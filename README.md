@@ -1,0 +1,165 @@
+# PortMate
+
+PortMate is a Rust-first terminal workbench for serial, SSH, shell, Telnet, raw TCP, file-transfer, and MCP-controlled co-debugging workflows.
+
+This repository currently contains the active desktop implementation slice:
+
+- Tauri v2 + React/TypeScript desktop shell
+- WindTerm-style workbench UI with resource/file/session/history/send panes and modal settings dialogs
+- Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
+- Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
+- Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux attach/list/pane inspection paths in the Tauri backend
+- SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
+- Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
+- SSH `profile-vault` private keys, optional saved passwords/passphrases, and the live MCP IPC token stored in the OS keyring with only `secretRef` metadata persisted in files/SQLite
+- SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a JSON compatibility export
+- Standalone `portmate-mcp` stdio bridge exposing MCP resources, tools, prompts, and local IPC control over JSON-RPC
+
+## Workspace
+
+```text
+crates/portmate-core   Shared domain model, SSH trust policy, tests
+crates/portmate-mcp    MCP stdio bridge for external AI/MCP hosts
+src                    React workbench UI
+src-tauri              Tauri desktop shell and backend commands
+```
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state outside Tauri and the Tauri command backend inside the desktop app.
+
+## How To Use The Current Build
+
+1. Start the desktop app:
+
+   ```bash
+   npm run desktop:clean
+   ```
+
+   Use `npm run desktop` if you are not launching from a snap-packaged VS Code environment.
+
+2. The app starts empty. No sample sessions, logs, transfers, host keys, or MCP audit rows are injected.
+
+3. Use the top menu bar for WindTerm-style entry points:
+
+   - `Session`: new session, session settings, duplicate tab, startup sessions, layout restore
+   - `Edit`: copy, paste, paste dialog, search, online search
+   - `View`: session tree, explorer pane, shell pane, quick bar, split views, focus mode
+   - `Terminal`: sync input, command sender, completion, free type, lock screen
+   - `Transfer`: SFTP, SCP, X/Y/ZModem
+   - `Tools`: forwarding, Sysmon, triggers, logs, MCP bridge, key manager
+   - `Preferences`: global settings, font, color scheme, tab color, transparency, mouse behavior
+
+4. Open settings from any settings-oriented menu item, for example `会话 -> 会话设置` or `工具 -> 终端设置`.
+
+5. A modal settings window opens. `会话 -> 新建会话` and `会话 -> 会话设置` open the session settings dialog; `工具 -> 终端设置` opens the terminal settings dialog.
+
+   - Session name, group, tags
+   - SSH host, port, username, `HostKeyAlias`, host key policy, trust scope, identity file, auth order, agent and forwarding behavior
+   - SSH profile-vault private key import plus optional saved password/passphrase into the system keyring; saved profiles keep only generated `secretRef` values
+   - Serial port, baud rate, parity, flow control, DTR/RTS, reconnect
+   - Shell/TCP/Telnet/Tmux fields when those session types are selected
+   - Trigger matching and actions for timeline marks, notifications, highlights, local commands, and send-text automation
+   - Terminal type, font, rows, cols, scrollback, theme
+   - Logging formats, redaction, path template
+   - Transfer protocols
+   - Workbench/global preferences modeled after WindTerm settings
+
+6. Click `保存` or `保存并连接`. SSH credentials are requested in a separate connection dialog, so the same saved profile can be reused with a different username/password/passphrase on the next connection. SSH private-key paths are configured under `SSH/Tmux -> 公钥`; passphrases are requested only at connect time.
+
+Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend.
+
+The `传输 -> SFTP/SCP 传输` dialog supports local file copy, protocol-native SFTP upload/download/remote copy, SCP upload/download, remote-to-remote SCP copy through SSH command channels, and X/Y/ZModem in-band transfers over connected runtimes. Use `remote:/path/file` or `ssh:/path/file` on either side to mark the remote path. ZModem uses the `zmodem2` state machine and expects `rz`/`sz` on the remote side when PortMate starts a remote modem transfer automatically.
+
+The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, local-to-remote upload, and remote-to-local download through the same SFTP transfer queue.
+
+The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text.
+
+The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
+
+The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding.
+
+The `工具 -> Tmux` dialog reads remote `tmux list-sessions` and `tmux list-panes` output through the connected SSH/Tmux runtime, then can attach or create a named tmux session in the active terminal.
+
+The `工具 -> Sysmon` action samples the local machine for Shell/Serial/TCP sessions and executes a Linux `/proc` sampler through the active SSH/Tmux connection for remote sessions.
+
+The `搜索 -> 会话搜索` and `搜索 -> 日志搜索` dialogs search the current desktop session set and recent loaded logs. `工具 -> 密钥管理器` manages PortMate host keys, imports/exports OpenSSH `known_hosts`, and lists visible ssh-agent client identities with SHA-256 fingerprints. `工具 -> MCP Bridge` opens the grant manager for MCP client IDs, scopes, allowed sessions, and recent audit records.
+
+Run the desktop application:
+
+```bash
+npm run desktop
+```
+
+If you launch from snap-packaged VS Code and GTK/WebKit loads `/snap/core20` libraries, use the sanitized launcher:
+
+```bash
+npm run desktop:clean
+```
+
+Build desktop bundles:
+
+```bash
+npm run desktop:build
+```
+
+The terminal renderer is pinned to `@xterm/xterm@6.0.0` with matching current `@xterm/addon-*` packages.
+
+To run the MCP bridge:
+
+```bash
+cargo run -p portmate-mcp
+```
+
+To let the standalone stdio bridge read the desktop store directly, pass the SQLite store path:
+
+```bash
+PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 cargo run -p portmate-mcp
+```
+
+When the desktop app is running, it writes `portmate-ipc.json` next to the store. The live IPC token is stored in the OS keyring and the endpoint file contains a `tokenRef` rather than the token itself when keyring access is available. The MCP bridge uses that endpoint to forward `send_text`, `send_key`, `run_command`, `open_session`, `close_session`, `start_transfer`, `create_tunnel`, `list_tmux_state`, and `attach_tmux` to the live desktop runtime. If the desktop IPC file is unavailable, read tools fall back to the store snapshot.
+
+Write tools are denied by default. For a trusted local development run with an empty grant store:
+
+```bash
+PORTMATE_MCP_TRUSTED=1 PORTMATE_MCP_CLIENT_ID=portmate-local cargo run -p portmate-mcp
+```
+
+## Verification
+
+```bash
+cargo test -p portmate-core -p portmate-mcp
+npm run build
+cargo check -p portmate
+```
+
+On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libcairo2-dev libgdk-pixbuf-2.0-dev
+```
+
+Without those packages, `cargo check -p portmate` stops at pkg-config errors for libraries such as `cairo` or `gdk-pixbuf-2.0`.
+
+## SSH Trust Model
+
+PortMate intentionally does not use the system `known_hosts` file as the source of truth. Each SSH profile owns:
+
+- `hostKeyPolicy.alias`, equivalent in purpose to OpenSSH `HostKeyAlias`
+- profile/project/user scoped trusted host keys
+- multiple trusted host key algorithms for the same profile
+- `identityPolicy.identitiesOnly`, so the selected profile key is tried before broad agent enumeration
+- `agentPolicy`, including agent forwarding and offer order
+
+This prevents common embedded lab failures where several devices reuse `192.168.1.10:22` but have different host keys.
+
+## Current Implementation Boundary
+
+The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, local Shell PTY with resize, raw TCP, Telnet socket mode with basic option negotiation, serial open/read/write with runtime port enumeration, DTR/RTS, Break, real Hex byte sending, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels, local and SSH remote Sysmon snapshots, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks, profile-vault private key/password/passphrase storage through the OS keyring, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust, modal settings, MCP manifests/tools/resources, and live desktop IPC for trusted MCP control.
+
+Still pending: Jump Host, transfer cancel/retry/speed, append-only raw/text/jsonl log shards, full host-key confirmation modal during connect, terminal compatibility test baselines, and a portable Stronghold-style vault backend for environments where the native OS keyring is unavailable or intentionally disabled.

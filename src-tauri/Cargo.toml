@@ -1,0 +1,33 @@
+[package]
+name = "portmate"
+version = "0.1.0"
+description = "MCP-ready serial and SSH co-debugging assistant"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "portmate_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+portmate-core = { path = "../crates/portmate-core" }
+chrono.workspace = true
+keyring = "4.0.1"
+keyring-core = "1.0.0"
+russh = { version = "0.60.1", features = ["async-trait"] }
+russh-sftp = "2.1.2"
+# russh 0.60.1 depends on pkcs5 0.8.0-rc.13 semantics; without an
+# exact direct pin Cargo may resolve pkcs5 0.8.0, which breaks pkcs8 rc.
+pkcs5 = "=0.8.0-rc.13"
+portable-pty = "0.9"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+serialport = { version = "4.9", default-features = false }
+tauri = { version = "2.10.3", features = [] }
+tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
+uuid.workspace = true
+zmodem2 = "0.5.0"

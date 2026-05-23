@@ -1,0 +1,566 @@
+use crate::host_keys::{HostKeyEvaluation, HostKeyObservation, HostKeyStore};
+use crate::models::*;
+use crate::redaction::redact_secrets;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStore {
+    pub profiles: Vec<SessionProfile>,
+    pub runtimes: Vec<SessionRuntime>,
+    pub events: Vec<SessionEvent>,
+    pub transfers: Vec<TransferTask>,
+    pub host_keys: HostKeyStore,
+    pub grants: Vec<McpGrant>,
+    pub audit: Vec<AuditRecord>,
+    pub timeline: Vec<TimelineMark>,
+    pub sysmon: Vec<SysmonSnapshot>,
+}
+
+impl SessionStore {
+    pub fn profile(&self, session_id: &str) -> Option<SessionProfile> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == session_id)
+            .cloned()
+    }
+
+    pub fn upsert_profile(&mut self, profile: SessionProfile) -> SessionSummary {
+        let now = Utc::now();
+        let session_id = profile.id.clone();
+        let kind = profile.kind;
+        let title = profile.name.clone();
+
+        if let Some(existing) = self
+            .profiles
+            .iter_mut()
+            .find(|existing| existing.id == session_id)
+        {
+            *existing = profile;
+        } else {
+            self.profiles.push(profile);
+        }
+
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.title = title;
+            runtime.active_transport = kind;
+            runtime.last_activity = now;
+        } else {
+            self.runtimes.push(SessionRuntime {
+                session_id: session_id.clone(),
+                pane_id: format!("{session_id}:main"),
+                status: SessionStatus::Disconnected,
+                title,
+                cwd: None,
+                connected_since: None,
+                last_activity: now,
+                active_transport: kind,
+            });
+        }
+
+        self.summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == session_id)
+            .expect("upserted profile must have a runtime summary")
+    }
+
+    pub fn open_session(&mut self, session_id: &str) -> Result<SessionSummary, String> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == session_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        self.set_runtime_status(session_id, SessionStatus::Connected)?;
+
+        self.push_system_event(
+            session_id,
+            format!(
+                "PortMate: connected to {} ({:?})",
+                Self::describe_endpoint(&profile),
+                profile.kind
+            ),
+        );
+        self.summary_for(session_id)
+    }
+
+    pub fn set_runtime_status(
+        &mut self,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> Result<SessionSummary, String> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == session_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        let now = Utc::now();
+
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.status = status;
+            runtime.title = profile.name.clone();
+            runtime.connected_since = if status == SessionStatus::Connected {
+                Some(runtime.connected_since.unwrap_or(now))
+            } else {
+                None
+            };
+            runtime.last_activity = now;
+            runtime.active_transport = profile.kind;
+        } else {
+            self.runtimes.push(SessionRuntime {
+                session_id: session_id.to_string(),
+                pane_id: format!("{session_id}:main"),
+                status,
+                title: profile.name.clone(),
+                cwd: None,
+                connected_since: (status == SessionStatus::Connected).then_some(now),
+                last_activity: now,
+                active_transport: profile.kind,
+            });
+        }
+
+        self.summary_for(session_id)
+    }
+
+    pub fn close_session(&mut self, session_id: &str) -> Result<SessionSummary, String> {
+        if !self.profiles.iter().any(|profile| profile.id == session_id) {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        let now = Utc::now();
+
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.status = SessionStatus::Disconnected;
+            runtime.connected_since = None;
+            runtime.last_activity = now;
+        }
+
+        self.push_system_event(session_id, "PortMate: session disconnected".to_string());
+        self.summary_for(session_id)
+    }
+
+    pub fn record_system_event(&mut self, session_id: &str, text: impl Into<String>) {
+        self.push_system_event(session_id, text.into());
+    }
+
+    pub fn record_stream_event(
+        &mut self,
+        session_id: &str,
+        direction: EventDirection,
+        stream: EventStream,
+        text: impl Into<String>,
+    ) -> Result<SessionEvent, String> {
+        if !self.profiles.iter().any(|profile| profile.id == session_id) {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        let now = Utc::now();
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.last_activity = now;
+        }
+        let event = SessionEvent {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            pane_id: format!("{session_id}:main"),
+            ts: now,
+            direction,
+            stream,
+            bytes_ref: None,
+            text: Some(text.into()),
+            annotations: BTreeMap::new(),
+        };
+        self.events.push(event.clone());
+        Ok(event)
+    }
+
+    pub fn record_auth_success(
+        &mut self,
+        session_id: &str,
+        method: AuthMethod,
+    ) -> Result<(), String> {
+        let profile = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+
+        match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                if ssh.identity_policy.record_success {
+                    ssh.identity_policy.last_successful = Some(method);
+                }
+                Ok(())
+            }
+            _ => Err(format!("profile is not SSH-backed: {session_id}")),
+        }
+    }
+
+    pub fn summaries(&self) -> Vec<SessionSummary> {
+        self.profiles
+            .iter()
+            .filter_map(|profile| {
+                let runtime = self
+                    .runtimes
+                    .iter()
+                    .find(|runtime| runtime.session_id == profile.id)?
+                    .clone();
+                let lines = self
+                    .events
+                    .iter()
+                    .filter(|event| event.session_id == profile.id)
+                    .filter_map(|event| event.text.as_deref())
+                    .collect::<Vec<_>>();
+                Some(SessionSummary {
+                    profile: profile.clone(),
+                    runtime,
+                    log_lines: lines.len(),
+                    last_line: lines.last().map(|line| (*line).to_string()),
+                })
+            })
+            .collect()
+    }
+
+    fn summary_for(&self, session_id: &str) -> Result<SessionSummary, String> {
+        self.summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == session_id)
+            .ok_or_else(|| format!("session summary is missing: {session_id}"))
+    }
+
+    fn push_system_event(&mut self, session_id: &str, text: String) {
+        let event = SessionEvent {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            pane_id: format!("{session_id}:main"),
+            ts: Utc::now(),
+            direction: EventDirection::System,
+            stream: EventStream::Control,
+            bytes_ref: None,
+            text: Some(text),
+            annotations: BTreeMap::new(),
+        };
+        self.events.push(event);
+    }
+
+    fn describe_endpoint(profile: &SessionProfile) -> String {
+        match &profile.connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                if ssh.username.is_empty() {
+                    format!("{}:{}", ssh.endpoint.host, ssh.endpoint.port)
+                } else {
+                    format!(
+                        "{}@{}:{}",
+                        ssh.username, ssh.endpoint.host, ssh.endpoint.port
+                    )
+                }
+            }
+            ConnectionConfig::Serial(serial) => serial.port.clone(),
+            ConnectionConfig::Shell(shell) => shell.program.clone(),
+            ConnectionConfig::Telnet(tcp) | ConnectionConfig::Tcp(tcp) => {
+                format!("{}:{}", tcp.host, tcp.port)
+            }
+        }
+    }
+
+    pub fn screen(&self, session_id: &str) -> Option<String> {
+        let lines = self
+            .events
+            .iter()
+            .filter(|event| event.session_id == session_id)
+            .filter_map(|event| event.text.as_deref())
+            .rev()
+            .take(80)
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.into_iter().rev().collect::<Vec<_>>().join("\n"))
+        }
+    }
+
+    pub fn tail_log(&self, session_id: &str, limit: usize) -> Vec<SessionEvent> {
+        let mut events = self
+            .events
+            .iter()
+            .filter(|event| event.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let start = events.len().saturating_sub(limit);
+        events.drain(..start);
+        events
+    }
+
+    pub fn search_logs(
+        &self,
+        query: &str,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<SessionEvent> {
+        let needle = query.to_lowercase();
+        self.events
+            .iter()
+            .filter(|event| session_id.is_none_or(|id| event.session_id == id))
+            .filter(|event| {
+                event
+                    .text
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    pub fn send_text(
+        &mut self,
+        actor: &str,
+        session_id: &str,
+        text: &str,
+    ) -> Result<SessionEvent, String> {
+        if !self.profiles.iter().any(|profile| profile.id == session_id) {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        let redacted = redact_secrets(text);
+        let event = SessionEvent {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            pane_id: format!("{session_id}:main"),
+            ts: Utc::now(),
+            direction: EventDirection::Outbound,
+            stream: EventStream::Stdout,
+            bytes_ref: None,
+            text: Some(redacted),
+            annotations: BTreeMap::from([("actor".to_string(), actor.to_string())]),
+        };
+        self.events.push(event.clone());
+        self.audit.push(AuditRecord {
+            id: Uuid::new_v4().to_string(),
+            ts: Utc::now(),
+            actor: actor.to_string(),
+            action: "send_text".to_string(),
+            session_id: Some(session_id.to_string()),
+            decision: "recorded".to_string(),
+            details: BTreeMap::from([("bytes".to_string(), text.len().to_string())]),
+        });
+        Ok(event)
+    }
+
+    pub fn evaluate_host_key(
+        &self,
+        profile_id: &str,
+        observation: &HostKeyObservation,
+    ) -> Result<HostKeyEvaluation, String> {
+        let policy = self
+            .ssh_profile(profile_id)
+            .map(|ssh| &ssh.host_key_policy)
+            .ok_or_else(|| format!("profile is not SSH-backed: {profile_id}"))?;
+        self.host_keys
+            .evaluate(profile_id, policy, observation)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn apply_host_key_decision(
+        &mut self,
+        profile_id: &str,
+        observation: &HostKeyObservation,
+        decision: HostKeyDecision,
+    ) -> Result<Option<TrustedHostKey>, String> {
+        let policy = self
+            .ssh_profile(profile_id)
+            .map(|ssh| ssh.host_key_policy.clone())
+            .ok_or_else(|| format!("profile is not SSH-backed: {profile_id}"))?;
+        self.host_keys
+            .apply_decision(profile_id, &policy, observation, decision)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn transfer_by_id(&self, id: &str) -> Option<TransferTask> {
+        self.transfers
+            .iter()
+            .find(|transfer| transfer.id == id)
+            .cloned()
+    }
+
+    pub fn sysmon_for(&self, session_id: &str) -> Option<SysmonSnapshot> {
+        self.sysmon
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.session_id == session_id)
+            .cloned()
+    }
+
+    pub fn timeline_for(&self, session_id: &str) -> Vec<TimelineMark> {
+        self.timeline
+            .iter()
+            .filter(|mark| mark.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn mcp_can(&self, client_id: &str, scope: McpScope, session_id: Option<&str>) -> bool {
+        let now = Utc::now();
+        self.grants
+            .iter()
+            .filter(|grant| grant.client_id == client_id)
+            .any(|grant| grant.allows(scope, session_id, now))
+    }
+
+    pub fn export_session_bundle(&self, session_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "summary": self.summaries().into_iter().find(|summary| summary.profile.id == session_id),
+            "events": self.tail_log(session_id, 500),
+            "timeline": self.timeline_for(session_id),
+            "sysmon": self.sysmon_for(session_id),
+        })
+    }
+
+    fn ssh_profile(&self, profile_id: &str) -> Option<&SshConnection> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| match &profile.connection {
+                ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(ssh),
+                _ => None,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_scope_requires_grant() {
+        let store = test_store();
+        assert!(store.mcp_can("test-client", McpScope::ReadLogs, Some("test-session")));
+        assert!(store.mcp_can("test-client", McpScope::WriteInput, Some("test-session")));
+        assert!(!store.mcp_can("readonly", McpScope::WriteInput, Some("test-session")));
+    }
+
+    #[test]
+    fn send_text_redacts_and_audits() {
+        let mut store = test_store();
+        let event = store
+            .send_text("test", "test-session", "password=hunter2\n")
+            .unwrap();
+        assert!(!event.text.unwrap().contains("hunter2"));
+        assert_eq!(store.audit.last().unwrap().action, "send_text");
+    }
+
+    #[test]
+    fn upsert_profile_creates_runtime_for_new_session() {
+        let mut store = SessionStore::default();
+        let summary = store.upsert_profile(SessionProfile {
+            id: "new-session".to_string(),
+            name: "new session".to_string(),
+            kind: SessionKind::Serial,
+            group: "serial".to_string(),
+            tags: Vec::new(),
+            connection: ConnectionConfig::Serial(SerialConnection {
+                port: "COM7".to_string(),
+                baud_rate: 115_200,
+                data_bits: 8,
+                stop_bits: 1,
+                parity: "none".to_string(),
+                flow_control: "none".to_string(),
+                dtr: false,
+                rts: false,
+                reconnect: true,
+            }),
+            terminal: TerminalSettings::default(),
+            logging: LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: TransferSettings::default(),
+        });
+
+        assert_eq!(summary.profile.id, "new-session");
+        assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+        assert_eq!(store.summaries().len(), 1);
+    }
+
+    #[test]
+    fn open_and_close_session_updates_runtime_and_log() {
+        let mut store = test_store();
+        let opened = store.open_session("test-session").unwrap();
+        assert_eq!(opened.runtime.status, SessionStatus::Connected);
+        assert!(store.screen("test-session").unwrap().contains("connected"));
+
+        let closed = store.close_session("test-session").unwrap();
+        assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+        assert!(store
+            .screen("test-session")
+            .unwrap()
+            .contains("disconnected"));
+    }
+
+    fn test_store() -> SessionStore {
+        let now = chrono::Utc::now();
+        SessionStore {
+            profiles: vec![SessionProfile {
+                id: "test-session".to_string(),
+                name: "test session".to_string(),
+                kind: SessionKind::Shell,
+                group: "tests".to_string(),
+                tags: Vec::new(),
+                connection: ConnectionConfig::Shell(ShellConnection {
+                    program: "/bin/sh".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                }),
+                terminal: TerminalSettings::default(),
+                logging: LoggingSettings::default(),
+                triggers: Vec::new(),
+                transfer: TransferSettings::default(),
+            }],
+            runtimes: vec![SessionRuntime {
+                session_id: "test-session".to_string(),
+                pane_id: "test-session:main".to_string(),
+                status: SessionStatus::Connected,
+                title: "test session".to_string(),
+                cwd: None,
+                connected_since: Some(now),
+                last_activity: now,
+                active_transport: SessionKind::Shell,
+            }],
+            grants: vec![
+                McpGrant {
+                    client_id: "test-client".to_string(),
+                    name: "test client".to_string(),
+                    scopes: vec![McpScope::ReadLogs, McpScope::WriteInput],
+                    allowed_sessions: vec!["test-session".to_string()],
+                    expires_at: None,
+                    revoked_at: None,
+                },
+                McpGrant {
+                    client_id: "readonly".to_string(),
+                    name: "readonly".to_string(),
+                    scopes: vec![McpScope::ReadLogs],
+                    allowed_sessions: Vec::new(),
+                    expires_at: None,
+                    revoked_at: None,
+                },
+            ],
+            ..SessionStore::default()
+        }
+    }
+}
