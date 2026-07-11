@@ -68,7 +68,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Tmux：远端 `list-sessions`、`list-panes`、attach/new-session。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
-- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，远端需要 `rz`/`sz`。
+- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。
 - SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口。
 
 主要缺口：
@@ -78,7 +78,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH/TCP/Telnet/Serial 自动重连已有初版，断线后会进入 `Reconnecting` 并后台重试；更深连接健康探测还不完整。
 - Serial 的基础断线重开已接入；Hex/时间戳查看已接入活动会话侧栏，但仍缺更完整过滤、导出和独立串口分析窗口。
 - SFTP 文件管理已是 local/remote 双栏并支持 rename/chmod/属性查看，以及本地/远端文件面板之间拖拽上传/下载；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口；外部文件拖放、目录递归拖放和端到端传输矩阵测试还缺。
-- ZModem 当前限制单文件小于 4 GiB，批量和复杂 rz/sz 兼容矩阵还需要实测。
+- ZModem 当前限制单文件小于 4 GiB；OpenSSH PTY 上的 lrzsz X/Y/Z 双向传输已有实测，物理串口、取消/断线、批量和不同工具实现的兼容矩阵仍待补。
 
 ### SSH 身份与 Host Key 隔离
 
@@ -178,17 +178,18 @@ npm run build
 - MCP resource/template、ping、batch、notification、HTTP `202` 和日志 limit 协议边界。
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、SCP 上传/下载，以及 local/dynamic/remote reverse tunnel 和流量统计。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY，以及第二跳 host key 变更诊断。
+- OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复，以及 XModem block padding 精确截断。
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 72：`portmate` 43、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 74：`portmate` 45、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
 - 已有隔离 OpenSSH server 和两跳 Jump Host 集成测试；`allowRotation`、混合认证与超时/拒绝等分跳失败聚合矩阵仍待补。
 - 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
-- 已有 OpenSSH SFTP 浏览/写操作/传输和 SCP 上传/下载端到端测试；SFTP/SCP 续传、取消、失败和 X/Y/ZModem 真实工具矩阵仍待补。
+- 已有 OpenSSH SFTP 浏览/写操作/传输、SCP 上传/下载和 lrzsz X/Y/ZModem 双向端到端测试；SFTP/SCP 续传/取消/失败，以及 modem 物理串口/取消/断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端及 SOCKS5 错误协议 loopback 测试；更完整失败和健康探测矩阵仍待补。
 - 没有 Playwright UI/截图/交互回归。
 - 没有 vttest/xterm 兼容性基线。
@@ -206,7 +207,7 @@ npm run build
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商/CRLF/raw byte IAC 转义、Telnet/Raw TCP loopback 与 TCP 自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH SFTP 浏览/写操作/上传/远端复制/下载和 SCP 上传/下载端到端已覆盖，外部文件/目录递归拖放和续传/取消/失败矩阵待补。 |
-| X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；需要真实 rz/sz/串口矩阵测试。 |
+| X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控和 XModem 精确长度已覆盖，物理串口、取消/断线和工具变体矩阵待补。 |
 | 隧道 | 部分实现 | local/remote/dynamic 已有，运行中列表、停止入口、连接数/字节/最后错误统计已接入；三种模式的 OpenSSH 端到端和 SOCKS5 错误协议 loopback 已覆盖，更完整失败矩阵与深度健康探测待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 部分实现 | 结构化 events/SQLite、append-only raw/text/jsonl 分片、bundle 日志引用已有；查询/归档/清理策略待补。 |
@@ -222,7 +223,7 @@ npm run build
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
 2. 为 Jump Host 增加混合认证、超时/拒绝的连接诊断和错误聚合覆盖。
 3. 为 tunnel 补齐更深健康探测和失败矩阵，并为远端命令型传输补齐更完整的失败状态和错误可视化。
-4. 扩展端到端集成测试：host key `allowRotation`、Jump Host 混合认证/失败、SFTP/SCP 续传/取消/失败、Raw TCP/Telnet 更完整矩阵、虚拟串口重连、rz/sz。
+4. 扩展端到端集成测试：host key `allowRotation`、Jump Host 混合认证/失败、SFTP/SCP 续传/取消/失败、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流

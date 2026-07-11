@@ -2974,7 +2974,12 @@ async fn transfer_file_via_xmodem(
             remote_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let source_size = fs::metadata(&local_source)
+                .map_err(|error| format!("读取 XModem 本地文件元数据失败: {error}"))?
+                .len();
+            let completion_token = Uuid::new_v4().simple().to_string();
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Xmodem,
@@ -2982,21 +2987,38 @@ async fn transfer_file_via_xmodem(
                 &remote_destination,
             )
             .await?;
-            xmodem_send_file(
+            let remote_started = remote_start.is_some();
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = xmodem_send_file(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_source,
+                remote_started,
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                let command = xmodem_remote_finalize_command(
+                    &remote_destination,
+                    source_size,
+                    &completion_token,
+                );
+                let _ = send_text_inner(state.session_io(), request.session_id.clone(), command)
+                    .await?;
+                wait_for_xmodem_remote_completion(&mut completion_receiver, &completion_token)
+                    .await?;
+            }
+            Ok(bytes)
         }
         ModemDirection::Download {
             remote_source,
             local_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Xmodem,
@@ -3004,14 +3026,19 @@ async fn transfer_file_via_xmodem(
                 &remote_source,
             )
             .await?;
-            xmodem_receive_file(
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = xmodem_receive_file(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_destination,
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+            }
+            Ok(bytes)
         }
     }
 }
@@ -3028,7 +3055,8 @@ async fn transfer_file_via_ymodem(
             remote_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Ymodem,
@@ -3036,22 +3064,29 @@ async fn transfer_file_via_ymodem(
                 &remote_destination,
             )
             .await?;
-            ymodem_send_file(
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = ymodem_send_file(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_source,
                 Some(&remote_destination),
+                remote_start.is_some(),
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+            }
+            Ok(bytes)
         }
         ModemDirection::Download {
             remote_source,
             local_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Ymodem,
@@ -3059,14 +3094,19 @@ async fn transfer_file_via_ymodem(
                 &remote_source,
             )
             .await?;
-            ymodem_receive_file(
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = ymodem_receive_file(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_destination,
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+            }
+            Ok(bytes)
         }
     }
 }
@@ -3083,7 +3123,8 @@ async fn transfer_file_via_zmodem(
             remote_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Zmodem,
@@ -3091,22 +3132,28 @@ async fn transfer_file_via_zmodem(
                 &remote_destination,
             )
             .await?;
-            zmodem_send_file(
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = zmodem_send_file(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_source,
                 Some(&remote_destination),
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+            }
+            Ok(bytes)
         }
         ModemDirection::Download {
             remote_source,
             local_destination,
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            maybe_start_remote_modem(
+            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Zmodem,
@@ -3114,14 +3161,19 @@ async fn transfer_file_via_zmodem(
                 &remote_source,
             )
             .await?;
-            zmodem_receive_files(
+            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let bytes = zmodem_receive_files(
                 state,
                 &request.session_id,
-                receiver,
+                reader,
                 &local_destination,
                 progress,
             )
-            .await
+            .await?;
+            if let Some(remote_start) = remote_start.as_ref() {
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+            }
+            Ok(bytes)
         }
     }
 }
@@ -3161,64 +3213,260 @@ fn modem_direction(request: &StartTransferRequest) -> Result<ModemDirection, Str
     }
 }
 
+struct RemoteModemStart {
+    token: String,
+    ready_marker: String,
+}
+
+impl RemoteModemStart {
+    fn success_marker(&self) -> String {
+        format!("__PORTMATE_MODEM_{}_DONE__", self.token)
+    }
+
+    fn failure_marker(&self) -> String {
+        format!("__PORTMATE_MODEM_{}_FAIL__", self.token)
+    }
+}
+
 async fn maybe_start_remote_modem(
     state: &AppState,
     session_id: &str,
     protocol: TransferProtocol,
     upload: bool,
     remote_path: &str,
-) -> Result<(), String> {
+) -> Result<Option<RemoteModemStart>, String> {
+    if !remote_modem_auto_start_enabled(state, session_id)? {
+        return Ok(None);
+    }
+
+    let readiness_token = Uuid::new_v4().simple().to_string();
+    let command = modem_remote_command(protocol, upload, remote_path, &readiness_token);
+    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
+    Ok(Some(RemoteModemStart {
+        ready_marker: format!("__PORTMATE_MODEM_{readiness_token}_READY__"),
+        token: readiness_token,
+    }))
+}
+
+fn remote_modem_auto_start_enabled(state: &AppState, session_id: &str) -> Result<bool, String> {
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store.profile(session_id)
-    };
-    let Some(profile) = profile else {
-        return Err(format!("unknown session: {session_id}"));
-    };
-    if !matches!(
+    }
+    .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    Ok(matches!(
         profile.kind,
         SessionKind::Ssh | SessionKind::Tmux | SessionKind::Shell | SessionKind::Telnet
-    ) {
-        return Ok(());
-    }
-
-    let command = modem_remote_command(protocol, upload, remote_path);
-    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
-    Ok(())
+    ))
 }
 
-fn modem_remote_command(protocol: TransferProtocol, upload: bool, remote_path: &str) -> String {
+fn xmodem_remote_finalize_command(
+    remote_path: &str,
+    source_size: u64,
+    completion_token: &str,
+) -> String {
+    format!(
+        concat!(
+            "target={}; portmate_status=0; ",
+            "if command -v truncate >/dev/null 2>&1; then ",
+            "truncate -s {} -- \"$target\"; portmate_status=$?; ",
+            "else part=\"$target.portmate-trim\"; ",
+            "dd if=\"$target\" of=\"$part\" bs=1 count={} 2>/dev/null ",
+            "&& mv -f -- \"$part\" \"$target\"; portmate_status=$?; ",
+            "if [ \"$portmate_status\" -ne 0 ]; then rm -f -- \"$part\"; fi; fi; ",
+            "if [ \"$portmate_status\" -eq 0 ]; then ",
+            "printf '\\n__PORTMATE_XMODEM_%s_DONE__\\n' {}; ",
+            "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi\r"
+        ),
+        shell_quote(remote_path),
+        source_size,
+        source_size,
+        shell_quote(completion_token),
+        shell_quote(completion_token),
+    )
+}
+
+async fn wait_for_xmodem_remote_completion(
+    receiver: &mut broadcast::Receiver<Vec<u8>>,
+    completion_token: &str,
+) -> Result<(), String> {
+    let success = format!("__PORTMATE_XMODEM_{completion_token}_DONE__");
+    let failure = format!("__PORTMATE_XMODEM_{completion_token}_FAIL__");
+    let started = Instant::now();
+    let mut output = Vec::new();
+    loop {
+        let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("XModem remote finalize timed out".to_string());
+        }
+        match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await {
+            Ok(Ok(bytes)) => {
+                output.extend_from_slice(&bytes);
+                if output
+                    .windows(success.len())
+                    .any(|window| window == success.as_bytes())
+                {
+                    return Ok(());
+                }
+                if output
+                    .windows(failure.len())
+                    .any(|window| window == failure.as_bytes())
+                {
+                    return Err(format!(
+                        "XModem remote finalize failed: {}",
+                        String::from_utf8_lossy(&output)
+                    ));
+                }
+                if output.len() > 64 * 1024 {
+                    let keep = success.len().max(failure.len()).saturating_sub(1);
+                    output.drain(..output.len().saturating_sub(keep));
+                }
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                return Err("XModem remote finalize stream closed".to_string())
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+async fn wait_for_remote_modem_completion(
+    receiver: &mut broadcast::Receiver<Vec<u8>>,
+    remote_start: &RemoteModemStart,
+) -> Result<(), String> {
+    let success = remote_start.success_marker();
+    let failure = remote_start.failure_marker();
+    let started = Instant::now();
+    let mut output = Vec::new();
+    loop {
+        let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("remote modem command completion timed out".to_string());
+        }
+        match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await {
+            Ok(Ok(bytes)) => {
+                output.extend_from_slice(&bytes);
+                if output
+                    .windows(success.len())
+                    .any(|window| window == success.as_bytes())
+                {
+                    return Ok(());
+                }
+                if output
+                    .windows(failure.len())
+                    .any(|window| window == failure.as_bytes())
+                {
+                    return Err(format!(
+                        "remote modem command failed: {}",
+                        String::from_utf8_lossy(&output)
+                    ));
+                }
+                if output.len() > 64 * 1024 {
+                    let keep = success.len().max(failure.len()).saturating_sub(1);
+                    output.drain(..output.len().saturating_sub(keep));
+                }
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                return Err("remote modem command completion stream closed".to_string())
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+fn modem_remote_command(
+    protocol: TransferProtocol,
+    upload: bool,
+    remote_path: &str,
+    readiness_token: &str,
+) -> String {
     match (protocol, upload) {
-        (TransferProtocol::Xmodem, true) => format!("rx {}\r", shell_quote(remote_path)),
-        (TransferProtocol::Xmodem, false) => format!("sx {}\r", shell_quote(remote_path)),
+        (TransferProtocol::Xmodem, true) => format!(
+            "{}\r",
+            modem_raw_tty_shell_command(
+                &format!("rx {}", shell_quote(remote_path)),
+                readiness_token,
+            )
+        ),
+        (TransferProtocol::Xmodem, false) => format!(
+            "{}\r",
+            modem_raw_tty_shell_command(
+                &format!("sx {}", shell_quote(remote_path)),
+                readiness_token,
+            )
+        ),
         (TransferProtocol::Ymodem, true) => {
             let (parent, _) = remote_parent_and_file_name(remote_path);
             if parent.is_empty() {
-                "rb -y\r".to_string()
+                format!(
+                    "{}\r",
+                    modem_raw_tty_shell_command("rb -y", readiness_token)
+                )
             } else {
                 format!(
-                    "mkdir -p {} && cd {} && rb -y\r",
+                    "mkdir -p {} && cd {} && {}\r",
                     shell_quote(&parent),
-                    shell_quote(&parent)
+                    shell_quote(&parent),
+                    modem_raw_tty_shell_command("rb -y", readiness_token)
                 )
             }
         }
-        (TransferProtocol::Ymodem, false) => format!("sb {}\r", shell_quote(remote_path)),
+        (TransferProtocol::Ymodem, false) => format!(
+            "{}\r",
+            modem_raw_tty_shell_command(
+                &format!("sb {}", shell_quote(remote_path)),
+                readiness_token,
+            )
+        ),
         (TransferProtocol::Zmodem, true) => {
             let (parent, _) = remote_parent_and_file_name(remote_path);
             if parent.is_empty() {
-                "rz -y\r".to_string()
+                format!(
+                    "{}\r",
+                    modem_raw_tty_shell_command("rz -y", readiness_token)
+                )
             } else {
                 format!(
-                    "mkdir -p {} && cd {} && rz -y\r",
+                    "mkdir -p {} && cd {} && {}\r",
                     shell_quote(&parent),
-                    shell_quote(&parent)
+                    shell_quote(&parent),
+                    modem_raw_tty_shell_command("rz -y", readiness_token)
                 )
             }
         }
-        (TransferProtocol::Zmodem, false) => format!("sz {}\r", shell_quote(remote_path)),
+        (TransferProtocol::Zmodem, false) => format!(
+            "{}\r",
+            modem_raw_tty_shell_command(
+                &format!("sz {}", shell_quote(remote_path)),
+                readiness_token,
+            )
+        ),
         _ => String::new(),
     }
+}
+
+fn modem_raw_tty_shell_command(command: &str, readiness_token: &str) -> String {
+    format!(
+        concat!(
+            "{{ portmate_stty=0; ",
+            "if command -v stty >/dev/null 2>&1; then ",
+            "stty raw -echo; portmate_stty=1; fi; ",
+            "printf '__PORTMATE_MODEM_%s_READY__' {}; ",
+            "{}; portmate_modem_status=$?; ",
+            "if [ \"$portmate_stty\" -eq 1 ]; then stty sane; fi; ",
+            "if [ \"$portmate_modem_status\" -eq 0 ]; then ",
+            "printf '\\n__PORTMATE_MODEM_%s_DONE__\\n' {}; ",
+            "else printf '\\n__PORTMATE_MODEM_%s_FAIL__%s\\n' {} ",
+            "\"$portmate_modem_status\"; fi; ",
+            "(exit \"$portmate_modem_status\"); }}"
+        ),
+        shell_quote(readiness_token),
+        command,
+        shell_quote(readiness_token),
+        shell_quote(readiness_token),
+    )
 }
 
 fn runtime_tap_receiver(
@@ -3362,6 +3610,45 @@ impl ModemByteReader {
         }
     }
 
+    async fn after_marker(
+        mut receiver: broadcast::Receiver<Vec<u8>>,
+        marker: &str,
+    ) -> Result<Self, String> {
+        let started = Instant::now();
+        let marker = marker.as_bytes();
+        let mut buffered = Vec::new();
+        loop {
+            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err("remote modem readiness marker timed out".to_string());
+            }
+            match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await
+            {
+                Ok(Ok(bytes)) => {
+                    buffered.extend_from_slice(&bytes);
+                    if let Some(offset) = buffered
+                        .windows(marker.len())
+                        .position(|window| window == marker)
+                    {
+                        return Ok(Self {
+                            receiver,
+                            pending: buffered[offset + marker.len()..].iter().copied().collect(),
+                        });
+                    }
+                    if buffered.len() > 64 * 1024 {
+                        let keep = marker.len().saturating_sub(1);
+                        buffered.drain(..buffered.len().saturating_sub(keep));
+                    }
+                }
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Closed)) => {
+                    return Err("remote modem readiness stream closed".to_string())
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
     async fn next_byte(&mut self, timeout: Duration) -> Result<u8, String> {
         loop {
             if let Some(byte) = self.pending.pop_front() {
@@ -3411,10 +3698,20 @@ impl ModemByteReader {
     }
 }
 
+async fn modem_reader_after_start(
+    receiver: broadcast::Receiver<Vec<u8>>,
+    remote_start: Option<&RemoteModemStart>,
+) -> Result<ModemByteReader, String> {
+    match remote_start {
+        Some(start) => ModemByteReader::after_marker(receiver, &start.ready_marker).await,
+        None => Ok(ModemByteReader::new(receiver)),
+    }
+}
+
 async fn zmodem_send_file(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_source: &str,
     remote_destination: Option<&str>,
     progress: &TransferProgressContext,
@@ -3443,7 +3740,6 @@ async fn zmodem_send_file(
         .start_file(file_name.as_bytes(), size)
         .map_err(|error| format!("ZModem 文件发送启动失败: {error}"))?;
 
-    let mut reader = ModemByteReader::new(receiver);
     let mut input_buf = Vec::<u8>::new();
     let mut input_offset = 0_usize;
     let mut file_buf = vec![0_u8; 1024];
@@ -3536,13 +3832,12 @@ async fn zmodem_send_file(
 async fn zmodem_receive_files(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut modem_receiver =
         zmodem2::Receiver::new().map_err(|error| format!("ZModem receiver 初始化失败: {error}"))?;
-    let mut reader = ModemByteReader::new(receiver);
     let mut input_buf = Vec::<u8>::new();
     let mut input_offset = 0_usize;
     let mut current_file: Option<(fs::File, PathBuf)> = None;
@@ -3687,13 +3982,13 @@ fn zmodem_local_target_path(
 async fn xmodem_send_file(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_source: &str,
+    auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let data =
         fs::read(local_source).map_err(|error| format!("读取 XModem 本地文件失败: {error}"))?;
-    let mut reader = ModemByteReader::new(receiver);
     let crc = modem_wait_for_receiver(&mut reader).await?;
     let mut block_no = 1_u8;
     let total = data.len() as u64;
@@ -3710,23 +4005,48 @@ async fn xmodem_send_file(
             chunk,
             crc,
         )
-        .await?;
+        .await
+        .map_err(|error| format!("XModem data block {block_no} failed: {error}"))?;
         bytes_done += chunk.len() as u64;
         progress.update(bytes_done, total)?;
         block_no = block_no.wrapping_add(1);
     }
-    modem_finish_eot(state, session_id, &mut reader).await?;
+    if auto_remote_receiver {
+        modem_finish_auto_remote_xmodem(state, session_id, &mut reader)
+            .await
+            .map_err(|error| format!("XModem EOT handshake failed: {error}"))?;
+    } else {
+        modem_finish_eot(state, session_id, &mut reader)
+            .await
+            .map_err(|error| format!("XModem EOT handshake failed: {error}"))?;
+    }
     Ok(data.len() as u64)
+}
+
+async fn modem_finish_auto_remote_xmodem(
+    state: &AppState,
+    session_id: &str,
+    reader: &mut ModemByteReader,
+) -> Result<(), String> {
+    for _ in 0..3 {
+        write_runtime_bytes(state, session_id, &[MODEM_EOT]).await?;
+        match modem_wait_for_ack(reader, Duration::from_secs(2)).await {
+            Ok(ModemAck::Ack) => return Ok(()),
+            Ok(ModemAck::Nak) => {}
+            Err(error) if is_modem_timeout(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+    Err("remote did not ACK modem EOT".to_string())
 }
 
 async fn xmodem_receive_file(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let mut reader = ModemByteReader::new(receiver);
     let mut expected = 1_u8;
     let mut output = Vec::new();
     let mut first_packet = true;
@@ -3768,14 +4088,14 @@ async fn xmodem_receive_file(
 async fn ymodem_send_file(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_source: &str,
     remote_destination: Option<&str>,
+    auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let data =
         fs::read(local_source).map_err(|error| format!("读取 YModem 本地文件失败: {error}"))?;
-    let mut reader = ModemByteReader::new(receiver);
     if !modem_wait_for_receiver(&mut reader).await? {
         return Err("YModem receiver did not request CRC mode".to_string());
     }
@@ -3802,7 +4122,8 @@ async fn ymodem_send_file(
         &metadata,
         true,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("YModem metadata block failed: {error}"))?;
     let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
 
     let mut block_no = 1_u8;
@@ -3819,27 +4140,55 @@ async fn ymodem_send_file(
             chunk,
             true,
         )
-        .await?;
+        .await
+        .map_err(|error| format!("YModem data block {block_no} failed: {error}"))?;
         bytes_done += chunk.len() as u64;
         progress.update(bytes_done, total)?;
         block_no = block_no.wrapping_add(1);
     }
-    modem_finish_eot(state, session_id, &mut reader).await?;
+    modem_finish_eot(state, session_id, &mut reader)
+        .await
+        .map_err(|error| format!("YModem EOT handshake failed: {error}"))?;
     let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
-    let empty = vec![0_u8; XMODEM_BLOCK_SIZE];
-    modem_send_packet_with_retries(state, session_id, &mut reader, MODEM_SOH, 0, &empty, true)
-        .await?;
+    if auto_remote_receiver {
+        modem_finish_auto_remote_ymodem_batch(state, session_id, &mut reader)
+            .await
+            .map_err(|error| format!("YModem final empty block failed: {error}"))?;
+    } else {
+        let empty = vec![0_u8; XMODEM_BLOCK_SIZE];
+        modem_send_packet_with_retries(state, session_id, &mut reader, MODEM_SOH, 0, &empty, true)
+            .await
+            .map_err(|error| format!("YModem final empty block failed: {error}"))?;
+    }
     Ok(data.len() as u64)
+}
+
+async fn modem_finish_auto_remote_ymodem_batch(
+    state: &AppState,
+    session_id: &str,
+    reader: &mut ModemByteReader,
+) -> Result<(), String> {
+    let empty = vec![0_u8; XMODEM_BLOCK_SIZE];
+    let packet = modem_packet_bytes(MODEM_SOH, 0, &empty, XMODEM_BLOCK_SIZE, true);
+    for _ in 0..3 {
+        write_runtime_bytes(state, session_id, &packet).await?;
+        match modem_wait_for_ack(reader, Duration::from_secs(2)).await {
+            Ok(ModemAck::Ack) => return Ok(()),
+            Ok(ModemAck::Nak) => {}
+            Err(error) if is_modem_timeout(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+    Err("remote rejected final YModem empty block".to_string())
 }
 
 async fn ymodem_receive_file(
     state: &AppState,
     session_id: &str,
-    receiver: broadcast::Receiver<Vec<u8>>,
+    mut reader: ModemByteReader,
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let mut reader = ModemByteReader::new(receiver);
     let marker = modem_wait_for_packet_marker(state, session_id, &mut reader).await?;
     if marker == MODEM_EOT {
         return Err("YModem sender ended before metadata block".to_string());
@@ -4168,7 +4517,7 @@ fn remote_parent_and_file_name(path: &str) -> (String, String) {
 }
 
 fn is_modem_timeout(error: &str) -> bool {
-    error.contains("timeout")
+    error.contains("timeout") || error.contains("timed out")
 }
 
 fn remote_path(value: &str) -> Option<&str> {
@@ -12067,6 +12416,51 @@ mod tests {
     }
 
     #[test]
+    fn remote_modem_command_uses_raw_tty_and_non_echoing_markers() {
+        let token = "modem-token-1";
+        let command = modem_remote_command(
+            TransferProtocol::Ymodem,
+            true,
+            "/tmp/transfers/file.bin",
+            token,
+        );
+        assert!(command.contains("stty raw -echo"));
+        assert!(command.contains("stty sane"));
+        assert!(command.contains("rb -y"));
+        assert!(command.contains(token));
+        assert!(!command.contains("__PORTMATE_MODEM_modem-token-1_READY__"));
+        assert!(!command.contains("__PORTMATE_MODEM_modem-token-1_DONE__"));
+
+        let finalize = xmodem_remote_finalize_command("/tmp/file.bin", 37, token);
+        assert!(finalize.contains("truncate -s 37"));
+        assert!(finalize.contains("count=37"));
+        assert!(finalize.contains("portmate_status"));
+        assert!(!finalize.contains(" status="));
+        assert!(is_modem_timeout("modem byte timeout"));
+        assert!(is_modem_timeout("timed out waiting for modem ACK"));
+    }
+
+    #[test]
+    fn modem_ready_marker_discards_stale_bytes_and_preserves_handshake() {
+        tauri::async_runtime::block_on(async {
+            let (tap, receiver) = broadcast::channel(8);
+            tap.send(b"old-C-old-__PORTMATE_MODEM_token_REA".to_vec())
+                .unwrap();
+            tap.send([b"DY__".as_slice(), &[MODEM_CRC_REQUEST]].concat())
+                .unwrap();
+
+            let mut reader =
+                ModemByteReader::after_marker(receiver, "__PORTMATE_MODEM_token_READY__")
+                    .await
+                    .unwrap();
+            assert_eq!(
+                reader.next_byte(Duration::from_millis(10)).await.unwrap(),
+                MODEM_CRC_REQUEST
+            );
+        });
+    }
+
+    #[test]
     fn socks5_loopback_parses_domain_connect_request() {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -12159,6 +12553,9 @@ mod tests {
             eprintln!("skipping OpenSSH integration test: ssh-keygen is not installed");
             return;
         }
+        let modem_tools_available = ["rx", "sx", "rb", "sb", "rz", "sz"]
+            .into_iter()
+            .all(|command| Command::new(command).arg("--version").output().is_ok());
 
         let root = std::env::temp_dir().join(format!("portmate-sshd-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -12430,6 +12827,164 @@ mod tests {
             );
             assert_eq!(download.bytes_done, payload.len() as u64);
             assert_eq!(fs::read(&download_target).unwrap(), payload);
+
+            if modem_tools_available {
+                let zmodem_source = root.join("zmodem-upload-source.bin");
+                let zmodem_remote = root.join("zmodem-remote.bin");
+                let zmodem_download = root.join("zmodem-download-target.bin");
+                let zmodem_payload = b"PortMate ZModem\x00binary\xffpayload\n";
+                fs::write(&zmodem_source, zmodem_payload).unwrap();
+
+                let upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Zmodem,
+                        source: zmodem_source.display().to_string(),
+                        destination: format!("remote:{}", zmodem_remote.display()),
+                    },
+                )
+                .await
+                .unwrap();
+                let upload = wait_for_transfer_terminal_state(&state, &upload.id).await;
+                assert_eq!(
+                    upload.status,
+                    TransferStatus::Completed,
+                    "ZModem upload failed: {:?}",
+                    upload.message
+                );
+                assert_eq!(upload.bytes_done, zmodem_payload.len() as u64);
+                assert_eq!(fs::read(&zmodem_remote).unwrap(), zmodem_payload);
+
+                let download = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Zmodem,
+                        source: format!("remote:{}", zmodem_remote.display()),
+                        destination: zmodem_download.display().to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+                let download = wait_for_transfer_terminal_state(&state, &download.id).await;
+                assert_eq!(
+                    download.status,
+                    TransferStatus::Completed,
+                    "ZModem download failed: {:?}",
+                    download.message
+                );
+                assert_eq!(download.bytes_done, zmodem_payload.len() as u64);
+                assert_eq!(fs::read(&zmodem_download).unwrap(), zmodem_payload);
+
+                let xmodem_source = root.join("xmodem-upload-source.bin");
+                let xmodem_remote = root.join("xmodem-remote.bin");
+                let xmodem_download = root.join("xmodem-download-target.bin");
+                let xmodem_payload = b"PortMate XModem integration payload\n";
+                fs::write(&xmodem_source, xmodem_payload).unwrap();
+                let upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Xmodem,
+                        source: xmodem_source.display().to_string(),
+                        destination: format!("remote:{}", xmodem_remote.display()),
+                    },
+                )
+                .await
+                .unwrap();
+                let upload = wait_for_transfer_terminal_state(&state, &upload.id).await;
+                let xmodem_screen = state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .screen(&profile.id)
+                    .unwrap_or_default();
+                assert_eq!(
+                    upload.status,
+                    TransferStatus::Completed,
+                    "XModem upload failed: {:?}; screen={xmodem_screen:?}",
+                    upload.message,
+                );
+                assert_eq!(upload.bytes_done, xmodem_payload.len() as u64);
+                assert_eq!(fs::read(&xmodem_remote).unwrap(), xmodem_payload);
+
+                let download = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Xmodem,
+                        source: format!("remote:{}", xmodem_remote.display()),
+                        destination: xmodem_download.display().to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+                let download = wait_for_transfer_terminal_state(&state, &download.id).await;
+                assert_eq!(
+                    download.status,
+                    TransferStatus::Completed,
+                    "XModem download failed: {:?}",
+                    download.message
+                );
+                assert_eq!(download.bytes_done, xmodem_payload.len() as u64);
+                assert_eq!(fs::read(&xmodem_download).unwrap(), xmodem_payload);
+
+                let ymodem_source = root.join("ymodem-upload-source.bin");
+                let ymodem_remote = root.join("ymodem-remote.bin");
+                let ymodem_download = root.join("ymodem-download-target.bin");
+                let ymodem_payload = b"PortMate YModem\x00binary\xffpayload\n";
+                fs::write(&ymodem_source, ymodem_payload).unwrap();
+                let upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Ymodem,
+                        source: ymodem_source.display().to_string(),
+                        destination: format!("remote:{}", ymodem_remote.display()),
+                    },
+                )
+                .await
+                .unwrap();
+                let upload = wait_for_transfer_terminal_state(&state, &upload.id).await;
+                let ymodem_screen = state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .screen(&profile.id)
+                    .unwrap_or_default();
+                assert_eq!(
+                    upload.status,
+                    TransferStatus::Completed,
+                    "YModem upload failed: {:?}; screen={ymodem_screen:?}",
+                    upload.message,
+                );
+                assert_eq!(upload.bytes_done, ymodem_payload.len() as u64);
+                assert_eq!(fs::read(&ymodem_remote).unwrap(), ymodem_payload);
+
+                let download = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: TransferProtocol::Ymodem,
+                        source: format!("remote:{}", ymodem_remote.display()),
+                        destination: ymodem_download.display().to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+                let download = wait_for_transfer_terminal_state(&state, &download.id).await;
+                assert_eq!(
+                    download.status,
+                    TransferStatus::Completed,
+                    "YModem download failed: {:?}",
+                    download.message
+                );
+                assert_eq!(download.bytes_done, ymodem_payload.len() as u64);
+                assert_eq!(fs::read(&ymodem_download).unwrap(), ymodem_payload);
+            } else {
+                eprintln!("skipping modem OpenSSH coverage: lrzsz tools are not installed");
+            }
 
             let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let echo_address = echo_listener.local_addr().unwrap();
@@ -13031,7 +13586,7 @@ mod tests {
     }
 
     async fn wait_for_transfer_terminal_state(state: &AppState, task_id: &str) -> TransferTask {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
                 if matches!(
