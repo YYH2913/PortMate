@@ -862,6 +862,7 @@ async fn send_bytes_inner(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
+    let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
     write_session_bytes(
         &io.store,
         &io.runtimes.ssh,
@@ -869,7 +870,7 @@ async fn send_bytes_inner(
         &io.runtimes.tcp,
         &io.runtimes.serial,
         &session_id,
-        &bytes,
+        &wire_bytes,
     )
     .await?;
 
@@ -977,16 +978,44 @@ fn outbound_text_for_session(
     }
 }
 
+fn outbound_bytes_for_session(
+    store: &Arc<Mutex<SessionStore>>,
+    session_id: &str,
+    bytes: &[u8],
+) -> Result<Vec<u8>, String> {
+    let is_telnet = {
+        let store = store.lock().map_err(|error| error.to_string())?;
+        store
+            .profile(session_id)
+            .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_)))
+    };
+    Ok(if is_telnet {
+        encode_telnet_outbound_bytes(bytes)
+    } else {
+        bytes.to_vec()
+    })
+}
+
 fn encode_telnet_outbound_text(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut previous = '\0';
     for ch in text.chars() {
         match ch {
             '\n' if previous != '\r' => output.push_str("\r\n"),
-            '\u{00ff}' => output.push_str("\u{00ff}\u{00ff}"),
             _ => output.push(ch),
         }
         previous = ch;
+    }
+    output
+}
+
+fn encode_telnet_outbound_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(bytes.len());
+    for byte in bytes {
+        output.push(*byte);
+        if *byte == TELNET_IAC {
+            output.push(*byte);
+        }
     }
     output
 }
@@ -10743,6 +10772,73 @@ mod tests {
     fn telnet_outbound_text_uses_crlf() {
         assert_eq!(encode_telnet_outbound_text("show\n"), "show\r\n");
         assert_eq!(encode_telnet_outbound_text("show\r\n"), "show\r\n");
+        assert_eq!(encode_telnet_outbound_text("ÿ\n"), "ÿ\r\n");
+        assert_eq!(
+            encode_telnet_outbound_bytes(&[0x01, TELNET_IAC]),
+            vec![0x01, TELNET_IAC, TELNET_IAC]
+        );
+    }
+
+    #[test]
+    fn tcp_telnet_loopback_negotiates_and_round_trips_wire_bytes() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                socket
+                    .write_all(&[
+                        TELNET_IAC,
+                        TELNET_WILL,
+                        TELNET_OPT_ECHO,
+                        b'l',
+                        b'o',
+                        b'g',
+                        b'i',
+                        b'n',
+                        b':',
+                        b' ',
+                    ])
+                    .await
+                    .unwrap();
+
+                let mut negotiation_reply = [0_u8; 3];
+                socket.read_exact(&mut negotiation_reply).await.unwrap();
+                assert_eq!(negotiation_reply, [TELNET_IAC, TELNET_DO, TELNET_OPT_ECHO]);
+
+                let mut command = [0_u8; 6];
+                socket.read_exact(&mut command).await.unwrap();
+                assert_eq!(&command, b"show\r\n");
+
+                let mut raw = [0_u8; 3];
+                socket.read_exact(&mut raw).await.unwrap();
+                assert_eq!(raw, [0x01, TELNET_IAC, TELNET_IAC]);
+            });
+
+            let mut client = connect_tcp_socket("127.0.0.1", address.port(), "Telnet")
+                .await
+                .unwrap();
+            let mut incoming = [0_u8; 10];
+            client.read_exact(&mut incoming).await.unwrap();
+            let mut negotiator = TelnetNegotiator::new();
+            let (text, replies) = negotiator.filter(&incoming);
+            assert_eq!(text, b"login: ");
+            assert_eq!(replies.len(), 1);
+            client.write_all(&replies[0]).await.unwrap();
+            client
+                .write_all(encode_telnet_outbound_text("show\n").as_bytes())
+                .await
+                .unwrap();
+            client
+                .write_all(&encode_telnet_outbound_bytes(&[0x01, TELNET_IAC]))
+                .await
+                .unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("Telnet loopback server timed out")
+                .expect("Telnet loopback server task failed");
+        });
     }
 
     #[test]
