@@ -7706,6 +7706,13 @@ async fn authenticate_ssh(
                     .collect::<Vec<_>>();
                 if !identities.is_empty() {
                     attempted.push("publickey");
+                    let rsa_hash = session
+                        .best_supported_rsa_hash()
+                        .await
+                        .map_err(|error| {
+                            format!("SSH publickey 认证准备失败，无法查询 RSA 签名算法: {error}")
+                        })?
+                        .flatten();
                     for identity in identities {
                         let label = identity.label.clone();
                         let key = match load_identity_private_key(
@@ -7719,21 +7726,23 @@ async fn authenticate_ssh(
                                 continue;
                             }
                         };
-                        let rsa_hash = session
-                            .best_supported_rsa_hash()
-                            .await
-                            .map_err(|error| format!("SSH 查询 RSA 签名算法失败: {error}"))?
-                            .flatten();
-                        let result = session
+                        let result = match session
                             .authenticate_publickey(
                                 username.clone(),
                                 PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
                             )
                             .await
-                            .map_err(|error| format!("SSH publickey 认证失败: {error}"))?;
+                        {
+                            Ok(result) => result,
+                            Err(error) => {
+                                key_errors.push(format!("{label}: 认证请求失败: {error}"));
+                                break;
+                            }
+                        };
                         if result.success() {
                             return Ok(AuthMethod::PublicKey);
                         }
+                        key_errors.push(format!("{label}: 被服务器拒绝"));
                     }
                 }
 
@@ -7812,7 +7821,7 @@ async fn authenticate_ssh(
         format!("SSH 认证失败，已尝试: {}", attempted.join(", "))
     };
     if !key_errors.is_empty() {
-        message.push_str(&format!("；密钥加载错误: {}", key_errors.join(" | ")));
+        message.push_str(&format!("；密钥详情: {}", key_errors.join(" | ")));
     }
     if ssh.agent_policy.enabled && ssh.identity_policy.identities_only {
         message.push_str("；当前按 IdentitiesOnly 处理，不会遍历系统 ssh-agent 的全部密钥");
@@ -11251,10 +11260,29 @@ mod tests {
         authorized_keys: &Path,
         port: u16,
     ) {
+        write_openssh_test_config_with_extra(
+            config_path,
+            host_key,
+            pid_file,
+            authorized_keys,
+            port,
+            "",
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_openssh_test_config_with_extra(
+        config_path: &Path,
+        host_key: &Path,
+        pid_file: &Path,
+        authorized_keys: &Path,
+        port: u16,
+        extra_config: &str,
+    ) {
         fs::write(
             config_path,
             format!(
-                "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
+                "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n{extra_config}",
                 host_key.display(),
                 pid_file.display(),
                 authorized_keys.display(),
@@ -13446,6 +13474,125 @@ mod tests {
         jump_one_sshd.stop();
         jump_two_sshd.stop();
         target_sshd.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openssh_identity_order_respects_max_auth_tries() {
+        let Some(sshd_path) = openssh_test_server_path() else {
+            eprintln!("skipping OpenSSH identity-order test: sshd is not installed");
+            return;
+        };
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping OpenSSH identity-order test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("portmate-auth-order-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let host_key = root.join("ssh_host_ed25519_key");
+        let accepted_key = root.join("accepted_ed25519_key");
+        let rejected_key_one = root.join("rejected_one_ed25519_key");
+        let rejected_key_two = root.join("rejected_two_ed25519_key");
+        for key_path in [
+            &host_key,
+            &accepted_key,
+            &rejected_key_one,
+            &rejected_key_two,
+        ] {
+            generate_ed25519_test_key(key_path);
+        }
+        let authorized_keys = root.join("authorized_keys");
+        fs::copy(accepted_key.with_extension("pub"), &authorized_keys).unwrap();
+
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let config_path = root.join("sshd_config");
+        write_openssh_test_config_with_extra(
+            &config_path,
+            &host_key,
+            &root.join("sshd.pid"),
+            &authorized_keys,
+            port,
+            "MaxAuthTries 2\n",
+        );
+        let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
+
+        tauri::async_runtime::block_on(async {
+            wait_for_openssh_test_server(&mut sshd, port, "identity-order sshd").await;
+
+            let mut profile = test_ssh_profile();
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.endpoint.host = "127.0.0.1".to_string();
+                ssh.endpoint.port = port;
+                ssh.username = openssh_test_username();
+                ssh.reconnect = false;
+                ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.host_key_policy.alias = Some("identity-order-target".to_string());
+                ssh.identity_policy.identities_only = true;
+                ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+                ssh.identity_refs = vec![
+                    IdentityRef {
+                        id: "rejected-key-one".to_string(),
+                        label: "rejected key one".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(rejected_key_one.display().to_string()),
+                        secret_ref: None,
+                    },
+                    IdentityRef {
+                        id: "rejected-key-two".to_string(),
+                        label: "rejected key two".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(rejected_key_two.display().to_string()),
+                        secret_ref: None,
+                    },
+                    IdentityRef {
+                        id: "accepted-key".to_string(),
+                        label: "accepted key".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(accepted_key.display().to_string()),
+                        secret_ref: None,
+                    },
+                ];
+                ssh.agent_policy.enabled = false;
+                ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+            }
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+            let exhausted = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap_err();
+            assert!(
+                exhausted.contains("认证失败") || exhausted.contains("authentication"),
+                "{exhausted}"
+            );
+            assert!(exhausted.contains("rejected key one"), "{exhausted}");
+            assert!(exhausted.contains("rejected key two"), "{exhausted}");
+            assert!(exhausted.contains("accepted key"), "{exhausted}");
+            assert!(state.store.lock().unwrap().host_keys.keys.is_empty());
+
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.identity_refs.rotate_right(1);
+            }
+            state.store.lock().unwrap().upsert_profile(profile.clone());
+            let connected = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap();
+            assert_eq!(connected.runtime.status, SessionStatus::Connected);
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+        });
+
+        sshd.stop();
         let _ = fs::remove_dir_all(root);
     }
 

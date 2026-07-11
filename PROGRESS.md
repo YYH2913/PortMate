@@ -179,14 +179,15 @@ npm run build
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、SCP 上传/下载，以及 local/dynamic/remote reverse tunnel 和流量统计。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY，以及第二跳 host key 变更诊断。
 - OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复，以及 XModem block padding 精确截断。
+- OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 74：`portmate` 45、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 75：`portmate` 46、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
-- 已有隔离 OpenSSH server、host key mismatch/`allowRotation` 和两跳 Jump Host 集成测试；混合认证、MaxAuthTries 与超时/拒绝等分跳失败聚合矩阵仍待补。
+- 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序和两跳 Jump Host 集成测试；agent 实例、混合认证与超时/拒绝等分跳失败聚合矩阵仍待补。
 - 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SCP 上传/下载和 lrzsz X/Y/ZModem 双向端到端测试；SFTP/SCP 续传/取消/失败，以及 modem 物理串口/取消/断线/工具变体矩阵仍待补。
@@ -223,7 +224,7 @@ npm run build
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
 2. 为 Jump Host 增加混合认证、超时/拒绝的连接诊断和错误聚合覆盖。
 3. 为 tunnel 补齐更深健康探测和失败矩阵，并为远端命令型传输补齐更完整的失败状态和错误可视化。
-4. 扩展端到端集成测试：Jump Host 混合认证/失败、MaxAuthTries、SFTP/SCP 续传/取消/失败、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
+4. 扩展端到端集成测试：Jump Host 混合认证/失败、ssh-agent 实例、SFTP/SCP 续传/取消/失败、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
