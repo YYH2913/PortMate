@@ -12348,6 +12348,67 @@ mod tests {
             let stopped = stop_tunnel_inner(&state, &dynamic_tunnel.id).await.unwrap();
             assert!(!stopped.spec.enabled);
 
+            let remote_echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let remote_echo_address = remote_echo_listener.local_addr().unwrap();
+            let remote_echo = tokio::spawn(async move {
+                let (mut socket, _) = remote_echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
+            let remote_tunnel = create_tunnel_inner(
+                &state,
+                CreateTunnelRequest {
+                    session_id: profile.id.clone(),
+                    mode: TunnelMode::Remote,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 0,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: remote_echo_address.port(),
+                    label: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_ne!(remote_tunnel.bind_port, 0);
+            assert!(remote_tunnel
+                .label
+                .contains(&remote_tunnel.bind_port.to_string()));
+
+            let mut remote_client = TcpStream::connect(("127.0.0.1", remote_tunnel.bind_port))
+                .await
+                .unwrap();
+            remote_client.write_all(b"ping").await.unwrap();
+            let mut remote_response = [0_u8; 4];
+            remote_client
+                .read_exact(&mut remote_response)
+                .await
+                .unwrap();
+            assert_eq!(&remote_response, b"pong");
+            drop(remote_client);
+            remote_echo.await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == remote_tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert_eq!(status.tcp_to_ssh_bytes, 4);
+                        assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("remote tunnel metrics did not settle");
+            let stopped = stop_tunnel_inner(&state, &remote_tunnel.id).await.unwrap();
+            assert!(!stopped.spec.enabled);
+
             let closed = close_session_inner(&state, profile.id.clone())
                 .await
                 .unwrap();
