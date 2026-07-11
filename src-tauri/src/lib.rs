@@ -7,7 +7,7 @@ use portmate_core::{
     HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef,
     IdentitySource, McpGrant, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus,
     SessionStore, SessionSummary, SshConnection, SysmonSnapshot, TimelineMark, TransferProtocol,
-    TransferStatus, TransferTask, TriggerAction, TunnelMode, TunnelSpec,
+    TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -256,6 +256,7 @@ struct SshConnectRequest<'a> {
     profile: &'a SessionProfile,
     ssh: &'a SshConnection,
     host_keys: HostKeyStore,
+    one_time_host_keys: Vec<TrustedHostKey>,
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     host_key_error: Arc<Mutex<Option<String>>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
@@ -6345,9 +6346,8 @@ async fn establish_ssh_runtime(
         store.host_keys.clone()
     };
     host_keys.keys.extend(ssh.trusted_host_keys.clone());
-    host_keys
-        .keys
-        .extend(one_time_host_keys_snapshot(state, &profile.id)?);
+    let one_time_host_keys = one_time_host_keys_snapshot(state, &profile.id)?;
+    host_keys.keys.extend(one_time_host_keys.clone());
 
     let observed_key = Arc::new(Mutex::new(None));
     let host_key_error = Arc::new(Mutex::new(None));
@@ -6367,6 +6367,7 @@ async fn establish_ssh_runtime(
         profile,
         ssh: &ssh,
         host_keys,
+        one_time_host_keys: one_time_host_keys.clone(),
         observed_key: Arc::clone(&observed_key),
         host_key_error: Arc::clone(&host_key_error),
         remote_forwards: Arc::clone(&remote_forwards),
@@ -6384,7 +6385,12 @@ async fn establish_ssh_runtime(
     )
     .await?;
 
-    persist_observed_host_key(&state.store, &profile.id, &observed_key)?;
+    persist_observed_host_key(
+        &state.store,
+        &profile.id,
+        &observed_key,
+        &one_time_host_keys,
+    )?;
     persist_store_arc(&state.store_path, &state.store)?;
 
     let channel = session
@@ -6460,6 +6466,7 @@ async fn connect_ssh_target(
         profile,
         ssh,
         host_keys,
+        one_time_host_keys,
         observed_key,
         host_key_error,
         remote_forwards,
@@ -6615,6 +6622,7 @@ async fn connect_ssh_target(
             &profile.id,
             &jump_policy,
             &observed_jump_key,
+            &one_time_host_keys,
             &format!("Jump Host #{}", index + 1),
         ) {
             disconnect_jump_sessions(jump_sessions, "PortMate jump host key rejected").await;
@@ -7618,6 +7626,7 @@ fn persist_observed_host_key(
     store: &Arc<Mutex<SessionStore>>,
     profile_id: &str,
     observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
+    one_time_host_keys: &[TrustedHostKey],
 ) -> Result<(), String> {
     let observation = observed_key
         .lock()
@@ -7625,6 +7634,27 @@ fn persist_observed_host_key(
         .clone()
         .ok_or_else(|| "SSH 未收到服务器 host key".to_string())?;
     let mut store = store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(profile_id)
+        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    let policy = match profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
+        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
+    };
+
+    if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation) {
+        let fingerprint = observation
+            .fingerprint_sha256()
+            .map_err(|error| error.to_string())?;
+        store.record_system_event(
+            profile_id,
+            format!(
+                "PortMate: SSH host key trusted for this connection only ({}, {})",
+                observation.algorithm, fingerprint
+            ),
+        );
+        return Ok(());
+    }
 
     if profile_trusts_observation(&store, profile_id, &observation) {
         let fingerprint = observation
@@ -7656,13 +7686,6 @@ fn persist_observed_host_key(
         HostKeyEvaluation::Unknown {
             fingerprint_sha256, ..
         } => {
-            let profile = store
-                .profile(profile_id)
-                .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-            let policy = match profile.connection {
-                ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-                _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
-            };
             if policy.mode != HostKeyMode::TrustOnFirstUse {
                 return Err(format!(
                     "SSH host key 未受信任: {} {}",
@@ -7776,6 +7799,7 @@ fn persist_observed_host_key_with_policy(
     profile_id: &str,
     policy: &portmate_core::HostKeyPolicy,
     observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
+    one_time_host_keys: &[TrustedHostKey],
     label: &str,
 ) -> Result<(), String> {
     let observation = observed_key
@@ -7784,6 +7808,19 @@ fn persist_observed_host_key_with_policy(
         .clone()
         .ok_or_else(|| format!("{label} 未收到服务器 host key"))?;
     let mut store = store.lock().map_err(|error| error.to_string())?;
+    if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
+        let fingerprint = observation
+            .fingerprint_sha256()
+            .map_err(|error| error.to_string())?;
+        store.record_system_event(
+            profile_id,
+            format!(
+                "PortMate: {label} host key trusted for this connection only ({}, {})",
+                observation.algorithm, fingerprint
+            ),
+        );
+        return save_store(store_path, &store);
+    }
     match store.host_keys.evaluate(profile_id, policy, &observation) {
         Ok(HostKeyEvaluation::Trusted {
             fingerprint_sha256, ..
@@ -7820,6 +7857,26 @@ fn persist_observed_host_key_with_policy(
         Err(error) => return Err(error.to_string()),
     }
     save_store(store_path, &store)
+}
+
+fn one_time_trusts_observation(
+    one_time_host_keys: &[TrustedHostKey],
+    profile_id: &str,
+    policy: &portmate_core::HostKeyPolicy,
+    observation: &HostKeyObservation,
+) -> bool {
+    let Ok(fingerprint) = observation.fingerprint_sha256() else {
+        return false;
+    };
+    let alias = observation.target_alias(policy);
+    one_time_host_keys.iter().any(|key| {
+        key.profile_id.as_deref() == Some(profile_id)
+            && key.alias == alias
+            && key.host == observation.host
+            && key.port == observation.port
+            && key.algorithm == observation.algorithm
+            && key.fingerprint_sha256 == fingerprint
+    })
 }
 
 fn profile_trusts_observation(
@@ -11083,6 +11140,21 @@ mod tests {
                 .evaluate(&profile_id, &policy, &observation)
                 .unwrap(),
             HostKeyEvaluation::Trusted { .. }
+        ));
+        assert!(one_time_trusts_observation(
+            &host_keys.keys,
+            &profile_id,
+            &policy,
+            &observation
+        ));
+
+        let mut different_host = observation.clone();
+        different_host.host = "192.0.2.11".to_string();
+        assert!(!one_time_trusts_observation(
+            &host_keys.keys,
+            &profile_id,
+            &policy,
+            &different_host
         ));
     }
 
