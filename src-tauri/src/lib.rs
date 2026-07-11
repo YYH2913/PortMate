@@ -189,7 +189,11 @@ impl TunnelMetrics {
     }
 
     fn connection_closed(&self) {
-        self.active_connections.fetch_sub(1, Ordering::SeqCst);
+        let _ = self
+            .active_connections
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                Some(value.saturating_sub(1))
+            });
         self.touch();
     }
 
@@ -6139,8 +6143,9 @@ async fn handle_local_tunnel_client(
         Ok::<(), String>(())
     };
 
-    let _ = tokio::join!(local_to_remote, remote_to_local);
-    Ok(())
+    tokio::try_join!(local_to_remote, remote_to_local)
+        .map(|_| ())
+        .map_err(|error| format!("local tunnel pipe failed ({}): {error}", tunnel.label))
 }
 
 async fn handle_remote_tunnel_client(
@@ -6167,12 +6172,55 @@ async fn handle_dynamic_tunnel_client(
     peer: std::net::SocketAddr,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
+    let (target_host, target_port) = read_socks5_connect_request(&mut local_stream).await?;
+
+    let channel = {
+        let handle = handle.lock().await;
+        handle
+            .channel_open_direct_tcpip(
+                target_host.clone(),
+                u32::from(target_port),
+                peer.ip().to_string(),
+                u32::from(peer.port()),
+            )
+            .await
+    };
+    let channel = match channel {
+        Ok(channel) => channel,
+        Err(error) => {
+            let _ = local_stream.write_all(&socks5_reply(5)).await;
+            return Err(format!("dynamic direct-tcpip open failed: {error}"));
+        }
+    };
+
+    local_stream
+        .write_all(&socks5_reply(0))
+        .await
+        .map_err(|error| format!("SOCKS5 success response failed: {error}"))?;
+
+    let spec = TunnelSpec {
+        id: "dynamic-client".to_string(),
+        label: format!("SOCKS5 -> {target_host}:{target_port}"),
+        mode: TunnelMode::Dynamic,
+        bind_host: String::new(),
+        bind_port: 0,
+        target_host,
+        target_port,
+        enabled: true,
+    };
+    pipe_ssh_channel_to_tcp(channel, local_stream, spec, metrics).await
+}
+
+async fn read_socks5_connect_request(
+    local_stream: &mut TcpStream,
+) -> Result<(String, u16), String> {
     let mut header = [0_u8; 2];
     local_stream
         .read_exact(&mut header)
         .await
         .map_err(|error| format!("SOCKS5 handshake read failed: {error}"))?;
     if header[0] != 5 {
+        let _ = local_stream.write_all(&[5, 0xff]).await;
         return Err("only SOCKS5 is supported for dynamic tunnel".to_string());
     }
     let mut methods = vec![0_u8; header[1] as usize];
@@ -6180,6 +6228,13 @@ async fn handle_dynamic_tunnel_client(
         .read_exact(&mut methods)
         .await
         .map_err(|error| format!("SOCKS5 methods read failed: {error}"))?;
+    if !methods.contains(&0) {
+        local_stream
+            .write_all(&[5, 0xff])
+            .await
+            .map_err(|error| format!("SOCKS5 method rejection failed: {error}"))?;
+        return Err("SOCKS5 client did not offer no-authentication method".to_string());
+    }
     local_stream
         .write_all(&[5, 0])
         .await
@@ -6190,11 +6245,12 @@ async fn handle_dynamic_tunnel_client(
         .read_exact(&mut request)
         .await
         .map_err(|error| format!("SOCKS5 request read failed: {error}"))?;
-    if request[0] != 5 || request[1] != 1 {
-        local_stream
-            .write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0])
-            .await
-            .ok();
+    if request[0] != 5 || request[2] != 0 {
+        let _ = local_stream.write_all(&socks5_reply(1)).await;
+        return Err("invalid SOCKS5 CONNECT request header".to_string());
+    }
+    if request[1] != 1 {
+        local_stream.write_all(&socks5_reply(7)).await.ok();
         return Err("only SOCKS5 CONNECT is supported".to_string());
     }
 
@@ -6213,12 +6269,22 @@ async fn handle_dynamic_tunnel_client(
                 .read_exact(&mut len)
                 .await
                 .map_err(|error| format!("SOCKS5 domain length read failed: {error}"))?;
+            if len[0] == 0 {
+                let _ = local_stream.write_all(&socks5_reply(8)).await;
+                return Err("SOCKS5 domain name cannot be empty".to_string());
+            }
             let mut name = vec![0_u8; len[0] as usize];
             local_stream
                 .read_exact(&mut name)
                 .await
                 .map_err(|error| format!("SOCKS5 domain read failed: {error}"))?;
-            String::from_utf8_lossy(&name).to_string()
+            match String::from_utf8(name) {
+                Ok(name) => name,
+                Err(_) => {
+                    let _ = local_stream.write_all(&socks5_reply(8)).await;
+                    return Err("SOCKS5 domain name is not valid UTF-8".to_string());
+                }
+            }
         }
         4 => {
             let mut addr = [0_u8; 16];
@@ -6228,7 +6294,10 @@ async fn handle_dynamic_tunnel_client(
                 .map_err(|error| format!("SOCKS5 IPv6 read failed: {error}"))?;
             std::net::Ipv6Addr::from(addr).to_string()
         }
-        other => return Err(format!("unsupported SOCKS5 address type: {other}")),
+        other => {
+            let _ = local_stream.write_all(&socks5_reply(8)).await;
+            return Err(format!("unsupported SOCKS5 address type: {other}"));
+        }
     };
     let mut port_bytes = [0_u8; 2];
     local_stream
@@ -6236,36 +6305,15 @@ async fn handle_dynamic_tunnel_client(
         .await
         .map_err(|error| format!("SOCKS5 port read failed: {error}"))?;
     let target_port = u16::from_be_bytes(port_bytes);
+    if target_port == 0 {
+        let _ = local_stream.write_all(&socks5_reply(1)).await;
+        return Err("SOCKS5 target port cannot be zero".to_string());
+    }
+    Ok((target_host, target_port))
+}
 
-    let channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_direct_tcpip(
-                target_host.clone(),
-                u32::from(target_port),
-                peer.ip().to_string(),
-                u32::from(peer.port()),
-            )
-            .await
-            .map_err(|error| format!("dynamic direct-tcpip open failed: {error}"))?
-    };
-
-    local_stream
-        .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-        .await
-        .map_err(|error| format!("SOCKS5 success response failed: {error}"))?;
-
-    let spec = TunnelSpec {
-        id: "dynamic-client".to_string(),
-        label: format!("SOCKS5 -> {target_host}:{target_port}"),
-        mode: TunnelMode::Dynamic,
-        bind_host: String::new(),
-        bind_port: 0,
-        target_host,
-        target_port,
-        enabled: true,
-    };
-    pipe_ssh_channel_to_tcp(channel, local_stream, spec, metrics).await
+fn socks5_reply(code: u8) -> [u8; 10] {
+    [5, code, 0, 1, 0, 0, 0, 0, 0, 0]
 }
 
 async fn pipe_ssh_channel_to_tcp(
@@ -6319,8 +6367,8 @@ async fn pipe_ssh_channel_to_tcp(
         Ok::<(), String>(())
     };
 
-    let (a, b) = tokio::join!(local_to_remote, remote_to_local);
-    a.and(b)
+    tokio::try_join!(local_to_remote, remote_to_local)
+        .map(|_| ())
         .map_err(|error| format!("tunnel pipe failed ({}): {error}", tunnel.label))
 }
 
@@ -11797,9 +11845,92 @@ mod tests {
         );
 
         metrics.connection_closed();
+        metrics.connection_closed();
         let closed = metrics.snapshot(spec);
         assert_eq!(closed.active_connections, 0);
         assert_eq!(closed.total_connections, 1);
+    }
+
+    #[test]
+    fn socks5_loopback_parses_domain_connect_request() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_socks5_connect_request(&mut socket).await.unwrap()
+            });
+
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(&[5, 1, 0]).await.unwrap();
+            let mut method = [0_u8; 2];
+            client.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 0]);
+
+            let domain = b"example.com";
+            let mut request = vec![5, 1, 0, 3, domain.len() as u8];
+            request.extend_from_slice(domain);
+            request.extend_from_slice(&443_u16.to_be_bytes());
+            client.write_all(&request).await.unwrap();
+
+            let target = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("SOCKS5 parser timed out")
+                .expect("SOCKS5 parser task failed");
+            assert_eq!(target, ("example.com".to_string(), 443));
+        });
+    }
+
+    #[test]
+    fn socks5_loopback_rejects_clients_without_no_auth_method() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_socks5_connect_request(&mut socket).await.unwrap_err()
+            });
+
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(&[5, 1, 2]).await.unwrap();
+            let mut method = [0_u8; 2];
+            client.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 0xff]);
+
+            let error = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("SOCKS5 rejection timed out")
+                .expect("SOCKS5 rejection task failed");
+            assert!(error.contains("did not offer no-authentication"));
+        });
+    }
+
+    #[test]
+    fn socks5_loopback_rejects_non_connect_commands_with_reply() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_socks5_connect_request(&mut socket).await.unwrap_err()
+            });
+
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(&[5, 1, 0]).await.unwrap();
+            let mut method = [0_u8; 2];
+            client.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 0]);
+            client.write_all(&[5, 2, 0, 1]).await.unwrap();
+
+            let mut reply = [0_u8; 10];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, socks5_reply(7));
+            let error = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("SOCKS5 command rejection timed out")
+                .expect("SOCKS5 command rejection task failed");
+            assert!(error.contains("only SOCKS5 CONNECT"));
+        });
     }
 
     #[test]
