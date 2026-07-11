@@ -124,20 +124,14 @@ impl PortMateMcp {
     }
 
     fn handle(&mut self, request: JsonRpcRequest) -> Result<Option<JsonRpcResponse>> {
+        let response_id = request.id.clone();
         if request.jsonrpc != "2.0" {
-            return Ok(Some(error(
-                request.id.unwrap_or(Value::Null),
-                -32600,
-                "invalid JSON-RPC version",
-            )));
+            return Ok(response_id.map(|id| error(id, -32600, "invalid JSON-RPC version")));
         }
-
-        let Some(id) = request.id.clone() else {
-            return Ok(None);
-        };
 
         let result = match request.method.as_str() {
             "initialize" => self.initialize_result(),
+            "ping" | "notifications/initialized" | "notifications/cancelled" => json!({}),
             "tools/list" => json!({
                 "tools": tool_definitions().into_iter().map(|tool| json!({
                     "name": tool.name,
@@ -147,14 +141,17 @@ impl PortMateMcp {
                     "annotations": { "readOnlyHint": tool.read_only }
                 })).collect::<Vec<_>>()
             }),
-            "resources/list" => json!({
-                "resources": resource_templates().into_iter().map(|resource| json!({
-                    "uri": resource.uri_template,
-                    "name": resource.name,
-                    "title": resource.title,
-                    "description": resource.description,
-                    "mimeType": resource.mime_type
-                })).collect::<Vec<_>>()
+            "resources/list" => self.resources_list_result(),
+            "resources/templates/list" => json!({
+                "resourceTemplates": resource_templates().into_iter()
+                    .filter(|resource| resource.uri_template.contains('{'))
+                    .map(|resource| json!({
+                        "uriTemplate": resource.uri_template,
+                        "name": resource.name,
+                        "title": resource.title,
+                        "description": resource.description,
+                        "mimeType": resource.mime_type
+                    })).collect::<Vec<_>>()
             }),
             "prompts/list" => json!({
                 "prompts": prompt_templates().into_iter().map(|prompt| json!({
@@ -168,15 +165,12 @@ impl PortMateMcp {
             "resources/read" => self.resource_read(&request.params)?,
             "tools/call" => self.tool_call(&request.params)?,
             _ => {
-                return Ok(Some(error(
-                    id,
-                    -32601,
-                    format!("unknown method: {}", request.method),
-                )));
+                return Ok(response_id
+                    .map(|id| error(id, -32601, format!("unknown method: {}", request.method))));
             }
         };
 
-        Ok(Some(JsonRpcResponse {
+        Ok(response_id.map(|id| JsonRpcResponse {
             jsonrpc: "2.0",
             id,
             result: Some(result),
@@ -198,6 +192,43 @@ impl PortMateMcp {
                 "version": env!("CARGO_PKG_VERSION")
             }
         })
+    }
+
+    fn resources_list_result(&self) -> Value {
+        let mut resources = vec![json!({
+            "uri": "portmate://sessions",
+            "name": "sessions",
+            "title": "Sessions",
+            "description": "All visible session summaries",
+            "mimeType": "application/json"
+        })];
+        let session_resources = [
+            ("state", "State", "application/json"),
+            ("screen", "Screen", "text/plain"),
+            ("log", "Log", "application/jsonl"),
+            ("timeline", "Timeline", "application/json"),
+            ("sysmon", "Sysmon", "application/json"),
+            ("tmux", "Tmux", "application/json"),
+        ];
+        for summary in self.store.summaries() {
+            for (suffix, label, mime_type) in session_resources {
+                resources.push(json!({
+                    "uri": format!("portmate://sessions/{}/{suffix}", summary.profile.id),
+                    "name": format!("session_{}_{}", summary.profile.id, suffix),
+                    "title": format!("{} {label}", summary.profile.name),
+                    "mimeType": mime_type
+                }));
+            }
+        }
+        for transfer in &self.store.transfers {
+            resources.push(json!({
+                "uri": format!("portmate://transfers/{}", transfer.id),
+                "name": format!("transfer_{}", transfer.id),
+                "title": format!("Transfer {}", transfer.id),
+                "mimeType": "application/json"
+            }));
+        }
+        json!({ "resources": resources })
     }
 
     fn prompt_get(&self, params: &Value) -> Result<Value> {
@@ -722,8 +753,8 @@ fn run_stdio_server() -> Result<()> {
             continue;
         }
 
-        let request = match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(request) => request,
+        let value = match serde_json::from_str::<Value>(&line) {
+            Ok(value) => value,
             Err(error_message) => {
                 let response = error(Value::Null, -32700, format!("parse error: {error_message}"));
                 writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
@@ -732,9 +763,13 @@ fn run_stdio_server() -> Result<()> {
             }
         };
 
-        if let Some(response) = match server.handle(request) {
+        if let Some(response) = match handle_json_rpc_value(&mut server, value) {
             Ok(response) => response,
-            Err(error_message) => Some(error(Value::Null, -32603, error_message.to_string())),
+            Err(error_message) => Some(serde_json::to_value(error(
+                Value::Null,
+                -32603,
+                error_message.to_string(),
+            ))?),
         } {
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
@@ -974,7 +1009,10 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
         }
     };
     let body = match handle_http_json_rpc(value) {
-        Ok(value) => value.to_string(),
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => {
+            return http_response(202, "Accepted", "", origin.as_deref());
+        }
         Err(error) => json!({
             "jsonrpc": "2.0",
             "id": null,
@@ -989,33 +1027,52 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
     }
 }
 
-fn handle_http_json_rpc(value: Value) -> Result<Value> {
+fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
+    let mut server = PortMateMcp::new();
+    handle_json_rpc_value(&mut server, value)
+}
+
+fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
     if let Some(items) = value.as_array() {
+        if items.is_empty() {
+            return Ok(Some(serde_json::to_value(error(
+                Value::Null,
+                -32600,
+                "an empty JSON-RPC batch is invalid",
+            ))?));
+        }
         let mut responses = Vec::new();
         for item in items {
-            if let Some(response) = handle_one_json_rpc_value(item.clone())? {
+            if let Some(response) = handle_one_json_rpc_value(server, item.clone())? {
                 responses.push(serde_json::to_value(response)?);
             }
         }
-        return Ok(Value::Array(responses));
+        return if responses.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Value::Array(responses)))
+        };
     }
-    if let Some(response) = handle_one_json_rpc_value(value)? {
-        serde_json::to_value(response).map_err(Into::into)
-    } else {
-        Ok(Value::Null)
-    }
+    handle_one_json_rpc_value(server, value)?
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(Into::into)
 }
 
-fn handle_one_json_rpc_value(value: Value) -> Result<Option<JsonRpcResponse>> {
+fn handle_one_json_rpc_value(
+    server: &mut PortMateMcp,
+    value: Value,
+) -> Result<Option<JsonRpcResponse>> {
+    let has_id = value.get("id").is_some();
     let id = value.get("id").cloned().unwrap_or(Value::Null);
     let request = match serde_json::from_value::<JsonRpcRequest>(value) {
         Ok(request) => request,
         Err(error_message) => return Ok(Some(error(id, -32600, error_message.to_string()))),
     };
-    let mut server = PortMateMcp::new();
     match server.handle(request) {
         Ok(response) => Ok(response),
-        Err(error_message) => Ok(Some(error(id, -32603, error_message.to_string()))),
+        Err(error_message) if has_id => Ok(Some(error(id, -32603, error_message.to_string()))),
+        Err(_) => Ok(None),
     }
 }
 
@@ -1108,7 +1165,7 @@ fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) ->
     }
     response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
     response.push_str(
-        "Access-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
     );
     response.push_str(body);
     response
@@ -1335,9 +1392,102 @@ mod tests {
             "method": "initialize",
             "params": {}
         }))
+        .unwrap()
         .unwrap();
         assert_eq!(response["id"], json!(1));
         assert_eq!(response["result"]["serverInfo"]["name"], "portmate-mcp");
+    }
+
+    #[test]
+    fn mcp_lists_concrete_resources_separately_from_templates() {
+        let resources = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/list",
+            "params": {}
+        }))
+        .unwrap()
+        .unwrap();
+        let listed = resources["result"]["resources"].as_array().unwrap();
+        assert_eq!(listed[0]["uri"], "portmate://sessions");
+        assert!(listed
+            .iter()
+            .all(|resource| !resource["uri"].as_str().unwrap().contains('{')));
+
+        let templates = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/templates/list",
+            "params": {}
+        }))
+        .unwrap()
+        .unwrap();
+        let listed = templates["result"]["resourceTemplates"].as_array().unwrap();
+        assert!(!listed.is_empty());
+        assert!(listed
+            .iter()
+            .all(|resource| resource["uriTemplate"].as_str().unwrap().contains('{')));
+    }
+
+    #[test]
+    fn mcp_ping_returns_empty_result() {
+        let response = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "ping-1",
+            "method": "ping"
+        }))
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response["id"], "ping-1");
+        assert_eq!(response["result"], json!({}));
+    }
+
+    #[test]
+    fn json_rpc_empty_batch_is_invalid_and_notifications_have_no_payload() {
+        let empty = handle_http_json_rpc(json!([])).unwrap().unwrap();
+        assert_eq!(empty["error"]["code"], -32600);
+
+        let notification = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .unwrap();
+        assert!(notification.is_none());
+
+        let notification_batch = handle_http_json_rpc(json!([
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}}
+        ]))
+        .unwrap();
+        assert!(notification_batch.is_none());
+    }
+
+    #[test]
+    fn http_notification_returns_accepted_without_json_null() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("accept".to_string(), "application/json".to_string());
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            headers,
+            body: serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .unwrap(),
+        };
+
+        let response = handle_http_request(request, &config);
+
+        assert!(response.starts_with("HTTP/1.1 202 Accepted"));
+        assert!(response.ends_with("\r\n\r\n"));
+        assert!(!response.ends_with("null"));
     }
 
     #[test]
