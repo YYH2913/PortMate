@@ -12251,6 +12251,139 @@ mod tests {
             let entries = list_remote_files(ssh_handle, ".").await.unwrap();
             assert!(entries.iter().all(|entry| !entry.name.is_empty()));
 
+            let sftp_root = root.join("sftp-workspace");
+            let sftp_nested = sftp_root.join("nested");
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_nested.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateDirectory,
+            )
+            .await
+            .unwrap();
+            assert!(sftp_nested.is_dir());
+
+            let sftp_source = root.join("sftp-upload-source.bin");
+            let sftp_payload = b"PortMate OpenSSH SFTP integration payload\n";
+            fs::write(&sftp_source, sftp_payload).unwrap();
+            let sftp_upload = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: sftp_source.display().to_string(),
+                    destination: format!("remote:{}/", sftp_nested.display()),
+                },
+            )
+            .await
+            .unwrap();
+            let sftp_upload = wait_for_transfer_terminal_state(&state, &sftp_upload.id).await;
+            assert_eq!(
+                sftp_upload.status,
+                TransferStatus::Completed,
+                "SFTP upload failed: {:?}",
+                sftp_upload.message
+            );
+            assert_eq!(sftp_upload.bytes_done, sftp_payload.len() as u64);
+
+            let uploaded_sftp_file = sftp_nested.join("sftp-upload-source.bin");
+            let renamed_sftp_file = sftp_nested.join("renamed.bin");
+            rename_path_inner(
+                &state,
+                RenamePathRequest {
+                    session_id: Some(profile.id.clone()),
+                    old_path: uploaded_sftp_file.display().to_string(),
+                    new_path: renamed_sftp_file.display().to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            chmod_path_inner(
+                &state,
+                ChmodPathRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: renamed_sftp_file.display().to_string(),
+                    mode: 0o640,
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            let properties = file_properties_inner(
+                &state,
+                FilePropertiesRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: renamed_sftp_file.display().to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(properties.is_file);
+            assert_eq!(properties.size, sftp_payload.len() as u64);
+            assert_eq!(properties.permissions.unwrap() & 0o777, 0o640);
+
+            let copied_sftp_file = sftp_root.join("copied.bin");
+            let sftp_copy = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: format!("remote:{}", renamed_sftp_file.display()),
+                    destination: format!("remote:{}", copied_sftp_file.display()),
+                },
+            )
+            .await
+            .unwrap();
+            let sftp_copy = wait_for_transfer_terminal_state(&state, &sftp_copy.id).await;
+            assert_eq!(
+                sftp_copy.status,
+                TransferStatus::Completed,
+                "SFTP remote copy failed: {:?}",
+                sftp_copy.message
+            );
+            assert_eq!(sftp_copy.bytes_done, sftp_payload.len() as u64);
+            assert_eq!(fs::read(&copied_sftp_file).unwrap(), sftp_payload);
+
+            let sftp_download_target = root.join("sftp-download-target.bin");
+            let sftp_download = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: format!("remote:{}", renamed_sftp_file.display()),
+                    destination: sftp_download_target.display().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            let sftp_download = wait_for_transfer_terminal_state(&state, &sftp_download.id).await;
+            assert_eq!(
+                sftp_download.status,
+                TransferStatus::Completed,
+                "SFTP download failed: {:?}",
+                sftp_download.message
+            );
+            assert_eq!(sftp_download.bytes_done, sftp_payload.len() as u64);
+            assert_eq!(fs::read(&sftp_download_target).unwrap(), sftp_payload);
+
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_root.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::Delete,
+            )
+            .await
+            .unwrap();
+            assert!(!sftp_root.exists());
+
             let upload_source = root.join("scp-upload-source.bin");
             let remote_file = root.join("scp-remote.bin");
             let download_target = root.join("scp-download-target.bin");
