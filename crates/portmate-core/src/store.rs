@@ -404,8 +404,10 @@ impl SessionStore {
         limit: usize,
     ) -> Vec<SessionEvent> {
         let needle = query.to_lowercase();
-        self.events
+        let mut events = self
+            .events
             .iter()
+            .rev()
             .filter(|event| session_id.is_none_or(|id| event.session_id == id))
             .filter(|event| {
                 event
@@ -417,7 +419,9 @@ impl SessionStore {
             })
             .take(limit)
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        events.reverse();
+        events
     }
 
     pub fn send_text(
@@ -705,6 +709,37 @@ mod tests {
             events.first().and_then(|event| event.text.as_deref()),
             Some("line 0")
         );
+    }
+
+    #[test]
+    fn search_logs_limits_to_recent_matches_in_chronological_order() {
+        let mut store = test_store();
+        for text in ["match old", "unrelated", "match middle", "match newest"] {
+            store
+                .record_stream_event(
+                    "test-session",
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    text,
+                )
+                .unwrap();
+        }
+
+        let latest = store.search_logs("MATCH", Some("test-session"), 1);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].text.as_deref(), Some("match newest"));
+
+        let latest_two = store.search_logs("match", Some("test-session"), 2);
+        assert_eq!(
+            latest_two
+                .iter()
+                .filter_map(|event| event.text.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["match middle", "match newest"]
+        );
+        assert!(store
+            .search_logs("match", Some("other-session"), 10)
+            .is_empty());
     }
 
     #[test]
