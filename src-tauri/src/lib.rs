@@ -13194,6 +13194,27 @@ mod tests {
             assert!(mismatch.contains("observed="), "{mismatch}");
             assert!(mismatch.contains("expected=["), "{mismatch}");
             assert_eq!(state.store.lock().unwrap().host_keys.keys, trusted_before);
+
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.host_key_policy.allow_rotation = true;
+            }
+            state.store.lock().unwrap().upsert_profile(profile.clone());
+            let rotated = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap();
+            assert_eq!(rotated.runtime.status, SessionStatus::Connected);
+            let trusted_after_rotation = state.store.lock().unwrap().host_keys.keys.clone();
+            assert_eq!(trusted_after_rotation.len(), 2);
+            assert!(trusted_after_rotation
+                .iter()
+                .all(|key| key.alias == "bench-device" && key.port == port));
+            assert_ne!(
+                trusted_after_rotation[0].fingerprint_sha256,
+                trusted_after_rotation[1].fingerprint_sha256
+            );
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
         });
 
         sshd.stop();
