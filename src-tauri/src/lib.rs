@@ -12514,7 +12514,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn openssh_jump_host_chain_and_key_mismatch_end_to_end() {
+    fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH Jump Host test: sshd is not installed");
             return;
@@ -12526,13 +12526,15 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("portmate-jump-sshd-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let jump_host_key = root.join("jump_host_ed25519_key");
-        let replacement_jump_host_key = root.join("jump_host_ed25519_key_replacement");
+        let jump_one_host_key = root.join("jump_one_host_ed25519_key");
+        let jump_two_host_key = root.join("jump_two_host_ed25519_key");
+        let replacement_jump_two_host_key = root.join("jump_two_host_ed25519_key_replacement");
         let target_host_key = root.join("target_host_ed25519_key");
         let client_key = root.join("id_ed25519");
         for key_path in [
-            &jump_host_key,
-            &replacement_jump_host_key,
+            &jump_one_host_key,
+            &jump_two_host_key,
+            &replacement_jump_two_host_key,
             &target_host_key,
             &client_key,
         ] {
@@ -12541,21 +12543,32 @@ mod tests {
         let authorized_keys = root.join("authorized_keys");
         fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
 
-        let jump_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let jump_one_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let jump_two_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let target_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let jump_port = jump_reservation.local_addr().unwrap().port();
+        let jump_one_port = jump_one_reservation.local_addr().unwrap().port();
+        let jump_two_port = jump_two_reservation.local_addr().unwrap().port();
         let target_port = target_reservation.local_addr().unwrap().port();
-        drop(jump_reservation);
+        drop(jump_one_reservation);
+        drop(jump_two_reservation);
         drop(target_reservation);
 
-        let jump_config = root.join("jump_sshd_config");
+        let jump_one_config = root.join("jump_one_sshd_config");
+        let jump_two_config = root.join("jump_two_sshd_config");
         let target_config = root.join("target_sshd_config");
         write_openssh_test_config(
-            &jump_config,
-            &jump_host_key,
-            &root.join("jump_sshd.pid"),
+            &jump_one_config,
+            &jump_one_host_key,
+            &root.join("jump_one_sshd.pid"),
             &authorized_keys,
-            jump_port,
+            jump_one_port,
+        );
+        write_openssh_test_config(
+            &jump_two_config,
+            &jump_two_host_key,
+            &root.join("jump_two_sshd.pid"),
+            &authorized_keys,
+            jump_two_port,
         );
         write_openssh_test_config(
             &target_config,
@@ -12564,11 +12577,13 @@ mod tests {
             &authorized_keys,
             target_port,
         );
-        let mut jump_sshd = spawn_openssh_test_server(sshd_path, &jump_config);
+        let mut jump_one_sshd = spawn_openssh_test_server(sshd_path, &jump_one_config);
+        let mut jump_two_sshd = spawn_openssh_test_server(sshd_path, &jump_two_config);
         let mut target_sshd = spawn_openssh_test_server(sshd_path, &target_config);
 
         tauri::async_runtime::block_on(async {
-            wait_for_openssh_test_server(&mut jump_sshd, jump_port, "jump sshd").await;
+            wait_for_openssh_test_server(&mut jump_one_sshd, jump_one_port, "jump one sshd").await;
+            wait_for_openssh_test_server(&mut jump_two_sshd, jump_two_port, "jump two sshd").await;
             wait_for_openssh_test_server(&mut target_sshd, target_port, "target sshd").await;
 
             let username = openssh_test_username();
@@ -12591,8 +12606,16 @@ mod tests {
                         secret_ref: None,
                     },
                     IdentityRef {
-                        id: "jump-client-key".to_string(),
-                        label: "jump client key".to_string(),
+                        id: "jump-one-client-key".to_string(),
+                        label: "jump one client key".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(client_key.display().to_string()),
+                        secret_ref: None,
+                    },
+                    IdentityRef {
+                        id: "jump-two-client-key".to_string(),
+                        label: "jump two client key".to_string(),
                         source: IdentitySource::SystemFile,
                         fingerprint_sha256: None,
                         path: Some(client_key.display().to_string()),
@@ -12601,18 +12624,32 @@ mod tests {
                 ];
                 ssh.agent_policy.enabled = false;
                 ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
-                let mut jump_policy =
-                    portmate_core::HostKeyPolicy::profile_alias("integration-jump");
-                jump_policy.mode = HostKeyMode::TrustOnFirstUse;
-                ssh.jumps = vec![portmate_core::JumpHop {
-                    host: "127.0.0.1".to_string(),
-                    port: jump_port,
-                    username: username.clone(),
-                    password_secret_ref: None,
-                    passphrase_secret_ref: None,
-                    identity_ref: Some("jump-client-key".to_string()),
-                    host_key_policy: Some(jump_policy),
-                }];
+                let mut jump_one_policy =
+                    portmate_core::HostKeyPolicy::profile_alias("integration-jump-1");
+                jump_one_policy.mode = HostKeyMode::TrustOnFirstUse;
+                let mut jump_two_policy =
+                    portmate_core::HostKeyPolicy::profile_alias("integration-jump-2");
+                jump_two_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.jumps = vec![
+                    portmate_core::JumpHop {
+                        host: "127.0.0.1".to_string(),
+                        port: jump_one_port,
+                        username: username.clone(),
+                        password_secret_ref: None,
+                        passphrase_secret_ref: None,
+                        identity_ref: Some("jump-one-client-key".to_string()),
+                        host_key_policy: Some(jump_one_policy),
+                    },
+                    portmate_core::JumpHop {
+                        host: "127.0.0.1".to_string(),
+                        port: jump_two_port,
+                        username: username.clone(),
+                        password_secret_ref: None,
+                        passphrase_secret_ref: None,
+                        identity_ref: Some("jump-two-client-key".to_string()),
+                        host_key_policy: Some(jump_two_policy),
+                    },
+                ];
             }
 
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
@@ -12629,13 +12666,16 @@ mod tests {
                     .unwrap()
                     .jump_handles
                     .len(),
-                1
+                2
             );
             let trusted = state.store.lock().unwrap().host_keys.keys.clone();
-            assert_eq!(trusted.len(), 2);
+            assert_eq!(trusted.len(), 3);
             assert!(trusted
                 .iter()
-                .any(|key| key.alias == "integration-jump" && key.port == jump_port));
+                .any(|key| key.alias == "integration-jump-1" && key.port == jump_one_port));
+            assert!(trusted
+                .iter()
+                .any(|key| key.alias == "integration-jump-2" && key.port == jump_two_port));
             assert!(trusted
                 .iter()
                 .any(|key| key.alias == "integration-target" && key.port == target_port));
@@ -12668,28 +12708,34 @@ mod tests {
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
-            jump_sshd.stop();
+            jump_two_sshd.stop();
             write_openssh_test_config(
-                &jump_config,
-                &replacement_jump_host_key,
-                &root.join("jump_sshd.pid"),
+                &jump_two_config,
+                &replacement_jump_two_host_key,
+                &root.join("jump_two_sshd.pid"),
                 &authorized_keys,
-                jump_port,
+                jump_two_port,
             );
-            jump_sshd = spawn_openssh_test_server(sshd_path, &jump_config);
-            wait_for_openssh_test_server(&mut jump_sshd, jump_port, "replacement jump sshd").await;
+            jump_two_sshd = spawn_openssh_test_server(sshd_path, &jump_two_config);
+            wait_for_openssh_test_server(
+                &mut jump_two_sshd,
+                jump_two_port,
+                "replacement jump two sshd",
+            )
+            .await;
 
             let trusted_before = state.store.lock().unwrap().host_keys.keys.clone();
             let mismatch = open_ssh_session(&state, profile.clone(), None, None)
                 .await
                 .unwrap_err();
-            assert!(mismatch.contains("alias=integration-jump"), "{mismatch}");
+            assert!(mismatch.contains("alias=integration-jump-2"), "{mismatch}");
             assert!(mismatch.contains("observed="), "{mismatch}");
             assert!(mismatch.contains("expected=["), "{mismatch}");
             assert_eq!(state.store.lock().unwrap().host_keys.keys, trusted_before);
         });
 
-        jump_sshd.stop();
+        jump_one_sshd.stop();
+        jump_two_sshd.stop();
         target_sshd.stop();
         let _ = fs::remove_dir_all(root);
     }
