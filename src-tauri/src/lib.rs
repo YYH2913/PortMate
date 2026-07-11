@@ -12028,7 +12028,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn openssh_sftp_and_local_tunnel_end_to_end() {
+    fn openssh_sftp_scp_and_tunnels_end_to_end() {
         let sshd_path = ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
             .into_iter()
             .map(Path::new)
@@ -12279,6 +12279,73 @@ mod tests {
             .await
             .expect("local tunnel metrics did not settle");
             let stopped = stop_tunnel_inner(&state, &tunnel.id).await.unwrap();
+            assert!(!stopped.spec.enabled);
+
+            let dynamic_echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let dynamic_echo_address = dynamic_echo_listener.local_addr().unwrap();
+            let dynamic_echo = tokio::spawn(async move {
+                let (mut socket, _) = dynamic_echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
+            let dynamic_tunnel = create_tunnel_inner(
+                &state,
+                CreateTunnelRequest {
+                    session_id: profile.id.clone(),
+                    mode: TunnelMode::Dynamic,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 0,
+                    target_host: String::new(),
+                    target_port: 0,
+                    label: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_ne!(dynamic_tunnel.bind_port, 0);
+
+            let mut socks_client = TcpStream::connect(("127.0.0.1", dynamic_tunnel.bind_port))
+                .await
+                .unwrap();
+            socks_client.write_all(&[5, 1, 0]).await.unwrap();
+            let mut method = [0_u8; 2];
+            socks_client.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 0]);
+            let [port_high, port_low] = dynamic_echo_address.port().to_be_bytes();
+            socks_client
+                .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, port_high, port_low])
+                .await
+                .unwrap();
+            let mut socks_reply = [0_u8; 10];
+            socks_client.read_exact(&mut socks_reply).await.unwrap();
+            assert_eq!(socks_reply, super::socks5_reply(0));
+            socks_client.write_all(b"ping").await.unwrap();
+            let mut socks_response = [0_u8; 4];
+            socks_client.read_exact(&mut socks_response).await.unwrap();
+            assert_eq!(&socks_response, b"pong");
+            drop(socks_client);
+            dynamic_echo.await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == dynamic_tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert_eq!(status.tcp_to_ssh_bytes, 4);
+                        assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("dynamic tunnel metrics did not settle");
+            let stopped = stop_tunnel_inner(&state, &dynamic_tunnel.id).await.unwrap();
             assert!(!stopped.spec.enabled);
 
             let closed = close_session_inner(&state, profile.id.clone())
