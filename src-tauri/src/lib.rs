@@ -2390,8 +2390,8 @@ async fn scan_ssh_host_key_via_jump(
             &mut jump_session,
             jump_ssh,
             jump_username,
-            password.map(str::to_string),
-            passphrase.map(str::to_string),
+            jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
+            jump_runtime_credential(passphrase, jump.passphrase_secret_ref.as_deref()),
         )
         .await
         {
@@ -6754,8 +6754,8 @@ async fn connect_ssh_target(
             &mut jump_session,
             jump_ssh,
             jump_username,
-            password.map(str::to_string),
-            passphrase.map(str::to_string),
+            jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
+            jump_runtime_credential(passphrase, jump.passphrase_secret_ref.as_deref()),
         )
         .await
         {
@@ -6965,6 +6965,19 @@ fn jump_ssh_connection(
         agent_policy: ssh.agent_policy.clone(),
         jumps: Vec::new(),
         tunnels: Vec::new(),
+    }
+}
+
+fn jump_runtime_credential(
+    inherited: Option<&str>,
+    jump_secret_ref: Option<&str>,
+) -> Option<String> {
+    if jump_secret_ref.is_some_and(|value| !value.trim().is_empty()) {
+        None
+    } else {
+        inherited
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
     }
 }
 
@@ -10853,6 +10866,94 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn openssh_test_server_path() -> Option<&'static Path> {
+        ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| path.exists())
+    }
+
+    #[cfg(unix)]
+    fn generate_ed25519_test_key(path: &Path) {
+        let status = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "ssh-keygen failed for {}", path.display());
+    }
+
+    #[cfg(unix)]
+    fn openssh_test_username() -> String {
+        std::env::var("USER").unwrap_or_else(|_| {
+            String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
+                .unwrap()
+                .trim()
+                .to_string()
+        })
+    }
+
+    #[cfg(unix)]
+    fn write_openssh_test_config(
+        config_path: &Path,
+        host_key: &Path,
+        pid_file: &Path,
+        authorized_keys: &Path,
+        port: u16,
+    ) {
+        fs::write(
+            config_path,
+            format!(
+                "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
+                host_key.display(),
+                pid_file.display(),
+                authorized_keys.display(),
+            ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn spawn_openssh_test_server(sshd_path: &Path, config_path: &Path) -> ChildGuard {
+        let child = Command::new(sshd_path)
+            .args(["-D", "-e", "-f"])
+            .arg(config_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        ChildGuard(Some(child))
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_openssh_test_server(server: &mut ChildGuard, port: u16, label: &str) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                    break;
+                }
+                if let Some(status) = server.0.as_mut().unwrap().try_wait().unwrap() {
+                    let mut stderr = String::new();
+                    server
+                        .0
+                        .as_mut()
+                        .unwrap()
+                        .stderr
+                        .as_mut()
+                        .unwrap()
+                        .read_to_string(&mut stderr)
+                        .unwrap();
+                    panic!("{label} exited early with {status}: {stderr}");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{label} did not start"));
+    }
+
     #[test]
     fn telnet_negotiator_filters_iac_and_replies() {
         let mut negotiator = TelnetNegotiator::new();
@@ -11366,6 +11467,27 @@ mod tests {
             jump_ssh.passphrase_secret_ref.as_deref(),
             Some("keychain:target-passphrase")
         );
+    }
+
+    #[test]
+    fn jump_runtime_credentials_do_not_override_independent_secret_refs() {
+        assert_eq!(
+            jump_runtime_credential(Some("target-password"), Some("keychain:jump-password")),
+            None
+        );
+        assert_eq!(
+            jump_runtime_credential(Some("target-passphrase"), Some(" keychain:jump-key ")),
+            None
+        );
+        assert_eq!(
+            jump_runtime_credential(Some("shared-password"), None).as_deref(),
+            Some("shared-password")
+        );
+        assert_eq!(
+            jump_runtime_credential(Some("shared-password"), Some(" ")).as_deref(),
+            Some("shared-password")
+        );
+        assert_eq!(jump_runtime_credential(Some(""), None), None);
     }
 
     #[test]
@@ -12029,11 +12151,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn openssh_sftp_scp_and_tunnels_end_to_end() {
-        let sshd_path = ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
-            .into_iter()
-            .map(Path::new)
-            .find(|path| path.exists());
-        let Some(sshd_path) = sshd_path else {
+        let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH integration test: sshd is not installed");
             return;
         };
@@ -12048,16 +12166,7 @@ mod tests {
         let replacement_host_key = root.join("ssh_host_ed25519_key_replacement");
         let client_key = root.join("id_ed25519");
         for key_path in [&host_key, &replacement_host_key, &client_key] {
-            let status = Command::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-                .arg(key_path)
-                .status()
-                .unwrap();
-            assert!(
-                status.success(),
-                "ssh-keygen failed for {}",
-                key_path.display()
-            );
+            generate_ed25519_test_key(key_path);
         }
         let authorized_keys = root.join("authorized_keys");
         fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
@@ -12066,57 +12175,20 @@ mod tests {
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
             listener.local_addr().unwrap().port()
         };
-        let username = std::env::var("USER").unwrap_or_else(|_| {
-            String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
-                .unwrap()
-                .trim()
-                .to_string()
-        });
+        let username = openssh_test_username();
         let config_path = root.join("sshd_config");
-        fs::write(
+        write_openssh_test_config(
             &config_path,
-            format!(
-                "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
-                host_key.display(),
-                root.join("sshd.pid").display(),
-                authorized_keys.display(),
-            ),
-        )
-        .unwrap();
+            &host_key,
+            &root.join("sshd.pid"),
+            &authorized_keys,
+            port,
+        );
 
-        let child = Command::new(sshd_path)
-            .args(["-D", "-e", "-f"])
-            .arg(&config_path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut sshd = ChildGuard(Some(child));
+        let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
 
         tauri::async_runtime::block_on(async {
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-                        break;
-                    }
-                    if let Some(status) = sshd.0.as_mut().unwrap().try_wait().unwrap() {
-                        let mut stderr = String::new();
-                        sshd.0
-                            .as_mut()
-                            .unwrap()
-                            .stderr
-                            .as_mut()
-                            .unwrap()
-                            .read_to_string(&mut stderr)
-                            .unwrap();
-                        panic!("sshd exited early with {status}: {stderr}");
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("sshd did not start");
+            wait_for_openssh_test_server(&mut sshd, port, "sshd").await;
 
             let mut profile = test_ssh_profile();
             if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
@@ -12416,48 +12488,15 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
 
             sshd.stop();
-            fs::write(
+            write_openssh_test_config(
                 &config_path,
-                format!(
-                    "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
-                    replacement_host_key.display(),
-                    root.join("sshd.pid").display(),
-                    authorized_keys.display(),
-                ),
-            )
-            .unwrap();
-            let replacement_child = Command::new(sshd_path)
-                .args(["-D", "-e", "-f"])
-                .arg(&config_path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            sshd = ChildGuard(Some(replacement_child));
-
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-                        break;
-                    }
-                    if let Some(status) = sshd.0.as_mut().unwrap().try_wait().unwrap() {
-                        let mut stderr = String::new();
-                        sshd.0
-                            .as_mut()
-                            .unwrap()
-                            .stderr
-                            .as_mut()
-                            .unwrap()
-                            .read_to_string(&mut stderr)
-                            .unwrap();
-                        panic!("replacement sshd exited early with {status}: {stderr}");
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("replacement sshd did not start");
+                &replacement_host_key,
+                &root.join("sshd.pid"),
+                &authorized_keys,
+                port,
+            );
+            sshd = spawn_openssh_test_server(sshd_path, &config_path);
+            wait_for_openssh_test_server(&mut sshd, port, "replacement sshd").await;
 
             let trusted_before = state.store.lock().unwrap().host_keys.keys.clone();
             let mismatch = open_ssh_session(&state, profile.clone(), None, None)
@@ -12470,6 +12509,188 @@ mod tests {
         });
 
         sshd.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openssh_jump_host_chain_and_key_mismatch_end_to_end() {
+        let Some(sshd_path) = openssh_test_server_path() else {
+            eprintln!("skipping OpenSSH Jump Host test: sshd is not installed");
+            return;
+        };
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping OpenSSH Jump Host test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!("portmate-jump-sshd-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let jump_host_key = root.join("jump_host_ed25519_key");
+        let replacement_jump_host_key = root.join("jump_host_ed25519_key_replacement");
+        let target_host_key = root.join("target_host_ed25519_key");
+        let client_key = root.join("id_ed25519");
+        for key_path in [
+            &jump_host_key,
+            &replacement_jump_host_key,
+            &target_host_key,
+            &client_key,
+        ] {
+            generate_ed25519_test_key(key_path);
+        }
+        let authorized_keys = root.join("authorized_keys");
+        fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
+
+        let jump_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let target_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let jump_port = jump_reservation.local_addr().unwrap().port();
+        let target_port = target_reservation.local_addr().unwrap().port();
+        drop(jump_reservation);
+        drop(target_reservation);
+
+        let jump_config = root.join("jump_sshd_config");
+        let target_config = root.join("target_sshd_config");
+        write_openssh_test_config(
+            &jump_config,
+            &jump_host_key,
+            &root.join("jump_sshd.pid"),
+            &authorized_keys,
+            jump_port,
+        );
+        write_openssh_test_config(
+            &target_config,
+            &target_host_key,
+            &root.join("target_sshd.pid"),
+            &authorized_keys,
+            target_port,
+        );
+        let mut jump_sshd = spawn_openssh_test_server(sshd_path, &jump_config);
+        let mut target_sshd = spawn_openssh_test_server(sshd_path, &target_config);
+
+        tauri::async_runtime::block_on(async {
+            wait_for_openssh_test_server(&mut jump_sshd, jump_port, "jump sshd").await;
+            wait_for_openssh_test_server(&mut target_sshd, target_port, "target sshd").await;
+
+            let username = openssh_test_username();
+            let mut profile = test_ssh_profile();
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.endpoint.host = "127.0.0.1".to_string();
+                ssh.endpoint.port = target_port;
+                ssh.username = username.clone();
+                ssh.reconnect = false;
+                ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.host_key_policy.alias = Some("integration-target".to_string());
+                ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+                ssh.identity_refs = vec![
+                    IdentityRef {
+                        id: "target-client-key".to_string(),
+                        label: "target client key".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(client_key.display().to_string()),
+                        secret_ref: None,
+                    },
+                    IdentityRef {
+                        id: "jump-client-key".to_string(),
+                        label: "jump client key".to_string(),
+                        source: IdentitySource::SystemFile,
+                        fingerprint_sha256: None,
+                        path: Some(client_key.display().to_string()),
+                        secret_ref: None,
+                    },
+                ];
+                ssh.agent_policy.enabled = false;
+                ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+                let mut jump_policy =
+                    portmate_core::HostKeyPolicy::profile_alias("integration-jump");
+                jump_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.jumps = vec![portmate_core::JumpHop {
+                    host: "127.0.0.1".to_string(),
+                    port: jump_port,
+                    username: username.clone(),
+                    password_secret_ref: None,
+                    passphrase_secret_ref: None,
+                    identity_ref: Some("jump-client-key".to_string()),
+                    host_key_policy: Some(jump_policy),
+                }];
+            }
+
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let summary = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap();
+            assert_eq!(summary.runtime.status, SessionStatus::Connected);
+            assert_eq!(
+                state
+                    .ssh
+                    .lock()
+                    .unwrap()
+                    .get(&profile.id)
+                    .unwrap()
+                    .jump_handles
+                    .len(),
+                1
+            );
+            let trusted = state.store.lock().unwrap().host_keys.keys.clone();
+            assert_eq!(trusted.len(), 2);
+            assert!(trusted
+                .iter()
+                .any(|key| key.alias == "integration-jump" && key.port == jump_port));
+            assert!(trusted
+                .iter()
+                .any(|key| key.alias == "integration-target" && key.port == target_port));
+
+            send_text_inner(
+                state.session_io(),
+                profile.id.clone(),
+                "printf '__PORTMATE_JUMP_OK__\\n'\n".to_string(),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .screen(&profile.id)
+                        .is_some_and(|screen| screen.contains("__PORTMATE_JUMP_OK__"))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("Jump Host PTY command output was not recorded");
+
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            jump_sshd.stop();
+            write_openssh_test_config(
+                &jump_config,
+                &replacement_jump_host_key,
+                &root.join("jump_sshd.pid"),
+                &authorized_keys,
+                jump_port,
+            );
+            jump_sshd = spawn_openssh_test_server(sshd_path, &jump_config);
+            wait_for_openssh_test_server(&mut jump_sshd, jump_port, "replacement jump sshd").await;
+
+            let trusted_before = state.store.lock().unwrap().host_keys.keys.clone();
+            let mismatch = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap_err();
+            assert!(mismatch.contains("alias=integration-jump"), "{mismatch}");
+            assert!(mismatch.contains("observed="), "{mismatch}");
+            assert!(mismatch.contains("expected=["), "{mismatch}");
+            assert_eq!(state.store.lock().unwrap().host_keys.keys, trusted_before);
+        });
+
+        jump_sshd.stop();
+        target_sshd.stop();
         let _ = fs::remove_dir_all(root);
     }
 
