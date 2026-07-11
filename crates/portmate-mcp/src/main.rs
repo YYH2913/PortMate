@@ -1,20 +1,26 @@
 use anyhow::{anyhow, Result};
 use keyring_core::Entry;
 use portmate_core::{
-    prompt_templates, resource_templates, tool_definitions, McpScope, SessionStore,
+    prompt_templates, redact_secrets, resource_templates, tool_definitions, McpScope, SessionEvent,
+    SessionStore,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
+use uuid::Uuid;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const STORE_KEY: &str = "session-store";
-const SQLITE_SCHEMA_VERSION: &str = "2";
+const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
+const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -45,7 +51,6 @@ struct JsonRpcError {
 
 struct PortMateMcp {
     store: SessionStore,
-    store_path: Option<PathBuf>,
     ipc: Option<IpcEndpointFile>,
     client_id: String,
     allow_write: bool,
@@ -66,6 +71,10 @@ struct IpcEndpointFile {
 #[serde(rename_all = "camelCase")]
 struct IpcRequest {
     token: String,
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    trusted_write: bool,
     command: String,
     #[serde(default)]
     args: Value,
@@ -77,6 +86,21 @@ struct IpcResponse {
     ok: bool,
     value: Option<Value>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpConfig {
+    addr: SocketAddr,
+    token: String,
+    allowed_origins: Vec<String>,
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
 }
 
 impl PortMateMcp {
@@ -92,7 +116,6 @@ impl PortMateMcp {
         let ipc = store_path.as_deref().and_then(load_ipc_endpoint);
         Self {
             store,
-            store_path,
             ipc,
             client_id: std::env::var("PORTMATE_MCP_CLIENT_ID")
                 .unwrap_or_else(|_| "portmate-local".to_string()),
@@ -216,10 +239,8 @@ impl PortMateMcp {
                         .into_iter()
                         .find(|summary| summary.profile.id == session_id),
                 )?,
-                "screen" => self.store.screen(session_id).unwrap_or_default(),
-                "log" => self
-                    .store
-                    .tail_log(session_id, 200)
+                "screen" => redact_secrets(&self.store.screen(session_id).unwrap_or_default()),
+                "log" => redact_events(self.store.tail_log(session_id, 200))
                     .into_iter()
                     .map(|event| serde_json::to_string(&event).unwrap_or_default())
                     .collect::<Vec<_>>()
@@ -265,6 +286,7 @@ impl PortMateMcp {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let mut is_error = false;
 
         let output = match name {
             "list_sessions" => {
@@ -279,7 +301,7 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value("read_screen", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    self.store.screen(session_id).unwrap_or_default()
+                    redact_secrets(&self.store.screen(session_id).unwrap_or_default())
                 }
             }
             "tail_log" => {
@@ -291,7 +313,9 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    serde_json::to_string_pretty(&self.store.tail_log(session_id, limit))?
+                    serde_json::to_string_pretty(&redact_events(
+                        self.store.tail_log(session_id, limit),
+                    ))?
                 }
             }
             "search_logs" => {
@@ -304,13 +328,30 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value("search_logs", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    serde_json::to_string_pretty(&self.store.search_logs(query, session_id, limit))?
+                    serde_json::to_string_pretty(&redact_events(
+                        self.store.search_logs(query, session_id, limit),
+                    ))?
                 }
             }
-            "send_text" | "send_key" | "run_command" => self.write_tool(name, &arguments)?,
+            "send_text" | "send_key" | "run_command" => {
+                if let Some(output) = self.write_tool(name, &arguments)? {
+                    output
+                } else {
+                    is_error = true;
+                    format!(
+                        "{name} was NOT executed: desktop IPC is not available, so no session input was sent."
+                    )
+                }
+            }
             "export_session_bundle" => {
                 let session_id = required_string(&arguments, "sessionId")?;
-                serde_json::to_string_pretty(&self.store.export_session_bundle(session_id))?
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    ipc_value_to_text(value)?
+                } else {
+                    serde_json::to_string_pretty(
+                        &self.store.export_session_bundle_redacted(session_id),
+                    )?
+                }
             }
             "open_session" | "close_session" => {
                 let session_id = required_string(&arguments, "sessionId")?;
@@ -318,7 +359,8 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    format!("{name} accepted by PortMate bridge; desktop IPC is not available.")
+                    is_error = true;
+                    format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
                 }
             }
             "start_transfer" => {
@@ -327,7 +369,8 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    "start_transfer accepted by PortMate bridge; desktop IPC is not available."
+                    is_error = true;
+                    "start_transfer was NOT executed: desktop IPC is not available, so no transfer was started."
                         .to_string()
                 }
             }
@@ -337,7 +380,8 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    "create_tunnel accepted by PortMate bridge; desktop IPC is not available."
+                    is_error = true;
+                    "create_tunnel was NOT executed: desktop IPC is not available, so no tunnel was created."
                         .to_string()
                 }
             }
@@ -360,7 +404,8 @@ impl PortMateMcp {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
-                    "attach_tmux accepted by PortMate bridge; desktop IPC is not available."
+                    is_error = true;
+                    "attach_tmux was NOT executed: desktop IPC is not available, so tmux was not attached."
                         .to_string()
                 }
             }
@@ -369,28 +414,17 @@ impl PortMateMcp {
 
         Ok(json!({
             "content": [{ "type": "text", "text": output }],
-            "isError": false
+            "isError": is_error
         }))
     }
 
-    fn write_tool(&mut self, name: &str, arguments: &Value) -> Result<String> {
+    fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
         let session_id = required_string(arguments, "sessionId")?;
         self.guard_scope(McpScope::WriteInput, session_id)?;
         if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-            return ipc_value_to_text(value);
+            return ipc_value_to_text(value).map(Some);
         }
-        let text = match name {
-            "send_text" => required_string(arguments, "text")?.to_string(),
-            "send_key" => format!("<{}>", required_string(arguments, "key")?),
-            "run_command" => format!("{}\n", required_string(arguments, "command")?),
-            _ => unreachable!(),
-        };
-        let event = self
-            .store
-            .send_text(&self.client_id, session_id, &text)
-            .map_err(|message| anyhow!(message))?;
-        self.persist_store()?;
-        Ok(serde_json::to_string_pretty(&event)?)
+        Ok(None)
     }
 
     fn call_ipc_value(&self, command: &str, args: Value) -> Result<Option<Value>> {
@@ -404,6 +438,8 @@ impl PortMateMcp {
         let token = endpoint_ipc_token(endpoint)?;
         let request = IpcRequest {
             token,
+            client_id: self.client_id.clone(),
+            trusted_write: self.allow_write,
             command: command.to_string(),
             args,
         };
@@ -422,21 +458,6 @@ impl PortMateMcp {
                     .unwrap_or_else(|| "unknown error".to_string())
             ))
         }
-    }
-
-    fn persist_store(&self) -> Result<()> {
-        let Some(path) = &self.store_path else {
-            return Ok(());
-        };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
-            save_store_to_sqlite(path, &self.store)?;
-        } else {
-            fs::write(path, serde_json::to_vec_pretty(&self.store)?)?;
-        }
-        Ok(())
     }
 
     fn guard_scope(&self, scope: McpScope, session_id: &str) -> Result<()> {
@@ -527,24 +548,32 @@ fn read_secret_from_keyring(secret_ref: &str) -> Result<String> {
         .map_err(|error| anyhow!("failed to read keyring secret {secret_ref}: {error:?}"))
 }
 
+fn write_secret_to_keyring(secret_ref: &str, secret: &str) -> Result<()> {
+    keyring_entry(secret_ref)?
+        .set_password(secret)
+        .map_err(|error| anyhow!("failed to write keyring secret {secret_ref}: {error:?}"))
+}
+
+/// Redacts secrets out of events read from the local store snapshot fallback
+/// (used when live desktop IPC is unavailable) before they reach an MCP client.
+/// The live-IPC path is redacted on the desktop side (src-tauri) since that is
+/// the same trust boundary crossing — an external MCP client, not the local operator.
+fn redact_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    events
+        .into_iter()
+        .map(|mut event| {
+            event.text = event.text.map(|text| redact_secrets(&text));
+            event
+        })
+        .collect()
+}
+
 fn ipc_value_to_text(value: Value) -> Result<String> {
     if let Some(text) = value.as_str() {
         Ok(text.to_string())
     } else {
         Ok(serde_json::to_string_pretty(&value)?)
     }
-}
-
-fn save_store_to_sqlite(path: &std::path::Path, store: &SessionStore) -> Result<()> {
-    let connection = SqliteConnection::open(path)?;
-    ensure_store_schema(&connection)?;
-    connection.execute(
-        "insert into kv (key, value, updated_at) values (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now')) \
-         on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at",
-        params![STORE_KEY, serde_json::to_string_pretty(store)?],
-    )?;
-    save_store_sqlite_tables(&connection, store)?;
-    Ok(())
 }
 
 fn ensure_store_schema(connection: &SqliteConnection) -> Result<()> {
@@ -672,216 +701,17 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<()> {
     Ok(())
 }
 
-fn save_store_sqlite_tables(connection: &SqliteConnection, store: &SessionStore) -> Result<()> {
-    connection.execute_batch(
-        "delete from profiles;
-         delete from runtimes;
-         delete from events;
-         delete from transfers;
-         delete from trusted_host_keys;
-         delete from mcp_grants;
-         delete from mcp_audit;
-         delete from timeline_marks;
-         delete from sysmon_snapshots;",
-    )?;
-
-    for profile in &store.profiles {
-        connection.execute(
-            "insert into profiles (
-                id, name, kind, group_name, tags_json, connection_json, terminal_json,
-                logging_json, triggers_json, transfer_json, updated_at
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-            params![
-                profile.id,
-                profile.name,
-                enum_text(&profile.kind)?,
-                profile.group,
-                json_text(&profile.tags)?,
-                json_text(&profile.connection)?,
-                json_text(&profile.terminal)?,
-                json_text(&profile.logging)?,
-                json_text(&profile.triggers)?,
-                json_text(&profile.transfer)?,
-            ],
-        )?;
-    }
-
-    for runtime in &store.runtimes {
-        connection.execute(
-            "insert into runtimes (
-                session_id, pane_id, status, title, cwd, connected_since, last_activity,
-                active_transport, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                runtime.session_id,
-                runtime.pane_id,
-                enum_text(&runtime.status)?,
-                runtime.title,
-                runtime.cwd,
-                runtime.connected_since.map(|value| value.to_rfc3339()),
-                runtime.last_activity.to_rfc3339(),
-                enum_text(&runtime.active_transport)?,
-                json_text(runtime)?,
-            ],
-        )?;
-    }
-
-    for event in &store.events {
-        connection.execute(
-            "insert into events (
-                id, session_id, pane_id, ts, direction, stream, bytes_ref, text,
-                annotations_json, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                event.id,
-                event.session_id,
-                event.pane_id,
-                event.ts.to_rfc3339(),
-                enum_text(&event.direction)?,
-                enum_text(&event.stream)?,
-                event.bytes_ref,
-                event.text,
-                json_text(&event.annotations)?,
-                json_text(event)?,
-            ],
-        )?;
-    }
-
-    for transfer in &store.transfers {
-        connection.execute(
-            "insert into transfers (
-                id, session_id, protocol, source, destination, bytes_total, bytes_done,
-                status, message, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                transfer.id,
-                transfer.session_id,
-                enum_text(&transfer.protocol)?,
-                transfer.source,
-                transfer.destination,
-                transfer.bytes_total as i64,
-                transfer.bytes_done as i64,
-                enum_text(&transfer.status)?,
-                transfer.message,
-                json_text(transfer)?,
-            ],
-        )?;
-    }
-
-    for key in &store.host_keys.keys {
-        connection.execute(
-            "insert into trusted_host_keys (
-                id, profile_id, alias, host, port, algorithm, fingerprint_sha256,
-                public_key_base64, scope, label, first_seen, last_seen, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                key.id,
-                key.profile_id,
-                key.alias,
-                key.host,
-                i64::from(key.port),
-                key.algorithm,
-                key.fingerprint_sha256,
-                key.public_key_base64,
-                enum_text(&key.scope)?,
-                key.label,
-                key.first_seen.to_rfc3339(),
-                key.last_seen.to_rfc3339(),
-                json_text(key)?,
-            ],
-        )?;
-    }
-
-    for grant in &store.grants {
-        connection.execute(
-            "insert into mcp_grants (
-                client_id, name, scopes_json, allowed_sessions_json, expires_at, revoked_at, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                grant.client_id,
-                grant.name,
-                json_text(&grant.scopes)?,
-                json_text(&grant.allowed_sessions)?,
-                grant.expires_at.map(|value| value.to_rfc3339()),
-                grant.revoked_at.map(|value| value.to_rfc3339()),
-                json_text(grant)?,
-            ],
-        )?;
-    }
-
-    for record in &store.audit {
-        connection.execute(
-            "insert into mcp_audit (
-                id, ts, actor, action, session_id, decision, details_json, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                record.id,
-                record.ts.to_rfc3339(),
-                record.actor,
-                record.action,
-                record.session_id,
-                record.decision,
-                json_text(&record.details)?,
-                json_text(record)?,
-            ],
-        )?;
-    }
-
-    for mark in &store.timeline {
-        connection.execute(
-            "insert into timeline_marks (
-                id, session_id, ts, label, details, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                mark.id,
-                mark.session_id,
-                mark.ts.to_rfc3339(),
-                mark.label,
-                mark.details,
-                json_text(mark)?,
-            ],
-        )?;
-    }
-
-    for snapshot in &store.sysmon {
-        connection.execute(
-            "insert into sysmon_snapshots (
-                session_id, ts, uptime_seconds, cpu_percent, memory_percent, rx_kbps, tx_kbps, raw_json
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                snapshot.session_id,
-                snapshot.ts.to_rfc3339(),
-                snapshot.uptime_seconds as i64,
-                snapshot.cpu_percent,
-                snapshot.memory_percent,
-                snapshot.rx_kbps,
-                snapshot.tx_kbps,
-                json_text(snapshot)?,
-            ],
-        )?;
-    }
-
-    connection.execute(
-        "insert into metadata (key, value) values ('schemaVersion', ?1)
-            on conflict(key) do update set value = excluded.value",
-        params![SQLITE_SCHEMA_VERSION],
-    )?;
-    Ok(())
-}
-
-fn json_text<T: Serialize>(value: &T) -> Result<String> {
-    Ok(serde_json::to_string(value)?)
-}
-
-fn enum_text<T: Serialize>(value: &T) -> Result<String> {
-    let value = serde_json::to_value(value)?;
-    value
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("expected enum to serialize as a string"))
-}
-
 fn main() -> Result<()> {
+    if std::env::args().any(|arg| arg == "--http")
+        || std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1")
+    {
+        run_http_server()
+    } else {
+        run_stdio_server()
+    }
+}
+
+fn run_stdio_server() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut server = PortMateMcp::new();
@@ -914,6 +744,487 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn run_http_server() -> Result<()> {
+    let config = http_config()?;
+    let listener = TcpListener::bind(config.addr)?;
+    eprintln!("PortMate MCP HTTP listening on http://{}/mcp", config.addr);
+    eprintln!("PortMate MCP HTTP token source: {HTTP_TOKEN_REF} or PORTMATE_MCP_HTTP_TOKEN");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let config = config.clone();
+                thread::spawn(move || handle_http_connection(stream, config));
+            }
+            Err(error) => eprintln!("PortMate MCP HTTP accept failed: {error}"),
+        }
+    }
+    Ok(())
+}
+
+fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
+    let response = match read_http_request(&mut stream) {
+        Ok(request) if is_sse_stream_request(&request) => {
+            if let Err(error) = write_http_sse_stream(&mut stream, request, &config) {
+                eprintln!("PortMate MCP HTTP SSE stream failed: {error}");
+            }
+            return;
+        }
+        Ok(request) => handle_http_request(request, &config),
+        Err(error) => http_response(
+            400,
+            "Bad Request",
+            &json!({ "error": error.to_string() }).to_string(),
+            None,
+        ),
+    };
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
+fn http_config() -> Result<HttpConfig> {
+    let addr = std::env::var("PORTMATE_MCP_HTTP_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
+        .parse::<SocketAddr>()
+        .map_err(|error| anyhow!("PORTMATE_MCP_HTTP_ADDR must be host:port: {error}"))?;
+    if !matches!(addr.ip(), IpAddr::V4(ip) if ip.is_loopback())
+        && !matches!(addr.ip(), IpAddr::V6(ip) if ip.is_loopback())
+    {
+        return Err(anyhow!("MCP HTTP must bind a loopback address; got {addr}"));
+    }
+    let token = std::env::var("PORTMATE_MCP_HTTP_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| read_or_create_http_token().ok())
+        .ok_or_else(|| anyhow!("failed to load or create MCP HTTP token"))?;
+    let mut allowed_origins = std::env::var("PORTMATE_MCP_HTTP_ORIGINS")
+        .or_else(|_| std::env::var("PORTMATE_MCP_HTTP_ORIGIN"))
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if allowed_origins.is_empty() {
+        allowed_origins.push(format!("http://127.0.0.1:{}", addr.port()));
+        allowed_origins.push(format!("http://localhost:{}", addr.port()));
+    }
+    Ok(HttpConfig {
+        addr,
+        token,
+        allowed_origins,
+    })
+}
+
+fn read_or_create_http_token() -> Result<String> {
+    match read_secret_from_keyring(HTTP_TOKEN_REF) {
+        Ok(token) if !token.trim().is_empty() => Ok(token),
+        _ => {
+            let token = Uuid::new_v4().to_string();
+            write_secret_to_keyring(HTTP_TOKEN_REF, &token)?;
+            Ok(token)
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(anyhow!("connection closed before HTTP headers"));
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        if raw.len() > MAX_HTTP_BODY_BYTES {
+            return Err(anyhow!("HTTP request is too large"));
+        }
+        if let Some(index) = find_header_end(&raw) {
+            break index;
+        }
+    };
+
+    let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| anyhow!("missing HTTP request line"))?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or_else(|| anyhow!("missing HTTP method"))?
+        .to_string();
+    let path = request_parts
+        .next()
+        .ok_or_else(|| anyhow!("missing HTTP path"))?
+        .to_string();
+    let mut headers = HashMap::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+    }
+
+    let content_length = headers
+        .get("content-length")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|error| anyhow!("invalid Content-Length: {error}"))?
+        .unwrap_or(0);
+    if content_length > MAX_HTTP_BODY_BYTES {
+        return Err(anyhow!("HTTP body is too large"));
+    }
+    let body_start = header_end + 4;
+    let mut body = raw.get(body_start..).unwrap_or_default().to_vec();
+    while body.len() < content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(anyhow!("connection closed before HTTP body"));
+        }
+        body.extend_from_slice(&buffer[..read]);
+        if body.len() > MAX_HTTP_BODY_BYTES {
+            return Err(anyhow!("HTTP body is too large"));
+        }
+    }
+    body.truncate(content_length);
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn find_header_end(raw: &[u8]) -> Option<usize> {
+    raw.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
+    let origin = request.headers.get("origin").cloned();
+    if let Err(error) = validate_origin(origin.as_deref(), config) {
+        return http_response(
+            403,
+            "Forbidden",
+            &json!({ "error": error.to_string() }).to_string(),
+            origin.as_deref(),
+        );
+    }
+
+    if request.method == "OPTIONS" {
+        return http_response(204, "No Content", "", origin.as_deref());
+    }
+
+    if request.path != "/mcp" {
+        return http_response(
+            404,
+            "Not Found",
+            &json!({ "error": "unknown endpoint" }).to_string(),
+            origin.as_deref(),
+        );
+    }
+    if request.method == "GET" && accepts_sse_http_response(&request) {
+        return http_sse_stream_start_response(&request, config);
+    }
+    if request.method != "POST" {
+        return http_response(
+            405,
+            "Method Not Allowed",
+            &json!({ "error": "use POST /mcp or GET /mcp with Accept: text/event-stream" })
+                .to_string(),
+            origin.as_deref(),
+        );
+    }
+    let accepts_json = accepts_json_http_response(&request);
+    let accepts_sse = accepts_sse_http_response(&request);
+    if !accepts_json && !accepts_sse {
+        return http_response(
+            406,
+            "Not Acceptable",
+            &json!({
+                "error": "PortMate MCP HTTP returns JSON-RPC or SSE responses; send Accept: application/json, text/event-stream for streamable-http JSON compatibility"
+            })
+            .to_string(),
+            origin.as_deref(),
+        );
+    }
+    if !authorized_http_request(&request, &config.token) {
+        return http_response(
+            401,
+            "Unauthorized",
+            &json!({ "error": "missing or invalid MCP HTTP token" }).to_string(),
+            origin.as_deref(),
+        );
+    }
+
+    let value = match serde_json::from_slice::<Value>(&request.body) {
+        Ok(value) => value,
+        Err(parse_error) => {
+            let response = error(Value::Null, -32700, format!("parse error: {parse_error}"));
+            return http_response(
+                200,
+                "OK",
+                &serde_json::to_string(&response).unwrap_or_default(),
+                origin.as_deref(),
+            );
+        }
+    };
+    let body = match handle_http_json_rpc(value) {
+        Ok(value) => value.to_string(),
+        Err(error) => json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": { "code": -32603, "message": error.to_string() }
+        })
+        .to_string(),
+    };
+    if accepts_sse && !accepts_json {
+        http_sse_message_response(&body, origin.as_deref())
+    } else {
+        http_response(200, "OK", &body, origin.as_deref())
+    }
+}
+
+fn handle_http_json_rpc(value: Value) -> Result<Value> {
+    if let Some(items) = value.as_array() {
+        let mut responses = Vec::new();
+        for item in items {
+            if let Some(response) = handle_one_json_rpc_value(item.clone())? {
+                responses.push(serde_json::to_value(response)?);
+            }
+        }
+        return Ok(Value::Array(responses));
+    }
+    if let Some(response) = handle_one_json_rpc_value(value)? {
+        serde_json::to_value(response).map_err(Into::into)
+    } else {
+        Ok(Value::Null)
+    }
+}
+
+fn handle_one_json_rpc_value(value: Value) -> Result<Option<JsonRpcResponse>> {
+    let id = value.get("id").cloned().unwrap_or(Value::Null);
+    let request = match serde_json::from_value::<JsonRpcRequest>(value) {
+        Ok(request) => request,
+        Err(error_message) => return Ok(Some(error(id, -32600, error_message.to_string()))),
+    };
+    let mut server = PortMateMcp::new();
+    match server.handle(request) {
+        Ok(response) => Ok(response),
+        Err(error_message) => Ok(Some(error(id, -32603, error_message.to_string()))),
+    }
+}
+
+fn validate_origin(origin: Option<&str>, config: &HttpConfig) -> Result<()> {
+    let Some(origin) = origin.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if config
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == "*" || allowed == origin)
+    {
+        Ok(())
+    } else {
+        Err(anyhow!("Origin `{origin}` is not allowed"))
+    }
+}
+
+fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
+    if let Some(value) = request.headers.get("authorization") {
+        if let Some(candidate) = value.trim().strip_prefix("Bearer ") {
+            return constant_time_str_eq(candidate.trim(), token);
+        }
+    }
+    request
+        .headers
+        .get("x-portmate-mcp-token")
+        .is_some_and(|candidate| constant_time_str_eq(candidate.trim(), token))
+}
+
+fn accepts_json_http_response(request: &HttpRequest) -> bool {
+    let Some(accept) = request.headers.get("accept") else {
+        return true;
+    };
+    accept.split(',').any(|item| {
+        let media_type = item
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        matches!(
+            media_type.as_str(),
+            "*/*" | "application/*" | "application/json"
+        )
+    })
+}
+
+fn accepts_sse_http_response(request: &HttpRequest) -> bool {
+    let Some(accept) = request.headers.get("accept") else {
+        return false;
+    };
+    accept.split(',').any(|item| {
+        let media_type = item
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        media_type == "text/event-stream"
+    })
+}
+
+fn is_sse_stream_request(request: &HttpRequest) -> bool {
+    request.method == "GET" && request.path == "/mcp" && accepts_sse_http_response(request)
+}
+
+fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
+    let content_type = if body.is_empty() {
+        "text/plain"
+    } else {
+        "application/json"
+    };
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n",
+        body.len()
+    );
+    if let Some(origin) = origin {
+        response.push_str(&format!(
+            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
+        ));
+    }
+    response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
+    response.push_str(
+        "Access-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
+    );
+    response.push_str(body);
+    response
+}
+
+fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) -> String {
+    let origin = request.headers.get("origin").cloned();
+    if let Err(error) = validate_origin(origin.as_deref(), config) {
+        return http_response(
+            403,
+            "Forbidden",
+            &json!({ "error": error.to_string() }).to_string(),
+            origin.as_deref(),
+        );
+    }
+    if !authorized_http_request(request, &config.token) {
+        return http_response(
+            401,
+            "Unauthorized",
+            &json!({ "error": "missing or invalid MCP HTTP token" }).to_string(),
+            origin.as_deref(),
+        );
+    }
+    let mut response = http_sse_headers(origin.as_deref(), None);
+    response.push_str(&sse_event(
+        "endpoint",
+        &json!({
+            "uri": "/mcp",
+            "method": "POST",
+            "protocolVersion": MCP_PROTOCOL_VERSION
+        }),
+    ));
+    response.push_str(&sse_event("portmate.state", &mcp_sse_state_payload()));
+    response
+}
+
+fn write_http_sse_stream(
+    stream: &mut TcpStream,
+    request: HttpRequest,
+    config: &HttpConfig,
+) -> Result<()> {
+    let response = http_sse_stream_start_response(&request, config);
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+    if !response.starts_with("HTTP/1.1 200 OK") {
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    }
+
+    loop {
+        thread::sleep(Duration::from_secs(5));
+        let event = format!(
+            ": keep-alive\n\n{}",
+            sse_event("portmate.state", &mcp_sse_state_payload())
+        );
+        stream.write_all(event.as_bytes())?;
+        stream.flush()?;
+    }
+}
+
+fn http_sse_message_response(body: &str, origin: Option<&str>) -> String {
+    let event = sse_event(
+        "message",
+        &serde_json::from_str::<Value>(body).unwrap_or_else(|_| json!({ "text": body })),
+    );
+    let mut response = http_sse_headers(origin, Some(event.len()));
+    response.push_str(&event);
+    response
+}
+
+fn http_sse_headers(origin: Option<&str>, content_length: Option<usize>) -> String {
+    let mut response =
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
+            .to_string();
+    if let Some(content_length) = content_length {
+        response.push_str(&format!("Content-Length: {content_length}\r\n"));
+    } else {
+        response.push_str("Connection: keep-alive\r\n");
+    }
+    if let Some(origin) = origin {
+        response.push_str(&format!(
+            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
+        ));
+    }
+    response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
+    response.push_str(
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
+    );
+    response
+}
+
+fn sse_event(event: &str, data: &Value) -> String {
+    let data = data.to_string();
+    let mut output = format!("event: {event}\n");
+    for line in data.lines() {
+        output.push_str("data: ");
+        output.push_str(line);
+        output.push('\n');
+    }
+    output.push('\n');
+    output
+}
+
+fn mcp_sse_state_payload() -> Value {
+    let server = PortMateMcp::new();
+    json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "serverInfo": {
+            "name": "portmate-mcp",
+            "title": "PortMate MCP Bridge",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "sessions": server.store.summaries()
+    })
+}
+
 fn error(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0",
@@ -940,4 +1251,151 @@ fn parse_session_uri(uri: &str) -> Option<(&str, &str)> {
     let id = parts.next()?;
     let suffix = parts.next()?.split('?').next().unwrap_or_default();
     Some((id, suffix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_http_config() -> HttpConfig {
+        HttpConfig {
+            addr: "127.0.0.1:8787".parse().unwrap(),
+            token: "secret-token".to_string(),
+            allowed_origins: vec!["http://127.0.0.1:8787".to_string()],
+        }
+    }
+
+    fn test_http_request(headers: HashMap<String, String>) -> HttpRequest {
+        HttpRequest {
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            headers,
+            body: serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn test_http_get_request(headers: HashMap<String, String>) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "/mcp".to_string(),
+            headers,
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn http_origin_requires_allow_list_match_when_present() {
+        let config = test_http_config();
+        assert!(validate_origin(None, &config).is_ok());
+        assert!(validate_origin(Some("http://127.0.0.1:8787"), &config).is_ok());
+        assert!(validate_origin(Some("http://evil.example"), &config).is_err());
+    }
+
+    #[test]
+    fn http_token_accepts_bearer_or_portmate_header() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            headers,
+            body: Vec::new(),
+        };
+        assert!(authorized_http_request(&request, "secret-token"));
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-portmate-mcp-token".to_string(),
+            "secret-token".to_string(),
+        );
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            headers,
+            body: Vec::new(),
+        };
+        assert!(authorized_http_request(&request, "secret-token"));
+        assert!(!authorized_http_request(&request, "different-token"));
+    }
+
+    #[test]
+    fn http_json_rpc_initialize_returns_server_info() {
+        let response = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        }))
+        .unwrap();
+        assert_eq!(response["id"], json!(1));
+        assert_eq!(response["result"]["serverInfo"]["name"], "portmate-mcp");
+    }
+
+    #[test]
+    fn http_streamable_accept_header_allows_json_response() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert(
+            "accept".to_string(),
+            "application/json, text/event-stream".to_string(),
+        );
+
+        let response = handle_http_request(test_http_request(headers), &config);
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("MCP-Protocol-Version: 2025-06-18"));
+        assert!(response.contains("\"serverInfo\""));
+    }
+
+    #[test]
+    fn http_get_sse_accept_header_returns_event_stream() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("accept".to_string(), "text/event-stream".to_string());
+
+        let response = handle_http_request(test_http_get_request(headers), &config);
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("Connection: keep-alive"));
+        assert!(response.contains("event: endpoint"));
+        assert!(response.contains("event: portmate.state"));
+        assert!(response.contains("\"protocolVersion\":\"2025-06-18\""));
+    }
+
+    #[test]
+    fn http_post_sse_only_accept_header_returns_message_event() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("accept".to_string(), "text/event-stream".to_string());
+
+        let response = handle_http_request(test_http_request(headers), &config);
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("Content-Length:"));
+        assert!(response.contains("event: message"));
+        assert!(response.contains("\"serverInfo\""));
+    }
 }

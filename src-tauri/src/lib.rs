@@ -2,12 +2,12 @@ use chrono::Utc;
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
-    compute_ssh_sha256_fingerprint, prompt_templates, resource_templates, tool_definitions,
-    AuthMethod, ConnectionConfig, EventDirection, EventStream, HostKeyDecision, HostKeyEvaluation,
-    HostKeyMode, HostKeyObservation, HostKeyStore, IdentityRef, IdentitySource, McpGrant,
-    SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary,
-    SshConnection, SysmonSnapshot, TimelineMark, TransferProtocol, TransferStatus, TransferTask,
-    TriggerAction, TunnelMode, TunnelSpec,
+    compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, resource_templates,
+    tool_definitions, AuthMethod, ConnectionConfig, EventDirection, EventStream, HostKeyDecision,
+    HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef,
+    IdentitySource, McpGrant, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus,
+    SessionStore, SessionSummary, SshConnection, SysmonSnapshot, TimelineMark, TransferProtocol,
+    TransferStatus, TransferTask, TriggerAction, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -20,15 +20,15 @@ use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Manager, State};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -100,24 +100,33 @@ const MODEM_CRC_REQUEST: u8 = b'C';
 const MODEM_EOF: u8 = 0x1a;
 const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
+const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
+const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
+const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
 
 #[derive(Clone)]
 pub struct AppState {
+    app_handle: AppHandle,
     pub store: Arc<Mutex<SessionStore>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     store_path: PathBuf,
 }
 
 struct SshRuntime {
     runtime_id: String,
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    jump_handles: Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
     writer: Arc<tokio::sync::Mutex<ChannelWriteHalf<client::Msg>>>,
     tap: broadcast::Sender<Vec<u8>>,
-    remote_forwards: Arc<Mutex<HashMap<String, TunnelSpec>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    closed: Arc<AtomicBool>,
 }
 
 struct ShellRuntime {
@@ -133,18 +142,95 @@ struct TcpRuntime {
     runtime_id: String,
     writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     tap: broadcast::Sender<Vec<u8>>,
+    closed: Arc<AtomicBool>,
 }
 
 struct SerialRuntime {
     runtime_id: String,
-    writer: Arc<Mutex<Box<dyn serialport::SerialPort>>>,
+    writer: Option<Arc<Mutex<SerialPortHandle>>>,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
 }
 
+type SerialPortHandle = Box<dyn serialport::SerialPort>;
+type SerialPortPair = (SerialPortHandle, SerialPortHandle);
+
+#[derive(Clone)]
 struct TunnelRuntime {
     session_id: String,
+    spec: TunnelSpec,
+    metrics: Arc<TunnelMetrics>,
     closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug)]
+struct TunnelForwardTarget {
+    spec: TunnelSpec,
+    metrics: Arc<TunnelMetrics>,
+}
+
+#[derive(Debug, Default)]
+struct TunnelMetrics {
+    active_connections: AtomicU64,
+    total_connections: AtomicU64,
+    tcp_to_ssh_bytes: AtomicU64,
+    ssh_to_tcp_bytes: AtomicU64,
+    last_activity: Mutex<Option<String>>,
+    last_error: Mutex<Option<String>>,
+}
+
+impl TunnelMetrics {
+    fn connection_opened(&self) {
+        self.total_connections.fetch_add(1, Ordering::SeqCst);
+        self.active_connections.fetch_add(1, Ordering::SeqCst);
+        self.touch();
+    }
+
+    fn connection_closed(&self) {
+        self.active_connections.fetch_sub(1, Ordering::SeqCst);
+        self.touch();
+    }
+
+    fn add_tcp_to_ssh_bytes(&self, bytes: usize) {
+        self.tcp_to_ssh_bytes
+            .fetch_add(bytes as u64, Ordering::SeqCst);
+        self.touch();
+    }
+
+    fn add_ssh_to_tcp_bytes(&self, bytes: usize) {
+        self.ssh_to_tcp_bytes
+            .fetch_add(bytes as u64, Ordering::SeqCst);
+        self.touch();
+    }
+
+    fn record_error(&self, error: &str) {
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = Some(error.to_string());
+        }
+        self.touch();
+    }
+
+    fn touch(&self) {
+        if let Ok(mut last_activity) = self.last_activity.lock() {
+            *last_activity = Some(Utc::now().to_rfc3339());
+        }
+    }
+
+    fn snapshot(&self, spec: TunnelSpec) -> TunnelStatus {
+        TunnelStatus {
+            spec,
+            active_connections: self.active_connections.load(Ordering::SeqCst),
+            total_connections: self.total_connections.load(Ordering::SeqCst),
+            tcp_to_ssh_bytes: self.tcp_to_ssh_bytes.load(Ordering::SeqCst),
+            ssh_to_tcp_bytes: self.ssh_to_tcp_bytes.load(Ordering::SeqCst),
+            last_activity: self
+                .last_activity
+                .lock()
+                .ok()
+                .and_then(|value| value.clone()),
+            last_error: self.last_error.lock().ok().and_then(|value| value.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -155,6 +241,79 @@ struct RuntimeRegistry {
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
 }
 
+#[derive(Clone)]
+struct SessionIo {
+    app_handle: AppHandle,
+    store: Arc<Mutex<SessionStore>>,
+    runtimes: RuntimeRegistry,
+    store_path: PathBuf,
+}
+
+struct SshConnectRequest<'a> {
+    config: Arc<client::Config>,
+    store: Arc<Mutex<SessionStore>>,
+    store_path: PathBuf,
+    profile: &'a SessionProfile,
+    ssh: &'a SshConnection,
+    host_keys: HostKeyStore,
+    observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
+    host_key_error: Arc<Mutex<Option<String>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    password: Option<&'a str>,
+    passphrase: Option<&'a str>,
+}
+
+struct SshHandlerParams {
+    profile_id: String,
+    host: String,
+    port: u16,
+    alias: Option<String>,
+    policy: portmate_core::HostKeyPolicy,
+    host_keys: HostKeyStore,
+    observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
+    host_key_error: Arc<Mutex<Option<String>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+}
+
+struct JumpHostKeyScanRequest<'a> {
+    state: &'a AppState,
+    profile: &'a SessionProfile,
+    ssh: &'a SshConnection,
+    config: Arc<client::Config>,
+    target_handler: HostKeyScanHandler,
+    password: Option<&'a str>,
+    passphrase: Option<&'a str>,
+}
+
+#[derive(Clone)]
+struct TransferProgressContext {
+    state: AppState,
+    task_id: String,
+    cancel: Arc<AtomicBool>,
+    last_emit: Arc<Mutex<Instant>>,
+    started: Instant,
+    rate_baseline_bytes: Arc<AtomicU64>,
+    rate_limit_bytes_per_second: Option<u64>,
+}
+
+struct EstablishedSshRuntime {
+    runtime_id: String,
+    runtime: SshRuntime,
+    tap: broadcast::Sender<Vec<u8>>,
+    read_half: ChannelReadHalf,
+    auth_method: AuthMethod,
+    closed: Arc<AtomicBool>,
+}
+
+struct SshReadTask {
+    state: AppState,
+    profile: SessionProfile,
+    runtime_id: String,
+    tap: broadcast::Sender<Vec<u8>>,
+    read_half: ChannelReadHalf,
+    closed: Arc<AtomicBool>,
+}
+
 impl AppState {
     fn runtimes(&self) -> RuntimeRegistry {
         RuntimeRegistry {
@@ -162,6 +321,15 @@ impl AppState {
             shell: Arc::clone(&self.shell),
             tcp: Arc::clone(&self.tcp),
             serial: Arc::clone(&self.serial),
+        }
+    }
+
+    fn session_io(&self) -> SessionIo {
+        SessionIo {
+            app_handle: self.app_handle.clone(),
+            store: Arc::clone(&self.store),
+            runtimes: self.runtimes(),
+            store_path: self.store_path.clone(),
         }
     }
 }
@@ -176,7 +344,7 @@ struct PortMateSshHandler {
     host_keys: HostKeyStore,
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     host_key_error: Arc<Mutex<Option<String>>>,
-    remote_forwards: Arc<Mutex<HashMap<String, TunnelSpec>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
 }
 
 struct HostKeyScanHandler {
@@ -200,6 +368,10 @@ impl client::Handler for PortMateSshHandler {
             algorithm: server_public_key.algorithm().to_string(),
             public_key_base64: server_public_key.public_key_base64(),
         };
+        *self
+            .observed_key
+            .lock()
+            .expect("host key observation lock poisoned") = Some(observation.clone());
 
         let evaluation = self
             .host_keys
@@ -208,10 +380,6 @@ impl client::Handler for PortMateSshHandler {
             Ok(HostKeyEvaluation::Trusted {
                 fingerprint_sha256, ..
             }) => {
-                *self
-                    .observed_key
-                    .lock()
-                    .expect("host key observation lock poisoned") = Some(observation);
                 *self
                     .host_key_error
                     .lock()
@@ -224,10 +392,6 @@ impl client::Handler for PortMateSshHandler {
                 fingerprint_sha256,
                 ..
             }) if self.policy.mode == HostKeyMode::TrustOnFirstUse => {
-                *self
-                    .observed_key
-                    .lock()
-                    .expect("host key observation lock poisoned") = Some(observation);
                 *self
                     .host_key_error
                     .lock()
@@ -269,7 +433,7 @@ impl client::Handler for PortMateSshHandler {
         let connected_address = connected_address.to_string();
         let originator_address = originator_address.to_string();
         async move {
-            let spec = {
+            let target = {
                 let forwards = forwards
                     .lock()
                     .expect("remote forward target map lock poisoned");
@@ -279,18 +443,22 @@ impl client::Handler for PortMateSshHandler {
                     .or_else(|| forwards.get(&remote_forward_port_key(connected_port as u16)))
                     .cloned()
             };
-            if let Some(spec) = spec {
+            if let Some(target) = target {
                 tauri::async_runtime::spawn(async move {
+                    target.metrics.connection_opened();
                     if let Err(error) = handle_remote_tunnel_client(
                         channel,
-                        spec,
+                        target.spec.clone(),
                         originator_address,
                         originator_port as u16,
+                        Arc::clone(&target.metrics),
                     )
                     .await
                     {
+                        target.metrics.record_error(&error);
                         eprintln!("PortMate: remote SSH tunnel client failed: {error}");
                     }
+                    target.metrics.connection_closed();
                 });
             }
             Ok(())
@@ -350,6 +518,18 @@ pub struct CreateTunnelRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TunnelStatus {
+    pub spec: TunnelSpec,
+    pub active_connections: u64,
+    pub total_connections: u64,
+    pub tcp_to_ssh_bytes: u64,
+    pub ssh_to_tcp_bytes: u64,
+    pub last_activity: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub name: String,
     pub path: String,
@@ -360,7 +540,32 @@ pub struct FileEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileProperties {
+    pub name: String,
+    pub path: String,
+    pub remote: bool,
+    pub kind: String,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
+    pub size: u64,
+    pub permissions: Option<u32>,
+    pub modified: Option<String>,
+    pub accessed: Option<String>,
+    pub created: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListFilesRequest {
+    pub session_id: Option<String>,
+    pub path: String,
+    pub remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePropertiesRequest {
     pub session_id: Option<String>,
     pub path: String,
     pub remote: bool,
@@ -415,6 +620,23 @@ pub struct SecretWriteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct McpHttpConfig {
+    pub endpoint: String,
+    pub token_ref: String,
+    pub token_available: bool,
+    pub default_origin: String,
+    pub start_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpHttpTokenResponse {
+    pub config: McpHttpConfig,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TmuxSessionInfo {
     pub name: String,
     pub windows: u32,
@@ -444,6 +666,7 @@ pub struct TmuxState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostKeyScanResult {
+    pub label: Option<String>,
     pub observation: HostKeyObservation,
     pub evaluation: HostKeyEvaluation,
 }
@@ -453,6 +676,18 @@ pub struct HostKeyScanResult {
 pub struct KnownHostsImportRequest {
     pub profile_id: String,
     pub contents: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyUpdateRequest {
+    pub key_id: String,
+    pub profile_id: Option<String>,
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub scope: HostKeyScope,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +713,10 @@ struct IpcEndpointFile {
 #[serde(rename_all = "camelCase")]
 struct IpcRequest {
     token: String,
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    trusted_write: bool,
     command: String,
     #[serde(default)]
     args: serde_json::Value,
@@ -534,17 +773,7 @@ async fn send_text(
     session_id: String,
     text: String,
 ) -> Result<SessionEvent, String> {
-    send_text_inner(
-        state.inner().store.clone(),
-        state.inner().ssh.clone(),
-        state.inner().shell.clone(),
-        state.inner().tcp.clone(),
-        state.inner().serial.clone(),
-        state.inner().store_path.clone(),
-        session_id,
-        text,
-    )
-    .await
+    send_text_inner(state.inner().session_io(), session_id, text).await
 }
 
 #[tauri::command]
@@ -553,17 +782,7 @@ async fn send_bytes(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
-    send_bytes_inner(
-        state.inner().store.clone(),
-        state.inner().ssh.clone(),
-        state.inner().shell.clone(),
-        state.inner().tcp.clone(),
-        state.inner().serial.clone(),
-        state.inner().store_path.clone(),
-        session_id,
-        bytes,
-    )
-    .await
+    send_bytes_inner(state.inner().session_io(), session_id, bytes).await
 }
 
 #[tauri::command]
@@ -573,17 +792,7 @@ async fn send_key(
     key: String,
 ) -> Result<SessionEvent, String> {
     let text = terminal_key_sequence(&key)?;
-    send_text_inner(
-        state.inner().store.clone(),
-        state.inner().ssh.clone(),
-        state.inner().shell.clone(),
-        state.inner().tcp.clone(),
-        state.inner().serial.clone(),
-        state.inner().store_path.clone(),
-        session_id,
-        text,
-    )
-    .await
+    send_text_inner(state.inner().session_io(), session_id, text).await
 }
 
 #[tauri::command]
@@ -596,63 +805,52 @@ async fn run_command(
     if !text.ends_with('\n') && !text.ends_with('\r') {
         text.push('\n');
     }
-    send_text_inner(
-        state.inner().store.clone(),
-        state.inner().ssh.clone(),
-        state.inner().shell.clone(),
-        state.inner().tcp.clone(),
-        state.inner().serial.clone(),
-        state.inner().store_path.clone(),
-        session_id,
-        text,
-    )
-    .await
+    send_text_inner(state.inner().session_io(), session_id, text).await
 }
 
 async fn send_text_inner(
-    store: Arc<Mutex<SessionStore>>,
-    ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
-    shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
-    tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
-    serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
-    store_path: PathBuf,
+    io: SessionIo,
     session_id: String,
     text: String,
 ) -> Result<SessionEvent, String> {
-    let wire_text = outbound_text_for_session(&store, &session_id, &text)?;
+    let wire_text = outbound_text_for_session(&io.store, &session_id, &text)?;
     write_session_bytes(
-        &store,
-        &ssh,
-        &shell,
-        &tcp,
-        &serial,
+        &io.store,
+        &io.runtimes.ssh,
+        &io.runtimes.shell,
+        &io.runtimes.tcp,
+        &io.runtimes.serial,
         &session_id,
         wire_text.as_bytes(),
     )
     .await?;
 
-    let mut store = store.lock().map_err(|error| error.to_string())?;
+    let mut store = io.store.lock().map_err(|error| error.to_string())?;
     let event = store.send_text("desktop-user", &session_id, &text)?;
-    save_store(&store_path, &store)?;
+    save_store(&io.store_path, &store)?;
     Ok(event)
 }
 
 async fn send_bytes_inner(
-    store: Arc<Mutex<SessionStore>>,
-    ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
-    shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
-    tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
-    serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
-    store_path: PathBuf,
+    io: SessionIo,
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
-    write_session_bytes(&store, &ssh, &shell, &tcp, &serial, &session_id, &bytes).await?;
+    write_session_bytes(
+        &io.store,
+        &io.runtimes.ssh,
+        &io.runtimes.shell,
+        &io.runtimes.tcp,
+        &io.runtimes.serial,
+        &session_id,
+        &bytes,
+    )
+    .await?;
 
-    let mut store = store.lock().map_err(|error| error.to_string())?;
+    let mut store = io.store.lock().map_err(|error| error.to_string())?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     let event = store.send_text("desktop-user", &session_id, &text)?;
-    save_store(&store_path, &store)?;
+    save_store(&io.store_path, &store)?;
     Ok(event)
 }
 
@@ -707,22 +905,27 @@ async fn write_session_bytes(
                     .await
                     .map_err(|error| format!("TCP/Telnet 写入失败: {error}"))?;
             } else {
-                let writer = {
+                let serial_writer = {
                     let connections = serial.lock().map_err(|error| error.to_string())?;
                     connections
                         .get(session_id)
-                        .map(|runtime| Arc::clone(&runtime.writer))
+                        .map(|runtime| runtime.writer.as_ref().map(Arc::clone))
                 };
-                if let Some(writer) = writer {
-                    let mut writer = writer.lock().map_err(|error| error.to_string())?;
-                    writer
-                        .write_all(bytes)
-                        .map_err(|error| format!("串口写入失败: {error}"))?;
-                    writer
-                        .flush()
-                        .map_err(|error| format!("串口刷新失败: {error}"))?;
-                } else if profile_requires_runtime(store, session_id)? {
-                    return Err("会话尚未连接，无法发送输入".to_string());
+                match serial_writer {
+                    Some(Some(writer)) => {
+                        let mut writer = writer.lock().map_err(|error| error.to_string())?;
+                        writer
+                            .write_all(bytes)
+                            .map_err(|error| format!("串口写入失败: {error}"))?;
+                        writer
+                            .flush()
+                            .map_err(|error| format!("串口刷新失败: {error}"))?;
+                    }
+                    Some(None) => return Err("串口正在重连，无法发送输入".to_string()),
+                    None if profile_requires_runtime(store, session_id)? => {
+                        return Err("会话尚未连接，无法发送输入".to_string());
+                    }
+                    None => {}
                 }
             }
         }
@@ -828,7 +1031,7 @@ fn save_session_profile(
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let summary = store.upsert_profile(profile);
+    let summary = store.upsert_profile(normalize_session_profile(profile));
     save_store(&state.store_path, &store)?;
     Ok(summary)
 }
@@ -862,7 +1065,7 @@ async fn open_session_inner(
             format!("PortMate: connecting to {endpoint} ({:?})", profile.kind),
         );
         save_store(&state.store_path, &store)?;
-        profile
+        normalize_session_profile(profile)
     };
 
     if matches!(
@@ -936,10 +1139,21 @@ async fn close_session_inner(
         connections.remove(&session_id)
     };
     if let Some(runtime) = existing {
+        runtime.closed.store(true, Ordering::SeqCst);
         let handle = runtime.handle.lock().await;
         let _ = handle
             .disconnect(Disconnect::ByApplication, "PortMate close_session", "en")
             .await;
+        for jump_handle in runtime.jump_handles {
+            let handle = jump_handle.lock().await;
+            let _ = handle
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate close jump session",
+                    "en",
+                )
+                .await;
+        }
     }
     let existing_shell = {
         let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
@@ -956,6 +1170,7 @@ async fn close_session_inner(
         connections.remove(&session_id)
     };
     if let Some(runtime) = existing_tcp {
+        runtime.closed.store(true, Ordering::SeqCst);
         let mut writer = runtime.writer.lock().await;
         let _ = writer.shutdown().await;
     }
@@ -1001,6 +1216,13 @@ fn apply_host_key_decision(
     request: HostKeyDecisionRequest,
 ) -> Result<Option<portmate_core::TrustedHostKey>, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    if request.decision == HostKeyDecision::TrustOnce {
+        let trusted =
+            temporary_trusted_host_key(&store, &request.profile_id, &request.observation)?;
+        drop(store);
+        remember_one_time_host_key(state.inner(), &request.profile_id, trusted.clone())?;
+        return Ok(Some(trusted));
+    }
     let trusted = store.apply_host_key_decision(
         &request.profile_id,
         &request.observation,
@@ -1014,8 +1236,16 @@ fn apply_host_key_decision(
 async fn scan_ssh_host_key(
     state: State<'_, AppState>,
     profile: SessionProfile,
+    password: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<HostKeyScanResult, String> {
-    scan_ssh_host_key_inner(state.inner(), profile).await
+    scan_ssh_host_key_inner(
+        state.inner(),
+        normalize_session_profile(profile),
+        password.as_deref(),
+        passphrase.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1024,8 +1254,15 @@ fn trust_scanned_host_key(
     request: TrustScannedHostKeyRequest,
 ) -> Result<Option<portmate_core::TrustedHostKey>, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let profile_id = request.profile.id.clone();
-    store.upsert_profile(request.profile);
+    let profile = normalize_session_profile(request.profile);
+    let profile_id = profile.id.clone();
+    store.upsert_profile(profile);
+    if request.decision == HostKeyDecision::TrustOnce {
+        let trusted = temporary_trusted_host_key(&store, &profile_id, &request.observation)?;
+        drop(store);
+        remember_one_time_host_key(state.inner(), &profile_id, trusted.clone())?;
+        return Ok(Some(trusted));
+    }
     let trusted =
         store.apply_host_key_decision(&profile_id, &request.observation, request.decision)?;
     save_store(&state.store_path, &store)?;
@@ -1058,21 +1295,155 @@ fn export_known_hosts(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 fn delete_host_key(state: State<'_, AppState>, key_id: String) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.host_keys.keys.retain(|key| key.id != key_id);
-    for profile in &mut store.profiles {
-        if let ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) = &mut profile.connection {
-            ssh.trusted_host_keys.retain(|key| key.id != key_id);
-        }
-    }
-    let host_keys = store.host_keys.clone();
+    let host_keys = delete_host_keys_from_store(&mut store, &[key_id]);
     save_store(&state.store_path, &store)?;
     Ok(host_keys)
+}
+
+#[tauri::command]
+fn delete_host_keys(
+    state: State<'_, AppState>,
+    key_ids: Vec<String>,
+) -> Result<HostKeyStore, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let host_keys = delete_host_keys_from_store(&mut store, &key_ids);
+    save_store(&state.store_path, &store)?;
+    Ok(host_keys)
+}
+
+fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
+    store
+        .host_keys
+        .keys
+        .retain(|key| !key_ids.contains(&key.id));
+    for profile in &mut store.profiles {
+        if let ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) = &mut profile.connection {
+            ssh.trusted_host_keys
+                .retain(|key| !key_ids.contains(&key.id));
+        }
+    }
+    store.host_keys.clone()
+}
+
+#[tauri::command]
+fn update_host_key(
+    state: State<'_, AppState>,
+    request: HostKeyUpdateRequest,
+) -> Result<HostKeyStore, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let host_keys = update_host_key_in_store(&mut store, request)?;
+    save_store(&state.store_path, &store)?;
+    Ok(host_keys)
+}
+
+fn update_host_key_in_store(
+    store: &mut SessionStore,
+    request: HostKeyUpdateRequest,
+) -> Result<HostKeyStore, String> {
+    let alias = request.alias.trim().to_string();
+    if alias.is_empty() {
+        return Err("host key alias 不能为空".to_string());
+    }
+    let host = request.host.trim().to_string();
+    if host.is_empty() {
+        return Err("host key host 不能为空".to_string());
+    }
+    if request.port == 0 {
+        return Err("host key 端口必须在 1-65535 之间".to_string());
+    }
+    let profile_id = request
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile_id| !profile_id.is_empty())
+        .map(str::to_string);
+    if request.scope == HostKeyScope::Profile {
+        let Some(profile_id) = profile_id.as_deref() else {
+            return Err("Profile scope host key 必须选择 Profile".to_string());
+        };
+        if store.profile(profile_id).is_none() {
+            return Err(format!("unknown session: {profile_id}"));
+        }
+    } else if let Some(profile_id) = profile_id.as_deref() {
+        if store.profile(profile_id).is_none() {
+            return Err(format!("unknown session: {profile_id}"));
+        }
+    }
+    let label = request
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string);
+
+    let Some(key) = store
+        .host_keys
+        .keys
+        .iter_mut()
+        .find(|key| key.id == request.key_id)
+    else {
+        return Err(format!("unknown host key: {}", request.key_id));
+    };
+    key.profile_id = profile_id.clone();
+    key.alias = alias.clone();
+    key.host = host.clone();
+    key.port = request.port;
+    key.scope = request.scope;
+    key.label = label.clone();
+
+    for profile in &mut store.profiles {
+        if let ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) = &mut profile.connection {
+            for profile_key in &mut ssh.trusted_host_keys {
+                if profile_key.id == request.key_id {
+                    profile_key.profile_id = profile_id.clone();
+                    profile_key.alias = alias.clone();
+                    profile_key.host = host.clone();
+                    profile_key.port = request.port;
+                    profile_key.scope = request.scope;
+                    profile_key.label = label.clone();
+                }
+            }
+        }
+    }
+
+    Ok(store.host_keys.clone())
 }
 
 #[tauri::command]
 fn list_transfers(state: State<'_, AppState>) -> Result<Vec<TransferTask>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.transfers.clone())
+}
+
+#[tauri::command]
+async fn retry_transfer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<TransferTask, String> {
+    let previous = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        store
+            .transfer_by_id(&transfer_id)
+            .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
+    };
+    start_transfer_inner(
+        state.inner(),
+        StartTransferRequest {
+            session_id: previous.session_id,
+            protocol: previous.protocol,
+            source: previous.source,
+            destination: previous.destination,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+fn cancel_transfer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<TransferTask, String> {
+    cancel_transfer_inner(state.inner(), &transfer_id)
 }
 
 #[tauri::command]
@@ -1112,6 +1483,21 @@ fn revoke_mcp_grant(
     store.grants.retain(|grant| grant.client_id != client_id);
     save_store(&state.store_path, &store)?;
     Ok(store.grants.clone())
+}
+
+#[tauri::command]
+fn mcp_http_config() -> McpHttpConfig {
+    build_mcp_http_config(has_secret_ref(MCP_HTTP_TOKEN_REF))
+}
+
+#[tauri::command]
+fn rotate_mcp_http_token() -> Result<McpHttpTokenResponse, String> {
+    let token = Uuid::new_v4().to_string();
+    write_secret_to_keyring(MCP_HTTP_TOKEN_REF, &token)?;
+    Ok(McpHttpTokenResponse {
+        config: build_mcp_http_config(true),
+        token,
+    })
 }
 
 #[tauri::command]
@@ -1201,17 +1587,7 @@ async fn attach_tmux(
         shell_quote(&target),
         shell_quote(&target)
     );
-    send_text_inner(
-        Arc::clone(&state.store),
-        Arc::clone(&state.ssh),
-        Arc::clone(&state.shell),
-        Arc::clone(&state.tcp),
-        Arc::clone(&state.serial),
-        state.store_path.clone(),
-        session_id,
-        command,
-    )
-    .await
+    send_text_inner(state.inner().session_io(), session_id, command).await
 }
 
 #[tauri::command]
@@ -1220,6 +1596,14 @@ async fn list_files(
     request: ListFilesRequest,
 ) -> Result<Vec<FileEntry>, String> {
     list_files_inner(state.inner(), request).await
+}
+
+#[tauri::command]
+async fn file_properties(
+    state: State<'_, AppState>,
+    request: FilePropertiesRequest,
+) -> Result<FileProperties, String> {
+    file_properties_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -1255,11 +1639,15 @@ fn serial_set_lines(
 ) -> Result<SessionSummary, String> {
     let writer = {
         let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(&request.session_id)
-            .map(|runtime| Arc::clone(&runtime.writer))
-    }
-    .ok_or_else(|| "串口会话尚未连接".to_string())?;
+        match connections.get(&request.session_id) {
+            Some(runtime) => runtime
+                .writer
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| "串口正在重连".to_string()),
+            None => Err("串口会话尚未连接".to_string()),
+        }
+    }?;
 
     {
         let mut port = writer.lock().map_err(|error| error.to_string())?;
@@ -1301,11 +1689,15 @@ fn serial_set_lines(
 fn serial_send_break(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let writer = {
         let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(&session_id)
-            .map(|runtime| Arc::clone(&runtime.writer))
-    }
-    .ok_or_else(|| "串口会话尚未连接".to_string())?;
+        match connections.get(&session_id) {
+            Some(runtime) => runtime
+                .writer
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| "串口正在重连".to_string()),
+            None => Err("串口会话尚未连接".to_string()),
+        }
+    }?;
 
     {
         let port = writer.lock().map_err(|error| error.to_string())?;
@@ -1374,6 +1766,22 @@ async fn create_tunnel(
     request: CreateTunnelRequest,
 ) -> Result<TunnelSpec, String> {
     create_tunnel_inner(state.inner(), request).await
+}
+
+#[tauri::command]
+fn list_tunnels(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<Vec<TunnelStatus>, String> {
+    list_tunnels_inner(state.inner(), session_id.as_deref())
+}
+
+#[tauri::command]
+async fn stop_tunnel(
+    state: State<'_, AppState>,
+    tunnel_id: String,
+) -> Result<TunnelStatus, String> {
+    stop_tunnel_inner(state.inner(), &tunnel_id).await
 }
 
 #[tauri::command]
@@ -1452,11 +1860,21 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
     });
 }
 
+/// Constant-time string comparison so a local process guessing the IPC token
+/// can't use response-time differences to narrow down a correct byte prefix.
+fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream) {
     let mut raw = Vec::new();
     let response = match stream.read_to_end(&mut raw).await {
         Ok(_) => match serde_json::from_slice::<IpcRequest>(&raw) {
-            Ok(request) if request.token == token => {
+            Ok(request) if constant_time_str_eq(&request.token, &token) => {
                 match handle_ipc_request(state.clone(), request).await {
                     Ok(value) => IpcResponse {
                         ok: true,
@@ -1494,6 +1912,45 @@ async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream
     }
 }
 
+/// Independently enforces the MCP grant model against the desktop's live store.
+/// The empty-store bootstrap is accepted only when the bridge explicitly declares
+/// its trusted-write mode, preserving the documented local development flow while
+/// preventing ordinary read-only bridge requests from inheriting write access.
+fn guard_mcp_scope(
+    state: &AppState,
+    request: &IpcRequest,
+    scope: McpScope,
+    session_id: &str,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    if mcp_scope_allowed(
+        &store,
+        &request.client_id,
+        request.trusted_write,
+        scope,
+        session_id,
+    ) {
+        Ok(())
+    } else {
+        Err(format!(
+            "MCP grant does not permit {scope:?} for client `{}` on session `{session_id}`",
+            request.client_id
+        ))
+    }
+}
+
+fn mcp_scope_allowed(
+    store: &SessionStore,
+    client_id: &str,
+    trusted_write: bool,
+    scope: McpScope,
+    session_id: &str,
+) -> bool {
+    !client_id.trim().is_empty()
+        && (store.mcp_can(client_id, scope, Some(session_id))
+            || (trusted_write && store.grants.is_empty()))
+}
+
 async fn handle_ipc_request(
     state: AppState,
     request: IpcRequest,
@@ -1506,7 +1963,7 @@ async fn handle_ipc_request(
         "read_screen" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            let screen = store.screen(&session_id).unwrap_or_default();
+            let screen = redact_secrets(&store.screen(&session_id).unwrap_or_default());
             Ok(serde_json::json!(screen))
         }
         "tail_log" => {
@@ -1517,7 +1974,7 @@ async fn handle_ipc_request(
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(100) as usize;
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            serde_json::to_value(store.tail_log(&session_id, limit))
+            serde_json::to_value(redact_mcp_events(store.tail_log(&session_id, limit)))
                 .map_err(|error| error.to_string())
         }
         "search_logs" => {
@@ -1532,63 +1989,39 @@ async fn handle_ipc_request(
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(100) as usize;
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            serde_json::to_value(store.search_logs(&query, session_id, limit))
-                .map_err(|error| error.to_string())
+            serde_json::to_value(redact_mcp_events(
+                store.search_logs(&query, session_id, limit),
+            ))
+            .map_err(|error| error.to_string())
         }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
-            let event = send_text_inner(
-                Arc::clone(&state.store),
-                Arc::clone(&state.ssh),
-                Arc::clone(&state.shell),
-                Arc::clone(&state.tcp),
-                Arc::clone(&state.serial),
-                state.store_path.clone(),
-                session_id,
-                text,
-            )
-            .await?;
+            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
+            let event = send_text_inner(state.session_io(), session_id, text).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "send_key" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let key = ipc_string_arg(&request.args, "key")?.to_string();
+            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             let text = terminal_key_sequence(&key)?;
-            let event = send_text_inner(
-                Arc::clone(&state.store),
-                Arc::clone(&state.ssh),
-                Arc::clone(&state.shell),
-                Arc::clone(&state.tcp),
-                Arc::clone(&state.serial),
-                state.store_path.clone(),
-                session_id,
-                text,
-            )
-            .await?;
+            let event = send_text_inner(state.session_io(), session_id, text).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "run_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let mut text = ipc_string_arg(&request.args, "command")?.to_string();
+            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             if !text.ends_with('\n') && !text.ends_with('\r') {
                 text.push('\n');
             }
-            let event = send_text_inner(
-                Arc::clone(&state.store),
-                Arc::clone(&state.ssh),
-                Arc::clone(&state.shell),
-                Arc::clone(&state.tcp),
-                Arc::clone(&state.serial),
-                state.store_path.clone(),
-                session_id,
-                text,
-            )
-            .await?;
+            let event = send_text_inner(state.session_io(), session_id, text).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "open_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            guard_mcp_scope(&state, &request, McpScope::ManageSessions, &session_id)?;
             let password = request
                 .args
                 .get("password")
@@ -1605,18 +2038,21 @@ async fn handle_ipc_request(
         }
         "close_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            guard_mcp_scope(&state, &request, McpScope::ManageSessions, &session_id)?;
             let summary = close_session_inner(&state, session_id).await?;
             serde_json::to_value(summary).map_err(|error| error.to_string())
         }
         "start_transfer" => {
-            let transfer = serde_json::from_value::<StartTransferRequest>(request.args)
+            let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
+            guard_mcp_scope(&state, &request, McpScope::Transfer, &transfer.session_id)?;
             let task = start_transfer_inner(&state, transfer).await?;
             serde_json::to_value(task).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
-            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args)
+            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
+            guard_mcp_scope(&state, &request, McpScope::Tunnel, &tunnel.session_id)?;
             let spec = create_tunnel_inner(&state, tunnel).await?;
             serde_json::to_value(spec).map_err(|error| error.to_string())
         }
@@ -1634,24 +2070,20 @@ async fn handle_ipc_request(
         "attach_tmux" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let target = ipc_string_arg(&request.args, "target")?.to_string();
+            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             let command = format!(
                 "tmux switch-client -t {} || tmux attach -t {} || tmux new-session -A -s {}\r",
                 shell_quote(&target),
                 shell_quote(&target),
                 shell_quote(&target)
             );
-            let event = send_text_inner(
-                Arc::clone(&state.store),
-                Arc::clone(&state.ssh),
-                Arc::clone(&state.shell),
-                Arc::clone(&state.tcp),
-                Arc::clone(&state.serial),
-                state.store_path.clone(),
-                session_id,
-                command,
-            )
-            .await?;
+            let event = send_text_inner(state.session_io(), session_id, command).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
+        }
+        "export_session_bundle" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            Ok(store.export_session_bundle_redacted(&session_id))
         }
         other => Err(format!("unsupported IPC command: {other}")),
     }
@@ -1660,6 +2092,8 @@ async fn handle_ipc_request(
 async fn scan_ssh_host_key_inner(
     state: &AppState,
     profile: SessionProfile,
+    password: Option<&str>,
+    passphrase: Option<&str>,
 ) -> Result<HostKeyScanResult, String> {
     let ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
@@ -1668,6 +2102,9 @@ async fn scan_ssh_host_key_inner(
     let host = ssh.endpoint.host.trim().to_string();
     if host.is_empty() {
         return Err("SSH 主机不能为空".to_string());
+    }
+    if ssh.endpoint.port == 0 {
+        return Err("SSH 端口必须在 1-65535 之间".to_string());
     }
 
     let observed_key = Arc::new(Mutex::new(None));
@@ -1690,21 +2127,37 @@ async fn scan_ssh_host_key_inner(
         ..Default::default()
     });
 
-    let session = tokio::time::timeout(
-        Duration::from_secs(12),
-        client::connect(config, (host.clone(), ssh.endpoint.port), handler),
-    )
-    .await
-    .map_err(|_| format!("SSH host key 扫描超时: {host}:{}", ssh.endpoint.port))?
-    .map_err(|error| {
-        format!(
-            "SSH host key 扫描失败: {host}:{}: {error}",
-            ssh.endpoint.port
+    if !ssh.jumps.is_empty() {
+        if let Some(result) = scan_ssh_host_key_via_jump(JumpHostKeyScanRequest {
+            state,
+            profile: &profile,
+            ssh: &ssh,
+            config,
+            target_handler: handler,
+            password,
+            passphrase,
+        })
+        .await?
+        {
+            return Ok(result);
+        }
+    } else {
+        let session = tokio::time::timeout(
+            Duration::from_secs(12),
+            client::connect(config, (host.clone(), ssh.endpoint.port), handler),
         )
-    })?;
-    let _ = session
-        .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
-        .await;
+        .await
+        .map_err(|_| format!("SSH host key 扫描超时: {host}:{}", ssh.endpoint.port))?
+        .map_err(|error| {
+            format!(
+                "SSH host key 扫描失败: {host}:{}: {error}",
+                ssh.endpoint.port
+            )
+        })?;
+        let _ = session
+            .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
+            .await;
+    }
 
     let observation = observed_key
         .lock()
@@ -1716,13 +2169,268 @@ async fn scan_ssh_host_key_inner(
         store.host_keys.clone()
     };
     host_keys.keys.extend(ssh.trusted_host_keys.clone());
+    host_keys
+        .keys
+        .extend(one_time_host_keys_snapshot(state, &profile.id)?);
     let evaluation = host_keys
         .evaluate(&profile.id, &ssh.host_key_policy, &observation)
         .map_err(|error| error.to_string())?;
     Ok(HostKeyScanResult {
+        label: Some("目标 SSH".to_string()),
         observation,
         evaluation,
     })
+}
+
+async fn scan_ssh_host_key_via_jump(
+    request: JumpHostKeyScanRequest<'_>,
+) -> Result<Option<HostKeyScanResult>, String> {
+    let JumpHostKeyScanRequest {
+        state,
+        profile,
+        ssh,
+        config,
+        target_handler,
+        password,
+        passphrase,
+    } = request;
+
+    let mut host_keys = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        store.host_keys.clone()
+    };
+    host_keys.keys.extend(ssh.trusted_host_keys.clone());
+
+    let mut jump_sessions: Vec<client::Handle<PortMateSshHandler>> = Vec::new();
+    for (index, jump) in ssh.jumps.iter().enumerate() {
+        let (jump_host, jump_port, jump_username) = jump_endpoint_details(jump, index)?;
+        let jump_policy = jump_host_key_policy(ssh, jump);
+        let jump_ssh = jump_ssh_connection(ssh, jump, jump_policy.clone());
+        let observed_jump_key = Arc::new(Mutex::new(None));
+        let jump_key_error = Arc::new(Mutex::new(None));
+        let jump_handler = ssh_handler_for_endpoint(SshHandlerParams {
+            profile_id: profile.id.clone(),
+            host: jump_host.clone(),
+            port: jump_port,
+            alias: jump_policy.alias.clone(),
+            policy: jump_ssh.host_key_policy.clone(),
+            host_keys: host_keys.clone(),
+            observed_key: Arc::clone(&observed_jump_key),
+            host_key_error: Arc::clone(&jump_key_error),
+            remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let jump_label = format!("Jump Host 第 {} 跳", index + 1);
+        let mut jump_session = if let Some(previous_jump) = jump_sessions.last_mut() {
+            let jump_channel = match previous_jump
+                .channel_open_direct_tcpip(jump_host.clone(), u32::from(jump_port), "127.0.0.1", 0)
+                .await
+            {
+                Ok(channel) => channel,
+                Err(error) => {
+                    disconnect_jump_sessions(
+                        jump_sessions,
+                        "PortMate jump host key scan channel failed",
+                    )
+                    .await;
+                    return Err(format!(
+                        "Jump Host 第 {} 跳打开 host key 扫描通道到 {jump_host}:{jump_port} 失败: {error}",
+                        index + 1
+                    ));
+                }
+            };
+            match tokio::time::timeout(
+                Duration::from_secs(12),
+                client::connect_stream(config.clone(), jump_channel.into_stream(), jump_handler),
+            )
+            .await
+            {
+                Ok(Ok(session)) => session,
+                Err(_) => {
+                    disconnect_jump_sessions(jump_sessions, "PortMate jump host key scan timeout")
+                        .await;
+                    return Err(format!(
+                        "Jump Host 第 {} 跳 host key 扫描连接超时: {jump_host}:{jump_port}",
+                        index + 1
+                    ));
+                }
+                Ok(Err(error)) => {
+                    if let Some(result) = host_key_scan_result_for_policy(
+                        profile,
+                        ssh,
+                        &jump_policy,
+                        &observed_jump_key,
+                        &jump_label,
+                        state,
+                    )? {
+                        disconnect_jump_sessions(
+                            jump_sessions,
+                            "PortMate jump host key scan needs confirmation",
+                        )
+                        .await;
+                        return Ok(Some(result));
+                    }
+                    let message = jump_key_error
+                        .lock()
+                        .ok()
+                        .and_then(|reason| reason.clone())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Jump Host 第 {} 跳 host key 扫描连接失败: {error}",
+                                index + 1
+                            )
+                        });
+                    disconnect_jump_sessions(
+                        jump_sessions,
+                        "PortMate jump host key scan handshake failed",
+                    )
+                    .await;
+                    return Err(message);
+                }
+            }
+        } else {
+            match tokio::time::timeout(
+                Duration::from_secs(12),
+                client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
+            )
+            .await
+            {
+                Ok(Ok(session)) => session,
+                Err(_) => {
+                    return Err(format!(
+                        "Jump Host host key 扫描连接超时: {jump_host}:{jump_port}"
+                    ));
+                }
+                Ok(Err(error)) => {
+                    if let Some(result) = host_key_scan_result_for_policy(
+                        profile,
+                        ssh,
+                        &jump_policy,
+                        &observed_jump_key,
+                        &jump_label,
+                        state,
+                    )? {
+                        return Ok(Some(result));
+                    }
+                    return Err(jump_key_error
+                        .lock()
+                        .ok()
+                        .and_then(|reason| reason.clone())
+                        .unwrap_or_else(|| format!("Jump Host host key 扫描连接失败: {error}")));
+                }
+            }
+        };
+
+        if let Err(error) = authenticate_ssh(
+            &mut jump_session,
+            jump_ssh,
+            jump_username,
+            password.map(str::to_string),
+            passphrase.map(str::to_string),
+        )
+        .await
+        {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump host key scan auth failed")
+                .await;
+            let _ = jump_session
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate jump host key scan auth failed",
+                    "en",
+                )
+                .await;
+            return Err(format!(
+                "Jump Host 第 {} 跳 host key 扫描认证失败: {error}",
+                index + 1
+            ));
+        }
+        jump_sessions.push(jump_session);
+    }
+
+    let target_host = ssh.endpoint.host.trim().to_string();
+    let jump_channel = match jump_sessions
+        .last_mut()
+        .expect("non-empty jumps should create jump sessions")
+        .channel_open_direct_tcpip(
+            target_host.clone(),
+            u32::from(ssh.endpoint.port),
+            "127.0.0.1",
+            0,
+        )
+        .await
+    {
+        Ok(channel) => channel,
+        Err(error) => {
+            disconnect_jump_sessions(
+                jump_sessions,
+                "PortMate jump host key scan target channel failed",
+            )
+            .await;
+            return Err(format!(
+                "Jump Host 打开 host key 扫描通道到 {target_host}:{} 失败: {error}",
+                ssh.endpoint.port
+            ));
+        }
+    };
+    let target_session = match tokio::time::timeout(
+        Duration::from_secs(12),
+        client::connect_stream(config, jump_channel.into_stream(), target_handler),
+    )
+    .await
+    {
+        Ok(Ok(session)) => session,
+        Err(_) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate host key scan target timeout").await;
+            return Err(format!(
+                "SSH 经 Jump Host host key 扫描超时: {target_host}:{}",
+                ssh.endpoint.port
+            ));
+        }
+        Ok(Err(error)) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate host key scan target failed").await;
+            return Err(format!(
+                "SSH 经 Jump Host host key 扫描失败: {target_host}:{}: {error}",
+                ssh.endpoint.port
+            ));
+        }
+    };
+    let _ = target_session
+        .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
+        .await;
+    disconnect_jump_sessions(jump_sessions, "PortMate jump host key scan").await;
+    Ok(None)
+}
+
+fn host_key_scan_result_for_policy(
+    profile: &SessionProfile,
+    ssh: &SshConnection,
+    policy: &portmate_core::HostKeyPolicy,
+    observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
+    label: &str,
+    state: &AppState,
+) -> Result<Option<HostKeyScanResult>, String> {
+    let Some(observation) = observed_key
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone()
+    else {
+        return Ok(None);
+    };
+    let mut host_keys = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        store.host_keys.clone()
+    };
+    host_keys.keys.extend(ssh.trusted_host_keys.clone());
+    host_keys
+        .keys
+        .extend(one_time_host_keys_snapshot(state, &profile.id)?);
+    let evaluation = host_keys
+        .evaluate(&profile.id, policy, &observation)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(HostKeyScanResult {
+        label: Some(label.to_string()),
+        observation,
+        evaluation,
+    }))
 }
 
 fn ipc_string_arg<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
@@ -1730,6 +2438,19 @@ fn ipc_string_arg<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str
         .get(key)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("missing string argument `{key}`"))
+}
+
+/// Redacts secrets out of events before they cross the MCP/IPC boundary to an
+/// external client. Not applied inside `SessionStore` itself, so the desktop
+/// UI keeps showing the human operator raw, real terminal output.
+fn redact_mcp_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    events
+        .into_iter()
+        .map(|mut event| {
+            event.text = event.text.map(|text| redact_secrets(&text));
+            event
+        })
+        .collect()
 }
 
 async fn start_transfer_inner(
@@ -1743,7 +2464,7 @@ async fn start_transfer_inner(
         }
     }
 
-    let mut task = TransferTask {
+    let task = TransferTask {
         id: Uuid::new_v4().to_string(),
         session_id: request.session_id.clone(),
         protocol: request.protocol.clone(),
@@ -1751,13 +2472,156 @@ async fn start_transfer_inner(
         destination: request.destination.clone(),
         bytes_total: 0,
         bytes_done: 0,
-        status: TransferStatus::Running,
-        message: Some("started".to_string()),
+        status: TransferStatus::Queued,
+        message: Some("queued".to_string()),
+        started_at: None,
+        finished_at: None,
+        average_bytes_per_second: None,
     };
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut cancellations = state
+            .transfer_cancellations
+            .lock()
+            .map_err(|error| error.to_string())?;
+        cancellations.insert(task.id.clone(), Arc::clone(&cancel));
+    }
 
     {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
         store.transfers.push(task.clone());
+        store.record_system_event(
+            &request.session_id,
+            format!(
+                "PortMate: transfer queued ({:?}) {} -> {}",
+                request.protocol, request.source, request.destination
+            ),
+        );
+        save_store(&state.store_path, &store)?;
+    }
+    emit_transfer_task(state, &task);
+
+    let lane = transfer_lane(state, &request.session_id)?;
+    let runner_state = state.clone();
+    let task_id = task.id.clone();
+    tauri::async_runtime::spawn(async move {
+        run_queued_transfer(runner_state, request, task_id, cancel, lane).await;
+    });
+
+    Ok(task)
+}
+
+fn transfer_lane(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let mut lanes = state
+        .transfer_lanes
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::clone(
+        lanes
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+    ))
+}
+
+async fn run_queued_transfer(
+    state: AppState,
+    request: StartTransferRequest,
+    task_id: String,
+    cancel: Arc<AtomicBool>,
+    lane: Arc<tokio::sync::Mutex<()>>,
+) {
+    let _lane_guard = lane.lock().await;
+    if cancel.load(Ordering::SeqCst) {
+        finish_transfer_task(
+            &state,
+            &task_id,
+            &request.session_id,
+            TransferStatus::Cancelled,
+            "cancelled".to_string(),
+            None,
+        );
+        return;
+    }
+
+    let progress = TransferProgressContext {
+        state: state.clone(),
+        task_id: task_id.clone(),
+        cancel: Arc::clone(&cancel),
+        last_emit: Arc::new(Mutex::new(Instant::now())),
+        started: Instant::now(),
+        rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+        rate_limit_bytes_per_second: transfer_rate_limit_bytes_per_second(
+            &state,
+            &request.session_id,
+        ),
+    };
+
+    if let Err(error) = mark_transfer_running(&state, &task_id, &request) {
+        let status = if error == TRANSFER_CANCELLED_MESSAGE {
+            TransferStatus::Cancelled
+        } else {
+            TransferStatus::Failed
+        };
+        finish_transfer_task(&state, &task_id, &request.session_id, status, error, None);
+        return;
+    }
+
+    let result = match request.protocol {
+        TransferProtocol::Sftp => transfer_file_via_sftp(&state, &request, &progress).await,
+        TransferProtocol::Scp => transfer_file_via_local_or_scp(&state, &request, &progress).await,
+        TransferProtocol::Xmodem => transfer_file_via_xmodem(&state, &request, &progress).await,
+        TransferProtocol::Ymodem => transfer_file_via_ymodem(&state, &request, &progress).await,
+        TransferProtocol::Zmodem => transfer_file_via_zmodem(&state, &request, &progress).await,
+    };
+
+    let (status, message, bytes) = match result {
+        Ok(bytes) if cancel.load(Ordering::SeqCst) => (
+            TransferStatus::Cancelled,
+            "cancelled".to_string(),
+            Some(bytes),
+        ),
+        Ok(bytes) => (
+            TransferStatus::Completed,
+            "completed".to_string(),
+            Some(bytes),
+        ),
+        Err(error) if error == TRANSFER_CANCELLED_MESSAGE => {
+            (TransferStatus::Cancelled, "cancelled".to_string(), None)
+        }
+        Err(error) => (TransferStatus::Failed, error, None),
+    };
+    finish_transfer_task(
+        &state,
+        &task_id,
+        &request.session_id,
+        status,
+        message,
+        bytes,
+    );
+}
+
+fn mark_transfer_running(
+    state: &AppState,
+    task_id: &str,
+    request: &StartTransferRequest,
+) -> Result<(), String> {
+    let task = {
+        let mut store = state.store.lock().map_err(|error| error.to_string())?;
+        let task = store
+            .transfers
+            .iter_mut()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| format!("unknown transfer: {task_id}"))?;
+        if task.status == TransferStatus::Cancelled {
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
+        task.status = TransferStatus::Running;
+        task.message = Some("running".to_string());
+        task.started_at = Some(Utc::now());
+        let task = task.clone();
         store.record_system_event(
             &request.session_id,
             format!(
@@ -1766,71 +2630,232 @@ async fn start_transfer_inner(
             ),
         );
         save_store(&state.store_path, &store)?;
-    }
-
-    let result = match request.protocol {
-        TransferProtocol::Sftp => transfer_file_via_sftp(state, &request).await,
-        TransferProtocol::Scp => transfer_file_via_local_or_scp(state, &request).await,
-        TransferProtocol::Xmodem => transfer_file_via_xmodem(state, &request).await,
-        TransferProtocol::Ymodem => transfer_file_via_ymodem(state, &request).await,
-        TransferProtocol::Zmodem => transfer_file_via_zmodem(state, &request).await,
+        task
     };
+    emit_transfer_task(state, &task);
+    Ok(())
+}
 
-    match result {
-        Ok(bytes) => {
+fn finish_transfer_task(
+    state: &AppState,
+    task_id: &str,
+    session_id: &str,
+    status: TransferStatus,
+    message: String,
+    bytes: Option<u64>,
+) {
+    let task = {
+        let mut store = match state.store.lock() {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("PortMate: failed to lock transfer store: {error}");
+                return;
+            }
+        };
+        let task = match store.transfers.iter_mut().find(|item| item.id == task_id) {
+            Some(task) => task,
+            None => return,
+        };
+        if let Some(bytes) = bytes {
             task.bytes_total = bytes;
             task.bytes_done = bytes;
-            task.status = TransferStatus::Completed;
-            task.message = Some("completed".to_string());
         }
-        Err(error) => {
-            task.status = TransferStatus::Failed;
-            task.message = Some(error);
+        task.status = status;
+        task.message = Some(message);
+        task.finished_at = Some(Utc::now());
+        task.average_bytes_per_second = transfer_average_bps(task);
+        let task = task.clone();
+        {
+            let mut cancellations = match state.transfer_cancellations.lock() {
+                Ok(cancellations) => cancellations,
+                Err(error) => {
+                    eprintln!("PortMate: failed to lock transfer cancellations: {error}");
+                    return;
+                }
+            };
+            cancellations.remove(&task.id);
         }
+        store.record_system_event(
+            session_id,
+            format!(
+                "PortMate: transfer finished ({:?}, {:?})",
+                task.protocol, task.status
+            ),
+        );
+        if let Err(error) = save_store(&state.store_path, &store) {
+            eprintln!("PortMate: failed to persist transfer finish: {error}");
+        }
+        task
+    };
+    emit_transfer_task(state, &task);
+}
+
+fn transfer_task_is_active(status: &TransferStatus) -> bool {
+    matches!(status, TransferStatus::Queued | TransferStatus::Running)
+}
+
+fn transfer_rate_limit_bytes_per_second(state: &AppState, session_id: &str) -> Option<u64> {
+    state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| store.profile(session_id))
+        .and_then(|profile| profile.transfer.rate_limit_bytes_per_second)
+        .filter(|limit| *limit > 0)
+}
+
+fn transfer_throttle_delay(
+    rate_limit_bytes_per_second: Option<u64>,
+    bytes_done: u64,
+    elapsed: Duration,
+) -> Option<Duration> {
+    let limit = rate_limit_bytes_per_second.filter(|limit| *limit > 0)?;
+    if bytes_done == 0 {
+        return None;
+    }
+    Duration::from_secs_f64(bytes_done as f64 / limit as f64)
+        .checked_sub(elapsed)
+        .filter(|delay| !delay.is_zero())
+}
+
+fn transfer_average_bps(task: &TransferTask) -> Option<f64> {
+    let started = task.started_at?;
+    let finished = task.finished_at?;
+    let elapsed_ms = (finished - started).num_milliseconds().max(1) as f64;
+    if task.bytes_done == 0 {
+        return None;
+    }
+    Some((task.bytes_done as f64) * 1000.0 / elapsed_ms)
+}
+
+fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<TransferTask, String> {
+    if let Some(cancel) = state
+        .transfer_cancellations
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(transfer_id)
+        .cloned()
+    {
+        cancel.store(true, Ordering::SeqCst);
     }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    if let Some(existing) = store.transfers.iter_mut().find(|item| item.id == task.id) {
-        *existing = task.clone();
+    let task = store
+        .transfers
+        .iter_mut()
+        .find(|task| task.id == transfer_id)
+        .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?;
+    if transfer_task_is_active(&task.status) {
+        task.status = TransferStatus::Cancelled;
+        task.message = Some("cancelling".to_string());
+        task.finished_at = Some(Utc::now());
+        task.average_bytes_per_second = transfer_average_bps(task);
     }
-    store.record_system_event(
-        &request.session_id,
-        format!(
-            "PortMate: transfer finished ({:?}, {:?})",
-            task.protocol, task.status
-        ),
-    );
+    let task = task.clone();
     save_store(&state.store_path, &store)?;
+    emit_transfer_task(state, &task);
     Ok(task)
+}
+
+fn emit_transfer_task(state: &AppState, task: &TransferTask) {
+    let _ = state
+        .app_handle
+        .emit("portmate-transfer-task", task.clone());
+}
+
+impl TransferProgressContext {
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            Err(TRANSFER_CANCELLED_MESSAGE.to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_rate_baseline(&self, bytes_done: u64) {
+        self.rate_baseline_bytes.store(bytes_done, Ordering::SeqCst);
+    }
+
+    fn throttle(&self, bytes_done: u64) -> Result<(), String> {
+        let transferred_this_run =
+            bytes_done.saturating_sub(self.rate_baseline_bytes.load(Ordering::SeqCst));
+        if let Some(delay) = transfer_throttle_delay(
+            self.rate_limit_bytes_per_second,
+            transferred_this_run,
+            self.started.elapsed(),
+        ) {
+            std::thread::sleep(delay);
+            self.check_cancelled()?;
+        }
+        Ok(())
+    }
+
+    fn update(&self, bytes_done: u64, bytes_total: u64) -> Result<(), String> {
+        self.check_cancelled()?;
+        self.throttle(bytes_done)?;
+        let should_emit = {
+            let mut last_emit = self.last_emit.lock().map_err(|error| error.to_string())?;
+            if last_emit.elapsed() < Duration::from_millis(300) && bytes_done < bytes_total {
+                false
+            } else {
+                *last_emit = Instant::now();
+                true
+            }
+        };
+        if !should_emit {
+            return Ok(());
+        }
+        let task = {
+            let mut store = self.state.store.lock().map_err(|error| error.to_string())?;
+            let task = store
+                .transfers
+                .iter_mut()
+                .find(|task| task.id == self.task_id)
+                .ok_or_else(|| format!("unknown transfer: {}", self.task_id))?;
+            task.bytes_done = bytes_done;
+            if bytes_total > 0 {
+                task.bytes_total = bytes_total;
+            }
+            task.message = Some("running".to_string());
+            let task = task.clone();
+            save_store(&self.state.store_path, &store)?;
+            task
+        };
+        emit_transfer_task(&self.state, &task);
+        Ok(())
+    }
 }
 
 async fn transfer_file_via_sftp(
     state: &AppState,
     request: &StartTransferRequest,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let source_remote = remote_path(&request.source);
     let destination_remote = remote_path(&request.destination);
 
     match (source_remote, destination_remote) {
-        (None, None) => copy_local_file_for_transfer(&request.source, &request.destination),
+        (None, None) => {
+            copy_local_file_for_transfer(&request.source, &request.destination, progress)
+        }
         (None, Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
             let sftp = open_sftp_session(handle).await?;
-            let result = sftp_upload(&sftp, &request.source, remote_destination).await;
+            let result = sftp_upload(&sftp, &request.source, remote_destination, progress).await;
             let _ = sftp.close().await;
             result
         }
         (Some(remote_source), None) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
             let sftp = open_sftp_session(handle).await?;
-            let result = sftp_download(&sftp, remote_source, &request.destination).await;
+            let result = sftp_download(&sftp, remote_source, &request.destination, progress).await;
             let _ = sftp.close().await;
             result
         }
         (Some(remote_source), Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
             let sftp = open_sftp_session(handle).await?;
-            let result = sftp_remote_copy(&sftp, remote_source, remote_destination).await;
+            let result = sftp_remote_copy(&sftp, remote_source, remote_destination, progress).await;
             let _ = sftp.close().await;
             result
         }
@@ -1840,23 +2865,27 @@ async fn transfer_file_via_sftp(
 async fn transfer_file_via_local_or_scp(
     state: &AppState,
     request: &StartTransferRequest,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    progress.check_cancelled()?;
     let source_remote = remote_path(&request.source);
     let destination_remote = remote_path(&request.destination);
 
     match (source_remote, destination_remote) {
-        (None, None) => copy_local_file_for_transfer(&request.source, &request.destination),
+        (None, None) => {
+            copy_local_file_for_transfer(&request.source, &request.destination, progress)
+        }
         (None, Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-            scp_upload(handle, &request.source, remote_destination).await
+            scp_upload(handle, &request.source, remote_destination, progress).await
         }
         (Some(remote_source), None) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-            scp_download(handle, remote_source, &request.destination).await
+            scp_download(handle, remote_source, &request.destination, progress).await
         }
         (Some(remote_source), Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-            remote_copy(handle, remote_source, remote_destination).await
+            remote_copy(handle, remote_source, remote_destination, progress).await
         }
     }
 }
@@ -1864,7 +2893,9 @@ async fn transfer_file_via_local_or_scp(
 async fn transfer_file_via_xmodem(
     state: &AppState,
     request: &StartTransferRequest,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    progress.check_cancelled()?;
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,
@@ -1879,7 +2910,14 @@ async fn transfer_file_via_xmodem(
                 &remote_destination,
             )
             .await?;
-            xmodem_send_file(state, &request.session_id, receiver, &local_source).await
+            xmodem_send_file(
+                state,
+                &request.session_id,
+                receiver,
+                &local_source,
+                progress,
+            )
+            .await
         }
         ModemDirection::Download {
             remote_source,
@@ -1894,7 +2932,14 @@ async fn transfer_file_via_xmodem(
                 &remote_source,
             )
             .await?;
-            xmodem_receive_file(state, &request.session_id, receiver, &local_destination).await
+            xmodem_receive_file(
+                state,
+                &request.session_id,
+                receiver,
+                &local_destination,
+                progress,
+            )
+            .await
         }
     }
 }
@@ -1902,7 +2947,9 @@ async fn transfer_file_via_xmodem(
 async fn transfer_file_via_ymodem(
     state: &AppState,
     request: &StartTransferRequest,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    progress.check_cancelled()?;
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,
@@ -1923,6 +2970,7 @@ async fn transfer_file_via_ymodem(
                 receiver,
                 &local_source,
                 Some(&remote_destination),
+                progress,
             )
             .await
         }
@@ -1939,7 +2987,14 @@ async fn transfer_file_via_ymodem(
                 &remote_source,
             )
             .await?;
-            ymodem_receive_file(state, &request.session_id, receiver, &local_destination).await
+            ymodem_receive_file(
+                state,
+                &request.session_id,
+                receiver,
+                &local_destination,
+                progress,
+            )
+            .await
         }
     }
 }
@@ -1947,7 +3002,9 @@ async fn transfer_file_via_ymodem(
 async fn transfer_file_via_zmodem(
     state: &AppState,
     request: &StartTransferRequest,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    progress.check_cancelled()?;
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,
@@ -1968,6 +3025,7 @@ async fn transfer_file_via_zmodem(
                 receiver,
                 &local_source,
                 Some(&remote_destination),
+                progress,
             )
             .await
         }
@@ -1984,7 +3042,14 @@ async fn transfer_file_via_zmodem(
                 &remote_source,
             )
             .await?;
-            zmodem_receive_files(state, &request.session_id, receiver, &local_destination).await
+            zmodem_receive_files(
+                state,
+                &request.session_id,
+                receiver,
+                &local_destination,
+                progress,
+            )
+            .await
         }
     }
 }
@@ -2046,17 +3111,7 @@ async fn maybe_start_remote_modem(
     }
 
     let command = modem_remote_command(protocol, upload, remote_path);
-    let _ = send_text_inner(
-        Arc::clone(&state.store),
-        Arc::clone(&state.ssh),
-        Arc::clone(&state.shell),
-        Arc::clone(&state.tcp),
-        Arc::clone(&state.serial),
-        state.store_path.clone(),
-        session_id.to_string(),
-        command,
-    )
-    .await?;
+    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
     Ok(())
 }
 
@@ -2189,20 +3244,37 @@ async fn write_runtime_bytes(
         let connections = state.serial.lock().map_err(|error| error.to_string())?;
         connections
             .get(session_id)
-            .map(|runtime| Arc::clone(&runtime.writer))
+            .map(|runtime| runtime.writer.as_ref().map(Arc::clone))
     };
-    if let Some(writer) = serial_writer {
-        let mut writer = writer.lock().map_err(|error| error.to_string())?;
-        writer
-            .write_all(bytes)
-            .map_err(|error| format!("串口 modem 写入失败: {error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
-        return Ok(());
+    match serial_writer {
+        Some(Some(writer)) => {
+            let mut writer = writer.lock().map_err(|error| error.to_string())?;
+            writer
+                .write_all(bytes)
+                .map_err(|error| format!("串口 modem 写入失败: {error}"))?;
+            writer
+                .flush()
+                .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
+            return Ok(());
+        }
+        Some(None) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
+        None => {}
     }
 
     Err("会话尚未连接，无法执行 modem 写入".to_string())
+}
+
+async fn check_modem_cancelled(
+    state: &AppState,
+    session_id: &str,
+    progress: &TransferProgressContext,
+) -> Result<(), String> {
+    if progress.cancel.load(Ordering::SeqCst) {
+        let _ = write_runtime_bytes(state, session_id, &[MODEM_CAN, MODEM_CAN, MODEM_CAN]).await;
+        Err(TRANSFER_CANCELLED_MESSAGE.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 struct ModemByteReader {
@@ -2273,6 +3345,7 @@ async fn zmodem_send_file(
     receiver: broadcast::Receiver<Vec<u8>>,
     local_source: &str,
     remote_destination: Option<&str>,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let metadata = fs::metadata(local_source)
         .map_err(|error| format!("读取 ZModem 本地文件元数据失败: {error}"))?;
@@ -2304,8 +3377,10 @@ async fn zmodem_send_file(
     let mut file_buf = vec![0_u8; 1024];
     let mut session_done = false;
     let mut last_progress = Instant::now();
+    let mut bytes_done = 0_u64;
 
     while !session_done || !sender.drain_outgoing().is_empty() {
+        check_modem_cancelled(state, session_id, progress).await?;
         let mut progressed = false;
 
         let outgoing = sender.drain_outgoing().to_vec();
@@ -2328,6 +3403,8 @@ async fn zmodem_send_file(
             sender
                 .feed_file(&file_buf[..read])
                 .map_err(|error| format!("ZModem 发送文件块失败: {error}"))?;
+            bytes_done = bytes_done.max(u64::from(request.offset) + read as u64);
+            progress.update(bytes_done.min(u64::from(size)), u64::from(size))?;
             progressed = true;
         }
 
@@ -2389,6 +3466,7 @@ async fn zmodem_receive_files(
     session_id: &str,
     receiver: broadcast::Receiver<Vec<u8>>,
     local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut modem_receiver =
         zmodem2::Receiver::new().map_err(|error| format!("ZModem receiver 初始化失败: {error}"))?;
@@ -2402,6 +3480,7 @@ async fn zmodem_receive_files(
     let mut last_progress = Instant::now();
 
     while !session_done || !modem_receiver.drain_outgoing().is_empty() {
+        check_modem_cancelled(state, session_id, progress).await?;
         let mut progressed = false;
 
         let outgoing = modem_receiver.drain_outgoing().to_vec();
@@ -2452,6 +3531,7 @@ async fn zmodem_receive_files(
                 .advance_file(file_data.len())
                 .map_err(|error| format!("ZModem 文件写入确认失败: {error}"))?;
             bytes_done += file_data.len() as u64;
+            progress.update(bytes_done, 0)?;
             progressed = true;
         }
 
@@ -2537,14 +3617,18 @@ async fn xmodem_send_file(
     session_id: &str,
     receiver: broadcast::Receiver<Vec<u8>>,
     local_source: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let data =
         fs::read(local_source).map_err(|error| format!("读取 XModem 本地文件失败: {error}"))?;
     let mut reader = ModemByteReader::new(receiver);
     let crc = modem_wait_for_receiver(&mut reader).await?;
     let mut block_no = 1_u8;
+    let total = data.len() as u64;
+    let mut bytes_done = 0_u64;
 
     for chunk in data.chunks(XMODEM_BLOCK_SIZE) {
+        check_modem_cancelled(state, session_id, progress).await?;
         modem_send_packet_with_retries(
             state,
             session_id,
@@ -2555,6 +3639,8 @@ async fn xmodem_send_file(
             crc,
         )
         .await?;
+        bytes_done += chunk.len() as u64;
+        progress.update(bytes_done, total)?;
         block_no = block_no.wrapping_add(1);
     }
     modem_finish_eot(state, session_id, &mut reader).await?;
@@ -2566,6 +3652,7 @@ async fn xmodem_receive_file(
     session_id: &str,
     receiver: broadcast::Receiver<Vec<u8>>,
     local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut reader = ModemByteReader::new(receiver);
     let mut expected = 1_u8;
@@ -2573,6 +3660,7 @@ async fn xmodem_receive_file(
     let mut first_packet = true;
 
     loop {
+        check_modem_cancelled(state, session_id, progress).await?;
         let marker = if first_packet {
             first_packet = false;
             modem_wait_for_packet_marker(state, session_id, &mut reader).await?
@@ -2592,6 +3680,7 @@ async fn xmodem_receive_file(
         };
         if packet.block_no == expected {
             output.extend_from_slice(&packet.data);
+            progress.update(output.len() as u64, 0)?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
@@ -2610,6 +3699,7 @@ async fn ymodem_send_file(
     receiver: broadcast::Receiver<Vec<u8>>,
     local_source: &str,
     remote_destination: Option<&str>,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let data =
         fs::read(local_source).map_err(|error| format!("读取 YModem 本地文件失败: {error}"))?;
@@ -2644,7 +3734,10 @@ async fn ymodem_send_file(
     let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
 
     let mut block_no = 1_u8;
+    let total = data.len() as u64;
+    let mut bytes_done = 0_u64;
     for chunk in data.chunks(YMODEM_BLOCK_SIZE) {
+        check_modem_cancelled(state, session_id, progress).await?;
         modem_send_packet_with_retries(
             state,
             session_id,
@@ -2655,6 +3748,8 @@ async fn ymodem_send_file(
             true,
         )
         .await?;
+        bytes_done += chunk.len() as u64;
+        progress.update(bytes_done, total)?;
         block_no = block_no.wrapping_add(1);
     }
     modem_finish_eot(state, session_id, &mut reader).await?;
@@ -2670,6 +3765,7 @@ async fn ymodem_receive_file(
     session_id: &str,
     receiver: broadcast::Receiver<Vec<u8>>,
     local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut reader = ModemByteReader::new(receiver);
     let marker = modem_wait_for_packet_marker(state, session_id, &mut reader).await?;
@@ -2689,7 +3785,9 @@ async fn ymodem_receive_file(
 
     let mut expected = 1_u8;
     let mut output = Vec::new();
+    let total = expected_size.unwrap_or(0) as u64;
     loop {
+        check_modem_cancelled(state, session_id, progress).await?;
         let marker = modem_wait_for_next_marker(&mut reader, Duration::from_secs(15)).await?;
         if marker == MODEM_EOT {
             write_runtime_bytes(state, session_id, &[MODEM_ACK, MODEM_CRC_REQUEST]).await?;
@@ -2708,6 +3806,7 @@ async fn ymodem_receive_file(
         let packet = modem_read_packet(&mut reader, marker).await?;
         if packet.block_no == expected {
             output.extend_from_slice(&packet.data);
+            progress.update(output.len() as u64, total)?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
@@ -2721,8 +3820,13 @@ async fn ymodem_receive_file(
         }
     }
     let destination = if Path::new(local_destination).is_dir() {
+        let safe_name = Path::new(&name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("ymodem-file.bin");
         Path::new(local_destination)
-            .join(name)
+            .join(safe_name)
             .display()
             .to_string()
     } else {
@@ -3013,7 +4117,11 @@ fn ssh_handle_for_transfer(
         .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行 remote: 传输".to_string())
 }
 
-fn copy_local_file_for_transfer(source: &str, destination: &str) -> Result<u64, String> {
+fn copy_local_file_for_transfer(
+    source: &str,
+    destination: &str,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
     if !source.is_file() {
@@ -3021,11 +4129,51 @@ fn copy_local_file_for_transfer(source: &str, destination: &str) -> Result<u64, 
             "only local file copy is available for this protocol path right now".to_string(),
         );
     }
+    let total = fs::metadata(&source)
+        .map_err(|error| format!("failed to read transfer source metadata: {error}"))?
+        .len();
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create transfer destination: {error}"))?;
     }
-    fs::copy(&source, &destination).map_err(|error| format!("local transfer failed: {error}"))
+    let temp_destination = local_resume_part_path(&destination);
+    let mut input =
+        fs::File::open(&source).map_err(|error| format!("local transfer open failed: {error}"))?;
+    let mut copied = local_resume_offset(&temp_destination, total)?;
+    progress.set_rate_baseline(copied);
+    if copied > 0 {
+        input
+            .seek(std::io::SeekFrom::Start(copied))
+            .map_err(|error| format!("local transfer seek failed: {error}"))?;
+        progress.update(copied, total)?;
+    }
+    if copied == total {
+        finalize_local_resume_file(&temp_destination, &destination)?;
+        return Ok(copied);
+    }
+    let mut output = open_local_resume_writer(&temp_destination, copied)
+        .map_err(|error| format!("local transfer create failed: {error}"))?;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        progress.check_cancelled()?;
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| format!("local transfer read failed: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("local transfer write failed: {error}"))?;
+        copied += read as u64;
+        progress.update(copied, total)?;
+    }
+    output
+        .flush()
+        .map_err(|error| format!("local transfer flush failed: {error}"))?;
+    drop(output);
+    finalize_local_resume_file(&temp_destination, &destination)?;
+    Ok(copied)
 }
 
 async fn open_sftp_session(
@@ -3049,10 +4197,122 @@ async fn open_sftp_session(
     Ok(sftp)
 }
 
+/// A transfer writes to a temp sibling of the real destination and is only
+/// renamed onto it after a full success; on any error the temp is best-effort
+/// removed. Otherwise a mid-transfer failure leaves a partial file at the real
+/// destination path with nothing distinguishing it from a complete one.
+fn local_resume_part_path(target: &Path) -> PathBuf {
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("portmate-transfer");
+    target.with_file_name(format!("{name}.portmate-part"))
+}
+
+fn local_resume_offset(path: &Path, total: u64) -> Result<u64, String> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(0);
+    };
+    let size = metadata.len();
+    if size <= total {
+        Ok(size)
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("删除过大的断点文件失败 {}: {error}", path.display()))?;
+        Ok(0)
+    }
+}
+
+fn open_local_resume_writer(path: &Path, offset: u64) -> std::io::Result<fs::File> {
+    if offset == 0 {
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+    } else {
+        OpenOptions::new().create(true).append(true).open(path)
+    }
+}
+
+fn finalize_local_resume_file(temp: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() && target.is_file() {
+        fs::remove_file(target)
+            .map_err(|error| format!("删除旧目标文件失败 {}: {error}", target.display()))?;
+    }
+    fs::rename(temp, target).map_err(|error| {
+        format!(
+            "重命名本地目标文件失败 {} -> {}: {error}",
+            temp.display(),
+            target.display()
+        )
+    })
+}
+
+fn remote_resume_part_path(target: &str) -> String {
+    match target.rsplit_once('/') {
+        Some((dir, name)) => format!("{dir}/{name}.portmate-part"),
+        None => format!("{target}.portmate-part"),
+    }
+}
+
+async fn sftp_resume_offset(sftp: &SftpSession, path: &str, total: u64) -> Result<u64, String> {
+    let Some(size) = sftp
+        .metadata(path.to_string())
+        .await
+        .ok()
+        .and_then(|metadata| metadata.size)
+    else {
+        return Ok(0);
+    };
+    if size <= total {
+        Ok(size)
+    } else {
+        sftp.remove_file(path.to_string())
+            .await
+            .map_err(|error| format!("SFTP 删除过大的断点文件失败 {path}: {error}"))?;
+        Ok(0)
+    }
+}
+
+async fn sftp_open_resume_writer(
+    sftp: &SftpSession,
+    path: &str,
+    offset: u64,
+) -> Result<russh_sftp::client::fs::File, String> {
+    let flags = if offset == 0 {
+        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
+    } else {
+        OpenFlags::CREATE | OpenFlags::WRITE
+    };
+    let mut file = sftp
+        .open_with_flags(path.to_string(), flags)
+        .await
+        .map_err(|error| format!("SFTP 打开断点文件失败 {path}: {error}"))?;
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|error| format!("SFTP 断点文件 seek 失败 {path}: {error}"))?;
+    }
+    Ok(file)
+}
+
+async fn sftp_finalize_resume_file(
+    sftp: &SftpSession,
+    temp: &str,
+    target: &str,
+) -> Result<(), String> {
+    let _ = sftp.remove_file(target.to_string()).await;
+    sftp.rename(temp.to_string(), target.to_string())
+        .await
+        .map_err(|error| format!("SFTP 重命名断点文件失败 {temp} -> {target}: {error}"))
+}
+
 async fn sftp_upload(
     sftp: &SftpSession,
     local_source: &str,
     remote_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let metadata = fs::metadata(local_source)
         .map_err(|error| format!("读取本地文件元数据失败 {local_source}: {error}"))?;
@@ -3067,59 +4327,100 @@ async fn sftp_upload(
         .filter(|value| !value.is_empty())
         .unwrap_or("portmate-upload.bin");
     let target = sftp_destination_file_path(sftp, remote_destination, file_name).await?;
-    let mut remote_file = sftp
-        .open_with_flags(
-            target.clone(),
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-        )
-        .await
-        .map_err(|error| format!("SFTP 创建远端文件失败 {target}: {error}"))?;
+    let temp_target = remote_resume_part_path(&target);
+    let mut copied = sftp_resume_offset(sftp, &temp_target, metadata.len()).await?;
+    progress.set_rate_baseline(copied);
+    if copied > 0 {
+        local_file
+            .seek(std::io::SeekFrom::Start(copied))
+            .map_err(|error| format!("SFTP 本地文件 seek 失败 {local_source}: {error}"))?;
+        progress.update(copied, metadata.len())?;
+    }
+    if copied == metadata.len() {
+        sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
+        return Ok(copied);
+    }
+    let mut remote_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
 
-    let mut copied = 0_u64;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let read = local_file
-            .read(&mut buffer)
-            .map_err(|error| format!("读取本地文件失败 {local_source}: {error}"))?;
-        if read == 0 {
-            break;
+    let copy_result: Result<u64, String> = async {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            progress.check_cancelled()?;
+            let read = local_file
+                .read(&mut buffer)
+                .map_err(|error| format!("读取本地文件失败 {local_source}: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            remote_file
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|error| format!("SFTP 写入远端文件失败 {temp_target}: {error}"))?;
+            copied += read as u64;
+            progress.update(copied, metadata.len())?;
         }
         remote_file
-            .write_all(&buffer[..read])
+            .flush()
             .await
-            .map_err(|error| format!("SFTP 写入远端文件失败 {target}: {error}"))?;
-        copied += read as u64;
+            .map_err(|error| format!("SFTP 刷新远端文件失败 {temp_target}: {error}"))?;
+        remote_file
+            .shutdown()
+            .await
+            .map_err(|error| format!("SFTP 关闭远端文件失败 {temp_target}: {error}"))?;
+        Ok(copied)
     }
-    remote_file
-        .flush()
-        .await
-        .map_err(|error| format!("SFTP 刷新远端文件失败 {target}: {error}"))?;
-    remote_file
-        .shutdown()
-        .await
-        .map_err(|error| format!("SFTP 关闭远端文件失败 {target}: {error}"))?;
-    Ok(copied)
+    .await;
+
+    match copy_result {
+        Ok(copied) => {
+            sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
+            Ok(copied)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn sftp_download(
     sftp: &SftpSession,
     remote_source: &str,
     local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut remote_file = sftp
         .open(remote_source.to_string())
         .await
         .map_err(|error| format!("SFTP 打开远端文件失败 {remote_source}: {error}"))?;
+    let total = sftp
+        .metadata(remote_source.to_string())
+        .await
+        .ok()
+        .and_then(|metadata| metadata.size)
+        .unwrap_or(0);
     let target = local_destination_file_path(local_destination, remote_source)?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("创建本地目录失败 {}: {error}", parent.display()))?;
     }
-    let mut local_file = fs::File::create(&target)
-        .map_err(|error| format!("创建本地目标文件失败 {}: {error}", target.display()))?;
-    let mut copied = 0_u64;
+    let temp_target = local_resume_part_path(&target);
+    let mut copied = local_resume_offset(&temp_target, total)?;
+    progress.set_rate_baseline(copied);
+    if copied > 0 {
+        remote_file
+            .seek(std::io::SeekFrom::Start(copied))
+            .await
+            .map_err(|error| format!("SFTP 远端文件 seek 失败 {remote_source}: {error}"))?;
+        progress.update(copied, total)?;
+    }
+    if total > 0 && copied == total {
+        finalize_local_resume_file(&temp_target, &target)?;
+        let _ = remote_file.shutdown().await;
+        return Ok(copied);
+    }
+    let mut local_file = open_local_resume_writer(&temp_target, copied)
+        .map_err(|error| format!("创建本地目标文件失败 {}: {error}", temp_target.display()))?;
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
+        progress.check_cancelled()?;
         let read = remote_file
             .read(&mut buffer)
             .await
@@ -3129,12 +4430,15 @@ async fn sftp_download(
         }
         local_file
             .write_all(&buffer[..read])
-            .map_err(|error| format!("写入本地目标文件失败 {}: {error}", target.display()))?;
+            .map_err(|error| format!("写入本地目标文件失败 {}: {error}", temp_target.display()))?;
         copied += read as u64;
+        progress.update(copied, total)?;
     }
     local_file
         .flush()
-        .map_err(|error| format!("刷新本地目标文件失败 {}: {error}", target.display()))?;
+        .map_err(|error| format!("刷新本地目标文件失败 {}: {error}", temp_target.display()))?;
+    drop(local_file);
+    finalize_local_resume_file(&temp_target, &target)?;
     let _ = remote_file.shutdown().await;
     Ok(copied)
 }
@@ -3143,47 +4447,75 @@ async fn sftp_remote_copy(
     sftp: &SftpSession,
     remote_source: &str,
     remote_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut source_file = sftp
         .open(remote_source.to_string())
         .await
         .map_err(|error| format!("SFTP 打开远端源文件失败 {remote_source}: {error}"))?;
+    let total = sftp
+        .metadata(remote_source.to_string())
+        .await
+        .ok()
+        .and_then(|metadata| metadata.size)
+        .unwrap_or(0);
     let file_name = remote_file_name(remote_source);
     let target = sftp_destination_file_path(sftp, remote_destination, &file_name).await?;
-    let mut target_file = sftp
-        .open_with_flags(
-            target.clone(),
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-        )
-        .await
-        .map_err(|error| format!("SFTP 创建远端目标文件失败 {target}: {error}"))?;
-
-    let mut copied = 0_u64;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let read = source_file
-            .read(&mut buffer)
+    let temp_target = remote_resume_part_path(&target);
+    let mut copied = sftp_resume_offset(sftp, &temp_target, total).await?;
+    progress.set_rate_baseline(copied);
+    if copied > 0 {
+        source_file
+            .seek(std::io::SeekFrom::Start(copied))
             .await
-            .map_err(|error| format!("SFTP 读取远端源文件失败 {remote_source}: {error}"))?;
-        if read == 0 {
-            break;
+            .map_err(|error| format!("SFTP 远端源文件 seek 失败 {remote_source}: {error}"))?;
+        progress.update(copied, total)?;
+    }
+    if total > 0 && copied == total {
+        sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
+        let _ = source_file.shutdown().await;
+        return Ok(copied);
+    }
+    let mut target_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
+
+    let copy_result: Result<u64, String> = async {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            progress.check_cancelled()?;
+            let read = source_file
+                .read(&mut buffer)
+                .await
+                .map_err(|error| format!("SFTP 读取远端源文件失败 {remote_source}: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            target_file
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|error| format!("SFTP 写入远端目标文件失败 {temp_target}: {error}"))?;
+            copied += read as u64;
+            progress.update(copied, total)?;
         }
         target_file
-            .write_all(&buffer[..read])
+            .flush()
             .await
-            .map_err(|error| format!("SFTP 写入远端目标文件失败 {target}: {error}"))?;
-        copied += read as u64;
+            .map_err(|error| format!("SFTP 刷新远端目标文件失败 {temp_target}: {error}"))?;
+        target_file
+            .shutdown()
+            .await
+            .map_err(|error| format!("SFTP 关闭远端目标文件失败 {temp_target}: {error}"))?;
+        Ok(copied)
     }
-    target_file
-        .flush()
-        .await
-        .map_err(|error| format!("SFTP 刷新远端目标文件失败 {target}: {error}"))?;
+    .await;
     let _ = source_file.shutdown().await;
-    target_file
-        .shutdown()
-        .await
-        .map_err(|error| format!("SFTP 关闭远端目标文件失败 {target}: {error}"))?;
-    Ok(copied)
+
+    match copy_result {
+        Ok(copied) => {
+            sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
+            Ok(copied)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn sftp_destination_file_path(
@@ -3294,21 +4626,168 @@ async fn remote_copy(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     remote_source: &str,
     remote_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let command = format!(
-        "cp -f -- {} {} && stat -c '%s' -- {}",
+    let command = remote_copy_command(remote_source, remote_destination);
+    let mut channel = {
+        let handle = handle.lock().await;
+        handle
+            .channel_open_session()
+            .await
+            .map_err(|error| format!("SSH remote copy 打开 channel 失败: {error}"))?
+    };
+    channel
+        .exec(true, command)
+        .await
+        .map_err(|error| format!("SSH remote copy 启动失败: {error}"))?;
+
+    let mut output = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_status = None;
+    let mut reported_total = None;
+    let mut reported_resume = None;
+    let mut reported_progress = None;
+    let mut reported_done = None;
+    let started = Instant::now();
+
+    loop {
+        if progress.cancel.load(Ordering::SeqCst) {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
+        if started.elapsed() > Duration::from_secs(300) {
+            let _ = channel.close().await;
+            return Err("SSH remote copy 超时".to_string());
+        }
+
+        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => {
+                output.extend_from_slice(&data);
+                let markers = remote_copy_markers(&output);
+                if markers.total.is_some() && markers.total != reported_total {
+                    let total = markers.total.unwrap_or_default();
+                    progress.update(0, total)?;
+                    reported_total = Some(total);
+                }
+                if markers.resume.is_some() && markers.resume != reported_resume {
+                    let mut resume_bytes = markers.resume.unwrap_or_default();
+                    if let Some(total) = markers.total.or(reported_total) {
+                        resume_bytes = resume_bytes.min(total);
+                    }
+                    progress.set_rate_baseline(resume_bytes);
+                    progress.update(resume_bytes, markers.total.or(reported_total).unwrap_or(0))?;
+                    reported_resume = Some(markers.resume.unwrap_or_default());
+                }
+                if markers.progress.is_some() && markers.progress != reported_progress {
+                    let mut progress_bytes = markers.progress.unwrap_or_default();
+                    if let Some(total) = markers.total.or(reported_total) {
+                        progress_bytes = progress_bytes.min(total);
+                    }
+                    progress.update(
+                        progress_bytes,
+                        markers.total.or(reported_total).unwrap_or(0),
+                    )?;
+                    reported_progress = Some(markers.progress.unwrap_or_default());
+                }
+                if markers.done.is_some() && markers.done != reported_done {
+                    let done = markers.done.unwrap_or_default();
+                    progress.update(done, reported_total.unwrap_or(done))?;
+                    reported_done = Some(done);
+                }
+            }
+            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
+            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => break,
+            Ok(Some(_)) => {}
+            Err(_) => {}
+        }
+    }
+
+    if exit_status.is_some_and(|code| code != 0) {
+        return Err(format!(
+            "SSH remote copy 返回非零状态 {:?}: {}",
+            exit_status,
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+
+    let markers = remote_copy_markers(&output);
+    let bytes = markers.done.ok_or_else(|| {
+        format!(
+            "remote copy completed but done marker was missing: {}",
+            String::from_utf8_lossy(&output)
+        )
+    })?;
+    progress.update(bytes, reported_total.unwrap_or(bytes))?;
+    Ok(bytes)
+}
+
+fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String {
+    format!(
+        concat!(
+            "src={}; dst={}; target=; part=; pid=; ",
+            "remote_name=${{src##*/}}; if [ -z \"$remote_name\" ]; then remote_name=portmate-file.bin; fi; ",
+            "case \"$dst\" in */) target=\"${{dst%/}}/$remote_name\" ;; ",
+            "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$remote_name\"; else target=\"$dst\"; fi ;; esac; ",
+            "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
+            "*) part=\"$target.portmate-part\" ;; esac; ",
+            "cleanup() {{ if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || :; fi; }}; ",
+            "trap cleanup INT TERM HUP EXIT; ",
+            "if ! total=$(stat -c %s -- \"$src\"); then exit 1; fi; ",
+            "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
+            "offset=0; ",
+            "if [ -e \"$part\" ]; then ",
+            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if [ \"$current\" -le \"$total\" ]; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
+            "printf '__PORTMATE_RESUME__%s\\n' \"$offset\"; ",
+            "printf '__PORTMATE_PROGRESS__%s\\n' \"$offset\"; ",
+            "if [ \"$offset\" -lt \"$total\" ]; then ",
+            "tail -c +$((offset + 1)) -- \"$src\" >> \"$part\" & pid=$!; ",
+            "while kill -0 \"$pid\" 2>/dev/null; do ",
+            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "printf '__PORTMATE_PROGRESS__%s\\n' \"$current\"; ",
+            "fi; sleep 0.25; done; ",
+            "wait \"$pid\"; status=$?; pid=; ",
+            "if [ \"$status\" -ne 0 ]; then exit \"$status\"; fi; ",
+            "fi; ",
+            "final=$(stat -c %s -- \"$part\") || exit 1; ",
+            "if [ \"$final\" -ne \"$total\" ]; then ",
+            "printf 'PortMate remote copy size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
+            "fi; ",
+            "mv -f -- \"$part\" \"$target\" || exit 1; ",
+            "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
+        ),
         shell_quote(remote_source),
-        shell_quote(remote_destination),
         shell_quote(remote_destination)
-    );
-    let output = exec_ssh_command_capture(handle, &command, Duration::from_secs(60)).await?;
-    output
-        .lines()
-        .last()
-        .unwrap_or_default()
-        .trim()
-        .parse::<u64>()
-        .map_err(|error| format!("remote copy completed but size parse failed: {error}"))
+    )
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RemoteCopyMarkers {
+    total: Option<u64>,
+    resume: Option<u64>,
+    progress: Option<u64>,
+    done: Option<u64>,
+}
+
+fn remote_copy_markers(output: &[u8]) -> RemoteCopyMarkers {
+    let text = String::from_utf8_lossy(output);
+    let mut markers = RemoteCopyMarkers::default();
+    for line in text.lines() {
+        if let Some(value) = line.trim().strip_prefix("__PORTMATE_SIZE__") {
+            markers.total = value.trim().parse::<u64>().ok();
+        } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_RESUME__") {
+            markers.resume = value.trim().parse::<u64>().ok();
+        } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_PROGRESS__") {
+            markers.progress = value.trim().parse::<u64>().ok();
+        } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_DONE__") {
+            markers.done = value.trim().parse::<u64>().ok();
+        }
+    }
+    markers
 }
 
 enum FileOperation {
@@ -3332,6 +4811,28 @@ async fn list_files_inner(
     }
 }
 
+async fn file_properties_inner(
+    state: &AppState,
+    request: FilePropertiesRequest,
+) -> Result<FileProperties, String> {
+    if request.path.trim().is_empty() {
+        return Err("属性路径不能为空".to_string());
+    }
+    if request.remote {
+        let session_id = request
+            .session_id
+            .as_deref()
+            .ok_or_else(|| "remote file properties require sessionId".to_string())?;
+        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let sftp = open_sftp_session(handle).await?;
+        let result = remote_file_properties(&sftp, request.path.trim()).await;
+        let _ = sftp.close().await;
+        result
+    } else {
+        local_file_properties(request.path.trim())
+    }
+}
+
 async fn file_operation_inner(
     state: &AppState,
     request: FileOperationRequest,
@@ -3351,11 +4852,14 @@ async fn file_operation_inner(
         let _ = sftp.close().await;
         result
     } else {
-        let path = PathBuf::from(&request.path);
         match operation {
-            FileOperation::CreateDirectory => fs::create_dir_all(&path)
-                .map_err(|error| format!("创建本地目录失败 {}: {error}", path.display())),
+            FileOperation::CreateDirectory => {
+                let path = PathBuf::from(&request.path);
+                fs::create_dir_all(&path)
+                    .map_err(|error| format!("创建本地目录失败 {}: {error}", path.display()))
+            }
             FileOperation::Delete => {
+                let path = validate_local_mutating_path(&request.path)?;
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|error| format!("读取本地路径失败 {}: {error}", path.display()))?;
                 if metadata.is_dir() {
@@ -3393,8 +4897,8 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
         let _ = sftp.close().await;
         result
     } else {
-        let old_path = PathBuf::from(&request.old_path);
-        let new_path = PathBuf::from(&request.new_path);
+        let old_path = validate_local_mutating_path(&request.old_path)?;
+        let new_path = validate_local_mutating_path(&request.new_path)?;
         fs::rename(&old_path, &new_path).map_err(|error| {
             format!(
                 "本地重命名失败 {} -> {}: {error}",
@@ -3564,6 +5068,46 @@ fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
     Ok(entries)
 }
 
+fn local_file_properties(path: &str) -> Result<FileProperties, String> {
+    let path = expand_identity_path(path);
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("读取本地路径属性失败 {}: {error}", path.display()))?;
+    let file_type = metadata.file_type();
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode())
+    };
+    #[cfg(not(unix))]
+    let permissions = None;
+    Ok(FileProperties {
+        name: path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_else(|| path.to_str().unwrap_or(""))
+            .to_string(),
+        path: path.display().to_string(),
+        remote: false,
+        kind: file_kind_label(
+            metadata.is_dir(),
+            metadata.is_file(),
+            file_type.is_symlink(),
+        ),
+        is_dir: metadata.is_dir(),
+        is_file: metadata.is_file(),
+        is_symlink: file_type.is_symlink(),
+        size: if metadata.is_file() {
+            metadata.len()
+        } else {
+            0
+        },
+        permissions,
+        modified: metadata.modified().ok().and_then(system_time_to_rfc3339),
+        accessed: metadata.accessed().ok().and_then(system_time_to_rfc3339),
+        created: metadata.created().ok().and_then(system_time_to_rfc3339),
+    })
+}
+
 async fn list_remote_files(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     path: &str,
@@ -3609,6 +5153,54 @@ async fn list_remote_files_via_sftp(
     }
     sort_file_entries(&mut entries);
     Ok(entries)
+}
+
+async fn remote_file_properties(sftp: &SftpSession, path: &str) -> Result<FileProperties, String> {
+    let metadata = sftp
+        .symlink_metadata(path.to_string())
+        .await
+        .map_err(|error| format!("SFTP 读取远端属性失败 {path}: {error}"))?;
+    let is_dir = metadata.is_dir();
+    let is_file = metadata.is_regular();
+    let is_symlink = metadata.is_symlink();
+    Ok(FileProperties {
+        name: remote_file_name(path),
+        path: path.to_string(),
+        remote: true,
+        kind: file_kind_label(is_dir, is_file, is_symlink),
+        is_dir,
+        is_file,
+        is_symlink,
+        size: if is_file { metadata.len() } else { 0 },
+        permissions: metadata.permissions,
+        modified: metadata
+            .mtime
+            .and_then(|timestamp| chrono::DateTime::<Utc>::from_timestamp(timestamp.into(), 0))
+            .map(|value| value.to_rfc3339()),
+        accessed: None,
+        created: None,
+    })
+}
+
+fn file_kind_label(is_dir: bool, is_file: bool, is_symlink: bool) -> String {
+    if is_symlink {
+        "symlink"
+    } else if is_dir {
+        "directory"
+    } else if is_file {
+        "file"
+    } else {
+        "other"
+    }
+    .to_string()
+}
+
+fn system_time_to_rfc3339(time: std::time::SystemTime) -> Option<String> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| {
+            chrono::DateTime::<Utc>::from(std::time::UNIX_EPOCH + duration).to_rfc3339()
+        })
 }
 
 async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<(), String> {
@@ -3660,6 +5252,37 @@ fn validate_remote_delete_path(path: &str) -> Result<&str, String> {
     Ok(path)
 }
 
+/// Guards local delete/rename endpoints against the two most catastrophic
+/// fat-finger paths: an empty/`.`/`~` path, and a path that resolves to a
+/// filesystem root or to the user's home directory itself.
+fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    let trimmed_slashes = trimmed.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty()
+        || trimmed_slashes.is_empty()
+        || matches!(trimmed_slashes, "." | ".." | "~")
+        || trimmed.contains('\0')
+    {
+        return Err("拒绝操作空路径、根目录或当前目录".to_string());
+    }
+
+    let candidate = expand_identity_path(trimmed);
+    if candidate.parent().is_none() {
+        return Err("拒绝操作文件系统根目录".to_string());
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        let candidate_check = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        let home_check = home.canonicalize().unwrap_or(home);
+        if candidate_check == home_check {
+            return Err("拒绝操作用户主目录".to_string());
+        }
+    }
+    Ok(candidate)
+}
+
 fn sort_file_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| {
         b.is_dir
@@ -3672,14 +5295,20 @@ async fn scp_upload(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     local_source: &str,
     remote_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let data = fs::read(local_source).map_err(|error| format!("读取本地文件失败: {error}"))?;
-    let size = data.len() as u64;
+    let mut file =
+        fs::File::open(local_source).map_err(|error| format!("读取本地文件失败: {error}"))?;
+    let size = file
+        .metadata()
+        .map_err(|error| format!("读取本地文件元数据失败: {error}"))?
+        .len();
     let file_name = Path::new(local_source)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("portmate-upload.bin");
+    let command = scp_upload_command(remote_destination, file_name, size);
     let mut channel = {
         let handle = handle.lock().await;
         handle
@@ -3688,35 +5317,176 @@ async fn scp_upload(
             .map_err(|error| format!("SCP 打开 SSH channel 失败: {error}"))?
     };
     channel
-        .exec(true, format!("scp -t {}", shell_quote(remote_destination)))
+        .exec(true, command)
         .await
         .map_err(|error| format!("SCP 启动远端接收失败: {error}"))?;
 
-    let mut pending = VecDeque::new();
-    scp_wait_ack(&mut channel, &mut pending).await?;
-    channel
-        .data(format!("C0644 {size} {file_name}\n").as_bytes())
-        .await
-        .map_err(|error| format!("SCP 写入文件头失败: {error}"))?;
-    scp_wait_ack(&mut channel, &mut pending).await?;
-    channel
-        .data(&data[..])
-        .await
-        .map_err(|error| format!("SCP 写入文件内容失败: {error}"))?;
-    channel
-        .data(&[0_u8][..])
-        .await
-        .map_err(|error| format!("SCP 写入结束标记失败: {error}"))?;
-    scp_wait_ack(&mut channel, &mut pending).await?;
+    let mut output = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_status = None;
+    let mut reported_total = None;
+    let started = Instant::now();
+    let mut copied = loop {
+        if progress.cancel.load(Ordering::SeqCst) {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = channel.close().await;
+            return Err("SCP upload 等待远端续传状态超时".to_string());
+        }
+        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => {
+                output.extend_from_slice(&data);
+                let markers = remote_copy_markers(&output);
+                if markers.total.is_some() && markers.total != reported_total {
+                    let total = markers.total.unwrap_or_default();
+                    progress.update(0, total)?;
+                    reported_total = Some(total);
+                }
+                if let Some(resume) = markers.resume {
+                    let resume = resume.min(size);
+                    progress.set_rate_baseline(resume);
+                    if resume > 0 {
+                        progress.update(resume, size)?;
+                    }
+                    break resume;
+                }
+            }
+            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
+            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => {
+                return Err(format!(
+                    "SCP upload remote closed before resume marker: {}{}",
+                    String::from_utf8_lossy(&output),
+                    String::from_utf8_lossy(&stderr)
+                ));
+            }
+            Ok(Some(_)) => {}
+            Err(_) => {}
+        }
+        if exit_status.is_some_and(|code| code != 0) {
+            return Err(format!(
+                "SCP upload remote returned non-zero before upload {:?}: {}",
+                exit_status,
+                String::from_utf8_lossy(&stderr)
+            ));
+        }
+    };
+
+    if copied < size {
+        file.seek(std::io::SeekFrom::Start(copied))
+            .map_err(|error| format!("SCP 定位本地续传偏移失败: {error}"))?;
+    }
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while copied < size {
+        if progress.cancel.load(Ordering::SeqCst) {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("读取本地文件失败: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        channel
+            .data(&buffer[..read])
+            .await
+            .map_err(|error| format!("SCP 写入文件内容失败: {error}"))?;
+        copied += read as u64;
+        progress.update(copied, size)?;
+    }
     let _ = channel.eof().await;
-    let _ = channel.close().await;
-    Ok(size)
+
+    let started = Instant::now();
+    loop {
+        if progress.cancel.load(Ordering::SeqCst) {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
+        if started.elapsed() > Duration::from_secs(300) {
+            let _ = channel.close().await;
+            return Err("SCP upload 等待远端完成超时".to_string());
+        }
+        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => output.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
+            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => break,
+            Ok(Some(_)) => {}
+            Err(_) => {}
+        }
+    }
+
+    if exit_status.is_some_and(|code| code != 0) {
+        return Err(format!(
+            "SCP upload remote returned non-zero {:?}: {}",
+            exit_status,
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    let markers = remote_copy_markers(&output);
+    let done = markers.done.ok_or_else(|| {
+        format!(
+            "SCP upload completed but done marker was missing: {}",
+            String::from_utf8_lossy(&output)
+        )
+    })?;
+    if done != size {
+        return Err(format!(
+            "SCP upload size mismatch: remote done {done}, expected {size}"
+        ));
+    }
+    progress.update(done, size)?;
+    Ok(done)
+}
+
+fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> String {
+    format!(
+        concat!(
+            "dst={}; source_name={}; total={}; target=; part=; ",
+            "if [ -z \"$source_name\" ]; then source_name=portmate-upload.bin; fi; ",
+            "case \"$dst\" in */) target=\"${{dst%/}}/$source_name\" ;; ",
+            "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$source_name\"; else target=\"$dst\"; fi ;; esac; ",
+            "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
+            "*) part=\"$target.portmate-part\" ;; esac; ",
+            "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
+            "offset=0; ",
+            "if [ -e \"$part\" ]; then ",
+            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if [ \"$current\" -le \"$total\" ]; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
+            "printf '__PORTMATE_RESUME__%s\\n' \"$offset\"; ",
+            "printf '__PORTMATE_PROGRESS__%s\\n' \"$offset\"; ",
+            "if [ \"$offset\" -lt \"$total\" ]; then ",
+            "cat >> \"$part\" || exit 1; ",
+            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "printf '__PORTMATE_PROGRESS__%s\\n' \"$current\"; ",
+            "fi; ",
+            "fi; ",
+            "final=$(stat -c %s -- \"$part\") || exit 1; ",
+            "if [ \"$final\" -ne \"$total\" ]; then ",
+            "printf 'PortMate SCP upload size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
+            "fi; ",
+            "mv -f -- \"$part\" \"$target\" || exit 1; ",
+            "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
+        ),
+        shell_quote(remote_destination),
+        shell_quote(file_name),
+        total
+    )
 }
 
 async fn scp_download(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     remote_source: &str,
     local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut channel = {
         let handle = handle.lock().await;
@@ -3758,15 +5528,28 @@ async fn scp_download(
     if let Some(parent) = Path::new(local_destination).parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
     }
-    let mut file = fs::File::create(local_destination)
+    let target = Path::new(local_destination);
+    let temp_target = local_resume_part_path(target);
+    let copied = local_resume_offset(&temp_target, size)?;
+    progress.set_rate_baseline(copied);
+    if copied > 0 {
+        progress.update(copied, size)?;
+    }
+    if copied == size {
+        finalize_local_resume_file(&temp_target, target)?;
+        let _ = channel.close().await;
+        return Ok(size);
+    }
+    let mut file = open_local_resume_writer(&temp_target, copied)
         .map_err(|error| format!("创建本地目标文件失败: {error}"))?;
     channel
         .data(&[0_u8][..])
         .await
         .map_err(|error| format!("SCP 写入文件头确认失败: {error}"))?;
 
-    let mut remaining = size;
-    while remaining > 0 {
+    let mut received = 0_u64;
+    while received < size {
+        progress.check_cancelled()?;
         if pending.is_empty() {
             match channel.wait().await {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
@@ -3779,19 +5562,27 @@ async fn scp_download(
             }
             continue;
         }
-        let take = pending.len().min(remaining as usize);
+        let take = pending.len().min((size - received) as usize);
         let chunk = pending.drain(..take).collect::<Vec<_>>();
-        file.write_all(&chunk)
+        let chunk_start = received;
+        received += take as u64;
+        if received <= copied {
+            continue;
+        }
+        let write_from = copied.saturating_sub(chunk_start) as usize;
+        file.write_all(&chunk[write_from..])
             .map_err(|error| format!("写入本地目标文件失败: {error}"))?;
-        remaining -= take as u64;
+        progress.update(received, size)?;
     }
     file.flush()
         .map_err(|error| format!("刷新本地目标文件失败: {error}"))?;
+    drop(file);
     scp_wait_ack(&mut channel, &mut pending).await?;
     channel
         .data(&[0_u8][..])
         .await
         .map_err(|error| format!("SCP 写入完成确认失败: {error}"))?;
+    finalize_local_resume_file(&temp_target, target)?;
     let _ = channel.close().await;
     Ok(size)
 }
@@ -3866,16 +5657,14 @@ async fn create_tunnel_inner(
 
     let mut tunnel = TunnelSpec {
         id: Uuid::new_v4().to_string(),
-        label: request.label.unwrap_or_else(|| match request.mode {
-            TunnelMode::Local => format!(
-                "{}:{} -> {}:{}",
-                request.bind_host, request.bind_port, request.target_host, request.target_port
-            ),
-            TunnelMode::Dynamic => format!("SOCKS5 {}:{}", request.bind_host, request.bind_port),
-            TunnelMode::Remote => format!(
-                "remote {}:{} -> {}:{}",
-                request.bind_host, request.bind_port, request.target_host, request.target_port
-            ),
+        label: request.label.clone().unwrap_or_else(|| {
+            tunnel_label(
+                request.mode,
+                &request.bind_host,
+                request.bind_port,
+                &request.target_host,
+                request.target_port,
+            )
         }),
         mode: request.mode,
         bind_host: request.bind_host.clone(),
@@ -3908,13 +5697,18 @@ async fn create_tunnel_inner(
                 tunnel.bind_host, tunnel.bind_port, tunnel.target_host, tunnel.target_port
             );
         }
+        let metrics = Arc::new(TunnelMetrics::default());
         {
             let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+            let target = TunnelForwardTarget {
+                spec: tunnel.clone(),
+                metrics: Arc::clone(&metrics),
+            };
             forwards.insert(
                 remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
-                tunnel.clone(),
+                target.clone(),
             );
-            forwards.insert(remote_forward_port_key(tunnel.bind_port), tunnel.clone());
+            forwards.insert(remote_forward_port_key(tunnel.bind_port), target);
         }
         let closed = Arc::new(AtomicBool::new(false));
         {
@@ -3923,6 +5717,8 @@ async fn create_tunnel_inner(
                 tunnel.id.clone(),
                 TunnelRuntime {
                     session_id: request.session_id.clone(),
+                    spec: tunnel.clone(),
+                    metrics,
                     closed,
                 },
             );
@@ -3942,13 +5738,28 @@ async fn create_tunnel_inner(
     let local_addr = listener
         .local_addr()
         .map_err(|error| format!("SSH tunnel local addr failed: {error}"))?;
+    if request.bind_port == 0 {
+        tunnel.bind_port = local_addr.port();
+        if request.label.is_none() {
+            tunnel.label = tunnel_label(
+                tunnel.mode,
+                &tunnel.bind_host,
+                tunnel.bind_port,
+                &tunnel.target_host,
+                tunnel.target_port,
+            );
+        }
+    }
     let closed = Arc::new(AtomicBool::new(false));
+    let metrics = Arc::new(TunnelMetrics::default());
     {
         let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
         tunnels.insert(
             tunnel.id.clone(),
             TunnelRuntime {
                 session_id: request.session_id.clone(),
+                spec: tunnel.clone(),
+                metrics: Arc::clone(&metrics),
                 closed: Arc::clone(&closed),
             },
         );
@@ -3967,16 +5778,27 @@ async fn create_tunnel_inner(
                 Ok(Ok((stream, peer))) => {
                     let handle = handle.clone();
                     let spec = tunnel_for_task.clone();
+                    let metrics = Arc::clone(&metrics);
                     let store = Arc::clone(&store);
                     let store_path = store_path.clone();
                     let session_id = session_id.clone();
                     tauri::async_runtime::spawn(async move {
+                        metrics.connection_opened();
                         let result = if spec.mode == TunnelMode::Dynamic {
-                            handle_dynamic_tunnel_client(handle, stream, peer).await
+                            handle_dynamic_tunnel_client(handle, stream, peer, Arc::clone(&metrics))
+                                .await
                         } else {
-                            handle_local_tunnel_client(handle, spec, stream, peer).await
+                            handle_local_tunnel_client(
+                                handle,
+                                spec,
+                                stream,
+                                peer,
+                                Arc::clone(&metrics),
+                            )
+                            .await
                         };
                         if let Err(error) = result {
+                            metrics.record_error(&error);
                             if let Ok(mut store) = store.lock() {
                                 store.record_system_event(
                                     &session_id,
@@ -3989,6 +5811,7 @@ async fn create_tunnel_inner(
                                 }
                             }
                         }
+                        metrics.connection_closed();
                     });
                 }
                 Ok(Err(error)) => {
@@ -4008,6 +5831,109 @@ async fn create_tunnel_inner(
 
     persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, Some(local_addr))?;
     Ok(tunnel)
+}
+
+fn list_tunnels_inner(
+    state: &AppState,
+    session_id: Option<&str>,
+) -> Result<Vec<TunnelStatus>, String> {
+    let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+    let mut statuses = tunnels
+        .values()
+        .filter(|runtime| {
+            !runtime.closed.load(Ordering::SeqCst)
+                && match session_id {
+                    Some(expected) => runtime.session_id == expected,
+                    None => true,
+                }
+        })
+        .map(tunnel_status_from_runtime)
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| {
+        left.spec
+            .label
+            .cmp(&right.spec.label)
+            .then_with(|| left.spec.id.cmp(&right.spec.id))
+    });
+    Ok(statuses)
+}
+
+async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelStatus, String> {
+    let runtime = {
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .get(tunnel_id)
+            .cloned()
+            .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?
+    };
+
+    let mut stopped = runtime.spec.clone();
+    stopped.enabled = false;
+
+    if runtime.spec.mode == TunnelMode::Remote {
+        let remote_forward = {
+            let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+            connections
+                .get(&runtime.session_id)
+                .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards)))
+        };
+        if let Some((handle, remote_forwards)) = remote_forward {
+            {
+                let handle = handle.lock().await;
+                handle
+                    .cancel_tcpip_forward(
+                        runtime.spec.bind_host.clone(),
+                        u32::from(runtime.spec.bind_port),
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "remote SSH tunnel cancel failed {}:{}: {error}",
+                            runtime.spec.bind_host, runtime.spec.bind_port
+                        )
+                    })?;
+            }
+            let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+            forwards.remove(&remote_forward_key(
+                &runtime.spec.bind_host,
+                runtime.spec.bind_port,
+            ));
+            forwards.remove(&remote_forward_port_key(runtime.spec.bind_port));
+        }
+    }
+
+    {
+        let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .remove(tunnel_id)
+            .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?;
+    }
+    runtime.closed.store(true, Ordering::SeqCst);
+
+    persist_stopped_tunnel_to_profile_and_log(state, &runtime.session_id, &stopped)?;
+    Ok(runtime.metrics.snapshot(stopped))
+}
+
+fn tunnel_status_from_runtime(runtime: &TunnelRuntime) -> TunnelStatus {
+    runtime.metrics.snapshot(runtime.spec.clone())
+}
+
+fn tunnel_label(
+    mode: TunnelMode,
+    bind_host: &str,
+    bind_port: u16,
+    target_host: &str,
+    target_port: u16,
+) -> String {
+    match mode {
+        TunnelMode::Local => {
+            format!("{bind_host}:{bind_port} -> {target_host}:{target_port}")
+        }
+        TunnelMode::Dynamic => format!("SOCKS5 {bind_host}:{bind_port}"),
+        TunnelMode::Remote => {
+            format!("remote {bind_host}:{bind_port} -> {target_host}:{target_port}")
+        }
+    }
 }
 
 fn persist_tunnel_to_profile_and_log(
@@ -4040,6 +5966,39 @@ fn persist_tunnel_to_profile_and_log(
     save_store(&state.store_path, &store)
 }
 
+fn persist_stopped_tunnel_to_profile_and_log(
+    state: &AppState,
+    session_id: &str,
+    stopped: &TunnelSpec,
+) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    mark_tunnel_stopped_in_store(&mut store, session_id, stopped);
+    store.record_system_event(
+        session_id,
+        format!(
+            "PortMate: SSH {:?} tunnel stopped on {}:{}",
+            stopped.mode, stopped.bind_host, stopped.bind_port
+        ),
+    );
+    save_store(&state.store_path, &store)
+}
+
+fn mark_tunnel_stopped_in_store(store: &mut SessionStore, session_id: &str, stopped: &TunnelSpec) {
+    if let Some(mut profile) = store.profile(session_id) {
+        match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                if let Some(saved) = ssh.tunnels.iter_mut().find(|item| item.id == stopped.id) {
+                    saved.enabled = false;
+                } else {
+                    ssh.tunnels.push(stopped.clone());
+                }
+                let _ = store.upsert_profile(profile);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn remote_forward_key(host: &str, port: u16) -> String {
     format!("{}:{}", host, port)
 }
@@ -4053,6 +6012,7 @@ async fn handle_local_tunnel_client(
     tunnel: TunnelSpec,
     local_stream: TcpStream,
     peer: std::net::SocketAddr,
+    metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let channel = {
         let handle = handle.lock().await;
@@ -4069,6 +6029,7 @@ async fn handle_local_tunnel_client(
     let (mut remote_read, remote_write) = channel.split();
     let (mut local_read, mut local_write) = local_stream.into_split();
 
+    let upload_metrics = Arc::clone(&metrics);
     let local_to_remote = async move {
         let mut buffer = vec![0_u8; 16 * 1024];
         loop {
@@ -4083,6 +6044,7 @@ async fn handle_local_tunnel_client(
                     .map_err(|error| error.to_string())?;
                 break;
             }
+            upload_metrics.add_tcp_to_ssh_bytes(size);
             remote_write
                 .data(&buffer[..size])
                 .await
@@ -4091,10 +6053,12 @@ async fn handle_local_tunnel_client(
         Ok::<(), String>(())
     };
 
+    let download_metrics = Arc::clone(&metrics);
     let remote_to_local = async move {
         while let Some(message) = remote_read.wait().await {
             match message {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    download_metrics.add_ssh_to_tcp_bytes(data.len());
                     local_write
                         .write_all(&data)
                         .await
@@ -4116,6 +6080,7 @@ async fn handle_remote_tunnel_client(
     tunnel: TunnelSpec,
     originator_address: String,
     originator_port: u16,
+    metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let local_stream = TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port))
         .await
@@ -4125,13 +6090,14 @@ async fn handle_remote_tunnel_client(
                 tunnel.target_host, tunnel.target_port, originator_address, originator_port
             )
         })?;
-    pipe_ssh_channel_to_tcp(channel, local_stream, tunnel).await
+    pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
 }
 
 async fn handle_dynamic_tunnel_client(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     mut local_stream: TcpStream,
     peer: std::net::SocketAddr,
+    metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let mut header = [0_u8; 2];
     local_stream
@@ -4231,17 +6197,19 @@ async fn handle_dynamic_tunnel_client(
         target_port,
         enabled: true,
     };
-    pipe_ssh_channel_to_tcp(channel, local_stream, spec).await
+    pipe_ssh_channel_to_tcp(channel, local_stream, spec, metrics).await
 }
 
 async fn pipe_ssh_channel_to_tcp(
     channel: Channel<client::Msg>,
     local_stream: TcpStream,
     tunnel: TunnelSpec,
+    metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let (mut remote_read, remote_write) = channel.split();
     let (mut local_read, mut local_write) = local_stream.into_split();
 
+    let upload_metrics = Arc::clone(&metrics);
     let local_to_remote = async move {
         let mut buffer = vec![0_u8; 16 * 1024];
         loop {
@@ -4256,6 +6224,7 @@ async fn pipe_ssh_channel_to_tcp(
                     .map_err(|error| error.to_string())?;
                 break;
             }
+            upload_metrics.add_tcp_to_ssh_bytes(size);
             remote_write
                 .data(&buffer[..size])
                 .await
@@ -4264,10 +6233,12 @@ async fn pipe_ssh_channel_to_tcp(
         Ok::<(), String>(())
     };
 
+    let download_metrics = Arc::clone(&metrics);
     let remote_to_local = async move {
         while let Some(message) = remote_read.wait().await {
             match message {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    download_metrics.add_ssh_to_tcp_bytes(data.len());
                     local_write
                         .write_all(&data)
                         .await
@@ -4291,6 +6262,63 @@ async fn open_ssh_session(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<SessionSummary, String> {
+    if let Some(existing) = {
+        let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections.remove(&profile.id)
+    } {
+        existing.closed.store(true, Ordering::SeqCst);
+        let handle = existing.handle.lock().await;
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "PortMate reconnect", "en")
+            .await;
+        for jump_handle in existing.jump_handles {
+            let handle = jump_handle.lock().await;
+            let _ = handle
+                .disconnect(Disconnect::ByApplication, "PortMate reconnect jump", "en")
+                .await;
+        }
+    }
+
+    let established = establish_ssh_runtime(state, &profile, password, passphrase).await?;
+    let EstablishedSshRuntime {
+        runtime_id,
+        runtime,
+        tap,
+        read_half,
+        auth_method,
+        closed,
+    } = established;
+    {
+        let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections.insert(profile.id.clone(), runtime);
+    }
+
+    tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
+        state: state.clone(),
+        profile: profile.clone(),
+        runtime_id,
+        tap,
+        read_half,
+        closed,
+    }));
+
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let _ = store.record_auth_success(&profile.id, auth_method);
+    store.record_system_event(
+        &profile.id,
+        format!("PortMate: SSH authentication succeeded via {auth_method:?}"),
+    );
+    let summary = store.open_session(&profile.id)?;
+    save_store(&state.store_path, &store)?;
+    Ok(summary)
+}
+
+async fn establish_ssh_runtime(
+    state: &AppState,
+    profile: &SessionProfile,
+    password: Option<String>,
+    passphrase: Option<String>,
+) -> Result<EstablishedSshRuntime, String> {
     let ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
         _ => return Err("profile is not SSH-backed".to_string()),
@@ -4305,42 +6333,18 @@ async fn open_ssh_session(
         return Err("SSH 用户名不能为空；PortMate 不读取系统 ssh_config 的默认用户名".to_string());
     }
 
-    if let Some(existing) = {
-        let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id)
-    } {
-        let handle = existing.handle.lock().await;
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "PortMate reconnect", "en")
-            .await;
-    }
-
     let mut host_keys = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store.host_keys.clone()
     };
     host_keys.keys.extend(ssh.trusted_host_keys.clone());
+    host_keys
+        .keys
+        .extend(take_one_time_host_keys(state, &profile.id)?);
 
     let observed_key = Arc::new(Mutex::new(None));
     let host_key_error = Arc::new(Mutex::new(None));
     let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
-    let alias = ssh
-        .host_key_policy
-        .alias
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| Some(profile.id.clone()));
-    let handler = PortMateSshHandler {
-        profile_id: profile.id.clone(),
-        host: host.clone(),
-        port: ssh.endpoint.port,
-        alias,
-        policy: ssh.host_key_policy.clone(),
-        host_keys,
-        observed_key: Arc::clone(&observed_key),
-        host_key_error: Arc::clone(&host_key_error),
-        remote_forwards: Arc::clone(&remote_forwards),
-    };
 
     let config = Arc::new(client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
@@ -4349,19 +6353,20 @@ async fn open_ssh_session(
         ..Default::default()
     });
 
-    let mut session = tokio::time::timeout(
-        Duration::from_secs(20),
-        client::connect(config, (host.clone(), ssh.endpoint.port), handler),
-    )
-    .await
-    .map_err(|_| format!("SSH 连接超时: {host}:{}", ssh.endpoint.port))?
-    .map_err(|error| {
-        host_key_error
-            .lock()
-            .ok()
-            .and_then(|reason| reason.clone())
-            .unwrap_or_else(|| format!("SSH 握手失败: {error}"))
-    })?;
+    let (mut session, jump_handles) = connect_ssh_target(SshConnectRequest {
+        config: Arc::clone(&config),
+        store: Arc::clone(&state.store),
+        store_path: state.store_path.clone(),
+        profile,
+        ssh: &ssh,
+        host_keys,
+        observed_key: Arc::clone(&observed_key),
+        host_key_error: Arc::clone(&host_key_error),
+        remote_forwards: Arc::clone(&remote_forwards),
+        password: password.as_deref(),
+        passphrase: passphrase.as_deref(),
+    })
+    .await?;
 
     let auth_method = authenticate_ssh(
         &mut session,
@@ -4391,6 +6396,7 @@ async fn open_ssh_session(
         )
         .await
         .map_err(|error| format!("SSH 请求 PTY 失败: {error}"))?;
+    apply_ssh_terminal_color_env(&channel).await;
     if ssh.agent_policy.forwarding {
         let _ = channel.agent_forward(false).await;
     }
@@ -4403,19 +6409,7 @@ async fn open_ssh_session(
     let (read_half, write_half) = channel.split();
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
-    {
-        let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections.insert(
-            profile.id.clone(),
-            SshRuntime {
-                runtime_id: runtime_id.clone(),
-                handle: Arc::new(tokio::sync::Mutex::new(session)),
-                writer: Arc::clone(&writer),
-                tap: tap.clone(),
-                remote_forwards,
-            },
-        );
-    }
+    let closed = Arc::new(AtomicBool::new(false));
 
     if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
         let writer = writer.lock().await;
@@ -4425,26 +6419,373 @@ async fn open_ssh_session(
             .map_err(|error| format!("Tmux attach 命令发送失败: {error}"))?;
     }
 
-    tauri::async_runtime::spawn(read_ssh_channel(
-        Arc::clone(&state.store),
-        state.runtimes(),
-        Arc::clone(&state.ssh),
-        state.store_path.clone(),
-        profile.id.clone(),
-        runtime_id,
+    Ok(EstablishedSshRuntime {
+        runtime_id: runtime_id.clone(),
+        runtime: SshRuntime {
+            runtime_id: runtime_id.clone(),
+            handle: Arc::new(tokio::sync::Mutex::new(session)),
+            jump_handles,
+            writer,
+            tap: tap.clone(),
+            remote_forwards,
+            closed: Arc::clone(&closed),
+        },
         tap,
         read_half,
-    ));
+        auth_method,
+        closed,
+    })
+}
 
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let _ = store.record_auth_success(&profile.id, auth_method);
-    store.record_system_event(
-        &profile.id,
-        format!("PortMate: SSH authentication succeeded via {auth_method:?}"),
-    );
-    let summary = store.open_session(&profile.id)?;
-    save_store(&state.store_path, &store)?;
-    Ok(summary)
+async fn connect_ssh_target(
+    request: SshConnectRequest<'_>,
+) -> Result<
+    (
+        client::Handle<PortMateSshHandler>,
+        Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
+    ),
+    String,
+> {
+    let SshConnectRequest {
+        config,
+        store,
+        store_path,
+        profile,
+        ssh,
+        host_keys,
+        observed_key,
+        host_key_error,
+        remote_forwards,
+        password,
+        passphrase,
+    } = request;
+
+    let target_host = ssh.endpoint.host.trim().to_string();
+    if target_host.is_empty() {
+        return Err("SSH 主机不能为空".to_string());
+    }
+    if ssh.endpoint.port == 0 {
+        return Err("SSH 端口必须在 1-65535 之间".to_string());
+    }
+
+    let target_handler = ssh_handler_for_endpoint(SshHandlerParams {
+        profile_id: profile.id.clone(),
+        host: target_host.clone(),
+        port: ssh.endpoint.port,
+        alias: ssh
+            .host_key_policy
+            .alias
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| Some(profile.id.clone())),
+        policy: ssh.host_key_policy.clone(),
+        host_keys: host_keys.clone(),
+        observed_key: Arc::clone(&observed_key),
+        host_key_error: Arc::clone(&host_key_error),
+        remote_forwards: Arc::clone(&remote_forwards),
+    });
+
+    if ssh.jumps.is_empty() {
+        let session = tokio::time::timeout(
+            Duration::from_secs(20),
+            client::connect(
+                config,
+                (target_host.clone(), ssh.endpoint.port),
+                target_handler,
+            ),
+        )
+        .await
+        .map_err(|_| format!("SSH 连接超时: {target_host}:{}", ssh.endpoint.port))?
+        .map_err(|error| {
+            host_key_error
+                .lock()
+                .ok()
+                .and_then(|reason| reason.clone())
+                .unwrap_or_else(|| format!("SSH 握手失败: {error}"))
+        })?;
+        return Ok((session, Vec::new()));
+    }
+
+    let mut jump_sessions: Vec<client::Handle<PortMateSshHandler>> = Vec::new();
+    for (index, jump) in ssh.jumps.iter().enumerate() {
+        let (jump_host, jump_port, jump_username) = jump_endpoint_details(jump, index)?;
+        let jump_policy = jump_host_key_policy(ssh, jump);
+        let observed_jump_key = Arc::new(Mutex::new(None));
+        let jump_key_error = Arc::new(Mutex::new(None));
+        let jump_ssh = jump_ssh_connection(ssh, jump, jump_policy.clone());
+        let jump_handler = ssh_handler_for_endpoint(SshHandlerParams {
+            profile_id: profile.id.clone(),
+            host: jump_host.clone(),
+            port: jump_port,
+            alias: jump_policy.alias.clone(),
+            policy: jump_ssh.host_key_policy.clone(),
+            host_keys: host_keys.clone(),
+            observed_key: Arc::clone(&observed_jump_key),
+            host_key_error: Arc::clone(&jump_key_error),
+            remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let mut jump_session = if let Some(previous_jump) = jump_sessions.last_mut() {
+            let jump_channel = match previous_jump
+                .channel_open_direct_tcpip(jump_host.clone(), u32::from(jump_port), "127.0.0.1", 0)
+                .await
+            {
+                Ok(channel) => channel,
+                Err(error) => {
+                    disconnect_jump_sessions(jump_sessions, "PortMate jump chain channel failed")
+                        .await;
+                    return Err(format!(
+                        "Jump Host 第 {} 跳打开 direct-tcpip 到 {jump_host}:{jump_port} 失败: {error}",
+                        index + 1
+                    ));
+                }
+            };
+            match tokio::time::timeout(
+                Duration::from_secs(20),
+                client::connect_stream(config.clone(), jump_channel.into_stream(), jump_handler),
+            )
+            .await
+            {
+                Ok(Ok(session)) => session,
+                Err(_) => {
+                    disconnect_jump_sessions(jump_sessions, "PortMate jump chain connect timeout")
+                        .await;
+                    return Err(format!(
+                        "Jump Host 第 {} 跳连接超时: {jump_host}:{jump_port}",
+                        index + 1
+                    ));
+                }
+                Ok(Err(error)) => {
+                    let message = jump_key_error
+                        .lock()
+                        .ok()
+                        .and_then(|reason| reason.clone())
+                        .unwrap_or_else(|| {
+                            format!("Jump Host 第 {} 跳 SSH 握手失败: {error}", index + 1)
+                        });
+                    disconnect_jump_sessions(jump_sessions, "PortMate jump chain handshake failed")
+                        .await;
+                    return Err(message);
+                }
+            }
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
+            )
+            .await
+            .map_err(|_| format!("Jump Host 连接超时: {jump_host}:{jump_port}"))?
+            .map_err(|error| {
+                jump_key_error
+                    .lock()
+                    .ok()
+                    .and_then(|reason| reason.clone())
+                    .unwrap_or_else(|| format!("Jump Host SSH 握手失败: {error}"))
+            })?
+        };
+
+        if let Err(error) = authenticate_ssh(
+            &mut jump_session,
+            jump_ssh,
+            jump_username,
+            password.map(str::to_string),
+            passphrase.map(str::to_string),
+        )
+        .await
+        {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump authentication failed").await;
+            let _ = jump_session
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate jump authentication failed",
+                    "en",
+                )
+                .await;
+            return Err(format!("Jump Host 第 {} 跳认证失败: {error}", index + 1));
+        }
+        if let Err(error) = persist_observed_host_key_with_policy(
+            &store,
+            &store_path,
+            &profile.id,
+            &jump_policy,
+            &observed_jump_key,
+            &format!("Jump Host #{}", index + 1),
+        ) {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump host key rejected").await;
+            let _ = jump_session
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate jump host key rejected",
+                    "en",
+                )
+                .await;
+            return Err(error);
+        }
+        jump_sessions.push(jump_session);
+    }
+
+    let jump_channel = match jump_sessions
+        .last_mut()
+        .expect("non-empty jumps should create jump sessions")
+        .channel_open_direct_tcpip(
+            target_host.clone(),
+            u32::from(ssh.endpoint.port),
+            "127.0.0.1",
+            0,
+        )
+        .await
+    {
+        Ok(channel) => channel,
+        Err(error) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump target channel failed").await;
+            return Err(format!(
+                "Jump Host 打开 direct-tcpip 到 {target_host}:{} 失败: {error}",
+                ssh.endpoint.port
+            ));
+        }
+    };
+    let target_session = match tokio::time::timeout(
+        Duration::from_secs(20),
+        client::connect_stream(config, jump_channel.into_stream(), target_handler),
+    )
+    .await
+    {
+        Ok(Ok(session)) => session,
+        Err(_) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump target connect timeout").await;
+            return Err(format!(
+                "SSH 经 Jump Host 连接超时: {target_host}:{}",
+                ssh.endpoint.port
+            ));
+        }
+        Ok(Err(error)) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump target handshake failed").await;
+            return Err(host_key_error
+                .lock()
+                .ok()
+                .and_then(|reason| reason.clone())
+                .unwrap_or_else(|| format!("SSH 经 Jump Host 握手失败: {error}")));
+        }
+    };
+
+    Ok((
+        target_session,
+        jump_sessions
+            .into_iter()
+            .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
+            .collect(),
+    ))
+}
+
+fn jump_endpoint_details(
+    jump: &portmate_core::JumpHop,
+    index: usize,
+) -> Result<(String, u16, String), String> {
+    let label = format!("Jump Host 第 {} 跳", index + 1);
+    let host = jump.host.trim().to_string();
+    if host.is_empty() {
+        return Err(format!("{label} 主机不能为空"));
+    }
+    if jump.port == 0 {
+        return Err(format!("{label} 端口必须在 1-65535 之间"));
+    }
+    let username = jump.username.trim().to_string();
+    if username.is_empty() {
+        return Err(format!("{label} 用户名不能为空"));
+    }
+    Ok((host, jump.port, username))
+}
+
+async fn disconnect_jump_sessions(
+    jump_sessions: Vec<client::Handle<PortMateSshHandler>>,
+    reason: &str,
+) {
+    for session in jump_sessions {
+        let _ = session
+            .disconnect(Disconnect::ByApplication, reason, "en")
+            .await;
+    }
+}
+
+fn ssh_handler_for_endpoint(params: SshHandlerParams) -> PortMateSshHandler {
+    PortMateSshHandler {
+        profile_id: params.profile_id,
+        host: params.host,
+        port: params.port,
+        alias: params.alias,
+        policy: params.policy,
+        host_keys: params.host_keys,
+        observed_key: params.observed_key,
+        host_key_error: params.host_key_error,
+        remote_forwards: params.remote_forwards,
+    }
+}
+
+fn jump_host_key_policy(
+    ssh: &SshConnection,
+    jump: &portmate_core::JumpHop,
+) -> portmate_core::HostKeyPolicy {
+    let default_alias = format!("jump:{}:{}", jump.host.trim(), jump.port);
+    let mut policy = if let Some(custom) = jump.host_key_policy.clone() {
+        custom
+    } else {
+        let mut inherited = ssh.host_key_policy.clone();
+        inherited.alias = Some(default_alias.clone());
+        inherited.trust_scope = HostKeyScope::Profile;
+        inherited
+    };
+    policy.alias = policy
+        .alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .map(str::to_string)
+        .or(Some(default_alias));
+    policy
+}
+
+fn jump_ssh_connection(
+    ssh: &SshConnection,
+    jump: &portmate_core::JumpHop,
+    host_key_policy: portmate_core::HostKeyPolicy,
+) -> SshConnection {
+    let mut identity_refs = ssh.identity_refs.clone();
+    if let Some(identity_ref) = jump
+        .identity_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        identity_refs.retain(|identity| identity.id == identity_ref);
+    }
+    SshConnection {
+        endpoint: portmate_core::HostEndpoint {
+            host: jump.host.trim().to_string(),
+            port: jump.port,
+        },
+        username: jump.username.trim().to_string(),
+        reconnect: ssh.reconnect,
+        password_secret_ref: jump
+            .password_secret_ref
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| ssh.password_secret_ref.clone()),
+        passphrase_secret_ref: jump
+            .passphrase_secret_ref
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| ssh.passphrase_secret_ref.clone()),
+        host_key_policy,
+        trusted_host_keys: Vec::new(),
+        identity_policy: ssh.identity_policy.clone(),
+        identity_refs,
+        agent_policy: ssh.agent_policy.clone(),
+        jumps: Vec::new(),
+        tunnels: Vec::new(),
+    }
 }
 
 fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<SessionSummary, String> {
@@ -4480,7 +6821,7 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
 
     let mut command = CommandBuilder::new(&program);
     command.args(shell.args.iter());
-    command.env("TERM", profile.terminal.term.as_str());
+    apply_shell_terminal_color_env(&mut command, profile.terminal.term.as_str());
     if let Some(cwd) = shell
         .cwd
         .as_deref()
@@ -4527,19 +6868,16 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
 
     if let Err(error) = std::thread::Builder::new()
         .name(format!("portmate-shell-{}", profile.id))
-        .spawn(read_shell_pty(
-            Arc::clone(&state.store),
-            state.runtimes(),
-            Arc::clone(&state.shell),
-            state.store_path.clone(),
-            profile.id.clone(),
+        .spawn(read_shell_pty(ShellReadTask {
+            io: state.session_io(),
+            session_id: profile.id.clone(),
             runtime_id,
-            program.clone(),
+            program: program.clone(),
             tap,
             closed,
             child,
             reader,
-        ))
+        }))
     {
         let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id);
@@ -4553,10 +6891,7 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
     Ok(summary)
 }
 
-async fn open_tcp_session(
-    state: &AppState,
-    profile: SessionProfile,
-) -> Result<SessionSummary, String> {
+fn tcp_connection_details(profile: &SessionProfile) -> Result<(String, u16, &'static str), String> {
     let (host, port, label) = match &profile.connection {
         ConnectionConfig::Tcp(tcp) => (tcp.host.trim().to_string(), tcp.port, "TCP"),
         ConnectionConfig::Telnet(tcp) => (tcp.host.trim().to_string(), tcp.port, "Telnet"),
@@ -4568,30 +6903,48 @@ async fn open_tcp_session(
     if port == 0 {
         return Err(format!("{label} 端口不能为空"));
     }
+    Ok((host, port, label))
+}
 
+fn tcp_reconnect_enabled(profile: &SessionProfile) -> bool {
+    match &profile.connection {
+        ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => tcp.reconnect,
+        _ => false,
+    }
+}
+
+async fn connect_tcp_socket(host: &str, port: u16, label: &str) -> Result<TcpStream, String> {
+    let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| format!("{label} 连接超时: {host}:{port}"))?
+        .map_err(|error| format!("{label} 连接失败: {host}:{port}: {error}"))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|error| format!("{label} 设置 TCP_NODELAY 失败: {error}"))?;
+    Ok(stream)
+}
+
+async fn open_tcp_session(
+    state: &AppState,
+    profile: SessionProfile,
+) -> Result<SessionSummary, String> {
+    let (host, port, label) = tcp_connection_details(&profile)?;
     if let Some(existing) = {
         let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id)
     } {
+        existing.closed.store(true, Ordering::SeqCst);
         let mut writer = existing.writer.lock().await;
         let _ = writer.shutdown().await;
     }
 
-    let stream = tokio::time::timeout(
-        Duration::from_secs(15),
-        TcpStream::connect((host.clone(), port)),
-    )
-    .await
-    .map_err(|_| format!("{label} 连接超时: {host}:{port}"))?
-    .map_err(|error| format!("{label} 连接失败: {host}:{port}: {error}"))?;
-    stream
-        .set_nodelay(true)
-        .map_err(|error| format!("{label} 设置 TCP_NODELAY 失败: {error}"))?;
+    let stream = connect_tcp_socket(&host, port, label).await?;
 
     let runtime_id = Uuid::new_v4().to_string();
     let (read_half, write_half) = stream.into_split();
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
+    let closed = Arc::new(AtomicBool::new(false));
     {
         let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
         connections.insert(
@@ -4600,22 +6953,21 @@ async fn open_tcp_session(
                 runtime_id: runtime_id.clone(),
                 writer: Arc::clone(&writer),
                 tap: tap.clone(),
+                closed: Arc::clone(&closed),
             },
         );
     }
 
-    tauri::async_runtime::spawn(read_tcp_stream(
-        Arc::clone(&state.store),
-        state.runtimes(),
-        Arc::clone(&state.tcp),
-        state.store_path.clone(),
-        profile.id.clone(),
+    tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
+        state: state.clone(),
+        profile: profile.clone(),
         runtime_id,
-        label.to_string(),
+        label: label.to_string(),
         tap,
-        Arc::clone(&writer),
+        writer: Arc::clone(&writer),
         read_half,
-    ));
+        closed,
+    }));
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     store.record_system_event(&profile.id, format!("PortMate: {label} socket connected"));
@@ -4624,10 +6976,9 @@ async fn open_tcp_session(
     Ok(summary)
 }
 
-fn open_serial_session(
-    state: &AppState,
-    profile: SessionProfile,
-) -> Result<SessionSummary, String> {
+fn serial_connection_details(
+    profile: &SessionProfile,
+) -> Result<(portmate_core::SerialConnection, String), String> {
     let serial = match &profile.connection {
         ConnectionConfig::Serial(serial) => serial.clone(),
         _ => return Err("profile is not serial-backed".to_string()),
@@ -4636,15 +6987,21 @@ fn open_serial_session(
     if port_name.is_empty() {
         return Err("串口不能为空".to_string());
     }
+    Ok((serial, port_name))
+}
 
-    if let Some(existing) = {
-        let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id)
-    } {
-        existing.closed.store(true, Ordering::SeqCst);
+fn serial_reconnect_enabled(profile: &SessionProfile) -> bool {
+    match &profile.connection {
+        ConnectionConfig::Serial(serial) => serial.reconnect,
+        _ => false,
     }
+}
 
-    let mut port = serialport::new(&port_name, serial.baud_rate)
+fn open_configured_serial_port(
+    serial: &portmate_core::SerialConnection,
+    port_name: &str,
+) -> Result<SerialPortPair, String> {
+    let mut port = serialport::new(port_name, serial.baud_rate)
         .data_bits(serial_data_bits(serial.data_bits))
         .stop_bits(serial_stop_bits(serial.stop_bits))
         .parity(serial_parity(&serial.parity))
@@ -4660,6 +7017,23 @@ fn open_serial_session(
     let reader = port
         .try_clone()
         .map_err(|error| format!("串口 reader 克隆失败: {error}"))?;
+    Ok((port, reader))
+}
+
+fn open_serial_session(
+    state: &AppState,
+    profile: SessionProfile,
+) -> Result<SessionSummary, String> {
+    let (serial, port_name) = serial_connection_details(&profile)?;
+
+    if let Some(existing) = {
+        let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
+        connections.remove(&profile.id)
+    } {
+        existing.closed.store(true, Ordering::SeqCst);
+    }
+
+    let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
     let (tap, _) = broadcast::channel(1024);
@@ -4670,28 +7044,22 @@ fn open_serial_session(
             profile.id.clone(),
             SerialRuntime {
                 runtime_id: runtime_id.clone(),
-                writer,
+                writer: Some(writer),
                 tap: tap.clone(),
                 closed: Arc::clone(&closed),
             },
         );
     }
 
-    if let Err(error) = std::thread::Builder::new()
-        .name(format!("portmate-serial-{}", profile.id))
-        .spawn(read_serial_port(
-            Arc::clone(&state.store),
-            state.runtimes(),
-            Arc::clone(&state.serial),
-            state.store_path.clone(),
-            profile.id.clone(),
-            runtime_id,
-            port_name.clone(),
-            tap,
-            closed,
-            reader,
-        ))
-    {
+    if let Err(error) = spawn_serial_reader(SerialReadTask {
+        io: state.session_io(),
+        profile: profile.clone(),
+        runtime_id,
+        port_name: port_name.clone(),
+        tap,
+        closed,
+        reader,
+    }) {
         let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id);
         return Err(format!("串口读取线程启动失败: {error}"));
@@ -5193,6 +7561,22 @@ fn read_secret_from_keyring(secret_ref: &str) -> Result<String, String> {
         .map_err(|error| format!("读取系统密钥库失败: {error:?}"))
 }
 
+fn has_secret_ref(secret_ref: &str) -> bool {
+    read_secret_from_keyring(secret_ref).is_ok()
+}
+
+fn build_mcp_http_config(token_available: bool) -> McpHttpConfig {
+    McpHttpConfig {
+        endpoint: format!("http://{MCP_HTTP_DEFAULT_ADDR}/mcp"),
+        token_ref: MCP_HTTP_TOKEN_REF.to_string(),
+        token_available,
+        default_origin: format!("http://{MCP_HTTP_DEFAULT_ADDR}"),
+        start_command: format!(
+            "PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR={MCP_HTTP_DEFAULT_ADDR} PORTMATE_MCP_HTTP_ORIGINS=http://{MCP_HTTP_DEFAULT_ADDR} cargo run -p portmate-mcp -- --http"
+        ),
+    }
+}
+
 fn read_optional_secret_ref(
     secret_ref: Option<&str>,
     label: &str,
@@ -5298,6 +7682,139 @@ fn persist_observed_host_key(
     }
 }
 
+fn temporary_trusted_host_key(
+    store: &SessionStore,
+    profile_id: &str,
+    observation: &HostKeyObservation,
+) -> Result<portmate_core::TrustedHostKey, String> {
+    let profile = store
+        .profile(profile_id)
+        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    let policy = match profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
+        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
+    };
+    Ok(portmate_core::TrustedHostKey {
+        id: Uuid::new_v4().to_string(),
+        profile_id: Some(profile_id.to_string()),
+        alias: observation.target_alias(&policy).to_string(),
+        host: observation.host.clone(),
+        port: observation.port,
+        algorithm: observation.algorithm.clone(),
+        fingerprint_sha256: observation
+            .fingerprint_sha256()
+            .map_err(|error| error.to_string())?,
+        public_key_base64: observation.public_key_base64.clone(),
+        scope: HostKeyScope::Profile,
+        label: Some("trust once".to_string()),
+        first_seen: Utc::now(),
+        last_seen: Utc::now(),
+    })
+}
+
+fn remember_one_time_host_key(
+    state: &AppState,
+    profile_id: &str,
+    key: portmate_core::TrustedHostKey,
+) -> Result<(), String> {
+    remember_one_time_host_key_in(&state.one_time_host_keys, profile_id, key)
+}
+
+fn take_one_time_host_keys(
+    state: &AppState,
+    profile_id: &str,
+) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
+    take_one_time_host_keys_from(&state.one_time_host_keys, profile_id)
+}
+
+fn one_time_host_keys_snapshot(
+    state: &AppState,
+    profile_id: &str,
+) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
+    one_time_host_keys_snapshot_from(&state.one_time_host_keys, profile_id)
+}
+
+fn remember_one_time_host_key_in(
+    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
+    profile_id: &str,
+    key: portmate_core::TrustedHostKey,
+) -> Result<(), String> {
+    let mut one_time = one_time.lock().map_err(|error| error.to_string())?;
+    one_time
+        .entry(profile_id.to_string())
+        .or_default()
+        .push(key);
+    Ok(())
+}
+
+fn take_one_time_host_keys_from(
+    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
+    profile_id: &str,
+) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
+    let mut one_time = one_time.lock().map_err(|error| error.to_string())?;
+    Ok(one_time.remove(profile_id).unwrap_or_default())
+}
+
+fn one_time_host_keys_snapshot_from(
+    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
+    profile_id: &str,
+) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
+    let one_time = one_time.lock().map_err(|error| error.to_string())?;
+    Ok(one_time.get(profile_id).cloned().unwrap_or_default())
+}
+
+fn persist_observed_host_key_with_policy(
+    store: &Arc<Mutex<SessionStore>>,
+    store_path: &Path,
+    profile_id: &str,
+    policy: &portmate_core::HostKeyPolicy,
+    observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
+    label: &str,
+) -> Result<(), String> {
+    let observation = observed_key
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone()
+        .ok_or_else(|| format!("{label} 未收到服务器 host key"))?;
+    let mut store = store.lock().map_err(|error| error.to_string())?;
+    match store.host_keys.evaluate(profile_id, policy, &observation) {
+        Ok(HostKeyEvaluation::Trusted {
+            fingerprint_sha256, ..
+        }) => {
+            store.record_system_event(
+                profile_id,
+                format!(
+                    "PortMate: {label} host key verified ({}, {})",
+                    observation.algorithm, fingerprint_sha256
+                ),
+            );
+        }
+        Ok(HostKeyEvaluation::Unknown {
+            fingerprint_sha256, ..
+        }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
+            store
+                .host_keys
+                .apply_decision(
+                    profile_id,
+                    policy,
+                    &observation,
+                    HostKeyDecision::AppendToProfile,
+                )
+                .map_err(|error| error.to_string())?;
+            store.record_system_event(
+                profile_id,
+                format!(
+                    "PortMate: {label} host key trusted for this profile ({}, {})",
+                    observation.algorithm, fingerprint_sha256
+                ),
+            );
+        }
+        Ok(other) => return Err(describe_host_key_rejection(&other)),
+        Err(error) => return Err(error.to_string()),
+    }
+    save_store(store_path, &store)
+}
+
 fn profile_trusts_observation(
     store: &SessionStore,
     profile_id: &str,
@@ -5324,123 +7841,299 @@ fn profile_trusts_observation(
     })
 }
 
-async fn read_ssh_channel(
-    store: Arc<Mutex<SessionStore>>,
-    runtimes: RuntimeRegistry,
-    ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
-    store_path: PathBuf,
-    session_id: String,
-    runtime_id: String,
-    tap: broadcast::Sender<Vec<u8>>,
-    mut read_half: ChannelReadHalf,
-) {
-    let mut last_persist = Instant::now();
-    let mut has_unpersisted_stream = false;
+fn read_ssh_channel(
+    task: SshReadTask,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    Box::pin(async move {
+        let SshReadTask {
+            state,
+            profile,
+            runtime_id,
+            tap,
+            mut read_half,
+            closed,
+        } = task;
+        let io = state.session_io();
+        let session_id = profile.id.clone();
+        let mut last_persist = Instant::now();
+        let mut has_unpersisted_stream = false;
 
-    while let Some(message) = read_half.wait().await {
-        match message {
-            ChannelMsg::Data { data } => {
-                let bytes = data.to_vec();
-                let _ = tap.send(bytes.clone());
-                record_channel_text(
-                    &store,
-                    &runtimes,
-                    &store_path,
-                    &session_id,
-                    EventStream::Stdout,
-                    String::from_utf8_lossy(&bytes).to_string(),
-                );
-                has_unpersisted_stream = true;
+        while let Some(message) = read_half.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    let bytes = data.to_vec();
+                    let _ = tap.send(bytes.clone());
+                    record_channel_text(
+                        &io,
+                        &session_id,
+                        EventStream::Stdout,
+                        String::from_utf8_lossy(&bytes).to_string(),
+                    );
+                    has_unpersisted_stream = true;
+                }
+                ChannelMsg::ExtendedData { data, ext } => {
+                    let bytes = data.to_vec();
+                    let _ = tap.send(bytes.clone());
+                    let stream = if ext == 1 {
+                        EventStream::Stderr
+                    } else {
+                        EventStream::Stdout
+                    };
+                    record_channel_text(
+                        &io,
+                        &session_id,
+                        stream,
+                        String::from_utf8_lossy(&bytes).to_string(),
+                    );
+                    has_unpersisted_stream = true;
+                }
+                ChannelMsg::ExitStatus { exit_status } => {
+                    if let Ok(mut store) = io.store.lock() {
+                        store.record_system_event(
+                            &session_id,
+                            format!(
+                                "PortMate: SSH remote process exited with status {exit_status}"
+                            ),
+                        );
+                        if let Err(error) = save_store(&io.store_path, &store) {
+                            eprintln!("PortMate: failed to persist SSH exit status: {error}");
+                        }
+                    }
+                }
+                ChannelMsg::ExitSignal {
+                    signal_name,
+                    error_message,
+                    ..
+                } => {
+                    if let Ok(mut store) = io.store.lock() {
+                        store.record_system_event(
+                            &session_id,
+                            format!(
+                                "PortMate: SSH remote process exited by signal {signal_name:?} {error_message}"
+                            ),
+                        );
+                        if let Err(error) = save_store(&io.store_path, &store) {
+                            eprintln!("PortMate: failed to persist SSH exit signal: {error}");
+                        }
+                    }
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
             }
-            ChannelMsg::ExtendedData { data, ext } => {
-                let bytes = data.to_vec();
-                let _ = tap.send(bytes.clone());
-                let stream = if ext == 1 {
-                    EventStream::Stderr
+
+            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
+                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
+                    eprintln!("PortMate: failed to persist SSH stream data: {error}");
+                }
+                has_unpersisted_stream = false;
+                last_persist = Instant::now();
+            }
+        }
+
+        if has_unpersisted_stream {
+            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
+                eprintln!("PortMate: failed to persist final SSH stream data: {error}");
+            }
+        }
+
+        let mut should_reconnect = false;
+        let removed_current = {
+            let mut connections = match io.runtimes.ssh.lock() {
+                Ok(connections) => connections,
+                Err(_) => return,
+            };
+            if connections
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+            {
+                if ssh_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
+                    should_reconnect = true;
+                    false
                 } else {
-                    EventStream::Stdout
-                };
-                record_channel_text(
-                    &store,
-                    &runtimes,
-                    &store_path,
-                    &session_id,
-                    stream,
-                    String::from_utf8_lossy(&bytes).to_string(),
-                );
-                has_unpersisted_stream = true;
-            }
-            ChannelMsg::ExitStatus { exit_status } => {
-                if let Ok(mut store) = store.lock() {
-                    store.record_system_event(
-                        &session_id,
-                        format!("PortMate: SSH remote process exited with status {exit_status}"),
-                    );
-                    if let Err(error) = save_store(&store_path, &store) {
-                        eprintln!("PortMate: failed to persist SSH exit status: {error}");
-                    }
+                    connections.remove(&session_id);
+                    true
                 }
+            } else {
+                false
             }
-            ChannelMsg::ExitSignal {
-                signal_name,
-                error_message,
-                ..
-            } => {
-                if let Ok(mut store) = store.lock() {
-                    store.record_system_event(
-                        &session_id,
-                        format!(
-                            "PortMate: SSH remote process exited by signal {signal_name:?} {error_message}"
-                        ),
-                    );
-                    if let Err(error) = save_store(&store_path, &store) {
-                        eprintln!("PortMate: failed to persist SSH exit signal: {error}");
-                    }
-                }
-            }
-            ChannelMsg::Eof | ChannelMsg::Close => break,
-            _ => {}
-        }
-
-        if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-            if let Err(error) = persist_store_arc(&store_path, &store) {
-                eprintln!("PortMate: failed to persist SSH stream data: {error}");
-            }
-            has_unpersisted_stream = false;
-            last_persist = Instant::now();
-        }
-    }
-
-    if has_unpersisted_stream {
-        if let Err(error) = persist_store_arc(&store_path, &store) {
-            eprintln!("PortMate: failed to persist final SSH stream data: {error}");
-        }
-    }
-
-    let removed_current = {
-        let mut connections = match ssh.lock() {
-            Ok(connections) => connections,
-            Err(_) => return,
         };
-        if connections
-            .get(&session_id)
-            .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-        {
-            connections.remove(&session_id);
-            true
-        } else {
-            false
-        }
-    };
 
-    if removed_current {
-        if let Ok(mut store) = store.lock() {
-            let _ = store.set_runtime_status(&session_id, SessionStatus::Disconnected);
-            store.record_system_event(&session_id, "PortMate: SSH channel closed");
-            if let Err(error) = save_store(&store_path, &store) {
-                eprintln!("PortMate: failed to persist SSH close event: {error}");
+        if should_reconnect {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Reconnecting,
+                    Some("SSH channel closed".to_string()),
+                );
+                store.record_system_event(
+                    &session_id,
+                    "PortMate: SSH channel closed; reconnecting in 1000ms",
+                );
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    eprintln!("PortMate: failed to persist SSH reconnect event: {error}");
+                }
+            }
+            tauri::async_runtime::spawn(reconnect_ssh_session(state, profile, runtime_id, closed));
+            return;
+        }
+
+        if removed_current {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Disconnected,
+                    Some("SSH channel closed".to_string()),
+                );
+                store.record_system_event(&session_id, "PortMate: SSH channel closed");
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    eprintln!("PortMate: failed to persist SSH close event: {error}");
+                }
             }
         }
+    })
+}
+
+fn ssh_reconnect_enabled(profile: &SessionProfile) -> bool {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.reconnect,
+        _ => false,
+    }
+}
+
+fn ssh_reconnect_pending(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    if closed.load(Ordering::SeqCst) {
+        return false;
+    }
+    state
+        .ssh
+        .lock()
+        .ok()
+        .and_then(|connections| {
+            connections
+                .get(session_id)
+                .map(|runtime| runtime.runtime_id == runtime_id)
+        })
+        .unwrap_or(false)
+}
+
+async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
+    runtime.closed.store(true, Ordering::SeqCst);
+    let handle = runtime.handle.lock().await;
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, reason, "en")
+        .await;
+    drop(handle);
+    for jump_handle in runtime.jump_handles {
+        let handle = jump_handle.lock().await;
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, reason, "en")
+            .await;
+    }
+}
+
+async fn reconnect_ssh_session(
+    state: AppState,
+    profile: SessionProfile,
+    previous_runtime_id: String,
+    closed: Arc<AtomicBool>,
+) {
+    let session_id = profile.id.clone();
+    let reconnect_delay = Duration::from_millis(1000);
+
+    loop {
+        tokio::time::sleep(reconnect_delay).await;
+        if !ssh_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+            return;
+        }
+
+        let established = match establish_ssh_runtime(&state, &profile, None, None).await {
+            Ok(established) => established,
+            Err(error) => {
+                if !ssh_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+                    return;
+                }
+                if let Ok(mut store) = state.store.lock() {
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Reconnecting,
+                        Some(format!("SSH reconnect failed: {error}")),
+                    );
+                    store.record_system_event(
+                        &session_id,
+                        format!("PortMate: SSH reconnect failed: {error}; retrying in 1000ms"),
+                    );
+                    if let Err(error) = save_store(&state.store_path, &store) {
+                        eprintln!("PortMate: failed to persist SSH reconnect failure: {error}");
+                    }
+                }
+                continue;
+            }
+        };
+
+        let EstablishedSshRuntime {
+            runtime_id,
+            runtime,
+            tap,
+            read_half,
+            auth_method,
+            closed: next_closed,
+        } = established;
+        let mut runtime = Some(runtime);
+        let inserted = {
+            let mut connections = match state.ssh.lock() {
+                Ok(connections) => connections,
+                Err(_) => return,
+            };
+            if connections
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
+                && !closed.load(Ordering::SeqCst)
+            {
+                connections.insert(session_id.clone(), runtime.take().expect("runtime present"));
+                true
+            } else {
+                false
+            }
+        };
+
+        if !inserted {
+            if let Some(runtime) = runtime {
+                disconnect_ssh_runtime(runtime, "PortMate SSH reconnect superseded").await;
+            }
+            return;
+        }
+
+        tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
+            state: state.clone(),
+            profile: profile.clone(),
+            runtime_id,
+            tap,
+            read_half,
+            closed: next_closed,
+        }));
+
+        if let Ok(mut store) = state.store.lock() {
+            let _ = store.record_auth_success(&session_id, auth_method);
+            store.record_system_event(
+                &session_id,
+                format!("PortMate: SSH session reconnected via {auth_method:?}"),
+            );
+            if let Err(error) = store.open_session(&session_id) {
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: SSH reconnect status update failed: {error}"),
+                );
+            }
+            if let Err(error) = save_store(&state.store_path, &store) {
+                eprintln!("PortMate: failed to persist SSH reconnect success: {error}");
+            }
+        }
+        return;
     }
 }
 
@@ -5572,128 +8265,313 @@ fn telnet_subnegotiation_reply(payload: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-async fn read_tcp_stream(
-    store: Arc<Mutex<SessionStore>>,
-    runtimes: RuntimeRegistry,
-    tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
-    store_path: PathBuf,
-    session_id: String,
+struct TcpReadTask {
+    state: AppState,
+    profile: SessionProfile,
     runtime_id: String,
     label: String,
     tap: broadcast::Sender<Vec<u8>>,
     writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
-    mut read_half: OwnedReadHalf,
-) {
-    let mut buffer = vec![0_u8; 8192];
-    let mut last_persist = Instant::now();
-    let mut has_unpersisted_stream = false;
-    let mut telnet = (label == "Telnet").then(TelnetNegotiator::new);
+    read_half: OwnedReadHalf,
+    closed: Arc<AtomicBool>,
+}
 
-    loop {
-        match read_half.read(&mut buffer).await {
-            Ok(0) => break,
-            Ok(size) => {
-                let (bytes, replies) = if let Some(negotiator) = telnet.as_mut() {
-                    negotiator.filter(&buffer[..size])
-                } else {
-                    (buffer[..size].to_vec(), Vec::new())
-                };
-                for reply in replies {
-                    let mut writer = writer.lock().await;
-                    if let Err(error) = writer.write_all(&reply).await {
-                        if let Ok(mut store) = store.lock() {
-                            store.record_system_event(
-                                &session_id,
-                                format!("PortMate: Telnet negotiation reply failed: {error}"),
-                            );
+fn read_tcp_stream(
+    task: TcpReadTask,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    Box::pin(async move {
+        let TcpReadTask {
+            state,
+            profile,
+            runtime_id,
+            label,
+            tap,
+            writer,
+            mut read_half,
+            closed,
+        } = task;
+        let io = state.session_io();
+        let session_id = profile.id.clone();
+        let mut buffer = vec![0_u8; 8192];
+        let mut last_persist = Instant::now();
+        let mut has_unpersisted_stream = false;
+        let mut telnet = (label == "Telnet").then(TelnetNegotiator::new);
+
+        loop {
+            match read_half.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(size) => {
+                    let (bytes, replies) = if let Some(negotiator) = telnet.as_mut() {
+                        negotiator.filter(&buffer[..size])
+                    } else {
+                        (buffer[..size].to_vec(), Vec::new())
+                    };
+                    for reply in replies {
+                        let mut writer = writer.lock().await;
+                        if let Err(error) = writer.write_all(&reply).await {
+                            if let Ok(mut store) = io.store.lock() {
+                                store.record_system_event(
+                                    &session_id,
+                                    format!("PortMate: Telnet negotiation reply failed: {error}"),
+                                );
+                            }
+                            break;
                         }
-                        break;
                     }
-                }
-                if bytes.is_empty() {
-                    continue;
-                }
-                let _ = tap.send(bytes.clone());
-                record_channel_text(
-                    &store,
-                    &runtimes,
-                    &store_path,
-                    &session_id,
-                    EventStream::Stdout,
-                    String::from_utf8_lossy(&bytes).to_string(),
-                );
-                has_unpersisted_stream = true;
-            }
-            Err(error) => {
-                if let Ok(mut store) = store.lock() {
-                    store.record_system_event(
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    let _ = tap.send(bytes.clone());
+                    record_channel_text(
+                        &io,
                         &session_id,
-                        format!("PortMate: {label} read failed: {error}"),
+                        EventStream::Stdout,
+                        String::from_utf8_lossy(&bytes).to_string(),
                     );
-                    if let Err(error) = save_store(&store_path, &store) {
-                        eprintln!("PortMate: failed to persist {label} read error: {error}");
-                    }
+                    has_unpersisted_stream = true;
                 }
-                break;
+                Err(error) => {
+                    if let Ok(mut store) = io.store.lock() {
+                        store.record_system_event(
+                            &session_id,
+                            format!("PortMate: {label} read failed: {error}"),
+                        );
+                        if let Err(error) = save_store(&io.store_path, &store) {
+                            eprintln!("PortMate: failed to persist {label} read error: {error}");
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
+                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
+                    eprintln!("PortMate: failed to persist {label} stream data: {error}");
+                }
+                has_unpersisted_stream = false;
+                last_persist = Instant::now();
             }
         }
 
-        if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-            if let Err(error) = persist_store_arc(&store_path, &store) {
-                eprintln!("PortMate: failed to persist {label} stream data: {error}");
+        if has_unpersisted_stream {
+            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
+                eprintln!("PortMate: failed to persist final {label} stream data: {error}");
             }
-            has_unpersisted_stream = false;
-            last_persist = Instant::now();
         }
-    }
 
-    if has_unpersisted_stream {
-        if let Err(error) = persist_store_arc(&store_path, &store) {
-            eprintln!("PortMate: failed to persist final {label} stream data: {error}");
-        }
-    }
-
-    let removed_current = {
-        let mut connections = match tcp.lock() {
-            Ok(connections) => connections,
-            Err(_) => return,
+        let mut should_reconnect = false;
+        let removed_current = {
+            let mut connections = match io.runtimes.tcp.lock() {
+                Ok(connections) => connections,
+                Err(_) => return,
+            };
+            if connections
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+            {
+                if tcp_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
+                    should_reconnect = true;
+                    false
+                } else {
+                    connections.remove(&session_id);
+                    true
+                }
+            } else {
+                false
+            }
         };
-        if connections
-            .get(&session_id)
-            .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-        {
-            connections.remove(&session_id);
-            true
-        } else {
-            false
+
+        if should_reconnect {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Reconnecting,
+                    Some(format!("{label} socket closed")),
+                );
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: {label} socket closed; reconnecting in 1000ms"),
+                );
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    eprintln!("PortMate: failed to persist {label} reconnect event: {error}");
+                }
+            }
+            tauri::async_runtime::spawn(reconnect_tcp_session(
+                state, profile, runtime_id, label, closed,
+            ));
+            return;
+        }
+
+        if removed_current {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Disconnected,
+                    Some(format!("{label} socket closed")),
+                );
+                store.record_system_event(&session_id, format!("PortMate: {label} socket closed"));
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    eprintln!("PortMate: failed to persist {label} close event: {error}");
+                }
+            }
+        }
+    })
+}
+
+fn tcp_reconnect_pending(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    if closed.load(Ordering::SeqCst) {
+        return false;
+    }
+    state
+        .tcp
+        .lock()
+        .ok()
+        .and_then(|connections| {
+            connections
+                .get(session_id)
+                .map(|runtime| runtime.runtime_id == runtime_id)
+        })
+        .unwrap_or(false)
+}
+
+async fn reconnect_tcp_session(
+    state: AppState,
+    profile: SessionProfile,
+    previous_runtime_id: String,
+    label: String,
+    closed: Arc<AtomicBool>,
+) {
+    let session_id = profile.id.clone();
+    let (host, port, connect_label) = match tcp_connection_details(&profile) {
+        Ok(details) => details,
+        Err(error) => {
+            record_connection_failure(&state, &session_id, &error);
+            return;
         }
     };
+    let reconnect_delay = Duration::from_millis(1000);
 
-    if removed_current {
-        if let Ok(mut store) = store.lock() {
-            let _ = store.set_runtime_status(&session_id, SessionStatus::Disconnected);
-            store.record_system_event(&session_id, format!("PortMate: {label} socket closed"));
-            if let Err(error) = save_store(&store_path, &store) {
-                eprintln!("PortMate: failed to persist {label} close event: {error}");
+    loop {
+        tokio::time::sleep(reconnect_delay).await;
+        if !tcp_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+            return;
+        }
+
+        let stream = match connect_tcp_socket(&host, port, connect_label).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                if !tcp_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+                    return;
+                }
+                if let Ok(mut store) = state.store.lock() {
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Reconnecting,
+                        Some(format!("{label} reconnect failed: {error}")),
+                    );
+                    store.record_system_event(
+                        &session_id,
+                        format!("PortMate: {label} reconnect failed: {error}; retrying in 1000ms"),
+                    );
+                    if let Err(error) = save_store(&state.store_path, &store) {
+                        eprintln!("PortMate: failed to persist {label} reconnect failure: {error}");
+                    }
+                }
+                continue;
+            }
+        };
+
+        let runtime_id = Uuid::new_v4().to_string();
+        let (read_half, write_half) = stream.into_split();
+        let writer = Arc::new(tokio::sync::Mutex::new(write_half));
+        let (tap, _) = broadcast::channel(1024);
+        let next_closed = Arc::new(AtomicBool::new(false));
+        let inserted = {
+            let mut connections = match state.tcp.lock() {
+                Ok(connections) => connections,
+                Err(_) => return,
+            };
+            if connections
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
+                && !closed.load(Ordering::SeqCst)
+            {
+                connections.insert(
+                    session_id.clone(),
+                    TcpRuntime {
+                        runtime_id: runtime_id.clone(),
+                        writer: Arc::clone(&writer),
+                        tap: tap.clone(),
+                        closed: Arc::clone(&next_closed),
+                    },
+                );
+                true
+            } else {
+                false
+            }
+        };
+
+        if !inserted {
+            let mut writer = writer.lock().await;
+            let _ = writer.shutdown().await;
+            return;
+        }
+
+        tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
+            state: state.clone(),
+            profile: profile.clone(),
+            runtime_id,
+            label: label.clone(),
+            tap,
+            writer: Arc::clone(&writer),
+            read_half,
+            closed: next_closed,
+        }));
+
+        if let Ok(mut store) = state.store.lock() {
+            store.record_system_event(&session_id, format!("PortMate: {label} socket reconnected"));
+            if let Err(error) = store.open_session(&session_id) {
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: reconnect status update failed: {error}"),
+                );
+            }
+            if let Err(error) = save_store(&state.store_path, &store) {
+                eprintln!("PortMate: failed to persist {label} reconnect success: {error}");
             }
         }
+        return;
     }
 }
 
-fn read_shell_pty(
-    store: Arc<Mutex<SessionStore>>,
-    runtimes: RuntimeRegistry,
-    shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
-    store_path: PathBuf,
+struct ShellReadTask {
+    io: SessionIo,
     session_id: String,
     runtime_id: String,
     program: String,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    mut reader: Box<dyn Read + Send>,
-) -> impl FnOnce() + Send + 'static {
+    reader: Box<dyn Read + Send>,
+}
+
+fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
     move || {
+        let ShellReadTask {
+            io,
+            session_id,
+            runtime_id,
+            program,
+            tap,
+            closed,
+            child,
+            mut reader,
+        } = task;
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
@@ -5712,9 +8590,7 @@ fn read_shell_pty(
                     let bytes = buffer[..size].to_vec();
                     let _ = tap.send(bytes.clone());
                     record_channel_text(
-                        &store,
-                        &runtimes,
-                        &store_path,
+                        &io,
                         &session_id,
                         EventStream::Stdout,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -5723,12 +8599,12 @@ fn read_shell_pty(
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => {
-                    if let Ok(mut store) = store.lock() {
+                    if let Ok(mut store) = io.store.lock() {
                         store.record_system_event(
                             &session_id,
                             format!("PortMate: shell read failed on {program}: {error}"),
                         );
-                        if let Err(error) = save_store(&store_path, &store) {
+                        if let Err(error) = save_store(&io.store_path, &store) {
                             eprintln!("PortMate: failed to persist shell read error: {error}");
                         }
                     }
@@ -5737,7 +8613,7 @@ fn read_shell_pty(
             }
 
             if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&store_path, &store) {
+                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
                     eprintln!("PortMate: failed to persist shell stream data: {error}");
                 }
                 has_unpersisted_stream = false;
@@ -5746,13 +8622,13 @@ fn read_shell_pty(
         }
 
         if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&store_path, &store) {
+            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
                 eprintln!("PortMate: failed to persist final shell stream data: {error}");
             }
         }
 
         let removed_current = {
-            let mut connections = match shell.lock() {
+            let mut connections = match io.runtimes.shell.lock() {
                 Ok(connections) => connections,
                 Err(_) => return,
             };
@@ -5768,13 +8644,17 @@ fn read_shell_pty(
         };
 
         if removed_current {
-            if let Ok(mut store) = store.lock() {
-                let _ = store.set_runtime_status(&session_id, SessionStatus::Disconnected);
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Disconnected,
+                    Some(format!("shell closed ({program})")),
+                );
                 store.record_system_event(
                     &session_id,
                     format!("PortMate: shell closed ({program})"),
                 );
-                if let Err(error) = save_store(&store_path, &store) {
+                if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist shell close event: {error}");
                 }
             }
@@ -5782,19 +8662,35 @@ fn read_shell_pty(
     }
 }
 
-fn read_serial_port(
-    store: Arc<Mutex<SessionStore>>,
-    runtimes: RuntimeRegistry,
-    serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
-    store_path: PathBuf,
-    session_id: String,
+struct SerialReadTask {
+    io: SessionIo,
+    profile: SessionProfile,
     runtime_id: String,
     port_name: String,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
-    mut reader: Box<dyn serialport::SerialPort>,
-) -> impl FnOnce() + Send + 'static {
+    reader: SerialPortHandle,
+}
+
+fn spawn_serial_reader(task: SerialReadTask) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let name = format!("portmate-serial-{}", task.profile.id);
+    std::thread::Builder::new()
+        .name(name)
+        .spawn(read_serial_port(task))
+}
+
+fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
     move || {
+        let SerialReadTask {
+            io,
+            profile,
+            runtime_id,
+            port_name,
+            tap,
+            closed,
+            mut reader,
+        } = task;
+        let session_id = profile.id.clone();
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
@@ -5806,9 +8702,7 @@ fn read_serial_port(
                     let bytes = buffer[..size].to_vec();
                     let _ = tap.send(bytes.clone());
                     record_channel_text(
-                        &store,
-                        &runtimes,
-                        &store_path,
+                        &io,
                         &session_id,
                         EventStream::Stdout,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -5817,12 +8711,12 @@ fn read_serial_port(
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(error) => {
-                    if let Ok(mut store) = store.lock() {
+                    if let Ok(mut store) = io.store.lock() {
                         store.record_system_event(
                             &session_id,
                             format!("PortMate: serial read failed on {port_name}: {error}"),
                         );
-                        if let Err(error) = save_store(&store_path, &store) {
+                        if let Err(error) = save_store(&io.store_path, &store) {
                             eprintln!("PortMate: failed to persist serial read error: {error}");
                         }
                     }
@@ -5831,7 +8725,7 @@ fn read_serial_port(
             }
 
             if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&store_path, &store) {
+                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
                     eprintln!("PortMate: failed to persist serial stream data: {error}");
                 }
                 has_unpersisted_stream = false;
@@ -5840,13 +8734,14 @@ fn read_serial_port(
         }
 
         if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&store_path, &store) {
+            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
                 eprintln!("PortMate: failed to persist final serial stream data: {error}");
             }
         }
 
+        let mut should_reconnect = false;
         let removed_current = {
-            let mut connections = match serial.lock() {
+            let mut connections = match io.runtimes.serial.lock() {
                 Ok(connections) => connections,
                 Err(_) => return,
             };
@@ -5854,21 +8749,52 @@ fn read_serial_port(
                 .get(&session_id)
                 .is_some_and(|runtime| runtime.runtime_id == runtime_id)
             {
-                connections.remove(&session_id);
-                true
+                if serial_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
+                    if let Some(runtime) = connections.get_mut(&session_id) {
+                        runtime.writer = None;
+                    }
+                    should_reconnect = true;
+                    false
+                } else {
+                    connections.remove(&session_id);
+                    true
+                }
             } else {
                 false
             }
         };
 
+        if should_reconnect {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Reconnecting,
+                    Some(format!("serial port closed ({port_name})")),
+                );
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: serial port closed ({port_name}); reconnecting in 1000ms"),
+                );
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    eprintln!("PortMate: failed to persist serial reconnect event: {error}");
+                }
+            }
+            spawn_serial_reconnect(io, profile, runtime_id, port_name, closed);
+            return;
+        }
+
         if removed_current {
-            if let Ok(mut store) = store.lock() {
-                let _ = store.set_runtime_status(&session_id, SessionStatus::Disconnected);
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Disconnected,
+                    Some(format!("serial port closed ({port_name})")),
+                );
                 store.record_system_event(
                     &session_id,
                     format!("PortMate: serial port closed ({port_name})"),
                 );
-                if let Err(error) = save_store(&store_path, &store) {
+                if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist serial close event: {error}");
                 }
             }
@@ -5876,48 +8802,396 @@ fn read_serial_port(
     }
 }
 
-fn record_channel_text(
-    store: &Arc<Mutex<SessionStore>>,
-    runtimes: &RuntimeRegistry,
-    store_path: &Path,
+fn serial_reconnect_pending(
+    io: &SessionIo,
     session_id: &str,
-    stream: EventStream,
-    text: String,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    if closed.load(Ordering::SeqCst) {
+        return false;
+    }
+    io.runtimes
+        .serial
+        .lock()
+        .ok()
+        .and_then(|connections| {
+            connections
+                .get(session_id)
+                .map(|runtime| runtime.runtime_id == runtime_id)
+        })
+        .unwrap_or(false)
+}
+
+fn spawn_serial_reconnect(
+    io: SessionIo,
+    profile: SessionProfile,
+    previous_runtime_id: String,
+    port_name: String,
+    closed: Arc<AtomicBool>,
 ) {
+    let thread_name = format!("portmate-serial-reconnect-{}", profile.id);
+    if let Err(error) = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            reconnect_serial_session(io, profile, previous_runtime_id, port_name, closed)
+        })
+    {
+        eprintln!("PortMate: failed to start serial reconnect thread: {error}");
+    }
+}
+
+fn reconnect_serial_session(
+    io: SessionIo,
+    profile: SessionProfile,
+    previous_runtime_id: String,
+    port_name: String,
+    closed: Arc<AtomicBool>,
+) {
+    let session_id = profile.id.clone();
+    let (serial, _) = match serial_connection_details(&profile) {
+        Ok(details) => details,
+        Err(error) => {
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Error,
+                    Some(format!("serial reconnect cannot start: {error}")),
+                );
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: serial reconnect cannot start: {error}"),
+                );
+                let _ = save_store(&io.store_path, &store);
+            }
+            return;
+        }
+    };
+    let reconnect_delay = Duration::from_millis(1000);
+
+    loop {
+        std::thread::sleep(reconnect_delay);
+        if !serial_reconnect_pending(&io, &session_id, &previous_runtime_id, &closed) {
+            return;
+        }
+
+        let (port, reader) = match open_configured_serial_port(&serial, &port_name) {
+            Ok(port) => port,
+            Err(error) => {
+                if !serial_reconnect_pending(&io, &session_id, &previous_runtime_id, &closed) {
+                    return;
+                }
+                if let Ok(mut store) = io.store.lock() {
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Reconnecting,
+                        Some(format!("serial reconnect failed on {port_name}: {error}")),
+                    );
+                    store.record_system_event(
+                        &session_id,
+                        format!(
+                            "PortMate: serial reconnect failed on {port_name}: {error}; retrying in 1000ms"
+                        ),
+                    );
+                    if let Err(error) = save_store(&io.store_path, &store) {
+                        eprintln!("PortMate: failed to persist serial reconnect failure: {error}");
+                    }
+                }
+                continue;
+            }
+        };
+
+        let runtime_id = Uuid::new_v4().to_string();
+        let writer = Arc::new(Mutex::new(port));
+        let (tap, _) = broadcast::channel(1024);
+        let next_closed = Arc::new(AtomicBool::new(false));
+        let inserted = {
+            let mut connections = match io.runtimes.serial.lock() {
+                Ok(connections) => connections,
+                Err(_) => return,
+            };
+            if connections
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
+                && !closed.load(Ordering::SeqCst)
+            {
+                connections.insert(
+                    session_id.clone(),
+                    SerialRuntime {
+                        runtime_id: runtime_id.clone(),
+                        writer: Some(Arc::clone(&writer)),
+                        tap: tap.clone(),
+                        closed: Arc::clone(&next_closed),
+                    },
+                );
+                true
+            } else {
+                false
+            }
+        };
+
+        if !inserted {
+            return;
+        }
+
+        if let Err(error) = spawn_serial_reader(SerialReadTask {
+            io: io.clone(),
+            profile: profile.clone(),
+            runtime_id: runtime_id.clone(),
+            port_name: port_name.clone(),
+            tap,
+            closed: next_closed,
+            reader,
+        }) {
+            if let Ok(mut connections) = io.runtimes.serial.lock() {
+                if connections
+                    .get(&session_id)
+                    .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+                {
+                    connections.remove(&session_id);
+                }
+            }
+            if let Ok(mut store) = io.store.lock() {
+                let _ = store.set_runtime_status_with_reason(
+                    &session_id,
+                    SessionStatus::Error,
+                    Some(format!("serial read thread restart failed: {error}")),
+                );
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: serial read thread restart failed: {error}"),
+                );
+                let _ = save_store(&io.store_path, &store);
+            }
+            return;
+        }
+
+        if let Ok(mut store) = io.store.lock() {
+            store.record_system_event(
+                &session_id,
+                format!(
+                    "PortMate: serial port reconnected ({port_name}, {} baud)",
+                    serial.baud_rate
+                ),
+            );
+            if let Err(error) = store.open_session(&session_id) {
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: serial reconnect status update failed: {error}"),
+                );
+            }
+            if let Err(error) = save_store(&io.store_path, &store) {
+                eprintln!("PortMate: failed to persist serial reconnect success: {error}");
+            }
+        }
+        return;
+    }
+}
+
+fn record_channel_text(io: &SessionIo, session_id: &str, stream: EventStream, text: String) {
     if text.is_empty() {
         return;
     }
-    let local_commands = if let Ok(mut store) = store.lock() {
-        let _ =
-            store.record_stream_event(session_id, EventDirection::Inbound, stream, text.clone());
+    let bytes_ref = append_raw_and_text_log_shards(io, session_id, stream, &text);
+    let mut live_event = None;
+    let local_commands = if let Ok(mut store) = io.store.lock() {
+        live_event = store
+            .record_stream_event_with_bytes_ref(
+                session_id,
+                EventDirection::Inbound,
+                stream,
+                text.clone(),
+                bytes_ref,
+            )
+            .ok();
         let (trigger_dispatch, trigger_changed_store) =
             apply_trigger_actions_locked(&mut store, session_id, &text);
         if trigger_changed_store {
-            if let Err(error) = save_store(store_path, &store) {
+            if let Err(error) = save_store(&io.store_path, &store) {
                 eprintln!("PortMate: failed to persist trigger actions: {error}");
             }
         }
         trigger_dispatch
     } else {
+        eprintln!(
+            "PortMate: session store lock poisoned; dropping event for {session_id} \
+             (live push and persistence degraded until the app restarts)"
+        );
         TriggerDispatch::default()
     };
+    if let Some(event) = live_event {
+        append_jsonl_log_shard(io, session_id, &event);
+        let _ = io.app_handle.emit("portmate-session-event", event);
+    }
     for command in local_commands.local_commands {
         spawn_trigger_command(
-            Arc::clone(store),
-            store_path.to_path_buf(),
+            Arc::clone(&io.store),
+            io.store_path.clone(),
             session_id.to_string(),
             command,
         );
     }
     for text in local_commands.send_texts {
-        spawn_trigger_send_text(
-            Arc::clone(store),
-            runtimes.clone(),
-            store_path.to_path_buf(),
-            session_id.to_string(),
-            text,
-        );
+        spawn_trigger_send_text(io.clone(), session_id.to_string(), text);
     }
+}
+
+fn append_raw_and_text_log_shards(
+    io: &SessionIo,
+    session_id: &str,
+    stream: EventStream,
+    text: &str,
+) -> Option<String> {
+    let profile = logging_profile(io, session_id)?;
+    if !profile.logging.enabled {
+        return None;
+    }
+
+    let mut raw_ref = None;
+    if profile.logging.raw {
+        match append_log_bytes(&io.store_path, &profile, "raw", text.as_bytes()) {
+            Ok(reference) => raw_ref = Some(reference),
+            Err(error) => eprintln!("PortMate: failed to append raw log shard: {error}"),
+        }
+    }
+
+    if profile.logging.text {
+        let mut line = if profile.logging.redact_secrets {
+            redact_secrets(text)
+        } else {
+            text.to_string()
+        };
+        if !line.ends_with('\n') {
+            line.push('\n');
+        }
+        if let Err(error) = append_log_bytes(&io.store_path, &profile, "txt", line.as_bytes()) {
+            eprintln!("PortMate: failed to append text log shard: {error}");
+        }
+    }
+
+    if raw_ref.is_none() && matches!(stream, EventStream::Stdout | EventStream::Stderr) {
+        // `bytesRef` points at the raw shard when enabled; when raw logging is off,
+        // the store event still carries text/jsonl without pretending a byte shard exists.
+        return None;
+    }
+    raw_ref
+}
+
+fn append_jsonl_log_shard(io: &SessionIo, session_id: &str, event: &SessionEvent) {
+    let Some(profile) = logging_profile(io, session_id) else {
+        return;
+    };
+    if !profile.logging.enabled || !profile.logging.jsonl {
+        return;
+    }
+    let mut event = event.clone();
+    if profile.logging.redact_secrets {
+        event.text = event.text.map(|text| redact_secrets(&text));
+    }
+    let Ok(mut line) = serde_json::to_vec(&event) else {
+        return;
+    };
+    line.push(b'\n');
+    if let Err(error) = append_log_bytes(&io.store_path, &profile, "jsonl", &line) {
+        eprintln!("PortMate: failed to append jsonl log shard: {error}");
+    }
+}
+
+fn logging_profile(io: &SessionIo, session_id: &str) -> Option<SessionProfile> {
+    io.store
+        .lock()
+        .ok()
+        .and_then(|store| store.profile(session_id))
+}
+
+fn append_log_bytes(
+    store_path: &Path,
+    profile: &SessionProfile,
+    extension: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let path = log_shard_path(store_path, profile, extension)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create log dir {}: {error}", parent.display()))?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(&path)
+        .map_err(|error| format!("failed to open log shard {}: {error}", path.display()))?;
+    let offset = file
+        .seek(std::io::SeekFrom::End(0))
+        .map_err(|error| format!("failed to seek log shard {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("failed to append log shard {}: {error}", path.display()))?;
+    file.flush()
+        .map_err(|error| format!("failed to flush log shard {}: {error}", path.display()))?;
+    let relative = path
+        .strip_prefix(log_root(store_path))
+        .unwrap_or(path.as_path())
+        .display()
+        .to_string();
+    Ok(format!("{relative}:{offset}:{}", bytes.len()))
+}
+
+fn log_shard_path(
+    store_path: &Path,
+    profile: &SessionProfile,
+    extension: &str,
+) -> Result<PathBuf, String> {
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let template = profile
+        .logging
+        .path_template
+        .trim()
+        .trim_start_matches('/')
+        .trim_start_matches('\\');
+    let template = if template.is_empty() {
+        "{profile}/{date}/{session}.jsonl"
+    } else {
+        template
+    };
+    let rendered = template
+        .replace("{profile}", &profile.name)
+        .replace("{group}", &profile.group)
+        .replace("{session}", &profile.id)
+        .replace("{date}", &date);
+
+    let mut path = log_root(store_path);
+    for segment in rendered.replace('\\', "/").split('/') {
+        let clean = sanitize_log_path_segment(segment);
+        if !clean.is_empty() && clean != "." && clean != ".." {
+            path.push(clean);
+        }
+    }
+    if path == log_root(store_path) {
+        path.push(sanitize_log_path_segment(&profile.id));
+    }
+    path.set_extension(extension);
+    Ok(path)
+}
+
+fn log_root(store_path: &Path) -> PathBuf {
+    store_path
+        .parent()
+        .map(|parent| parent.join("logs"))
+        .unwrap_or_else(|| PathBuf::from("logs"))
+}
+
+fn sanitize_log_path_segment(segment: &str) -> String {
+    let cleaned = segment
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    cleaned.trim_matches('_').to_string()
 }
 
 #[derive(Default)]
@@ -6024,33 +9298,17 @@ fn spawn_trigger_command(
     });
 }
 
-fn spawn_trigger_send_text(
-    store: Arc<Mutex<SessionStore>>,
-    runtimes: RuntimeRegistry,
-    store_path: PathBuf,
-    session_id: String,
-    text: String,
-) {
+fn spawn_trigger_send_text(io: SessionIo, session_id: String, text: String) {
     tauri::async_runtime::spawn(async move {
-        let result = send_text_inner(
-            Arc::clone(&store),
-            Arc::clone(&runtimes.ssh),
-            Arc::clone(&runtimes.shell),
-            Arc::clone(&runtimes.tcp),
-            Arc::clone(&runtimes.serial),
-            store_path.clone(),
-            session_id.clone(),
-            text,
-        )
-        .await;
+        let result = send_text_inner(io.clone(), session_id.clone(), text).await;
 
         if let Err(error) = result {
-            if let Ok(mut store) = store.lock() {
+            if let Ok(mut store) = io.store.lock() {
                 store.record_system_event(
                     &session_id,
                     format!("PortMate: trigger send_text failed: {error}"),
                 );
-                if let Err(error) = save_store(&store_path, &store) {
+                if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist trigger send_text error: {error}");
                 }
             }
@@ -6462,13 +9720,65 @@ fn default_shell_program() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        if let Ok(shell) = std::env::var("SHELL") {
+            let shell = shell.trim();
+            if !shell.is_empty() {
+                return shell.to_string();
+            }
+        }
+        [
+            "/bin/zsh",
+            "/usr/bin/zsh",
+            "/usr/local/bin/zsh",
+            "/opt/homebrew/bin/zsh",
+            "/bin/bash",
+            "/usr/bin/bash",
+        ]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).exists())
+        .unwrap_or("/bin/sh")
+        .to_string()
+    }
+}
+
+fn apply_shell_terminal_color_env(command: &mut CommandBuilder, term: &str) {
+    command.env("TERM", normalized_terminal_name(term));
+    command.env("COLORTERM", "truecolor");
+    command.env("CLICOLOR", "1");
+    command.env("CLICOLOR_FORCE", "1");
+    command.env("FORCE_COLOR", "1");
+    command.env("TERM_PROGRAM", "PortMate");
+    command.env_remove("NO_COLOR");
+}
+
+async fn apply_ssh_terminal_color_env(channel: &Channel<client::Msg>) {
+    for (name, value) in [
+        ("COLORTERM", "truecolor"),
+        ("CLICOLOR", "1"),
+        ("CLICOLOR_FORCE", "1"),
+        ("FORCE_COLOR", "1"),
+        ("TERM_PROGRAM", "PortMate"),
+    ] {
+        let _ = channel.set_env(false, name, value).await;
+    }
+}
+
+fn normalized_terminal_name(term: &str) -> &str {
+    let term = term.trim();
+    if term.is_empty() {
+        "xterm-256color"
+    } else {
+        term
     }
 }
 
 fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
     if let Ok(mut store) = state.store.lock() {
-        let _ = store.set_runtime_status(session_id, SessionStatus::Error);
+        let _ = store.set_runtime_status_with_reason(
+            session_id,
+            SessionStatus::Error,
+            Some(error.to_string()),
+        );
         store.record_system_event(session_id, format!("PortMate: connection failed: {error}"));
         if let Err(error) = save_store(&state.store_path, &store) {
             eprintln!("PortMate: failed to persist connection failure: {error}");
@@ -6533,9 +9843,110 @@ fn load_store_json(path: &Path) -> SessionStore {
     }
 }
 
+fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
+    profile.id = profile.id.trim().to_string();
+    if profile.id.is_empty() {
+        profile.id = format!("session-{}", Uuid::new_v4());
+    }
+    profile.name = profile.name.trim().to_string();
+    profile.group = profile.group.trim().to_string();
+    profile.tags = profile
+        .tags
+        .into_iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    profile.kind = session_kind_for_connection(&profile.connection);
+    profile.terminal.term = normalized_terminal_name(&profile.terminal.term).to_string();
+
+    match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            ssh.endpoint.host = ssh.endpoint.host.trim().to_string();
+            if ssh.endpoint.port == 0 {
+                ssh.endpoint.port = 22;
+            }
+            ssh.username = ssh.username.trim().to_string();
+            let alias = ssh
+                .host_key_policy
+                .alias
+                .as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| profile.id.clone());
+            ssh.host_key_policy.alias = Some(alias);
+            for key in &mut ssh.trusted_host_keys {
+                if key.scope == HostKeyScope::Profile && key.profile_id.is_none() {
+                    key.profile_id = Some(profile.id.clone());
+                }
+                key.alias = key.alias.trim().to_string();
+            }
+            ssh.trusted_host_keys.retain(|key| {
+                key.scope != HostKeyScope::Profile
+                    || key.profile_id.as_deref() == Some(profile.id.as_str())
+            });
+            for jump in &mut ssh.jumps {
+                jump.host = jump.host.trim().to_string();
+                if jump.port == 0 {
+                    jump.port = 22;
+                }
+                jump.username = jump.username.trim().to_string();
+                if jump.username.is_empty() {
+                    jump.username = ssh.username.clone();
+                }
+                jump.identity_ref = jump
+                    .identity_ref
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|identity_ref| !identity_ref.is_empty())
+                    .map(ToOwned::to_owned);
+            }
+            ssh.jumps.retain(|jump| !jump.host.is_empty());
+            let mut normalized_auth_order = Vec::new();
+            for method in ssh.identity_policy.auth_order.drain(..) {
+                if !normalized_auth_order.contains(&method) {
+                    normalized_auth_order.push(method);
+                }
+            }
+            if normalized_auth_order.is_empty() {
+                normalized_auth_order = vec![
+                    AuthMethod::PublicKey,
+                    AuthMethod::KeyboardInteractive,
+                    AuthMethod::Password,
+                ];
+            }
+            ssh.identity_policy.auth_order = normalized_auth_order;
+        }
+        ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => {
+            tcp.host = tcp.host.trim().to_string();
+        }
+        ConnectionConfig::Serial(serial) => {
+            serial.port = serial.port.trim().to_string();
+        }
+        ConnectionConfig::Shell(shell) => {
+            shell.program = shell.program.trim().to_string();
+        }
+    }
+
+    profile
+}
+
+fn session_kind_for_connection(connection: &ConnectionConfig) -> SessionKind {
+    match connection {
+        ConnectionConfig::Ssh(_) => SessionKind::Ssh,
+        ConnectionConfig::Serial(_) => SessionKind::Serial,
+        ConnectionConfig::Shell(_) => SessionKind::Shell,
+        ConnectionConfig::Telnet(_) => SessionKind::Telnet,
+        ConnectionConfig::Tcp(_) => SessionKind::Tcp,
+        ConnectionConfig::Tmux(_) => SessionKind::Tmux,
+    }
+}
+
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
-    for profile in store.profiles.clone() {
-        let _ = store.upsert_profile(profile);
+    let profiles = std::mem::take(&mut store.profiles);
+    store.runtimes.clear();
+    for profile in profiles {
+        let _ = store.upsert_profile(normalize_session_profile(profile));
     }
     for runtime in &mut store.runtimes {
         runtime.status = SessionStatus::Disconnected;
@@ -6574,6 +9985,14 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
     ensure_store_schema(&connection)?;
     let bytes = serde_json::to_string_pretty(store)
         .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
+
+    // Everything below is one transaction: a mid-write crash or error leaves the
+    // connection with an open (uncommitted) transaction, and since this connection
+    // is local to this call and gets dropped right after, SQLite rolls it back on
+    // close instead of leaving the per-table mirror partially deleted/reinserted.
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|error| format!("failed to start PortMate SQLite transaction: {error}"))?;
     connection
         .execute(
             "insert into kv (key, value, updated_at) values (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now')) \
@@ -6582,6 +10001,9 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
         )
         .map_err(|error| format!("failed to save PortMate SQLite store: {error}"))?;
     save_store_sqlite_tables(&connection, store)?;
+    connection
+        .execute_batch("COMMIT;")
+        .map_err(|error| format!("failed to commit PortMate SQLite transaction: {error}"))?;
     Ok(())
 }
 
@@ -6618,6 +10040,8 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
                 cwd text,
                 connected_since text,
                 last_activity text not null,
+                last_disconnect text,
+                last_disconnect_reason text,
                 active_transport text not null,
                 raw_json text not null
             );
@@ -6708,7 +10132,13 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
             insert into metadata (key, value) values ('schemaVersion', '2')
                 on conflict(key) do update set value = excluded.value;",
         )
-        .map_err(|error| format!("failed to initialize PortMate SQLite schema: {error}"))
+        .map_err(|error| format!("failed to initialize PortMate SQLite schema: {error}"))?;
+    let _ = connection.execute("alter table runtimes add column last_disconnect text", []);
+    let _ = connection.execute(
+        "alter table runtimes add column last_disconnect_reason text",
+        [],
+    );
+    Ok(())
 }
 
 fn save_store_sqlite_tables(
@@ -6757,8 +10187,8 @@ fn save_store_sqlite_tables(
             .execute(
                 "insert into runtimes (
                     session_id, pane_id, status, title, cwd, connected_since, last_activity,
-                    active_transport, raw_json
-                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    last_disconnect, last_disconnect_reason, active_transport, raw_json
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     runtime.session_id,
                     runtime.pane_id,
@@ -6767,6 +10197,8 @@ fn save_store_sqlite_tables(
                     runtime.cwd,
                     runtime.connected_since.map(|value| value.to_rfc3339()),
                     runtime.last_activity.to_rfc3339(),
+                    runtime.last_disconnect.map(|value| value.to_rfc3339()),
+                    runtime.last_disconnect_reason,
                     enum_text(&runtime.active_transport)?,
                     json_text(runtime)?,
                 ],
@@ -7050,6 +10482,95 @@ fn describe_host_key_rejection(evaluation: &HostKeyEvaluation) -> String {
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            let store_path = data_dir.join(STORE_FILE_NAME);
+            let store = load_store(&store_path);
+            if let Err(error) = save_store(&store_path, &store) {
+                eprintln!("PortMate: failed to initialize persistent store: {error}");
+            }
+            let state = AppState {
+                app_handle: app.handle().clone(),
+                store: Arc::new(Mutex::new(store)),
+                ssh: Arc::new(Mutex::new(HashMap::new())),
+                shell: Arc::new(Mutex::new(HashMap::new())),
+                tcp: Arc::new(Mutex::new(HashMap::new())),
+                serial: Arc::new(Mutex::new(HashMap::new())),
+                tunnels: Arc::new(Mutex::new(HashMap::new())),
+                transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+                transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+                one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
+                store_path,
+            };
+            start_ipc_server(
+                state.clone(),
+                data_dir.join("portmate-ipc.json"),
+                Uuid::new_v4().to_string(),
+            );
+            app.manage(state);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_sessions,
+            read_screen,
+            tail_log,
+            search_logs,
+            send_text,
+            send_bytes,
+            send_key,
+            run_command,
+            resize_session,
+            save_session_profile,
+            open_session,
+            close_session,
+            evaluate_host_key,
+            apply_host_key_decision,
+            scan_ssh_host_key,
+            trust_scanned_host_key,
+            import_known_hosts,
+            export_known_hosts,
+            delete_host_key,
+            delete_host_keys,
+            update_host_key,
+            list_transfers,
+            retry_transfer,
+            cancel_transfer,
+            list_mcp_audit,
+            list_mcp_grants,
+            save_mcp_grant,
+            revoke_mcp_grant,
+            mcp_http_config,
+            rotate_mcp_http_token,
+            list_host_keys,
+            list_ssh_agent_identities,
+            save_secret,
+            delete_secret,
+            has_secret,
+            list_serial_ports,
+            list_tmux_state,
+            attach_tmux,
+            list_files,
+            file_properties,
+            create_directory,
+            delete_path,
+            rename_path,
+            chmod_path,
+            serial_set_lines,
+            serial_send_break,
+            refresh_sysmon,
+            start_transfer,
+            create_tunnel,
+            list_tunnels,
+            stop_tunnel,
+            mcp_manifest
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running PortMate");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7082,80 +10603,865 @@ mod tests {
         assert_eq!(encode_telnet_outbound_text("show\n"), "show\r\n");
         assert_eq!(encode_telnet_outbound_text("show\r\n"), "show\r\n");
     }
-}
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            let store_path = data_dir.join(STORE_FILE_NAME);
-            let store = load_store(&store_path);
-            if let Err(error) = save_store(&store_path, &store) {
-                eprintln!("PortMate: failed to initialize persistent store: {error}");
+    #[test]
+    fn tcp_connection_details_validate_endpoint_and_reconnect_flag() {
+        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: " 127.0.0.1 ".to_string(),
+            port: 2323,
+            reconnect: true,
+        }));
+        assert_eq!(
+            tcp_connection_details(&profile).unwrap(),
+            ("127.0.0.1".to_string(), 2323, "TCP")
+        );
+        assert!(tcp_reconnect_enabled(&profile));
+
+        profile.connection = ConnectionConfig::Telnet(portmate_core::TcpConnection {
+            host: "console.lab".to_string(),
+            port: 23,
+            reconnect: false,
+        });
+        assert_eq!(
+            tcp_connection_details(&profile).unwrap(),
+            ("console.lab".to_string(), 23, "Telnet")
+        );
+        assert!(!tcp_reconnect_enabled(&profile));
+
+        profile.connection = ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: " ".to_string(),
+            port: 23,
+            reconnect: true,
+        });
+        assert!(tcp_connection_details(&profile)
+            .unwrap_err()
+            .contains("主机不能为空"));
+
+        profile.connection = ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            reconnect: true,
+        });
+        assert!(tcp_connection_details(&profile)
+            .unwrap_err()
+            .contains("端口不能为空"));
+    }
+
+    #[test]
+    fn serial_connection_details_validate_port_and_reconnect_flag() {
+        let mut profile = test_serial_profile(portmate_core::SerialConnection {
+            port: " /dev/ttyUSB0 ".to_string(),
+            baud_rate: 115200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: true,
+            rts: false,
+            reconnect: true,
+        });
+        let (serial, port_name) = serial_connection_details(&profile).unwrap();
+        assert_eq!(serial.baud_rate, 115200);
+        assert_eq!(port_name, "/dev/ttyUSB0");
+        assert!(serial_reconnect_enabled(&profile));
+
+        if let ConnectionConfig::Serial(serial) = &mut profile.connection {
+            serial.port = " ".to_string();
+            serial.reconnect = false;
+        }
+        assert!(serial_connection_details(&profile)
+            .unwrap_err()
+            .contains("串口不能为空"));
+        assert!(!serial_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn ssh_reconnect_enabled_reads_ssh_and_tmux_profiles() {
+        let mut profile = test_ssh_profile();
+        assert!(ssh_reconnect_enabled(&profile));
+
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.reconnect = false;
+        }
+        assert!(!ssh_reconnect_enabled(&profile));
+
+        let ssh = match profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        profile.connection = ConnectionConfig::Tmux(SshConnection {
+            reconnect: true,
+            ..ssh
+        });
+        profile.kind = SessionKind::Tmux;
+        assert!(ssh_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn jump_endpoint_details_validate_each_hop() {
+        let jump = portmate_core::JumpHop {
+            host: " bastion-2 ".to_string(),
+            port: 2222,
+            username: " deploy ".to_string(),
+            password_secret_ref: None,
+            passphrase_secret_ref: None,
+            identity_ref: Some("jump-key".to_string()),
+            host_key_policy: None,
+        };
+        assert_eq!(
+            jump_endpoint_details(&jump, 1).unwrap(),
+            ("bastion-2".to_string(), 2222, "deploy".to_string())
+        );
+
+        let mut invalid = jump.clone();
+        invalid.host = " ".to_string();
+        assert!(jump_endpoint_details(&invalid, 0)
+            .unwrap_err()
+            .contains("第 1 跳 主机不能为空"));
+
+        invalid = jump.clone();
+        invalid.port = 0;
+        assert!(jump_endpoint_details(&invalid, 2)
+            .unwrap_err()
+            .contains("第 3 跳 端口必须"));
+
+        invalid = jump;
+        invalid.username = " ".to_string();
+        assert!(jump_endpoint_details(&invalid, 3)
+            .unwrap_err()
+            .contains("第 4 跳 用户名不能为空"));
+    }
+
+    #[test]
+    fn jump_ssh_connection_uses_independent_credentials_and_policy() {
+        let mut profile = test_ssh_profile();
+        let ssh = match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        ssh.password_secret_ref = Some("keychain:target-password".to_string());
+        ssh.passphrase_secret_ref = Some("keychain:target-passphrase".to_string());
+        ssh.identity_refs.push(portmate_core::IdentityRef {
+            id: "target-key".to_string(),
+            label: "target".to_string(),
+            source: IdentitySource::SystemFile,
+            fingerprint_sha256: None,
+            path: Some("~/.ssh/id_target".to_string()),
+            secret_ref: None,
+        });
+        ssh.identity_refs.push(portmate_core::IdentityRef {
+            id: "jump-key".to_string(),
+            label: "jump".to_string(),
+            source: IdentitySource::SystemFile,
+            fingerprint_sha256: None,
+            path: Some("~/.ssh/id_jump".to_string()),
+            secret_ref: None,
+        });
+
+        let jump_policy = portmate_core::HostKeyPolicy {
+            mode: HostKeyMode::AskEveryTime,
+            alias: Some(" bastion-a ".to_string()),
+            trust_scope: HostKeyScope::User,
+            allow_rotation: true,
+            check_ip: true,
+        };
+        let jump = portmate_core::JumpHop {
+            host: " bastion.example ".to_string(),
+            port: 2222,
+            username: " jumpuser ".to_string(),
+            password_secret_ref: Some(" keychain:jump-password ".to_string()),
+            passphrase_secret_ref: Some(" keychain:jump-passphrase ".to_string()),
+            identity_ref: Some("jump-key".to_string()),
+            host_key_policy: Some(jump_policy),
+        };
+
+        let policy = jump_host_key_policy(ssh, &jump);
+        assert_eq!(policy.mode, HostKeyMode::AskEveryTime);
+        assert_eq!(policy.alias.as_deref(), Some("bastion-a"));
+        assert_eq!(policy.trust_scope, HostKeyScope::User);
+        assert!(policy.allow_rotation);
+        assert!(policy.check_ip);
+
+        let jump_ssh = jump_ssh_connection(ssh, &jump, policy.clone());
+        assert_eq!(jump_ssh.endpoint.host, "bastion.example");
+        assert_eq!(jump_ssh.username, "jumpuser");
+        assert_eq!(
+            jump_ssh.password_secret_ref.as_deref(),
+            Some("keychain:jump-password")
+        );
+        assert_eq!(
+            jump_ssh.passphrase_secret_ref.as_deref(),
+            Some("keychain:jump-passphrase")
+        );
+        assert_eq!(jump_ssh.host_key_policy, policy);
+        assert_eq!(jump_ssh.identity_refs.len(), 1);
+        assert_eq!(jump_ssh.identity_refs[0].id, "jump-key");
+    }
+
+    #[test]
+    fn jump_ssh_connection_falls_back_to_parent_credentials_and_policy() {
+        let mut profile = test_ssh_profile();
+        let ssh = match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        ssh.password_secret_ref = Some("keychain:target-password".to_string());
+        ssh.passphrase_secret_ref = Some("keychain:target-passphrase".to_string());
+        ssh.host_key_policy = portmate_core::HostKeyPolicy {
+            mode: HostKeyMode::TrustOnFirstUse,
+            alias: Some("target-alias".to_string()),
+            trust_scope: HostKeyScope::Project,
+            allow_rotation: true,
+            check_ip: true,
+        };
+
+        let jump = portmate_core::JumpHop {
+            host: "bastion.example".to_string(),
+            port: 22,
+            username: "jumpuser".to_string(),
+            password_secret_ref: None,
+            passphrase_secret_ref: None,
+            identity_ref: None,
+            host_key_policy: None,
+        };
+
+        let policy = jump_host_key_policy(ssh, &jump);
+        assert_eq!(policy.mode, HostKeyMode::TrustOnFirstUse);
+        assert_eq!(policy.alias.as_deref(), Some("jump:bastion.example:22"));
+        assert_eq!(policy.trust_scope, HostKeyScope::Profile);
+        assert!(policy.allow_rotation);
+        assert!(policy.check_ip);
+
+        let jump_ssh = jump_ssh_connection(ssh, &jump, policy);
+        assert_eq!(
+            jump_ssh.password_secret_ref.as_deref(),
+            Some("keychain:target-password")
+        );
+        assert_eq!(
+            jump_ssh.passphrase_secret_ref.as_deref(),
+            Some("keychain:target-passphrase")
+        );
+    }
+
+    #[test]
+    fn empty_mcp_grant_store_requires_trusted_bootstrap() {
+        let store = SessionStore::default();
+        assert!(!mcp_scope_allowed(
+            &store,
+            "portmate-local",
+            false,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        assert!(mcp_scope_allowed(
+            &store,
+            "portmate-local",
+            true,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        assert!(!mcp_scope_allowed(
+            &store,
+            "",
+            true,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+    }
+
+    #[test]
+    fn transfer_average_bps_uses_elapsed_time() {
+        let started = Utc::now();
+        let finished = started + chrono::Duration::seconds(2);
+        let task = TransferTask {
+            id: "transfer-1".to_string(),
+            session_id: "session-1".to_string(),
+            protocol: TransferProtocol::Sftp,
+            source: "a.bin".to_string(),
+            destination: "b.bin".to_string(),
+            bytes_total: 2048,
+            bytes_done: 2048,
+            status: TransferStatus::Completed,
+            message: None,
+            started_at: Some(started),
+            finished_at: Some(finished),
+            average_bytes_per_second: None,
+        };
+
+        assert_eq!(transfer_average_bps(&task), Some(1024.0));
+    }
+
+    #[test]
+    fn transfer_active_statuses_cover_queued_and_running_tasks() {
+        assert!(transfer_task_is_active(&TransferStatus::Queued));
+        assert!(transfer_task_is_active(&TransferStatus::Running));
+        assert!(!transfer_task_is_active(&TransferStatus::Completed));
+        assert!(!transfer_task_is_active(&TransferStatus::Failed));
+        assert!(!transfer_task_is_active(&TransferStatus::Cancelled));
+    }
+
+    #[test]
+    fn transfer_throttle_delay_respects_rate_limit() {
+        assert!(transfer_throttle_delay(None, 1024, Duration::ZERO).is_none());
+        assert!(transfer_throttle_delay(Some(0), 1024, Duration::ZERO).is_none());
+        assert!(transfer_throttle_delay(Some(1024), 0, Duration::ZERO).is_none());
+
+        assert_eq!(
+            transfer_throttle_delay(Some(1024), 2048, Duration::from_secs(1)),
+            Some(Duration::from_secs(1))
+        );
+        assert!(transfer_throttle_delay(Some(1024), 2048, Duration::from_secs(2)).is_none());
+        assert!(transfer_throttle_delay(Some(1024), 2048, Duration::from_secs(3)).is_none());
+    }
+
+    #[test]
+    fn local_resume_part_helpers_keep_stable_offsets() {
+        let root = std::env::temp_dir().join(format!("portmate-resume-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("image.bin");
+        let part = local_resume_part_path(&target);
+        assert_eq!(
+            part.file_name().unwrap().to_string_lossy(),
+            "image.bin.portmate-part"
+        );
+
+        fs::write(&part, b"abc").unwrap();
+        assert_eq!(local_resume_offset(&part, 10).unwrap(), 3);
+        assert!(part.exists());
+
+        fs::write(&part, b"too-long").unwrap();
+        assert_eq!(local_resume_offset(&part, 3).unwrap(), 0);
+        assert!(!part.exists());
+
+        fs::write(&part, b"complete").unwrap();
+        fs::write(&target, b"old").unwrap();
+        finalize_local_resume_file(&part, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"complete");
+        assert!(!part.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_properties_reports_file_metadata() {
+        let root = std::env::temp_dir().join(format!("portmate-file-props-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("payload.bin");
+        fs::write(&target, b"payload").unwrap();
+
+        let properties = local_file_properties(target.to_str().unwrap()).unwrap();
+        assert_eq!(properties.name, "payload.bin");
+        assert_eq!(properties.path, target.display().to_string());
+        assert!(!properties.remote);
+        assert_eq!(properties.kind, "file");
+        assert!(properties.is_file);
+        assert!(!properties.is_dir);
+        assert_eq!(properties.size, 7);
+        assert!(properties.modified.is_some());
+        #[cfg(unix)]
+        assert!(properties.permissions.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn append_log_bytes_returns_stable_byte_refs() {
+        let root = std::env::temp_dir().join(format!("portmate-log-test-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.path_template = "../bad/{profile}/{date}/{session}.jsonl".to_string();
+
+        let first = append_log_bytes(&store_path, &profile, "raw", b"abc").unwrap();
+        let second = append_log_bytes(&store_path, &profile, "raw", b"de").unwrap();
+        let raw_path = log_shard_path(&store_path, &profile, "raw").unwrap();
+        let raw = fs::read(&raw_path).unwrap();
+
+        assert_eq!(raw, b"abcde");
+        assert!(first.ends_with(":0:3"));
+        assert!(second.ends_with(":3:2"));
+        assert!(raw_path.starts_with(log_root(&store_path)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn temporary_host_key_trust_matches_without_persisting() {
+        let mut store = SessionStore::default();
+        let profile = test_ssh_profile();
+        let profile_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let observation = HostKeyObservation {
+            host: "192.0.2.10".to_string(),
+            port: 22,
+            alias: Some("bench-device".to_string()),
+            algorithm: "ssh-ed25519".to_string(),
+            public_key_base64: "YWJj".to_string(),
+        };
+
+        let key = temporary_trusted_host_key(&store, &profile_id, &observation).unwrap();
+        assert!(store.host_keys.keys.is_empty());
+
+        let mut host_keys = store.host_keys.clone();
+        host_keys.keys.push(key);
+        let policy = match store.profile(&profile_id).unwrap().connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
+            _ => panic!("expected SSH profile"),
+        };
+        assert!(matches!(
+            host_keys
+                .evaluate(&profile_id, &policy, &observation)
+                .unwrap(),
+            HostKeyEvaluation::Trusted { .. }
+        ));
+    }
+
+    #[test]
+    fn update_host_key_edits_store_and_profile_copies() {
+        let mut store = SessionStore::default();
+        let mut profile = test_ssh_profile();
+        let key = portmate_core::TrustedHostKey {
+            id: "host-key-1".to_string(),
+            profile_id: Some(profile.id.clone()),
+            alias: "old-alias".to_string(),
+            host: "old-host".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::Profile,
+            label: Some("old label".to_string()),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.trusted_host_keys.push(key.clone());
+        }
+        let profile_id = profile.id.clone();
+        store.upsert_profile(profile);
+        store.host_keys.keys.push(key);
+
+        let next = update_host_key_in_store(
+            &mut store,
+            HostKeyUpdateRequest {
+                key_id: "host-key-1".to_string(),
+                profile_id: Some(profile_id.clone()),
+                alias: " new-alias ".to_string(),
+                host: " new-host ".to_string(),
+                port: 2222,
+                scope: HostKeyScope::Profile,
+                label: Some(" new label ".to_string()),
+            },
+        )
+        .unwrap();
+
+        let edited = next
+            .keys
+            .iter()
+            .find(|key| key.id == "host-key-1")
+            .expect("edited host key should remain in store");
+        assert_eq!(edited.alias, "new-alias");
+        assert_eq!(edited.host, "new-host");
+        assert_eq!(edited.port, 2222);
+        assert_eq!(edited.profile_id.as_deref(), Some(profile_id.as_str()));
+        assert_eq!(edited.label.as_deref(), Some("new label"));
+
+        let saved_profile = store.profile(&profile_id).unwrap();
+        let profile_copy = match &saved_profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh.trusted_host_keys.first().unwrap(),
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(profile_copy.alias, "new-alias");
+        assert_eq!(profile_copy.host, "new-host");
+        assert_eq!(profile_copy.port, 2222);
+        assert_eq!(profile_copy.label.as_deref(), Some("new label"));
+    }
+
+    #[test]
+    fn update_host_key_rejects_invalid_profile_scope() {
+        let mut store = SessionStore::default();
+        store.host_keys.keys.push(portmate_core::TrustedHostKey {
+            id: "host-key-1".to_string(),
+            profile_id: None,
+            alias: "alias".to_string(),
+            host: "host".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::User,
+            label: None,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        });
+
+        let error = update_host_key_in_store(
+            &mut store,
+            HostKeyUpdateRequest {
+                key_id: "host-key-1".to_string(),
+                profile_id: None,
+                alias: "alias".to_string(),
+                host: "host".to_string(),
+                port: 22,
+                scope: HostKeyScope::Profile,
+                label: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("必须选择 Profile"));
+    }
+
+    #[test]
+    fn delete_host_keys_removes_global_and_profile_copies() {
+        let mut store = SessionStore::default();
+        let mut profile = test_ssh_profile();
+        let profile_id = profile.id.clone();
+        let key_a = portmate_core::TrustedHostKey {
+            id: "host-key-a".to_string(),
+            profile_id: Some(profile_id.clone()),
+            alias: "alias-a".to_string(),
+            host: "host-a".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:a".to_string(),
+            public_key_base64: "YQ==".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        let key_b = portmate_core::TrustedHostKey {
+            id: "host-key-b".to_string(),
+            profile_id: Some(profile_id.clone()),
+            alias: "alias-b".to_string(),
+            host: "host-b".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:b".to_string(),
+            public_key_base64: "Yg==".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.trusted_host_keys.push(key_a.clone());
+            ssh.trusted_host_keys.push(key_b.clone());
+        }
+        store.upsert_profile(profile);
+        store.host_keys.keys.push(key_a);
+        store.host_keys.keys.push(key_b);
+
+        let next = delete_host_keys_from_store(&mut store, &["host-key-a".to_string()]);
+        assert_eq!(next.keys.len(), 1);
+        assert_eq!(next.keys[0].id, "host-key-b");
+
+        let saved_profile = store.profile(&profile_id).unwrap();
+        let profile_keys = match &saved_profile.connection {
+            ConnectionConfig::Ssh(ssh) => &ssh.trusted_host_keys,
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(profile_keys.len(), 1);
+        assert_eq!(profile_keys[0].id, "host-key-b");
+    }
+
+    #[test]
+    fn one_time_host_key_snapshot_does_not_consume_trust() {
+        let one_time = Arc::new(Mutex::new(HashMap::new()));
+        let key = portmate_core::TrustedHostKey {
+            id: "one-time-key".to_string(),
+            profile_id: Some("ssh-session-1".to_string()),
+            alias: "jump:bastion:22".to_string(),
+            host: "bastion".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::Profile,
+            label: Some("trust once".to_string()),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        remember_one_time_host_key_in(&one_time, "ssh-session-1", key.clone()).unwrap();
+
+        assert_eq!(
+            one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
+            vec![key.clone()]
+        );
+        assert_eq!(
+            one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
+            vec![key.clone()]
+        );
+        assert_eq!(
+            take_one_time_host_keys_from(&one_time, "ssh-session-1").unwrap(),
+            vec![key]
+        );
+        assert!(one_time_host_keys_snapshot_from(&one_time, "ssh-session-1")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn remote_copy_markers_parse_latest_size_and_done() {
+        let output = b"noise\n__PORTMATE_SIZE__1024\nother\n__PORTMATE_DONE__1024\n";
+        assert_eq!(
+            remote_copy_markers(output),
+            RemoteCopyMarkers {
+                total: Some(1024),
+                resume: None,
+                progress: None,
+                done: Some(1024)
             }
-            let state = AppState {
-                store: Arc::new(Mutex::new(store)),
-                ssh: Arc::new(Mutex::new(HashMap::new())),
-                shell: Arc::new(Mutex::new(HashMap::new())),
-                tcp: Arc::new(Mutex::new(HashMap::new())),
-                serial: Arc::new(Mutex::new(HashMap::new())),
-                tunnels: Arc::new(Mutex::new(HashMap::new())),
-                store_path,
-            };
-            start_ipc_server(
-                state.clone(),
-                data_dir.join("portmate-ipc.json"),
-                Uuid::new_v4().to_string(),
-            );
-            app.manage(state);
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            list_sessions,
-            read_screen,
-            tail_log,
-            search_logs,
-            send_text,
-            send_bytes,
-            send_key,
-            run_command,
-            resize_session,
-            save_session_profile,
-            open_session,
-            close_session,
-            evaluate_host_key,
-            apply_host_key_decision,
-            scan_ssh_host_key,
-            trust_scanned_host_key,
-            import_known_hosts,
-            export_known_hosts,
-            delete_host_key,
-            list_transfers,
-            list_mcp_audit,
-            list_mcp_grants,
-            save_mcp_grant,
-            revoke_mcp_grant,
-            list_host_keys,
-            list_ssh_agent_identities,
-            save_secret,
-            delete_secret,
-            has_secret,
-            list_serial_ports,
-            list_tmux_state,
-            attach_tmux,
-            list_files,
-            create_directory,
-            delete_path,
-            rename_path,
-            chmod_path,
-            serial_set_lines,
-            serial_send_break,
-            refresh_sysmon,
-            start_transfer,
-            create_tunnel,
-            mcp_manifest
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running PortMate");
+        );
+    }
+
+    #[test]
+    fn remote_copy_markers_parse_latest_progress() {
+        let output = b"__PORTMATE_SIZE__4096\n__PORTMATE_RESUME__512\n__PORTMATE_PROGRESS__512\n__PORTMATE_PROGRESS__2048\n__PORTMATE_DONE__4096\n";
+        assert_eq!(
+            remote_copy_markers(output),
+            RemoteCopyMarkers {
+                total: Some(4096),
+                resume: Some(512),
+                progress: Some(2048),
+                done: Some(4096)
+            }
+        );
+    }
+
+    #[test]
+    fn remote_copy_command_polls_progress_and_cleans_background_copy() {
+        let command = remote_copy_command("/tmp/source file.bin", "/tmp/o'clock.bin");
+        assert!(command.contains("__PORTMATE_RESUME__%s"));
+        assert!(command.contains("__PORTMATE_PROGRESS__%s"));
+        assert!(command.contains("trap cleanup INT TERM HUP EXIT"));
+        assert!(command.contains("kill \"$pid\""));
+        assert!(command.contains("remote_name=${src##*/}"));
+        assert!(command.contains("case \"$dst\" in */)"));
+        assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
+        assert!(command.contains("tail -c +$((offset + 1)) -- \"$src\" >> \"$part\""));
+        assert!(command.contains("mv -f -- \"$part\" \"$target\""));
+        assert!(command.contains("src='/tmp/source file.bin'"));
+        assert!(command.contains("dst='/tmp/o'\\''clock.bin'"));
+    }
+
+    #[test]
+    fn scp_upload_command_uses_resume_receiver() {
+        let command = scp_upload_command("/tmp/upload dir/", "local o'clock.bin", 8192);
+        assert!(command.contains("dst='/tmp/upload dir/'"));
+        assert!(command.contains("source_name='local o'\\''clock.bin'"));
+        assert!(command.contains("total=8192"));
+        assert!(command.contains("__PORTMATE_RESUME__%s"));
+        assert!(command.contains("__PORTMATE_PROGRESS__%s"));
+        assert!(command.contains("case \"$dst\" in */)"));
+        assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
+        assert!(command.contains("cat >> \"$part\" || exit 1"));
+        assert!(command.contains("mv -f -- \"$part\" \"$target\""));
+        assert!(command.contains("stat -c '__PORTMATE_DONE__%s' -- \"$target\""));
+    }
+
+    #[test]
+    fn scp_upload_command_resumes_existing_part_file() {
+        let root = std::env::temp_dir().join(format!("portmate-scp-upload-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("upload.bin");
+        let part = root.join("upload.bin.portmate-part");
+        fs::write(&part, b"abc").unwrap();
+
+        let mut destination = root.to_string_lossy().to_string();
+        destination.push('/');
+        let command = scp_upload_command(&destination, "upload.bin", 6);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(b"def").unwrap();
+        drop(child.stdin.take());
+
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+        assert!(!part.exists());
+        let markers = remote_copy_markers(&output.stdout);
+        assert_eq!(markers.total, Some(6));
+        assert_eq!(markers.resume, Some(3));
+        assert_eq!(markers.done, Some(6));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
+        let config = build_mcp_http_config(true);
+        assert_eq!(config.token_ref, MCP_HTTP_TOKEN_REF);
+        assert_eq!(config.endpoint, "http://127.0.0.1:8787/mcp");
+        assert!(config.token_available);
+        assert!(config.start_command.contains("PORTMATE_MCP_HTTP=1"));
+    }
+
+    #[test]
+    fn tunnel_label_reflects_assigned_local_port() {
+        assert_eq!(
+            tunnel_label(TunnelMode::Local, "127.0.0.1", 4567, "10.0.0.5", 22),
+            "127.0.0.1:4567 -> 10.0.0.5:22"
+        );
+        assert_eq!(
+            tunnel_label(TunnelMode::Dynamic, "127.0.0.1", 1080, "", 0),
+            "SOCKS5 127.0.0.1:1080"
+        );
+    }
+
+    #[test]
+    fn tunnel_metrics_snapshot_tracks_connections_bytes_and_errors() {
+        let metrics = TunnelMetrics::default();
+        let spec = TunnelSpec {
+            id: "tunnel-1".to_string(),
+            label: "127.0.0.1:10022 -> 127.0.0.1:22".to_string(),
+            mode: TunnelMode::Local,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10022,
+            target_host: "127.0.0.1".to_string(),
+            target_port: 22,
+            enabled: true,
+        };
+
+        metrics.connection_opened();
+        metrics.add_tcp_to_ssh_bytes(128);
+        metrics.add_ssh_to_tcp_bytes(256);
+        metrics.record_error("direct-tcpip open failed");
+        let active = metrics.snapshot(spec.clone());
+        assert_eq!(active.spec.id, spec.id);
+        assert_eq!(active.active_connections, 1);
+        assert_eq!(active.total_connections, 1);
+        assert_eq!(active.tcp_to_ssh_bytes, 128);
+        assert_eq!(active.ssh_to_tcp_bytes, 256);
+        assert!(active.last_activity.is_some());
+        assert_eq!(
+            active.last_error.as_deref(),
+            Some("direct-tcpip open failed")
+        );
+
+        metrics.connection_closed();
+        let closed = metrics.snapshot(spec);
+        assert_eq!(closed.active_connections, 0);
+        assert_eq!(closed.total_connections, 1);
+    }
+
+    #[test]
+    fn stopping_tunnel_marks_profile_tunnel_disabled() {
+        let mut store = SessionStore::default();
+        let mut profile = test_ssh_profile();
+        let tunnel = TunnelSpec {
+            id: "tunnel-1".to_string(),
+            label: "127.0.0.1:10022 -> 127.0.0.1:22".to_string(),
+            mode: TunnelMode::Local,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10022,
+            target_host: "127.0.0.1".to_string(),
+            target_port: 22,
+            enabled: true,
+        };
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.tunnels.push(tunnel.clone());
+        }
+        store.upsert_profile(profile);
+
+        let mut stopped = tunnel;
+        stopped.enabled = false;
+        mark_tunnel_stopped_in_store(&mut store, "ssh-session-1", &stopped);
+
+        let saved = match store.profile("ssh-session-1").unwrap().connection {
+            ConnectionConfig::Ssh(ssh) => ssh.tunnels,
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(saved.len(), 1);
+        assert!(!saved[0].enabled);
+    }
+
+    fn test_shell_profile() -> SessionProfile {
+        SessionProfile {
+            id: "session:1".to_string(),
+            name: "Bench/Device".to_string(),
+            kind: SessionKind::Shell,
+            group: "Lab".to_string(),
+            tags: Vec::new(),
+            connection: ConnectionConfig::Shell(portmate_core::ShellConnection {
+                program: "sh".to_string(),
+                args: Vec::new(),
+                cwd: None,
+            }),
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_tcp_profile(connection: ConnectionConfig) -> SessionProfile {
+        SessionProfile {
+            id: "tcp-session-1".to_string(),
+            name: "Bench TCP".to_string(),
+            kind: connection.kind(),
+            group: "Lab".to_string(),
+            tags: Vec::new(),
+            connection,
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {
+        SessionProfile {
+            id: "serial-session-1".to_string(),
+            name: "Bench Serial".to_string(),
+            kind: SessionKind::Serial,
+            group: "Lab".to_string(),
+            tags: Vec::new(),
+            connection: ConnectionConfig::Serial(serial),
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_ssh_profile() -> SessionProfile {
+        SessionProfile {
+            id: "ssh-session-1".to_string(),
+            name: "Bench SSH".to_string(),
+            kind: SessionKind::Ssh,
+            group: "Lab".to_string(),
+            tags: Vec::new(),
+            connection: ConnectionConfig::Ssh(SshConnection {
+                endpoint: portmate_core::HostEndpoint {
+                    host: "192.0.2.10".to_string(),
+                    port: 22,
+                },
+                username: "root".to_string(),
+                reconnect: true,
+                password_secret_ref: None,
+                passphrase_secret_ref: None,
+                host_key_policy: portmate_core::HostKeyPolicy::profile_alias("bench-device"),
+                trusted_host_keys: Vec::new(),
+                identity_policy: portmate_core::IdentityPolicy::default(),
+                identity_refs: Vec::new(),
+                agent_policy: portmate_core::AgentPolicy::default(),
+                jumps: Vec::new(),
+                tunnels: Vec::new(),
+            }),
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: portmate_core::TransferSettings::default(),
+        }
+    }
 }

@@ -80,7 +80,7 @@ impl HostKeyStore {
     ) -> Result<HostKeyEvaluation, HostKeyError> {
         let fingerprint = observation.fingerprint_sha256()?;
         let alias = observation.target_alias(policy).to_string();
-        let candidates = self.candidates(profile_id, policy, &alias, observation.port);
+        let candidates = self.candidates(profile_id, policy, &alias, observation);
 
         if let Some(trusted) = candidates.iter().find(|key| {
             key.algorithm == observation.algorithm && key.fingerprint_sha256 == fingerprint
@@ -98,6 +98,17 @@ impl HostKeyStore {
             .collect();
 
         if !same_algorithm.is_empty() {
+            if policy.allow_rotation {
+                return Ok(HostKeyEvaluation::Unknown {
+                    alias,
+                    host: observation.host.clone(),
+                    port: observation.port,
+                    algorithm: observation.algorithm.clone(),
+                    fingerprint_sha256: fingerprint,
+                    reason: "alias key rotated; policy allows re-trusting it like a first meeting"
+                        .to_string(),
+                });
+            }
             return Ok(HostKeyEvaluation::Mismatch {
                 alias,
                 host: observation.host.clone(),
@@ -196,11 +207,12 @@ impl HostKeyStore {
         profile_id: &str,
         policy: &HostKeyPolicy,
         alias: &str,
-        port: u16,
+        observation: &HostKeyObservation,
     ) -> Vec<&'a TrustedHostKey> {
         self.keys
             .iter()
-            .filter(|key| key.alias == alias && key.port == port)
+            .filter(|key| key.alias == alias && key.port == observation.port)
+            .filter(|key| !policy.check_ip || key.host == observation.host)
             .filter(|key| match key.scope {
                 HostKeyScope::Profile => key.profile_id.as_deref() == Some(profile_id),
                 HostKeyScope::Project => matches!(
@@ -341,6 +353,51 @@ mod tests {
             .evaluate("profile", &policy, &obs("bench-slot-1", &key_b))
             .unwrap();
         assert!(matches!(evaluation, HostKeyEvaluation::Mismatch { .. }));
+    }
+
+    #[test]
+    fn allow_rotation_treats_mismatch_as_unknown_instead_of_blocking() {
+        let key_a = general_purpose::STANDARD.encode(b"device-a-key");
+        let key_b = general_purpose::STANDARD.encode(b"device-b-key");
+        let mut store = HostKeyStore::new();
+        let mut policy = HostKeyPolicy::profile_alias("bench-slot-1");
+        policy.allow_rotation = true;
+
+        store
+            .apply_decision(
+                "profile",
+                &policy,
+                &obs("bench-slot-1", &key_a),
+                HostKeyDecision::AppendToProfile,
+            )
+            .unwrap();
+
+        let evaluation = store
+            .evaluate("profile", &policy, &obs("bench-slot-1", &key_b))
+            .unwrap();
+        assert!(matches!(evaluation, HostKeyEvaluation::Unknown { .. }));
+    }
+
+    #[test]
+    fn check_ip_treats_same_alias_different_host_as_unknown() {
+        let key_a = general_purpose::STANDARD.encode(b"device-a-key");
+        let mut store = HostKeyStore::new();
+        let mut policy = HostKeyPolicy::profile_alias("bench-slot-1");
+        policy.check_ip = true;
+
+        store
+            .apply_decision(
+                "profile",
+                &policy,
+                &obs("bench-slot-1", &key_a),
+                HostKeyDecision::AppendToProfile,
+            )
+            .unwrap();
+
+        let mut moved_obs = obs("bench-slot-1", &key_a);
+        moved_obs.host = "192.168.1.99".to_string();
+        let evaluation = store.evaluate("profile", &policy, &moved_obs).unwrap();
+        assert!(matches!(evaluation, HostKeyEvaluation::Unknown { .. }));
     }
 
     #[test]

@@ -64,6 +64,7 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - SSH profile-vault private key import plus optional saved password/passphrase into the system keyring; saved profiles keep only generated `secretRef` values
    - Serial port, baud rate, parity, flow control, DTR/RTS, reconnect
    - Shell/TCP/Telnet/Tmux fields when those session types are selected
+   - SSH/TCP/Telnet/Serial reconnect keeps a disconnected runtime in `Reconnecting` and retries in the background until the user closes or manually reconnects the session
    - Trigger matching and actions for timeline marks, notifications, highlights, local commands, and send-text automation
    - Terminal type, font, rows, cols, scrollback, theme
    - Logging formats, redaction, path template
@@ -76,7 +77,7 @@ Saved sessions, runtime state, host-key trust decisions, audit rows, and recent 
 
 The `传输 -> SFTP/SCP 传输` dialog supports local file copy, protocol-native SFTP upload/download/remote copy, SCP upload/download, remote-to-remote SCP copy through SSH command channels, and X/Y/ZModem in-band transfers over connected runtimes. Use `remote:/path/file` or `ssh:/path/file` on either side to mark the remote path. ZModem uses the `zmodem2` state machine and expects `rz`/`sz` on the remote side when PortMate starts a remote modem transfer automatically.
 
-The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, local-to-remote upload, and remote-to-local download through the same SFTP transfer queue.
+The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, file properties, local-to-remote upload, remote-to-local download, and pane-to-pane file drag-and-drop through the same SFTP transfer queue.
 
 The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text.
 
@@ -88,7 +89,7 @@ The `工具 -> Tmux` dialog reads remote `tmux list-sessions` and `tmux list-pan
 
 The `工具 -> Sysmon` action samples the local machine for Shell/Serial/TCP sessions and executes a Linux `/proc` sampler through the active SSH/Tmux connection for remote sessions.
 
-The `搜索 -> 会话搜索` and `搜索 -> 日志搜索` dialogs search the current desktop session set and recent loaded logs. `工具 -> 密钥管理器` manages PortMate host keys, imports/exports OpenSSH `known_hosts`, and lists visible ssh-agent client identities with SHA-256 fingerprints. `工具 -> MCP Bridge` opens the grant manager for MCP client IDs, scopes, allowed sessions, and recent audit records.
+The `搜索 -> 会话搜索` and `搜索 -> 日志搜索` dialogs search the current desktop session set and recent loaded logs. `工具 -> 密钥管理器` manages PortMate host keys with scope/profile filters, batch delete, batch copy-to-profile, host-key alias/host/port/scope/profile/label editing, OpenSSH `known_hosts` import/export, OpenSSH private-key import from local files or pasted text into profile-vault identities, and visible ssh-agent client identity listing with SHA-256 fingerprints. `工具 -> MCP Bridge` opens the grant manager for MCP client IDs, scopes, allowed sessions, and recent audit records.
 
 Run the desktop application:
 
@@ -130,6 +131,18 @@ Write tools are denied by default. For a trusted local development run with an e
 PORTMATE_MCP_TRUSTED=1 PORTMATE_MCP_CLIENT_ID=portmate-local cargo run -p portmate-mcp
 ```
 
+The same bridge can expose JSON-RPC over local HTTP for clients that cannot spawn stdio servers. It only accepts loopback bind addresses, validates `Origin` when present, and requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring.
+The desktop `工具 -> MCP Bridge` dialog shows the default HTTP endpoint, Origin, startup command, tokenRef, and can generate or rotate the keyring token.
+Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.
+
+```bash
+PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
+PORTMATE_MCP_HTTP=1 \
+PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 \
+PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787 \
+cargo run -p portmate-mcp -- --http
+```
+
 ## Verification
 
 ```bash
@@ -160,6 +173,6 @@ This prevents common embedded lab failures where several devices reuse `192.168.
 
 ## Current Implementation Boundary
 
-The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, local Shell PTY with resize, raw TCP, Telnet socket mode with basic option negotiation, serial open/read/write with runtime port enumeration, DTR/RTS, Break, real Hex byte sending, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels, local and SSH remote Sysmon snapshots, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks, profile-vault private key/password/passphrase storage through the OS keyring, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust, modal settings, MCP manifests/tools/resources, and live desktop IPC for trusted MCP control.
+The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, multi-hop SSH Jump Host backend connection chains with per-hop host-key verification, per-hop independent password/passphrase `secretRef`, per-hop identity selection, per-hop inherited or custom host-key mode/alias/trust scope/rotation/IP-check policy, target host-key scan over multi-hop chains, Jump Host host-key confirmation for the first untrusted or changed hop in the chain, session-settings editing, and initial SSH reconnect loops, local Shell PTY with resize, raw TCP, Telnet socket mode with basic option negotiation, TCP/Telnet/Serial initial reconnect loops, runtime `lastDisconnect` and `lastDisconnectReason` diagnostics surfaced in summaries, SQLite, and the desktop toolbar, serial open/read/write with runtime port enumeration, DTR/RTS, Break, real Hex byte sending, recent serial RX/TX timestamp and Hex monitoring, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels with running-list, stop controls, connection counters, byte counters, and last-error status, local and SSH remote Sysmon snapshots, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks with retry/speed metadata, profile-level B/s rate limits, per-session background queued scheduling, `.portmate-part` resume for local copy plus SFTP upload/download/remote copy, SCP upload/download, and remote-command SCP copy, full session queue view, batch cancel/retry controls, and live progress/cancel for local/SFTP/SCP copy loops, remote-command SCP copy with target-size polling, and X/Y/ZModem block loops, append-only raw/text/jsonl log shards, profile-vault private key/password/passphrase storage through the OS keyring, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust with connection-failure confirmation dialog and one-shot trust, host/client key manager workflows for known_hosts import/export, host-key scope/profile filtering, host-key field editing, batch host-key delete/copy-to-profile, importing profile-vault private keys, and copying ssh-agent identities into profiles, modal settings, MCP manifests/tools/resources, stdio/loopback HTTP MCP bridge, and live desktop IPC for trusted MCP control.
 
-Still pending: Jump Host, transfer cancel/retry/speed, append-only raw/text/jsonl log shards, full host-key confirmation modal during connect, terminal compatibility test baselines, and a portable Stronghold-style vault backend for environments where the native OS keyring is unavailable or intentionally disabled.
+Still pending: deeper Jump Host diagnostics and end-to-end coverage, deeper connection health probes, external file/directory recursive drag-and-drop, terminal compatibility test baselines, broader MCP HTTP client matrix testing, integration tests, and a portable Stronghold-style vault backend for environments where the native OS keyring is unavailable or intentionally disabled.

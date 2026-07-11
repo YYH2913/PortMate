@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：Jump Host、真正完整的传输队列体验、终端兼容性测试、append-only 日志体系、自动重连/队列控制、HTTP MCP、以及系统化集成测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：Jump Host 端到端诊断/测试、真正完整的传输队列体验、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化集成测试。
 
 ## 当前实现快照
 
@@ -62,21 +62,22 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - SSH PTY shell：`russh` 连接、PTY、resize、password/public-key/keyboard-interactive/ssh-agent、profile-vault 私钥、保存密码/口令。
 - Shell：跨平台 PTY 基础能力，支持自定义程序、参数、cwd。
-- Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写。
+- Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写，活动串口会话可查看最近收发事件的时间戳、方向、Hex 和文本预览；profile 开启 reconnect 后，读线程断开会释放旧端口、进入 `Reconnecting`，并按 1 秒间隔后台重开，用户关闭或手动重连会取消旧重连循环。
 - Telnet/Raw TCP：socket 模式读写；Telnet 已有最小 IAC 选项协商、终端类型响应和换行编码。
+- TCP/Telnet：profile 开启 reconnect 后，远端断开会进入 `Reconnecting`，保留可取消的 runtime 占位并按 1 秒间隔后台重连；用户主动关闭或手动重连会取消旧重连循环。
 - Tmux：远端 `list-sessions`、`list-panes`、attach/new-session。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
-- X/Y/ZModem：in-band 传输；ZModem 使用 `zmodem2`，远端需要 `rz`/`sz`。
-- SSH tunnel：local、remote reverse、dynamic SOCKS5。
+- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，远端需要 `rz`/`sz`。
+- SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口。
 
 主要缺口：
 
-- Jump Host 模型存在，但链路未实现。
+- Jump Host 后端连接链路已支持多跳，逐跳 host key 验证和 direct-tcpip 串接可用；会话设置可增删多跳 Jump Host，并可为每跳保存独立 password/passphrase secretRef、指定 identityRef、切换继承或自定义 host-key mode/alias/trust scope/rotation/IP 检查；目标 host-key 预扫描可经多跳链路执行；连接失败和扫描时可返回首个需要确认的 Jump Host host key，并通过同一确认弹窗逐跳信任后重连。
 - GSSAPI 标记为 unsupported。
-- 自动重连、断线恢复、连接健康检测还不完整。
-- Serial 的 Hex 查看、收发时间戳、自动重连还没有达到专业串口工具级别。
-- SFTP 文件管理已是 local/remote 双栏并支持 rename/chmod；属性、断点续传、取消、限速、失败重试、实时速度还缺。
+- Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH/TCP/Telnet/Serial 自动重连已有初版，断线后会进入 `Reconnecting` 并后台重试；更深连接健康探测还不完整。
+- Serial 的基础断线重开已接入；Hex/时间戳查看已接入活动会话侧栏，但仍缺更完整过滤、导出和独立串口分析窗口。
+- SFTP 文件管理已是 local/remote 双栏并支持 rename/chmod/属性查看，以及本地/远端文件面板之间拖拽上传/下载；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口；外部文件拖放、目录递归拖放和端到端传输矩阵测试还缺。
 - ZModem 当前限制单文件小于 4 GiB，批量和复杂 rz/sz 兼容矩阵还需要实测。
 
 ### SSH 身份与 Host Key 隔离
@@ -96,12 +97,13 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 认证成功方法会记录到 `lastSuccessful`。
 - 私钥、密码、passphrase、MCP IPC token 进入 OS keyring，SQLite 只保存引用。
 - OpenSSH `known_hosts` 导入/导出已接入 Tauri command 和密钥管理器弹窗。
-- 密钥管理器可以查看 PortMate host key trust store，并列出当前 ssh-agent 中的 client identities 和 SHA-256 指纹。
+- 密钥管理器可以查看 PortMate host key trust store、按 scope/profile 过滤分组、导入/导出 known_hosts、删除 host key、批量删除/复制 host key 到选中 profile、编辑 host key 的 alias/host/port/scope/profile/label；Client Key 区域可从本地文件或粘贴内容导入 OpenSSH 私钥到 profile-vault，并把已有 host key 或当前 ssh-agent identity 复制到选中 profile。
+- 首次连接/host key 变更失败后会弹出专门确认窗口，展示 SHA-256 指纹/已保存指纹，并支持仅本次、加入 Profile、加入 Project、替换 Profile、拒绝和确认后重连。
 
 主要缺口：
 
-- 首次连接/host key 变更时的专门 fingerprint 确认弹窗还不完整；后端有 `evaluate_host_key`/`apply_host_key_decision`，但 UI 没有完整三路径处理流程。
-- Bitvise 风格 Host Key Manager / Client Key Manager 已有基础弹窗，但还缺完整的分组、编辑、复制到 profile、导入私钥文件等高级管理体验。
+- 目标 host key 扫描已可经多跳 Jump Host 链路执行；多跳连接链路、每跳独立凭据/host-key 策略编辑和逐跳 host key 确认弹窗可用。
+- Bitvise 风格 Host Key Manager / Client Key Manager 已有基础弹窗、Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、私钥文件导入和复制到 profile 工作流，但 Client Key 分组/批量和更完整高级管理仍待补。
 - Stronghold 作为 OS keyring 不可用时的可移植 fallback 尚未实现。
 
 ### 数据、日志与自动化
@@ -122,11 +124,11 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - `bytes_ref`/原始字节流持久化没有完整落地。
 - 日志与命令关联、毫秒级分片文件、导出 bundle 的完整离线包还需增强。
 - 触发器动作中的播放声音、自定义链接等还不完整。
-- 传输任务进度主要是完成后更新，不是全程实时进度/速度。
+- 传输任务对 local/SFTP/SCP copy loop、远端命令型复制目标大小轮询和 X/Y/ZModem block loop 已有实时进度/速度与取消。
 
 ### MCP Surface
 
-状态：stdio bridge 可用，HTTP 模式未实现。
+状态：stdio bridge 可用，基础 HTTP JSON-RPC 模式可用。
 
 已实现：
 
@@ -137,11 +139,13 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Prompts：diagnose、serial/SSH compare、repro report。
 - 默认只读，写操作通过 MCP grant scope 控制。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
+- HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。
+- MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
 
 主要缺口：
 
-- HTTP MCP 模式未实现，因此也没有 HTTP Origin 校验路径。
-- 当 desktop IPC 不可用时，部分写工具返回 accepted 文案但不会真正执行；后续应改成明确错误、队列或离线计划。
+- HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流，以及纯 SSE POST 的 `message` 事件响应；更完整客户端矩阵仍待补。
+- 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
 - MCP 授权 UI 已有基础 grant 管理，但还缺更细的 per-tool/per-session 审计可视化和授权确认体验。
 
 ### 测试与验证
@@ -182,44 +186,44 @@ npm run build
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
 | WindTerm 风格工作台 | 部分实现 | 主布局和菜单已有，深层交互/快捷键/布局持久化不足。 |
-| SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent 可用；Jump Host、GSSAPI 未完成。 |
-| Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出已有；连接时确认弹窗不足。 |
-| Bitvise 风格密钥管理 | 部分实现 | keyring/secretRef、Host Key Manager、Agent identity 列表已有；完整 manager 未完成。 |
-| Shell/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商、break、DTR/RTS、hex 字节发送可用；重连、Hex viewer 待补。 |
+| SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；GSSAPI 未完成。 |
+| Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
+| Bitvise 风格密钥管理 | 部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、Client Key 私钥文件/粘贴导入、Agent identity 列表、host key 字段编辑、复制 host key/agent identity 到 profile 已有；Client Key 分组/批量和更完整高级管理待补。 |
+| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
-| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP 已有；双栏、rename、retry、cancel、速度待补。 |
-| X/Y/ZModem | 部分实现 | 三者都有实现；需要真实 rz/sz/串口矩阵测试。 |
-| 隧道 | 部分实现 | local/remote/dynamic 已有；管理/停止/监控体验待补。 |
+| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；外部文件/目录递归拖放和端到端传输矩阵测试待补。 |
+| X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；需要真实 rz/sz/串口矩阵测试。 |
+| 隧道 | 部分实现 | local/remote/dynamic 已有，运行中列表、停止入口、连接数/字节/最后错误统计已接入；深度健康探测和端到端测试待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
-| 日志 | 部分实现 | 结构化 events/SQLite 已有；append-only raw/text/jsonl 分片待补。 |
+| 日志 | 部分实现 | 结构化 events/SQLite、append-only raw/text/jsonl 分片、bundle 日志引用已有；查询/归档/清理策略待补。 |
 | 触发器 | 部分实现 | 匹配和主要动作已有；声音、自定义链接等待补。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、live IPC 已有。 |
-| MCP HTTP | 未实现 | 127.0.0.1 + Origin/token 模式待做。 |
+| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE 事件流和纯 SSE POST message 响应；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
 | 测试体系 | 部分实现 | core 单测可用；集成、UI、终端兼容测试不足。 |
 
 ## 下一阶段目标
 
 ### P0：把 alpha 变成稳定可日用版本
 
-1. 完整补 Jump Host。
-2. 补 host key 首次连接/变更弹窗：展示 SHA-256 fingerprint，并提供临时信任、追加、替换、拒绝。
-3. 为 SFTP/SCP/Modem/tunnel 增加真实进度、取消、失败状态和错误可视化。
+1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
+2. 为 Jump Host 增加更完整的连接诊断、错误聚合和端到端测试覆盖。
+3. 为 tunnel 补齐端到端测试和更深健康探测，并为远端命令型传输补齐更完整的失败状态和错误可视化。
 4. 增加端到端集成测试：测试 SSH server、SFTP server、TCP/Telnet mock、虚拟串口 loopback、rz/sz。
-5. 完成自动重连、断线恢复和连接健康检测。
+5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
 
-1. 文件管理器继续增强：拖拽、属性、断点续传、取消/重试、队列控制和速度统计。
+1. 文件管理器继续增强：外部文件/目录递归拖放和端到端传输矩阵测试。
 2. 会话布局持久化：任意分屏、pane session binding、启动自动打开、标签颜色、workspace restore。
 3. 同步输入正式化：多 pane 广播、过滤协议、换行策略、延迟、前后缀、明显状态条。
-4. 串口工具增强：Hex viewer、收发时间戳、断线自动重连。
-5. 密钥管理器增强：Host Key Manager、Client Key Manager 的编辑、复制到 profile、私钥导入和批量操作。
+4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
+5. 密钥管理器增强：Client Key Manager 分组/批量操作和更完整高级管理。
 
 ### P2：日志、诊断和 MCP 产品化
 
-1. 落地 append-only raw/text/jsonl 分片日志，`bytes_ref` 指向真实字节片段。
-2. `export_session_bundle` 生成完整可交付包：profile metadata、screen、timeline、audit、sysmon、transfers、日志片段。
-3. MCP HTTP 模式：仅绑定 `127.0.0.1`，校验 Origin，本地 token/keyring，提供配置入口。
+1. 完善 append-only raw/text/jsonl 分片日志的查询、归档、清理和 UI 入口。
+2. 强化 `export_session_bundle` 交付包：压缩、校验、更多环境诊断和可选脱敏策略。
+3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 扩展：进程、磁盘、网络接口、远端平台兼容。
 5. Playwright UI 回归、vttest/Unicode/鼠标/全屏程序兼容基线。
 
@@ -233,9 +237,9 @@ npm run build
 
 ## 建议的近期执行顺序
 
-1. Jump Host。
-2. Host key 确认弹窗。
-3. 传输队列取消/重试/速度。
+1. Client Key Manager 分组/批量操作和密钥管理高级工作流。
+2. 文件管理器外部文件/目录递归拖放和端到端传输矩阵测试。
+3. Jump Host 连接诊断和端到端测试覆盖。
 4. 集成测试环境。
 5. append-only 日志和 session bundle。
 

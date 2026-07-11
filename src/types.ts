@@ -41,6 +41,7 @@ export interface SessionProfile {
     xmodem: boolean;
     ymodem: boolean;
     zmodem: boolean;
+    rateLimitBytesPerSecond?: number | null;
     defaultLocalDir?: string | null;
   };
 }
@@ -51,18 +52,21 @@ export type ConnectionConfig =
   | ({ kind: "shell" } & ShellConnection)
   | ({ kind: "telnet" | "tcp" } & TcpConnection);
 
+export interface HostKeyPolicy {
+  mode: "strict" | "trust-on-first-use" | "ask-every-time";
+  alias?: string | null;
+  trustScope: "profile" | "project" | "user";
+  allowRotation: boolean;
+  checkIp: boolean;
+}
+
 export interface SshConnection {
   endpoint: { host: string; port: number };
   username: string;
+  reconnect: boolean;
   passwordSecretRef?: string | null;
   passphraseSecretRef?: string | null;
-  hostKeyPolicy: {
-    mode: "strict" | "trust-on-first-use" | "ask-every-time";
-    alias?: string | null;
-    trustScope: "profile" | "project" | "user";
-    allowRotation: boolean;
-    checkIp: boolean;
-  };
+  hostKeyPolicy: HostKeyPolicy;
   trustedHostKeys: TrustedHostKey[];
   identityPolicy: {
     identitiesOnly: boolean;
@@ -76,8 +80,18 @@ export interface SshConnection {
     forwarding: boolean;
     offerMode: "disabled" | "after-profile-keys" | "before-profile-keys";
   };
-  jumps: unknown[];
+  jumps: JumpHop[];
   tunnels: TunnelSpec[];
+}
+
+export interface JumpHop {
+  host: string;
+  port: number;
+  username: string;
+  passwordSecretRef?: string | null;
+  passphraseSecretRef?: string | null;
+  identityRef?: string | null;
+  hostKeyPolicy?: HostKeyPolicy | null;
 }
 
 export interface SerialConnection {
@@ -139,6 +153,16 @@ export interface TunnelSpec {
   enabled: boolean;
 }
 
+export interface TunnelStatus {
+  spec: TunnelSpec;
+  activeConnections: number;
+  totalConnections: number;
+  tcpToSshBytes: number;
+  sshToTcpBytes: number;
+  lastActivity?: string | null;
+  lastError?: string | null;
+}
+
 export interface TriggerSpec {
   id: string;
   label: string;
@@ -155,6 +179,8 @@ export interface SessionRuntime {
   cwd?: string | null;
   connectedSince?: string | null;
   lastActivity: string;
+  lastDisconnect?: string | null;
+  lastDisconnectReason?: string | null;
   activeTransport: SessionKind;
 }
 
@@ -180,6 +206,9 @@ export interface TransferTask {
   bytesDone: number;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   message?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  averageBytesPerSecond?: number | null;
 }
 
 export interface SysmonSnapshot {
@@ -213,6 +242,19 @@ export interface McpGrant {
   revokedAt?: string | null;
 }
 
+export interface McpHttpConfig {
+  endpoint: string;
+  tokenRef: string;
+  tokenAvailable: boolean;
+  defaultOrigin: string;
+  startCommand: string;
+}
+
+export interface McpHttpTokenResponse {
+  config: McpHttpConfig;
+  token: string;
+}
+
 export interface HostKeyStore {
   keys: TrustedHostKey[];
 }
@@ -231,6 +273,7 @@ export interface HostKeyObservation {
 }
 
 export interface HostKeyScanResult {
+  label?: string | null;
   observation: HostKeyObservation;
   evaluation: HostKeyEvaluation;
 }
@@ -241,6 +284,21 @@ export interface FileEntry {
   isDir: boolean;
   size: number;
   modified?: string | null;
+}
+
+export interface FileProperties {
+  name: string;
+  path: string;
+  remote: boolean;
+  kind: string;
+  isDir: boolean;
+  isFile: boolean;
+  isSymlink: boolean;
+  size: number;
+  permissions?: number | null;
+  modified?: string | null;
+  accessed?: string | null;
+  created?: string | null;
 }
 
 export interface TmuxSessionInfo {

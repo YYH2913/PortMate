@@ -3,8 +3,11 @@ use crate::models::*;
 use crate::redaction::redact_secrets;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
+
+const MAX_EVENTS_PER_SESSION: usize = 5000;
+const EVENT_TRIM_BATCH: usize = 512;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +21,11 @@ pub struct SessionStore {
     pub audit: Vec<AuditRecord>,
     pub timeline: Vec<TimelineMark>,
     pub sysmon: Vec<SysmonSnapshot>,
+    /// Perf cache for `trim_events_if_needed`, not semantic state: lazily seeded per
+    /// session (one full scan of `events`) and kept in sync incrementally afterward,
+    /// so bounding a chatty session's log no longer rescans every session's events.
+    #[serde(skip)]
+    event_counts: HashMap<String, usize>,
 }
 
 impl SessionStore {
@@ -61,6 +69,8 @@ impl SessionStore {
                 cwd: None,
                 connected_since: None,
                 last_activity: now,
+                last_disconnect: None,
+                last_disconnect_reason: None,
                 active_transport: kind,
             });
         }
@@ -96,6 +106,15 @@ impl SessionStore {
         session_id: &str,
         status: SessionStatus,
     ) -> Result<SessionSummary, String> {
+        self.set_runtime_status_with_reason(session_id, status, None)
+    }
+
+    pub fn set_runtime_status_with_reason(
+        &mut self,
+        session_id: &str,
+        status: SessionStatus,
+        reason: Option<String>,
+    ) -> Result<SessionSummary, String> {
         let profile = self
             .profiles
             .iter()
@@ -118,8 +137,9 @@ impl SessionStore {
             };
             runtime.last_activity = now;
             runtime.active_transport = profile.kind;
+            apply_runtime_health(runtime, status, reason);
         } else {
-            self.runtimes.push(SessionRuntime {
+            let mut runtime = SessionRuntime {
                 session_id: session_id.to_string(),
                 pane_id: format!("{session_id}:main"),
                 status,
@@ -127,8 +147,12 @@ impl SessionStore {
                 cwd: None,
                 connected_since: (status == SessionStatus::Connected).then_some(now),
                 last_activity: now,
+                last_disconnect: None,
+                last_disconnect_reason: None,
                 active_transport: profile.kind,
-            });
+            };
+            apply_runtime_health(&mut runtime, status, reason);
+            self.runtimes.push(runtime);
         }
 
         self.summary_for(session_id)
@@ -148,6 +172,8 @@ impl SessionStore {
             runtime.status = SessionStatus::Disconnected;
             runtime.connected_since = None;
             runtime.last_activity = now;
+            runtime.last_disconnect = Some(now);
+            runtime.last_disconnect_reason = Some("user closed session".to_string());
         }
 
         self.push_system_event(session_id, "PortMate: session disconnected".to_string());
@@ -164,6 +190,17 @@ impl SessionStore {
         direction: EventDirection,
         stream: EventStream,
         text: impl Into<String>,
+    ) -> Result<SessionEvent, String> {
+        self.record_stream_event_with_bytes_ref(session_id, direction, stream, text, None)
+    }
+
+    pub fn record_stream_event_with_bytes_ref(
+        &mut self,
+        session_id: &str,
+        direction: EventDirection,
+        stream: EventStream,
+        text: impl Into<String>,
+        bytes_ref: Option<String>,
     ) -> Result<SessionEvent, String> {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
@@ -183,11 +220,12 @@ impl SessionStore {
             ts: now,
             direction,
             stream,
-            bytes_ref: None,
+            bytes_ref,
             text: Some(text.into()),
             annotations: BTreeMap::new(),
         };
         self.events.push(event.clone());
+        self.trim_events_if_needed(session_id);
         Ok(event)
     }
 
@@ -214,6 +252,21 @@ impl SessionStore {
     }
 
     pub fn summaries(&self) -> Vec<SessionSummary> {
+        // Relies on `self.events` staying in per-session insertion order (only ever
+        // appended/retained-in-place, never sorted) so the last-seen text while
+        // iterating forward is genuinely the chronologically last event.
+        let mut log_stats: HashMap<&str, (usize, Option<&str>)> = HashMap::new();
+        for event in &self.events {
+            let Some(text) = event.text.as_deref() else {
+                continue;
+            };
+            let entry = log_stats
+                .entry(event.session_id.as_str())
+                .or_insert((0, None));
+            entry.0 += 1;
+            entry.1 = Some(text);
+        }
+
         self.profiles
             .iter()
             .filter_map(|profile| {
@@ -222,17 +275,15 @@ impl SessionStore {
                     .iter()
                     .find(|runtime| runtime.session_id == profile.id)?
                     .clone();
-                let lines = self
-                    .events
-                    .iter()
-                    .filter(|event| event.session_id == profile.id)
-                    .filter_map(|event| event.text.as_deref())
-                    .collect::<Vec<_>>();
+                let (log_lines, last_line) = log_stats
+                    .get(profile.id.as_str())
+                    .map(|(count, last)| (*count, last.map(ToOwned::to_owned)))
+                    .unwrap_or((0, None));
                 Some(SessionSummary {
                     profile: profile.clone(),
                     runtime,
-                    log_lines: lines.len(),
-                    last_line: lines.last().map(|line| (*line).to_string()),
+                    log_lines,
+                    last_line,
                 })
             })
             .collect()
@@ -258,6 +309,44 @@ impl SessionStore {
             annotations: BTreeMap::new(),
         };
         self.events.push(event);
+        self.trim_events_if_needed(session_id);
+    }
+
+    fn trim_events_if_needed(&mut self, session_id: &str) {
+        // Callers always push exactly one event for `session_id` before calling this.
+        // A cold cache entry is seeded with a fresh scan (already reflecting that push);
+        // a warm entry just needs +1 for the push that happened since the last check.
+        let already_cached = self.event_counts.contains_key(session_id);
+        let events = &self.events;
+        let count_ref = self
+            .event_counts
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                events
+                    .iter()
+                    .filter(|event| event.session_id == session_id)
+                    .count()
+            });
+        if already_cached {
+            *count_ref += 1;
+        }
+        let session_count = *count_ref;
+
+        if session_count <= MAX_EVENTS_PER_SESSION + EVENT_TRIM_BATCH {
+            return;
+        }
+
+        let mut to_drop = session_count - MAX_EVENTS_PER_SESSION;
+        self.events.retain(|event| {
+            if to_drop > 0 && event.session_id == session_id {
+                to_drop -= 1;
+                false
+            } else {
+                true
+            }
+        });
+        self.event_counts
+            .insert(session_id.to_string(), MAX_EVENTS_PER_SESSION);
     }
 
     fn describe_endpoint(profile: &SessionProfile) -> String {
@@ -353,6 +442,7 @@ impl SessionStore {
             annotations: BTreeMap::from([("actor".to_string(), actor.to_string())]),
         };
         self.events.push(event.clone());
+        self.trim_events_if_needed(session_id);
         self.audit.push(AuditRecord {
             id: Uuid::new_v4().to_string(),
             ts: Utc::now(),
@@ -426,11 +516,50 @@ impl SessionStore {
     }
 
     pub fn export_session_bundle(&self, session_id: &str) -> serde_json::Value {
+        self.export_session_bundle_with_redaction(session_id, false)
+    }
+
+    pub fn export_session_bundle_redacted(&self, session_id: &str) -> serde_json::Value {
+        self.export_session_bundle_with_redaction(session_id, true)
+    }
+
+    fn export_session_bundle_with_redaction(
+        &self,
+        session_id: &str,
+        redact_text: bool,
+    ) -> serde_json::Value {
+        let mut events = self.tail_log(session_id, 500);
+        if redact_text {
+            for event in &mut events {
+                event.text = event.text.take().map(|text| redact_secrets(&text));
+            }
+        }
+        let log_shards = events
+            .iter()
+            .filter_map(|event| event.bytes_ref.as_ref())
+            .cloned()
+            .collect::<Vec<_>>();
+        let transfers = self
+            .transfers
+            .iter()
+            .filter(|transfer| transfer.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let audit = self
+            .audit
+            .iter()
+            .filter(|record| record.session_id.as_deref() == Some(session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+
         serde_json::json!({
             "summary": self.summaries().into_iter().find(|summary| summary.profile.id == session_id),
-            "events": self.tail_log(session_id, 500),
+            "events": events,
+            "logShards": log_shards,
             "timeline": self.timeline_for(session_id),
             "sysmon": self.sysmon_for(session_id),
+            "transfers": transfers,
+            "audit": audit,
         })
     }
 
@@ -442,6 +571,25 @@ impl SessionStore {
                 ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(ssh),
                 _ => None,
             })
+    }
+}
+
+fn apply_runtime_health(
+    runtime: &mut SessionRuntime,
+    status: SessionStatus,
+    reason: Option<String>,
+) {
+    if matches!(
+        status,
+        SessionStatus::Disconnected | SessionStatus::Reconnecting | SessionStatus::Error
+    ) {
+        runtime.last_disconnect = Some(runtime.last_activity);
+        runtime.last_disconnect_reason = Some(reason.unwrap_or_else(|| match status {
+            SessionStatus::Disconnected => "session disconnected".to_string(),
+            SessionStatus::Reconnecting => "session reconnecting".to_string(),
+            SessionStatus::Error => "connection error".to_string(),
+            _ => "runtime status changed".to_string(),
+        }));
     }
 }
 
@@ -507,10 +655,96 @@ mod tests {
 
         let closed = store.close_session("test-session").unwrap();
         assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+        assert!(closed.runtime.last_disconnect.is_some());
+        assert_eq!(
+            closed.runtime.last_disconnect_reason.as_deref(),
+            Some("user closed session")
+        );
         assert!(store
             .screen("test-session")
             .unwrap()
             .contains("disconnected"));
+    }
+
+    #[test]
+    fn runtime_status_reason_records_disconnect_health() {
+        let mut store = test_store();
+        let summary = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Reconnecting,
+                Some("network timeout".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(summary.runtime.status, SessionStatus::Reconnecting);
+        assert!(summary.runtime.last_disconnect.is_some());
+        assert_eq!(
+            summary.runtime.last_disconnect_reason.as_deref(),
+            Some("network timeout")
+        );
+    }
+
+    #[test]
+    fn stream_events_are_bounded_per_session() {
+        let mut store = test_store();
+        for index in 0..(MAX_EVENTS_PER_SESSION + EVENT_TRIM_BATCH + 64) {
+            store
+                .record_stream_event(
+                    "test-session",
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    format!("line {index}"),
+                )
+                .unwrap();
+        }
+
+        let events = store.tail_log("test-session", usize::MAX);
+        assert!(events.len() <= MAX_EVENTS_PER_SESSION + EVENT_TRIM_BATCH);
+        assert_ne!(
+            events.first().and_then(|event| event.text.as_deref()),
+            Some("line 0")
+        );
+    }
+
+    #[test]
+    fn export_bundle_includes_diagnostics_and_redacts_text() {
+        let mut store = test_store();
+        store
+            .record_stream_event_with_bytes_ref(
+                "test-session",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "password=hunter2",
+                Some("test.raw:0:16".to_string()),
+            )
+            .unwrap();
+        store.transfers.push(TransferTask {
+            id: "transfer-1".to_string(),
+            session_id: "test-session".to_string(),
+            protocol: TransferProtocol::Sftp,
+            source: "a".to_string(),
+            destination: "b".to_string(),
+            bytes_total: 16,
+            bytes_done: 16,
+            status: TransferStatus::Completed,
+            message: Some("completed".to_string()),
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: None,
+        });
+        store
+            .send_text("client", "test-session", "token=abc123")
+            .unwrap();
+
+        let bundle = store.export_session_bundle_redacted("test-session");
+        let rendered = serde_json::to_string(&bundle).unwrap();
+
+        assert!(rendered.contains("test.raw:0:16"));
+        assert!(rendered.contains("transfer-1"));
+        assert!(rendered.contains("send_text"));
+        assert!(!rendered.contains("hunter2"));
+        assert!(!rendered.contains("abc123"));
     }
 
     fn test_store() -> SessionStore {
@@ -540,6 +774,8 @@ mod tests {
                 cwd: None,
                 connected_since: Some(now),
                 last_activity: now,
+                last_disconnect: None,
+                last_disconnect_reason: None,
                 active_transport: SessionKind::Shell,
             }],
             grants: vec![

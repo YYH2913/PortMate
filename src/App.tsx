@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
+import { listen } from "@tauri-apps/api/event";
 import {
   ChevronDown,
   ChevronRight,
@@ -19,7 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
-import type { AuditRecord, AuthMethod, ConnectionConfig, FileEntry, HostKeyObservation, HostKeyScanResult, HostKeyStore, IdentityRef, McpGrant, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TrustedHostKey } from "./types";
+import type { AuditRecord, AuthMethod, ConnectionConfig, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -58,9 +59,27 @@ type SessionPrefs = ReturnType<typeof createSessionPrefs>;
 type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; savePassword: boolean; savePassphrase: boolean };
 type NoticeState = { title: string; message: string } | null;
 type SearchDialogState = { mode: "sessions" | "logs"; query: string };
+type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
+type HostKeyEditDraft = {
+  keyId: string;
+  profileId: string;
+  alias: string;
+  host: string;
+  port: number;
+  scope: TrustedHostKey["scope"];
+  label: string;
+};
+type HostKeyPromptState = {
+  profile: SessionProfile;
+  message: string;
+  scan: HostKeyScanResult | null;
+  scanError: string | null;
+  busy: boolean;
+};
 type WorkspaceLayout = "single" | "horizontal" | "vertical";
 type SendMode = "text" | "hex";
 type SendTarget = "active" | "panes" | "connected";
+type ContextMenuState = { x: number; y: number; sessionId: string | null } | null;
 type CredentialPromptState = {
   target: string;
   initialUsername: string;
@@ -87,6 +106,60 @@ const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]> = {
   Serial: [...sharedSessionTree, { label: "串口", children: ["协议"] }, { label: "X/Y/Z Modem" }],
 };
 
+const tabColorChoices = [
+  { label: "青色", value: "#5eead4" },
+  { label: "蓝色", value: "#68a7ff" },
+  { label: "紫色", value: "#a78bfa" },
+  { label: "琥珀", value: "#f4b860" },
+  { label: "红色", value: "#f87171" },
+  { label: "绿色", value: "#37d67a" },
+];
+
+const portmateTerminalTheme = {
+  background: "#0d1117",
+  foreground: "#d7e1eb",
+  cursor: "#5eead4",
+  cursorAccent: "#0d1117",
+  selectionBackground: "#284457",
+  selectionForeground: "#f8fafc",
+  black: "#0d1117",
+  red: "#f87171",
+  green: "#37d67a",
+  yellow: "#f4b860",
+  blue: "#68a7ff",
+  magenta: "#c084fc",
+  cyan: "#5eead4",
+  white: "#d7e1eb",
+  brightBlack: "#6b7280",
+  brightRed: "#ff8a8a",
+  brightGreen: "#86efac",
+  brightYellow: "#fde047",
+  brightBlue: "#93c5fd",
+  brightMagenta: "#d8b4fe",
+  brightCyan: "#67e8f9",
+  brightWhite: "#ffffff",
+  extendedAnsi: createXterm256Palette(),
+};
+
+function createXterm256Palette() {
+  const toHex = (value: number) => value.toString(16).padStart(2, "0");
+  const rgb = (red: number, green: number, blue: number) => `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
+  const palette: string[] = [];
+  const steps = [0, 95, 135, 175, 215, 255];
+  for (const red of steps) {
+    for (const green of steps) {
+      for (const blue of steps) {
+        palette.push(rgb(red, green, blue));
+      }
+    }
+  }
+  for (let index = 0; index < 24; index += 1) {
+    const level = 8 + index * 10;
+    palette.push(rgb(level, level, level));
+  }
+  return palette;
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
@@ -110,10 +183,14 @@ export default function App() {
   const [syncInput, setSyncInput] = useState(() => loadLocalValue("portmate.syncInput", false));
   const [commandHistory, setCommandHistory] = useState<string[]>(() => loadLocalValue("portmate.commandHistory", []));
   const [notice, setNotice] = useState<NoticeState>(null);
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
+  const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
   const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayout>(() => loadLocalValue("portmate.workspaceLayout", "single"));
   const [paneIds, setPaneIds] = useState<string[]>(() => loadLocalValue("portmate.paneIds", []));
   const [blockSelection, setBlockSelection] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
+  const [tabColors, setTabColors] = useState<Record<string, string>>(() => loadLocalValue("portmate.tabColors", {}));
   const credentialResolverRef = useRef<((credentials: ConnectionCredentials | null) => void) | null>(null);
   const logSignatureRef = useRef<Record<string, string>>({});
   const sessionsSignatureRef = useRef("");
@@ -140,11 +217,35 @@ export default function App() {
   }, [commandHistory]);
 
   useEffect(() => {
+    saveLocalValue("portmate.tabColors", tabColors);
+  }, [tabColors]);
+
+  useEffect(() => {
+    const preventNativeContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("contextmenu", preventNativeContextMenu, { capture: true });
+    return () => window.removeEventListener("contextmenu", preventNativeContextMenu, { capture: true });
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
     if (!activeId || !isBackendAvailable()) return;
     if (!activeStatus || activeStatus === "disconnected") return;
+    void refreshActiveLog(activeId);
     const timer = window.setInterval(() => {
       void refreshActiveLog(activeId);
-    }, activeStatus === "connected" ? 500 : 900);
+    }, activeStatus === "connected" ? 2000 : 1200);
     return () => window.clearInterval(timer);
   }, [activeId, activeStatus]);
 
@@ -156,6 +257,29 @@ export default function App() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [activeId, activeStatus]);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<TransferTask>("portmate-transfer-task", (event) => {
+      if (disposed) return;
+      setTransfers((current) => mergeTransfers(current, event.payload));
+    })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   async function refresh() {
     const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
@@ -293,6 +417,7 @@ function handleMenuAction(item: string) {
     }
     if (item === "新建会话") {
       setDraft(createSessionDraft());
+      setSessionSettingsSection("会话");
       setDialog("session");
       return;
     }
@@ -306,6 +431,7 @@ function handleMenuAction(item: string) {
     }
     if (item === "会话设置") {
       setDraft(active?.profile ?? createSessionDraft());
+      setSessionSettingsSection("会话");
       setDialog("session");
       return;
     }
@@ -320,6 +446,7 @@ function handleMenuAction(item: string) {
       }
       if (item === "触发器") {
         setDraft(active?.profile ?? createSessionDraft());
+        setSessionSettingsSection("触发器");
         setDialog("session");
         return;
       }
@@ -347,15 +474,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "复制标签") {
-      if (!active) {
-        openNewSessionDialog();
-        return;
-      }
-      const duplicate = cloneSessionProfile(active.profile);
-      duplicate.id = createSessionId();
-      duplicate.name = `${active.profile.name} copy`;
-      setDraft(duplicate);
-      setDialog("session");
+      duplicateSessionFromContext();
       return;
     }
     if (item === "还原布局") {
@@ -366,8 +485,181 @@ function handleMenuAction(item: string) {
     setNotice({ title: item, message: "未识别的菜单项。" });
   }
 
+  function openAppContextMenu(event: ReactMouseEvent, sessionId?: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextSessionId = sessionId ?? (activeId || sessions[0]?.profile.id || null);
+    if (sessionId) {
+      setActiveId(sessionId);
+    }
+    setOpenMenu(null);
+    setContextMenu({ x: event.clientX, y: event.clientY, sessionId: nextSessionId });
+  }
+
+  function contextSession(sessionId?: string | null) {
+    return sessions.find((session) => session.profile.id === (sessionId ?? contextMenu?.sessionId ?? activeId));
+  }
+
+  async function renameSessionFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    const nextName = window.prompt("标签名称", session.profile.name);
+    if (!nextName?.trim()) return;
+    const saved = await saveProfile({ ...session.profile, name: nextName.trim() });
+    applySavedSession(saved);
+  }
+
+  async function moveSessionToGroupFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    const nextGroup = window.prompt("移动到分组", session.profile.group || "Sessions");
+    if (nextGroup === null) return;
+    const saved = await saveProfile({ ...session.profile, group: nextGroup.trim() || "Sessions" });
+    applySavedSession(saved);
+  }
+
+  async function saveSessionFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    const saved = await saveProfile(prepareSessionProfile(session.profile));
+    applySavedSession(saved);
+    setNotice({ title: "保存会话", message: `已保存 ${saved.profile.name}` });
+  }
+
+  function duplicateSessionFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) {
+      openNewSessionDialog();
+      return;
+    }
+    const duplicate = cloneSessionProfile(session.profile);
+    duplicate.id = createSessionId();
+    duplicate.name = `${session.profile.name} copy`;
+    duplicate.connection = isolateDuplicatedConnection(duplicate.id, duplicate.connection);
+    setDraft(duplicate);
+    setSessionSettingsSection("会话");
+    setDialog("session");
+  }
+
+  function openSessionSettingsFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    setDraft(session?.profile ?? createSessionDraft());
+    setSessionSettingsSection("会话");
+    setDialog("session");
+  }
+
+  function copySessionNameFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    void navigator.clipboard?.writeText(session.profile.name);
+  }
+
+  function copySessionUrlFromContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    const url = `portmate://sessions/${encodeURIComponent(session.profile.id)}?kind=${encodeURIComponent(session.profile.kind)}&endpoint=${encodeURIComponent(describeProfileEndpoint(session.profile))}`;
+    void navigator.clipboard?.writeText(url);
+  }
+
+  function setTabColorFromContext(sessionId: string | null | undefined, color: string) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    setTabColors((current) => ({ ...current, [session.profile.id]: color }));
+  }
+
+  async function pasteFromClipboardIntoContext(sessionId?: string | null) {
+    const session = contextSession(sessionId);
+    if (!session) return;
+    const text = await navigator.clipboard?.readText().catch(() => "");
+    if (text) await routeTerminalInput(session.profile.id, text);
+  }
+
+  async function closeSessionsByIds(ids: string[]) {
+    const failed: string[] = [];
+    for (const id of ids) {
+      try {
+        await disconnectSession(id);
+      } catch {
+        failed.push(id);
+      }
+    }
+    if (failed.length) {
+      setNotice({ title: "关闭视图", message: `${failed.length} 个会话关闭失败，其余已关闭。` });
+    }
+  }
+
+  function closeSideSessionsFromContext(sessionId?: string | null) {
+    const target = contextSession(sessionId);
+    if (!target) return;
+    const index = sessions.findIndex((session) => session.profile.id === target.profile.id);
+    if (index < 0) return;
+    const rightIds = sessions.slice(index + 1).map((session) => session.profile.id);
+    void closeSessionsByIds(rightIds);
+  }
+
+  function handleContextMenuAction(action: string, sessionId?: string | null) {
+    setContextMenu(null);
+    const target = contextSession(sessionId);
+    switch (action) {
+      case "sync-on":
+        setSyncInput(true);
+        return;
+      case "sync-off":
+        setSyncInput(false);
+        return;
+      case "rename":
+        void renameSessionFromContext(sessionId);
+        return;
+      case "duplicate":
+        duplicateSessionFromContext(sessionId);
+        return;
+      case "paste":
+        void pasteFromClipboardIntoContext(sessionId);
+        return;
+      case "copy-name":
+        copySessionNameFromContext(sessionId);
+        return;
+      case "copy-url":
+        copySessionUrlFromContext(sessionId);
+        return;
+      case "reconnect":
+        if (target) void connectSession(target.profile.id);
+        return;
+      case "save":
+        void saveSessionFromContext(sessionId);
+        return;
+      case "split-h":
+        splitWorkspace("horizontal");
+        return;
+      case "split-v":
+        splitWorkspace("vertical");
+        return;
+      case "move-group":
+        void moveSessionToGroupFromContext(sessionId);
+        return;
+      case "close":
+        if (target) void disconnectSession(target.profile.id);
+        return;
+      case "close-all":
+        void closeSessionsByIds(sessions.map((session) => session.profile.id));
+        return;
+      case "close-inactive":
+        void closeSessionsByIds(sessions.filter((session) => session.profile.id !== activeId).map((session) => session.profile.id));
+        return;
+      case "close-side":
+        closeSideSessionsFromContext(sessionId);
+        return;
+      case "settings":
+        openSessionSettingsFromContext(sessionId);
+        return;
+      default:
+        return;
+    }
+  }
+
   function openNewSessionDialog() {
     setDraft(createSessionDraft());
+    setSessionSettingsSection("会话");
     setDialog("session");
   }
 
@@ -484,13 +776,62 @@ function handleMenuAction(item: string) {
         return nextSessions;
       });
     } catch (error) {
+      const message = formatError(error);
       const failed = setSessionStatus({ ...session, profile: profileForConnect }, "error");
       const backendLog = await callBackend("tail_log", { sessionId: profileForConnect.id, limit: 600 }, []);
-      const errorText = `PortMate: connection failed: ${formatError(error)}`;
+      const errorText = `PortMate: connection failed: ${message}`;
       const nextLog = backendLog.length ? backendLog : [...(logs[profileForConnect.id] ?? []), createLocalSystemEvent(profileForConnect, errorText)];
       setLogs((current) => ({ ...current, [profileForConnect.id]: nextLog }));
       setSessions((current) => mergeSessionSummaries(current, failed));
+      if (isSshLikeProfile(profileForConnect) && isHostKeyFailure(message)) {
+        void openHostKeyPrompt(profileForConnect, message, credentials);
+      } else {
+        setNotice({ title: "连接失败", message });
+      }
     }
+  }
+
+  async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
+    setHostKeyPrompt({ profile, message, scan: null, scanError: null, busy: true });
+    try {
+      const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
+        profile: prepareSessionProfile(profile),
+        password: credentials?.password ?? null,
+        passphrase: credentials?.passphrase ?? null,
+      });
+      setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
+    } catch (error) {
+      setHostKeyPrompt({ profile, message, scan: null, scanError: formatError(error), busy: false });
+    }
+  }
+
+  async function applyHostKeyPromptDecision(decision: HostKeyDecisionValue, reconnect: boolean) {
+    if (!hostKeyPrompt?.scan) return;
+    const profile = prepareSessionProfile(hostKeyPrompt.profile);
+    setHostKeyPrompt((current) => current ? { ...current, busy: true } : current);
+    try {
+      await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
+        request: { profile, observation: hostKeyPrompt.scan.observation, decision },
+      });
+      const nextHostKeys = await callBackend("list_host_keys", {}, hostKeys);
+      setHostKeys(nextHostKeys);
+      setDraft(profile);
+      setHostKeyPrompt(null);
+      setNotice({ title: "Host key 已确认", message: reconnect ? "已保存信任决策，正在重新连接。" : "已保存信任决策。" });
+      if (reconnect) {
+        void connectSession(profile.id);
+      }
+    } catch (error) {
+      setHostKeyPrompt((current) => current ? { ...current, busy: false, scanError: formatError(error) } : current);
+    }
+  }
+
+  function openHostKeySettingsFromPrompt() {
+    if (!hostKeyPrompt) return;
+    setDraft(hostKeyPrompt.profile);
+    setSessionSettingsSection("验证");
+    setDialog("session");
+    setHostKeyPrompt(null);
   }
 
   async function disconnectSession(sessionId = activeId) {
@@ -674,7 +1015,7 @@ function handleMenuAction(item: string) {
   }
 
   return (
-    <main className="wind-root">
+    <main className="wind-root" onContextMenu={openAppContextMenu} onClick={() => setContextMenu(null)}>
       <header className="wind-menu">
         <div className="menu-row">
           {menuGroups.map((group) => (
@@ -722,8 +1063,13 @@ function handleMenuAction(item: string) {
           <div className="tab-line">
             {sessions.length ? (
               sessions.map((session) => (
-                <button key={session.profile.id} className={session.profile.id === activeId ? "terminal-tab active" : "terminal-tab"} onClick={() => activateSession(session.profile.id)}>
-                  <span className="tab-mark" />
+                <button
+                  key={session.profile.id}
+                  className={session.profile.id === activeId ? "terminal-tab active" : "terminal-tab"}
+                  onClick={() => activateSession(session.profile.id)}
+                  onContextMenu={(event) => openAppContextMenu(event, session.profile.id)}
+                >
+                  <span className="tab-mark" style={{ background: tabColors[session.profile.id] ?? "#5eead4" }} />
                   <span className="tab-title">{session.profile.name}</span>
                   <span className={`tab-status ${session.runtime.status}`} />
                   <X
@@ -771,6 +1117,12 @@ function handleMenuAction(item: string) {
               </div>
             ) : null}
             {active ? <span className={`runtime-pill ${active.runtime.status}`}>{active.runtime.status}</span> : null}
+            {active?.runtime.lastDisconnect ? (
+              <span title={active.runtime.lastDisconnectReason ?? undefined}>
+                最近断开 {formatEventClock(active.runtime.lastDisconnect)}
+                {active.runtime.lastDisconnectReason ? ` · ${active.runtime.lastDisconnectReason}` : ""}
+              </span>
+            ) : null}
           </div>
           <TerminalPaneGrid
             layout={workspaceLayout}
@@ -791,7 +1143,10 @@ function handleMenuAction(item: string) {
           </DockPanel>
           <DockPanel title="历史命令" accent="#f4b860" actions>
             <FilterLine compact />
-            <CommandHistoryPanel history={commandHistory} onPick={setSendText} />
+            <div className="right-tools-list">
+              {activeSerial && active ? <SerialMonitorPanel events={logs[active.profile.id] ?? []} /> : null}
+              <CommandHistoryPanel history={commandHistory} onPick={setSendText} />
+            </div>
           </DockPanel>
         </aside>
 
@@ -864,12 +1219,35 @@ function handleMenuAction(item: string) {
         <span>锁屏</span>
       </footer>
 
+      {contextMenu && (
+        <PortMateContextMenu
+          state={contextMenu}
+          active={contextSession(contextMenu.sessionId)}
+          syncInput={syncInput}
+          onAction={handleContextMenuAction}
+          onColor={(color) => {
+            setTabColorFromContext(contextMenu.sessionId, color);
+            setContextMenu(null);
+          }}
+        />
+      )}
+
       {dialog === "terminal" && <TerminalSettingsDialog onClose={() => setDialog(null)} />}
-      {dialog === "session" && <SessionSettingsDialog draft={draft} serialPorts={serialPorts} onDraftChange={setDraft} onSave={saveDraft} onSaveAndConnect={saveDraftAndConnect} onClose={() => setDialog(null)} />}
-      {utilityDialog === "transfer" && active && <TransferDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(task) => {
+      {dialog === "session" && (
+        <SessionSettingsDialog
+          draft={draft}
+          serialPorts={serialPorts}
+          initialSection={sessionSettingsSection}
+          onDraftChange={setDraft}
+          onSave={saveDraft}
+          onSaveAndConnect={saveDraftAndConnect}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {utilityDialog === "transfer" && active && <TransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
         setTransfers((current) => mergeTransfers(current, task));
-        setUtilityDialog(null);
-        setNotice({ title: "传输任务", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
+      }} onNotice={(message) => {
+        setNotice({ title: "传输任务", message });
       }} />}
       {utilityDialog === "tunnel" && active && <TunnelDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
         setUtilityDialog(null);
@@ -884,9 +1262,17 @@ function handleMenuAction(item: string) {
         activateSession(sessionId);
         setUtilityDialog(null);
       }} onClose={() => setUtilityDialog(null)} />}
-      {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
       {credentialPrompt && <CredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />}
+      {hostKeyPrompt && (
+        <HostKeyConfirmDialog
+          state={hostKeyPrompt}
+          onDecision={(decision, reconnect) => void applyHostKeyPromptDecision(decision, reconnect)}
+          onOpenSettings={openHostKeySettingsFromPrompt}
+          onClose={() => setHostKeyPrompt(null)}
+        />
+      )}
       {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
     </main>
   );
@@ -979,15 +1365,51 @@ function CommandHistoryPanel({ history, onPick }: { history: string[]; onPick: (
   );
 }
 
-function TransferList({ transfers }: { transfers: TransferTask[] }) {
+function SerialMonitorPanel({ events }: { events: SessionEvent[] }) {
+  const serialEvents = events
+    .filter((event) => event.stream !== "audit" && event.text)
+    .slice(-24)
+    .reverse();
+  if (!serialEvents.length) return <div className="empty-pane top">没有串口收发记录</div>;
+
+  return (
+    <div className="serial-monitor">
+      {serialEvents.map((event) => (
+        <div key={event.id} className={`serial-monitor-row ${event.direction}`}>
+          <div className="serial-monitor-meta">
+            <span>{formatEventClock(event.ts)}</span>
+            <strong>{event.direction === "inbound" ? "RX" : event.direction === "outbound" ? "TX" : "SYS"}</strong>
+          </div>
+          <code>{textToHex(event.text ?? "") || "--"}</code>
+          <small>{formatSerialPreview(event.text ?? "")}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TransferList({ transfers, onRetry, onCancel }: { transfers: TransferTask[]; onRetry: (task: TransferTask) => void; onCancel: (task: TransferTask) => void }) {
   if (!transfers.length) return <div className="empty-pane top">没有传输任务</div>;
   return (
     <div className="transfer-list">
       {transfers.slice().reverse().map((task) => (
         <div key={task.id} className="transfer-row">
-          <strong>{task.protocol}</strong>
-          <span>{task.status}</span>
+          <div className="transfer-row-head">
+            <strong>{task.protocol}</strong>
+            <span>{task.status}</span>
+            {task.status === "running" ? (
+              <button type="button" onClick={() => onCancel(task)}>取消</button>
+            ) : null}
+            {task.status === "failed" || task.status === "cancelled" ? (
+              <button type="button" onClick={() => onRetry(task)}>重试</button>
+            ) : null}
+          </div>
           <small>{task.source} → {task.destination}</small>
+          <small>
+            {formatBytes(task.bytesDone)} / {task.bytesTotal ? formatBytes(task.bytesTotal) : "未知"}
+            {task.averageBytesPerSecond ? ` · ${formatBytes(task.averageBytesPerSecond)}/s` : ""}
+            {task.startedAt && task.finishedAt ? ` · ${formatDuration(task.startedAt, task.finishedAt)}` : ""}
+          </small>
           <div className="transfer-progress">
             <span style={{ width: `${task.bytesTotal ? Math.min(100, (task.bytesDone / task.bytesTotal) * 100) : task.status === "completed" ? 100 : 0}%` }} />
           </div>
@@ -1005,6 +1427,19 @@ type FilePanelState = {
   error: string;
 };
 
+type FilePropertiesDialogState = {
+  remote: boolean;
+  path: string;
+  properties: FileProperties | null;
+  busy: boolean;
+  error: string;
+} | null;
+
+type FileDragState = {
+  remote: boolean;
+  entry: FileEntry;
+} | null;
+
 function FileManagerPanel({
   active,
   transfers,
@@ -1018,6 +1453,9 @@ function FileManagerPanel({
 }) {
   const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), entries: [], selected: null, busy: false, error: "" }));
   const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", entries: [], selected: null, busy: false, error: "" }));
+  const [propertiesDialog, setPropertiesDialog] = useState<FilePropertiesDialogState>(null);
+  const [draggedFile, setDraggedFile] = useState<FileDragState>(null);
+  const [dropTarget, setDropTarget] = useState<boolean | null>(null);
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
 
   useEffect(() => {
@@ -1103,6 +1541,19 @@ function FileManagerPanel({
     }
   }
 
+  async function showProperties(remote: boolean) {
+    const panel = remote ? remotePanel : localPanel;
+    if (!panel.selected) return;
+    const nextState: NonNullable<FilePropertiesDialogState> = { remote, path: panel.selected.path, properties: null, busy: true, error: "" };
+    setPropertiesDialog(nextState);
+    try {
+      const properties = await invokeBackend<FileProperties>("file_properties", { request: { sessionId: active?.profile.id ?? null, path: panel.selected.path, remote } });
+      setPropertiesDialog({ ...nextState, properties, busy: false });
+    } catch (error) {
+      setPropertiesDialog({ ...nextState, busy: false, error: formatError(error) });
+    }
+  }
+
   async function transferBetween(upload: boolean) {
     if (!active || !canRemote) return;
     const selected = upload ? localPanel.selected : remotePanel.selected;
@@ -1117,6 +1568,44 @@ function FileManagerPanel({
     });
     onTransfer(task);
     onNotice({ title: "传输任务", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
+  }
+
+  function startFileDrag(remote: boolean, entry: FileEntry, event: ReactDragEvent<HTMLButtonElement>) {
+    if (!canRemote || entry.isDir) return;
+    setDraggedFile({ remote, entry });
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-portmate-file", JSON.stringify({ remote, path: entry.path, name: entry.name }));
+  }
+
+  function handleDragOver(remote: boolean, event: ReactDragEvent<HTMLElement>) {
+    if (!canRemote || !draggedFile || draggedFile.remote === remote || draggedFile.entry.isDir) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropTarget(remote);
+  }
+
+  async function dropFile(remote: boolean, event: ReactDragEvent<HTMLElement>) {
+    event.preventDefault();
+    const dropped = draggedFile;
+    setDropTarget(null);
+    setDraggedFile(null);
+    if (!active || !canRemote || !dropped || dropped.remote === remote || dropped.entry.isDir) return;
+    const targetPanel = remote ? remotePanel : localPanel;
+    try {
+      const task = await invokeBackend<TransferTask>("start_transfer", {
+        request: {
+          sessionId: active.profile.id,
+          protocol: "sftp",
+          source: dropped.remote ? `remote:${dropped.entry.path}` : dropped.entry.path,
+          destination: remote ? `remote:${joinFilePath(targetPanel.path, dropped.entry.name, true)}` : joinFilePath(targetPanel.path, dropped.entry.name, false),
+        },
+      });
+      onTransfer(task);
+      onNotice({ title: "拖拽传输", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
+    } catch (error) {
+      updatePanel(remote, { error: formatError(error) });
+      onNotice({ title: "拖拽传输失败", message: formatError(error) });
+    }
   }
 
   async function startPromptTransfer(remote: boolean) {
@@ -1143,6 +1632,26 @@ function FileManagerPanel({
     onNotice({ title: "传输任务", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
   }
 
+  async function retryTransfer(task: TransferTask) {
+    try {
+      const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
+      onTransfer(retried);
+      onNotice({ title: "重试传输", message: `${retried.protocol} ${retried.status}: ${retried.message ?? ""}` });
+    } catch (error) {
+      onNotice({ title: "重试传输失败", message: formatError(error) });
+    }
+  }
+
+  async function cancelTransfer(task: TransferTask) {
+    try {
+      const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
+      onTransfer(cancelled);
+      onNotice({ title: "取消传输", message: `${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}` });
+    } catch (error) {
+      onNotice({ title: "取消传输失败", message: formatError(error) });
+    }
+  }
+
   return (
     <div className={canRemote ? "file-manager dual" : "file-manager"}>
       <div className="file-panels">
@@ -1155,10 +1664,20 @@ function FileManagerPanel({
           onPathChange={(path) => setLocalPanel((current) => ({ ...current, path }))}
           onLoad={(path) => void loadFiles(false, path)}
           onSelect={(entry) => setLocalPanel((current) => ({ ...current, selected: entry }))}
+          dropActive={dropTarget === false}
+          onDragStart={(entry, event) => startFileDrag(false, entry, event)}
+          onDragEnd={() => {
+            setDraggedFile(null);
+            setDropTarget(null);
+          }}
+          onDragOver={(event) => handleDragOver(false, event)}
+          onDragLeave={() => setDropTarget((current) => (current === false ? null : current))}
+          onDrop={(event) => void dropFile(false, event)}
           onCreateDir={() => void createDir(false)}
           onDelete={() => void deleteSelected(false)}
           onRename={() => void renameSelected(false)}
           onChmod={() => void chmodSelected(false)}
+          onProperties={() => void showProperties(false)}
           onTransfer={() => void (canRemote ? transferBetween(true) : startPromptTransfer(false))}
         />
         {canRemote ? (
@@ -1171,15 +1690,26 @@ function FileManagerPanel({
             onPathChange={(path) => setRemotePanel((current) => ({ ...current, path }))}
             onLoad={(path) => void loadFiles(true, path)}
             onSelect={(entry) => setRemotePanel((current) => ({ ...current, selected: entry }))}
+            dropActive={dropTarget === true}
+            onDragStart={(entry, event) => startFileDrag(true, entry, event)}
+            onDragEnd={() => {
+              setDraggedFile(null);
+              setDropTarget(null);
+            }}
+            onDragOver={(event) => handleDragOver(true, event)}
+            onDragLeave={() => setDropTarget((current) => (current === true ? null : current))}
+            onDrop={(event) => void dropFile(true, event)}
             onCreateDir={() => void createDir(true)}
             onDelete={() => void deleteSelected(true)}
             onRename={() => void renameSelected(true)}
             onChmod={() => void chmodSelected(true)}
+            onProperties={() => void showProperties(true)}
             onTransfer={() => void transferBetween(false)}
           />
         ) : null}
       </div>
-      <TransferList transfers={transfers.slice(-3)} />
+      <TransferList transfers={transfers.slice(-3)} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
+      {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={() => setPropertiesDialog(null)} /> : null}
     </div>
   );
 }
@@ -1190,13 +1720,20 @@ function FileBrowserPane({
   panel,
   canTransfer,
   transferLabel,
+  dropActive,
   onPathChange,
   onLoad,
   onSelect,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
   onCreateDir,
   onDelete,
   onRename,
   onChmod,
+  onProperties,
   onTransfer,
 }: {
   title: string;
@@ -1204,17 +1741,29 @@ function FileBrowserPane({
   panel: FilePanelState;
   canTransfer: boolean;
   transferLabel: string;
+  dropActive: boolean;
   onPathChange: (path: string) => void;
   onLoad: (path: string) => void;
   onSelect: (entry: FileEntry | null) => void;
+  onDragStart: (entry: FileEntry, event: ReactDragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
+  onDragLeave: () => void;
+  onDrop: (event: ReactDragEvent<HTMLElement>) => void;
   onCreateDir: () => void;
   onDelete: () => void;
   onRename: () => void;
   onChmod: () => void;
+  onProperties: () => void;
   onTransfer: () => void;
 }) {
   return (
-    <section className="file-browser-pane">
+    <section
+      className={dropActive ? "file-browser-pane drop-active" : "file-browser-pane"}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="file-toolbar">
         <strong>{title}</strong>
         <input value={panel.path} onChange={(event) => onPathChange(event.target.value)} onKeyDown={(event) => {
@@ -1229,6 +1778,7 @@ function FileBrowserPane({
         <button onClick={onRename} disabled={!panel.selected}>重命名</button>
         <button onClick={onDelete} disabled={!panel.selected}>删除</button>
         <button onClick={onChmod} disabled={!panel.selected}>权限</button>
+        <button onClick={onProperties} disabled={!panel.selected}>属性</button>
         <button onClick={onTransfer} disabled={!panel.selected || panel.selected.isDir || !canTransfer}>{transferLabel}</button>
       </div>
       {panel.error ? <div className="file-error">{panel.error}</div> : null}
@@ -1242,6 +1792,9 @@ function FileBrowserPane({
           <button
             key={entry.path}
             className={panel.selected?.path === entry.path ? "file-row active" : "file-row"}
+            draggable={canTransfer && !entry.isDir}
+            onDragStart={(event) => onDragStart(entry, event)}
+            onDragEnd={onDragEnd}
             onClick={() => onSelect(entry)}
             onDoubleClick={() => {
               if (entry.isDir) {
@@ -1256,6 +1809,49 @@ function FileBrowserPane({
         ))}
       </div>
     </section>
+  );
+}
+
+function FilePropertiesDialog({ state, onClose }: { state: NonNullable<FilePropertiesDialogState>; onClose: () => void }) {
+  const properties = state.properties;
+  return (
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="wind-dialog file-properties-dialog">
+        <header className="dialog-title">
+          <span>文件属性</span>
+          <button onClick={onClose}><X size={20} /></button>
+        </header>
+        <div className="file-properties-content">
+          {state.busy ? <div className="empty-pane top">读取中...</div> : null}
+          {state.error ? <div className="file-error">{state.error}</div> : null}
+          {properties ? (
+            <dl className="property-grid">
+              <dt>名称</dt>
+              <dd>{properties.name}</dd>
+              <dt>路径</dt>
+              <dd title={properties.path}>{properties.path}</dd>
+              <dt>位置</dt>
+              <dd>{properties.remote ? "远端" : "本地"}</dd>
+              <dt>类型</dt>
+              <dd>{formatFileKind(properties)}</dd>
+              <dt>大小</dt>
+              <dd>{properties.isFile ? `${formatBytes(properties.size)} (${properties.size} B)` : "-"}</dd>
+              <dt>权限</dt>
+              <dd>{formatFileMode(properties.permissions)}</dd>
+              <dt>修改时间</dt>
+              <dd>{formatDateTime(properties.modified)}</dd>
+              <dt>访问时间</dt>
+              <dd>{formatDateTime(properties.accessed)}</dd>
+              <dt>创建时间</dt>
+              <dd>{formatDateTime(properties.created)}</dd>
+            </dl>
+          ) : null}
+        </div>
+        <footer className="utility-actions">
+          <button type="button" onClick={onClose}>关闭</button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
@@ -1315,6 +1911,18 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
   const lastSizeRef = useRef("");
   const lastCopiedSelectionRef = useRef("");
 
+  // Returns whether `id` was already seen. Bounded so a session that stays
+  // connected for hours doesn't grow this Set forever; clearing early just
+  // risks one harmless re-rendered duplicate line, never data loss.
+  function markEventSeen(id: string): boolean {
+    if (seenEventsRef.current.size > 4000) {
+      seenEventsRef.current.clear();
+    }
+    if (seenEventsRef.current.has(id)) return true;
+    seenEventsRef.current.add(id);
+    return false;
+  }
+
   useEffect(() => {
     if (!active || !hostRef.current) return;
 
@@ -1325,23 +1933,12 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
       rows: active.profile.terminal.rows,
       cursorBlink: true,
       convertEol: false,
+      drawBoldTextInBrightColors: true,
       fontFamily: active.profile.terminal.fontFamily,
       fontSize: active.profile.terminal.fontSize,
+      minimumContrastRatio: 1,
       scrollback: active.profile.terminal.scrollback,
-      theme: {
-        background: "#0d1117",
-        foreground: "#d7e1eb",
-        cursor: "#5eead4",
-        selectionBackground: "#284457",
-        black: "#0d1117",
-        red: "#f87171",
-        green: "#37d67a",
-        yellow: "#f4b860",
-        blue: "#68a7ff",
-        magenta: "#c084fc",
-        cyan: "#5eead4",
-        white: "#d7e1eb",
-      },
+      theme: portmateTerminalTheme,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -1396,7 +1993,6 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
       }
     };
     const host = hostRef.current;
-    host.addEventListener("contextmenu", pasteFromClipboard);
     host.addEventListener("auxclick", pasteOnMiddleClick);
 
     termRef.current = term;
@@ -1405,7 +2001,6 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
     return () => {
       inputDisposable.dispose();
       selectionDisposable.dispose();
-      host.removeEventListener("contextmenu", pasteFromClipboard);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
       if (inputFlushTimerRef.current !== null) {
         window.clearTimeout(inputFlushTimerRef.current);
@@ -1420,11 +2015,36 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
   }, [active?.profile.id]);
 
   useEffect(() => {
+    if (!active || !isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void listen<SessionEvent>("portmate-session-event", (event) => {
+      if (disposed || event.payload.sessionId !== active.profile.id) return;
+      const term = termRef.current;
+      if (!term || markEventSeen(event.payload.id)) return;
+      writeTerminalEvent(term, event.payload);
+    })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [active?.profile.id]);
+
+  useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     for (const event of events) {
-      if (seenEventsRef.current.has(event.id)) continue;
-      seenEventsRef.current.add(event.id);
+      if (markEventSeen(event.id)) continue;
       writeTerminalEvent(term, event);
     }
   }, [events, active?.profile.id]);
@@ -1440,12 +2060,138 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
   );
 }
 
-function TransferDialog({ session, onClose, onDone }: { session: SessionSummary; onClose: () => void; onDone: (task: TransferTask) => void }) {
+function PortMateContextMenu({
+  state,
+  active,
+  syncInput,
+  onAction,
+  onColor,
+}: {
+  state: NonNullable<ContextMenuState>;
+  active?: SessionSummary;
+  syncInput: boolean;
+  onAction: (action: string, sessionId?: string | null) => void;
+  onColor: (color: string) => void;
+}) {
+  const left = Math.max(8, Math.min(state.x, window.innerWidth - 318));
+  const top = Math.max(8, Math.min(state.y, window.innerHeight - 540));
+  const sessionId = active?.profile.id ?? state.sessionId;
+  const disabled = !active;
+
+  return (
+    <div className="portmate-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+      <ContextSubmenu label="设置标签页颜色(C)" disabled={disabled}>
+        <div className="context-color-grid">
+          {tabColorChoices.map((color) => (
+            <button key={color.value} type="button" onClick={() => onColor(color.value)}>
+              <span style={{ background: color.value }} />
+              {color.label}
+            </button>
+          ))}
+        </div>
+      </ContextSubmenu>
+      <ContextSubmenu label="同步输入(S)">
+        <ContextMenuButton label={syncInput ? "同步输入已开启" : "开启同步输入"} checked={syncInput} onClick={() => onAction("sync-on", sessionId)} />
+        <ContextMenuButton label="关闭同步输入" checked={!syncInput} onClick={() => onAction("sync-off", sessionId)} />
+      </ContextSubmenu>
+      <ContextMenuButton label="粘贴(P)" shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
+      <ContextMenuButton label="重命名视图(R)" disabled={disabled} onClick={() => onAction("rename", sessionId)} />
+      <ContextMenuButton label="复制会话(D)" shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
+      <ContextMenuButton label="复制SSH通道(D)" disabled />
+      <ContextDivider />
+      <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
+      <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
+      <ContextDivider />
+      <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={disabled} onClick={() => onAction("reconnect", sessionId)} />
+      <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
+      <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
+      <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
+      <ContextSubmenu label="拆分为(S)" disabled={disabled}>
+        <ContextMenuButton label="水平拆分" onClick={() => onAction("split-h", sessionId)} />
+        <ContextMenuButton label="垂直拆分" onClick={() => onAction("split-v", sessionId)} />
+      </ContextSubmenu>
+      <ContextSubmenu label="移动至分组(M)" disabled={disabled}>
+        <ContextMenuButton label="选择分组..." onClick={() => onAction("move-group", sessionId)} />
+      </ContextSubmenu>
+      <ContextDivider />
+      <ContextMenuButton label="关闭视图(C)" shortcut="Ctrl+Shift+W" disabled={disabled} onClick={() => onAction("close", sessionId)} />
+      <ContextMenuButton label="关闭所有视图(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
+      <ContextMenuButton label="关闭所有非活动视图(A)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
+      <ContextMenuButton label="关闭在侧所有视图(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
+      <ContextDivider />
+      <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
+    </div>
+  );
+}
+
+function ContextMenuButton({
+  label,
+  shortcut,
+  disabled,
+  checked,
+  onClick,
+}: {
+  label: string;
+  shortcut?: string;
+  disabled?: boolean;
+  checked?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
+      <span className={checked ? "context-check active" : "context-check"}>{checked ? "✓" : ""}</span>
+      <span className="context-label">{label}</span>
+      {shortcut ? <span className="context-shortcut">{shortcut}</span> : null}
+    </button>
+  );
+}
+
+function ContextSubmenu({
+  label,
+  disabled,
+  children,
+}: {
+  label: string;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
+      <button type="button" className="context-menu-row" disabled={disabled}>
+        <span className="context-check" />
+        <span className="context-label">{label}</span>
+        <span className="context-arrow">›</span>
+      </button>
+      {!disabled ? <div className="context-submenu-panel">{children}</div> : null}
+    </div>
+  );
+}
+
+function ContextDivider() {
+  return <div className="context-divider" />;
+}
+
+function TransferDialog({
+  session,
+  transfers,
+  onClose,
+  onTask,
+  onNotice,
+}: {
+  session: SessionSummary;
+  transfers: TransferTask[];
+  onClose: () => void;
+  onTask: (task: TransferTask) => void;
+  onNotice: (message: string) => void;
+}) {
   const [protocol, setProtocol] = useState<TransferTask["protocol"]>("sftp");
   const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
+  const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
+  const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -1455,7 +2201,8 @@ function TransferDialog({ session, onClose, onDone }: { session: SessionSummary;
       const task = await invokeBackend<TransferTask>("start_transfer", {
         request: { sessionId: session.profile.id, protocol, source, destination },
       });
-      onDone(task);
+      onTask(task);
+      onNotice(`${task.protocol} ${task.status}: ${task.message ?? ""}`);
     } catch (error) {
       setError(formatError(error));
     } finally {
@@ -1463,9 +2210,41 @@ function TransferDialog({ session, onClose, onDone }: { session: SessionSummary;
     }
   }
 
+  async function retryTransfer(task: TransferTask) {
+    try {
+      const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
+      onTask(retried);
+      onNotice(`${retried.protocol} ${retried.status}: ${retried.message ?? ""}`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function cancelTransfer(task: TransferTask) {
+    try {
+      const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
+      onTask(cancelled);
+      onNotice(`${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function cancelRunningTransfers() {
+    for (const task of runningTransfers) {
+      await cancelTransfer(task);
+    }
+  }
+
+  async function retryFailedTransfers() {
+    for (const task of retryableTransfers) {
+      await retryTransfer(task);
+    }
+  }
+
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog utility-dialog" onSubmit={submit}>
+      <form className="wind-dialog utility-dialog transfer-dialog" onSubmit={submit}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>传输任务</strong>
@@ -1490,6 +2269,16 @@ function TransferDialog({ session, onClose, onDone }: { session: SessionSummary;
           <DialogField label="目标:">
             <input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" />
           </DialogField>
+          <div className="transfer-queue-panel">
+            <header>
+              <strong>队列</strong>
+              <div>
+                <button type="button" onClick={() => void retryFailedTransfers()} disabled={!retryableTransfers.length}>重试失败</button>
+                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={!runningTransfers.length}>取消运行中</button>
+              </div>
+            </header>
+            <TransferList transfers={sessionTransfers} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
+          </div>
           {error ? <div className="utility-error">{error}</div> : null}
         </section>
         <footer className="utility-actions">
@@ -1507,15 +2296,36 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
   const [bindPort, setBindPort] = useState("10022");
   const [targetHost, setTargetHost] = useState("127.0.0.1");
   const [targetPort, setTargetPort] = useState("22");
+  const [tunnels, setTunnels] = useState<TunnelStatus[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [stoppingId, setStoppingId] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    void refreshTunnels();
+    const timer = window.setInterval(() => void refreshTunnels(true), 2000);
+    return () => window.clearInterval(timer);
+  }, [session.profile.id]);
+
+  async function refreshTunnels(quiet = false) {
+    if (!quiet) setLoading(true);
+    if (!quiet) setError("");
+    try {
+      setTunnels(await invokeBackend<TunnelStatus[]>("list_tunnels", { sessionId: session.profile.id }));
+    } catch (error) {
+      if (!quiet) setError(formatError(error));
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     setBusy(true);
     try {
-      const tunnel = await invokeBackend<{ label: string }>("create_tunnel", {
+      const tunnel = await invokeBackend<TunnelSpec>("create_tunnel", {
         request: {
           sessionId: session.profile.id,
           mode,
@@ -1525,6 +2335,7 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
           targetPort: mode === "dynamic" ? 0 : Number(targetPort),
         },
       });
+      setTunnels((current) => mergeTunnels(current, emptyTunnelStatus(tunnel)));
       onDone(`已创建 ${mode} tunnel：${tunnel.label}`);
     } catch (error) {
       setError(formatError(error));
@@ -1532,6 +2343,22 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
       setBusy(false);
     }
   }
+
+  async function stopTunnel(tunnel: TunnelStatus) {
+    setStoppingId(tunnel.spec.id);
+    setError("");
+    try {
+      await invokeBackend<TunnelStatus>("stop_tunnel", { tunnelId: tunnel.spec.id });
+      setTunnels((current) => current.filter((item) => item.spec.id !== tunnel.spec.id));
+      onDone(`已停止 tunnel：${tunnel.spec.label}`);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setStoppingId("");
+    }
+  }
+
+  const sessionTunnels = tunnels.filter((tunnel) => tunnel.spec.enabled);
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1568,6 +2395,35 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
               </DialogField>
             </>
           ) : null}
+          <div className="tunnel-panel">
+            <header>
+              <strong>运行中</strong>
+              <button type="button" onClick={() => void refreshTunnels()} disabled={loading} title="刷新 tunnel 列表">
+                <RefreshCw size={14} />
+              </button>
+            </header>
+            {sessionTunnels.length ? (
+              <div className="tunnel-list">
+                {sessionTunnels.map((tunnel) => (
+                  <div key={tunnel.spec.id} className={`tunnel-row ${tunnel.lastError ? "degraded" : ""}`}>
+                    <div>
+                      <strong>{tunnel.spec.label}</strong>
+                      <small>{tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? "" : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
+                      <small>
+                        active {tunnel.activeConnections} · total {tunnel.totalConnections} · TCP→SSH {formatBytes(tunnel.tcpToSshBytes)} · SSH→TCP {formatBytes(tunnel.sshToTcpBytes)}
+                      </small>
+                      {tunnel.lastError ? <small className="tunnel-error">{tunnel.lastError}</small> : null}
+                    </div>
+                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingId === tunnel.spec.id} title="停止 tunnel">
+                      <Square size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-pane top">{loading ? "正在读取 tunnel" : "没有运行中的 tunnel"}</div>
+            )}
+          </div>
           {error ? <div className="utility-error">{error}</div> : null}
         </section>
         <footer className="utility-actions">
@@ -1729,11 +2585,13 @@ function KeyManagerDialog({
   hostKeys,
   sessions,
   onChange,
+  onProfileChange,
   onClose,
 }: {
   hostKeys: HostKeyStore;
   sessions: SessionSummary[];
   onChange: (store: HostKeyStore) => void;
+  onProfileChange: (summary: SessionSummary) => void;
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
@@ -1741,11 +2599,35 @@ function KeyManagerDialog({
   const [knownHostsText, setKnownHostsText] = useState("");
   const [exportText, setExportText] = useState("");
   const [agentKeys, setAgentKeys] = useState<IdentityRef[]>([]);
+  const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
+  const [privateKeyText, setPrivateKeyText] = useState("");
+  const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
+  const [keyProfileFilter, setKeyProfileFilter] = useState("all");
+  const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
+  const [editingKeyId, setEditingKeyId] = useState("");
+  const [editDraft, setEditDraft] = useState<HostKeyEditDraft | null>(null);
   const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  const selectedProfile = sshSessions.find((session) => session.profile.id === profileId)?.profile ?? null;
+  const editingKey = hostKeys.keys.find((key) => key.id === editingKeyId) ?? null;
+  const visibleHostKeys = hostKeys.keys.filter((key) => (
+    (keyScopeFilter === "all" || key.scope === keyScopeFilter)
+    && (keyProfileFilter === "all" || key.profileId === keyProfileFilter)
+  ));
+  const selectedVisibleHostKeys = visibleHostKeys.filter((key) => selectedHostKeyIds.includes(key.id));
 
   useEffect(() => {
     void refreshAgentKeys();
   }, []);
+
+  useEffect(() => {
+    if (editingKeyId && !hostKeys.keys.some((key) => key.id === editingKeyId)) {
+      setEditingKeyId("");
+      setEditDraft(null);
+    }
+    setSelectedHostKeyIds((current) => current.filter((keyId) => hostKeys.keys.some((key) => key.id === keyId)));
+  }, [editingKeyId, hostKeys.keys]);
 
   async function refreshAgentKeys() {
     if (!isBackendAvailable()) return;
@@ -1759,12 +2641,14 @@ function KeyManagerDialog({
   async function importKnownHostsText() {
     if (!profileId || !knownHostsText.trim()) return;
     setError("");
+    setStatus("");
     try {
       const nextStore = await invokeBackend<HostKeyStore>("import_known_hosts", {
         request: { profileId, contents: knownHostsText },
       });
       onChange(nextStore);
       setKnownHostsText("");
+      setStatus("known_hosts 已导入到选中的 Profile scope");
     } catch (error) {
       setError(formatError(error));
     }
@@ -1772,6 +2656,7 @@ function KeyManagerDialog({
 
   async function exportKnownHostsText() {
     setError("");
+    setStatus("");
     try {
       setExportText(await invokeBackend<string>("export_known_hosts", {}));
     } catch (error) {
@@ -1781,12 +2666,232 @@ function KeyManagerDialog({
 
   async function deleteKey(keyId: string) {
     setError("");
+    setStatus("");
     try {
       const nextStore = await invokeBackend<HostKeyStore>("delete_host_key", { keyId });
       onChange(nextStore);
+      if (editingKeyId === keyId) {
+        setEditingKeyId("");
+        setEditDraft(null);
+      }
+      setStatus("Host key 已删除");
     } catch (error) {
       setError(formatError(error));
     }
+  }
+
+  async function deleteSelectedHostKeys() {
+    if (!selectedHostKeyIds.length) return;
+    setError("");
+    setStatus("");
+    try {
+      const nextStore = await invokeBackend<HostKeyStore>("delete_host_keys", { keyIds: selectedHostKeyIds });
+      onChange(nextStore);
+      setSelectedHostKeyIds([]);
+      setEditingKeyId("");
+      setEditDraft(null);
+      setStatus(`已删除 ${selectedHostKeyIds.length} 个 host key`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  function toggleHostKeySelection(keyId: string, selected: boolean) {
+    setSelectedHostKeyIds((current) => (
+      selected
+        ? Array.from(new Set([...current, keyId]))
+        : current.filter((id) => id !== keyId)
+    ));
+  }
+
+  function selectVisibleHostKeys() {
+    setSelectedHostKeyIds((current) => Array.from(new Set([...current, ...visibleHostKeys.map((key) => key.id)])));
+  }
+
+  function startEditKey(key: TrustedHostKey) {
+    setEditingKeyId(key.id);
+    setEditDraft({
+      keyId: key.id,
+      profileId: key.profileId ?? profileId,
+      alias: key.alias,
+      host: key.host,
+      port: key.port,
+      scope: key.scope,
+      label: key.label ?? "",
+    });
+    setError("");
+    setStatus("");
+  }
+
+  async function saveEditedHostKey() {
+    if (!editDraft) return;
+    setError("");
+    setStatus("");
+    try {
+      const nextStore = await invokeBackend<HostKeyStore>("update_host_key", {
+        request: {
+          keyId: editDraft.keyId,
+          profileId: editDraft.profileId || null,
+          alias: editDraft.alias,
+          host: editDraft.host,
+          port: editDraft.port,
+          scope: editDraft.scope,
+          label: editDraft.label || null,
+        },
+      });
+      onChange(nextStore);
+      setEditingKeyId(editDraft.keyId);
+      setStatus("Host key 已更新");
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function saveProfileFromManager(profile: SessionProfile, message: string) {
+    setError("");
+    setStatus("");
+    try {
+      const saved = await invokeBackend<SessionSummary>("save_session_profile", { profile: prepareSessionProfile(profile) });
+      onProfileChange(saved);
+      setStatus(message);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function readPrivateKeyFile(file: File | null) {
+    if (!file) return;
+    setError("");
+    setStatus("");
+    try {
+      setPrivateKeyText(await file.text());
+      if (!privateKeyLabel.trim()) {
+        setPrivateKeyLabel(file.name.replace(/\.(pem|key|txt)$/i, "") || "profile key");
+      }
+      setStatus(`已读取 ${file.name}`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function importPrivateKeyToProfile() {
+    if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    const privateKey = privateKeyText.trim();
+    if (!privateKey) return;
+    if (!privateKey.includes("PRIVATE KEY")) {
+      setError("私钥内容看起来不是 OpenSSH/PEM private key");
+      return;
+    }
+    setError("");
+    setStatus("");
+    try {
+      const label = privateKeyLabel.trim() || "profile key";
+      const response = await invokeBackend<{ secretRef: string }>("save_secret", {
+        request: { secretRef: null, secret: privateKeyText },
+      });
+      const identityRef: IdentityRef = {
+        id: `vault:${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`,
+        label,
+        source: "profile-vault",
+        fingerprintSha256: null,
+        path: null,
+        secretRef: response.secretRef,
+      };
+      await saveProfileFromManager({
+        ...selectedProfile,
+        connection: {
+          ...selectedProfile.connection,
+          identityRefs: [identityRef, ...selectedProfile.connection.identityRefs],
+          identityPolicy: {
+            ...selectedProfile.connection.identityPolicy,
+            identitiesOnly: true,
+          },
+        },
+      }, `已导入私钥到 ${selectedProfile.name}`);
+      setPrivateKeyText("");
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function copyHostKeysToProfile(keys: TrustedHostKey[]) {
+    if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    const currentKeys = selectedProfile.connection.trustedHostKeys;
+    const copiedKeys: TrustedHostKey[] = [];
+    for (const key of keys) {
+      const copied: TrustedHostKey = {
+        ...key,
+        id: `${selectedProfile.id}:${key.alias}:${key.port}:${key.algorithm}:${key.fingerprintSha256}`,
+        profileId: selectedProfile.id,
+        scope: "profile",
+        label: key.label ?? `copied from ${key.scope}`,
+        lastSeen: new Date().toISOString(),
+      };
+      const exists = [...currentKeys, ...copiedKeys].some((item) => (
+        item.algorithm === copied.algorithm
+        && item.fingerprintSha256 === copied.fingerprintSha256
+        && item.alias === copied.alias
+        && item.port === copied.port
+      ));
+      if (!exists) {
+        copiedKeys.push(copied);
+      }
+    }
+    if (!copiedKeys.length) {
+      setStatus("选中的 Profile 已包含这些 host key");
+      return;
+    }
+    await saveProfileFromManager({
+      ...selectedProfile,
+      connection: {
+        ...selectedProfile.connection,
+        trustedHostKeys: [...copiedKeys, ...currentKeys],
+      },
+    }, `已复制 ${copiedKeys.length} 个 host key 到 ${selectedProfile.name}`);
+  }
+
+  async function copyHostKeyToProfile(key: TrustedHostKey) {
+    await copyHostKeysToProfile([key]);
+  }
+
+  async function copySelectedHostKeysToProfile() {
+    await copyHostKeysToProfile(selectedVisibleHostKeys);
+  }
+
+  async function copyAgentIdentityToProfile(identity: IdentityRef) {
+    if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    const identityRef: IdentityRef = {
+      ...identity,
+      id: identity.fingerprintSha256 ? `agent:${identity.fingerprintSha256}` : identity.id,
+      source: "agent",
+      path: identity.path ?? null,
+      secretRef: null,
+    };
+    const identities = selectedProfile.connection.identityRefs;
+    const exists = identities.some((item) => (
+      item.source === "agent"
+      && item.fingerprintSha256
+      && item.fingerprintSha256 === identityRef.fingerprintSha256
+    ));
+    const nextIdentities = exists
+      ? identities.map((item) => (
+        item.source === "agent" && item.fingerprintSha256 === identityRef.fingerprintSha256
+          ? { ...item, ...identityRef }
+          : item
+      ))
+      : [identityRef, ...identities];
+    await saveProfileFromManager({
+      ...selectedProfile,
+      connection: {
+        ...selectedProfile.connection,
+        identityRefs: nextIdentities,
+        agentPolicy: {
+          ...selectedProfile.connection.agentPolicy,
+          enabled: true,
+          offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
+        },
+      },
+    }, exists ? `已更新 ${selectedProfile.name} 的 agent identity` : `已添加 agent identity 到 ${selectedProfile.name}`);
   }
 
   return (
@@ -1799,15 +2904,44 @@ function KeyManagerDialog({
         </header>
         <div className="key-content">
           <section className="key-list">
-            {hostKeys.keys.map((key) => (
+            <div className="key-list-toolbar">
+              <select value={keyScopeFilter} onChange={(event) => setKeyScopeFilter(event.target.value as TrustedHostKey["scope"] | "all")}>
+                <option value="all">全部 scope</option>
+                <option value="profile">profile</option>
+                <option value="project">project</option>
+                <option value="user">user</option>
+              </select>
+              <select value={keyProfileFilter} onChange={(event) => setKeyProfileFilter(event.target.value)}>
+                <option value="all">全部 profile</option>
+                {sshSessions.map((session) => (
+                  <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
+                ))}
+              </select>
+              <button type="button" onClick={selectVisibleHostKeys} disabled={!visibleHostKeys.length}>全选</button>
+              <button type="button" onClick={() => setSelectedHostKeyIds([])} disabled={!selectedHostKeyIds.length}>清除</button>
+            </div>
+            <div className="key-batch-actions">
+              <span>{selectedHostKeyIds.length} selected</span>
+              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={!selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
+              <button type="button" onClick={() => void deleteSelectedHostKeys()} disabled={!selectedHostKeyIds.length}>删除</button>
+            </div>
+            {visibleHostKeys.map((key) => (
               <div key={key.id} className="key-row">
+                <label className="key-row-select">
+                  <input type="checkbox" checked={selectedHostKeyIds.includes(key.id)} onChange={(event) => toggleHostKeySelection(key.id, event.target.checked)} />
+                </label>
                 <strong>{key.alias}:{key.port}</strong>
                 <span>{key.algorithm} · {key.fingerprintSha256}</span>
                 <small>{key.scope} · {key.label ?? key.host}</small>
-                <button onClick={() => void deleteKey(key.id)}>删除</button>
+                <div className="key-row-actions">
+                  <button onClick={() => startEditKey(key)}>编辑</button>
+                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={!selectedProfile}>复制到 Profile</button>
+                  <button onClick={() => void deleteKey(key.id)}>删除</button>
+                </div>
               </div>
             ))}
             {!hostKeys.keys.length ? <div className="empty-pane top">没有保存的 host key</div> : null}
+            {hostKeys.keys.length && !visibleHostKeys.length ? <div className="empty-pane top">当前分组没有 host key</div> : null}
           </section>
           <section className="key-editor">
             <DialogField label="Profile:">
@@ -1817,10 +2951,53 @@ function KeyManagerDialog({
                 ))}
               </select>
             </DialogField>
+            {editDraft ? (
+              <section className="key-edit-panel">
+                <div className="key-edit-heading">
+                  <strong>Host Key</strong>
+                  <button type="button" onClick={() => { setEditingKeyId(""); setEditDraft(null); }}>关闭</button>
+                </div>
+                <DialogField label="Alias:">
+                  <input value={editDraft.alias} onChange={(event) => setEditDraft({ ...editDraft, alias: event.target.value })} />
+                </DialogField>
+                <DialogField label="Host:">
+                  <input value={editDraft.host} onChange={(event) => setEditDraft({ ...editDraft, host: event.target.value })} />
+                </DialogField>
+                <DialogField label="Port:">
+                  <input type="number" min={1} max={65535} value={editDraft.port} onChange={(event) => setEditDraft({ ...editDraft, port: Number(event.target.value) || 22 })} />
+                </DialogField>
+                <DialogField label="Scope:">
+                  <select value={editDraft.scope} onChange={(event) => setEditDraft({ ...editDraft, scope: event.target.value as TrustedHostKey["scope"] })}>
+                    <option value="profile">profile</option>
+                    <option value="project">project</option>
+                    <option value="user">user</option>
+                  </select>
+                </DialogField>
+                <DialogField label="Profile:">
+                  <select value={editDraft.profileId} onChange={(event) => setEditDraft({ ...editDraft, profileId: event.target.value })}>
+                    <option value="">无</option>
+                    {sshSessions.map((session) => (
+                      <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
+                    ))}
+                  </select>
+                </DialogField>
+                <DialogField label="Label:">
+                  <input value={editDraft.label} onChange={(event) => setEditDraft({ ...editDraft, label: event.target.value })} />
+                </DialogField>
+                <div className="key-edit-meta">
+                  <span>{editingKey?.algorithm ?? ""}</span>
+                  <span>{editingKey?.fingerprintSha256 ?? ""}</span>
+                </div>
+                <div className="key-actions">
+                  <button type="button" onClick={() => void saveEditedHostKey()}>保存编辑</button>
+                </div>
+              </section>
+            ) : null}
             <DialogField label="known_hosts:">
               <textarea value={knownHostsText} onChange={(event) => setKnownHostsText(event.target.value)} placeholder="粘贴 OpenSSH known_hosts 内容" />
             </DialogField>
             {error ? <div className="utility-error">{error}</div> : null}
+            {status ? <div className="utility-status">{status}</div> : null}
             <div className="key-actions">
               <button onClick={() => void importKnownHostsText()} disabled={!profileId || !knownHostsText.trim()}>导入</button>
               <button onClick={() => void exportKnownHostsText()}>导出</button>
@@ -1831,6 +3008,15 @@ function KeyManagerDialog({
           </section>
           <section className="key-agent-list">
             <div className="key-agent-header">
+              <strong>Client Keys</strong>
+            </div>
+            <section className="key-import-panel">
+              <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="label" />
+              <input type="file" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
+              <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={!selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+            </section>
+            <div className="key-agent-header">
               <strong>Agent Keys</strong>
               <button onClick={() => void refreshAgentKeys()}>刷新</button>
             </div>
@@ -1839,6 +3025,9 @@ function KeyManagerDialog({
                 <strong>{identity.label}</strong>
                 <span>{identity.fingerprintSha256 ?? "未识别指纹"}</span>
                 <small>{identity.path ?? "ssh-agent"}</small>
+                <div className="key-row-actions">
+                  <button onClick={() => void copyAgentIdentityToProfile(identity)} disabled={!selectedProfile}>添加到 Profile</button>
+                </div>
               </div>
             ))}
             {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}
@@ -1866,6 +3055,37 @@ function McpDialog({
 }) {
   const [draft, setDraft] = useState<McpGrant>(() => grants[0] ?? createMcpGrant());
   const [error, setError] = useState("");
+  const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
+  const [httpToken, setHttpToken] = useState("");
+  const [httpBusy, setHttpBusy] = useState(false);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    void loadHttpConfig();
+  }, []);
+
+  async function loadHttpConfig() {
+    try {
+      const config = await invokeBackend<McpHttpConfig>("mcp_http_config", {});
+      setHttpConfig(config);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function rotateHttpToken() {
+    setError("");
+    setHttpBusy(true);
+    try {
+      const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
+      setHttpConfig(response.config);
+      setHttpToken(response.token);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setHttpBusy(false);
+    }
+  }
 
   async function save() {
     setError("");
@@ -1947,6 +3167,35 @@ function McpDialog({
             <div className="mcp-actions">
               <button onClick={() => void save()}>保存</button>
               <button onClick={() => void revoke(draft.clientId)} disabled={!draft.clientId}>撤销</button>
+            </div>
+            <div className="mcp-http-panel">
+              <header>
+                <strong>HTTP</strong>
+                <span>{httpConfig?.tokenAvailable ? "token 已保存" : "未生成 token"}</span>
+              </header>
+              <div className="mcp-http-row">
+                <span>Endpoint</span>
+                <code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code>
+              </div>
+              <div className="mcp-http-row">
+                <span>Origin</span>
+                <code>{httpConfig?.defaultOrigin ?? "http://127.0.0.1:8787"}</code>
+              </div>
+              <div className="mcp-http-row">
+                <span>Token Ref</span>
+                <code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code>
+              </div>
+              {httpToken ? (
+                <div className="mcp-http-token">
+                  <span>新 Token</span>
+                  <code>{httpToken}</code>
+                </div>
+              ) : null}
+              <textarea readOnly value={httpConfig?.startCommand ?? "PORTMATE_MCP_HTTP=1 cargo run -p portmate-mcp -- --http"} />
+              <div className="mcp-actions">
+                <button onClick={() => void rotateHttpToken()} disabled={httpBusy}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig}>复制启动命令</button>
+              </div>
             </div>
             <div className="mcp-audit">
               {audit.slice(-8).reverse().map((record) => (
@@ -2054,6 +3303,71 @@ function CredentialDialog({
           <button type="submit">连接</button>
         </footer>
       </form>
+    </div>
+  );
+}
+
+function HostKeyConfirmDialog({
+  state,
+  onDecision,
+  onOpenSettings,
+  onClose,
+}: {
+  state: HostKeyPromptState;
+  onDecision: (decision: HostKeyDecisionValue, reconnect: boolean) => void;
+  onOpenSettings: () => void;
+  onClose: () => void;
+}) {
+  const evaluation = state.scan?.evaluation;
+  const observation = state.scan?.observation;
+  const fingerprint = evaluation?.status === "mismatch" ? evaluation.observedFingerprintSha256 : evaluation?.status === "unknown" ? evaluation.fingerprintSha256 : evaluation?.status === "trusted" ? evaluation.fingerprintSha256 : "";
+  const statusLabel = evaluation?.status === "mismatch" ? "Host key 已变化" : evaluation?.status === "unknown" ? "未知 Host key" : evaluation?.status === "trusted" ? "已信任 Host key" : "正在扫描 Host key";
+  const expected = evaluation?.status === "mismatch" ? evaluation.expected.map((key) => key.fingerprintSha256).join(", ") : "";
+  const scanLabel = state.scan?.label ?? "目标 SSH";
+
+  return (
+    <div className="dialog-backdrop hostkey-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !state.busy) {
+        onClose();
+      }
+    }}>
+      <section className="wind-dialog hostkey-dialog">
+        <header className="dialog-title">
+          <span className="app-icon" />
+          <div>
+            <strong>{statusLabel}</strong>
+            <small>{scanLabel} · {describeProfileEndpoint(state.profile)}</small>
+          </div>
+          <button onClick={onClose} disabled={state.busy}><X size={20} /></button>
+        </header>
+        <section className="hostkey-content">
+          <div className="hostkey-warning">{state.message}</div>
+          {state.busy && !state.scan ? <div className="hostkey-row"><span>状态</span><strong>扫描中...</strong></div> : null}
+          {observation ? (
+            <>
+              <div className="hostkey-row"><span>目标</span><strong>{observation.alias ?? observation.host}:{observation.port}</strong></div>
+              <div className="hostkey-row"><span>链路</span><strong>{scanLabel}</strong></div>
+              <div className="hostkey-row"><span>算法</span><strong>{observation.algorithm}</strong></div>
+              <div className="hostkey-fingerprint"><span>SHA-256</span><code>{fingerprint}</code></div>
+              {expected ? <div className="hostkey-fingerprint expected"><span>已保存</span><code>{expected}</code></div> : null}
+            </>
+          ) : null}
+          {state.scanError ? <div className="utility-error">{state.scanError}</div> : null}
+        </section>
+        <footer className="hostkey-actions">
+          {state.scan ? (
+            <>
+              <button type="button" onClick={() => onDecision("trust-once", true)} disabled={state.busy}>仅本次并重连</button>
+              <button type="button" onClick={() => onDecision("append-to-profile", true)} disabled={state.busy}>加入 Profile 并重连</button>
+              <button type="button" onClick={() => onDecision("append-to-project", true)} disabled={state.busy}>加入 Project 并重连</button>
+              <button type="button" onClick={() => onDecision("replace-for-profile", true)} disabled={state.busy}>替换 Profile 并重连</button>
+            </>
+          ) : (
+            <button type="button" onClick={onOpenSettings}>打开验证设置</button>
+          )}
+          <button type="button" onClick={onClose} disabled={state.busy}>拒绝</button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -2405,6 +3719,7 @@ function TerminalSettingsContent({
 function SessionSettingsDialog({
   draft,
   serialPorts,
+  initialSection,
   onDraftChange,
   onSave,
   onSaveAndConnect,
@@ -2412,13 +3727,14 @@ function SessionSettingsDialog({
 }: {
   draft: SessionProfile;
   serialPorts: string[];
+  initialSection: string;
   onDraftChange: (draft: SessionProfile) => void;
   onSave: () => void;
   onSaveAndConnect: () => void;
   onClose: () => void;
 }) {
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
-  const [activeSection, setActiveSection] = useState("会话");
+  const [activeSection, setActiveSection] = useState(initialSection);
   const [prefs, setPrefs] = useState<SessionPrefs>(() => loadLocalValue(`portmate.sessionPrefs.${draft.id}`, loadLocalValue("portmate.sessionPrefs.default", createSessionPrefs())));
   const updatePref = <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const sessionTree = sessionSettingTrees[activeProtocol];
@@ -2429,6 +3745,11 @@ function SessionSettingsDialog({
       setActiveSection("会话");
     }
   }, [activeSection, allowedSections]);
+
+  useEffect(() => {
+    setActiveProtocol(protocolFromKind(draft.kind));
+    setActiveSection(initialSection);
+  }, [draft.id, draft.kind, initialSection]);
 
   function changeProtocol(tab: ProtocolTab) {
     setActiveProtocol(tab);
@@ -2766,6 +4087,9 @@ function SessionSettingsContent({
             <option value="off">关闭</option>
           </select>
         </DialogField>
+        <DialogField label="限速 B/s:">
+          <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null } })} />
+        </DialogField>
         <DialogField label="目录:(D)">
           <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, defaultLocalDir: event.target.value || null } })} />
         </DialogField>
@@ -3084,15 +4408,149 @@ function SshAdvancedFields({
   const [secretStatus, setSecretStatus] = useState("");
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
   const [hostKeyStatus, setHostKeyStatus] = useState("");
+  const [jumpSecretDrafts, setJumpSecretDrafts] = useState<Record<string, string>>({});
+  const [jumpStatus, setJumpStatus] = useState("");
 
   if (section === "连接") {
+    const updateJump = (index: number, patch: Partial<JumpHop>) => {
+      const jumps = ssh.jumps.map((jump, jumpIndex) => (jumpIndex === index ? { ...jump, ...patch } : jump));
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps } });
+    };
+    const addJump = () => {
+      const next: JumpHop = { host: "", port: 22, username: ssh.username, passwordSecretRef: null, passphraseSecretRef: null, identityRef: null, hostKeyPolicy: null };
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps: [...ssh.jumps, next] } });
+    };
+    const removeJump = (index: number) => {
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps: ssh.jumps.filter((_, jumpIndex) => jumpIndex !== index) } });
+    };
+    const updateJumpPolicy = (index: number, patch: Partial<HostKeyPolicy>) => {
+      const jump = ssh.jumps[index];
+      if (!jump) return;
+      updateJump(index, { hostKeyPolicy: { ...createJumpHostKeyPolicy(jump), ...(jump.hostKeyPolicy ?? {}), ...patch } });
+    };
+    const jumpSecretKey = (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => `${index}:${field}`;
+    const setJumpSecretDraft = (index: number, field: "passwordSecretRef" | "passphraseSecretRef", value: string) => {
+      setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: value }));
+    };
+    const saveJumpSecret = async (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
+      const jump = ssh.jumps[index];
+      if (!jump) return;
+      const secret = jumpSecretDrafts[jumpSecretKey(index, field)] ?? "";
+      if (!secret.trim()) return;
+      setJumpStatus("");
+      try {
+        const currentRef = field === "passwordSecretRef" ? jump.passwordSecretRef : jump.passphraseSecretRef;
+        const response = await invokeBackend<{ secretRef: string }>("save_secret", {
+          request: { secretRef: currentRef ?? null, secret },
+        });
+        const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
+        updateJump(index, patch);
+        setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: "" }));
+        setJumpStatus("已保存跳板凭据");
+      } catch (error) {
+        setJumpStatus(formatError(error));
+      }
+    };
+    const deleteJumpSecret = async (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
+      const jump = ssh.jumps[index];
+      const secretRef = field === "passwordSecretRef" ? jump?.passwordSecretRef : jump?.passphraseSecretRef;
+      if (!secretRef) return;
+      setJumpStatus("");
+      try {
+        await invokeBackend("delete_secret", { secretRef });
+        const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: null } : { passphraseSecretRef: null };
+        updateJump(index, patch);
+        setJumpStatus("已删除跳板凭据");
+      } catch (error) {
+        setJumpStatus(formatError(error));
+      }
+    };
     return (
       <>
         <DialogField label="别名:(A)">
           <input value={ssh.hostKeyPolicy.alias ?? ""} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, alias: event.target.value || null } } })} />
         </DialogField>
+        <DialogField label="Jump Host:">
+          <div className="jump-list">
+            {ssh.jumps.map((jump, index) => {
+              const policy = jump.hostKeyPolicy ?? createJumpHostKeyPolicy(jump);
+              return (
+                <div className="jump-hop" key={index}>
+                  <div className="jump-hop-row">
+                    <span className="jump-hop-index">{index + 1}</span>
+                    <input value={jump.host} onChange={(event) => updateJump(index, { host: event.target.value })} placeholder="host" />
+                    <input type="number" value={jump.port} onChange={(event) => updateJump(index, { port: Number(event.target.value) || 22 })} aria-label={`Jump ${index + 1} port`} />
+                    <input value={jump.username} onChange={(event) => updateJump(index, { username: event.target.value })} placeholder="user" />
+                    <input value={jump.identityRef ?? ""} onChange={(event) => updateJump(index, { identityRef: event.target.value || null })} placeholder="identity id" />
+                    <button type="button" className="icon-button" onClick={() => removeJump(index)} title="删除跳板">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="jump-hop-extra">
+                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passwordSecretRef", event.target.value)} placeholder="password" />
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码">
+                      <Lock size={14} />
+                    </button>
+                    <input value={jump.passwordSecretRef ?? ""} onChange={(event) => updateJump(index, { passwordSecretRef: event.target.value || null })} placeholder="password secretRef" />
+                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passphraseSecretRef", event.target.value)} placeholder="passphrase" />
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令">
+                      <Lock size={14} />
+                    </button>
+                    <input value={jump.passphraseSecretRef ?? ""} onChange={(event) => updateJump(index, { passphraseSecretRef: event.target.value || null })} placeholder="passphrase secretRef" />
+                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passwordSecretRef")} disabled={!jump.passwordSecretRef} title="删除跳板密码">
+                      <X size={14} />
+                    </button>
+                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passphraseSecretRef")} disabled={!jump.passphraseSecretRef} title="删除跳板口令">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="jump-hop-policy">
+                    <select value={jump.hostKeyPolicy ? "custom" : "inherit"} onChange={(event) => updateJump(index, { hostKeyPolicy: event.target.value === "custom" ? createJumpHostKeyPolicy(jump) : null })}>
+                      <option value="inherit">继承</option>
+                      <option value="custom">自定义</option>
+                    </select>
+                    {jump.hostKeyPolicy ? (
+                      <>
+                        <select value={policy.mode} onChange={(event) => updateJumpPolicy(index, { mode: event.target.value as HostKeyPolicy["mode"] })}>
+                          <option value="strict">strict</option>
+                          <option value="trust-on-first-use">trust-on-first-use</option>
+                          <option value="ask-every-time">ask-every-time</option>
+                        </select>
+                        <input value={policy.alias ?? ""} onChange={(event) => updateJumpPolicy(index, { alias: event.target.value || null })} placeholder="host-key alias" />
+                        <select value={policy.trustScope} onChange={(event) => updateJumpPolicy(index, { trustScope: event.target.value as HostKeyPolicy["trustScope"] })}>
+                          <option value="profile">profile</option>
+                          <option value="project">project</option>
+                          <option value="user">user</option>
+                        </select>
+                        <label className="jump-hop-check">
+                          <input type="checkbox" checked={policy.allowRotation} onChange={(event) => updateJumpPolicy(index, { allowRotation: event.target.checked })} />
+                          <span>轮换</span>
+                        </label>
+                        <label className="jump-hop-check">
+                          <input type="checkbox" checked={policy.checkIp} onChange={(event) => updateJumpPolicy(index, { checkIp: event.target.checked })} />
+                          <span>IP</span>
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+            {jumpStatus ? <span className="settings-inline-status">{jumpStatus}</span> : null}
+            <button type="button" className="settings-secondary-button jump-add-button" onClick={addJump}>
+              <Plus size={14} />
+              <span>添加跳板</span>
+            </button>
+          </div>
+        </DialogField>
         <DialogField label="KeepAlive:">
           <input value={prefs.sshKeepaliveSeconds} onChange={(event) => updatePref("sshKeepaliveSeconds", event.target.value)} />
+        </DialogField>
+        <DialogField label="断线重连:">
+          <select value={ssh.reconnect ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, reconnect: event.target.value === "on" } })}>
+            <option value="on">开启</option>
+            <option value="off">关闭</option>
+          </select>
         </DialogField>
         <DialogField label="压缩:(C)">
           <select value={prefs.sshCompression ? "on" : "off"} onChange={(event) => updatePref("sshCompression", event.target.value === "on")}>
@@ -3134,13 +4592,13 @@ function SshAdvancedFields({
       setHostKeyStatus("");
       setHostKeyScan(null);
       try {
-        const result = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", { profile: prepareSessionProfile(draft) });
+        const result = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", { profile: prepareSessionProfile(draft), password: null, passphrase: null });
         setHostKeyScan(result);
       } catch (error) {
         setHostKeyStatus(formatError(error));
       }
     };
-    const trustHostKey = async (decision: "append-to-profile" | "append-to-project" | "replace-for-profile") => {
+    const trustHostKey = async (decision: HostKeyDecisionValue) => {
       if (!hostKeyScan) return;
       setHostKeyStatus("");
       try {
@@ -3150,7 +4608,7 @@ function SshAdvancedFields({
         if (trusted) {
           onDraftChange({ ...draft, kind, connection: { ...ssh, kind, trustedHostKeys: [trusted, ...ssh.trustedHostKeys.filter((key) => key.id !== trusted.id)] } });
         }
-        setHostKeyStatus(trusted ? `已信任 ${trusted.fingerprintSha256}` : "本次临时信任，不写入配置");
+        setHostKeyStatus(decision === "trust-once" ? "已临时信任，下一次连接有效" : trusted ? `已信任 ${trusted.fingerprintSha256}` : "未写入配置");
       } catch (error) {
         setHostKeyStatus(formatError(error));
       }
@@ -3192,6 +4650,7 @@ function SshAdvancedFields({
         {hostKeyScan ? (
           <DialogField label="处理:">
             <div className="inline-actions">
+              <button type="button" onClick={() => void trustHostKey("trust-once")}>仅本次</button>
               <button type="button" onClick={() => void trustHostKey("append-to-profile")}>加入 Profile</button>
               <button type="button" onClick={() => void trustHostKey("append-to-project")}>加入 Project</button>
               <button type="button" onClick={() => void trustHostKey("replace-for-profile")}>替换 Profile</button>
@@ -3414,6 +4873,9 @@ function SshAdvancedFields({
       <>
         <DialogToggleField label="Sftp:" checked={draft.transfer.sftp} onChange={(value) => onDraftChange({ ...draft, transfer: { ...draft.transfer, sftp: value } })} />
         <DialogToggleField label="Scp:" checked={draft.transfer.scp} onChange={(value) => onDraftChange({ ...draft, transfer: { ...draft.transfer, scp: value } })} />
+        <DialogField label="限速 B/s:">
+          <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null } })} />
+        </DialogField>
         <DialogField label="目录:(D)">
           <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, defaultLocalDir: event.target.value || null } })} />
         </DialogField>
@@ -3840,14 +5302,14 @@ function createSessionDraft(): SessionProfile {
       pathTemplate: "{profile}/{date}/{session}.jsonl",
     },
     triggers: [],
-    transfer: { sftp: true, scp: true, xmodem: true, ymodem: true, zmodem: true, defaultLocalDir: null },
+    transfer: { sftp: true, scp: true, xmodem: true, ymodem: true, zmodem: true, rateLimitBytesPerSecond: null, defaultLocalDir: null },
   };
 }
 
 function prepareSessionProfile(profile: SessionProfile): SessionProfile {
   const id = profile.id && profile.id !== "draft" ? profile.id : createSessionId();
   const name = profile.name.trim() || defaultSessionName(profile);
-  const connection = normalizeConnectionConfig(profile.connection);
+  const connection = normalizeConnectionConfig(profile.connection, id);
   return {
     ...profile,
     id,
@@ -3863,16 +5325,73 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
   };
 }
 
-function normalizeConnectionConfig(connection: ConnectionConfig): ConnectionConfig {
+function normalizeConnectionConfig(connection: ConnectionConfig, profileId: string): ConnectionConfig {
+  if (connection.kind !== "ssh" && connection.kind !== "tmux") {
+    return connection;
+  }
+  const alias = connection.hostKeyPolicy.alias?.trim();
+  return {
+    ...connection,
+    jumps: connection.jumps
+      .map((jump) => ({
+        host: jump.host.trim(),
+        port: Number.isFinite(jump.port) && jump.port > 0 ? Math.min(65535, Math.trunc(jump.port)) : 22,
+        username: jump.username.trim() || connection.username.trim(),
+        passwordSecretRef: jump.passwordSecretRef?.trim() || null,
+        passphraseSecretRef: jump.passphraseSecretRef?.trim() || null,
+        identityRef: jump.identityRef?.trim() || null,
+        hostKeyPolicy: normalizeOptionalHostKeyPolicy(jump.hostKeyPolicy),
+      }))
+      .filter((jump) => jump.host),
+    hostKeyPolicy: {
+      ...connection.hostKeyPolicy,
+      alias: alias || profileId,
+    },
+    trustedHostKeys: connection.trustedHostKeys.filter((key) => key.scope !== "profile" || !key.profileId || key.profileId === profileId),
+    identityPolicy: {
+      ...connection.identityPolicy,
+      authOrder: connection.identityPolicy.authOrder.map(normalizeAuthMethod).filter((method, index, methods) => methods.indexOf(method) === index),
+      lastSuccessful: connection.identityPolicy.lastSuccessful ? normalizeAuthMethod(connection.identityPolicy.lastSuccessful) : null,
+    },
+  };
+}
+
+function normalizeOptionalHostKeyPolicy(policy?: HostKeyPolicy | null): HostKeyPolicy | null {
+  if (!policy) return null;
+  const alias = policy.alias?.trim();
+  return {
+    ...policy,
+    alias: alias || null,
+  };
+}
+
+function createJumpHostKeyPolicy(jump?: JumpHop): HostKeyPolicy {
+  const host = jump?.host.trim();
+  const port = jump?.port && Number.isFinite(jump.port) ? Math.trunc(jump.port) : 22;
+  return {
+    mode: "trust-on-first-use",
+    alias: host ? `jump:${host}:${port}` : null,
+    trustScope: "profile",
+    allowRotation: false,
+    checkIp: false,
+  };
+}
+
+function isolateDuplicatedConnection(profileId: string, connection: ConnectionConfig): ConnectionConfig {
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {
     return connection;
   }
   return {
     ...connection,
+    hostKeyPolicy: {
+      ...connection.hostKeyPolicy,
+      alias: profileId,
+      trustScope: "profile",
+    },
+    trustedHostKeys: [],
     identityPolicy: {
       ...connection.identityPolicy,
-      authOrder: connection.identityPolicy.authOrder.map(normalizeAuthMethod).filter((method, index, methods) => methods.indexOf(method) === index),
-      lastSuccessful: connection.identityPolicy.lastSuccessful ? normalizeAuthMethod(connection.identityPolicy.lastSuccessful) : null,
+      lastSuccessful: null,
     },
   };
 }
@@ -3920,6 +5439,8 @@ function createSessionSummary(profile: SessionProfile): SessionSummary {
       cwd: null,
       connectedSince: null,
       lastActivity: now,
+      lastDisconnect: null,
+      lastDisconnectReason: null,
       activeTransport: profile.kind,
     },
     logLines: 0,
@@ -3975,6 +5496,8 @@ function setSessionStatus(session: SessionSummary, status: SessionStatus): Sessi
       title: session.profile.name,
       connectedSince: status === "connected" ? session.runtime.connectedSince ?? now : null,
       lastActivity: now,
+      lastDisconnect: status === "connected" ? session.runtime.lastDisconnect ?? null : now,
+      lastDisconnectReason: status === "connected" ? session.runtime.lastDisconnectReason ?? null : `session ${status}`,
       activeTransport: session.profile.kind,
     },
   };
@@ -4032,6 +5555,11 @@ function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & 
   return profile.connection.kind === "ssh" || profile.connection.kind === "tmux";
 }
 
+function isHostKeyFailure(message: string) {
+  const lower = message.toLowerCase();
+  return lower.includes("host key") || message.includes("指纹") || message.includes("未受信任") || message.includes("已变化");
+}
+
 function formatError(error: unknown) {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
@@ -4061,6 +5589,24 @@ function mergeTransfers(current: TransferTask[], saved: TransferTask) {
   const index = current.findIndex((task) => task.id === saved.id);
   if (index < 0) return [...current, saved];
   return current.map((task, itemIndex) => itemIndex === index ? saved : task);
+}
+
+function mergeTunnels(current: TunnelStatus[], saved: TunnelStatus) {
+  const index = current.findIndex((tunnel) => tunnel.spec.id === saved.spec.id);
+  if (index < 0) return [...current, saved];
+  return current.map((tunnel, itemIndex) => itemIndex === index ? saved : tunnel);
+}
+
+function emptyTunnelStatus(spec: TunnelSpec): TunnelStatus {
+  return {
+    spec,
+    activeConnections: 0,
+    totalConnections: 0,
+    tcpToSshBytes: 0,
+    sshToTcpBytes: 0,
+    lastActivity: null,
+    lastError: null,
+  };
 }
 
 function loadLocalSessionSummaries() {
@@ -4131,6 +5677,7 @@ function createSshConnection(): Extract<ConnectionConfig, { kind: "ssh" | "tmux"
     kind: "ssh",
     endpoint: { host: "", port: 22 },
     username: "",
+    reconnect: true,
     passwordSecretRef: null,
     passphraseSecretRef: null,
     hostKeyPolicy: {
@@ -4261,13 +5808,14 @@ function describeProfileEndpoint(profile: SessionProfile) {
 
 function describeHostKeyEvaluation(result: HostKeyScanResult) {
   const evaluation = result.evaluation;
+  const prefix = result.label ? `${result.label}: ` : "";
   if (evaluation.status === "trusted") {
-    return `已信任 ${evaluation.fingerprintSha256}`;
+    return `${prefix}已信任 ${evaluation.fingerprintSha256}`;
   }
   if (evaluation.status === "mismatch") {
-    return `不匹配 ${evaluation.algorithm} ${evaluation.observedFingerprintSha256}`;
+    return `${prefix}不匹配 ${evaluation.algorithm} ${evaluation.observedFingerprintSha256}`;
   }
-  return `未知 ${evaluation.algorithm} ${evaluation.fingerprintSha256}`;
+  return `${prefix}未知 ${evaluation.algorithm} ${evaluation.fingerprintSha256}`;
 }
 
 function defaultLocalPath() {
@@ -4293,6 +5841,57 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+}
+
+function formatFileMode(mode?: number | null) {
+  if (mode == null) return "-";
+  return `0${(mode & 0o7777).toString(8).padStart(3, "0")}`;
+}
+
+function formatFileKind(properties: FileProperties) {
+  if (properties.isSymlink) return "symlink";
+  if (properties.isDir) return "directory";
+  if (properties.isFile) return "file";
+  return properties.kind || "other";
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function formatDuration(start: string, end: string) {
+  const elapsedMs = Math.max(0, Date.parse(end) - Date.parse(start));
+  if (!Number.isFinite(elapsedMs)) return "";
+  if (elapsedMs < 1000) return `${elapsedMs} ms`;
+  const seconds = elapsedMs / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds % 60)}s`;
+}
+
+function formatEventClock(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function textToHex(value: string) {
+  return Array.from(new TextEncoder().encode(value))
+    .slice(0, 96)
+    .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
+    .join(" ");
+}
+
+function formatSerialPreview(value: string) {
+  const preview = value
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t")
+    .replace(/[^\x20-\x7e]/g, ".");
+  return preview.length > 120 ? `${preview.slice(0, 120)}...` : preview;
 }
 
 function parseHexBytes(value: string) {

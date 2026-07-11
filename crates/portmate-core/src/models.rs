@@ -205,7 +205,13 @@ pub struct JumpHop {
     pub host: String,
     pub port: u16,
     pub username: String,
+    #[serde(default)]
+    pub password_secret_ref: Option<String>,
+    #[serde(default)]
+    pub passphrase_secret_ref: Option<String>,
     pub identity_ref: Option<String>,
+    #[serde(default)]
+    pub host_key_policy: Option<HostKeyPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +240,8 @@ pub enum TunnelMode {
 pub struct SshConnection {
     pub endpoint: HostEndpoint,
     pub username: String,
+    #[serde(default = "default_true")]
+    pub reconnect: bool,
     #[serde(default)]
     pub password_secret_ref: Option<String>,
     #[serde(default)]
@@ -245,6 +253,10 @@ pub struct SshConnection {
     pub agent_policy: AgentPolicy,
     pub jumps: Vec<JumpHop>,
     pub tunnels: Vec<TunnelSpec>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +371,8 @@ pub struct TransferSettings {
     pub xmodem: bool,
     pub ymodem: bool,
     pub zmodem: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_bytes_per_second: Option<u64>,
     pub default_local_dir: Option<String>,
 }
 
@@ -370,6 +384,7 @@ impl Default for TransferSettings {
             xmodem: true,
             ymodem: true,
             zmodem: true,
+            rate_limit_bytes_per_second: None,
             default_local_dir: None,
         }
     }
@@ -428,6 +443,10 @@ pub struct SessionRuntime {
     pub cwd: Option<String>,
     pub connected_since: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
+    #[serde(default)]
+    pub last_disconnect: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_disconnect_reason: Option<String>,
     pub active_transport: SessionKind,
 }
 
@@ -508,6 +527,12 @@ pub struct TransferTask {
     pub bytes_done: u64,
     pub status: TransferStatus,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_bytes_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -559,4 +584,30 @@ pub struct AuditRecord {
     pub session_id: Option<String>,
     pub decision: String,
     pub details: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jump_hop_deserializes_legacy_shape_with_optional_defaults() {
+        let jump: JumpHop = serde_json::from_str(
+            r#"{
+                "host": "bastion.example",
+                "port": 22,
+                "username": "deploy",
+                "identityRef": "jump-key"
+            }"#,
+        )
+        .expect("legacy jump hop should deserialize");
+
+        assert_eq!(jump.host, "bastion.example");
+        assert_eq!(jump.port, 22);
+        assert_eq!(jump.username, "deploy");
+        assert_eq!(jump.identity_ref.as_deref(), Some("jump-key"));
+        assert!(jump.password_secret_ref.is_none());
+        assert!(jump.passphrase_secret_ref.is_none());
+        assert!(jump.host_key_policy.is_none());
+    }
 }

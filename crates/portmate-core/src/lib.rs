@@ -11,4 +11,5 @@ pub use host_keys::{
 };
 pub use mcp::{prompt_templates, resource_templates, tool_definitions};
 pub use models::*;
+pub use redaction::redact_secrets;
 pub use store::SessionStore;
