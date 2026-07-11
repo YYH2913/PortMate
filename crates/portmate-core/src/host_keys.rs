@@ -177,8 +177,8 @@ impl HostKeyStore {
                         self.keys.push(TrustedHostKey {
                             id: Uuid::new_v4().to_string(),
                             profile_id: Some(profile_id.to_string()),
+                            host: alias.clone(),
                             alias,
-                            host: host.clone(),
                             port,
                             algorithm: line.algorithm.clone(),
                             fingerprint_sha256: fingerprint.clone(),
@@ -197,7 +197,14 @@ impl HostKeyStore {
     pub fn export_known_hosts(&self) -> String {
         self.keys
             .iter()
-            .map(|key| format!("{} {} {}", key.alias, key.algorithm, key.public_key_base64))
+            .map(|key| {
+                format!(
+                    "{} {} {}",
+                    format_known_host(&key.alias, key.port),
+                    key.algorithm,
+                    key.public_key_base64
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -293,6 +300,14 @@ fn split_known_host(host: &str) -> (String, u16) {
         }
     }
     (host.to_string(), 22)
+}
+
+fn format_known_host(alias: &str, port: u16) -> String {
+    if port == 22 {
+        alias.to_string()
+    } else {
+        format!("[{alias}]:{port}")
+    }
 }
 
 #[cfg(test)]
@@ -429,5 +444,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.keys.len(), 2);
+    }
+
+    #[test]
+    fn known_hosts_nonstandard_port_round_trips_and_matches_check_ip() {
+        let key = general_purpose::STANDARD.encode(b"router-key");
+        let contents = format!("[router.example]:2222 ssh-ed25519 {key}");
+        let mut store = HostKeyStore::new();
+
+        let imported = store.import_known_hosts("profile", &contents);
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(store.keys[0].alias, "router.example");
+        assert_eq!(store.keys[0].host, "router.example");
+        assert_eq!(store.keys[0].port, 2222);
+        assert_eq!(store.export_known_hosts(), contents);
+
+        let mut policy = HostKeyPolicy::profile_alias("router.example");
+        policy.check_ip = true;
+        let observation = HostKeyObservation {
+            host: "router.example".to_string(),
+            port: 2222,
+            alias: Some("router.example".to_string()),
+            algorithm: "ssh-ed25519".to_string(),
+            public_key_base64: key,
+        };
+        assert!(matches!(
+            store.evaluate("profile", &policy, &observation).unwrap(),
+            HostKeyEvaluation::Trusted { .. }
+        ));
     }
 }
