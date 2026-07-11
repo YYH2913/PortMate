@@ -21,6 +21,8 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
+const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -337,10 +339,8 @@ impl PortMateMcp {
             }
             "tail_log" => {
                 let session_id = required_string(&arguments, "sessionId")?;
-                let limit = arguments
-                    .get("limit")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(100) as usize;
+                let limit = arguments.get("limit").and_then(Value::as_u64);
+                let limit = bounded_log_query_limit(limit);
                 if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -352,10 +352,8 @@ impl PortMateMcp {
             "search_logs" => {
                 let query = required_string(&arguments, "query")?;
                 let session_id = arguments.get("sessionId").and_then(Value::as_str);
-                let limit = arguments
-                    .get("limit")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(100) as usize;
+                let limit = arguments.get("limit").and_then(Value::as_u64);
+                let limit = bounded_log_query_limit(limit);
                 if let Some(value) = self.call_ipc_value("search_logs", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -1302,6 +1300,12 @@ fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| anyhow!("missing string argument `{key}`"))
 }
 
+fn bounded_log_query_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
+        .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
+}
+
 fn parse_session_uri(uri: &str) -> Option<(&str, &str)> {
     let path = uri.strip_prefix("portmate://sessions/")?;
     let mut parts = path.split('/');
@@ -1441,6 +1445,14 @@ mod tests {
 
         assert_eq!(response["id"], "ping-1");
         assert_eq!(response["result"], json!({}));
+    }
+
+    #[test]
+    fn mcp_log_query_limit_matches_declared_schema_bounds() {
+        assert_eq!(bounded_log_query_limit(None), 100);
+        assert_eq!(bounded_log_query_limit(Some(0)), 1);
+        assert_eq!(bounded_log_query_limit(Some(600)), 600);
+        assert_eq!(bounded_log_query_limit(Some(u64::MAX)), 1000);
     }
 
     #[test]

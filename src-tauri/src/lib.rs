@@ -103,6 +103,8 @@ const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
 const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
+const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
+const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -770,10 +772,10 @@ fn read_screen(state: State<'_, AppState>, session_id: String) -> Result<String,
 fn tail_log(
     state: State<'_, AppState>,
     session_id: String,
-    limit: Option<usize>,
+    limit: Option<u64>,
 ) -> Result<Vec<SessionEvent>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.tail_log(&session_id, limit.unwrap_or(100)))
+    Ok(store.tail_log(&session_id, bounded_log_query_limit(limit)))
 }
 
 #[tauri::command]
@@ -781,10 +783,14 @@ fn search_logs(
     state: State<'_, AppState>,
     query: String,
     session_id: Option<String>,
-    limit: Option<usize>,
+    limit: Option<u64>,
 ) -> Result<Vec<SessionEvent>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.search_logs(&query, session_id.as_deref(), limit.unwrap_or(100)))
+    Ok(store.search_logs(
+        &query,
+        session_id.as_deref(),
+        bounded_log_query_limit(limit),
+    ))
 }
 
 #[tauri::command]
@@ -1991,8 +1997,8 @@ async fn handle_ipc_request(
             let limit = request
                 .args
                 .get("limit")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(100) as usize;
+                .and_then(serde_json::Value::as_u64);
+            let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
             serde_json::to_value(redact_mcp_events(store.tail_log(&session_id, limit)))
                 .map_err(|error| error.to_string())
@@ -2006,8 +2012,8 @@ async fn handle_ipc_request(
             let limit = request
                 .args
                 .get("limit")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(100) as usize;
+                .and_then(serde_json::Value::as_u64);
+            let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
             serde_json::to_value(redact_mcp_events(
                 store.search_logs(&query, session_id, limit),
@@ -2465,6 +2471,12 @@ fn ipc_string_arg<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str
         .get(key)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("missing string argument `{key}`"))
+}
+
+fn bounded_log_query_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
+        .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
 }
 
 /// Redacts secrets out of events before they cross the MCP/IPC boundary to an
@@ -11057,6 +11069,14 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+    }
+
+    #[test]
+    fn log_query_limit_matches_mcp_schema_bounds() {
+        assert_eq!(bounded_log_query_limit(None), 100);
+        assert_eq!(bounded_log_query_limit(Some(0)), 1);
+        assert_eq!(bounded_log_query_limit(Some(600)), 600);
+        assert_eq!(bounded_log_query_limit(Some(u64::MAX)), 1000);
     }
 
     #[test]
