@@ -10828,6 +10828,23 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    struct ChildGuard(Option<std::process::Child>);
+
+    impl ChildGuard {
+        fn stop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
     #[test]
     fn telnet_negotiator_filters_iac_and_replies() {
         let mut negotiator = TelnetNegotiator::new();
@@ -11999,6 +12016,224 @@ mod tests {
                 .expect("SOCKS5 command rejection task failed");
             assert!(error.contains("only SOCKS5 CONNECT"));
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openssh_sftp_and_local_tunnel_end_to_end() {
+        let sshd = ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| path.exists());
+        let Some(sshd) = sshd else {
+            eprintln!("skipping OpenSSH integration test: sshd is not installed");
+            return;
+        };
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping OpenSSH integration test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!("portmate-sshd-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let host_key = root.join("ssh_host_ed25519_key");
+        let client_key = root.join("id_ed25519");
+        for key_path in [&host_key, &client_key] {
+            let status = Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(key_path)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "ssh-keygen failed for {}",
+                key_path.display()
+            );
+        }
+        let authorized_keys = root.join("authorized_keys");
+        fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
+
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let username = std::env::var("USER").unwrap_or_else(|_| {
+            String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
+                .unwrap()
+                .trim()
+                .to_string()
+        });
+        let config_path = root.join("sshd_config");
+        fs::write(
+            &config_path,
+            format!(
+                "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
+                host_key.display(),
+                root.join("sshd.pid").display(),
+                authorized_keys.display(),
+            ),
+        )
+        .unwrap();
+
+        let child = Command::new(sshd)
+            .args(["-D", "-e", "-f"])
+            .arg(&config_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut sshd = ChildGuard(Some(child));
+
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                        break;
+                    }
+                    if let Some(status) = sshd.0.as_mut().unwrap().try_wait().unwrap() {
+                        let mut stderr = String::new();
+                        sshd.0
+                            .as_mut()
+                            .unwrap()
+                            .stderr
+                            .as_mut()
+                            .unwrap()
+                            .read_to_string(&mut stderr)
+                            .unwrap();
+                        panic!("sshd exited early with {status}: {stderr}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("sshd did not start");
+
+            let mut profile = test_ssh_profile();
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.endpoint.host = "127.0.0.1".to_string();
+                ssh.endpoint.port = port;
+                ssh.username = username.clone();
+                ssh.reconnect = false;
+                ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+                ssh.identity_refs = vec![IdentityRef {
+                    id: "integration-client-key".to_string(),
+                    label: "integration client key".to_string(),
+                    source: IdentitySource::SystemFile,
+                    fingerprint_sha256: None,
+                    path: Some(client_key.display().to_string()),
+                    secret_ref: None,
+                }];
+                ssh.agent_policy.enabled = false;
+                ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+            }
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let summary = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap();
+            assert_eq!(summary.runtime.status, SessionStatus::Connected);
+            assert_eq!(summary.profile.connection.kind(), SessionKind::Ssh);
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
+
+            send_text_inner(
+                state.session_io(),
+                profile.id.clone(),
+                "printf '__PORTMATE_SSH_OK__\\n'\n".to_string(),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .screen(&profile.id)
+                        .is_some_and(|screen| screen.contains("__PORTMATE_SSH_OK__"))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("SSH PTY command output was not recorded");
+
+            let ssh_handle = state
+                .ssh
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .map(|runtime| Arc::clone(&runtime.handle))
+                .unwrap();
+            let entries = list_remote_files(ssh_handle, ".").await.unwrap();
+            assert!(entries.iter().all(|entry| !entry.name.is_empty()));
+
+            let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let echo_address = echo_listener.local_addr().unwrap();
+            let echo = tokio::spawn(async move {
+                let (mut socket, _) = echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
+            let tunnel = create_tunnel_inner(
+                &state,
+                CreateTunnelRequest {
+                    session_id: profile.id.clone(),
+                    mode: TunnelMode::Local,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 0,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: echo_address.port(),
+                    label: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_ne!(tunnel.bind_port, 0);
+
+            let mut tunnel_client = TcpStream::connect(("127.0.0.1", tunnel.bind_port))
+                .await
+                .unwrap();
+            tunnel_client.write_all(b"ping").await.unwrap();
+            let mut response = [0_u8; 4];
+            tunnel_client.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"pong");
+            drop(tunnel_client);
+            echo.await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert_eq!(status.tcp_to_ssh_bytes, 4);
+                        assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("local tunnel metrics did not settle");
+            let stopped = stop_tunnel_inner(&state, &tunnel.id).await.unwrap();
+            assert!(!stopped.spec.enabled);
+
+            let closed = close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        sshd.stop();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
