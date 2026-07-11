@@ -108,7 +108,7 @@ const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
 #[derive(Clone)]
 pub struct AppState {
-    app_handle: AppHandle,
+    app_handle: Option<AppHandle>,
     pub store: Arc<Mutex<SessionStore>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
@@ -245,7 +245,7 @@ struct RuntimeRegistry {
 
 #[derive(Clone)]
 struct SessionIo {
-    app_handle: AppHandle,
+    app_handle: Option<AppHandle>,
     store: Arc<Mutex<SessionStore>>,
     runtimes: RuntimeRegistry,
     store_path: PathBuf,
@@ -2826,9 +2826,9 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
 }
 
 fn emit_transfer_task(state: &AppState, task: &TransferTask) {
-    let _ = state
-        .app_handle
-        .emit("portmate-transfer-task", task.clone());
+    if let Some(app_handle) = &state.app_handle {
+        let _ = app_handle.emit("portmate-transfer-task", task.clone());
+    }
 }
 
 impl TransferProgressContext {
@@ -7058,21 +7058,22 @@ async fn open_tcp_session(
         );
     }
 
-    tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
-        state: state.clone(),
-        profile: profile.clone(),
-        runtime_id,
-        label: label.to_string(),
-        tap,
-        writer: Arc::clone(&writer),
-        read_half,
-        closed,
-    }));
-
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     store.record_system_event(&profile.id, format!("PortMate: {label} socket connected"));
     let summary = store.open_session(&profile.id)?;
     save_store(&state.store_path, &store)?;
+    drop(store);
+
+    tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
+        state: state.clone(),
+        profile,
+        runtime_id,
+        label: label.to_string(),
+        tap,
+        writer,
+        read_half,
+        closed,
+    }));
     Ok(summary)
 }
 
@@ -8678,17 +8679,6 @@ async fn reconnect_tcp_session(
             return;
         }
 
-        tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
-            state: state.clone(),
-            profile: profile.clone(),
-            runtime_id,
-            label: label.clone(),
-            tap,
-            writer: Arc::clone(&writer),
-            read_half,
-            closed: next_closed,
-        }));
-
         if let Ok(mut store) = state.store.lock() {
             store.record_system_event(&session_id, format!("PortMate: {label} socket reconnected"));
             if let Err(error) = store.open_session(&session_id) {
@@ -8701,6 +8691,17 @@ async fn reconnect_tcp_session(
                 eprintln!("PortMate: failed to persist {label} reconnect success: {error}");
             }
         }
+
+        tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
+            state: state.clone(),
+            profile: profile.clone(),
+            runtime_id,
+            label: label.clone(),
+            tap,
+            writer,
+            read_half,
+            closed: next_closed,
+        }));
         return;
     }
 }
@@ -9177,7 +9178,9 @@ fn record_channel_text(io: &SessionIo, session_id: &str, stream: EventStream, te
     };
     if let Some(event) = live_event {
         append_jsonl_log_shard(io, session_id, &event);
-        let _ = io.app_handle.emit("portmate-session-event", event);
+        if let Some(app_handle) = &io.app_handle {
+            let _ = app_handle.emit("portmate-session-event", event);
+        }
     }
     for command in local_commands.local_commands {
         spawn_trigger_command(
@@ -10663,7 +10666,7 @@ pub fn run() {
                 eprintln!("PortMate: failed to initialize persistent store: {error}");
             }
             let state = AppState {
-                app_handle: app.handle().clone(),
+                app_handle: Some(app.handle().clone()),
                 store: Arc::new(Mutex::new(store)),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
                 shell: Arc::new(Mutex::new(HashMap::new())),
@@ -10838,6 +10841,125 @@ mod tests {
                 .await
                 .expect("Telnet loopback server timed out")
                 .expect("Telnet loopback server task failed");
+        });
+    }
+
+    #[test]
+    fn tcp_loopback_reconnects_after_remote_disconnect() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (second_connected_tx, second_connected_rx) = tokio::sync::oneshot::channel();
+            let (release_server_tx, release_server_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (first, _) = listener.accept().await.unwrap();
+                drop(first);
+                let (second, _) = listener.accept().await.unwrap();
+                let _ = second_connected_tx.send(());
+                let _ = release_server_rx.await;
+                drop(second);
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: true,
+            }));
+            let root = std::env::temp_dir().join(format!("portmate-tcp-test-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+            let opened = open_tcp_session(&state, profile.clone()).await.unwrap();
+            assert_eq!(opened.runtime.status, SessionStatus::Connected);
+            let first_runtime_id = state
+                .tcp
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .runtime_id
+                .clone();
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap()
+                        .runtime
+                        .status;
+                    if status == SessionStatus::Reconnecting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP runtime never entered reconnecting state");
+
+            tokio::time::timeout(Duration::from_secs(3), second_connected_rx)
+                .await
+                .expect("TCP runtime did not reconnect")
+                .expect("TCP mock server dropped reconnect signal");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let connected = {
+                        let store = state.store.lock().unwrap();
+                        store
+                            .summaries()
+                            .into_iter()
+                            .find(|summary| summary.profile.id == profile.id)
+                            .is_some_and(|summary| {
+                                summary.runtime.status == SessionStatus::Connected
+                            })
+                    };
+                    if connected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP runtime did not return to connected state");
+
+            let runtime = state.tcp.lock().unwrap().remove(&profile.id).unwrap();
+            assert_ne!(runtime.runtime_id, first_runtime_id);
+            runtime.closed.store(true, Ordering::SeqCst);
+            runtime.writer.lock().await.shutdown().await.unwrap();
+            let _ = release_server_tx.send(());
+            server.await.unwrap();
+
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("socket closed; reconnecting"));
+            assert!(screen.contains("socket reconnected"));
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn tcp_loopback_round_trips_raw_bytes_without_telnet_escaping() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut raw = [0_u8; 2];
+                socket.read_exact(&mut raw).await.unwrap();
+                assert_eq!(raw, [0x01, TELNET_IAC]);
+            });
+
+            let mut client = connect_tcp_socket("127.0.0.1", address.port(), "TCP")
+                .await
+                .unwrap();
+            client.write_all(&[0x01, TELNET_IAC]).await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("TCP loopback server timed out")
+                .expect("TCP loopback server task failed");
         });
     }
 
@@ -11727,6 +11849,24 @@ mod tests {
             logging: portmate_core::LoggingSettings::default(),
             triggers: Vec::new(),
             transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        AppState {
+            app_handle: None,
+            store: Arc::new(Mutex::new(store)),
+            ssh: Arc::new(Mutex::new(HashMap::new())),
+            shell: Arc::new(Mutex::new(HashMap::new())),
+            tcp: Arc::new(Mutex::new(HashMap::new())),
+            serial: Arc::new(Mutex::new(HashMap::new())),
+            tunnels: Arc::new(Mutex::new(HashMap::new())),
+            transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+            one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
+            store_path,
         }
     }
 
