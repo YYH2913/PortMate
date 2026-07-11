@@ -176,7 +176,7 @@ npm run build
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
 - MCP resource/template、ping、batch、notification、HTTP `202` 和日志 limit 协议边界。
-- 隔离 OpenSSH 服务上的 TOFU、公钥认证、PTY 命令、原生 SFTP 浏览、SCP 上传/下载，以及 local direct-tcpip tunnel 和流量统计。
+- 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、公钥认证、PTY 命令、原生 SFTP 浏览、SCP 上传/下载，以及 local direct-tcpip tunnel 和流量统计。
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
@@ -184,7 +184,7 @@ npm run build
 
 主要缺口：
 
-- 已有隔离 OpenSSH server 集成测试；host key 变更、Jump Host、remote reverse/dynamic tunnel 等矩阵仍待补。
+- 已有隔离 OpenSSH server 集成测试；`allowRotation`、Jump Host、remote reverse/dynamic tunnel 等矩阵仍待补。
 - 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览和 SCP 上传/下载端到端测试；SFTP 写操作、SCP 续传/取消/失败和 X/Y/ZModem 真实工具矩阵仍待补。
@@ -221,7 +221,7 @@ npm run build
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
 2. 为 Jump Host 增加更完整的连接诊断、错误聚合和端到端测试覆盖。
 3. 为 remote reverse/dynamic tunnel 补齐真实 SSH 端到端测试和更深健康探测，并为远端命令型传输补齐更完整的失败状态和错误可视化。
-4. 扩展端到端集成测试：host key 变更、Jump Host、SFTP 写操作、Raw TCP/Telnet 更完整矩阵、虚拟串口重连、rz/sz。
+4. 扩展端到端集成测试：host key `allowRotation`、Jump Host、SFTP 写操作、Raw TCP/Telnet 更完整矩阵、虚拟串口重连、rz/sz。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流

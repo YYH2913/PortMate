@@ -12029,11 +12029,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn openssh_sftp_and_local_tunnel_end_to_end() {
-        let sshd = ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
+        let sshd_path = ["/usr/sbin/sshd", "/usr/local/sbin/sshd"]
             .into_iter()
             .map(Path::new)
             .find(|path| path.exists());
-        let Some(sshd) = sshd else {
+        let Some(sshd_path) = sshd_path else {
             eprintln!("skipping OpenSSH integration test: sshd is not installed");
             return;
         };
@@ -12045,8 +12045,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("portmate-sshd-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let host_key = root.join("ssh_host_ed25519_key");
+        let replacement_host_key = root.join("ssh_host_ed25519_key_replacement");
         let client_key = root.join("id_ed25519");
-        for key_path in [&host_key, &client_key] {
+        for key_path in [&host_key, &replacement_host_key, &client_key] {
             let status = Command::new("ssh-keygen")
                 .args(["-q", "-t", "ed25519", "-N", "", "-f"])
                 .arg(key_path)
@@ -12083,7 +12084,7 @@ mod tests {
         )
         .unwrap();
 
-        let child = Command::new(sshd)
+        let child = Command::new(sshd_path)
             .args(["-D", "-e", "-f"])
             .arg(&config_path)
             .stdin(std::process::Stdio::null())
@@ -12285,6 +12286,59 @@ mod tests {
                 .unwrap();
             assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
             tokio::time::sleep(Duration::from_millis(200)).await;
+
+            sshd.stop();
+            fs::write(
+                &config_path,
+                format!(
+                    "AddressFamily inet\nListenAddress 127.0.0.1\nPort {port}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nAuthenticationMethods publickey\nPubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin prohibit-password\nStrictModes no\nAllowTcpForwarding yes\nLogLevel ERROR\nSubsystem sftp internal-sftp\n",
+                    replacement_host_key.display(),
+                    root.join("sshd.pid").display(),
+                    authorized_keys.display(),
+                ),
+            )
+            .unwrap();
+            let replacement_child = Command::new(sshd_path)
+                .args(["-D", "-e", "-f"])
+                .arg(&config_path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            sshd = ChildGuard(Some(replacement_child));
+
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                        break;
+                    }
+                    if let Some(status) = sshd.0.as_mut().unwrap().try_wait().unwrap() {
+                        let mut stderr = String::new();
+                        sshd.0
+                            .as_mut()
+                            .unwrap()
+                            .stderr
+                            .as_mut()
+                            .unwrap()
+                            .read_to_string(&mut stderr)
+                            .unwrap();
+                        panic!("replacement sshd exited early with {status}: {stderr}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("replacement sshd did not start");
+
+            let trusted_before = state.store.lock().unwrap().host_keys.keys.clone();
+            let mismatch = open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap_err();
+            assert!(mismatch.contains("alias=bench-device"), "{mismatch}");
+            assert!(mismatch.contains("observed="), "{mismatch}");
+            assert!(mismatch.contains("expected=["), "{mismatch}");
+            assert_eq!(state.store.lock().unwrap().host_keys.keys, trusted_before);
         });
 
         sshd.stop();
