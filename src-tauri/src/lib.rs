@@ -1479,14 +1479,18 @@ async fn retry_transfer(
     state: State<'_, AppState>,
     transfer_id: String,
 ) -> Result<TransferTask, String> {
+    retry_transfer_inner(state.inner(), &transfer_id).await
+}
+
+async fn retry_transfer_inner(state: &AppState, transfer_id: &str) -> Result<TransferTask, String> {
     let previous = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store
-            .transfer_by_id(&transfer_id)
+            .transfer_by_id(transfer_id)
             .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
     };
     start_transfer_inner(
-        state.inner(),
+        state,
         StartTransferRequest {
             session_id: previous.session_id,
             protocol: previous.protocol,
@@ -12873,6 +12877,95 @@ mod tests {
             assert_eq!(download.bytes_done, payload.len() as u64);
             assert_eq!(fs::read(&download_target).unwrap(), payload);
             assert!(!download_part.exists());
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut limited = store.profile(&profile.id).unwrap();
+                limited.transfer.rate_limit_bytes_per_second = Some(64 * 1024);
+                store.upsert_profile(limited);
+            }
+            let cancel_source = root.join("sftp-cancel-source.bin");
+            let cancel_remote = root.join("sftp-cancel-remote.bin");
+            let cancel_remote_part =
+                PathBuf::from(remote_resume_part_path(cancel_remote.to_str().unwrap()));
+            let cancel_payload = (0..256 * 1024)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+            fs::write(&cancel_source, &cancel_payload).unwrap();
+            let cancelled_upload = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: cancel_source.display().to_string(),
+                    destination: format!("remote:{}", cancel_remote.display()),
+                },
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let task = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .transfer_by_id(&cancelled_upload.id)
+                        .unwrap();
+                    if task.status == TransferStatus::Running && task.bytes_done > 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("limited SFTP upload did not report progress");
+            let cancelling = cancel_transfer_inner(&state, &cancelled_upload.id).unwrap();
+            assert_eq!(cancelling.status, TransferStatus::Cancelled);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if !state
+                        .transfer_cancellations
+                        .lock()
+                        .unwrap()
+                        .contains_key(&cancelled_upload.id)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("cancelled SFTP worker did not stop");
+            let cancelled = state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&cancelled_upload.id)
+                .unwrap();
+            assert_eq!(cancelled.status, TransferStatus::Cancelled);
+            assert!(!cancel_remote.exists());
+            let partial_size = fs::metadata(&cancel_remote_part).unwrap().len();
+            assert!(partial_size > 0 && partial_size < cancel_payload.len() as u64);
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut unlimited = store.profile(&profile.id).unwrap();
+                unlimited.transfer.rate_limit_bytes_per_second = None;
+                store.upsert_profile(unlimited);
+            }
+            let retried = retry_transfer_inner(&state, &cancelled_upload.id)
+                .await
+                .unwrap();
+            let retried = wait_for_transfer_terminal_state(&state, &retried.id).await;
+            assert_eq!(
+                retried.status,
+                TransferStatus::Completed,
+                "SFTP retry failed: {:?}",
+                retried.message
+            );
+            assert_eq!(retried.bytes_done, cancel_payload.len() as u64);
+            assert_eq!(fs::read(&cancel_remote).unwrap(), cancel_payload);
+            assert!(!cancel_remote_part.exists());
 
             if modem_tools_available {
                 let zmodem_source = root.join("zmodem-upload-source.bin");
