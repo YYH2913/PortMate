@@ -6280,6 +6280,7 @@ async fn open_ssh_session(
     }
 
     let established = establish_ssh_runtime(state, &profile, password, passphrase).await?;
+    let one_time_cleanup_error = take_one_time_host_keys(state, &profile.id).err();
     let EstablishedSshRuntime {
         runtime_id,
         runtime,
@@ -6308,6 +6309,12 @@ async fn open_ssh_session(
         &profile.id,
         format!("PortMate: SSH authentication succeeded via {auth_method:?}"),
     );
+    if let Some(error) = one_time_cleanup_error {
+        store.record_system_event(
+            &profile.id,
+            format!("PortMate: failed to consume one-time host key trust: {error}"),
+        );
+    }
     let summary = store.open_session(&profile.id)?;
     save_store(&state.store_path, &store)?;
     Ok(summary)
@@ -6340,7 +6347,7 @@ async fn establish_ssh_runtime(
     host_keys.keys.extend(ssh.trusted_host_keys.clone());
     host_keys
         .keys
-        .extend(take_one_time_host_keys(state, &profile.id)?);
+        .extend(one_time_host_keys_snapshot(state, &profile.id)?);
 
     let observed_key = Arc::new(Mutex::new(None));
     let host_key_error = Arc::new(Mutex::new(None));
@@ -8074,7 +8081,6 @@ async fn reconnect_ssh_session(
                 continue;
             }
         };
-
         let EstablishedSshRuntime {
             runtime_id,
             runtime,
@@ -8108,6 +8114,8 @@ async fn reconnect_ssh_session(
             return;
         }
 
+        let one_time_cleanup_error = take_one_time_host_keys(&state, &session_id).err();
+
         tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
             state: state.clone(),
             profile: profile.clone(),
@@ -8123,6 +8131,12 @@ async fn reconnect_ssh_session(
                 &session_id,
                 format!("PortMate: SSH session reconnected via {auth_method:?}"),
             );
+            if let Some(error) = one_time_cleanup_error {
+                store.record_system_event(
+                    &session_id,
+                    format!("PortMate: failed to consume one-time host key trust: {error}"),
+                );
+            }
             if let Err(error) = store.open_session(&session_id) {
                 store.record_system_event(
                     &session_id,
@@ -11222,7 +11236,7 @@ mod tests {
     }
 
     #[test]
-    fn one_time_host_key_snapshot_does_not_consume_trust() {
+    fn one_time_host_key_snapshot_keeps_multi_hop_trust_until_success() {
         let one_time = Arc::new(Mutex::new(HashMap::new()));
         let key = portmate_core::TrustedHostKey {
             id: "one-time-key".to_string(),
@@ -11238,19 +11252,24 @@ mod tests {
             first_seen: Utc::now(),
             last_seen: Utc::now(),
         };
+        let mut target_key = key.clone();
+        target_key.id = "one-time-target-key".to_string();
+        target_key.alias = "target:22".to_string();
+        target_key.host = "target".to_string();
         remember_one_time_host_key_in(&one_time, "ssh-session-1", key.clone()).unwrap();
+        remember_one_time_host_key_in(&one_time, "ssh-session-1", target_key.clone()).unwrap();
 
         assert_eq!(
             one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
-            vec![key.clone()]
+            vec![key.clone(), target_key.clone()]
         );
         assert_eq!(
             one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
-            vec![key.clone()]
+            vec![key.clone(), target_key.clone()]
         );
         assert_eq!(
             take_one_time_host_keys_from(&one_time, "ssh-session-1").unwrap(),
-            vec![key]
+            vec![key, target_key]
         );
         assert!(one_time_host_keys_snapshot_from(&one_time, "ssh-session-1")
             .unwrap()
