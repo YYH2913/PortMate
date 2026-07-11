@@ -12694,6 +12694,11 @@ mod tests {
             let sftp_source = root.join("sftp-upload-source.bin");
             let sftp_payload = b"PortMate OpenSSH SFTP integration payload\n";
             fs::write(&sftp_source, sftp_payload).unwrap();
+            let uploaded_sftp_file = sftp_nested.join("sftp-upload-source.bin");
+            let uploaded_sftp_part = PathBuf::from(remote_resume_part_path(
+                uploaded_sftp_file.to_str().unwrap(),
+            ));
+            fs::write(&uploaded_sftp_part, &sftp_payload[..11]).unwrap();
             let sftp_upload = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -12713,8 +12718,8 @@ mod tests {
                 sftp_upload.message
             );
             assert_eq!(sftp_upload.bytes_done, sftp_payload.len() as u64);
+            assert!(!uploaded_sftp_part.exists());
 
-            let uploaded_sftp_file = sftp_nested.join("sftp-upload-source.bin");
             let renamed_sftp_file = sftp_nested.join("renamed.bin");
             rename_path_inner(
                 &state,
@@ -12753,6 +12758,9 @@ mod tests {
             assert_eq!(properties.permissions.unwrap() & 0o777, 0o640);
 
             let copied_sftp_file = sftp_root.join("copied.bin");
+            let copied_sftp_part =
+                PathBuf::from(remote_resume_part_path(copied_sftp_file.to_str().unwrap()));
+            fs::write(&copied_sftp_part, &sftp_payload[..13]).unwrap();
             let sftp_copy = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -12773,8 +12781,11 @@ mod tests {
             );
             assert_eq!(sftp_copy.bytes_done, sftp_payload.len() as u64);
             assert_eq!(fs::read(&copied_sftp_file).unwrap(), sftp_payload);
+            assert!(!copied_sftp_part.exists());
 
             let sftp_download_target = root.join("sftp-download-target.bin");
+            let sftp_download_part = local_resume_part_path(&sftp_download_target);
+            fs::write(&sftp_download_part, &sftp_payload[..17]).unwrap();
             let sftp_download = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -12795,6 +12806,7 @@ mod tests {
             );
             assert_eq!(sftp_download.bytes_done, sftp_payload.len() as u64);
             assert_eq!(fs::read(&sftp_download_target).unwrap(), sftp_payload);
+            assert!(!sftp_download_part.exists());
 
             file_operation_inner(
                 &state,
@@ -12814,6 +12826,8 @@ mod tests {
             let download_target = root.join("scp-download-target.bin");
             let payload = b"PortMate OpenSSH SCP integration payload\n";
             fs::write(&upload_source, payload).unwrap();
+            let remote_part = PathBuf::from(remote_resume_part_path(remote_file.to_str().unwrap()));
+            fs::write(&remote_part, &payload[..9]).unwrap();
             let upload = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -12834,7 +12848,10 @@ mod tests {
             );
             assert_eq!(upload.bytes_done, payload.len() as u64);
             assert_eq!(fs::read(&remote_file).unwrap(), payload);
+            assert!(!remote_part.exists());
 
+            let download_part = local_resume_part_path(&download_target);
+            fs::write(&download_part, &payload[..15]).unwrap();
             let download = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -12855,6 +12872,7 @@ mod tests {
             );
             assert_eq!(download.bytes_done, payload.len() as u64);
             assert_eq!(fs::read(&download_target).unwrap(), payload);
+            assert!(!download_part.exists());
 
             if modem_tools_available {
                 let zmodem_source = root.join("zmodem-upload-source.bin");
