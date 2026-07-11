@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-05-18
+审查日期：2026-07-12
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -99,6 +99,9 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - OpenSSH `known_hosts` 导入/导出已接入 Tauri command 和密钥管理器弹窗。
 - 密钥管理器可以查看 PortMate host key trust store、按 scope/profile 过滤分组、导入/导出 known_hosts、删除 host key、批量删除/复制 host key 到选中 profile、编辑 host key 的 alias/host/port/scope/profile/label；Client Key 区域可从本地文件或粘贴内容导入 OpenSSH 私钥到 profile-vault，并把已有 host key 或当前 ssh-agent identity 复制到选中 profile。
 - 首次连接/host key 变更失败后会弹出专门确认窗口，展示 SHA-256 指纹/已保存指纹，并支持仅本次、加入 Profile、加入 Project、替换 Profile、拒绝和确认后重连。
+- `AskEveryTime` 会在每次连接时要求显式确认，不再因永久 trust store 中已有 key 而直接放行；`TrustOnce` 只对精确匹配的 profile/alias/host/port/algorithm/fingerprint 生效。
+- 多跳连接的 `TrustOnce` 会保留到整条 Jump Host 链成功建立后再消费，后续跳点确认失败不会导致前一跳重复确认。
+- OpenSSH `known_hosts` 导入/导出会保留非 22 端口的 `[host]:port` 形式，并保持 `checkIp` 可匹配规范化 host。
 
 主要缺口：
 
@@ -145,6 +148,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流，以及纯 SSE POST 的 `message` 事件响应；更完整客户端矩阵仍待补。
+- MCP 已区分 `resources/list` 实际资源与 `resources/templates/list` URI 模板，支持 `ping`、JSON-RPC batch/notification 语义；HTTP notification 返回无响应体的 `202 Accepted`。
+- MCP 与桌面 IPC 都执行日志查询 `limit` 的 1..=1000 边界，日志搜索返回最近命中并按时间正序排列。
 - 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
 - MCP 授权 UI 已有基础 grant 管理，但还缺更细的 per-tool/per-session 审计可视化和授权确认体验。
 
@@ -160,7 +165,7 @@ cargo test -p portmate-core -p portmate-mcp
 npm run build
 ```
 
-`npm run build` 当前有 Vite chunk size warning：主 JS chunk 约 639 kB，功能上不阻断构建，发布前可通过 code splitting 或调整 chunk 策略处理。
+`npm run build` 当前有 Vite chunk size warning：主 JS chunk 约 723 kB，功能上不阻断构建，发布前可通过 code splitting 或调整 chunk 策略处理。
 
 已有单元测试覆盖：
 
@@ -168,6 +173,12 @@ npm run build
 - Store open/close、profile upsert、MCP write scope、send_text redaction/audit。
 - Trigger contains/regex。
 - Secret redaction。
+- JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
+- 运行时断线诊断跨 store reload 保留。
+- 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
+- MCP resource/template、ping、batch、notification、HTTP `202` 和日志 limit 协议边界。
+
+当前 workspace 自动化测试总数为 61：`portmate` 32、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
