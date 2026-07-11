@@ -271,6 +271,7 @@ struct SshHandlerParams {
     alias: Option<String>,
     policy: portmate_core::HostKeyPolicy,
     host_keys: HostKeyStore,
+    one_time_host_key_ids: Vec<String>,
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     host_key_error: Arc<Mutex<Option<String>>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
@@ -343,6 +344,7 @@ struct PortMateSshHandler {
     alias: Option<String>,
     policy: portmate_core::HostKeyPolicy,
     host_keys: HostKeyStore,
+    one_time_host_key_ids: Vec<String>,
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     host_key_error: Arc<Mutex<Option<String>>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
@@ -379,14 +381,31 @@ impl client::Handler for PortMateSshHandler {
             .evaluate(&self.profile_id, &self.policy, &observation);
         let accepted = match evaluation {
             Ok(HostKeyEvaluation::Trusted {
-                fingerprint_sha256, ..
-            }) => {
+                matched_key_id,
+                fingerprint_sha256,
+            }) if trusted_host_key_allowed(
+                &self.policy,
+                &matched_key_id,
+                &self.one_time_host_key_ids,
+            ) =>
+            {
                 *self
                     .host_key_error
                     .lock()
                     .expect("host key error lock poisoned") = None;
                 let _ = fingerprint_sha256;
                 true
+            }
+            Ok(HostKeyEvaluation::Trusted {
+                fingerprint_sha256, ..
+            }) => {
+                *self
+                    .host_key_error
+                    .lock()
+                    .expect("host key error lock poisoned") = Some(format!(
+                    "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
+                ));
+                false
             }
             Ok(HostKeyEvaluation::Unknown {
                 alias,
@@ -2201,6 +2220,12 @@ async fn scan_ssh_host_key_via_jump(
         store.host_keys.clone()
     };
     host_keys.keys.extend(ssh.trusted_host_keys.clone());
+    let one_time_host_keys = one_time_host_keys_snapshot(state, &profile.id)?;
+    let one_time_host_key_ids = one_time_host_keys
+        .iter()
+        .map(|key| key.id.clone())
+        .collect::<Vec<_>>();
+    host_keys.keys.extend(one_time_host_keys);
 
     let mut jump_sessions: Vec<client::Handle<PortMateSshHandler>> = Vec::new();
     for (index, jump) in ssh.jumps.iter().enumerate() {
@@ -2216,6 +2241,7 @@ async fn scan_ssh_host_key_via_jump(
             alias: jump_policy.alias.clone(),
             policy: jump_ssh.host_key_policy.clone(),
             host_keys: host_keys.clone(),
+            one_time_host_key_ids: one_time_host_key_ids.clone(),
             observed_key: Arc::clone(&observed_jump_key),
             host_key_error: Arc::clone(&jump_key_error),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
@@ -6473,6 +6499,10 @@ async fn connect_ssh_target(
         password,
         passphrase,
     } = request;
+    let one_time_host_key_ids = one_time_host_keys
+        .iter()
+        .map(|key| key.id.clone())
+        .collect::<Vec<_>>();
 
     let target_host = ssh.endpoint.host.trim().to_string();
     if target_host.is_empty() {
@@ -6494,6 +6524,7 @@ async fn connect_ssh_target(
             .or_else(|| Some(profile.id.clone())),
         policy: ssh.host_key_policy.clone(),
         host_keys: host_keys.clone(),
+        one_time_host_key_ids: one_time_host_key_ids.clone(),
         observed_key: Arc::clone(&observed_key),
         host_key_error: Arc::clone(&host_key_error),
         remote_forwards: Arc::clone(&remote_forwards),
@@ -6534,6 +6565,7 @@ async fn connect_ssh_target(
             alias: jump_policy.alias.clone(),
             policy: jump_ssh.host_key_policy.clone(),
             host_keys: host_keys.clone(),
+            one_time_host_key_ids: one_time_host_key_ids.clone(),
             observed_key: Arc::clone(&observed_jump_key),
             host_key_error: Arc::clone(&jump_key_error),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
@@ -6729,10 +6761,22 @@ fn ssh_handler_for_endpoint(params: SshHandlerParams) -> PortMateSshHandler {
         alias: params.alias,
         policy: params.policy,
         host_keys: params.host_keys,
+        one_time_host_key_ids: params.one_time_host_key_ids,
         observed_key: params.observed_key,
         host_key_error: params.host_key_error,
         remote_forwards: params.remote_forwards,
     }
+}
+
+fn trusted_host_key_allowed(
+    policy: &portmate_core::HostKeyPolicy,
+    matched_key_id: &str,
+    one_time_host_key_ids: &[String],
+) -> bool {
+    policy.mode != HostKeyMode::AskEveryTime
+        || one_time_host_key_ids
+            .iter()
+            .any(|key_id| key_id == matched_key_id)
 }
 
 fn jump_host_key_policy(
@@ -10823,6 +10867,24 @@ mod tests {
         });
         profile.kind = SessionKind::Tmux;
         assert!(ssh_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn ask_every_time_only_accepts_a_one_time_key_id() {
+        let mut policy = portmate_core::HostKeyPolicy::profile_alias("bench-device");
+        assert!(trusted_host_key_allowed(&policy, "persistent-key", &[]));
+
+        policy.mode = HostKeyMode::AskEveryTime;
+        assert!(!trusted_host_key_allowed(
+            &policy,
+            "persistent-key",
+            &["one-time-key".to_string()]
+        ));
+        assert!(trusted_host_key_allowed(
+            &policy,
+            "one-time-key",
+            &["one-time-key".to_string()]
+        ));
     }
 
     #[test]
