@@ -5714,6 +5714,7 @@ async fn create_tunnel_inner(
     state: &AppState,
     request: CreateTunnelRequest,
 ) -> Result<TunnelSpec, String> {
+    let request = normalize_tunnel_request(request)?;
     let (handle, remote_forwards) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -5903,6 +5904,37 @@ async fn create_tunnel_inner(
 
     persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, Some(local_addr))?;
     Ok(tunnel)
+}
+
+fn normalize_tunnel_request(
+    mut request: CreateTunnelRequest,
+) -> Result<CreateTunnelRequest, String> {
+    request.session_id = request.session_id.trim().to_string();
+    request.bind_host = request.bind_host.trim().to_string();
+    request.target_host = request.target_host.trim().to_string();
+    request.label = request
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(ToOwned::to_owned);
+
+    if request.session_id.is_empty() {
+        return Err("tunnel requires a session id".to_string());
+    }
+    if request.mode != TunnelMode::Remote && request.bind_host.is_empty() {
+        return Err("local and dynamic tunnels require a bind host".to_string());
+    }
+    if request.mode != TunnelMode::Dynamic
+        && (request.target_host.is_empty() || request.target_port == 0)
+    {
+        return Err("local and remote tunnels require a target host and port".to_string());
+    }
+    if request.mode == TunnelMode::Dynamic {
+        request.target_host.clear();
+        request.target_port = 0;
+    }
+    Ok(request)
 }
 
 fn list_tunnels_inner(
@@ -11812,6 +11844,42 @@ mod tests {
             tunnel_label(TunnelMode::Dynamic, "127.0.0.1", 1080, "", 0),
             "SOCKS5 127.0.0.1:1080"
         );
+    }
+
+    #[test]
+    fn tunnel_requests_are_normalized_and_validate_targets_early() {
+        let local = normalize_tunnel_request(CreateTunnelRequest {
+            session_id: " ssh-session-1 ".to_string(),
+            mode: TunnelMode::Local,
+            bind_host: " 127.0.0.1 ".to_string(),
+            bind_port: 0,
+            target_host: " device.internal ".to_string(),
+            target_port: 22,
+            label: Some("  ".to_string()),
+        })
+        .unwrap();
+        assert_eq!(local.session_id, "ssh-session-1");
+        assert_eq!(local.bind_host, "127.0.0.1");
+        assert_eq!(local.target_host, "device.internal");
+        assert!(local.label.is_none());
+
+        let error = normalize_tunnel_request(CreateTunnelRequest {
+            target_host: " ".to_string(),
+            target_port: 0,
+            ..local.clone()
+        })
+        .unwrap_err();
+        assert!(error.contains("require a target host and port"));
+
+        let dynamic = normalize_tunnel_request(CreateTunnelRequest {
+            mode: TunnelMode::Dynamic,
+            target_host: "ignored".to_string(),
+            target_port: 443,
+            ..local
+        })
+        .unwrap();
+        assert!(dynamic.target_host.is_empty());
+        assert_eq!(dynamic.target_port, 0);
     }
 
     #[test]
