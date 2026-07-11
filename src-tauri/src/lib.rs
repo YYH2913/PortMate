@@ -12170,6 +12170,53 @@ mod tests {
             let entries = list_remote_files(ssh_handle, ".").await.unwrap();
             assert!(entries.iter().all(|entry| !entry.name.is_empty()));
 
+            let upload_source = root.join("scp-upload-source.bin");
+            let remote_file = root.join("scp-remote.bin");
+            let download_target = root.join("scp-download-target.bin");
+            let payload = b"PortMate OpenSSH SCP integration payload\n";
+            fs::write(&upload_source, payload).unwrap();
+            let upload = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Scp,
+                    source: upload_source.display().to_string(),
+                    destination: format!("remote:{}", remote_file.display()),
+                },
+            )
+            .await
+            .unwrap();
+            let upload = wait_for_transfer_terminal_state(&state, &upload.id).await;
+            assert_eq!(
+                upload.status,
+                TransferStatus::Completed,
+                "SCP upload failed: {:?}",
+                upload.message
+            );
+            assert_eq!(upload.bytes_done, payload.len() as u64);
+            assert_eq!(fs::read(&remote_file).unwrap(), payload);
+
+            let download = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Scp,
+                    source: format!("remote:{}", remote_file.display()),
+                    destination: download_target.display().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            let download = wait_for_transfer_terminal_state(&state, &download.id).await;
+            assert_eq!(
+                download.status,
+                TransferStatus::Completed,
+                "SCP download failed: {:?}",
+                download.message
+            );
+            assert_eq!(download.bytes_done, payload.len() as u64);
+            assert_eq!(fs::read(&download_target).unwrap(), payload);
+
             let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let echo_address = echo_listener.local_addr().unwrap();
             let echo = tokio::spawn(async move {
@@ -12302,6 +12349,23 @@ mod tests {
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
             store_path,
         }
+    }
+
+    async fn wait_for_transfer_terminal_state(state: &AppState, task_id: &str) -> TransferTask {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
+                if matches!(
+                    task.status,
+                    TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+                ) {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("transfer did not reach a terminal state")
     }
 
     fn test_tcp_profile(connection: ConnectionConfig) -> SessionProfile {
