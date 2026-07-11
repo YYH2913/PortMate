@@ -9944,11 +9944,25 @@ fn session_kind_for_connection(connection: &ConnectionConfig) -> SessionKind {
 
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
-    store.runtimes.clear();
+    let saved_runtimes = std::mem::take(&mut store.runtimes)
+        .into_iter()
+        .map(|mut runtime| {
+            runtime.session_id = runtime.session_id.trim().to_string();
+            (runtime.session_id.clone(), runtime)
+        })
+        .collect::<HashMap<_, _>>();
     for profile in profiles {
         let _ = store.upsert_profile(normalize_session_profile(profile));
     }
     for runtime in &mut store.runtimes {
+        if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
+            runtime.pane_id = saved.pane_id.clone();
+            runtime.title = saved.title.clone();
+            runtime.cwd = saved.cwd.clone();
+            runtime.last_activity = saved.last_activity;
+            runtime.last_disconnect = saved.last_disconnect;
+            runtime.last_disconnect_reason = saved.last_disconnect_reason.clone();
+        }
         runtime.status = SessionStatus::Disconnected;
         runtime.connected_since = None;
     }
@@ -10602,6 +10616,49 @@ mod tests {
     fn telnet_outbound_text_uses_crlf() {
         assert_eq!(encode_telnet_outbound_text("show\n"), "show\r\n");
         assert_eq!(encode_telnet_outbound_text("show\r\n"), "show\r\n");
+    }
+
+    #[test]
+    fn normalize_loaded_store_preserves_runtime_diagnostics() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let last_activity = Utc::now() - chrono::Duration::minutes(5);
+        let last_disconnect = Utc::now() - chrono::Duration::minutes(4);
+        let runtime = store
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+            .unwrap();
+        runtime.status = SessionStatus::Connected;
+        runtime.connected_since = Some(Utc::now() - chrono::Duration::hours(1));
+        runtime.pane_id = "custom-pane".to_string();
+        runtime.title = "dynamic shell title".to_string();
+        runtime.cwd = Some("/tmp/worktree".to_string());
+        runtime.last_activity = last_activity;
+        runtime.last_disconnect = Some(last_disconnect);
+        runtime.last_disconnect_reason = Some("network timeout".to_string());
+
+        let normalized = normalize_loaded_store(store);
+        let runtime = normalized
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == session_id)
+            .unwrap();
+
+        assert_eq!(runtime.status, SessionStatus::Disconnected);
+        assert!(runtime.connected_since.is_none());
+        assert_eq!(runtime.active_transport, SessionKind::Shell);
+        assert_eq!(runtime.pane_id, "custom-pane");
+        assert_eq!(runtime.title, "dynamic shell title");
+        assert_eq!(runtime.cwd.as_deref(), Some("/tmp/worktree"));
+        assert_eq!(runtime.last_activity, last_activity);
+        assert_eq!(runtime.last_disconnect, Some(last_disconnect));
+        assert_eq!(
+            runtime.last_disconnect_reason.as_deref(),
+            Some("network timeout")
+        );
     }
 
     #[test]
