@@ -19,7 +19,7 @@ use russh::keys::{
 use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -11301,15 +11301,38 @@ fn save_store_sqlite_tables(
         .execute_batch(
             "delete from profiles;
              delete from runtimes;
-             delete from events;
              delete from transfers;
              delete from trusted_host_keys;
-             delete from mcp_grants;
-             delete from mcp_audit;
-             delete from timeline_marks;
-             delete from sysmon_snapshots;",
+             delete from mcp_grants;",
         )
         .map_err(|error| format!("failed to clear PortMate SQLite mirror tables: {error}"))?;
+
+    let mirrored_event_ids = sqlite_string_keys(connection, "select id from events", "event")?;
+    let current_event_ids = store
+        .events
+        .iter()
+        .map(|event| event.id.clone())
+        .collect::<HashSet<_>>();
+    let mirrored_audit_ids =
+        sqlite_string_keys(connection, "select id from mcp_audit", "MCP audit")?;
+    let current_audit_ids = store
+        .audit
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    let mirrored_timeline_ids =
+        sqlite_string_keys(connection, "select id from timeline_marks", "timeline mark")?;
+    let current_timeline_ids = store
+        .timeline
+        .iter()
+        .map(|mark| mark.id.clone())
+        .collect::<HashSet<_>>();
+    let mirrored_sysmon_keys = sqlite_sysmon_keys(connection)?;
+    let current_sysmon_keys = store
+        .sysmon
+        .iter()
+        .map(|snapshot| (snapshot.session_id.clone(), snapshot.ts.to_rfc3339()))
+        .collect::<HashSet<_>>();
 
     for profile in &store.profiles {
         connection
@@ -11359,6 +11382,9 @@ fn save_store_sqlite_tables(
     }
 
     for event in &store.events {
+        if mirrored_event_ids.contains(&event.id) {
+            continue;
+        }
         connection
             .execute(
                 "insert into events (
@@ -11379,6 +11405,11 @@ fn save_store_sqlite_tables(
                 ],
             )
             .map_err(|error| format!("failed to mirror event {}: {error}", event.id))?;
+    }
+    for id in mirrored_event_ids.difference(&current_event_ids) {
+        connection
+            .execute("delete from events where id = ?1", params![id])
+            .map_err(|error| format!("failed to remove stale mirrored event {id}: {error}"))?;
     }
 
     for transfer in &store.transfers {
@@ -11450,6 +11481,9 @@ fn save_store_sqlite_tables(
     }
 
     for record in &store.audit {
+        if mirrored_audit_ids.contains(&record.id) {
+            continue;
+        }
         connection
             .execute(
                 "insert into mcp_audit (
@@ -11468,8 +11502,16 @@ fn save_store_sqlite_tables(
             )
             .map_err(|error| format!("failed to mirror MCP audit {}: {error}", record.id))?;
     }
+    for id in mirrored_audit_ids.difference(&current_audit_ids) {
+        connection
+            .execute("delete from mcp_audit where id = ?1", params![id])
+            .map_err(|error| format!("failed to remove stale mirrored MCP audit {id}: {error}"))?;
+    }
 
     for mark in &store.timeline {
+        if mirrored_timeline_ids.contains(&mark.id) {
+            continue;
+        }
         connection
             .execute(
                 "insert into timeline_marks (
@@ -11486,8 +11528,19 @@ fn save_store_sqlite_tables(
             )
             .map_err(|error| format!("failed to mirror timeline mark {}: {error}", mark.id))?;
     }
+    for id in mirrored_timeline_ids.difference(&current_timeline_ids) {
+        connection
+            .execute("delete from timeline_marks where id = ?1", params![id])
+            .map_err(|error| {
+                format!("failed to remove stale mirrored timeline mark {id}: {error}")
+            })?;
+    }
 
     for snapshot in &store.sysmon {
+        let key = (snapshot.session_id.clone(), snapshot.ts.to_rfc3339());
+        if mirrored_sysmon_keys.contains(&key) {
+            continue;
+        }
         connection
             .execute(
                 "insert into sysmon_snapshots (
@@ -11511,6 +11564,18 @@ fn save_store_sqlite_tables(
                 )
             })?;
     }
+    for (session_id, ts) in mirrored_sysmon_keys.difference(&current_sysmon_keys) {
+        connection
+            .execute(
+                "delete from sysmon_snapshots where session_id = ?1 and ts = ?2",
+                params![session_id, ts],
+            )
+            .map_err(|error| {
+                format!(
+                    "failed to remove stale mirrored sysmon snapshot {session_id} {ts}: {error}"
+                )
+            })?;
+    }
 
     connection
         .execute(
@@ -11520,6 +11585,42 @@ fn save_store_sqlite_tables(
         )
         .map_err(|error| format!("failed to update SQLite schema version: {error}"))?;
     Ok(())
+}
+
+fn sqlite_string_keys(
+    connection: &SqliteConnection,
+    query: &str,
+    label: &str,
+) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(query)
+        .map_err(|error| format!("failed to query mirrored {label} keys: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("failed to read mirrored {label} keys: {error}"))?;
+    let mut keys = HashSet::new();
+    for row in rows {
+        keys.insert(
+            row.map_err(|error| format!("failed to decode mirrored {label} key: {error}"))?,
+        );
+    }
+    Ok(keys)
+}
+
+fn sqlite_sysmon_keys(connection: &SqliteConnection) -> Result<HashSet<(String, String)>, String> {
+    let mut statement = connection
+        .prepare("select session_id, ts from sysmon_snapshots")
+        .map_err(|error| format!("failed to query mirrored sysmon keys: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed to read mirrored sysmon keys: {error}"))?;
+    let mut keys = HashSet::new();
+    for row in rows {
+        keys.insert(row.map_err(|error| format!("failed to decode mirrored sysmon key: {error}"))?);
+    }
+    Ok(keys)
 }
 
 fn json_text<T: Serialize>(value: &T) -> Result<String, String> {
@@ -12617,6 +12718,149 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn sqlite_mirror_incrementally_syncs_append_only_tables() {
+        let root = std::env::temp_dir().join(format!("portmate-sqlite-mirror-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        store.record_system_event(&session_id, "first event");
+        store
+            .send_text("test-user", &session_id, "second event")
+            .unwrap();
+        store.timeline.push(TimelineMark {
+            id: "timeline-1".to_string(),
+            session_id: session_id.clone(),
+            ts: Utc::now(),
+            label: "checkpoint".to_string(),
+            details: None,
+        });
+        store.sysmon.push(SysmonSnapshot {
+            session_id: session_id.clone(),
+            ts: Utc::now(),
+            uptime_seconds: 10,
+            cpu_percent: 1.0,
+            memory_percent: 2.0,
+            rx_kbps: 3.0,
+            tx_kbps: 4.0,
+        });
+        save_store(&store_path, &store).unwrap();
+
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute_batch(
+                "create table mirror_test_counts (
+                    table_name text not null,
+                    action text not null,
+                    count integer not null,
+                    primary key (table_name, action)
+                );
+                insert into mirror_test_counts values
+                    ('events', 'insert', 0), ('events', 'delete', 0),
+                    ('mcp_audit', 'insert', 0), ('mcp_audit', 'delete', 0),
+                    ('timeline_marks', 'insert', 0), ('timeline_marks', 'delete', 0),
+                    ('sysmon_snapshots', 'insert', 0), ('sysmon_snapshots', 'delete', 0);
+                create trigger mirror_test_events_insert after insert on events begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'events' and action = 'insert';
+                end;
+                create trigger mirror_test_events_delete after delete on events begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'events' and action = 'delete';
+                end;
+                create trigger mirror_test_audit_insert after insert on mcp_audit begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'mcp_audit' and action = 'insert';
+                end;
+                create trigger mirror_test_audit_delete after delete on mcp_audit begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'mcp_audit' and action = 'delete';
+                end;
+                create trigger mirror_test_timeline_insert after insert on timeline_marks begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'timeline_marks' and action = 'insert';
+                end;
+                create trigger mirror_test_timeline_delete after delete on timeline_marks begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'timeline_marks' and action = 'delete';
+                end;
+                create trigger mirror_test_sysmon_insert after insert on sysmon_snapshots begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'sysmon_snapshots' and action = 'insert';
+                end;
+                create trigger mirror_test_sysmon_delete after delete on sysmon_snapshots begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'sysmon_snapshots' and action = 'delete';
+                end;",
+            )
+            .unwrap();
+        drop(connection);
+
+        store.record_system_event(&session_id, "third event");
+        save_store(&store_path, &store).unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        let mirror_count = |table: &str, action: &str| -> i64 {
+            connection
+                .query_row(
+                    "select count from mirror_test_counts where table_name = ?1 and action = ?2",
+                    params![table, action],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(mirror_count("events", "insert"), 1);
+        assert_eq!(mirror_count("events", "delete"), 0);
+        for table in ["mcp_audit", "timeline_marks", "sysmon_snapshots"] {
+            assert_eq!(mirror_count(table, "insert"), 0, "{table}");
+            assert_eq!(mirror_count(table, "delete"), 0, "{table}");
+        }
+        connection
+            .execute("update mirror_test_counts set count = 0", [])
+            .unwrap();
+        drop(connection);
+
+        let removed_event_id = store.events[0].id.clone();
+        store.events.remove(0);
+        store.audit.clear();
+        store.timeline.clear();
+        store.sysmon.clear();
+        save_store(&store_path, &store).unwrap();
+
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        let mirror_count = |table: &str, action: &str| -> i64 {
+            connection
+                .query_row(
+                    "select count from mirror_test_counts where table_name = ?1 and action = ?2",
+                    params![table, action],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        for table in ["events", "mcp_audit", "timeline_marks", "sysmon_snapshots"] {
+            assert_eq!(mirror_count(table, "insert"), 0, "{table}");
+            assert_eq!(mirror_count(table, "delete"), 1, "{table}");
+        }
+        let removed_count: i64 = connection
+            .query_row(
+                "select count(*) from events where id = ?1",
+                params![removed_event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed_count, 0);
+        drop(connection);
+
+        let loaded = load_store_sqlite(&store_path).unwrap();
+        assert_eq!(loaded.events, store.events);
+        assert!(loaded.audit.is_empty());
+        assert!(loaded.timeline.is_empty());
+        assert!(loaded.sysmon.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

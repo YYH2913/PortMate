@@ -117,6 +117,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出。
 - SQLite v2 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、sysmon_snapshots。
+- SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
 - 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。
 - 触发器支持 contains/regex，动作包括高亮、通知、时间线标记、本地命令、发送文本。
 - secret redaction 有核心测试。
@@ -185,7 +186,7 @@ npm run build
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 85：`portmate` 56、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 86：`portmate` 57、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
@@ -248,7 +249,7 @@ npm run build
 ### P3：架构整理与发布准备
 
 1. 拆分当前 `src-tauri/src/lib.rs`：transport、transfer、mcp、storage、security、terminal 模块化。
-2. 将 SQLite mirror 从全量 delete/reinsert 优化为增量写入或 append-only event store。
+2. SQLite 大型追加表已改为增量写入并有 INSERT/DELETE 触发器回归；继续拆分存储模块并评估 kv/JSON 兼容快照的异步化。
 3. 引入 Stronghold-style portable vault，覆盖 OS keyring 不可用/禁用场景。
 4. 增加 Windows/macOS/Linux 打包验证和权限说明。
 5. 建立 release checklist：签名、更新日志、迁移测试、回滚策略。
