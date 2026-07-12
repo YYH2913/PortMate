@@ -102,6 +102,7 @@ const MODEM_NAK: u8 = 0x15;
 const MODEM_CAN: u8 = 0x18;
 const MODEM_CRC_REQUEST: u8 = b'C';
 const MODEM_EOF: u8 = 0x1a;
+const MODEM_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
@@ -2835,6 +2836,12 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
         .iter_mut()
         .find(|task| task.id == transfer_id)
         .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?;
+    let abort_modem_session = (task.status == TransferStatus::Running
+        && matches!(
+            task.protocol,
+            TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
+        ))
+    .then(|| task.session_id.clone());
     if transfer_task_is_active(&task.status) {
         task.status = TransferStatus::Cancelled;
         task.message = Some("cancelling".to_string());
@@ -2843,6 +2850,14 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
     }
     let task = task.clone();
     save_store(&state.store_path, &store)?;
+    drop(store);
+    if let Some(session_id) = abort_modem_session {
+        let state = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ =
+                write_runtime_bytes(&state, &session_id, &[MODEM_CAN, MODEM_CAN, MODEM_CAN]).await;
+        });
+    }
     emit_transfer_task(state, &task);
     Ok(task)
 }
@@ -3006,7 +3021,8 @@ async fn transfer_file_via_xmodem(
             )
             .await?;
             let remote_started = remote_start.is_some();
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = xmodem_send_file(
                 state,
                 &request.session_id,
@@ -3017,7 +3033,8 @@ async fn transfer_file_via_xmodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
                 let command = xmodem_remote_finalize_command(
                     &remote_destination,
                     source_size,
@@ -3025,8 +3042,12 @@ async fn transfer_file_via_xmodem(
                 );
                 let _ = send_text_inner(state.session_io(), request.session_id.clone(), command)
                     .await?;
-                wait_for_xmodem_remote_completion(&mut completion_receiver, &completion_token)
-                    .await?;
+                wait_for_xmodem_remote_completion(
+                    &mut completion_receiver,
+                    &completion_token,
+                    progress,
+                )
+                .await?;
             }
             Ok(bytes)
         }
@@ -3044,7 +3065,8 @@ async fn transfer_file_via_xmodem(
                 &remote_source,
             )
             .await?;
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = xmodem_receive_file(
                 state,
                 &request.session_id,
@@ -3054,7 +3076,8 @@ async fn transfer_file_via_xmodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
             }
             Ok(bytes)
         }
@@ -3082,7 +3105,8 @@ async fn transfer_file_via_ymodem(
                 &remote_destination,
             )
             .await?;
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = ymodem_send_file(
                 state,
                 &request.session_id,
@@ -3094,7 +3118,8 @@ async fn transfer_file_via_ymodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
             }
             Ok(bytes)
         }
@@ -3112,7 +3137,8 @@ async fn transfer_file_via_ymodem(
                 &remote_source,
             )
             .await?;
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = ymodem_receive_file(
                 state,
                 &request.session_id,
@@ -3122,7 +3148,8 @@ async fn transfer_file_via_ymodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
             }
             Ok(bytes)
         }
@@ -3150,7 +3177,8 @@ async fn transfer_file_via_zmodem(
                 &remote_destination,
             )
             .await?;
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = zmodem_send_file(
                 state,
                 &request.session_id,
@@ -3161,7 +3189,8 @@ async fn transfer_file_via_zmodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
             }
             Ok(bytes)
         }
@@ -3179,7 +3208,8 @@ async fn transfer_file_via_zmodem(
                 &remote_source,
             )
             .await?;
-            let reader = modem_reader_after_start(receiver, remote_start.as_ref()).await?;
+            let reader =
+                modem_reader_after_start(receiver, remote_start.as_ref(), progress).await?;
             let bytes = zmodem_receive_files(
                 state,
                 &request.session_id,
@@ -3189,7 +3219,8 @@ async fn transfer_file_via_zmodem(
             )
             .await?;
             if let Some(remote_start) = remote_start.as_ref() {
-                wait_for_remote_modem_completion(&mut completion_receiver, remote_start).await?;
+                wait_for_remote_modem_completion(&mut completion_receiver, remote_start, progress)
+                    .await?;
             }
             Ok(bytes)
         }
@@ -3307,17 +3338,20 @@ fn xmodem_remote_finalize_command(
 async fn wait_for_xmodem_remote_completion(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     completion_token: &str,
+    progress: &TransferProgressContext,
 ) -> Result<(), String> {
     let success = format!("__PORTMATE_XMODEM_{completion_token}_DONE__");
     let failure = format!("__PORTMATE_XMODEM_{completion_token}_FAIL__");
     let started = Instant::now();
     let mut output = Vec::new();
     loop {
+        progress.check_cancelled()?;
         let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("XModem remote finalize timed out".to_string());
         }
-        match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await {
+        match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv()).await
+        {
             Ok(Ok(bytes)) => {
                 output.extend_from_slice(&bytes);
                 if output
@@ -3352,17 +3386,20 @@ async fn wait_for_xmodem_remote_completion(
 async fn wait_for_remote_modem_completion(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     remote_start: &RemoteModemStart,
+    progress: &TransferProgressContext,
 ) -> Result<(), String> {
     let success = remote_start.success_marker();
     let failure = remote_start.failure_marker();
     let started = Instant::now();
     let mut output = Vec::new();
     loop {
+        progress.check_cancelled()?;
         let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("remote modem command completion timed out".to_string());
         }
-        match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await {
+        match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv()).await
+        {
             Ok(Ok(bytes)) => {
                 output.extend_from_slice(&bytes);
                 if output
@@ -3618,29 +3655,36 @@ async fn check_modem_cancelled(
 struct ModemByteReader {
     receiver: broadcast::Receiver<Vec<u8>>,
     pending: VecDeque<u8>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl ModemByteReader {
-    fn new(receiver: broadcast::Receiver<Vec<u8>>) -> Self {
+    fn new(receiver: broadcast::Receiver<Vec<u8>>, cancel: Arc<AtomicBool>) -> Self {
         Self {
             receiver,
             pending: VecDeque::new(),
+            cancel,
         }
     }
 
     async fn after_marker(
         mut receiver: broadcast::Receiver<Vec<u8>>,
         marker: &str,
+        cancel: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         let started = Instant::now();
         let marker = marker.as_bytes();
         let mut buffered = Vec::new();
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
             let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err("remote modem readiness marker timed out".to_string());
             }
-            match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await
+            match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv())
+                .await
             {
                 Ok(Ok(bytes)) => {
                     buffered.extend_from_slice(&bytes);
@@ -3651,6 +3695,7 @@ impl ModemByteReader {
                         return Ok(Self {
                             receiver,
                             pending: buffered[offset + marker.len()..].iter().copied().collect(),
+                            cancel,
                         });
                     }
                     if buffered.len() > 64 * 1024 {
@@ -3668,17 +3713,30 @@ impl ModemByteReader {
     }
 
     async fn next_byte(&mut self, timeout: Duration) -> Result<u8, String> {
+        let started = Instant::now();
         loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
             if let Some(byte) = self.pending.pop_front() {
                 return Ok(byte);
             }
-            match tokio::time::timeout(timeout, self.receiver.recv()).await {
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err("modem byte timeout".to_string());
+            }
+            match tokio::time::timeout(
+                remaining.min(MODEM_CANCEL_POLL_INTERVAL),
+                self.receiver.recv(),
+            )
+            .await
+            {
                 Ok(Ok(bytes)) => self.pending.extend(bytes),
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
                 Ok(Err(broadcast::error::RecvError::Closed)) => {
                     return Err("modem byte stream closed".to_string())
                 }
-                Err(_) => return Err("modem byte timeout".to_string()),
+                Err(_) => {}
             }
         }
     }
@@ -3692,13 +3750,29 @@ impl ModemByteReader {
     }
 
     async fn next_chunk(&mut self, timeout: Duration, max_len: usize) -> Result<Vec<u8>, String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+        }
         if !self.pending.is_empty() {
             let take = self.pending.len().min(max_len);
             return Ok(self.pending.drain(..take).collect());
         }
 
+        let started = Instant::now();
         loop {
-            match tokio::time::timeout(timeout, self.receiver.recv()).await {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err("modem byte timeout".to_string());
+            }
+            match tokio::time::timeout(
+                remaining.min(MODEM_CANCEL_POLL_INTERVAL),
+                self.receiver.recv(),
+            )
+            .await
+            {
                 Ok(Ok(bytes)) => {
                     if bytes.len() <= max_len {
                         return Ok(bytes);
@@ -3710,7 +3784,7 @@ impl ModemByteReader {
                 Ok(Err(broadcast::error::RecvError::Closed)) => {
                     return Err("modem byte stream closed".to_string())
                 }
-                Err(_) => return Err("modem byte timeout".to_string()),
+                Err(_) => {}
             }
         }
     }
@@ -3719,10 +3793,18 @@ impl ModemByteReader {
 async fn modem_reader_after_start(
     receiver: broadcast::Receiver<Vec<u8>>,
     remote_start: Option<&RemoteModemStart>,
+    progress: &TransferProgressContext,
 ) -> Result<ModemByteReader, String> {
     match remote_start {
-        Some(start) => ModemByteReader::after_marker(receiver, &start.ready_marker).await,
-        None => Ok(ModemByteReader::new(receiver)),
+        Some(start) => {
+            ModemByteReader::after_marker(
+                receiver,
+                &start.ready_marker,
+                Arc::clone(&progress.cancel),
+            )
+            .await
+        }
+        None => Ok(ModemByteReader::new(receiver, Arc::clone(&progress.cancel))),
     }
 }
 
@@ -11994,6 +12076,99 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_silent_xmodem_sends_can_and_stops_worker() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut cancel = [0_u8; 3];
+                socket.read_exact(&mut cancel).await.unwrap();
+                assert_eq!(cancel, [MODEM_CAN; 3]);
+                let _ = release_rx.await;
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+            }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-modem-cancel-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let source = root.join("source.bin");
+            fs::write(&source, b"cancel this XModem transfer").unwrap();
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            let task = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Xmodem,
+                    source: source.display().to_string(),
+                    destination: "remote:/tmp/cancelled.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .transfer_by_id(&task.id)
+                        .is_some_and(|task| task.status == TransferStatus::Running)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("XModem task did not start");
+
+            let cancelling = cancel_transfer_inner(&state, &task.id).unwrap();
+            assert_eq!(cancelling.status, TransferStatus::Cancelled);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if !state
+                        .transfer_cancellations
+                        .lock()
+                        .unwrap()
+                        .contains_key(&task.id)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled XModem worker did not stop promptly");
+            let cancelled = state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap();
+            assert_eq!(cancelled.status, TransferStatus::Cancelled);
+            assert_eq!(cancelled.message.as_deref(), Some("cancelled"));
+
+            let _ = release_tx.send(());
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("XModem cancellation bytes were not received")
+                .expect("XModem cancellation server failed");
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
     fn tcp_loopback_round_trips_raw_bytes_without_telnet_escaping() {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -13060,14 +13235,60 @@ mod tests {
             tap.send([b"DY__".as_slice(), &[MODEM_CRC_REQUEST]].concat())
                 .unwrap();
 
-            let mut reader =
-                ModemByteReader::after_marker(receiver, "__PORTMATE_MODEM_token_READY__")
-                    .await
-                    .unwrap();
+            let mut reader = ModemByteReader::after_marker(
+                receiver,
+                "__PORTMATE_MODEM_token_READY__",
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 reader.next_byte(Duration::from_millis(10)).await.unwrap(),
                 MODEM_CRC_REQUEST
             );
+        });
+    }
+
+    #[test]
+    fn modem_marker_and_byte_waits_observe_cancellation_promptly() {
+        tauri::async_runtime::block_on(async {
+            let (marker_tap, marker_receiver) = broadcast::channel(8);
+            let marker_cancel = Arc::new(AtomicBool::new(false));
+            let cancel = Arc::clone(&marker_cancel);
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel.store(true, Ordering::SeqCst);
+            });
+            let started = Instant::now();
+            let result = ModemByteReader::after_marker(
+                marker_receiver,
+                "__PORTMATE_MODEM_never_READY__",
+                marker_cancel,
+            )
+            .await;
+            let error = match result {
+                Ok(_) => panic!("cancelled modem marker wait unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_secs(1));
+            cancel_task.await.unwrap();
+            drop(marker_tap);
+
+            let (byte_tap, byte_receiver) = broadcast::channel(8);
+            let byte_cancel = Arc::new(AtomicBool::new(false));
+            let cancel = Arc::clone(&byte_cancel);
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel.store(true, Ordering::SeqCst);
+            });
+            let mut reader = ModemByteReader::new(byte_receiver, byte_cancel);
+            let started = Instant::now();
+            let error = reader.next_byte(Duration::from_secs(15)).await.unwrap_err();
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_secs(1));
+            cancel_task.await.unwrap();
+            drop(byte_tap);
         });
     }
 
