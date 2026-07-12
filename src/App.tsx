@@ -40,7 +40,11 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
+import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
+import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+
+const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -125,7 +129,6 @@ type HostKeyPromptState = {
   scanError: string | null;
   busy: boolean;
 };
-type WorkspaceLayout = "single" | "horizontal" | "vertical";
 type SendMode = "text" | "hex";
 type SendTarget = "active" | "panes" | "connected";
 type ContextMenuState = { x: number; y: number; sessionId: string | null } | null;
@@ -210,6 +213,7 @@ function createXterm256Palette() {
 }
 
 export default function App() {
+  const [initialWorkspace] = useState(loadWorkspaceSnapshot);
   const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
@@ -217,7 +221,7 @@ export default function App() {
   const [grants, setGrants] = useState<McpGrant[]>(emptyGrants);
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
-  const [activeId, setActiveId] = useState("");
+  const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
   const [utilityDialog, setUtilityDialog] = useState<UtilityDialog>(null);
@@ -235,12 +239,13 @@ export default function App() {
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
-  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayout>(() => loadLocalValue("portmate.workspaceLayout", "single"));
-  const [paneIds, setPaneIds] = useState<string[]>(() => loadLocalValue("portmate.paneIds", []));
+  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayout>(initialWorkspace.layout);
+  const [paneIds, setPaneIds] = useState<string[]>(initialWorkspace.paneIds);
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [tabColors, setTabColors] = useState<Record<string, string>>(() => loadLocalValue("portmate.tabColors", {}));
+  const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
   const credentialResolverRef = useRef<((credentials: ConnectionCredentials | null) => void) | null>(null);
+  const startupAppliedRef = useRef(false);
   const logSignatureRef = useRef<Record<string, string>>({});
   const sessionsSignatureRef = useRef("");
 
@@ -253,9 +258,39 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    saveLocalValue("portmate.workspaceLayout", workspaceLayout);
-    saveLocalValue("portmate.paneIds", paneIds);
-  }, [workspaceLayout, paneIds]);
+    if (startupAppliedRef.current || !sessions.length) return;
+    startupAppliedRef.current = true;
+    const prefs = loadLocalValue<TerminalPrefs>("portmate.terminalPrefs", createTerminalPrefs());
+    const workspace = reconcileWorkspaceSnapshot({
+      version: 1,
+      layout: workspaceLayout,
+      paneIds,
+      activeId,
+      tabColors,
+    }, sessions.map((session) => session.profile.id));
+    const mode: StartupMode = prefs.startupMode === "none" || prefs.startupMode === "specific"
+      ? prefs.startupMode
+      : "last";
+    const targets = resolveStartupSessionIds(mode, prefs.startupSessions, workspace, sessions.map((session) => session.profile.id));
+    void (async () => {
+      for (const sessionId of targets) {
+        const session = sessions.find((item) => item.profile.id === sessionId);
+        if (session?.runtime.status === "disconnected") {
+          await connectSession(sessionId);
+        }
+      }
+    })();
+  }, [sessions]);
+
+  useEffect(() => {
+    saveLocalValue<WorkspaceSnapshot>(WORKSPACE_STORAGE_KEY, {
+      version: 1,
+      layout: workspaceLayout,
+      paneIds,
+      activeId,
+      tabColors,
+    });
+  }, [workspaceLayout, paneIds, activeId, tabColors]);
 
   useEffect(() => {
     saveLocalValue("portmate.syncInput", syncInput);
@@ -264,10 +299,6 @@ export default function App() {
   useEffect(() => {
     saveLocalValue("portmate.commandHistory", commandHistory.slice(0, 200));
   }, [commandHistory]);
-
-  useEffect(() => {
-    saveLocalValue("portmate.tabColors", tabColors);
-  }, [tabColors]);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
@@ -338,7 +369,17 @@ export default function App() {
     setGrants(await callBackend("list_mcp_grants", {}, emptyGrants));
     setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
     setSerialPorts(await callBackend("list_serial_ports", {}, []));
-    setActiveId((current) => nextSessions.find((session) => session.profile.id === current)?.profile.id ?? nextSessions[0]?.profile.id ?? "");
+    const restored = reconcileWorkspaceSnapshot({
+      version: 1,
+      layout: workspaceLayout,
+      paneIds,
+      activeId,
+      tabColors,
+    }, nextSessions.map((session) => session.profile.id));
+    setWorkspaceLayout(restored.layout);
+    setPaneIds(restored.paneIds);
+    setActiveId(restored.activeId);
+    setTabColors(restored.tabColors);
 
     const nextLogs: Record<string, SessionEvent[]> = {};
     for (const session of nextSessions) {
@@ -531,7 +572,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "还原布局") {
-      void refresh();
+      restoreWorkspaceLayout();
       return;
     }
 
@@ -724,6 +765,23 @@ function handleMenuAction(item: string) {
         return [sessionId, ...current.slice(1)];
       });
     }
+  }
+
+  function restoreWorkspaceLayout() {
+    const restored = reconcileWorkspaceSnapshot(
+      loadWorkspaceSnapshot(),
+      sessions.map((session) => session.profile.id),
+    );
+    setWorkspaceLayout(restored.layout);
+    setPaneIds(restored.paneIds);
+    setActiveId(restored.activeId);
+    setTabColors(restored.tabColors);
+    setNotice({
+      title: "还原布局",
+      message: restored.layout === "single"
+        ? "已还原单窗格工作区。"
+        : `已还原 ${restored.paneIds.length} 个窗格。`,
+    });
   }
 
   function splitWorkspace(layout: Exclude<WorkspaceLayout, "single">) {
@@ -6688,6 +6746,18 @@ function loadLocalSessionSummaries() {
 
 function saveLocalSessionSummaries(sessions: SessionSummary[]) {
   window.localStorage.setItem("portmate.sessions", JSON.stringify(sessions));
+}
+
+function loadWorkspaceSnapshot(): WorkspaceSnapshot {
+  const stored = loadLocalValue<unknown>(WORKSPACE_STORAGE_KEY, null);
+  if (stored) return sanitizeWorkspaceSnapshot(stored);
+  return sanitizeWorkspaceSnapshot({
+    version: 1,
+    layout: loadLocalValue<unknown>("portmate.workspaceLayout", "single"),
+    paneIds: loadLocalValue<unknown>("portmate.paneIds", []),
+    activeId: loadLocalValue<unknown>("portmate.activeId", ""),
+    tabColors: loadLocalValue<unknown>("portmate.tabColors", {}),
+  });
 }
 
 function loadLocalValue<T>(key: string, fallback: T): T {

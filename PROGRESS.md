@@ -41,7 +41,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
 - `xterm.js` 终端渲染，FitAddon、SearchAddon、WebLinksAddon 已接入。
-- 分屏布局有水平/垂直/关闭 pane 的基础实现。
+- 分屏布局有水平/垂直/关闭 pane 的基础实现；版本化 workspace snapshot 会统一保存 pane session binding、active session 和标签颜色，兼容迁移旧 localStorage key，并在 profile 列表变化后剔除重复/失效 ID、收敛无效 split。
+- `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Sysmon/Trigger 相关入口已存在。
 - 同步输入、底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
@@ -49,7 +50,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 主要缺口：
 
-- WindTerm 级别的任意分屏、布局持久化、启动自动打开会话、标签颜色实际应用、快捷键体系还不完整。
+- WindTerm 级别的任意嵌套分屏和快捷键体系还不完整；当前持久化布局仍限定水平/垂直最多 4 pane。
 - serialize/unicode/webgl/clipboard 等计划项没有完整接入。
 - 自由输入、锁屏等 WindTerm 细节仍不完整。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
@@ -201,7 +202,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 109：`portmate` 78、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 16 个前端 transfer/selection/presentation/log-shard 单元测试。
+当前 Rust workspace 自动化测试总数为 109：`portmate` 78、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 21 个前端 transfer/selection/presentation/log-shard/workspace 单元测试。
 
 主要缺口：
 
@@ -219,7 +220,7 @@ npm run build
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
-| WindTerm 风格工作台 | 部分实现 | 主布局和菜单已有，深层交互/快捷键/布局持久化不足。 |
+| WindTerm 风格工作台 | 部分实现 | 主布局和菜单、最多 4 pane 的水平/垂直布局、版本化 snapshot、pane/active/tab color 恢复、旧 key 迁移和启动会话策略已有；任意嵌套分屏和快捷键体系不足。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护，以及 Argon2id + IOTA Stronghold portable vault/fallback 已有；主密码轮换和批量迁移待补。 |
@@ -248,7 +249,7 @@ npm run build
 ### P1：补齐 WindTerm/Bitvise 级工作流
 
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
-2. 会话布局持久化：任意分屏、pane session binding、启动自动打开、标签颜色、workspace restore。
+2. pane session binding、启动自动连接、标签颜色和 workspace restore 已完成版本化基础实现；继续补任意嵌套分屏。
 3. 同步输入正式化：多 pane 广播、过滤协议、换行策略、延迟、前后缀、明显状态条。
 4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
 5. 密钥管理器继续增强：Stronghold 主密码轮换和 keychain/Stronghold 批量迁移；portable vault、解锁状态、Client identity 字段编辑、密钥轮换与底层 secret 生命周期管理已完成。
@@ -272,7 +273,7 @@ npm run build
 ## 建议的近期执行顺序
 
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
-2. 会话布局持久化和 workspace restore。
+2. 会话任意嵌套分屏；基础布局持久化、workspace restore 和启动会话策略已完成。
 3. Stronghold 主密码轮换与批量迁移。
 4. 更深连接健康探测和跨平台传输故障矩阵。
 
