@@ -13089,6 +13089,96 @@ mod tests {
             assert_eq!(fs::read(&scp_cancel_remote).unwrap(), cancel_payload);
             assert!(!scp_cancel_remote_part.exists());
 
+            for (label, protocol) in [
+                ("sftp", TransferProtocol::Sftp),
+                ("scp", TransferProtocol::Scp),
+            ] {
+                {
+                    let mut store = state.store.lock().unwrap();
+                    let mut limited = store.profile(&profile.id).unwrap();
+                    limited.transfer.rate_limit_bytes_per_second = Some(64 * 1024);
+                    store.upsert_profile(limited);
+                }
+                let disconnect_remote = root.join(format!("{label}-disconnect-remote.bin"));
+                let disconnect_remote_part =
+                    PathBuf::from(remote_resume_part_path(disconnect_remote.to_str().unwrap()));
+                let interrupted_upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: protocol.clone(),
+                        source: cancel_source.display().to_string(),
+                        destination: format!("remote:{}", disconnect_remote.display()),
+                    },
+                )
+                .await
+                .unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let task = state
+                            .store
+                            .lock()
+                            .unwrap()
+                            .transfer_by_id(&interrupted_upload.id)
+                            .unwrap();
+                        if task.status == TransferStatus::Running && task.bytes_done > 0 {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("limited {label} upload did not report progress"));
+
+                let disconnected = close_session_inner(&state, profile.id.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(disconnected.runtime.status, SessionStatus::Disconnected);
+                let interrupted =
+                    wait_for_transfer_terminal_state(&state, &interrupted_upload.id).await;
+                assert_eq!(
+                    interrupted.status,
+                    TransferStatus::Failed,
+                    "{protocol:?} SSH disconnect was not reported as a failure: {:?}",
+                    interrupted.message
+                );
+                assert!(
+                    !state
+                        .transfer_cancellations
+                        .lock()
+                        .unwrap()
+                        .contains_key(&interrupted.id),
+                    "{protocol:?} disconnected transfer retained its cancellation handle"
+                );
+                assert!(!disconnect_remote.exists());
+                let partial_size = fs::metadata(&disconnect_remote_part).unwrap().len();
+                assert!(partial_size > 0 && partial_size < cancel_payload.len() as u64);
+
+                let reopened = open_ssh_session(&state, profile.clone(), None, None)
+                    .await
+                    .unwrap();
+                assert_eq!(reopened.runtime.status, SessionStatus::Connected);
+                {
+                    let mut store = state.store.lock().unwrap();
+                    let mut unlimited = store.profile(&profile.id).unwrap();
+                    unlimited.transfer.rate_limit_bytes_per_second = None;
+                    store.upsert_profile(unlimited);
+                }
+                let retried = retry_transfer_inner(&state, &interrupted_upload.id)
+                    .await
+                    .unwrap();
+                let retried = wait_for_transfer_terminal_state(&state, &retried.id).await;
+                assert_eq!(
+                    retried.status,
+                    TransferStatus::Completed,
+                    "{protocol:?} retry after reconnect failed: {:?}",
+                    retried.message
+                );
+                assert_eq!(retried.bytes_done, cancel_payload.len() as u64);
+                assert_eq!(fs::read(&disconnect_remote).unwrap(), cancel_payload);
+                assert!(!disconnect_remote_part.exists());
+            }
+
             if modem_tools_available {
                 let zmodem_source = root.join("zmodem-upload-source.bin");
                 let zmodem_remote = root.join("zmodem-remote.bin");
