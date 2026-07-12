@@ -12967,6 +12967,92 @@ mod tests {
             assert_eq!(fs::read(&cancel_remote).unwrap(), cancel_payload);
             assert!(!cancel_remote_part.exists());
 
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut limited = store.profile(&profile.id).unwrap();
+                limited.transfer.rate_limit_bytes_per_second = Some(64 * 1024);
+                store.upsert_profile(limited);
+            }
+            let scp_cancel_source = root.join("scp-cancel-source.bin");
+            let scp_cancel_remote = root.join("scp-cancel-remote.bin");
+            let scp_cancel_remote_part =
+                PathBuf::from(remote_resume_part_path(scp_cancel_remote.to_str().unwrap()));
+            fs::write(&scp_cancel_source, &cancel_payload).unwrap();
+            let cancelled_scp_upload = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Scp,
+                    source: scp_cancel_source.display().to_string(),
+                    destination: format!("remote:{}", scp_cancel_remote.display()),
+                },
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let task = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .transfer_by_id(&cancelled_scp_upload.id)
+                        .unwrap();
+                    if task.status == TransferStatus::Running && task.bytes_done > 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("limited SCP upload did not report progress");
+            let cancelling = cancel_transfer_inner(&state, &cancelled_scp_upload.id).unwrap();
+            assert_eq!(cancelling.status, TransferStatus::Cancelled);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if !state
+                        .transfer_cancellations
+                        .lock()
+                        .unwrap()
+                        .contains_key(&cancelled_scp_upload.id)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("cancelled SCP worker did not stop");
+            let cancelled = state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&cancelled_scp_upload.id)
+                .unwrap();
+            assert_eq!(cancelled.status, TransferStatus::Cancelled);
+            assert!(!scp_cancel_remote.exists());
+            let partial_size = fs::metadata(&scp_cancel_remote_part).unwrap().len();
+            assert!(partial_size > 0 && partial_size < cancel_payload.len() as u64);
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut unlimited = store.profile(&profile.id).unwrap();
+                unlimited.transfer.rate_limit_bytes_per_second = None;
+                store.upsert_profile(unlimited);
+            }
+            let retried = retry_transfer_inner(&state, &cancelled_scp_upload.id)
+                .await
+                .unwrap();
+            let retried = wait_for_transfer_terminal_state(&state, &retried.id).await;
+            assert_eq!(
+                retried.status,
+                TransferStatus::Completed,
+                "SCP retry failed: {:?}",
+                retried.message
+            );
+            assert_eq!(retried.bytes_done, cancel_payload.len() as u64);
+            assert_eq!(fs::read(&scp_cancel_remote).unwrap(), cancel_payload);
+            assert!(!scp_cancel_remote_part.exists());
+
             if modem_tools_available {
                 let zmodem_source = root.join("zmodem-upload-source.bin");
                 let zmodem_remote = root.join("zmodem-remote.bin");
