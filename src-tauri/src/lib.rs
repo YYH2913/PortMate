@@ -220,6 +220,13 @@ impl TunnelMetrics {
         self.touch();
     }
 
+    fn clear_error(&self) {
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = None;
+        }
+        self.touch();
+    }
+
     fn touch(&self) {
         if let Ok(mut last_activity) = self.last_activity.lock() {
             *last_activity = Some(Utc::now().to_rfc3339());
@@ -476,17 +483,20 @@ impl client::Handler for PortMateSshHandler {
             if let Some(target) = target {
                 tauri::async_runtime::spawn(async move {
                     target.metrics.connection_opened();
-                    if let Err(error) = handle_remote_tunnel_client(
+                    let result = handle_remote_tunnel_client(
                         channel,
                         target.spec.clone(),
                         originator_address,
                         originator_port as u16,
                         Arc::clone(&target.metrics),
                     )
-                    .await
-                    {
-                        target.metrics.record_error(&error);
-                        eprintln!("PortMate: remote SSH tunnel client failed: {error}");
+                    .await;
+                    match result {
+                        Ok(()) => target.metrics.clear_error(),
+                        Err(error) => {
+                            target.metrics.record_error(&error);
+                            eprintln!("PortMate: remote SSH tunnel client failed: {error}");
+                        }
                     }
                     target.metrics.connection_closed();
                 });
@@ -6198,6 +6208,7 @@ async fn create_tunnel_inner(
     let session_id = request.session_id.clone();
     let store = Arc::clone(&state.store);
     let store_path = state.store_path.clone();
+    let tunnel_registry = Arc::clone(&state.tunnels);
     let tunnel_for_task = tunnel.clone();
     tauri::async_runtime::spawn(async move {
         loop {
@@ -6227,17 +6238,20 @@ async fn create_tunnel_inner(
                             )
                             .await
                         };
-                        if let Err(error) = result {
-                            metrics.record_error(&error);
-                            if let Ok(mut store) = store.lock() {
-                                store.record_system_event(
-                                    &session_id,
-                                    format!("PortMate: SSH tunnel client failed: {error}"),
-                                );
-                                if let Err(error) = save_store(&store_path, &store) {
-                                    eprintln!(
-                                        "PortMate: failed to persist tunnel client error: {error}"
+                        match result {
+                            Ok(()) => metrics.clear_error(),
+                            Err(error) => {
+                                metrics.record_error(&error);
+                                if let Ok(mut store) = store.lock() {
+                                    store.record_system_event(
+                                        &session_id,
+                                        format!("PortMate: SSH tunnel client failed: {error}"),
                                     );
+                                    if let Err(error) = save_store(&store_path, &store) {
+                                        eprintln!(
+                                            "PortMate: failed to persist tunnel client error: {error}"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -6245,11 +6259,18 @@ async fn create_tunnel_inner(
                     });
                 }
                 Ok(Err(error)) => {
+                    let message = format!("SSH tunnel accept failed: {error}");
+                    if let Err(registry_error) =
+                        fail_tunnel_runtime(&tunnel_registry, &tunnel_for_task.id, &message)
+                    {
+                        closed.store(true, Ordering::SeqCst);
+                        metrics.record_error(&format!("{message}; {registry_error}"));
+                    }
                     if let Ok(mut store) = store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!("PortMate: SSH tunnel accept failed: {error}"),
-                        );
+                        let mut stopped = tunnel_for_task.clone();
+                        stopped.enabled = false;
+                        mark_tunnel_stopped_in_store(&mut store, &session_id, &stopped);
+                        store.record_system_event(&session_id, format!("PortMate: {message}"));
                         let _ = save_store(&store_path, &store);
                     }
                     break;
@@ -6317,6 +6338,22 @@ fn list_tunnels_inner(
             .then_with(|| left.spec.id.cmp(&right.spec.id))
     });
     Ok(statuses)
+}
+
+fn fail_tunnel_runtime(
+    tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    tunnel_id: &str,
+    error: &str,
+) -> Result<Option<TunnelRuntime>, String> {
+    let runtime = tunnels
+        .lock()
+        .map_err(|lock_error| lock_error.to_string())?
+        .remove(tunnel_id);
+    if let Some(runtime) = &runtime {
+        runtime.metrics.record_error(error);
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    Ok(runtime)
 }
 
 async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelStatus, String> {
@@ -6544,14 +6581,18 @@ async fn handle_remote_tunnel_client(
     originator_port: u16,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
-    let local_stream = TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port))
-        .await
-        .map_err(|error| {
-            format!(
-                "remote tunnel target connect failed {}:{} for {}:{}: {error}",
-                tunnel.target_host, tunnel.target_port, originator_address, originator_port
-            )
-        })?;
+    let local_stream =
+        match TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port)).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = channel.eof().await;
+                let _ = channel.close().await;
+                return Err(format!(
+                    "remote tunnel target connect failed {}:{} for {}:{}: {error}",
+                    tunnel.target_host, tunnel.target_port, originator_address, originator_port
+                ));
+            }
+        };
     pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
 }
 
@@ -11609,6 +11650,21 @@ mod tests {
         (port, task)
     }
 
+    fn assert_tunnel_client_closed(result: std::io::Result<usize>, label: &str) {
+        match result {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) => {}
+            Ok(bytes) => panic!("{label} remained open and returned {bytes} bytes"),
+            Err(error) => panic!("{label} closed with unexpected error: {error}"),
+        }
+    }
+
     #[test]
     fn telnet_negotiator_filters_iac_and_replies() {
         let mut negotiator = TelnetNegotiator::new();
@@ -12714,11 +12770,36 @@ mod tests {
             Some("direct-tcpip open failed")
         );
 
+        metrics.clear_error();
+        let recovered = metrics.snapshot(spec.clone());
+        assert!(recovered.last_error.is_none());
+
         metrics.connection_closed();
         metrics.connection_closed();
-        let closed = metrics.snapshot(spec);
+        let closed = metrics.snapshot(spec.clone());
         assert_eq!(closed.active_connections, 0);
         assert_eq!(closed.total_connections, 1);
+
+        let failed_metrics = Arc::new(TunnelMetrics::default());
+        let failed_closed = Arc::new(AtomicBool::new(false));
+        let tunnels = Arc::new(Mutex::new(HashMap::from([(
+            spec.id.clone(),
+            TunnelRuntime {
+                session_id: "ssh-session-1".to_string(),
+                spec: spec.clone(),
+                metrics: Arc::clone(&failed_metrics),
+                closed: Arc::clone(&failed_closed),
+            },
+        )])));
+        let failed = fail_tunnel_runtime(&tunnels, &spec.id, "listener failed")
+            .unwrap()
+            .unwrap();
+        assert!(tunnels.lock().unwrap().is_empty());
+        assert!(failed_closed.load(Ordering::SeqCst));
+        assert_eq!(
+            failed.metrics.snapshot(spec).last_error.as_deref(),
+            Some("listener failed")
+        );
     }
 
     #[test]
@@ -13613,13 +13694,7 @@ mod tests {
 
             let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let echo_address = echo_listener.local_addr().unwrap();
-            let echo = tokio::spawn(async move {
-                let (mut socket, _) = echo_listener.accept().await.unwrap();
-                let mut request = [0_u8; 4];
-                socket.read_exact(&mut request).await.unwrap();
-                assert_eq!(&request, b"ping");
-                socket.write_all(b"pong").await.unwrap();
-            });
+            drop(echo_listener);
             let tunnel = create_tunnel_inner(
                 &state,
                 CreateTunnelRequest {
@@ -13636,6 +13711,44 @@ mod tests {
             .unwrap();
             assert_ne!(tunnel.bind_port, 0);
 
+            let mut failed_client = TcpStream::connect(("127.0.0.1", tunnel.bind_port))
+                .await
+                .unwrap();
+            failed_client.write_all(b"ping").await.unwrap();
+            let mut closed_byte = [0_u8; 1];
+            let read =
+                tokio::time::timeout(Duration::from_secs(2), failed_client.read(&mut closed_byte))
+                    .await
+                    .expect("failed local tunnel client did not close");
+            assert_tunnel_client_closed(read, "failed local tunnel client");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert!(status
+                            .last_error
+                            .as_deref()
+                            .is_some_and(|error| error.contains("direct-tcpip open failed")));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("local tunnel failure metrics did not settle");
+
+            let echo_listener = TcpListener::bind(echo_address).await.unwrap();
+            let echo = tokio::spawn(async move {
+                let (mut socket, _) = echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
             let mut tunnel_client = TcpStream::connect(("127.0.0.1", tunnel.bind_port))
                 .await
                 .unwrap();
@@ -13653,9 +13766,10 @@ mod tests {
                         .into_iter()
                         .find(|status| status.spec.id == tunnel.id)
                         .unwrap();
-                    if status.active_connections == 0 && status.total_connections == 1 {
+                    if status.active_connections == 0 && status.total_connections == 2 {
                         assert_eq!(status.tcp_to_ssh_bytes, 4);
                         assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        assert!(status.last_error.is_none());
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -13668,13 +13782,7 @@ mod tests {
 
             let dynamic_echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let dynamic_echo_address = dynamic_echo_listener.local_addr().unwrap();
-            let dynamic_echo = tokio::spawn(async move {
-                let (mut socket, _) = dynamic_echo_listener.accept().await.unwrap();
-                let mut request = [0_u8; 4];
-                socket.read_exact(&mut request).await.unwrap();
-                assert_eq!(&request, b"ping");
-                socket.write_all(b"pong").await.unwrap();
-            });
+            drop(dynamic_echo_listener);
             let dynamic_tunnel = create_tunnel_inner(
                 &state,
                 CreateTunnelRequest {
@@ -13691,6 +13799,55 @@ mod tests {
             .unwrap();
             assert_ne!(dynamic_tunnel.bind_port, 0);
 
+            let [port_high, port_low] = dynamic_echo_address.port().to_be_bytes();
+            let mut failed_socks_client =
+                TcpStream::connect(("127.0.0.1", dynamic_tunnel.bind_port))
+                    .await
+                    .unwrap();
+            failed_socks_client.write_all(&[5, 1, 0]).await.unwrap();
+            let mut failed_method = [0_u8; 2];
+            failed_socks_client
+                .read_exact(&mut failed_method)
+                .await
+                .unwrap();
+            assert_eq!(failed_method, [5, 0]);
+            failed_socks_client
+                .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, port_high, port_low])
+                .await
+                .unwrap();
+            let mut failed_socks_reply = [0_u8; 10];
+            failed_socks_client
+                .read_exact(&mut failed_socks_reply)
+                .await
+                .unwrap();
+            assert_eq!(failed_socks_reply, super::socks5_reply(5));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == dynamic_tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert!(status.last_error.as_deref().is_some_and(
+                            |error| error.contains("dynamic direct-tcpip open failed")
+                        ));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("dynamic tunnel failure metrics did not settle");
+
+            let dynamic_echo_listener = TcpListener::bind(dynamic_echo_address).await.unwrap();
+            let dynamic_echo = tokio::spawn(async move {
+                let (mut socket, _) = dynamic_echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
             let mut socks_client = TcpStream::connect(("127.0.0.1", dynamic_tunnel.bind_port))
                 .await
                 .unwrap();
@@ -13698,7 +13855,6 @@ mod tests {
             let mut method = [0_u8; 2];
             socks_client.read_exact(&mut method).await.unwrap();
             assert_eq!(method, [5, 0]);
-            let [port_high, port_low] = dynamic_echo_address.port().to_be_bytes();
             socks_client
                 .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, port_high, port_low])
                 .await
@@ -13720,9 +13876,10 @@ mod tests {
                         .into_iter()
                         .find(|status| status.spec.id == dynamic_tunnel.id)
                         .unwrap();
-                    if status.active_connections == 0 && status.total_connections == 1 {
+                    if status.active_connections == 0 && status.total_connections == 2 {
                         assert_eq!(status.tcp_to_ssh_bytes, 4);
                         assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        assert!(status.last_error.is_none());
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -13735,13 +13892,7 @@ mod tests {
 
             let remote_echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let remote_echo_address = remote_echo_listener.local_addr().unwrap();
-            let remote_echo = tokio::spawn(async move {
-                let (mut socket, _) = remote_echo_listener.accept().await.unwrap();
-                let mut request = [0_u8; 4];
-                socket.read_exact(&mut request).await.unwrap();
-                assert_eq!(&request, b"ping");
-                socket.write_all(b"pong").await.unwrap();
-            });
+            drop(remote_echo_listener);
             let remote_tunnel = create_tunnel_inner(
                 &state,
                 CreateTunnelRequest {
@@ -13761,6 +13912,47 @@ mod tests {
                 .label
                 .contains(&remote_tunnel.bind_port.to_string()));
 
+            let mut failed_remote_client =
+                TcpStream::connect(("127.0.0.1", remote_tunnel.bind_port))
+                    .await
+                    .unwrap();
+            failed_remote_client.write_all(b"ping").await.unwrap();
+            let mut closed_byte = [0_u8; 1];
+            let read = tokio::time::timeout(
+                Duration::from_secs(2),
+                failed_remote_client.read(&mut closed_byte),
+            )
+            .await
+            .expect("failed remote tunnel client did not close");
+            assert_tunnel_client_closed(read, "failed remote tunnel client");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let status = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == remote_tunnel.id)
+                        .unwrap();
+                    if status.active_connections == 0 && status.total_connections == 1 {
+                        assert!(status
+                            .last_error
+                            .as_deref()
+                            .is_some_and(|error| error.contains("target connect failed")));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("remote tunnel failure metrics did not settle");
+
+            let remote_echo_listener = TcpListener::bind(remote_echo_address).await.unwrap();
+            let remote_echo = tokio::spawn(async move {
+                let (mut socket, _) = remote_echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
             let mut remote_client = TcpStream::connect(("127.0.0.1", remote_tunnel.bind_port))
                 .await
                 .unwrap();
@@ -13781,9 +13973,10 @@ mod tests {
                         .into_iter()
                         .find(|status| status.spec.id == remote_tunnel.id)
                         .unwrap();
-                    if status.active_connections == 0 && status.total_connections == 1 {
+                    if status.active_connections == 0 && status.total_connections == 2 {
                         assert_eq!(status.tcp_to_ssh_bytes, 4);
                         assert_eq!(status.ssh_to_tcp_bytes, 4);
+                        assert!(status.last_error.is_none());
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
