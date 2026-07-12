@@ -6883,7 +6883,8 @@ async fn establish_ssh_runtime(
         password,
         passphrase,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("SSH 目标认证失败 {host}:{}: {error}", ssh.endpoint.port))?;
 
     persist_observed_host_key(
         &state.store,
@@ -7075,16 +7076,17 @@ async fn connect_ssh_target(
                     ));
                 }
                 Ok(Err(error)) => {
-                    let message = jump_key_error
+                    let reason = jump_key_error
                         .lock()
                         .ok()
                         .and_then(|reason| reason.clone())
-                        .unwrap_or_else(|| {
-                            format!("Jump Host 第 {} 跳 SSH 握手失败: {error}", index + 1)
-                        });
+                        .unwrap_or_else(|| error.to_string());
                     disconnect_jump_sessions(jump_sessions, "PortMate jump chain handshake failed")
                         .await;
-                    return Err(message);
+                    return Err(format!(
+                        "Jump Host 第 {} 跳 SSH 握手失败 {jump_host}:{jump_port}: {reason}",
+                        index + 1
+                    ));
                 }
             }
         } else {
@@ -7093,13 +7095,22 @@ async fn connect_ssh_target(
                 client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
             )
             .await
-            .map_err(|_| format!("Jump Host 连接超时: {jump_host}:{jump_port}"))?
+            .map_err(|_| {
+                format!(
+                    "Jump Host 第 {} 跳连接超时: {jump_host}:{jump_port}",
+                    index + 1
+                )
+            })?
             .map_err(|error| {
-                jump_key_error
+                let reason = jump_key_error
                     .lock()
                     .ok()
                     .and_then(|reason| reason.clone())
-                    .unwrap_or_else(|| format!("Jump Host SSH 握手失败: {error}"))
+                    .unwrap_or_else(|| error.to_string());
+                format!(
+                    "Jump Host 第 {} 跳 SSH 握手失败 {jump_host}:{jump_port}: {reason}",
+                    index + 1
+                )
             })?
         };
 
@@ -7120,7 +7131,10 @@ async fn connect_ssh_target(
                     "en",
                 )
                 .await;
-            return Err(format!("Jump Host 第 {} 跳认证失败: {error}", index + 1));
+            return Err(format!(
+                "Jump Host 第 {} 跳认证失败 {jump_host}:{jump_port}: {error}",
+                index + 1
+            ));
         }
         if let Err(error) = persist_observed_host_key_with_policy(
             &store,
@@ -7139,7 +7153,10 @@ async fn connect_ssh_target(
                     "en",
                 )
                 .await;
-            return Err(error);
+            return Err(format!(
+                "Jump Host 第 {} 跳 host key 处理失败 {jump_host}:{jump_port}: {error}",
+                index + 1
+            ));
         }
         jump_sessions.push(jump_session);
     }
@@ -13590,18 +13607,38 @@ mod tests {
         let jump_two_host_key = root.join("jump_two_host_ed25519_key");
         let replacement_jump_two_host_key = root.join("jump_two_host_ed25519_key_replacement");
         let target_host_key = root.join("target_host_ed25519_key");
-        let client_key = root.join("id_ed25519");
+        let jump_one_client_key = root.join("jump_one_id_ed25519");
+        let jump_two_client_key = root.join("jump_two_id_ed25519");
+        let target_client_key = root.join("target_id_ed25519");
         for key_path in [
             &jump_one_host_key,
             &jump_two_host_key,
             &replacement_jump_two_host_key,
             &target_host_key,
-            &client_key,
+            &jump_one_client_key,
+            &jump_two_client_key,
+            &target_client_key,
         ] {
             generate_ed25519_test_key(key_path);
         }
-        let authorized_keys = root.join("authorized_keys");
-        fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
+        let jump_one_authorized_keys = root.join("jump_one_authorized_keys");
+        let jump_two_authorized_keys = root.join("jump_two_authorized_keys");
+        let target_authorized_keys = root.join("target_authorized_keys");
+        fs::copy(
+            jump_one_client_key.with_extension("pub"),
+            &jump_one_authorized_keys,
+        )
+        .unwrap();
+        fs::copy(
+            jump_two_client_key.with_extension("pub"),
+            &jump_two_authorized_keys,
+        )
+        .unwrap();
+        fs::copy(
+            target_client_key.with_extension("pub"),
+            &target_authorized_keys,
+        )
+        .unwrap();
 
         let jump_one_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let jump_two_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -13620,21 +13657,21 @@ mod tests {
             &jump_one_config,
             &jump_one_host_key,
             &root.join("jump_one_sshd.pid"),
-            &authorized_keys,
+            &jump_one_authorized_keys,
             jump_one_port,
         );
         write_openssh_test_config(
             &jump_two_config,
             &jump_two_host_key,
             &root.join("jump_two_sshd.pid"),
-            &authorized_keys,
+            &jump_two_authorized_keys,
             jump_two_port,
         );
         write_openssh_test_config(
             &target_config,
             &target_host_key,
             &root.join("target_sshd.pid"),
-            &authorized_keys,
+            &target_authorized_keys,
             target_port,
         );
         let mut jump_one_sshd = spawn_openssh_test_server(sshd_path, &jump_one_config);
@@ -13662,7 +13699,7 @@ mod tests {
                         label: "target client key".to_string(),
                         source: IdentitySource::SystemFile,
                         fingerprint_sha256: None,
-                        path: Some(client_key.display().to_string()),
+                        path: Some(target_client_key.display().to_string()),
                         secret_ref: None,
                     },
                     IdentityRef {
@@ -13670,7 +13707,7 @@ mod tests {
                         label: "jump one client key".to_string(),
                         source: IdentitySource::SystemFile,
                         fingerprint_sha256: None,
-                        path: Some(client_key.display().to_string()),
+                        path: Some(jump_one_client_key.display().to_string()),
                         secret_ref: None,
                     },
                     IdentityRef {
@@ -13678,7 +13715,7 @@ mod tests {
                         label: "jump two client key".to_string(),
                         source: IdentitySource::SystemFile,
                         fingerprint_sha256: None,
-                        path: Some(client_key.display().to_string()),
+                        path: Some(jump_two_client_key.display().to_string()),
                         secret_ref: None,
                     },
                 ];
@@ -13713,6 +13750,79 @@ mod tests {
             }
 
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+            let refused_first_port = {
+                let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                reservation.local_addr().unwrap().port()
+            };
+            let mut refused_first = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut refused_first.connection {
+                ssh.jumps[0].port = refused_first_port;
+            }
+            let error = open_ssh_session(&state, refused_first, None, None)
+                .await
+                .unwrap_err();
+            assert!(error.contains("Jump Host 第 1 跳"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{refused_first_port}")),
+                "{error}"
+            );
+            assert!(state.store.lock().unwrap().host_keys.keys.is_empty());
+
+            let refused_second_port = {
+                let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                reservation.local_addr().unwrap().port()
+            };
+            let mut refused_second = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut refused_second.connection {
+                ssh.jumps[1].port = refused_second_port;
+            }
+            let error = open_ssh_session(&state, refused_second, None, None)
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("Jump Host 第 2 跳打开 direct-tcpip"),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("127.0.0.1:{refused_second_port}")),
+                "{error}"
+            );
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
+
+            let mut rejected_second_identity = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut rejected_second_identity.connection {
+                ssh.jumps[1].identity_ref = Some("target-client-key".to_string());
+            }
+            let error = open_ssh_session(&state, rejected_second_identity, None, None)
+                .await
+                .unwrap_err();
+            assert!(error.contains("Jump Host 第 2 跳认证失败"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{jump_two_port}")),
+                "{error}"
+            );
+            assert!(error.contains("target client key"), "{error}");
+            assert!(error.contains("被服务器拒绝"), "{error}");
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
+
+            let mut rejected_target_identities = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut rejected_target_identities.connection {
+                ssh.identity_refs
+                    .retain(|identity| identity.id != "target-client-key");
+            }
+            let error = open_ssh_session(&state, rejected_target_identities, None, None)
+                .await
+                .unwrap_err();
+            assert!(error.contains("SSH 目标认证失败"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{target_port}")),
+                "{error}"
+            );
+            assert!(error.contains("jump one client key"), "{error}");
+            assert!(error.contains("jump two client key"), "{error}");
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 2);
+
             let summary = open_ssh_session(&state, profile.clone(), None, None)
                 .await
                 .unwrap();
@@ -13773,7 +13883,7 @@ mod tests {
                 &jump_two_config,
                 &replacement_jump_two_host_key,
                 &root.join("jump_two_sshd.pid"),
-                &authorized_keys,
+                &jump_two_authorized_keys,
                 jump_two_port,
             );
             jump_two_sshd = spawn_openssh_test_server(sshd_path, &jump_two_config);
