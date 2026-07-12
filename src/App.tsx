@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   AlertCircle,
+  Archive,
   ArrowUp,
   Ban,
   ChevronDown,
@@ -39,7 +40,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
-import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -2904,6 +2905,8 @@ function LogManagerDialog({
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchResult, setSearchResult] = useState<SearchLogShardsResult | null>(null);
   const [activeSearchMatch, setActiveSearchMatch] = useState<LogShardSearchMatch | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveResult, setArchiveResult] = useState<ArchiveLogShardsResult | null>(null);
 
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
@@ -2994,6 +2997,24 @@ function LogManagerDialog({
     }
   }
 
+  async function archiveSelected() {
+    if (!selected.length) return;
+    setArchiveBusy(true);
+    setArchiveResult(null);
+    setError("");
+    try {
+      const result = await invokeBackend<ArchiveLogShardsResult>("archive_log_shards", {
+        request: { paths: selected },
+      });
+      setArchiveResult(result);
+      onNotice(`已归档 ${result.shards} 个日志分片：${result.path}`);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
   async function searchShardContent() {
     if (!contentQuery.trim()) return;
     setSearchBusy(true);
@@ -3035,8 +3056,11 @@ function LogManagerDialog({
               <option value="txt">Text</option>
               <option value="jsonl">JSONL</option>
             </select>
-            <button type="button" title="刷新日志分片" aria-label="刷新日志分片" onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
-            <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={busy || !selected.length}><Trash2 size={15} /></button>
+            <div className="log-manager-toolbar-actions">
+              <button type="button" title="刷新日志分片" aria-label="刷新日志分片" onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
+              <button type="button" title="归档选中分片" aria-label="归档选中分片" onClick={() => void archiveSelected()} disabled={archiveBusy || !selected.length}><Archive size={15} /></button>
+              <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={busy || !selected.length}><Trash2 size={15} /></button>
+            </div>
           </div>
           <div className="log-manager-selection">
             <span>{searchResult ? `${searchResult.matches.length} 条命中 · ${searchResult.filesScanned} 文件 · ${formatBytes(searchResult.bytesScanned)}${searchResult.truncated ? " · 已截断" : ""}` : `${filtered.length} 项 · 已选 ${selected.length}`}</span>
@@ -3055,6 +3079,13 @@ function LogManagerDialog({
             <button type="button" onClick={clearContentSearch} disabled={!searchResult}>返回分片</button>
           </div>
           <div className="log-bundle-panel">
+            {archiveResult ? (
+              <div className="log-bundle-result log-archive-result">
+                <code title={archiveResult.path}>{archiveResult.path}</code>
+                <span>{archiveResult.shards} 分片 · 源 {formatBytes(archiveResult.sourceBytes)} · 包 {formatBytes(archiveResult.size)} · SHA-256 {archiveResult.sha256.slice(0, 16)}...</span>
+                <button type="button" title="复制归档信息" aria-label="复制归档信息" onClick={() => void navigator.clipboard?.writeText(`${archiveResult.path}\n${archiveResult.checksumPath}\nSHA-256 ${archiveResult.sha256}`).catch(() => {})}><Copy size={14} /></button>
+              </div>
+            ) : null}
             <div className="log-bundle-controls">
               <select value={bundleSessionId} onChange={(event) => setBundleSessionId(event.target.value)} aria-label="导出会话">
                 {sessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}

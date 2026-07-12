@@ -2027,7 +2027,7 @@ fieldset label {
 
 .log-manager-toolbar {
   display: grid;
-  grid-template-columns: minmax(150px, auto) minmax(180px, 1fr) 120px 30px 30px;
+  grid-template-columns: minmax(150px, auto) minmax(180px, 1fr) 120px auto;
   align-items: center;
   gap: 8px;
 }
@@ -2059,6 +2059,11 @@ fieldset label {
   color: var(--text);
   cursor: pointer;
   place-items: center;
+}
+
+.log-manager-toolbar-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .log-manager-toolbar button.danger {
@@ -2371,7 +2376,7 @@ fieldset label {
   }
 
   .log-manager-toolbar {
-    grid-template-columns: minmax(0, 1fr) 112px 30px 30px;
+    grid-template-columns: minmax(0, 1fr) 112px auto;
   }
 
   .log-manager-toolbar > strong {
@@ -2426,7 +2431,7 @@ fieldset label {
   }
 
   .log-manager-toolbar {
-    grid-template-columns: minmax(0, 1fr) 30px 30px;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .log-manager-toolbar input {

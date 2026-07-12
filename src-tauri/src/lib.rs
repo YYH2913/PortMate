@@ -129,6 +129,8 @@ const MAX_LOG_SHARD_SEARCH_LIMIT: u64 = 500;
 const MAX_LOG_SHARD_SEARCH_PATHS: usize = 1_000;
 const MAX_LOG_SHARD_SEARCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_LOG_SHARD_SEARCH_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_LOG_ARCHIVE_PATHS: usize = 1_000;
+const MAX_LOG_ARCHIVE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
@@ -767,6 +769,23 @@ pub struct SearchLogShardsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ArchiveLogShardsRequest {
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveLogShardsResult {
+    pub path: String,
+    pub checksum_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub shards: usize,
+    pub source_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportSessionBundleArchiveRequest {
     pub session_id: String,
     #[serde(default = "default_true")]
@@ -1149,6 +1168,14 @@ fn search_log_shards(
     request: SearchLogShardsRequest,
 ) -> Result<SearchLogShardsResult, String> {
     search_log_shards_inner(&state.store_path, request)
+}
+
+#[tauri::command]
+fn archive_log_shards(
+    state: State<'_, AppState>,
+    request: ArchiveLogShardsRequest,
+) -> Result<ArchiveLogShardsResult, String> {
+    archive_log_shards_inner(&state.store_path, request)
 }
 
 #[tauri::command]
@@ -13001,6 +13028,78 @@ fn search_log_shards_inner(
     })
 }
 
+fn archive_log_shards_inner(
+    store_path: &Path,
+    request: ArchiveLogShardsRequest,
+) -> Result<ArchiveLogShardsResult, String> {
+    if request.paths.is_empty() {
+        return Err("select at least one log shard to archive".to_string());
+    }
+    if request.paths.len() > MAX_LOG_ARCHIVE_PATHS {
+        return Err(format!(
+            "log archive path limit exceeded ({MAX_LOG_ARCHIVE_PATHS})"
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut validated = Vec::new();
+    let mut source_bytes = 0_u64;
+    for relative in &request.paths {
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        let path = resolve_log_shard_path(store_path, relative)?;
+        let size = fs::metadata(&path)
+            .map_err(|error| format!("failed to read log metadata {relative}: {error}"))?
+            .len();
+        source_bytes = source_bytes
+            .checked_add(size)
+            .ok_or_else(|| "log archive size overflow".to_string())?;
+        if source_bytes > MAX_LOG_ARCHIVE_TOTAL_BYTES {
+            return Err(format!(
+                "log archive source size limit exceeded ({MAX_LOG_ARCHIVE_TOTAL_BYTES} bytes)"
+            ));
+        }
+        validated.push((relative.clone(), path, size));
+    }
+
+    let created_at = Utc::now();
+    let export_dir = store_path
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .unwrap_or_else(|| PathBuf::from("exports"));
+    fs::create_dir_all(&export_dir).map_err(|error| {
+        format!(
+            "failed to create log archive directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "portmate-logs-{timestamp}-{}.tar.gz",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let temp_path = final_path.with_extension("tar.gz.part");
+    if let Err(error) = write_log_shard_archive(
+        &temp_path,
+        &validated,
+        created_at.timestamp().max(0) as u64,
+        &created_at.to_rfc3339(),
+    ) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    let finalized = finalize_archive_with_checksum(&temp_path, &final_path, "log archive")?;
+    Ok(ArchiveLogShardsResult {
+        path: final_path.display().to_string(),
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
+        shards: validated.len(),
+        source_bytes,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BundleFileManifest {
@@ -13178,56 +13277,13 @@ fn export_session_bundle_archive_inner(
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
-    fs::rename(&temp_path, &final_path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        format!(
-            "failed to finalize session bundle {}: {error}",
-            final_path.display()
-        )
-    })?;
-
-    let sha256 = match sha256_file(&final_path) {
-        Ok(sha256) => sha256,
-        Err(error) => {
-            let _ = fs::remove_file(&final_path);
-            return Err(error);
-        }
-    };
-    let size = match fs::metadata(&final_path) {
-        Ok(metadata) => metadata.len(),
-        Err(error) => {
-            let _ = fs::remove_file(&final_path);
-            return Err(format!("failed to read bundle metadata: {error}"));
-        }
-    };
-    let checksum_path = final_path.with_extension("tar.gz.sha256");
-    let checksum_temp_path = final_path.with_extension("tar.gz.sha256.part");
-    let archive_name = final_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("portmate-session-bundle.tar.gz");
-    if let Err(error) = fs::write(&checksum_temp_path, format!("{sha256}  {archive_name}\n")) {
-        let _ = fs::remove_file(&final_path);
-        let _ = fs::remove_file(&checksum_temp_path);
-        return Err(format!(
-            "failed to write bundle checksum {}: {error}",
-            checksum_path.display()
-        ));
-    }
-    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
-        let _ = fs::remove_file(&final_path);
-        let _ = fs::remove_file(&checksum_temp_path);
-        return Err(format!(
-            "failed to finalize bundle checksum {}: {error}",
-            checksum_path.display()
-        ));
-    }
+    let finalized = finalize_archive_with_checksum(&temp_path, &final_path, "session bundle")?;
 
     Ok(ExportSessionBundleArchiveResult {
         path: final_path.display().to_string(),
-        checksum_path: checksum_path.display().to_string(),
-        sha256,
-        size,
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
         files: entries.len(),
         raw_log_segments,
         redacted,
@@ -13316,6 +13372,163 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+struct FinalizedArchive {
+    checksum_path: PathBuf,
+    sha256: String,
+    size: u64,
+}
+
+fn finalize_archive_with_checksum(
+    temp_path: &Path,
+    final_path: &Path,
+    label: &str,
+) -> Result<FinalizedArchive, String> {
+    fs::rename(temp_path, final_path).map_err(|error| {
+        let _ = fs::remove_file(temp_path);
+        format!(
+            "failed to finalize {label} {}: {error}",
+            final_path.display()
+        )
+    })?;
+    let sha256 = match sha256_file(final_path) {
+        Ok(sha256) => sha256,
+        Err(error) => {
+            let _ = fs::remove_file(final_path);
+            return Err(error);
+        }
+    };
+    let size = match fs::metadata(final_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            let _ = fs::remove_file(final_path);
+            return Err(format!("failed to read {label} metadata: {error}"));
+        }
+    };
+    let checksum_path = final_path.with_extension("tar.gz.sha256");
+    let checksum_temp_path = final_path.with_extension("tar.gz.sha256.part");
+    let archive_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("portmate-archive.tar.gz");
+    if let Err(error) = fs::write(&checksum_temp_path, format!("{sha256}  {archive_name}\n")) {
+        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!(
+            "failed to write {label} checksum {}: {error}",
+            checksum_path.display()
+        ));
+    }
+    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!(
+            "failed to finalize {label} checksum {}: {error}",
+            checksum_path.display()
+        ));
+    }
+    Ok(FinalizedArchive {
+        checksum_path,
+        sha256,
+        size,
+    })
+}
+
+struct HashingReader<R> {
+    inner: R,
+    digest: Sha256,
+    bytes_read: u64,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+            bytes_read: 0,
+        }
+    }
+
+    fn finish(self) -> (String, u64) {
+        (format!("{:x}", self.digest.finalize()), self.bytes_read)
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.digest.update(&buffer[..read]);
+        self.bytes_read += read as u64;
+        Ok(read)
+    }
+}
+
+fn write_log_shard_archive(
+    path: &Path,
+    shards: &[(String, PathBuf, u64)],
+    modified_at: u64,
+    created_at: &str,
+) -> Result<(), String> {
+    let file = fs::File::create(path)
+        .map_err(|error| format!("failed to create log archive {}: {error}", path.display()))?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut archive = TarBuilder::new(encoder);
+    let mut manifest_files = Vec::new();
+    for (relative, source, size) in shards {
+        let file = fs::File::open(source)
+            .map_err(|error| format!("failed to open log shard {relative}: {error}"))?;
+        let mut reader = HashingReader::new(file.take(*size));
+        let archive_path = format!("logs/{relative}");
+        let mut header = TarHeader::new_gnu();
+        header.set_size(*size);
+        header.set_mode(0o600);
+        header.set_mtime(modified_at);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, &archive_path, &mut reader)
+            .map_err(|error| format!("failed to archive log shard {relative}: {error}"))?;
+        let (sha256, bytes_read) = reader.finish();
+        if bytes_read != *size {
+            return Err(format!(
+                "log shard changed while archiving {relative}: read {bytes_read} of {size} bytes"
+            ));
+        }
+        manifest_files.push(BundleFileManifest {
+            path: archive_path,
+            size: *size as usize,
+            sha256,
+        });
+    }
+    let manifest = serde_json::json!({
+        "format": "portmate-log-archive",
+        "version": 1,
+        "createdAt": created_at,
+        "files": manifest_files,
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("failed to serialize log archive manifest: {error}"))?;
+    let mut header = TarHeader::new_gnu();
+    header.set_size(manifest_bytes.len() as u64);
+    header.set_mode(0o600);
+    header.set_mtime(modified_at);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, "manifest.json", manifest_bytes.as_slice())
+        .map_err(|error| format!("failed to append log archive manifest: {error}"))?;
+    archive
+        .finish()
+        .map_err(|error| format!("failed to finish log archive tar stream: {error}"))?;
+    let encoder = archive
+        .into_inner()
+        .map_err(|error| format!("failed to close log archive tar stream: {error}"))?;
+    let mut file = encoder
+        .finish()
+        .map_err(|error| format!("failed to finish log archive compression: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("failed to flush log archive: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync log archive: {error}"))
 }
 
 fn write_bundle_archive(
@@ -14828,6 +15041,7 @@ pub fn run() {
             read_log_shard,
             delete_log_shards,
             search_log_shards,
+            archive_log_shards,
             export_session_bundle_archive,
             send_text,
             send_bytes,
@@ -16734,6 +16948,62 @@ mod tests {
                 query: "error".to_string(),
                 paths: vec!["../outside.txt".to_string()],
                 limit: None,
+            },
+        )
+        .is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_shard_archive_streams_verified_files_without_deleting_sources() {
+        let root = std::env::temp_dir().join(format!("portmate-log-archive-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let logs = log_root(&store_path);
+        fs::create_dir_all(logs.join("nested")).unwrap();
+        let text = b"first line\nsecond line\n";
+        let raw = [0_u8, 0xff, 0x7f, b'A'];
+        fs::write(logs.join("session.txt"), text).unwrap();
+        fs::write(logs.join("nested/session.raw"), raw).unwrap();
+
+        let archived = archive_log_shards_inner(
+            &store_path,
+            ArchiveLogShardsRequest {
+                paths: vec![
+                    "session.txt".to_string(),
+                    "nested/session.raw".to_string(),
+                    "session.txt".to_string(),
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(archived.shards, 2);
+        assert_eq!(archived.source_bytes, (text.len() + raw.len()) as u64);
+        assert_eq!(
+            sha256_file(Path::new(&archived.path)).unwrap(),
+            archived.sha256
+        );
+        assert!(fs::read_to_string(&archived.checksum_path)
+            .unwrap()
+            .contains(&archived.sha256));
+        assert!(logs.join("session.txt").exists());
+        assert!(logs.join("nested/session.raw").exists());
+
+        let entries = read_test_bundle_entries(Path::new(&archived.path));
+        assert_eq!(entries["logs/session.txt"], text);
+        assert_eq!(entries["logs/nested/session.raw"], raw);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        assert_eq!(manifest["format"], "portmate-log-archive");
+        for file in manifest["files"].as_array().unwrap() {
+            let path = file["path"].as_str().unwrap();
+            assert_eq!(file["sha256"].as_str().unwrap(), sha256_hex(&entries[path]));
+        }
+
+        assert!(archive_log_shards_inner(
+            &store_path,
+            ArchiveLogShardsRequest {
+                paths: vec!["../outside.raw".to_string()],
             },
         )
         .is_err());

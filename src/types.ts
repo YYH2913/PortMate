@@ -243,6 +243,15 @@ export interface SearchLogShardsResult {
   warnings: string[];
 }
 
+export interface ArchiveLogShardsResult {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  shards: number;
+  sourceBytes: number;
+}
+
 export interface TransferTask {
   id: string;
   sessionId: string;
