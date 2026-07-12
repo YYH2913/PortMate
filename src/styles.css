@@ -2020,7 +2020,7 @@ fieldset label {
 .log-manager-content {
   display: grid;
   min-height: 0;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
   gap: 10px;
   padding: 14px 18px 0;
 }
@@ -2092,6 +2092,44 @@ fieldset label {
   color: var(--text);
   cursor: pointer;
   padding: 0 9px;
+}
+
+.log-content-search {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-content-search svg {
+  color: var(--muted);
+}
+
+.log-content-search input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  padding: 0 8px;
+}
+
+.log-content-search button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.log-content-search button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .log-bundle-panel {
@@ -2236,6 +2274,40 @@ fieldset label {
   white-space: nowrap;
 }
 
+.log-search-result {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 4px;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.log-search-result.active {
+  background: rgba(94, 234, 212, 0.08);
+}
+
+.log-search-result strong,
+.log-search-result span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-search-result strong {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.log-search-result span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .log-shard-row strong {
   font-family: var(--mono);
   font-size: 12px;
@@ -2290,12 +2362,28 @@ fieldset label {
 }
 
 @media (max-width: 760px) {
+  .log-manager-dialog {
+    height: calc(100vh - 24px);
+  }
+
+  .log-manager-content {
+    overflow-y: auto;
+  }
+
   .log-manager-toolbar {
     grid-template-columns: minmax(0, 1fr) 112px 30px 30px;
   }
 
   .log-manager-toolbar > strong {
     grid-column: 1 / -1;
+  }
+
+  .log-content-search {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+  }
+
+  .log-content-search button:last-child {
+    grid-column: 2 / -1;
   }
 
   .log-manager-main {

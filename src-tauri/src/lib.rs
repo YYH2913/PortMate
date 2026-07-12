@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -124,6 +124,11 @@ const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
 const MAX_LOG_DELETE_BATCH: usize = 1_000;
 const DEFAULT_LOG_PREVIEW_BYTES: u64 = 64 * 1024;
 const MAX_LOG_PREVIEW_BYTES: u64 = 1024 * 1024;
+const DEFAULT_LOG_SHARD_SEARCH_LIMIT: u64 = 100;
+const MAX_LOG_SHARD_SEARCH_LIMIT: u64 = 500;
+const MAX_LOG_SHARD_SEARCH_PATHS: usize = 1_000;
+const MAX_LOG_SHARD_SEARCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_LOG_SHARD_SEARCH_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
@@ -733,6 +738,35 @@ pub struct DeleteLogShardsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SearchLogShardsRequest {
+    pub query: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogShardSearchMatch {
+    pub path: String,
+    pub format: String,
+    pub line: u64,
+    pub byte_offset: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchLogShardsResult {
+    pub matches: Vec<LogShardSearchMatch>,
+    pub files_scanned: usize,
+    pub bytes_scanned: u64,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportSessionBundleArchiveRequest {
     pub session_id: String,
     #[serde(default = "default_true")]
@@ -1107,6 +1141,14 @@ fn delete_log_shards(
     paths: Vec<String>,
 ) -> Result<DeleteLogShardsResult, String> {
     delete_log_shards_inner(&state.store_path, &paths)
+}
+
+#[tauri::command]
+fn search_log_shards(
+    state: State<'_, AppState>,
+    request: SearchLogShardsRequest,
+) -> Result<SearchLogShardsResult, String> {
+    search_log_shards_inner(&state.store_path, request)
 }
 
 #[tauri::command]
@@ -12841,6 +12883,124 @@ fn delete_log_shards_inner(
     })
 }
 
+fn search_log_shards_inner(
+    store_path: &Path,
+    request: SearchLogShardsRequest,
+) -> Result<SearchLogShardsResult, String> {
+    let query = request.query.trim();
+    if query.is_empty() {
+        return Err("log shard search query cannot be empty".to_string());
+    }
+    if query.chars().count() > 256 {
+        return Err("log shard search query exceeds 256 characters".to_string());
+    }
+    if request.paths.len() > MAX_LOG_SHARD_SEARCH_PATHS {
+        return Err(format!(
+            "log shard search path limit exceeded ({MAX_LOG_SHARD_SEARCH_PATHS})"
+        ));
+    }
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_LOG_SHARD_SEARCH_LIMIT)
+        .clamp(1, MAX_LOG_SHARD_SEARCH_LIMIT) as usize;
+    let normalized_query = query.to_lowercase();
+    let inventory = list_log_shards_inner(store_path)?;
+    let inventory_by_path = inventory
+        .iter()
+        .map(|shard| (shard.path.as_str(), shard))
+        .collect::<HashMap<_, _>>();
+    let mut warnings = Vec::new();
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    if request.paths.is_empty() {
+        selected.extend(
+            inventory
+                .iter()
+                .filter(|shard| matches!(shard.format.as_str(), "txt" | "jsonl")),
+        );
+    } else {
+        for path in &request.paths {
+            if !seen.insert(path.as_str()) {
+                continue;
+            }
+            let shard = inventory_by_path
+                .get(path.as_str())
+                .copied()
+                .ok_or_else(|| format!("log shard not found or unsupported: {path}"))?;
+            if !matches!(shard.format.as_str(), "txt" | "jsonl") {
+                warnings.push(format!("{path}: raw shards are not text-searched"));
+                continue;
+            }
+            selected.push(shard);
+        }
+    }
+
+    let mut matches = Vec::new();
+    let mut files_scanned = 0_usize;
+    let mut bytes_scanned = 0_u64;
+    let mut truncated = false;
+    'files: for shard in selected {
+        if shard.size > MAX_LOG_SHARD_SEARCH_FILE_BYTES {
+            warnings.push(format!(
+                "{}: file exceeds {} byte search limit",
+                shard.path, MAX_LOG_SHARD_SEARCH_FILE_BYTES
+            ));
+            truncated = true;
+            continue;
+        }
+        if shard.size > MAX_LOG_SHARD_SEARCH_TOTAL_BYTES.saturating_sub(bytes_scanned) {
+            warnings.push(format!(
+                "search stopped at {} byte total scan limit",
+                MAX_LOG_SHARD_SEARCH_TOTAL_BYTES
+            ));
+            truncated = true;
+            break;
+        }
+        let path = resolve_log_shard_path(store_path, &shard.path)?;
+        let file = fs::File::open(&path)
+            .map_err(|error| format!("failed to open log shard {}: {error}", shard.path))?;
+        let mut reader = BufReader::new(file);
+        files_scanned += 1;
+        let mut buffer = Vec::new();
+        let mut line = 0_u64;
+        let mut byte_offset = 0_u64;
+        loop {
+            buffer.clear();
+            let read = reader
+                .read_until(b'\n', &mut buffer)
+                .map_err(|error| format!("failed to search log shard {}: {error}", shard.path))?;
+            if read == 0 {
+                break;
+            }
+            line += 1;
+            bytes_scanned += read as u64;
+            let text = String::from_utf8_lossy(&buffer);
+            if text.to_lowercase().contains(&normalized_query) {
+                matches.push(LogShardSearchMatch {
+                    path: shard.path.clone(),
+                    format: shard.format.clone(),
+                    line,
+                    byte_offset,
+                    text: truncate_for_log(&text, 600),
+                });
+                if matches.len() >= limit {
+                    truncated = true;
+                    break 'files;
+                }
+            }
+            byte_offset += read as u64;
+        }
+    }
+
+    Ok(SearchLogShardsResult {
+        matches,
+        files_scanned,
+        bytes_scanned,
+        truncated,
+        warnings,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BundleFileManifest {
@@ -14667,6 +14827,7 @@ pub fn run() {
             list_log_shards,
             read_log_shard,
             delete_log_shards,
+            search_log_shards,
             export_session_bundle_archive,
             send_text,
             send_bytes,
@@ -16488,6 +16649,94 @@ mod tests {
         assert_eq!(deleted.bytes_deleted, 200);
         assert!(!text_path.exists());
         assert!(raw_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_shard_search_filters_text_formats_and_reports_limits() {
+        let root = std::env::temp_dir().join(format!("portmate-log-search-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let logs = log_root(&store_path);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(
+            logs.join("session.txt"),
+            b"normal line\nDevice ERROR at startup\nlast line\n",
+        )
+        .unwrap();
+        fs::write(
+            logs.join("session.jsonl"),
+            br#"{"text":"another error from jsonl"}
+{"text":"ok"}
+"#,
+        )
+        .unwrap();
+        fs::write(logs.join("session.raw"), b"binary ERROR bytes").unwrap();
+
+        let result = search_log_shards_inner(
+            &store_path,
+            SearchLogShardsRequest {
+                query: "error".to_string(),
+                paths: Vec::new(),
+                limit: Some(10),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.files_scanned, 2);
+        assert!(!result.truncated);
+        assert!(result
+            .matches
+            .iter()
+            .any(|item| item.path == "session.txt" && item.line == 2 && item.byte_offset == 12));
+        assert!(result
+            .matches
+            .iter()
+            .any(|item| item.path == "session.jsonl" && item.line == 1));
+
+        let limited = search_log_shards_inner(
+            &store_path,
+            SearchLogShardsRequest {
+                query: "error".to_string(),
+                paths: Vec::new(),
+                limit: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(limited.matches.len(), 1);
+        assert!(limited.truncated);
+
+        let raw_only = search_log_shards_inner(
+            &store_path,
+            SearchLogShardsRequest {
+                query: "error".to_string(),
+                paths: vec!["session.raw".to_string()],
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert!(raw_only.matches.is_empty());
+        assert_eq!(raw_only.files_scanned, 0);
+        assert!(raw_only.warnings[0].contains("not text-searched"));
+
+        assert!(search_log_shards_inner(
+            &store_path,
+            SearchLogShardsRequest {
+                query: "x".repeat(257),
+                paths: Vec::new(),
+                limit: None,
+            },
+        )
+        .is_err());
+        assert!(search_log_shards_inner(
+            &store_path,
+            SearchLogShardsRequest {
+                query: "error".to_string(),
+                paths: vec!["../outside.txt".to_string()],
+                limit: None,
+            },
+        )
+        .is_err());
 
         let _ = fs::remove_dir_all(root);
     }

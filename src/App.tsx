@@ -39,7 +39,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
-import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -2900,6 +2900,10 @@ function LogManagerDialog({
   const [bundleRawLogs, setBundleRawLogs] = useState(false);
   const [bundleBusy, setBundleBusy] = useState(false);
   const [bundleResult, setBundleResult] = useState<ExportSessionBundleArchiveResult | null>(null);
+  const [contentQuery, setContentQuery] = useState("");
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchResult, setSearchResult] = useState<SearchLogShardsResult | null>(null);
+  const [activeSearchMatch, setActiveSearchMatch] = useState<LogShardSearchMatch | null>(null);
 
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
@@ -2914,6 +2918,8 @@ function LogManagerDialog({
       const paths = new Set(next.map((shard) => shard.path));
       setSelected((current) => current.filter((path) => paths.has(path)));
       setPreview((current) => current && paths.has(current.path) ? current : null);
+      setSearchResult(null);
+      setActiveSearchMatch(null);
     } catch (error) {
       setError(formatError(error));
     } finally {
@@ -2929,6 +2935,7 @@ function LogManagerDialog({
     setBusy(true);
     setError("");
     try {
+      setActiveSearchMatch(null);
       setPreview(await invokeBackend<LogShardPreview>("read_log_shard", { path, maxBytes: 64 * 1024 }));
     } catch (error) {
       setError(formatError(error));
@@ -2948,6 +2955,8 @@ function LogManagerDialog({
       const result = await invokeBackend<DeleteLogShardsResult>("delete_log_shards", { paths: selected });
       setSelected([]);
       setPreview(null);
+      setSearchResult(null);
+      setActiveSearchMatch(null);
       onNotice(`已删除 ${result.deleted} 个分片，释放 ${formatBytes(result.bytesDeleted)}`);
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
       setShards(next);
@@ -2985,6 +2994,29 @@ function LogManagerDialog({
     }
   }
 
+  async function searchShardContent() {
+    if (!contentQuery.trim()) return;
+    setSearchBusy(true);
+    setError("");
+    try {
+      const result = await invokeBackend<SearchLogShardsResult>("search_log_shards", {
+        request: { query: contentQuery, paths: selected, limit: 200 },
+      });
+      setSearchResult(result);
+      setActiveSearchMatch(result.matches[0] ?? null);
+      setPreview(null);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setSearchBusy(false);
+    }
+  }
+
+  function clearContentSearch() {
+    setSearchResult(null);
+    setActiveSearchMatch(null);
+  }
+
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="wind-dialog log-manager-dialog">
@@ -3007,9 +3039,20 @@ function LogManagerDialog({
             <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={busy || !selected.length}><Trash2 size={15} /></button>
           </div>
           <div className="log-manager-selection">
-            <span>{filtered.length} 项 · 已选 {selected.length}</span>
-            <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>全选结果</button>
-            <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>清除</button>
+            <span>{searchResult ? `${searchResult.matches.length} 条命中 · ${searchResult.filesScanned} 文件 · ${formatBytes(searchResult.bytesScanned)}${searchResult.truncated ? " · 已截断" : ""}` : `${filtered.length} 项 · 已选 ${selected.length}`}</span>
+            {!searchResult ? <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>全选结果</button> : null}
+            {!searchResult ? <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>清除</button> : null}
+          </div>
+          <div className="log-content-search">
+            <Search size={14} />
+            <input value={contentQuery} onChange={(event) => setContentQuery(event.target.value)} onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void searchShardContent();
+              }
+            }} placeholder="搜索 Text / JSONL 内容" />
+            <button type="button" onClick={() => void searchShardContent()} disabled={searchBusy || !contentQuery.trim()}>{searchBusy ? "搜索中" : selected.length ? "搜索选中" : "搜索全部"}</button>
+            <button type="button" onClick={clearContentSearch} disabled={!searchResult}>返回分片</button>
           </div>
           <div className="log-bundle-panel">
             <div className="log-bundle-controls">
@@ -3033,7 +3076,15 @@ function LogManagerDialog({
           </div>
           <div className="log-manager-main">
             <div className="log-shard-list">
-              {filtered.map((shard) => (
+              {searchResult ? searchResult.matches.map((match) => (
+                <button key={`${match.path}-${match.byteOffset}`} className={`log-search-result ${activeSearchMatch?.path === match.path && activeSearchMatch.byteOffset === match.byteOffset ? "active" : ""}`} type="button" onClick={() => {
+                  setActiveSearchMatch(match);
+                  setPreview(null);
+                }}>
+                  <strong>{match.path}:{match.line}</strong>
+                  <span>{match.text}</span>
+                </button>
+              )) : filtered.map((shard) => (
                 <div key={shard.path} className={`log-shard-row ${preview?.path === shard.path ? "active" : ""}`}>
                   <input type="checkbox" checked={selectedPaths.has(shard.path)} onChange={() => toggleSelected(shard.path)} aria-label={`选择 ${shard.path}`} />
                   <button type="button" onClick={() => void openPreview(shard.path)} title={shard.path}>
@@ -3042,16 +3093,18 @@ function LogManagerDialog({
                   </button>
                 </div>
               ))}
-              {!filtered.length ? <div className="empty-pane top">没有日志分片</div> : null}
+              {searchResult && !searchResult.matches.length ? <div className="empty-pane top">没有内容命中</div> : null}
+              {!searchResult && !filtered.length ? <div className="empty-pane top">没有日志分片</div> : null}
             </div>
             <div className="log-preview">
               <header>
-                <strong>{preview?.path ?? "预览"}</strong>
-                {preview ? <span>{preview.encoding.toUpperCase()} · {formatBytes(preview.bytesRead)}{preview.truncated ? " · 尾部" : ""}</span> : null}
+                <strong>{activeSearchMatch ? `${activeSearchMatch.path}:${activeSearchMatch.line}` : preview?.path ?? "预览"}</strong>
+                {activeSearchMatch ? <span>{activeSearchMatch.format.toUpperCase()} · offset {activeSearchMatch.byteOffset}</span> : preview ? <span>{preview.encoding.toUpperCase()} · {formatBytes(preview.bytesRead)}{preview.truncated ? " · 尾部" : ""}</span> : null}
               </header>
-              <pre>{preview?.content ?? "选择日志分片查看内容"}</pre>
+              <pre>{activeSearchMatch?.text ?? preview?.content ?? "选择日志分片查看内容"}</pre>
             </div>
           </div>
+          {searchResult?.warnings.length ? <div className="utility-status">{searchResult.warnings.join(" · ")}</div> : null}
           {error ? <div className="utility-error">{error}</div> : null}
         </div>
         <footer className="utility-actions">

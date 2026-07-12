@@ -227,6 +227,22 @@ export interface ExportSessionBundleArchiveResult {
   warnings: string[];
 }
 
+export interface LogShardSearchMatch {
+  path: string;
+  format: "txt" | "jsonl";
+  line: number;
+  byteOffset: number;
+  text: string;
+}
+
+export interface SearchLogShardsResult {
+  matches: LogShardSearchMatch[];
+  filesScanned: number;
+  bytesScanned: number;
+  truncated: boolean;
+  warnings: string[];
+}
+
 export interface TransferTask {
   id: string;
   sessionId: string;
