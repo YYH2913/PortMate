@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import { mergeTransfers } from "./transfer-state";
+import { updateFileSelection } from "./file-selection";
 import type { AuditRecord, AuthMethod, ConnectionConfig, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
@@ -1460,7 +1461,7 @@ function TransferList({ transfers, onRetry, onCancel }: { transfers: TransferTas
 type FilePanelState = {
   path: string;
   entries: FileEntry[];
-  selected: FileEntry | null;
+  selected: FileEntry[];
   busy: boolean;
   error: string;
 };
@@ -1475,8 +1476,11 @@ type FilePropertiesDialogState = {
 
 type FileDragState = {
   remote: boolean;
-  entry: FileEntry;
+  entries: FileEntry[];
 } | null;
+
+type TransferConflictPolicy = "fail" | "overwrite" | "skip" | "rename";
+type FileSelectionModifiers = { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean };
 
 type ExternalDropState = {
   remote: boolean;
@@ -1496,12 +1500,14 @@ function FileManagerPanel({
   onTransfer: (task: TransferTask) => void;
   onNotice: (notice: NoticeState) => void;
 }) {
-  const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), entries: [], selected: null, busy: false, error: "" }));
-  const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", entries: [], selected: null, busy: false, error: "" }));
+  const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), entries: [], selected: [], busy: false, error: "" }));
+  const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", entries: [], selected: [], busy: false, error: "" }));
   const [propertiesDialog, setPropertiesDialog] = useState<FilePropertiesDialogState>(null);
   const [draggedFile, setDraggedFile] = useState<FileDragState>(null);
   const [dropTarget, setDropTarget] = useState<boolean | null>(null);
   const [externalDrop, setExternalDrop] = useState<ExternalDropState>(null);
+  const [conflictPolicy, setConflictPolicy] = useState<TransferConflictPolicy>("fail");
+  const selectionAnchors = useRef<{ local: string; remote: string }>({ local: "", remote: "" });
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
 
   useEffect(() => {
@@ -1512,7 +1518,7 @@ function FileManagerPanel({
     if (canRemote) {
       void loadFiles(true);
     } else {
-      setRemotePanel((current) => ({ ...current, entries: [], selected: null, error: "" }));
+      setRemotePanel((current) => ({ ...current, entries: [], selected: [], error: "" }));
     }
   }, [canRemote, active?.profile.id]);
 
@@ -1552,7 +1558,7 @@ function FileManagerPanel({
       disposed = true;
       unlisten?.();
     };
-  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path]);
+  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path, conflictPolicy]);
 
   useEffect(() => {
     if (!externalDrop || externalDrop.status !== "queued" || !externalDrop.taskIds.length) return;
@@ -1572,11 +1578,36 @@ function FileManagerPanel({
     setter((current) => ({ ...current, ...patch }));
   }
 
+  function selectFileEntry(remote: boolean, entry: FileEntry, event: FileSelectionModifiers) {
+    const setter = remote ? setRemotePanel : setLocalPanel;
+    const anchorKey = remote ? "remote" : "local";
+    setter((current) => {
+      const result = updateFileSelection(
+        current.entries,
+        current.selected,
+        entry,
+        selectionAnchors.current[anchorKey],
+        event,
+      );
+      selectionAnchors.current[anchorKey] = result.anchorPath;
+      return { ...current, selected: result.selected };
+    });
+  }
+
+  function selectAllFileEntries(remote: boolean) {
+    const setter = remote ? setRemotePanel : setLocalPanel;
+    setter((current) => ({
+      ...current,
+      selected: current.selected.length === current.entries.length ? [] : [...current.entries],
+    }));
+  }
+
   async function loadFiles(remote: boolean, nextPath = remote ? remotePanel.path : localPanel.path) {
     updatePanel(remote, { busy: true, error: "" });
     try {
       const nextEntries = await invokeBackend<FileEntry[]>("list_files", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
-      updatePanel(remote, { entries: nextEntries, path: nextPath, selected: null });
+      updatePanel(remote, { entries: nextEntries, path: nextPath, selected: [] });
+      selectionAnchors.current[remote ? "remote" : "local"] = "";
     } catch (error) {
       updatePanel(remote, { entries: [], error: formatError(error) });
     } finally {
@@ -1599,10 +1630,12 @@ function FileManagerPanel({
 
   async function deleteSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected) return;
-    if (!window.confirm(`删除 ${panel.selected.path}?`)) return;
+    if (!panel.selected.length) return;
+    if (!window.confirm(`删除选中的 ${panel.selected.length} 项?`)) return;
     try {
-      await invokeBackend("delete_path", { request: { sessionId: active?.profile.id ?? null, path: panel.selected.path, remote } });
+      for (const entry of panel.selected) {
+        await invokeBackend("delete_path", { request: { sessionId: active?.profile.id ?? null, path: entry.path, remote } });
+      }
       await loadFiles(remote, panel.path);
     } catch (error) {
       updatePanel(remote, { error: formatError(error) });
@@ -1611,12 +1644,13 @@ function FileManagerPanel({
 
   async function renameSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected) return;
-    const nextName = window.prompt("新名称", panel.selected.name);
+    const selected = panel.selected[0];
+    if (panel.selected.length !== 1 || !selected) return;
+    const nextName = window.prompt("新名称", selected.name);
     if (!nextName?.trim()) return;
-    const nextPath = joinFilePath(parentPath(panel.selected.path, remote), nextName.trim(), remote);
+    const nextPath = joinFilePath(parentPath(selected.path, remote), nextName.trim(), remote);
     try {
-      await invokeBackend("rename_path", { request: { sessionId: active?.profile.id ?? null, oldPath: panel.selected.path, newPath: nextPath, remote } });
+      await invokeBackend("rename_path", { request: { sessionId: active?.profile.id ?? null, oldPath: selected.path, newPath: nextPath, remote } });
       await loadFiles(remote, panel.path);
     } catch (error) {
       updatePanel(remote, { error: formatError(error) });
@@ -1625,13 +1659,14 @@ function FileManagerPanel({
 
   async function chmodSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected) return;
+    const selected = panel.selected[0];
+    if (panel.selected.length !== 1 || !selected) return;
     const modeText = window.prompt("八进制权限", "0644");
     if (!modeText?.trim()) return;
     const mode = Number.parseInt(modeText.replace(/^0o/i, ""), 8);
     if (!Number.isFinite(mode)) return;
     try {
-      await invokeBackend("chmod_path", { request: { sessionId: active?.profile.id ?? null, path: panel.selected.path, mode, remote } });
+      await invokeBackend("chmod_path", { request: { sessionId: active?.profile.id ?? null, path: selected.path, mode, remote } });
       await loadFiles(remote, panel.path);
     } catch (error) {
       updatePanel(remote, { error: formatError(error) });
@@ -1640,11 +1675,12 @@ function FileManagerPanel({
 
   async function showProperties(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected) return;
-    const nextState: NonNullable<FilePropertiesDialogState> = { remote, path: panel.selected.path, properties: null, busy: true, error: "" };
+    const selected = panel.selected[0];
+    if (panel.selected.length !== 1 || !selected) return;
+    const nextState: NonNullable<FilePropertiesDialogState> = { remote, path: selected.path, properties: null, busy: true, error: "" };
     setPropertiesDialog(nextState);
     try {
-      const properties = await invokeBackend<FileProperties>("file_properties", { request: { sessionId: active?.profile.id ?? null, path: panel.selected.path, remote } });
+      const properties = await invokeBackend<FileProperties>("file_properties", { request: { sessionId: active?.profile.id ?? null, path: selected.path, remote } });
       setPropertiesDialog({ ...nextState, properties, busy: false });
     } catch (error) {
       setPropertiesDialog({ ...nextState, busy: false, error: formatError(error) });
@@ -1654,28 +1690,81 @@ function FileManagerPanel({
   async function transferBetween(upload: boolean) {
     if (!active || !canRemote) return;
     const selected = upload ? localPanel.selected : remotePanel.selected;
-    if (!selected || selected.isDir) return;
-    const task = await invokeBackend<TransferTask>("start_transfer", {
-      request: {
-        sessionId: active.profile.id,
-        protocol: "sftp",
-        source: upload ? selected.path : `remote:${selected.path}`,
-        destination: upload ? `remote:${joinFilePath(remotePanel.path, selected.name, true)}` : joinFilePath(localPanel.path, selected.name, false),
-      },
-    });
-    onTransfer(task);
-    onNotice({ title: "传输任务", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
+    if (!selected.length) return;
+    await queueFileBatch(
+      !upload,
+      selected,
+      upload,
+      upload ? remotePanel.path : localPanel.path,
+      upload ? "批量上传" : "批量下载",
+    );
   }
 
-  function startFileDrag(remote: boolean, entry: FileEntry, event: ReactDragEvent<HTMLButtonElement>) {
-    if (!canRemote || entry.isDir) return;
-    setDraggedFile({ remote, entry });
+  async function queueFileBatch(
+    sourceRemote: boolean,
+    entries: FileEntry[],
+    destinationRemote: boolean,
+    destination: string,
+    title: string,
+  ) {
+    if (!active || !canRemote || !entries.length) return;
+    setExternalDrop({
+      remote: destinationRemote,
+      taskIds: [],
+      message: `正在规划 ${entries.length} 个选中项`,
+      status: "planning",
+    });
+    updatePanel(destinationRemote, { busy: true, error: "" });
+    try {
+      const result = await invokeBackend<ExternalDropResult>("start_file_batch", {
+        request: {
+          sessionId: active.profile.id,
+          paths: entries.map((entry) => entry.path),
+          sourceRemote,
+          destination,
+          destinationRemote,
+          conflictPolicy,
+        },
+      });
+      result.tasks.forEach(onTransfer);
+      const parts = [
+        `${result.tasks.length} 个文件`,
+        formatBytes(result.totalBytes),
+        `${result.directoriesPrepared} 个新目录`,
+      ];
+      if (result.skipped.length) parts.push(`跳过 ${result.skipped.length} 项`);
+      const message = parts.join(" · ");
+      setExternalDrop({
+        remote: destinationRemote,
+        taskIds: result.tasks.map((task) => task.id),
+        message,
+        status: result.tasks.length ? "queued" : result.skipped.length ? "warning" : "completed",
+      });
+      onNotice({ title, message });
+      if (!result.tasks.length) {
+        await loadFiles(destinationRemote, destination);
+      }
+    } catch (error) {
+      const message = formatError(error);
+      setExternalDrop(null);
+      updatePanel(destinationRemote, { error: message });
+      onNotice({ title: `${title}失败`, message });
+    } finally {
+      updatePanel(destinationRemote, { busy: false });
+    }
+  }
+
+  function startFileDrag(remote: boolean, entry: FileEntry, event: ReactDragEvent<HTMLElement>) {
+    if (!canRemote) return;
+    const panel = remote ? remotePanel : localPanel;
+    const entries = panel.selected.some((item) => item.path === entry.path) ? panel.selected : [entry];
+    setDraggedFile({ remote, entries });
     event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("application/x-portmate-file", JSON.stringify({ remote, path: entry.path, name: entry.name }));
+    event.dataTransfer.setData("application/x-portmate-file", JSON.stringify({ remote, paths: entries.map((item) => item.path) }));
   }
 
   function handleDragOver(remote: boolean, event: ReactDragEvent<HTMLElement>) {
-    if (!canRemote || !draggedFile || draggedFile.remote === remote || draggedFile.entry.isDir) return;
+    if (!canRemote || !draggedFile || draggedFile.remote === remote) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setDropTarget(remote);
@@ -1686,23 +1775,9 @@ function FileManagerPanel({
     const dropped = draggedFile;
     setDropTarget(null);
     setDraggedFile(null);
-    if (!active || !canRemote || !dropped || dropped.remote === remote || dropped.entry.isDir) return;
+    if (!active || !canRemote || !dropped || dropped.remote === remote) return;
     const targetPanel = remote ? remotePanel : localPanel;
-    try {
-      const task = await invokeBackend<TransferTask>("start_transfer", {
-        request: {
-          sessionId: active.profile.id,
-          protocol: "sftp",
-          source: dropped.remote ? `remote:${dropped.entry.path}` : dropped.entry.path,
-          destination: remote ? `remote:${joinFilePath(targetPanel.path, dropped.entry.name, true)}` : joinFilePath(targetPanel.path, dropped.entry.name, false),
-        },
-      });
-      onTransfer(task);
-      onNotice({ title: "拖拽传输", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
-    } catch (error) {
-      updatePanel(remote, { error: formatError(error) });
-      onNotice({ title: "拖拽传输失败", message: formatError(error) });
-    }
+    await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.path, "拖拽传输");
   }
 
   async function startExternalDrop(remote: boolean, paths: string[]) {
@@ -1722,6 +1797,7 @@ function FileManagerPanel({
           paths,
           destination: panel.path,
           remote,
+          conflictPolicy,
         },
       });
       result.tasks.forEach(onTransfer);
@@ -1755,8 +1831,8 @@ function FileManagerPanel({
   async function startPromptTransfer(remote: boolean) {
     if (!active) return;
     const panel = remote ? remotePanel : localPanel;
-    const selected = panel.selected;
-    if (!selected) return;
+    const selected = panel.selected[0];
+    if (!selected || selected.isDir) return;
     if (remote) {
       const destination = window.prompt("下载到本地路径", selected.name);
       if (!destination) return;
@@ -1807,7 +1883,10 @@ function FileManagerPanel({
           transferLabel="上传"
           onPathChange={(path) => setLocalPanel((current) => ({ ...current, path }))}
           onLoad={(path) => void loadFiles(false, path)}
-          onSelect={(entry) => setLocalPanel((current) => ({ ...current, selected: entry }))}
+          conflictPolicy={conflictPolicy}
+          onConflictPolicyChange={setConflictPolicy}
+          onSelect={(entry, event) => selectFileEntry(false, entry, event)}
+          onSelectAll={() => selectAllFileEntries(false)}
           dropActive={dropTarget === false}
           dropStatus={externalDrop?.remote === false ? externalDrop : null}
           onDragStart={(entry, event) => startFileDrag(false, entry, event)}
@@ -1834,7 +1913,10 @@ function FileManagerPanel({
             transferLabel="下载"
             onPathChange={(path) => setRemotePanel((current) => ({ ...current, path }))}
             onLoad={(path) => void loadFiles(true, path)}
-            onSelect={(entry) => setRemotePanel((current) => ({ ...current, selected: entry }))}
+            conflictPolicy={conflictPolicy}
+            onConflictPolicyChange={setConflictPolicy}
+            onSelect={(entry, event) => selectFileEntry(true, entry, event)}
+            onSelectAll={() => selectAllFileEntries(true)}
             dropActive={dropTarget === true}
             dropStatus={externalDrop?.remote === true ? externalDrop : null}
             onDragStart={(entry, event) => startFileDrag(true, entry, event)}
@@ -1868,9 +1950,12 @@ function FileBrowserPane({
   transferLabel,
   dropActive,
   dropStatus,
+  conflictPolicy,
   onPathChange,
   onLoad,
   onSelect,
+  onSelectAll,
+  onConflictPolicyChange,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -1890,10 +1975,13 @@ function FileBrowserPane({
   transferLabel: string;
   dropActive: boolean;
   dropStatus: ExternalDropState;
+  conflictPolicy: TransferConflictPolicy;
   onPathChange: (path: string) => void;
   onLoad: (path: string) => void;
-  onSelect: (entry: FileEntry | null) => void;
-  onDragStart: (entry: FileEntry, event: ReactDragEvent<HTMLButtonElement>) => void;
+  onSelect: (entry: FileEntry, event: FileSelectionModifiers) => void;
+  onSelectAll: () => void;
+  onConflictPolicyChange: (policy: TransferConflictPolicy) => void;
+  onDragStart: (entry: FileEntry, event: ReactDragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
   onDragLeave: () => void;
@@ -1923,42 +2011,60 @@ function FileBrowserPane({
         <button onClick={() => onLoad(panel.path)} disabled={panel.busy}><RefreshCw size={13} /></button>
       </div>
       <div className="file-actions">
+        <button type="button" onClick={onSelectAll}>{panel.selected.length === panel.entries.length && panel.entries.length ? "清除" : "全选"}</button>
         <button onClick={onCreateDir}>新建</button>
-        <button onClick={onRename} disabled={!panel.selected}>重命名</button>
-        <button onClick={onDelete} disabled={!panel.selected}>删除</button>
-        <button onClick={onChmod} disabled={!panel.selected}>权限</button>
-        <button onClick={onProperties} disabled={!panel.selected}>属性</button>
-        <button onClick={onTransfer} disabled={!panel.selected || panel.selected.isDir || !canTransfer}>{transferLabel}</button>
+        <button onClick={onRename} disabled={panel.selected.length !== 1}>重命名</button>
+        <button onClick={onDelete} disabled={!panel.selected.length}>删除</button>
+        <button onClick={onChmod} disabled={panel.selected.length !== 1}>权限</button>
+        <button onClick={onProperties} disabled={panel.selected.length !== 1}>属性</button>
+        <select value={conflictPolicy} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label="文件冲突策略" title="文件冲突策略">
+          <option value="fail">冲突：停止</option>
+          <option value="overwrite">冲突：覆盖</option>
+          <option value="skip">冲突：跳过</option>
+          <option value="rename">冲突：重命名</option>
+        </select>
+        <button onClick={onTransfer} disabled={!panel.selected.length || !canTransfer}>{transferLabel}{panel.selected.length > 1 ? ` ${panel.selected.length}` : ""}</button>
       </div>
       {panel.error ? (
         <div className="file-error">{panel.error}</div>
       ) : dropStatus ? (
         <div className={`file-pane-status ${dropStatus.status}`}>{dropStatus.message}</div>
       ) : null}
-      <div className="file-list">
+      <div className="file-list" role="listbox" aria-multiselectable="true">
         <button className="file-row up" onClick={() => onLoad(parentPath(panel.path, remote))}>
+          <span className="file-row-check" />
           <Folder size={13} />
           <span>..</span>
           <small />
         </button>
         {panel.entries.map((entry) => (
-          <button
+          <div
             key={entry.path}
-            className={panel.selected?.path === entry.path ? "file-row active" : "file-row"}
-            draggable={canTransfer && !entry.isDir}
+            className={panel.selected.some((item) => item.path === entry.path) ? "file-row active" : "file-row"}
+            role="option"
+            aria-selected={panel.selected.some((item) => item.path === entry.path)}
+            tabIndex={0}
+            draggable={canTransfer}
             onDragStart={(event) => onDragStart(entry, event)}
             onDragEnd={onDragEnd}
-            onClick={() => onSelect(entry)}
+            onClick={(event) => onSelect(entry, event)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(entry, event);
+              }
+            }}
             onDoubleClick={() => {
               if (entry.isDir) {
                 onLoad(entry.path);
               }
             }}
           >
+            <input type="checkbox" tabIndex={-1} readOnly checked={panel.selected.some((item) => item.path === entry.path)} aria-label={`选择 ${entry.name}`} />
             {entry.isDir ? <Folder size={13} /> : <File size={13} />}
             <span>{entry.name}</span>
             <small>{entry.isDir ? "dir" : formatBytes(entry.size)}</small>
-          </button>
+          </div>
         ))}
       </div>
     </section>

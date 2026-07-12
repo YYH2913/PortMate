@@ -616,10 +616,17 @@ button {
   border-bottom: 1px solid var(--line-soft);
 }
 
+.file-actions {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
 .file-toolbar select,
 .file-toolbar input,
 .file-toolbar button,
-.file-actions button {
+.file-actions button,
+.file-actions select {
   height: 24px;
   border: 1px solid var(--line);
   background: var(--control);
@@ -651,8 +658,14 @@ button {
 }
 
 .file-actions button {
+  flex: 0 0 auto;
   padding: 0 8px;
   cursor: pointer;
+}
+
+.file-actions select {
+  min-width: 96px;
+  flex: 0 0 auto;
 }
 
 .file-actions button:disabled {
@@ -695,7 +708,7 @@ button {
 
 .file-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -706,6 +719,17 @@ button {
   text-align: left;
   cursor: pointer;
   font-size: 12px;
+}
+
+.file-row > input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.file-row-check {
+  width: 13px;
 }
 
 .file-row svg {

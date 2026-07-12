@@ -660,6 +660,30 @@ pub struct StartExternalDropRequest {
     pub paths: Vec<String>,
     pub destination: String,
     pub remote: bool,
+    #[serde(default)]
+    pub conflict_policy: TransferConflictPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransferConflictPolicy {
+    #[default]
+    Fail,
+    Overwrite,
+    Skip,
+    Rename,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartFileBatchRequest {
+    pub session_id: String,
+    pub paths: Vec<String>,
+    pub source_remote: bool,
+    pub destination: String,
+    pub destination_remote: bool,
+    #[serde(default)]
+    pub conflict_policy: TransferConflictPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2270,6 +2294,14 @@ async fn start_external_drop(
     request: StartExternalDropRequest,
 ) -> Result<ExternalDropResult, String> {
     start_external_drop_inner(state.inner(), request).await
+}
+
+#[tauri::command]
+async fn start_file_batch(
+    state: State<'_, AppState>,
+    request: StartFileBatchRequest,
+) -> Result<ExternalDropResult, String> {
+    start_file_batch_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -5877,6 +5909,561 @@ struct ExternalDropPlan {
     total_bytes: u64,
 }
 
+#[derive(Debug)]
+struct FileBatchPlanFile {
+    source: String,
+    relative: String,
+    size: u64,
+}
+
+#[derive(Debug, Default)]
+struct FileBatchPlan {
+    directories: Vec<String>,
+    files: Vec<FileBatchPlanFile>,
+    skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchTargetKind {
+    Missing,
+    File,
+    Directory,
+    Other,
+}
+
+async fn start_file_batch_inner(
+    state: &AppState,
+    request: StartFileBatchRequest,
+) -> Result<ExternalDropResult, String> {
+    if request.source_remote == request.destination_remote {
+        return Err("文件批次必须在本地与远端面板之间传输".to_string());
+    }
+    {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if store.profile(&request.session_id).is_none() {
+            return Err(format!("unknown session: {}", request.session_id));
+        }
+    }
+    if request.paths.is_empty() {
+        return Err("文件批次没有源路径".to_string());
+    }
+    if request.paths.len() > MAX_EXTERNAL_DROP_ROOTS {
+        return Err(format!(
+            "一次最多选择 {MAX_EXTERNAL_DROP_ROOTS} 个顶层路径，当前为 {} 个",
+            request.paths.len()
+        ));
+    }
+
+    let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+    let sftp = open_sftp_session(handle).await?;
+    let result = async {
+        let mut plan = if request.source_remote {
+            plan_remote_file_batch(&sftp, &request.paths).await?
+        } else {
+            plan_local_file_batch(&request.paths)?
+        };
+        let local_destination = if request.destination_remote {
+            validate_remote_batch_destination(&sftp, &request.destination).await?;
+            None
+        } else {
+            Some(validate_local_drop_destination(&request.destination)?)
+        };
+
+        let mut directory_targets = Vec::with_capacity(plan.directories.len());
+        for relative in &plan.directories {
+            validate_batch_relative_path(relative)?;
+            let target = batch_destination_path(
+                request.destination.trim(),
+                local_destination.as_deref(),
+                relative,
+                request.destination_remote,
+            )?;
+            match batch_target_kind(Some(&sftp), &target, request.destination_remote).await? {
+                BatchTargetKind::Missing => directory_targets.push(target),
+                BatchTargetKind::Directory => {}
+                BatchTargetKind::File | BatchTargetKind::Other => {
+                    return Err(format!("目标目录路径已被非目录占用: {target}"));
+                }
+            }
+        }
+
+        let mut reserved_targets = HashSet::new();
+        let mut prepared_files = Vec::with_capacity(plan.files.len());
+        let mut total_bytes = 0_u64;
+        for file in plan.files {
+            validate_batch_relative_path(&file.relative)?;
+            let mut relative = file.relative.clone();
+            let mut target = batch_destination_path(
+                request.destination.trim(),
+                local_destination.as_deref(),
+                &relative,
+                request.destination_remote,
+            )?;
+            let kind = batch_target_kind(Some(&sftp), &target, request.destination_remote).await?;
+            let conflict =
+                kind != BatchTargetKind::Missing || !reserved_targets.insert(target.clone());
+            if conflict {
+                match request.conflict_policy {
+                    TransferConflictPolicy::Fail => {
+                        return Err(format!("目标文件已存在或批次内冲突: {target}"));
+                    }
+                    TransferConflictPolicy::Skip => {
+                        plan.skipped
+                            .push(format!("{} (destination exists: {target})", file.source));
+                        continue;
+                    }
+                    TransferConflictPolicy::Overwrite => {
+                        if !matches!(kind, BatchTargetKind::File | BatchTargetKind::Missing) {
+                            return Err(format!("拒绝用文件覆盖非普通文件目标: {target}"));
+                        }
+                        reserved_targets.insert(target.clone());
+                    }
+                    TransferConflictPolicy::Rename => {
+                        let mut renamed = None;
+                        for suffix in 1..=10_000_u32 {
+                            let candidate_relative =
+                                numbered_batch_relative_path(&file.relative, suffix)?;
+                            let candidate = batch_destination_path(
+                                request.destination.trim(),
+                                local_destination.as_deref(),
+                                &candidate_relative,
+                                request.destination_remote,
+                            )?;
+                            if !reserved_targets.contains(&candidate)
+                                && batch_target_kind(
+                                    Some(&sftp),
+                                    &candidate,
+                                    request.destination_remote,
+                                )
+                                .await?
+                                    == BatchTargetKind::Missing
+                            {
+                                renamed = Some((candidate_relative, candidate));
+                                break;
+                            }
+                        }
+                        let (candidate_relative, candidate) = renamed
+                            .ok_or_else(|| format!("无法为冲突目标生成可用名称: {target}"))?;
+                        relative = candidate_relative;
+                        target = candidate;
+                        reserved_targets.insert(target.clone());
+                    }
+                }
+            }
+            total_bytes = total_bytes
+                .checked_add(file.size)
+                .ok_or_else(|| "文件批次总大小溢出".to_string())?;
+            prepared_files.push((file.source, relative, target));
+        }
+
+        directory_targets.sort_by_key(|path| batch_path_depth(path));
+        for target in &directory_targets {
+            if request.destination_remote {
+                sftp_create_dir_all(&sftp, target).await?;
+            } else {
+                fs::create_dir_all(target)
+                    .map_err(|error| format!("创建本地批次目录失败 {target}: {error}"))?;
+            }
+        }
+
+        Ok::<_, String>((
+            prepared_files,
+            directory_targets.len(),
+            plan.skipped,
+            total_bytes,
+        ))
+    }
+    .await;
+    let _ = sftp.close().await;
+    let (prepared_files, directories_prepared, mut skipped, total_bytes) = result?;
+
+    let mut tasks = Vec::with_capacity(prepared_files.len());
+    for (source, _relative, target) in prepared_files {
+        let source = if request.source_remote {
+            format!("remote:{source}")
+        } else {
+            source
+        };
+        let destination = if request.destination_remote {
+            format!("remote:{target}")
+        } else {
+            target
+        };
+        tasks.push(
+            start_transfer_inner(
+                state,
+                StartTransferRequest {
+                    session_id: request.session_id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source,
+                    destination,
+                },
+            )
+            .await?,
+        );
+    }
+    skipped.sort();
+    skipped.dedup();
+    Ok(ExternalDropResult {
+        tasks,
+        directories_prepared,
+        skipped,
+        total_bytes,
+    })
+}
+
+fn plan_local_file_batch(paths: &[String]) -> Result<FileBatchPlan, String> {
+    let plan = plan_external_drop(paths, None)?;
+    Ok(FileBatchPlan {
+        directories: plan
+            .directories
+            .iter()
+            .map(|path| external_relative_remote_path(path))
+            .collect::<Result<Vec<_>, _>>()?,
+        files: plan
+            .files
+            .into_iter()
+            .map(|file| {
+                let source = file.source.to_str().ok_or_else(|| {
+                    format!("批次源路径不是有效 Unicode: {}", file.source.display())
+                })?;
+                Ok(FileBatchPlanFile {
+                    source: source.to_string(),
+                    relative: external_relative_remote_path(&file.relative)?,
+                    size: fs::metadata(&file.source)
+                        .map_err(|error| {
+                            format!("读取批次源文件失败 {}: {error}", file.source.display())
+                        })?
+                        .len(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        skipped: plan.skipped,
+    })
+}
+
+async fn plan_remote_file_batch(
+    sftp: &SftpSession,
+    paths: &[String],
+) -> Result<FileBatchPlan, String> {
+    let mut roots = Vec::new();
+    let mut skipped = Vec::new();
+    for raw in paths {
+        let path = normalize_remote_batch_source(raw)?;
+        if roots.iter().any(|existing: &(String, bool)| {
+            path == existing.0 || (existing.1 && remote_path_is_within(&path, &existing.0))
+        }) {
+            skipped.push(format!("{path} (already included)"));
+            continue;
+        }
+        let metadata = sftp
+            .symlink_metadata(path.clone())
+            .await
+            .map_err(|error| format!("SFTP 读取批次源路径失败 {path}: {error}"))?;
+        if metadata.is_symlink() {
+            skipped.push(format!("{path} (symbolic link)"));
+            continue;
+        }
+        if !metadata.is_dir() && !metadata.is_regular() {
+            skipped.push(format!("{path} (not a regular file or directory)"));
+            continue;
+        }
+        roots.push((path, metadata.is_dir()));
+    }
+
+    let mut plan = FileBatchPlan {
+        skipped,
+        ..FileBatchPlan::default()
+    };
+    let mut visited = 0_usize;
+    for (root, _) in roots {
+        let root_name = remote_file_name(&root);
+        validate_batch_relative_path(&root_name)?;
+        let mut stack = vec![(root, root_name)];
+        while let Some((source, relative)) = stack.pop() {
+            visited += 1;
+            if visited > MAX_EXTERNAL_DROP_ENTRIES {
+                return Err(format!(
+                    "远端目录超过 {MAX_EXTERNAL_DROP_ENTRIES} 个条目，请缩小批次"
+                ));
+            }
+            let metadata = sftp
+                .symlink_metadata(source.clone())
+                .await
+                .map_err(|error| format!("SFTP 读取远端目录项失败 {source}: {error}"))?;
+            if metadata.is_symlink() {
+                plan.skipped.push(format!("{source} (symbolic link)"));
+                continue;
+            }
+            if metadata.is_dir() {
+                plan.directories.push(relative.clone());
+                let mut children = sftp
+                    .read_dir(source.clone())
+                    .await
+                    .map_err(|error| format!("SFTP 读取远端目录失败 {source}: {error}"))?
+                    .collect::<Vec<_>>();
+                children.sort_by_key(|entry| entry.file_name());
+                for child in children.into_iter().rev() {
+                    let name = child.file_name();
+                    if matches!(name.as_str(), "." | "..") {
+                        continue;
+                    }
+                    validate_batch_relative_path(&name)?;
+                    stack.push((
+                        remote_join_path(&source, &name),
+                        remote_join_path(&relative, &name),
+                    ));
+                }
+            } else if metadata.is_regular() {
+                if plan.files.len() >= MAX_EXTERNAL_DROP_FILES {
+                    return Err(format!(
+                        "一次最多传输 {MAX_EXTERNAL_DROP_FILES} 个文件，请缩小批次"
+                    ));
+                }
+                plan.files.push(FileBatchPlanFile {
+                    source,
+                    relative,
+                    size: metadata.len(),
+                });
+            } else {
+                plan.skipped
+                    .push(format!("{source} (not a regular file or directory)"));
+            }
+        }
+    }
+    validate_file_batch_plan(&mut plan)?;
+    Ok(plan)
+}
+
+fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), String> {
+    plan.directories.sort_by(|left, right| {
+        batch_path_depth(left)
+            .cmp(&batch_path_depth(right))
+            .then_with(|| left.cmp(right))
+    });
+    if let Some(conflict) = plan
+        .directories
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| &pair[0])
+    {
+        return Err(format!("文件批次包含冲突的目标目录: {conflict}"));
+    }
+    plan.files
+        .sort_by(|left, right| left.relative.cmp(&right.relative));
+    let directories = plan.directories.iter().collect::<HashSet<_>>();
+    let mut files = HashSet::new();
+    for file in &plan.files {
+        if directories.contains(&file.relative) || !files.insert(file.relative.as_str()) {
+            return Err(format!("文件批次包含冲突的目标路径: {}", file.relative));
+        }
+    }
+    plan.skipped.sort();
+    plan.skipped.dedup();
+    Ok(())
+}
+
+fn normalize_remote_batch_source(path: &str) -> Result<String, String> {
+    let path = path.trim().trim_end_matches('/');
+    if path.is_empty() || matches!(path, "." | ".." | "~") || path.contains('\0') || path == "/" {
+        return Err("拒绝传输空路径、当前目录或远端根目录".to_string());
+    }
+    Ok(path.to_string())
+}
+
+fn remote_path_is_within(path: &str, parent: &str) -> bool {
+    path == parent
+        || path
+            .strip_prefix(parent)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn validate_batch_relative_path(path: &str) -> Result<(), String> {
+    if path.is_empty()
+        || path.contains('\0')
+        || path
+            .chars()
+            .any(|character| matches!(character, '\\' | ':'))
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+    {
+        return Err(format!("批次相对路径无效: {path}"));
+    }
+    Ok(())
+}
+
+async fn validate_remote_batch_destination(sftp: &SftpSession, path: &str) -> Result<(), String> {
+    validate_remote_drop_destination(path)?;
+    let metadata = sftp
+        .symlink_metadata(path.trim().to_string())
+        .await
+        .map_err(|error| format!("SFTP 读取远端目标目录失败 {}: {error}", path.trim()))?;
+    if !metadata.is_dir() || metadata.is_symlink() {
+        return Err(format!("远端批次目标不是普通目录: {}", path.trim()));
+    }
+    Ok(())
+}
+
+fn batch_destination_path(
+    remote_destination: &str,
+    local_destination: Option<&Path>,
+    relative: &str,
+    destination_remote: bool,
+) -> Result<String, String> {
+    if destination_remote {
+        Ok(remote_join_path(remote_destination, relative))
+    } else {
+        let destination = local_destination.ok_or_else(|| "本地批次目标目录不可用".to_string())?;
+        Ok(destination.join(Path::new(relative)).display().to_string())
+    }
+}
+
+async fn batch_target_kind(
+    sftp: Option<&SftpSession>,
+    path: &str,
+    remote: bool,
+) -> Result<BatchTargetKind, String> {
+    if remote {
+        let sftp = sftp.ok_or_else(|| "远端目标检查缺少 SFTP session".to_string())?;
+        let Ok(metadata) = sftp.symlink_metadata(path.to_string()).await else {
+            return Ok(BatchTargetKind::Missing);
+        };
+        Ok(if metadata.is_symlink() {
+            BatchTargetKind::Other
+        } else if metadata.is_dir() {
+            BatchTargetKind::Directory
+        } else if metadata.is_regular() {
+            BatchTargetKind::File
+        } else {
+            BatchTargetKind::Other
+        })
+    } else {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Ok(BatchTargetKind::Other),
+            Ok(metadata) if metadata.is_dir() => Ok(BatchTargetKind::Directory),
+            Ok(metadata) if metadata.is_file() => Ok(BatchTargetKind::File),
+            Ok(_) => Ok(BatchTargetKind::Other),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(BatchTargetKind::Missing)
+            }
+            Err(error) => Err(format!("读取本地批次目标失败 {path}: {error}")),
+        }
+    }
+}
+
+fn numbered_batch_relative_path(path: &str, suffix: u32) -> Result<String, String> {
+    validate_batch_relative_path(path)?;
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let (stem, extension) = name
+        .rsplit_once('.')
+        .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
+        .map_or((name, ""), |parts| parts);
+    let renamed = if extension.is_empty() {
+        format!("{stem} ({suffix})")
+    } else {
+        format!("{stem} ({suffix}).{extension}")
+    };
+    Ok(if parent.is_empty() {
+        renamed
+    } else {
+        format!("{parent}/{renamed}")
+    })
+}
+
+fn batch_path_depth(path: &str) -> usize {
+    path.split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .count()
+}
+
+async fn apply_external_drop_conflicts(
+    plan: &mut ExternalDropPlan,
+    sftp: Option<&SftpSession>,
+    destination: &str,
+    local_destination: Option<&Path>,
+    remote: bool,
+    policy: TransferConflictPolicy,
+) -> Result<(), String> {
+    for relative in &plan.directories {
+        let relative = external_relative_remote_path(relative)?;
+        let target = batch_destination_path(destination, local_destination, &relative, remote)?;
+        match batch_target_kind(sftp, &target, remote).await? {
+            BatchTargetKind::Missing | BatchTargetKind::Directory => {}
+            BatchTargetKind::File | BatchTargetKind::Other => {
+                return Err(format!("目标目录路径已被非目录占用: {target}"));
+            }
+        }
+    }
+
+    let mut prepared = Vec::with_capacity(plan.files.len());
+    let mut reserved = HashSet::new();
+    let mut total_bytes = 0_u64;
+    for mut file in std::mem::take(&mut plan.files) {
+        let original_relative = external_relative_remote_path(&file.relative)?;
+        let mut relative = original_relative.clone();
+        let mut target = batch_destination_path(destination, local_destination, &relative, remote)?;
+        let kind = batch_target_kind(sftp, &target, remote).await?;
+        let conflict = kind != BatchTargetKind::Missing || !reserved.insert(target.clone());
+        if conflict {
+            match policy {
+                TransferConflictPolicy::Fail => {
+                    return Err(format!("目标文件已存在或批次内冲突: {target}"));
+                }
+                TransferConflictPolicy::Skip => {
+                    plan.skipped.push(format!(
+                        "{} (destination exists: {target})",
+                        file.source.display()
+                    ));
+                    continue;
+                }
+                TransferConflictPolicy::Overwrite => {
+                    if !matches!(kind, BatchTargetKind::File | BatchTargetKind::Missing) {
+                        return Err(format!("拒绝用文件覆盖非普通文件目标: {target}"));
+                    }
+                    reserved.insert(target.clone());
+                }
+                TransferConflictPolicy::Rename => {
+                    let mut renamed = None;
+                    for suffix in 1..=10_000_u32 {
+                        let candidate_relative =
+                            numbered_batch_relative_path(&original_relative, suffix)?;
+                        let candidate = batch_destination_path(
+                            destination,
+                            local_destination,
+                            &candidate_relative,
+                            remote,
+                        )?;
+                        if !reserved.contains(&candidate)
+                            && batch_target_kind(sftp, &candidate, remote).await?
+                                == BatchTargetKind::Missing
+                        {
+                            renamed = Some((candidate_relative, candidate));
+                            break;
+                        }
+                    }
+                    let (candidate_relative, candidate) =
+                        renamed.ok_or_else(|| format!("无法为冲突目标生成可用名称: {target}"))?;
+                    relative = candidate_relative;
+                    target = candidate;
+                    reserved.insert(target);
+                    file.relative = PathBuf::from(relative);
+                }
+            }
+        }
+        let size = fs::metadata(&file.source)
+            .map_err(|error| format!("读取拖放源文件失败 {}: {error}", file.source.display()))?
+            .len();
+        total_bytes = total_bytes
+            .checked_add(size)
+            .ok_or_else(|| "拖放批次总大小溢出".to_string())?;
+        prepared.push(file);
+    }
+    plan.files = prepared;
+    plan.total_bytes = total_bytes;
+    Ok(())
+}
+
 async fn start_external_drop_inner(
     state: &AppState,
     request: StartExternalDropRequest,
@@ -5894,13 +6481,22 @@ async fn start_external_drop_inner(
     } else {
         Some(validate_local_drop_destination(&request.destination)?)
     };
-    let plan = plan_external_drop(&request.paths, local_destination.as_deref())?;
+    let mut plan = plan_external_drop(&request.paths, local_destination.as_deref())?;
 
     if request.remote {
         if !plan.directories.is_empty() || !plan.files.is_empty() {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
             let sftp = open_sftp_session(handle).await?;
             let result = async {
+                apply_external_drop_conflicts(
+                    &mut plan,
+                    Some(&sftp),
+                    request.destination.trim(),
+                    None,
+                    true,
+                    request.conflict_policy,
+                )
+                .await?;
                 sftp_create_dir_all(&sftp, request.destination.trim()).await?;
                 for relative in &plan.directories {
                     let target = remote_join_path(
@@ -5916,6 +6512,15 @@ async fn start_external_drop_inner(
             result?;
         }
     } else if let Some(destination) = &local_destination {
+        apply_external_drop_conflicts(
+            &mut plan,
+            None,
+            &destination.display().to_string(),
+            Some(destination),
+            false,
+            request.conflict_policy,
+        )
+        .await?;
         for relative in &plan.directories {
             let target = destination.join(relative);
             fs::create_dir_all(&target)
@@ -13368,6 +13973,7 @@ pub fn run() {
             refresh_sysmon,
             start_transfer,
             start_external_drop,
+            start_file_batch,
             create_tunnel,
             list_tunnels,
             stop_tunnel,
@@ -14920,6 +15526,86 @@ mod tests {
     }
 
     #[test]
+    fn file_batch_conflict_policies_fail_skip_overwrite_and_rename() {
+        let root = std::env::temp_dir().join(format!("portmate-conflicts-{}", Uuid::new_v4()));
+        let source = root.join("source/report.txt");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(&source, b"new report").unwrap();
+        fs::write(destination.join("report.txt"), b"old report").unwrap();
+        let destination = destination.canonicalize().unwrap();
+        let paths = vec![source.display().to_string()];
+
+        tauri::async_runtime::block_on(async {
+            let mut fail = plan_external_drop(&paths, Some(&destination)).unwrap();
+            let error = apply_external_drop_conflicts(
+                &mut fail,
+                None,
+                destination.to_str().unwrap(),
+                Some(&destination),
+                false,
+                TransferConflictPolicy::Fail,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("目标文件已存在"), "{error}");
+
+            let mut skip = plan_external_drop(&paths, Some(&destination)).unwrap();
+            apply_external_drop_conflicts(
+                &mut skip,
+                None,
+                destination.to_str().unwrap(),
+                Some(&destination),
+                false,
+                TransferConflictPolicy::Skip,
+            )
+            .await
+            .unwrap();
+            assert!(skip.files.is_empty());
+            assert_eq!(skip.skipped.len(), 1);
+            assert_eq!(skip.total_bytes, 0);
+
+            let mut overwrite = plan_external_drop(&paths, Some(&destination)).unwrap();
+            apply_external_drop_conflicts(
+                &mut overwrite,
+                None,
+                destination.to_str().unwrap(),
+                Some(&destination),
+                false,
+                TransferConflictPolicy::Overwrite,
+            )
+            .await
+            .unwrap();
+            assert_eq!(overwrite.files[0].relative, PathBuf::from("report.txt"));
+            assert_eq!(overwrite.total_bytes, 10);
+
+            let mut rename = plan_external_drop(&paths, Some(&destination)).unwrap();
+            apply_external_drop_conflicts(
+                &mut rename,
+                None,
+                destination.to_str().unwrap(),
+                Some(&destination),
+                false,
+                TransferConflictPolicy::Rename,
+            )
+            .await
+            .unwrap();
+            assert_eq!(rename.files[0].relative, PathBuf::from("report (1).txt"));
+            assert_eq!(rename.total_bytes, 10);
+        });
+
+        assert_eq!(
+            numbered_batch_relative_path("nested/archive.tar.gz", 2).unwrap(),
+            "nested/archive.tar (2).gz"
+        );
+        assert!(validate_batch_relative_path("../escape").is_err());
+        assert!(validate_batch_relative_path("folder\\escape").is_err());
+        assert!(validate_batch_relative_path("C:/escape").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn external_drop_local_batch_copies_nested_files_through_transfer_queue() {
         let root = std::env::temp_dir().join(format!("portmate-drop-local-{}", Uuid::new_v4()));
         let source = root.join("incoming");
@@ -14942,6 +15628,7 @@ mod tests {
                     paths: vec![source.display().to_string()],
                     destination: destination.display().to_string(),
                     remote: false,
+                    conflict_policy: TransferConflictPolicy::Fail,
                 },
             )
             .await
@@ -15953,6 +16640,7 @@ mod tests {
                     paths: vec![drop_source.display().to_string()],
                     destination: drop_remote_target.display().to_string(),
                     remote: true,
+                    conflict_policy: TransferConflictPolicy::Fail,
                 },
             )
             .await
@@ -16097,6 +16785,83 @@ mod tests {
             assert_eq!(sftp_download.bytes_done, sftp_payload.len() as u64);
             assert_eq!(fs::read(&sftp_download_target).unwrap(), sftp_payload);
             assert!(!sftp_download_part.exists());
+
+            let sftp_empty = sftp_root.join("empty");
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_empty.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateDirectory,
+            )
+            .await
+            .unwrap();
+            let recursive_download_root = root.join("recursive-download");
+            fs::create_dir_all(&recursive_download_root).unwrap();
+            let recursive_download = start_file_batch_inner(
+                &state,
+                StartFileBatchRequest {
+                    session_id: profile.id.clone(),
+                    paths: vec![sftp_root.display().to_string()],
+                    source_remote: true,
+                    destination: recursive_download_root.display().to_string(),
+                    destination_remote: false,
+                    conflict_policy: TransferConflictPolicy::Fail,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(recursive_download.tasks.len(), 2);
+            assert_eq!(recursive_download.directories_prepared, 3);
+            assert_eq!(
+                recursive_download.total_bytes,
+                (sftp_payload.len() * 2) as u64
+            );
+            assert!(recursive_download.skipped.is_empty());
+            for task in recursive_download.tasks {
+                let task = wait_for_transfer_terminal_state(&state, &task.id).await;
+                assert_eq!(
+                    task.status,
+                    TransferStatus::Completed,
+                    "recursive SFTP download failed: {:?}",
+                    task.message
+                );
+            }
+            let downloaded_tree = recursive_download_root.join("sftp-workspace");
+            assert_eq!(
+                fs::read(downloaded_tree.join("copied.bin")).unwrap(),
+                sftp_payload
+            );
+            assert_eq!(
+                fs::read(downloaded_tree.join("nested/renamed.bin")).unwrap(),
+                sftp_payload
+            );
+            assert!(downloaded_tree.join("empty").is_dir());
+
+            fs::write(recursive_download_root.join("copied.bin"), b"existing").unwrap();
+            let renamed_download = start_file_batch_inner(
+                &state,
+                StartFileBatchRequest {
+                    session_id: profile.id.clone(),
+                    paths: vec![copied_sftp_file.display().to_string()],
+                    source_remote: true,
+                    destination: recursive_download_root.display().to_string(),
+                    destination_remote: false,
+                    conflict_policy: TransferConflictPolicy::Rename,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(renamed_download.tasks.len(), 1);
+            let renamed_task =
+                wait_for_transfer_terminal_state(&state, &renamed_download.tasks[0].id).await;
+            assert_eq!(renamed_task.status, TransferStatus::Completed);
+            assert_eq!(
+                fs::read(recursive_download_root.join("copied (1).bin")).unwrap(),
+                sftp_payload
+            );
 
             file_operation_inner(
                 &state,
