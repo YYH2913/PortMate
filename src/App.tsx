@@ -6,10 +6,13 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ArrowUp,
   ChevronDown,
   ChevronRight,
+  Copy,
   File,
   Folder,
+  KeyRound,
   Lock,
   Play,
   Plus,
@@ -17,6 +20,8 @@ import {
   Search,
   Settings,
   Square,
+  Trash2,
+  UserPlus,
   X,
 } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
@@ -68,6 +73,14 @@ type HostKeyEditDraft = {
   port: number;
   scope: TrustedHostKey["scope"];
   label: string;
+};
+type ClientIdentityGroupBy = "profile" | "source";
+type ClientIdentityItem = {
+  selectionId: string;
+  profileId: string;
+  profileName: string;
+  identity: IdentityRef;
+  jumpInUse: boolean;
 };
 type HostKeyPromptState = {
   profile: SessionProfile;
@@ -2599,6 +2612,12 @@ function KeyManagerDialog({
   const [knownHostsText, setKnownHostsText] = useState("");
   const [exportText, setExportText] = useState("");
   const [agentKeys, setAgentKeys] = useState<IdentityRef[]>([]);
+  const [clientKeyQuery, setClientKeyQuery] = useState("");
+  const [clientKeySourceFilter, setClientKeySourceFilter] = useState<IdentityRef["source"] | "all">("all");
+  const [clientKeyProfileFilter, setClientKeyProfileFilter] = useState("all");
+  const [clientKeyGroupBy, setClientKeyGroupBy] = useState<ClientIdentityGroupBy>("profile");
+  const [selectedClientKeyIds, setSelectedClientKeyIds] = useState<string[]>([]);
+  const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
@@ -2616,10 +2635,36 @@ function KeyManagerDialog({
     && (keyProfileFilter === "all" || key.profileId === keyProfileFilter)
   ));
   const selectedVisibleHostKeys = visibleHostKeys.filter((key) => selectedHostKeyIds.includes(key.id));
+  const clientIdentityItems = sshSessions.flatMap((session) => {
+    const profile = session.profile;
+    if (!isSshLikeProfile(profile)) return [];
+    return profile.connection.identityRefs.map((identity, index): ClientIdentityItem => ({
+      selectionId: clientIdentitySelectionId(profile.id, identity, index),
+      profileId: profile.id,
+      profileName: profile.name,
+      identity,
+      jumpInUse: profile.connection.jumps.some((jump) => jump.identityRef === identity.id),
+    }));
+  });
+  const normalizedClientKeyQuery = clientKeyQuery.trim().toLowerCase();
+  const visibleClientIdentityItems = clientIdentityItems.filter((item) => (
+    (clientKeySourceFilter === "all" || item.identity.source === clientKeySourceFilter)
+    && (clientKeyProfileFilter === "all" || item.profileId === clientKeyProfileFilter)
+    && (!normalizedClientKeyQuery || `${item.identity.label} ${item.identity.fingerprintSha256 ?? ""} ${item.identity.path ?? ""} ${item.profileName}`.toLowerCase().includes(normalizedClientKeyQuery))
+  ));
+  const clientIdentityGroups = groupClientIdentityItems(visibleClientIdentityItems, clientKeyGroupBy);
+  const selectedClientIdentityItems = clientIdentityItems.filter((item) => selectedClientKeyIds.includes(item.selectionId));
+  const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
 
   useEffect(() => {
     void refreshAgentKeys();
   }, []);
+
+  useEffect(() => {
+    if (!sshSessions.some((session) => session.profile.id === profileId)) {
+      setProfileId(sshSessions[0]?.profile.id ?? "");
+    }
+  }, [profileId, sessions]);
 
   useEffect(() => {
     if (editingKeyId && !hostKeys.keys.some((key) => key.id === editingKeyId)) {
@@ -2628,6 +2673,16 @@ function KeyManagerDialog({
     }
     setSelectedHostKeyIds((current) => current.filter((keyId) => hostKeys.keys.some((key) => key.id === keyId)));
   }, [editingKeyId, hostKeys.keys]);
+
+  useEffect(() => {
+    const validClientIds = new Set(clientIdentityItems.map((item) => item.selectionId));
+    setSelectedClientKeyIds((current) => current.filter((id) => validClientIds.has(id)));
+  }, [sessions]);
+
+  useEffect(() => {
+    const validAgentIds = new Set(agentKeys.map(identityStableKey));
+    setSelectedAgentKeyIds((current) => current.filter((id) => validAgentIds.has(id)));
+  }, [agentKeys]);
 
   async function refreshAgentKeys() {
     if (!isBackendAvailable()) return;
@@ -2747,15 +2802,17 @@ function KeyManagerDialog({
     }
   }
 
-  async function saveProfileFromManager(profile: SessionProfile, message: string) {
+  async function saveProfileFromManager(profile: SessionProfile, message: string): Promise<boolean> {
     setError("");
     setStatus("");
     try {
       const saved = await invokeBackend<SessionSummary>("save_session_profile", { profile: prepareSessionProfile(profile) });
       onProfileChange(saved);
       setStatus(message);
+      return true;
     } catch (error) {
       setError(formatError(error));
+      return false;
     }
   }
 
@@ -2797,7 +2854,7 @@ function KeyManagerDialog({
         path: null,
         secretRef: response.secretRef,
       };
-      await saveProfileFromManager({
+      const saved = await saveProfileFromManager({
         ...selectedProfile,
         connection: {
           ...selectedProfile.connection,
@@ -2808,7 +2865,15 @@ function KeyManagerDialog({
           },
         },
       }, `已导入私钥到 ${selectedProfile.name}`);
-      setPrivateKeyText("");
+      if (saved) {
+        setPrivateKeyText("");
+      } else {
+        try {
+          await invokeBackend("delete_secret", { secretRef: response.secretRef });
+        } catch {
+          // Preserve the original profile-save error if best-effort cleanup also fails.
+        }
+      }
     } catch (error) {
       setError(formatError(error));
     }
@@ -2858,29 +2923,32 @@ function KeyManagerDialog({
     await copyHostKeysToProfile(selectedVisibleHostKeys);
   }
 
-  async function copyAgentIdentityToProfile(identity: IdentityRef) {
+  async function copyAgentIdentitiesToProfile(identitiesToCopy: IdentityRef[]) {
     if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
-    const identityRef: IdentityRef = {
-      ...identity,
-      id: identity.fingerprintSha256 ? `agent:${identity.fingerprintSha256}` : identity.id,
-      source: "agent",
-      path: identity.path ?? null,
-      secretRef: null,
-    };
-    const identities = selectedProfile.connection.identityRefs;
-    const exists = identities.some((item) => (
-      item.source === "agent"
-      && item.fingerprintSha256
-      && item.fingerprintSha256 === identityRef.fingerprintSha256
-    ));
-    const nextIdentities = exists
-      ? identities.map((item) => (
-        item.source === "agent" && item.fingerprintSha256 === identityRef.fingerprintSha256
-          ? { ...item, ...identityRef }
-          : item
-      ))
-      : [identityRef, ...identities];
-    await saveProfileFromManager({
+    let added = 0;
+    let updated = 0;
+    let nextIdentities = [...selectedProfile.connection.identityRefs];
+    for (const identity of identitiesToCopy) {
+      const identityRef: IdentityRef = {
+        ...identity,
+        id: identity.fingerprintSha256 ? `agent:${identity.fingerprintSha256}` : identity.id,
+        source: "agent",
+        path: identity.path ?? null,
+        secretRef: null,
+      };
+      const stableKey = identityStableKey(identityRef);
+      const existingIndex = nextIdentities.findIndex((item) => identityStableKey(item) === stableKey);
+      if (existingIndex >= 0) {
+        if (nextIdentities[existingIndex].source !== "agent") continue;
+        nextIdentities[existingIndex] = { ...nextIdentities[existingIndex], ...identityRef };
+        updated += 1;
+      } else {
+        nextIdentities = [identityRef, ...nextIdentities];
+        added += 1;
+      }
+    }
+    if (!added && !updated) return;
+    const saved = await saveProfileFromManager({
       ...selectedProfile,
       connection: {
         ...selectedProfile.connection,
@@ -2891,7 +2959,137 @@ function KeyManagerDialog({
           offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
         },
       },
-    }, exists ? `已更新 ${selectedProfile.name} 的 agent identity` : `已添加 agent identity 到 ${selectedProfile.name}`);
+    }, `Agent keys: ${added} added, ${updated} updated · ${selectedProfile.name}`);
+    if (saved) setSelectedAgentKeyIds([]);
+  }
+
+  async function copyAgentIdentityToProfile(identity: IdentityRef) {
+    await copyAgentIdentitiesToProfile([identity]);
+  }
+
+  async function copyClientIdentitiesToProfile(items: ClientIdentityItem[]) {
+    if (!selectedProfile || !isSshLikeProfile(selectedProfile) || !items.length) return;
+    const currentIdentities = selectedProfile.connection.identityRefs;
+    const nextIdentities = [...currentIdentities];
+    let copied = 0;
+    let copiedAgent = false;
+    let copiedProfileKey = false;
+    for (const item of items) {
+      const identity = item.identity;
+      const stableKey = identityStableKey(identity);
+      if (nextIdentities.some((existing) => identityStableKey(existing) === stableKey)) continue;
+      let id = identity.id;
+      if (nextIdentities.some((existing) => existing.id === id)) {
+        id = `${identity.id}:${createLocalId()}`;
+      }
+      nextIdentities.unshift({ ...identity, id });
+      copied += 1;
+      copiedAgent ||= identity.source === "agent";
+      copiedProfileKey ||= identity.source !== "agent";
+    }
+    if (!copied) {
+      setStatus(`${selectedProfile.name} 已包含选中的 client keys`);
+      return;
+    }
+    const saved = await saveProfileFromManager({
+      ...selectedProfile,
+      connection: {
+        ...selectedProfile.connection,
+        identityRefs: nextIdentities,
+        identityPolicy: {
+          ...selectedProfile.connection.identityPolicy,
+          identitiesOnly: copiedProfileKey ? true : selectedProfile.connection.identityPolicy.identitiesOnly,
+        },
+        agentPolicy: copiedAgent ? {
+          ...selectedProfile.connection.agentPolicy,
+          enabled: true,
+          offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
+        } : selectedProfile.connection.agentPolicy,
+      },
+    }, `已复制 ${copied} 个 client key 到 ${selectedProfile.name}`);
+    if (saved) setSelectedClientKeyIds([]);
+  }
+
+  async function moveSelectedClientIdentitiesFirst() {
+    if (!selectedClientIdentityItems.length) return;
+    setError("");
+    setStatus("");
+    let updatedProfiles = 0;
+    try {
+      for (const session of sshSessions) {
+        const profile = session.profile;
+        if (!isSshLikeProfile(profile)) continue;
+        const selectedIds = new Set(selectedClientIdentityItems.map((item) => item.selectionId));
+        const selected = profile.connection.identityRefs.filter((identity, index) => (
+          selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
+        ));
+        if (!selected.length) continue;
+        const remaining = profile.connection.identityRefs.filter((identity, index) => (
+          !selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
+        ));
+        const saved = await invokeBackend<SessionSummary>("save_session_profile", {
+          profile: prepareSessionProfile({
+            ...profile,
+            connection: { ...profile.connection, identityRefs: [...selected, ...remaining] },
+          }),
+        });
+        onProfileChange(saved);
+        updatedProfiles += 1;
+      }
+      setSelectedClientKeyIds([]);
+      setStatus(`已在 ${updatedProfiles} 个 Profile 中置顶所选 client keys`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  async function removeSelectedClientIdentities() {
+    if (!selectedClientIdentityItems.length) return;
+    setError("");
+    setStatus("");
+    let removed = 0;
+    let skipped = 0;
+    try {
+      for (const session of sshSessions) {
+        const profile = session.profile;
+        if (!isSshLikeProfile(profile)) continue;
+        const selected = selectedClientIdentityItems.filter((item) => item.profileId === profile.id);
+        if (!selected.length) continue;
+        const removableIds = new Set(selected.filter((item) => !item.jumpInUse).map((item) => item.selectionId));
+        skipped += selected.filter((item) => item.jumpInUse).length;
+        if (!removableIds.size) continue;
+        const saved = await invokeBackend<SessionSummary>("save_session_profile", {
+          profile: prepareSessionProfile({
+            ...profile,
+            connection: {
+              ...profile.connection,
+              identityRefs: profile.connection.identityRefs.filter((identity, index) => (
+                !removableIds.has(clientIdentitySelectionId(profile.id, identity, index))
+              )),
+            },
+          }),
+        });
+        onProfileChange(saved);
+        removed += removableIds.size;
+      }
+      setSelectedClientKeyIds([]);
+      setStatus(`已移除 ${removed} 个 client key 引用${skipped ? `，跳过 ${skipped} 个 Jump Host 使用中的 key` : ""}`);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  }
+
+  function toggleClientIdentitySelection(selectionId: string, selected: boolean) {
+    setSelectedClientKeyIds((current) => selected
+      ? Array.from(new Set([...current, selectionId]))
+      : current.filter((id) => id !== selectionId));
+  }
+
+  function toggleAgentIdentitySelection(identity: IdentityRef, selected: boolean) {
+    const id = identityStableKey(identity);
+    setSelectedAgentKeyIds((current) => selected
+      ? Array.from(new Set([...current, id]))
+      : current.filter((item) => item !== id));
   }
 
   return (
@@ -3008,29 +3206,96 @@ function KeyManagerDialog({
           </section>
           <section className="key-agent-list">
             <div className="key-agent-header">
-              <strong>Client Keys</strong>
+              <span><KeyRound size={15} /><strong>Client Keys</strong></span>
+              <small>{clientIdentityItems.length} identities</small>
             </div>
-            <section className="key-import-panel">
-              <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="label" />
-              <input type="file" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
+            <div className="client-key-filters">
+              <label className="client-key-search">
+                <Search size={14} />
+                <input value={clientKeyQuery} onChange={(event) => setClientKeyQuery(event.target.value)} placeholder="搜索 label、指纹或路径" />
+              </label>
+              <select value={clientKeySourceFilter} onChange={(event) => setClientKeySourceFilter(event.target.value as IdentityRef["source"] | "all")} aria-label="Client key 来源">
+                <option value="all">全部来源</option>
+                <option value="profile-vault">Profile Vault</option>
+                <option value="system-file">System File</option>
+                <option value="agent">SSH Agent</option>
+                <option value="public-key-only">Public Key</option>
+              </select>
+              <select value={clientKeyProfileFilter} onChange={(event) => setClientKeyProfileFilter(event.target.value)} aria-label="Client key Profile">
+                <option value="all">全部 Profile</option>
+                {sshSessions.map((session) => (
+                  <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
+                ))}
+              </select>
+              <select value={clientKeyGroupBy} onChange={(event) => setClientKeyGroupBy(event.target.value as ClientIdentityGroupBy)} aria-label="Client key 分组">
+                <option value="profile">按 Profile 分组</option>
+                <option value="source">按来源分组</option>
+              </select>
+            </div>
+            <div className="client-key-batch">
+              <span>{selectedClientIdentityItems.length} selected</span>
+              <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={!visibleClientIdentityItems.length}>全选结果</button>
+              <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={!selectedClientKeyIds.length}>清除</button>
+              <div className="client-key-command-group">
+                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={!selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
+                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={!selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
+                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={!selectedClientIdentityItems.length}><Trash2 size={15} /></button>
+              </div>
+            </div>
+            <div className="client-key-groups">
+              {clientIdentityGroups.map((group) => (
+                <section key={group.id} className="client-key-group">
+                  <header><strong>{group.label}</strong><span>{group.items.length}</span></header>
+                  {group.items.map((item) => (
+                    <label key={item.selectionId} className={`client-key-row${item.jumpInUse ? " in-use" : ""}`}>
+                      <input type="checkbox" checked={selectedClientKeyIds.includes(item.selectionId)} onChange={(event) => toggleClientIdentitySelection(item.selectionId, event.target.checked)} />
+                      <span className="client-key-main">
+                        <strong title={item.identity.label}>{item.identity.label}</strong>
+                        <code title={item.identity.fingerprintSha256 ?? item.identity.path ?? item.identity.id}>{item.identity.fingerprintSha256 ?? item.identity.path ?? "No fingerprint"}</code>
+                      </span>
+                      <span className="client-key-meta">
+                        <span>{identitySourceLabel(item.identity.source)}</span>
+                        {clientKeyGroupBy === "source" ? <span>{item.profileName}</span> : null}
+                        {item.jumpInUse ? <span className="client-key-in-use">Jump Host 使用中</span> : null}
+                      </span>
+                    </label>
+                  ))}
+                </section>
+              ))}
+              {!clientIdentityItems.length ? <div className="empty-pane top">Profile 中还没有 client identity</div> : null}
+              {clientIdentityItems.length && !visibleClientIdentityItems.length ? <div className="empty-pane top">当前筛选没有 client identity</div> : null}
+            </div>
+            <details className="key-import-panel">
+              <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
+              <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
+              <input type="file" accept=".pem,.key,.txt" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
               <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
               <button onClick={() => void importPrivateKeyToProfile()} disabled={!selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
-            </section>
-            <div className="key-agent-header">
-              <strong>Agent Keys</strong>
+            </details>
+            <div className="key-agent-header agent-section-header">
+              <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>
               <button onClick={() => void refreshAgentKeys()}>刷新</button>
             </div>
-            {agentKeys.map((identity) => (
-              <div key={identity.id} className="key-row agent-row">
-                <strong>{identity.label}</strong>
-                <span>{identity.fingerprintSha256 ?? "未识别指纹"}</span>
-                <small>{identity.path ?? "ssh-agent"}</small>
-                <div className="key-row-actions">
-                  <button onClick={() => void copyAgentIdentityToProfile(identity)} disabled={!selectedProfile}>添加到 Profile</button>
+            <div className="client-key-batch agent-key-batch">
+              <span>{selectedAgentKeys.length} selected</span>
+              <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={!agentKeys.length}>全选</button>
+              <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={!selectedAgentKeyIds.length}>清除</button>
+              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={!selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
+            </div>
+            <div className="agent-key-list">
+              {agentKeys.map((identity, index) => (
+                <div key={`${identityStableKey(identity)}:${index}`} className="client-key-row agent-row">
+                  <input type="checkbox" checked={selectedAgentKeyIds.includes(identityStableKey(identity))} onChange={(event) => toggleAgentIdentitySelection(identity, event.target.checked)} />
+                  <span className="client-key-main">
+                    <strong title={identity.label}>{identity.label}</strong>
+                    <code title={identity.fingerprintSha256 ?? ""}>{identity.fingerprintSha256 ?? "未识别指纹"}</code>
+                  </span>
+                  <span className="client-key-meta"><span>{identity.path ?? "ssh-agent"}</span></span>
+                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={!selectedProfile}><UserPlus size={15} /></button>
                 </div>
-              </div>
-            ))}
-            {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}
+              ))}
+              {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}
+            </div>
           </section>
         </div>
       </section>
@@ -5553,6 +5818,47 @@ async function persistConnectionSecrets(profile: SessionProfile, credentials: Co
 
 function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & { connection: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> } {
   return profile.connection.kind === "ssh" || profile.connection.kind === "tmux";
+}
+
+function identityStableKey(identity: IdentityRef) {
+  if (identity.fingerprintSha256) return `fingerprint:${identity.fingerprintSha256}`;
+  if (identity.secretRef) return `secret:${identity.secretRef}`;
+  if (identity.path) return `path:${identity.source}:${identity.path}`;
+  return `id:${identity.id}`;
+}
+
+function clientIdentitySelectionId(profileId: string, identity: IdentityRef, index: number) {
+  return `${profileId}\0${identity.id}\0${index}`;
+}
+
+function identitySourceLabel(source: IdentityRef["source"]) {
+  switch (source) {
+    case "profile-vault":
+      return "Profile Vault";
+    case "system-file":
+      return "System File";
+    case "agent":
+      return "SSH Agent";
+    case "public-key-only":
+      return "Public Key";
+  }
+}
+
+function groupClientIdentityItems(items: ClientIdentityItem[], groupBy: ClientIdentityGroupBy) {
+  const groups = new Map<string, { id: string; label: string; items: ClientIdentityItem[] }>();
+  for (const item of items) {
+    const id = groupBy === "profile" ? item.profileId : item.identity.source;
+    const label = groupBy === "profile" ? item.profileName : identitySourceLabel(item.identity.source);
+    const group = groups.get(id) ?? { id, label, items: [] };
+    group.items.push(item);
+    groups.set(id, group);
+  }
+  return Array.from(groups.values());
+}
+
+function createLocalId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function isHostKeyFailure(message: string) {
