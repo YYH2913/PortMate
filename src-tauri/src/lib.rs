@@ -12878,6 +12878,42 @@ mod tests {
             assert_eq!(fs::read(&download_target).unwrap(), payload);
             assert!(!download_part.exists());
 
+            let denied_target = format!("/proc/portmate-transfer-denied-{}.bin", Uuid::new_v4());
+            for protocol in [TransferProtocol::Sftp, TransferProtocol::Scp] {
+                let failed_upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: protocol.clone(),
+                        source: upload_source.display().to_string(),
+                        destination: format!("remote:{denied_target}"),
+                    },
+                )
+                .await
+                .unwrap();
+                let failed_upload =
+                    wait_for_transfer_terminal_state(&state, &failed_upload.id).await;
+                assert_eq!(
+                    failed_upload.status,
+                    TransferStatus::Failed,
+                    "{protocol:?} server-side write failure was not reported: {:?}",
+                    failed_upload.message
+                );
+                let message = failed_upload.message.unwrap_or_default();
+                assert!(
+                    message.contains("SFTP") || message.contains("SCP"),
+                    "{protocol:?} failure lacked protocol context: {message}"
+                );
+                assert!(
+                    !state
+                        .transfer_cancellations
+                        .lock()
+                        .unwrap()
+                        .contains_key(&failed_upload.id),
+                    "{protocol:?} failed transfer retained its cancellation handle"
+                );
+            }
+
             {
                 let mut store = state.store.lock().unwrap();
                 let mut limited = store.profile(&profile.id).unwrap();
