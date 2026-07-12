@@ -16,6 +16,7 @@ tauri-build = { version = "2.5.3", features = [] }
 portmate-core = { path = "../crates/portmate-core" }
 portmate-kdf = { path = "../crates/portmate-kdf" }
 chrono.workspace = true
+flate2 = "1.1.9"
 getrandom = "0.3"
 iota_stronghold = "2.1.0"
 keyring = "4.0.1"
@@ -29,7 +30,9 @@ portable-pty = "0.9"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 serialport = { version = "4.9", default-features = false }
+tar = "0.4.46"
 tauri = { version = "2.10.3", features = [] }
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 uuid.workspace = true

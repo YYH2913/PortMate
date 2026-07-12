@@ -216,6 +216,17 @@ export interface DeleteLogShardsResult {
   bytesDeleted: number;
 }
 
+export interface ExportSessionBundleArchiveResult {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  files: number;
+  rawLogSegments: number;
+  redacted: boolean;
+  warnings: string[];
+}
+
 export interface TransferTask {
   id: string;
   sessionId: string;

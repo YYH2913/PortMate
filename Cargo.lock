@@ -5169,6 +5169,7 @@ name = "portmate"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "flate2",
  "getrandom 0.3.4",
  "iota_stronghold",
  "keyring",
@@ -5183,6 +5184,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2 0.10.9",
+ "tar",
  "tauri",
  "tauri-build",
  "tokio",

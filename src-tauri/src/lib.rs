@@ -1,4 +1,5 @@
 use chrono::Utc;
+use flate2::{write::GzEncoder, Compression};
 use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -20,6 +21,7 @@ use russh::keys::{
 use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
@@ -29,6 +31,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -121,6 +124,8 @@ const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
 const MAX_LOG_DELETE_BATCH: usize = 1_000;
 const DEFAULT_LOG_PREVIEW_BYTES: u64 = 64 * 1024;
 const MAX_LOG_PREVIEW_BYTES: u64 = 1024 * 1024;
+const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
@@ -728,6 +733,33 @@ pub struct DeleteLogShardsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExportSessionBundleArchiveRequest {
+    pub session_id: String,
+    #[serde(default = "default_true")]
+    pub redact_secrets: bool,
+    #[serde(default)]
+    pub include_raw_logs: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSessionBundleArchiveResult {
+    pub path: String,
+    pub checksum_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub files: usize,
+    pub raw_log_segments: usize,
+    pub redacted: bool,
+    pub warnings: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTunnelRequest {
     pub session_id: String,
     pub mode: TunnelMode,
@@ -1075,6 +1107,19 @@ fn delete_log_shards(
     paths: Vec<String>,
 ) -> Result<DeleteLogShardsResult, String> {
     delete_log_shards_inner(&state.store_path, &paths)
+}
+
+#[tauri::command]
+fn export_session_bundle_archive(
+    state: State<'_, AppState>,
+    request: ExportSessionBundleArchiveRequest,
+) -> Result<ExportSessionBundleArchiveResult, String> {
+    let snapshot = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    export_session_bundle_archive_inner(&state.store_path, &snapshot, request)
 }
 
 #[tauri::command]
@@ -12796,6 +12841,363 @@ fn delete_log_shards_inner(
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleFileManifest {
+    path: String,
+    size: usize,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleManifest {
+    format: &'static str,
+    version: u32,
+    session_id: String,
+    created_at: String,
+    redacted: bool,
+    raw_log_segments: usize,
+    files: Vec<BundleFileManifest>,
+    warnings: Vec<String>,
+}
+
+struct BundleArchiveEntry {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+fn export_session_bundle_archive_inner(
+    store_path: &Path,
+    store: &SessionStore,
+    request: ExportSessionBundleArchiveRequest,
+) -> Result<ExportSessionBundleArchiveResult, String> {
+    let profile = store
+        .profile(&request.session_id)
+        .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
+    let redacted = request.redact_secrets;
+    let include_raw_logs = request.include_raw_logs && !redacted;
+    let created_at = Utc::now();
+    let bundle = if redacted {
+        store.export_session_bundle_redacted(&request.session_id)
+    } else {
+        store.export_session_bundle(&request.session_id)
+    };
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    if request.include_raw_logs && redacted {
+        warnings.push("raw log segments were omitted because redaction is enabled".to_string());
+    }
+
+    let bundle_bytes = serde_json::to_vec_pretty(&bundle)
+        .map_err(|error| format!("failed to serialize session bundle: {error}"))?;
+    push_bundle_entry(&mut entries, "bundle.json", bundle_bytes)?;
+
+    let events = bundle
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut event_bytes = Vec::new();
+    for event in &events {
+        serde_json::to_writer(&mut event_bytes, event)
+            .map_err(|error| format!("failed to serialize bundle event: {error}"))?;
+        event_bytes.push(b'\n');
+    }
+    push_bundle_entry(&mut entries, "events.jsonl", event_bytes)?;
+
+    let shard_inventory = match list_log_shards_inner(store_path) {
+        Ok(shards) => shards,
+        Err(error) => {
+            warnings.push(format!("log shard inventory unavailable: {error}"));
+            Vec::new()
+        }
+    };
+    let diagnostics = serde_json::json!({
+        "createdAt": created_at.to_rfc3339(),
+        "portmateVersion": env!("CARGO_PKG_VERSION"),
+        "storeSchemaVersion": SQLITE_SCHEMA_VERSION,
+        "platform": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "family": std::env::consts::FAMILY,
+        },
+        "session": {
+            "id": profile.id,
+            "name": profile.name,
+            "kind": profile.kind,
+        },
+        "eventCount": events.len(),
+        "availableLogShards": shard_inventory,
+        "redacted": redacted,
+        "rawLogsRequested": request.include_raw_logs,
+        "rawLogsIncluded": include_raw_logs,
+    });
+    push_bundle_entry(
+        &mut entries,
+        "diagnostics.json",
+        serde_json::to_vec_pretty(&diagnostics)
+            .map_err(|error| format!("failed to serialize bundle diagnostics: {error}"))?,
+    )?;
+
+    let mut raw_log_segments = 0_usize;
+    if include_raw_logs {
+        let mut seen = HashSet::new();
+        for reference in events
+            .iter()
+            .filter_map(|event| event.get("bytesRef").and_then(serde_json::Value::as_str))
+        {
+            if !seen.insert(reference.to_string()) {
+                continue;
+            }
+            match read_log_bytes_ref(store_path, reference) {
+                Ok((relative, offset, bytes)) => {
+                    let file_name = Path::new(&relative)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("segment.raw");
+                    let path = format!(
+                        "log-segments/{raw_log_segments:04}-{}-{offset}-{}.bin",
+                        sanitize_log_path_segment(file_name),
+                        bytes.len()
+                    );
+                    push_bundle_entry(&mut entries, &path, bytes)?;
+                    raw_log_segments += 1;
+                }
+                Err(error) => warnings.push(format!("{reference}: {error}")),
+            }
+        }
+    }
+
+    let manifest_files = entries
+        .iter()
+        .map(|entry| BundleFileManifest {
+            path: entry.path.clone(),
+            size: entry.bytes.len(),
+            sha256: sha256_hex(&entry.bytes),
+        })
+        .collect::<Vec<_>>();
+    let manifest = BundleManifest {
+        format: "portmate-session-bundle",
+        version: 1,
+        session_id: request.session_id.clone(),
+        created_at: created_at.to_rfc3339(),
+        redacted,
+        raw_log_segments,
+        files: manifest_files,
+        warnings: warnings.clone(),
+    };
+    push_bundle_entry(
+        &mut entries,
+        "manifest.json",
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("failed to serialize bundle manifest: {error}"))?,
+    )?;
+
+    let export_dir = store_path
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .unwrap_or_else(|| PathBuf::from("exports"));
+    fs::create_dir_all(&export_dir).map_err(|error| {
+        format!(
+            "failed to create bundle export directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "{}-{timestamp}-{}.tar.gz",
+        sanitize_log_path_segment(&request.session_id),
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let temp_path = final_path.with_extension("tar.gz.part");
+    if let Err(error) =
+        write_bundle_archive(&temp_path, &entries, created_at.timestamp().max(0) as u64)
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    fs::rename(&temp_path, &final_path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "failed to finalize session bundle {}: {error}",
+            final_path.display()
+        )
+    })?;
+
+    let sha256 = match sha256_file(&final_path) {
+        Ok(sha256) => sha256,
+        Err(error) => {
+            let _ = fs::remove_file(&final_path);
+            return Err(error);
+        }
+    };
+    let size = match fs::metadata(&final_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            let _ = fs::remove_file(&final_path);
+            return Err(format!("failed to read bundle metadata: {error}"));
+        }
+    };
+    let checksum_path = final_path.with_extension("tar.gz.sha256");
+    let checksum_temp_path = final_path.with_extension("tar.gz.sha256.part");
+    let archive_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("portmate-session-bundle.tar.gz");
+    if let Err(error) = fs::write(&checksum_temp_path, format!("{sha256}  {archive_name}\n")) {
+        let _ = fs::remove_file(&final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!(
+            "failed to write bundle checksum {}: {error}",
+            checksum_path.display()
+        ));
+    }
+    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+        let _ = fs::remove_file(&final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!(
+            "failed to finalize bundle checksum {}: {error}",
+            checksum_path.display()
+        ));
+    }
+
+    Ok(ExportSessionBundleArchiveResult {
+        path: final_path.display().to_string(),
+        checksum_path: checksum_path.display().to_string(),
+        sha256,
+        size,
+        files: entries.len(),
+        raw_log_segments,
+        redacted,
+        warnings,
+    })
+}
+
+fn push_bundle_entry(
+    entries: &mut Vec<BundleArchiveEntry>,
+    path: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let current = entries.iter().map(|entry| entry.bytes.len()).sum::<usize>();
+    if bytes.len() > MAX_BUNDLE_ARCHIVE_BYTES.saturating_sub(current) {
+        return Err(format!(
+            "session bundle uncompressed size limit exceeded ({MAX_BUNDLE_ARCHIVE_BYTES} bytes)"
+        ));
+    }
+    entries.push(BundleArchiveEntry {
+        path: path.to_string(),
+        bytes,
+    });
+    Ok(())
+}
+
+fn read_log_bytes_ref(
+    store_path: &Path,
+    reference: &str,
+) -> Result<(String, u64, Vec<u8>), String> {
+    let mut parts = reference.rsplitn(3, ':');
+    let length = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "invalid bytesRef length".to_string())?;
+    let offset = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "invalid bytesRef offset".to_string())?;
+    let relative = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "invalid bytesRef path".to_string())?;
+    if length > MAX_BUNDLE_LOG_SEGMENT_BYTES {
+        return Err(format!(
+            "log segment exceeds {MAX_BUNDLE_LOG_SEGMENT_BYTES} byte limit"
+        ));
+    }
+    let path = resolve_log_shard_path(store_path, relative)?;
+    let size = fs::metadata(&path)
+        .map_err(|error| format!("failed to read referenced log metadata: {error}"))?
+        .len();
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| "bytesRef range overflow".to_string())?;
+    if end > size {
+        return Err(format!(
+            "bytesRef range {offset}..{end} exceeds shard size {size}"
+        ));
+    }
+    let mut file = fs::File::open(&path)
+        .map_err(|error| format!("failed to open referenced log shard: {error}"))?;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(|error| format!("failed to seek referenced log shard: {error}"))?;
+    let mut bytes = vec![0_u8; length as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|error| format!("failed to read referenced log segment: {error}"))?;
+    Ok((relative.to_string(), offset, bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open bundle for checksum: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read bundle for checksum: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn write_bundle_archive(
+    path: &Path,
+    entries: &[BundleArchiveEntry],
+    modified_at: u64,
+) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|error| {
+        format!(
+            "failed to create session bundle {}: {error}",
+            path.display()
+        )
+    })?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut archive = TarBuilder::new(encoder);
+    for entry in entries {
+        let mut header = TarHeader::new_gnu();
+        header.set_size(entry.bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_mtime(modified_at);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, &entry.path, entry.bytes.as_slice())
+            .map_err(|error| {
+                format!("failed to append {} to session bundle: {error}", entry.path)
+            })?;
+    }
+    archive
+        .finish()
+        .map_err(|error| format!("failed to finish session bundle tar stream: {error}"))?;
+    let encoder = archive
+        .into_inner()
+        .map_err(|error| format!("failed to close session bundle tar stream: {error}"))?;
+    let mut file = encoder
+        .finish()
+        .map_err(|error| format!("failed to finish session bundle compression: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("failed to flush session bundle: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync session bundle: {error}"))
+}
+
 fn sanitize_log_path_segment(segment: &str) -> String {
     let cleaned = segment
         .chars()
@@ -14265,6 +14667,7 @@ pub fn run() {
             list_log_shards,
             read_log_shard,
             delete_log_shards,
+            export_session_bundle_archive,
             send_text,
             send_bytes,
             send_key,
@@ -16087,6 +16490,108 @@ mod tests {
         assert!(raw_path.exists());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_bundle_archive_enforces_redaction_and_verifies_checksums() {
+        let root = std::env::temp_dir().join(format!("portmate-bundle-test-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        let secret = b"password=hunter2";
+        let bytes_ref = append_log_bytes(&store_path, &profile, "raw", secret).unwrap();
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        store
+            .record_stream_event_with_bytes_ref(
+                &session_id,
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                String::from_utf8_lossy(secret),
+                Some(bytes_ref),
+            )
+            .unwrap();
+
+        let redacted = export_session_bundle_archive_inner(
+            &store_path,
+            &store,
+            ExportSessionBundleArchiveRequest {
+                session_id: session_id.clone(),
+                redact_secrets: true,
+                include_raw_logs: true,
+            },
+        )
+        .unwrap();
+        assert!(redacted.redacted);
+        assert_eq!(redacted.raw_log_segments, 0);
+        assert!(redacted
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("omitted")));
+        assert_eq!(
+            sha256_file(Path::new(&redacted.path)).unwrap(),
+            redacted.sha256
+        );
+        assert!(fs::read_to_string(&redacted.checksum_path)
+            .unwrap()
+            .contains(&redacted.sha256));
+        let redacted_entries = read_test_bundle_entries(Path::new(&redacted.path));
+        assert!(redacted_entries.contains_key("bundle.json"));
+        assert!(redacted_entries.contains_key("events.jsonl"));
+        assert!(redacted_entries.contains_key("diagnostics.json"));
+        assert!(redacted_entries.contains_key("manifest.json"));
+        assert!(!redacted_entries
+            .keys()
+            .any(|path| path.starts_with("log-segments/")));
+        let redacted_text = String::from_utf8_lossy(&redacted_entries["bundle.json"]);
+        assert!(!redacted_text.contains("hunter2"));
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&redacted_entries["manifest.json"]).unwrap();
+        for file in manifest["files"].as_array().unwrap() {
+            let path = file["path"].as_str().unwrap();
+            assert_eq!(
+                file["sha256"].as_str().unwrap(),
+                sha256_hex(&redacted_entries[path])
+            );
+        }
+
+        let plain = export_session_bundle_archive_inner(
+            &store_path,
+            &store,
+            ExportSessionBundleArchiveRequest {
+                session_id,
+                redact_secrets: false,
+                include_raw_logs: true,
+            },
+        )
+        .unwrap();
+        assert!(!plain.redacted);
+        assert_eq!(plain.raw_log_segments, 1);
+        let plain_entries = read_test_bundle_entries(Path::new(&plain.path));
+        let raw_entry = plain_entries
+            .iter()
+            .find(|(path, _)| path.starts_with("log-segments/"))
+            .unwrap();
+        assert_eq!(raw_entry.1, secret);
+        assert!(String::from_utf8_lossy(&plain_entries["events.jsonl"]).contains("hunter2"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn read_test_bundle_entries(path: &Path) -> HashMap<String, Vec<u8>> {
+        let file = fs::File::open(path).unwrap();
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        let mut result = HashMap::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            result.insert(path, bytes);
+        }
+        result
     }
 
     #[test]

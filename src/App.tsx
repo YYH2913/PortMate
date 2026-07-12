@@ -21,6 +21,7 @@ import {
   KeyRound,
   Lock,
   LoaderCircle,
+  Package,
   Pencil,
   Play,
   Plus,
@@ -38,7 +39,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
-import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -1313,7 +1314,7 @@ function handleMenuAction(item: string) {
         activateSession(sessionId);
         setUtilityDialog(null);
       }} onClose={() => setUtilityDialog(null)} />}
-      {utilityDialog === "logs" && <LogManagerDialog onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
+      {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
       {credentialPrompt && <CredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />}
@@ -2876,7 +2877,17 @@ function SearchDialog({
   );
 }
 
-function LogManagerDialog({ onClose, onNotice }: { onClose: () => void; onNotice: (message: string) => void }) {
+function LogManagerDialog({
+  sessions,
+  activeId,
+  onClose,
+  onNotice,
+}: {
+  sessions: SessionSummary[];
+  activeId: string;
+  onClose: () => void;
+  onNotice: (message: string) => void;
+}) {
   const [shards, setShards] = useState<LogShardInfo[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [preview, setPreview] = useState<LogShardPreview | null>(null);
@@ -2884,6 +2895,11 @@ function LogManagerDialog({ onClose, onNotice }: { onClose: () => void; onNotice
   const [format, setFormat] = useState<LogShardInfo["format"] | "all">("all");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [bundleSessionId, setBundleSessionId] = useState(activeId || sessions[0]?.profile.id || "");
+  const [bundleRedacted, setBundleRedacted] = useState(true);
+  const [bundleRawLogs, setBundleRawLogs] = useState(false);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleResult, setBundleResult] = useState<ExportSessionBundleArchiveResult | null>(null);
 
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
@@ -2946,6 +2962,29 @@ function LogManagerDialog({ onClose, onNotice }: { onClose: () => void; onNotice
     setSelected((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]);
   }
 
+  async function exportBundle() {
+    if (!bundleSessionId) return;
+    setBundleBusy(true);
+    setBundleResult(null);
+    setError("");
+    try {
+      const result = await invokeBackend<ExportSessionBundleArchiveResult>("export_session_bundle_archive", {
+        request: {
+          sessionId: bundleSessionId,
+          redactSecrets: bundleRedacted,
+          includeRawLogs: bundleRawLogs,
+        },
+      });
+      setBundleResult(result);
+      const warning = result.warnings.length ? ` · ${result.warnings.join(" · ")}` : "";
+      onNotice(`会话包已导出：${result.path}${warning}`);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setBundleBusy(false);
+    }
+  }
+
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="wind-dialog log-manager-dialog">
@@ -2971,6 +3010,26 @@ function LogManagerDialog({ onClose, onNotice }: { onClose: () => void; onNotice
             <span>{filtered.length} 项 · 已选 {selected.length}</span>
             <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>全选结果</button>
             <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>清除</button>
+          </div>
+          <div className="log-bundle-panel">
+            <div className="log-bundle-controls">
+              <select value={bundleSessionId} onChange={(event) => setBundleSessionId(event.target.value)} aria-label="导出会话">
+                {sessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}
+              </select>
+              <label><input type="checkbox" checked={bundleRedacted} onChange={(event) => {
+                setBundleRedacted(event.target.checked);
+                if (event.target.checked) setBundleRawLogs(false);
+              }} />脱敏</label>
+              <label className={bundleRedacted ? "disabled" : ""}><input type="checkbox" checked={bundleRawLogs} disabled={bundleRedacted} onChange={(event) => setBundleRawLogs(event.target.checked)} />Raw 片段</label>
+              <button type="button" onClick={() => void exportBundle()} disabled={bundleBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? "导出中" : "导出会话包"}</button>
+            </div>
+            {bundleResult ? (
+              <div className="log-bundle-result">
+                <code title={bundleResult.path}>{bundleResult.path}</code>
+                <span>{formatBytes(bundleResult.size)} · {bundleResult.files} 文件 · Raw {bundleResult.rawLogSegments} · SHA-256 {bundleResult.sha256.slice(0, 16)}...</span>
+                <button type="button" title="复制会话包信息" aria-label="复制会话包信息" onClick={() => void navigator.clipboard?.writeText(`${bundleResult.path}\n${bundleResult.checksumPath}\nSHA-256 ${bundleResult.sha256}`).catch(() => {})}><Copy size={14} /></button>
+              </div>
+            ) : null}
           </div>
           <div className="log-manager-main">
             <div className="log-shard-list">

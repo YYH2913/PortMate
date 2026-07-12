@@ -532,8 +532,15 @@ impl SessionStore {
         session_id: &str,
         redact_text: bool,
     ) -> serde_json::Value {
+        let mut summary = self
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == session_id);
         let mut events = self.tail_log(session_id, 500);
         if redact_text {
+            if let Some(summary) = &mut summary {
+                summary.last_line = summary.last_line.take().map(|text| redact_secrets(&text));
+            }
             for event in &mut events {
                 event.text = event.text.take().map(|text| redact_secrets(&text));
             }
@@ -557,7 +564,7 @@ impl SessionStore {
             .collect::<Vec<_>>();
 
         serde_json::json!({
-            "summary": self.summaries().into_iter().find(|summary| summary.profile.id == session_id),
+            "summary": summary,
             "events": events,
             "logShards": log_shards,
             "timeline": self.timeline_for(session_id),
