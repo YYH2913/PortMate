@@ -6082,20 +6082,7 @@ async fn create_tunnel_inner(
     request: CreateTunnelRequest,
 ) -> Result<TunnelSpec, String> {
     let request = normalize_tunnel_request(request)?;
-    let (handle, remote_forwards) = {
-        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(&request.session_id)
-            .map(|runtime| {
-                (
-                    Arc::clone(&runtime.handle),
-                    Arc::clone(&runtime.remote_forwards),
-                )
-            })
-            .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能创建 tunnel".to_string())?
-    };
-
-    let mut tunnel = TunnelSpec {
+    let tunnel = TunnelSpec {
         id: Uuid::new_v4().to_string(),
         label: request.label.clone().unwrap_or_else(|| {
             tunnel_label(
@@ -6113,29 +6100,70 @@ async fn create_tunnel_inner(
         target_port: request.target_port,
         enabled: true,
     };
+    let (tunnel, local_addr) =
+        start_tunnel_runtime(state, &request.session_id, tunnel, request.label.is_none()).await?;
+    persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, local_addr)?;
+    Ok(tunnel)
+}
 
-    if request.mode == TunnelMode::Remote {
-        if request.target_host.trim().is_empty() || request.target_port == 0 {
+async fn start_tunnel_runtime(
+    state: &AppState,
+    session_id: &str,
+    mut tunnel: TunnelSpec,
+    relabel_assigned_port: bool,
+) -> Result<(TunnelSpec, Option<std::net::SocketAddr>), String> {
+    let (handle, remote_forwards) = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(session_id)
+            .map(|runtime| {
+                (
+                    Arc::clone(&runtime.handle),
+                    Arc::clone(&runtime.remote_forwards),
+                )
+            })
+            .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能创建 tunnel".to_string())?
+    };
+
+    if tunnel.id.trim().is_empty() {
+        return Err("tunnel requires an id".to_string());
+    }
+    if state
+        .tunnels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(&tunnel.id)
+    {
+        return Err(format!("tunnel already running: {}", tunnel.id));
+    }
+
+    if tunnel.mode == TunnelMode::Remote {
+        if tunnel.target_host.trim().is_empty() || tunnel.target_port == 0 {
             return Err("remote tunnel requires a local target host and port".to_string());
         }
         let returned_port = {
             let handle = handle.lock().await;
             handle
-                .tcpip_forward(request.bind_host.clone(), u32::from(request.bind_port))
+                .tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
                 .await
                 .map_err(|error| {
                     format!(
                         "remote SSH tunnel request failed {}:{}: {error}",
-                        request.bind_host, request.bind_port
+                        tunnel.bind_host, tunnel.bind_port
                     )
                 })?
         };
-        if request.bind_port == 0 && returned_port > 0 {
+        if tunnel.bind_port == 0 && returned_port > 0 {
             tunnel.bind_port = returned_port as u16;
-            tunnel.label = format!(
-                "remote {}:{} -> {}:{}",
-                tunnel.bind_host, tunnel.bind_port, tunnel.target_host, tunnel.target_port
-            );
+            if relabel_assigned_port {
+                tunnel.label = tunnel_label(
+                    tunnel.mode,
+                    &tunnel.bind_host,
+                    tunnel.bind_port,
+                    &tunnel.target_host,
+                    tunnel.target_port,
+                );
+            }
         }
         let metrics = Arc::new(TunnelMetrics::default());
         {
@@ -6156,31 +6184,30 @@ async fn create_tunnel_inner(
             tunnels.insert(
                 tunnel.id.clone(),
                 TunnelRuntime {
-                    session_id: request.session_id.clone(),
+                    session_id: session_id.to_string(),
                     spec: tunnel.clone(),
                     metrics,
                     closed,
                 },
             );
         }
-        persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, None)?;
-        return Ok(tunnel);
+        return Ok((tunnel, None));
     }
 
-    let listener = TcpListener::bind((request.bind_host.clone(), request.bind_port))
+    let listener = TcpListener::bind((tunnel.bind_host.clone(), tunnel.bind_port))
         .await
         .map_err(|error| {
             format!(
                 "SSH tunnel bind failed {}:{}: {error}",
-                request.bind_host, request.bind_port
+                tunnel.bind_host, tunnel.bind_port
             )
         })?;
     let local_addr = listener
         .local_addr()
         .map_err(|error| format!("SSH tunnel local addr failed: {error}"))?;
-    if request.bind_port == 0 {
+    if tunnel.bind_port == 0 {
         tunnel.bind_port = local_addr.port();
-        if request.label.is_none() {
+        if relabel_assigned_port {
             tunnel.label = tunnel_label(
                 tunnel.mode,
                 &tunnel.bind_host,
@@ -6197,7 +6224,7 @@ async fn create_tunnel_inner(
         tunnels.insert(
             tunnel.id.clone(),
             TunnelRuntime {
-                session_id: request.session_id.clone(),
+                session_id: session_id.to_string(),
                 spec: tunnel.clone(),
                 metrics: Arc::clone(&metrics),
                 closed: Arc::clone(&closed),
@@ -6205,7 +6232,7 @@ async fn create_tunnel_inner(
         );
     }
 
-    let session_id = request.session_id.clone();
+    let session_id = session_id.to_string();
     let store = Arc::clone(&state.store);
     let store_path = state.store_path.clone();
     let tunnel_registry = Arc::clone(&state.tunnels);
@@ -6280,8 +6307,75 @@ async fn create_tunnel_inner(
         }
     });
 
-    persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, Some(local_addr))?;
-    Ok(tunnel)
+    Ok((tunnel, Some(local_addr)))
+}
+
+fn enabled_tunnel_specs(state: &AppState, session_id: &str) -> Result<Vec<TunnelSpec>, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    let tunnels = match profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.tunnels,
+        _ => Vec::new(),
+    };
+    Ok(tunnels
+        .into_iter()
+        .filter(|tunnel| tunnel.enabled)
+        .collect())
+}
+
+async fn restore_enabled_tunnels(state: &AppState, session_id: &str) -> (usize, usize) {
+    let tunnels = match enabled_tunnel_specs(state, session_id) {
+        Ok(tunnels) => tunnels,
+        Err(error) => {
+            record_tunnel_restore_failure(state, session_id, None, &error);
+            return (0, 1);
+        }
+    };
+    let mut restored = 0;
+    let mut failed = 0;
+    for tunnel in tunnels {
+        let tunnel_id = tunnel.id.clone();
+        match start_tunnel_runtime(state, session_id, tunnel, false).await {
+            Ok((tunnel, local_addr)) => {
+                restored += 1;
+                if let Err(error) =
+                    persist_tunnel_to_profile_and_log(state, session_id, &tunnel, local_addr)
+                {
+                    record_tunnel_restore_failure(
+                        state,
+                        session_id,
+                        Some(&tunnel_id),
+                        &format!("runtime restored but persistence failed: {error}"),
+                    );
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                record_tunnel_restore_failure(state, session_id, Some(&tunnel_id), &error);
+            }
+        }
+    }
+    (restored, failed)
+}
+
+fn record_tunnel_restore_failure(
+    state: &AppState,
+    session_id: &str,
+    tunnel_id: Option<&str>,
+    error: &str,
+) {
+    let label = tunnel_id.map(|id| format!(" {id}")).unwrap_or_default();
+    if let Ok(mut store) = state.store.lock() {
+        store.record_system_event(
+            session_id,
+            format!("PortMate: failed to restore SSH tunnel{label}: {error}"),
+        );
+        if let Err(save_error) = save_store(&state.store_path, &store) {
+            eprintln!("PortMate: failed to persist tunnel restore failure: {save_error}");
+        }
+    }
 }
 
 fn normalize_tunnel_request(
@@ -8901,11 +8995,15 @@ async fn reconnect_ssh_session(
             closed: next_closed,
         }));
 
+        let (restored_tunnels, failed_tunnels) = restore_enabled_tunnels(&state, &session_id).await;
+
         if let Ok(mut store) = state.store.lock() {
             let _ = store.record_auth_success(&session_id, auth_method);
             store.record_system_event(
                 &session_id,
-                format!("PortMate: SSH session reconnected via {auth_method:?}"),
+                format!(
+                    "PortMate: SSH session reconnected via {auth_method:?}; restored {restored_tunnels} tunnel(s), {failed_tunnels} failed"
+                ),
             );
             if let Some(error) = one_time_cleanup_error {
                 store.record_system_event(
@@ -13105,7 +13203,7 @@ mod tests {
                 ssh.endpoint.host = "127.0.0.1".to_string();
                 ssh.endpoint.port = port;
                 ssh.username = username.clone();
-                ssh.reconnect = false;
+                ssh.reconnect = true;
                 ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
                 ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
                 ssh.identity_refs = vec![IdentityRef {
@@ -14111,6 +14209,190 @@ mod tests {
             .await
             .expect("remote tunnel metrics did not settle");
             let stopped = stop_tunnel_inner(&state, &remote_tunnel.id).await.unwrap();
+            assert!(!stopped.spec.enabled);
+
+            let reconnect_tunnel = create_tunnel_inner(
+                &state,
+                CreateTunnelRequest {
+                    session_id: profile.id.clone(),
+                    mode: TunnelMode::Local,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 0,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: port,
+                    label: Some("reconnect tunnel".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+            let reconnect_remote_tunnel = create_tunnel_inner(
+                &state,
+                CreateTunnelRequest {
+                    session_id: profile.id.clone(),
+                    mode: TunnelMode::Remote,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 0,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: port,
+                    label: Some("reconnect remote tunnel".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+            let conflict_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let conflict_port = conflict_listener.local_addr().unwrap().port();
+            let conflict_tunnel = TunnelSpec {
+                id: "reconnect-conflict".to_string(),
+                label: "occupied reconnect tunnel".to_string(),
+                mode: TunnelMode::Local,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: conflict_port,
+                target_host: "127.0.0.1".to_string(),
+                target_port: port,
+                enabled: true,
+            };
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut saved_profile = store.profile(&profile.id).unwrap();
+                match &mut saved_profile.connection {
+                    ConnectionConfig::Ssh(ssh) => ssh.tunnels.push(conflict_tunnel.clone()),
+                    _ => panic!("expected SSH profile"),
+                }
+                store.upsert_profile(saved_profile);
+            }
+            let (previous_runtime_id, reconnect_handle) = {
+                let connections = state.ssh.lock().unwrap();
+                let runtime = connections.get(&profile.id).unwrap();
+                (runtime.runtime_id.clone(), Arc::clone(&runtime.handle))
+            };
+            {
+                let handle = reconnect_handle.lock().await;
+                handle
+                    .disconnect(
+                        Disconnect::ByApplication,
+                        "PortMate tunnel reconnect integration test",
+                        "en",
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let restored = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let runtime_replaced = state
+                        .ssh
+                        .lock()
+                        .unwrap()
+                        .get(&profile.id)
+                        .is_some_and(|runtime| runtime.runtime_id != previous_runtime_id);
+                    let restored = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .into_iter()
+                        .find(|status| status.spec.id == reconnect_tunnel.id);
+                    let remote_restored = list_tunnels_inner(&state, Some(&profile.id))
+                        .unwrap()
+                        .iter()
+                        .any(|status| status.spec.id == reconnect_remote_tunnel.id);
+                    let conflict_reported = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .tail_log(&profile.id, 200)
+                        .iter()
+                        .any(|event| {
+                            event.text.as_deref().is_some_and(|text| {
+                                text.contains("failed to restore SSH tunnel reconnect-conflict")
+                                    && text.contains("SSH tunnel bind failed")
+                            })
+                        });
+                    if runtime_replaced && remote_restored && conflict_reported {
+                        if let Some(restored) = restored {
+                            break restored;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                let statuses = list_tunnels_inner(&state, Some(&profile.id)).unwrap();
+                let events = state.store.lock().unwrap().tail_log(&profile.id, 20);
+                panic!(
+                    "SSH reconnect did not restore the tunnel runtime; statuses={statuses:?}; recent events={events:?}"
+                )
+            });
+            assert_eq!(restored.spec.id, reconnect_tunnel.id);
+            assert_eq!(restored.spec.label, reconnect_tunnel.label);
+            assert_eq!(restored.spec.bind_port, reconnect_tunnel.bind_port);
+            let restored_tunnels = list_tunnels_inner(&state, Some(&profile.id)).unwrap();
+            let restored_remote = restored_tunnels
+                .iter()
+                .find(|status| status.spec.id == reconnect_remote_tunnel.id)
+                .unwrap();
+            assert_eq!(restored_remote.spec.label, reconnect_remote_tunnel.label);
+            assert_eq!(
+                restored_remote.spec.bind_port,
+                reconnect_remote_tunnel.bind_port
+            );
+            assert!(restored_tunnels
+                .iter()
+                .all(|status| status.spec.id != conflict_tunnel.id));
+
+            let saved_profile = state.store.lock().unwrap().profile(&profile.id).unwrap();
+            let saved_tunnels = match saved_profile.connection {
+                ConnectionConfig::Ssh(ssh) => ssh.tunnels,
+                _ => panic!("expected SSH profile"),
+            };
+            assert!(saved_tunnels
+                .iter()
+                .any(|tunnel| tunnel.id == conflict_tunnel.id && tunnel.enabled));
+            assert!(state
+                .store
+                .lock()
+                .unwrap()
+                .tail_log(&profile.id, 200)
+                .iter()
+                .any(|event| event.text.as_deref().is_some_and(|text| {
+                    text.contains("failed to restore SSH tunnel reconnect-conflict")
+                        && text.contains("SSH tunnel bind failed")
+                })));
+
+            let mut restored_client = TcpStream::connect(("127.0.0.1", reconnect_tunnel.bind_port))
+                .await
+                .unwrap();
+            let mut ssh_banner = [0_u8; 4];
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                restored_client.read_exact(&mut ssh_banner),
+            )
+            .await
+            .expect("restored tunnel did not receive an SSH banner")
+            .unwrap();
+            assert_eq!(&ssh_banner, b"SSH-");
+            drop(restored_client);
+
+            let mut restored_remote_client =
+                TcpStream::connect(("127.0.0.1", reconnect_remote_tunnel.bind_port))
+                    .await
+                    .unwrap();
+            let mut remote_ssh_banner = [0_u8; 4];
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                restored_remote_client.read_exact(&mut remote_ssh_banner),
+            )
+            .await
+            .expect("restored remote tunnel did not receive an SSH banner")
+            .unwrap();
+            assert_eq!(&remote_ssh_banner, b"SSH-");
+            drop(restored_remote_client);
+            drop(conflict_listener);
+            let stopped = stop_tunnel_inner(&state, &reconnect_tunnel.id)
+                .await
+                .unwrap();
+            assert!(!stopped.spec.enabled);
+            let stopped = stop_tunnel_inner(&state, &reconnect_remote_tunnel.id)
+                .await
+                .unwrap();
             assert!(!stopped.spec.enabled);
 
             let closed = close_session_inner(&state, profile.id.clone())
