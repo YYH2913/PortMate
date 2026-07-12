@@ -15471,6 +15471,184 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn serial_socat_reconnects_after_pty_replacement() {
+        if Command::new("socat").arg("-V").output().is_err() {
+            eprintln!("skipping serial reconnect integration test: socat is not installed");
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("portmate-serial-reconnect-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let portmate_pty = root.join("portmate.pty");
+        let peer_pty = root.join("peer.pty");
+        let spawn_socat = || {
+            let child = Command::new("socat")
+                .args(["-d", "-d"])
+                .arg(format!("pty,raw,echo=0,link={}", portmate_pty.display()))
+                .arg(format!("pty,raw,echo=0,link={}", peer_pty.display()))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            ChildGuard(Some(child))
+        };
+        let mut socat = spawn_socat();
+
+        tauri::async_runtime::block_on(async {
+            wait_for_socat_pty_pair(&mut socat, &portmate_pty, &peer_pty).await;
+
+            let profile = test_serial_profile(portmate_core::SerialConnection {
+                port: portmate_pty.display().to_string(),
+                baud_rate: 115_200,
+                data_bits: 8,
+                stop_bits: 1,
+                parity: "none".to_string(),
+                flow_control: "none".to_string(),
+                dtr: false,
+                rts: false,
+                reconnect: true,
+            });
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let opened = open_serial_session(&state, profile.clone()).unwrap();
+            assert_eq!(opened.runtime.status, SessionStatus::Connected);
+            let first_runtime_id = state
+                .serial
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .runtime_id
+                .clone();
+            let peer = serialport::new(peer_pty.display().to_string(), 115_200)
+                .timeout(Duration::from_secs(2))
+                .open()
+                .unwrap();
+
+            socat.stop();
+            drop(peer);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let reconnecting = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .is_some_and(|summary| {
+                            summary.runtime.status == SessionStatus::Reconnecting
+                        });
+                    let writer_released = state
+                        .serial
+                        .lock()
+                        .unwrap()
+                        .get(&profile.id)
+                        .is_some_and(|runtime| runtime.writer.is_none());
+                    if reconnecting && writer_released {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("serial runtime did not enter reconnecting state");
+            let error = send_bytes_inner(state.session_io(), profile.id.clone(), vec![0xde, 0xad])
+                .await
+                .unwrap_err();
+            assert!(error.contains("串口正在重连"), "{error}");
+
+            let _ = fs::remove_file(&portmate_pty);
+            let _ = fs::remove_file(&peer_pty);
+            socat = spawn_socat();
+            wait_for_socat_pty_pair(&mut socat, &portmate_pty, &peer_pty).await;
+            let mut peer = serialport::new(peer_pty.display().to_string(), 115_200)
+                .timeout(Duration::from_secs(2))
+                .open()
+                .unwrap();
+
+            tokio::time::timeout(Duration::from_secs(4), async {
+                loop {
+                    let runtime_replaced = state
+                        .serial
+                        .lock()
+                        .unwrap()
+                        .get(&profile.id)
+                        .is_some_and(|runtime| {
+                            runtime.runtime_id != first_runtime_id && runtime.writer.is_some()
+                        });
+                    let connected = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .is_some_and(|summary| summary.runtime.status == SessionStatus::Connected);
+                    if runtime_replaced && connected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("serial runtime did not reconnect to the replacement PTY");
+            let mut inbound = state
+                .serial
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .tap
+                .subscribe();
+
+            let outbound = vec![0xff, 0x00, 0x80, 0x7f];
+            send_bytes_inner(state.session_io(), profile.id.clone(), outbound.clone())
+                .await
+                .unwrap();
+            let mut peer_received = [0_u8; 4];
+            peer.read_exact(&mut peer_received).unwrap();
+            assert_eq!(peer_received, outbound.as_slice());
+
+            let peer_reply = [0x41, 0x00, 0xff, 0x42];
+            peer.write_all(&peer_reply).unwrap();
+            peer.flush().unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(3), inbound.recv())
+                .await
+                .expect("reconnected serial runtime did not receive loopback bytes")
+                .expect("reconnected serial runtime tap closed");
+            assert_eq!(received, peer_reply);
+
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("serial port closed"));
+            assert!(screen.contains("serial port reconnected"));
+            let closed = close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        socat.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_socat_pty_pair(socat: &mut ChildGuard, portmate_pty: &Path, peer_pty: &Path) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !portmate_pty.exists() || !peer_pty.exists() {
+                if let Some(status) = socat.0.as_mut().unwrap().try_wait().unwrap() {
+                    panic!("socat exited before creating PTYs: {status}");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("socat did not create PTYs");
+    }
+
     #[test]
     fn stopping_tunnel_marks_profile_tunnel_disabled() {
         let mut store = SessionStore::default();

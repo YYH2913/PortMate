@@ -185,12 +185,12 @@ npm run build
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 78：`portmate` 49、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 79：`portmate` 50、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
 - 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序、真实 ssh-agent 策略/过滤和两跳 Jump Host 集成测试；第一/二跳连接拒绝、三段静默握手超时、逐跳独立 identity 拒绝、目标 identity 耗尽，以及 password/keyboard-interactive 到公钥端点的混合认证链均已覆盖。
-- 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
+- 已有 `socat` 虚拟串口 loopback 二进制收发和 PTY 消失/重建后的自动重连测试，覆盖 runtime ID 轮换、重连期间拒绝写入和恢复后的双向 I/O；真实硬件和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传和 lrzsz X/Y/ZModem 双向端到端测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/取消/断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；服务端撤销 remote forward 等更深健康探测仍待补。
@@ -207,7 +207,7 @@ npm run build
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、Client Key 私钥文件/粘贴导入、Agent identity 列表、host key 字段编辑、复制 host key/agent identity 到 profile 已有；Client Key 分组/批量和更完整高级管理待补。 |
-| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商/CRLF/raw byte IAC 转义、Telnet/Raw TCP loopback 与 TCP 自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
+| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商/CRLF/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH SFTP 浏览/写操作/上传/远端复制/下载、SCP 上传/下载、五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态和活动 SSH 断开后重连续传已覆盖，外部文件/目录递归拖放及更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控和 XModem 精确长度已覆盖，物理串口、取消/断线和工具变体矩阵待补。 |
@@ -226,7 +226,7 @@ npm run build
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. 为 tunnel 补齐服务端撤销 remote forward 等更深健康探测，并为远端命令型传输补齐更完整的失败状态和错误可视化；自动重连后按原 ID/标签/端口重建及失败隔离已完成。
-4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
+4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵和 modem 取消/断线；虚拟串口重连已覆盖。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
