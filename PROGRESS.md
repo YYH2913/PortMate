@@ -63,7 +63,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH PTY shell：`russh` 连接、PTY、resize、password/public-key/keyboard-interactive/ssh-agent、profile-vault 私钥、保存密码/口令。
 - Shell：跨平台 PTY 基础能力，支持自定义程序、参数、cwd。
 - Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写，活动串口会话可查看最近收发事件的时间戳、方向、Hex 和文本预览；profile 开启 reconnect 后，读线程断开会释放旧端口、进入 `Reconnecting`，并按 1 秒间隔后台重开，用户关闭或手动重连会取消旧重连循环。
-- Telnet/Raw TCP：socket 模式读写；Telnet 已有最小 IAC 选项协商、终端类型响应、换行编码、Hex/raw byte IAC 转义，以及 Telnet/Raw TCP loopback mock 回归覆盖。
+- Telnet/Raw TCP：socket 模式读写；Telnet 已有增量 IAC 选项协商、分片终端类型子协商、NVT `CR NUL`/CRLF 编解码、Hex/raw byte IAC 转义，以及 Telnet/Raw TCP loopback mock 回归覆盖；协商回复写失败会结束旧 transport 并进入统一断开/重连流程。
 - TCP/Telnet：profile 开启 reconnect 后，远端断开会进入 `Reconnecting`，保留可取消的 runtime 占位并按 1 秒间隔后台重连；用户主动关闭或手动重连会取消旧重连循环；loopback 回归覆盖远端立即断开、runtime id 轮换和 `Connected -> Reconnecting -> Connected` 状态恢复。
 - Tmux：远端 `list-sessions`、`list-panes`、attach/new-session。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
@@ -185,13 +185,13 @@ npm run build
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 83：`portmate` 54、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 85：`portmate` 56、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
 - 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序、真实 ssh-agent 策略/过滤和两跳 Jump Host 集成测试；第一/二跳连接拒绝、三段静默握手超时、逐跳独立 identity 拒绝、目标 identity 耗尽，以及 password/keyboard-interactive 到公钥端点的混合认证链均已覆盖。
 - 已有 `socat` 虚拟串口 loopback 二进制收发和 PTY 消失/重建后的自动重连测试，覆盖 runtime ID 轮换、重连期间拒绝写入和恢复后的双向 I/O；真实硬件和 modem 测试矩阵仍待补。
-- Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
+- Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、子协商 IAC 转义、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；BINARY/NAWS 等更完整 Telnet 选项和更广服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；服务端撤销 remote forward 等更深健康探测仍待补。
 - 没有 Playwright UI/截图/交互回归。
@@ -207,7 +207,7 @@ npm run build
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、Client Key 私钥文件/粘贴导入、Agent identity 列表、host key 字段编辑、复制 host key/agent identity 到 profile 已有；Client Key 分组/批量和更完整高级管理待补。 |
-| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商/CRLF/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
+| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；Telnet 高级选项、深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH SFTP 浏览/写操作/上传/远端复制/下载、SCP 上传/下载、五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态和活动 SSH 断开后重连续传已覆盖，外部文件/目录递归拖放及更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |

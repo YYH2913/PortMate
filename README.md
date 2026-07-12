@@ -79,7 +79,7 @@ The `传输 -> SFTP/SCP 传输` dialog supports local file copy, protocol-native
 
 The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, file properties, local-to-remote upload, remote-to-local download, and pane-to-pane file drag-and-drop through the same SFTP transfer queue.
 
-The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text. Telnet Hex/raw byte sends escape `0xFF` as doubled IAC on the wire, while text sends keep Telnet CRLF normalization.
+The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text. Telnet Hex/raw byte sends escape `0xFF` as doubled IAC on the wire, while text uses NVT CRLF/`CR NUL` encoding. Incoming Telnet negotiation and NVT decoding retain state across fragmented socket reads, including terminal-type subnegotiation and EOF flushing of a pending CR.
 
 The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
 

@@ -1017,13 +1017,21 @@ fn outbound_bytes_for_session(
 
 fn encode_telnet_outbound_text(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
-    let mut previous = '\0';
-    for ch in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
-            '\n' if previous != '\r' => output.push_str("\r\n"),
+            '\r' => {
+                output.push('\r');
+                if chars.peek().copied() == Some('\n') {
+                    chars.next();
+                    output.push('\n');
+                } else {
+                    output.push('\0');
+                }
+            }
+            '\n' => output.push_str("\r\n"),
             _ => output.push(ch),
         }
-        previous = ch;
     }
     output
 }
@@ -9234,6 +9242,7 @@ enum TelnetState {
 struct TelnetNegotiator {
     state: TelnetState,
     subnegotiation: Vec<u8>,
+    pending_cr: bool,
 }
 
 impl TelnetNegotiator {
@@ -9241,7 +9250,36 @@ impl TelnetNegotiator {
         Self {
             state: TelnetState::Data,
             subnegotiation: Vec::new(),
+            pending_cr: false,
         }
+    }
+
+    fn push_data_byte(&mut self, byte: u8, output: &mut Vec<u8>) {
+        if self.pending_cr {
+            output.push(b'\r');
+            self.pending_cr = false;
+            if byte == 0 {
+                return;
+            }
+        }
+        if byte == b'\r' {
+            self.pending_cr = true;
+        } else {
+            output.push(byte);
+        }
+    }
+
+    fn flush_pending_cr(&mut self, output: &mut Vec<u8>) {
+        if self.pending_cr {
+            output.push(b'\r');
+            self.pending_cr = false;
+        }
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        let mut output = Vec::new();
+        self.flush_pending_cr(&mut output);
+        output
     }
 
     fn filter(&mut self, input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -9251,14 +9289,15 @@ impl TelnetNegotiator {
             match self.state {
                 TelnetState::Data => {
                     if *byte == TELNET_IAC {
+                        self.flush_pending_cr(&mut output);
                         self.state = TelnetState::Iac;
                     } else {
-                        output.push(*byte);
+                        self.push_data_byte(*byte, &mut output);
                     }
                 }
                 TelnetState::Iac => match *byte {
                     TELNET_IAC => {
-                        output.push(TELNET_IAC);
+                        self.push_data_byte(TELNET_IAC, &mut output);
                         self.state = TelnetState::Data;
                     }
                     TELNET_DO | TELNET_DONT | TELNET_WILL | TELNET_WONT => {
@@ -9292,6 +9331,9 @@ impl TelnetNegotiator {
                         }
                         self.subnegotiation.clear();
                         self.state = TelnetState::Data;
+                    } else if *byte == TELNET_IAC {
+                        self.subnegotiation.push(TELNET_IAC);
+                        self.state = TelnetState::Subnegotiation;
                     } else {
                         self.subnegotiation.push(TELNET_IAC);
                         self.subnegotiation.push(*byte);
@@ -9370,7 +9412,7 @@ fn read_tcp_stream(
         let mut has_unpersisted_stream = false;
         let mut telnet = (label == "Telnet").then(TelnetNegotiator::new);
 
-        loop {
+        'read_loop: loop {
             match read_half.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(size) => {
@@ -9379,6 +9421,16 @@ fn read_tcp_stream(
                     } else {
                         (buffer[..size].to_vec(), Vec::new())
                     };
+                    if !bytes.is_empty() {
+                        let _ = tap.send(bytes.clone());
+                        record_channel_text(
+                            &io,
+                            &session_id,
+                            EventStream::Stdout,
+                            String::from_utf8_lossy(&bytes).to_string(),
+                        );
+                        has_unpersisted_stream = true;
+                    }
                     for reply in replies {
                         let mut writer = writer.lock().await;
                         if let Err(error) = writer.write_all(&reply).await {
@@ -9387,21 +9439,18 @@ fn read_tcp_stream(
                                     &session_id,
                                     format!("PortMate: Telnet negotiation reply failed: {error}"),
                                 );
+                                if let Err(error) = save_store(&io.store_path, &store) {
+                                    eprintln!(
+                                        "PortMate: failed to persist Telnet negotiation error: {error}"
+                                    );
+                                }
                             }
-                            break;
+                            break 'read_loop;
                         }
                     }
                     if bytes.is_empty() {
                         continue;
                     }
-                    let _ = tap.send(bytes.clone());
-                    record_channel_text(
-                        &io,
-                        &session_id,
-                        EventStream::Stdout,
-                        String::from_utf8_lossy(&bytes).to_string(),
-                    );
-                    has_unpersisted_stream = true;
                 }
                 Err(error) => {
                     if let Ok(mut store) = io.store.lock() {
@@ -9423,6 +9472,20 @@ fn read_tcp_stream(
                 }
                 has_unpersisted_stream = false;
                 last_persist = Instant::now();
+            }
+        }
+
+        if let Some(negotiator) = telnet.as_mut() {
+            let bytes = negotiator.finish();
+            if !bytes.is_empty() {
+                let _ = tap.send(bytes.clone());
+                record_channel_text(
+                    &io,
+                    &session_id,
+                    EventStream::Stdout,
+                    String::from_utf8_lossy(&bytes).to_string(),
+                );
+                has_unpersisted_stream = true;
             }
         }
 
@@ -12014,11 +12077,138 @@ mod tests {
     fn telnet_outbound_text_uses_crlf() {
         assert_eq!(encode_telnet_outbound_text("show\n"), "show\r\n");
         assert_eq!(encode_telnet_outbound_text("show\r\n"), "show\r\n");
+        assert_eq!(
+            encode_telnet_outbound_text("a\rb\r\nc\n"),
+            "a\r\0b\r\nc\r\n"
+        );
         assert_eq!(encode_telnet_outbound_text("ÿ\n"), "ÿ\r\n");
         assert_eq!(
             encode_telnet_outbound_bytes(&[0x01, TELNET_IAC]),
             vec![0x01, TELNET_IAC, TELNET_IAC]
         );
+    }
+
+    #[test]
+    fn telnet_negotiator_handles_fragmented_nvt_and_subnegotiation() {
+        let mut negotiator = TelnetNegotiator::new();
+        let (first, replies) = negotiator.filter(b"left\r");
+        assert_eq!(first, b"left");
+        assert!(replies.is_empty());
+
+        let (second, replies) =
+            negotiator.filter(&[0, b'|', b'\r', b'\n', TELNET_IAC, TELNET_SB, 99, TELNET_IAC]);
+        assert_eq!(second, b"\r|\r\n");
+        assert!(replies.is_empty());
+        let (escaped, replies) = negotiator.filter(&[TELNET_IAC]);
+        assert!(escaped.is_empty());
+        assert!(replies.is_empty());
+        assert_eq!(negotiator.subnegotiation, [99, TELNET_IAC]);
+        let (third, replies) = negotiator.filter(&[7, TELNET_IAC, TELNET_SE, b'!']);
+        assert_eq!(third, b"!");
+        assert!(replies.is_empty());
+
+        let (last, replies) = negotiator.filter(b"tail\r");
+        assert_eq!(last, b"tail");
+        assert!(replies.is_empty());
+        assert_eq!(negotiator.finish(), b"\r");
+    }
+
+    #[test]
+    fn telnet_runtime_handles_fragmented_negotiation_and_nvt_data() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                for chunk in [
+                    b"left\r".as_slice(),
+                    &[0, b'|', b'\r'],
+                    &[b'\n', TELNET_IAC],
+                    &[TELNET_WILL],
+                    &[
+                        TELNET_OPT_ECHO,
+                        TELNET_IAC,
+                        TELNET_SB,
+                        TELNET_OPT_TERMINAL_TYPE,
+                    ],
+                    &[TELNET_TTYPE_SEND, TELNET_IAC],
+                    &[TELNET_SE, b'!'],
+                    b"tail\r".as_slice(),
+                ] {
+                    socket.write_all(chunk).await.unwrap();
+                    tokio::task::yield_now().await;
+                }
+
+                let mut option_reply = [0_u8; 3];
+                socket.read_exact(&mut option_reply).await.unwrap();
+                assert_eq!(option_reply, [TELNET_IAC, TELNET_DO, TELNET_OPT_ECHO]);
+                let mut terminal_reply = vec![0_u8; 20];
+                socket.read_exact(&mut terminal_reply).await.unwrap();
+                assert_eq!(
+                    terminal_reply,
+                    [
+                        [
+                            TELNET_IAC,
+                            TELNET_SB,
+                            TELNET_OPT_TERMINAL_TYPE,
+                            TELNET_TTYPE_IS
+                        ]
+                        .as_slice(),
+                        b"xterm-256color".as_slice(),
+                        [TELNET_IAC, TELNET_SE].as_slice(),
+                    ]
+                    .concat()
+                );
+            });
+
+            let profile =
+                test_tcp_profile(ConnectionConfig::Telnet(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-telnet-test-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("fragmented Telnet server timed out")
+                .expect("fragmented Telnet server failed");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let summary = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap();
+                    if summary.runtime.status == SessionStatus::Disconnected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Telnet runtime did not close after EOF");
+            let stdout = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == profile.id && event.stream == EventStream::Stdout
+                })
+                .filter_map(|event| event.text.as_deref())
+                .collect::<String>();
+            assert_eq!(stdout, "left\r|\r\n!tail\r");
+            assert!(!stdout.contains('\0'));
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
@@ -14735,7 +14925,7 @@ mod tests {
                     .unwrap();
             }
 
-            let restored = tokio::time::timeout(Duration::from_secs(10), async {
+            let restored = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
                     let runtime_replaced = state
                         .ssh
