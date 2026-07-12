@@ -97,7 +97,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 认证成功方法会记录到 `lastSuccessful`。
 - 私钥、密码、passphrase、MCP IPC token 进入 OS keyring，SQLite 只保存引用。
 - OpenSSH `known_hosts` 导入/导出已接入 Tauri command 和密钥管理器弹窗。
-- 密钥管理器可以查看 PortMate host key trust store、按 scope/profile 过滤分组、导入/导出 known_hosts、删除 host key、批量删除/复制 host key 到选中 profile、编辑 host key 的 alias/host/port/scope/profile/label；Client Key 区域可搜索并按 profile/source 筛选分组全部 SSH/Tmux profile identity，批量复制到目标 profile、在各自 profile 中置顶或移除引用，被 Jump Host 使用的引用会标记并阻止移除；可从本地文件或粘贴内容导入 OpenSSH 私钥到 profile-vault，并单条或批量添加当前 ssh-agent identity。
+- 密钥管理器可以查看 PortMate host key trust store、按 scope/profile 过滤分组、导入/导出 known_hosts、删除 host key、批量删除/复制 host key 到选中 profile、编辑 host key 的 alias/host/port/scope/profile/label；Client Key 区域可搜索并按 profile/source 筛选分组全部 SSH/Tmux profile identity，批量复制到目标 profile、在各自 profile 中置顶或移除引用，被 Jump Host 使用的引用会标记并阻止移除；可从本地文件或粘贴内容导入 OpenSSH 私钥到 profile-vault，并单条或批量添加当前 ssh-agent identity；紧凑 identity inspector 可编辑 label/source/path/fingerprint，展示不可变 ID、Jump Host 和共享 secret 影响，并安全轮换 Vault 私钥或区分“只移除引用/同时清理未共享 secret”。
 - 首次连接/host key 变更失败后会弹出专门确认窗口，展示 SHA-256 指纹/已保存指纹，并支持仅本次、加入 Profile、加入 Project、替换 Profile、拒绝和确认后重连。
 - `AskEveryTime` 会在每次连接时要求显式确认，不再因永久 trust store 中已有 key 而直接放行；`TrustOnce` 只对精确匹配的 profile/alias/host/port/algorithm/fingerprint 生效。
 - 多跳连接的 `TrustOnce` 会保留到整条 Jump Host 链成功建立后再消费，后续跳点确认失败不会导致前一跳重复确认。
@@ -106,7 +106,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - 目标 host key 扫描已可经多跳 Jump Host 链路执行；多跳连接链路、每跳独立凭据/host-key 策略编辑和逐跳 host key 确认弹窗可用。
-- Bitvise 风格 Host Key Manager / Client Key Manager 已有 Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、Client Key 搜索/分组/批量复制/置顶/安全移除、私钥文件导入和 ssh-agent 批量添加；Client identity 字段编辑、密钥轮换和底层 secret 生命周期管理仍待补。
+- Bitvise 风格 Host Key Manager / Client Key Manager 已有 Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、Client Key 搜索/分组/批量复制/置顶/安全移除、私钥文件导入、ssh-agent 批量添加、identity 字段检查器和 Vault 私钥轮换。identity 更新/轮换/删除由后端按 immutable ID 原子持久化；共享 secret 不会被原地覆盖或误删，孤儿清理失败只返回 warning，不会留下悬空 Profile 引用。
 - Stronghold 作为 OS keyring 不可用时的可移植 fallback 尚未实现。
 
 ### 数据、日志与自动化
@@ -185,8 +185,9 @@ npm run build
 - OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
+- Client identity source/immutable ID 校验、重复 ID 拒绝、共享 secret 轮换隔离、Jump Host 删除阻断、全凭据引用计数，以及清理失败后已持久化 Profile 仍保持有效。
 
-当前 Rust workspace 自动化测试总数为 91：`portmate` 62、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 4 个前端 transfer state 单元测试。
+当前 Rust workspace 自动化测试总数为 96：`portmate` 67、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 4 个前端 transfer state 单元测试。
 
 主要缺口：
 
@@ -207,7 +208,7 @@ npm run build
 | WindTerm 风格工作台 | 部分实现 | 主布局和菜单已有，深层交互/快捷键/布局持久化不足。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
-| Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入和 Agent identity 单条/批量添加已有；identity 字段编辑、轮换和 portable vault 待补。 |
+| Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换和共享 secret 生命周期保护已有；portable vault 待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；Telnet 高级选项、深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、空目录保留、安全批次规划、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH 递归外部目录上传及原有 SFTP/SCP 矩阵已覆盖，文件多选、冲突策略、远端目录递归下载及更广服务故障矩阵待补。 |
@@ -224,7 +225,7 @@ npm run build
 
 ### P0：把 alpha 变成稳定可日用版本
 
-1. 补齐 Client identity 字段编辑、密钥轮换/生命周期和 OS keyring 不可用时的 portable vault。
+1. 补齐 OS keyring 不可用时的 Stronghold-style portable vault；Client identity 字段编辑、密钥轮换和引用计数生命周期管理已完成。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建和 cancel 失败后的本地收敛已完成；继续为远端命令型传输补齐更完整的失败状态和错误可视化。
 4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵和 modem 的物理串口/OpenSSH 活动传输断线；虚拟串口重连、静默 modem 快速取消和 transport 重连态失败已覆盖。
@@ -236,7 +237,7 @@ npm run build
 2. 会话布局持久化：任意分屏、pane session binding、启动自动打开、标签颜色、workspace restore。
 3. 同步输入正式化：多 pane 广播、过滤协议、换行策略、延迟、前后缀、明显状态条。
 4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
-5. 密钥管理器增强：Client identity 字段编辑、密钥轮换与底层 secret 生命周期管理。
+5. 密钥管理器继续增强：Stronghold-style portable vault、解锁状态和迁移工作流；Client identity 字段编辑、密钥轮换与底层 secret 生命周期管理已完成。
 
 ### P2：日志、诊断和 MCP 产品化
 
@@ -256,7 +257,7 @@ npm run build
 
 ## 建议的近期执行顺序
 
-1. Client identity 字段编辑、密钥轮换和 portable vault。
+1. Stronghold-style portable vault、解锁状态和 OS keyring 迁移工作流。
 2. 文件管理器多选、冲突策略和远端目录递归下载。
 3. 集成测试环境与非 Linux tunnel 探测矩阵。
 4. 远端命令型传输失败状态和错误可视化。

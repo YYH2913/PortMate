@@ -734,6 +734,45 @@ pub struct SecretWriteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClientIdentityUpdateRequest {
+    pub profile_id: String,
+    pub identity_id: String,
+    pub label: String,
+    pub source: IdentitySource,
+    pub fingerprint_sha256: Option<String>,
+    pub path: Option<String>,
+    pub secret_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIdentityRotateRequest {
+    pub profile_id: String,
+    pub identity_id: String,
+    pub private_key: String,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIdentityDeleteRequest {
+    pub profile_id: String,
+    pub identity_id: String,
+    #[serde(default)]
+    pub delete_secret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIdentityMutationResponse {
+    pub summary: SessionSummary,
+    pub old_secret_deleted: bool,
+    pub old_secret_shared: bool,
+    pub cleanup_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpHttpConfig {
     pub endpoint: String,
     pub token_ref: String,
@@ -1185,9 +1224,24 @@ fn save_session_profile(
     state: State<'_, AppState>,
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
+    let profile = normalize_session_profile(profile);
+    validate_profile_client_identity_ids(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let summary = store.upsert_profile(normalize_session_profile(profile));
-    save_store(&state.store_path, &store)?;
+    let old_secret_refs = store
+        .profile(&profile.id)
+        .map(|old_profile| profile_secret_refs(&old_profile))
+        .unwrap_or_default();
+    let mut next_store = store.clone();
+    let summary = next_store.upsert_profile(profile);
+    save_store(&state.store_path, &next_store)?;
+    *store = next_store;
+    for secret_ref in old_secret_refs {
+        if secret_ref_usage_count(&store, &secret_ref) == 0 {
+            if let Err(error) = delete_secret_from_keyring(&secret_ref) {
+                eprintln!("PortMate: profile saved but orphan secret cleanup failed: {error}");
+            }
+        }
+    }
     Ok(summary)
 }
 
@@ -1706,7 +1760,14 @@ fn save_secret(request: SecretWriteRequest) -> Result<SecretWriteResponse, Strin
 }
 
 #[tauri::command]
-fn delete_secret(secret_ref: String) -> Result<(), String> {
+fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let usage_count = secret_ref_usage_count(&store, &secret_ref);
+    if usage_count > 0 {
+        return Err(format!(
+            "secretRef 仍被 {usage_count} 个 Profile 凭据引用，无法删除"
+        ));
+    }
     delete_secret_from_keyring(&secret_ref)
 }
 
@@ -1717,6 +1778,148 @@ fn has_secret(secret_ref: String) -> Result<bool, String> {
         Err(error) if error.contains("NoEntry") || error.contains("No credential") => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+#[tauri::command]
+fn update_client_identity(
+    state: State<'_, AppState>,
+    request: ClientIdentityUpdateRequest,
+) -> Result<ClientIdentityMutationResponse, String> {
+    let identity = normalize_client_identity(
+        &request.identity_id,
+        IdentityRef {
+            id: request.identity_id.clone(),
+            label: request.label,
+            source: request.source,
+            fingerprint_sha256: request.fingerprint_sha256,
+            path: request.path,
+            secret_ref: request.secret_ref,
+        },
+        |secret_ref| read_secret_from_keyring(secret_ref).map(|_| ()),
+    )?;
+    let new_secret_ref = identity.secret_ref.clone();
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let mut next_store = store.clone();
+    let (summary, old_secret_ref) = replace_client_identity(
+        &mut next_store,
+        &request.profile_id,
+        &request.identity_id,
+        identity,
+    )?;
+    save_store(&state.store_path, &next_store)?;
+    *store = next_store;
+    let cleanup_secret_ref = old_secret_ref.filter(|old_secret_ref| {
+        new_secret_ref.as_deref().map(str::trim) != Some(old_secret_ref.trim())
+    });
+    Ok(client_identity_mutation_response(
+        &store,
+        summary,
+        cleanup_secret_ref.as_deref(),
+        true,
+        delete_secret_from_keyring,
+    ))
+}
+
+#[tauri::command]
+fn rotate_client_identity(
+    state: State<'_, AppState>,
+    request: ClientIdentityRotateRequest,
+) -> Result<ClientIdentityMutationResponse, String> {
+    let private_key = request
+        .private_key
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    if private_key.trim().is_empty() {
+        return Err("私钥内容不能为空".to_string());
+    }
+    let saved_passphrase_ref = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        let current = find_client_identity(&store, &request.profile_id, &request.identity_id)?;
+        if current.source != IdentitySource::ProfileVault {
+            return Err("只有 Profile Vault identity 可以轮换私钥".to_string());
+        }
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == request.profile_id)
+            .ok_or_else(|| format!("unknown session: {}", request.profile_id))?;
+        ssh_connection(profile)?.passphrase_secret_ref.clone()
+    };
+    let saved_passphrase = saved_passphrase_ref
+        .as_deref()
+        .map(|secret_ref| read_optional_secret_ref(Some(secret_ref), "SSH private-key passphrase"))
+        .transpose()?
+        .flatten();
+    let validation_passphrase = saved_passphrase
+        .as_deref()
+        .or(request.passphrase.as_deref());
+    let decoded = decode_secret_key(&private_key, validation_passphrase).map_err(|error| {
+        if saved_passphrase.is_some() {
+            format!("新私钥无法使用 Profile 已保存的私钥口令解析: {error}")
+        } else {
+            format!("新私钥无法解析: {error}")
+        }
+    })?;
+    let fingerprint_sha256 =
+        compute_ssh_sha256_fingerprint(&decoded.public_key().public_key_base64())
+            .map_err(|error| format!("无法计算新私钥指纹: {error}"))?;
+    let new_secret_ref = format!("keychain:{}", Uuid::new_v4());
+    write_secret_to_keyring(&new_secret_ref, &private_key)?;
+
+    let result = (|| {
+        let mut store = state.store.lock().map_err(|error| error.to_string())?;
+        let mut next_store = store.clone();
+        let current = find_client_identity(&next_store, &request.profile_id, &request.identity_id)?;
+        if current.source != IdentitySource::ProfileVault {
+            return Err("只有 Profile Vault identity 可以轮换私钥".to_string());
+        }
+        let identity = IdentityRef {
+            fingerprint_sha256: Some(fingerprint_sha256),
+            secret_ref: Some(new_secret_ref.clone()),
+            path: None,
+            ..current
+        };
+        let (summary, old_secret_ref) = replace_client_identity(
+            &mut next_store,
+            &request.profile_id,
+            &request.identity_id,
+            identity,
+        )?;
+        save_store(&state.store_path, &next_store)?;
+        *store = next_store;
+        Ok(client_identity_mutation_response(
+            &store,
+            summary,
+            old_secret_ref.as_deref(),
+            true,
+            delete_secret_from_keyring,
+        ))
+    })();
+
+    if result.is_err() {
+        let _ = delete_secret_from_keyring(&new_secret_ref);
+    }
+    result
+}
+
+#[tauri::command]
+fn delete_client_identity(
+    state: State<'_, AppState>,
+    request: ClientIdentityDeleteRequest,
+) -> Result<ClientIdentityMutationResponse, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let mut next_store = store.clone();
+    let (summary, old_secret_ref) =
+        remove_client_identity(&mut next_store, &request.profile_id, &request.identity_id)?;
+    save_store(&state.store_path, &next_store)?;
+    *store = next_store;
+    Ok(client_identity_mutation_response(
+        &store,
+        summary,
+        old_secret_ref.as_deref(),
+        request.delete_secret,
+        delete_secret_from_keyring,
+    ))
 }
 
 #[tauri::command]
@@ -9206,6 +9409,303 @@ fn load_identity_private_key(
     }
 }
 
+fn ssh_connection(profile: &SessionProfile) -> Result<&SshConnection, String> {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Ok(ssh),
+        _ => Err(format!("Profile {} 不是 SSH/Tmux 会话", profile.id)),
+    }
+}
+
+fn ssh_connection_mut(profile: &mut SessionProfile) -> Result<&mut SshConnection, String> {
+    match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Ok(ssh),
+        _ => Err(format!("Profile {} 不是 SSH/Tmux 会话", profile.id)),
+    }
+}
+
+fn find_client_identity(
+    store: &SessionStore,
+    profile_id: &str,
+    identity_id: &str,
+) -> Result<IdentityRef, String> {
+    let profile = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    let ssh = ssh_connection(profile)?;
+    let matches = ssh
+        .identity_refs
+        .iter()
+        .filter(|identity| identity.id == identity_id)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [identity] => Ok((*identity).clone()),
+        [] => Err(format!("unknown client identity: {identity_id}")),
+        _ => Err(format!(
+            "Profile {profile_id} 中存在重复 identity id: {identity_id}"
+        )),
+    }
+}
+
+fn validate_profile_client_identity_ids(profile: &SessionProfile) -> Result<(), String> {
+    let Ok(ssh) = ssh_connection(profile) else {
+        return Ok(());
+    };
+    let mut ids = HashSet::new();
+    for identity in &ssh.identity_refs {
+        if identity.id.trim().is_empty() {
+            return Err(format!("Profile {} 包含空 identity id", profile.id));
+        }
+        if !ids.insert(identity.id.as_str()) {
+            return Err(format!(
+                "Profile {} 中存在重复 identity id: {}",
+                profile.id, identity.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_client_identity<F>(
+    expected_id: &str,
+    mut identity: IdentityRef,
+    check_secret: F,
+) -> Result<IdentityRef, String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    if identity.id != expected_id || identity.id.trim().is_empty() {
+        return Err("identity id 不可修改且不能为空".to_string());
+    }
+    identity.label = identity.label.trim().to_string();
+    if identity.label.is_empty() {
+        return Err("identity label 不能为空".to_string());
+    }
+    identity.fingerprint_sha256 = identity
+        .fingerprint_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    identity.path = identity
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    identity.secret_ref = identity
+        .secret_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    match identity.source {
+        IdentitySource::ProfileVault => {
+            let secret_ref = identity
+                .secret_ref
+                .as_deref()
+                .ok_or_else(|| "Profile Vault identity 必须包含 secretRef".to_string())?;
+            check_secret(secret_ref)?;
+            identity.path = None;
+        }
+        IdentitySource::SystemFile => {
+            if identity.path.is_none() {
+                return Err("System File identity 必须包含私钥路径".to_string());
+            }
+            identity.secret_ref = None;
+        }
+        IdentitySource::Agent | IdentitySource::PublicKeyOnly => {
+            identity.secret_ref = None;
+        }
+    }
+    Ok(identity)
+}
+
+fn replace_client_identity(
+    store: &mut SessionStore,
+    profile_id: &str,
+    identity_id: &str,
+    identity: IdentityRef,
+) -> Result<(SessionSummary, Option<String>), String> {
+    let profile = store
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    let ssh = ssh_connection_mut(profile)?;
+    let matching = ssh
+        .identity_refs
+        .iter()
+        .enumerate()
+        .filter(|(_, identity)| identity.id == identity_id)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let index = match matching.as_slice() {
+        [index] => *index,
+        [] => return Err(format!("unknown client identity: {identity_id}")),
+        _ => {
+            return Err(format!(
+                "Profile {profile_id} 中存在重复 identity id: {identity_id}"
+            ));
+        }
+    };
+    let old_secret_ref = ssh.identity_refs[index].secret_ref.clone();
+    ssh.identity_refs[index] = identity;
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile_id)
+        .ok_or_else(|| format!("session summary is missing: {profile_id}"))?;
+    Ok((summary, old_secret_ref))
+}
+
+fn remove_client_identity(
+    store: &mut SessionStore,
+    profile_id: &str,
+    identity_id: &str,
+) -> Result<(SessionSummary, Option<String>), String> {
+    let current = find_client_identity(store, profile_id, identity_id)?;
+    let profile = store
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    let ssh = ssh_connection_mut(profile)?;
+    if ssh
+        .jumps
+        .iter()
+        .any(|jump| jump.identity_ref.as_deref() == Some(identity_id))
+    {
+        return Err("identity 正被 Jump Host 使用，无法移除".to_string());
+    }
+    ssh.identity_refs
+        .retain(|identity| identity.id != identity_id);
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile_id)
+        .ok_or_else(|| format!("session summary is missing: {profile_id}"))?;
+    Ok((summary, current.secret_ref))
+}
+
+fn secret_ref_usage_count(store: &SessionStore, secret_ref: &str) -> usize {
+    let expected = secret_ref.trim();
+    if expected.is_empty() {
+        return 0;
+    }
+    store
+        .profiles
+        .iter()
+        .filter_map(|profile| ssh_connection(profile).ok())
+        .map(|ssh| {
+            usize::from(ssh.password_secret_ref.as_deref().map(str::trim) == Some(expected))
+                + usize::from(ssh.passphrase_secret_ref.as_deref().map(str::trim) == Some(expected))
+                + ssh
+                    .identity_refs
+                    .iter()
+                    .filter(|identity| {
+                        identity.secret_ref.as_deref().map(str::trim) == Some(expected)
+                    })
+                    .count()
+                + ssh
+                    .jumps
+                    .iter()
+                    .map(|jump| {
+                        usize::from(
+                            jump.password_secret_ref.as_deref().map(str::trim) == Some(expected),
+                        ) + usize::from(
+                            jump.passphrase_secret_ref.as_deref().map(str::trim) == Some(expected),
+                        )
+                    })
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
+    let Ok(ssh) = ssh_connection(profile) else {
+        return HashSet::new();
+    };
+    let mut refs = HashSet::new();
+    for secret_ref in [
+        ssh.password_secret_ref.as_deref(),
+        ssh.passphrase_secret_ref.as_deref(),
+    ] {
+        if let Some(secret_ref) = secret_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            refs.insert(secret_ref.to_string());
+        }
+    }
+    for identity in &ssh.identity_refs {
+        if let Some(secret_ref) = identity
+            .secret_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            refs.insert(secret_ref.to_string());
+        }
+    }
+    for jump in &ssh.jumps {
+        for secret_ref in [
+            jump.password_secret_ref.as_deref(),
+            jump.passphrase_secret_ref.as_deref(),
+        ] {
+            if let Some(secret_ref) = secret_ref.map(str::trim).filter(|value| !value.is_empty()) {
+                refs.insert(secret_ref.to_string());
+            }
+        }
+    }
+    refs
+}
+
+fn client_identity_mutation_response<F>(
+    store: &SessionStore,
+    summary: SessionSummary,
+    old_secret_ref: Option<&str>,
+    delete_orphan: bool,
+    delete_secret: F,
+) -> ClientIdentityMutationResponse
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let Some(old_secret_ref) = old_secret_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return ClientIdentityMutationResponse {
+            summary,
+            old_secret_deleted: false,
+            old_secret_shared: false,
+            cleanup_warning: None,
+        };
+    };
+    let old_secret_shared = secret_ref_usage_count(store, old_secret_ref) > 0;
+    if !delete_orphan || old_secret_shared {
+        return ClientIdentityMutationResponse {
+            summary,
+            old_secret_deleted: false,
+            old_secret_shared,
+            cleanup_warning: None,
+        };
+    }
+    match delete_secret(old_secret_ref) {
+        Ok(()) => ClientIdentityMutationResponse {
+            summary,
+            old_secret_deleted: true,
+            old_secret_shared: false,
+            cleanup_warning: None,
+        },
+        Err(error) => ClientIdentityMutationResponse {
+            summary,
+            old_secret_deleted: false,
+            old_secret_shared: false,
+            cleanup_warning: Some(format!("Profile 已保存，但旧 secret 清理失败: {error}")),
+        },
+    }
+}
+
 fn ensure_keyring_store() -> Result<(), String> {
     static KEYRING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
     KEYRING_INIT
@@ -12479,6 +12979,9 @@ pub fn run() {
             save_secret,
             delete_secret,
             has_secret,
+            update_client_identity,
+            rotate_client_identity,
+            delete_client_identity,
             list_serial_ports,
             list_tmux_state,
             attach_tmux,
@@ -17617,6 +18120,200 @@ mod tests {
         };
         assert_eq!(saved.len(), 1);
         assert!(!saved[0].enabled);
+    }
+
+    fn vault_identity(id: &str, secret_ref: &str) -> IdentityRef {
+        IdentityRef {
+            id: id.to_string(),
+            label: id.to_string(),
+            source: IdentitySource::ProfileVault,
+            fingerprint_sha256: Some("SHA256:test".to_string()),
+            path: None,
+            secret_ref: Some(secret_ref.to_string()),
+        }
+    }
+
+    #[test]
+    fn client_identity_validation_enforces_immutable_id_and_source_fields() {
+        let immutable_error = normalize_client_identity(
+            "identity-a",
+            IdentityRef {
+                id: "identity-b".to_string(),
+                label: "Key".to_string(),
+                source: IdentitySource::Agent,
+                fingerprint_sha256: None,
+                path: None,
+                secret_ref: None,
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(immutable_error.contains("不可修改"));
+
+        let path_error = normalize_client_identity(
+            "identity-a",
+            IdentityRef {
+                id: "identity-a".to_string(),
+                label: "Key".to_string(),
+                source: IdentitySource::SystemFile,
+                fingerprint_sha256: None,
+                path: Some("  ".to_string()),
+                secret_ref: Some("keychain:ignored".to_string()),
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(path_error.contains("私钥路径"));
+
+        let vault_error = normalize_client_identity(
+            "identity-a",
+            vault_identity("identity-a", "keychain:missing"),
+            |_| Err("secret unavailable".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(vault_error, "secret unavailable");
+
+        let agent = normalize_client_identity(
+            "identity-a",
+            IdentityRef {
+                id: "identity-a".to_string(),
+                label: "  Agent Key  ".to_string(),
+                source: IdentitySource::Agent,
+                fingerprint_sha256: Some("  SHA256:agent  ".to_string()),
+                path: Some(" socket comment ".to_string()),
+                secret_ref: Some("keychain:must-clear".to_string()),
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(agent.label, "Agent Key");
+        assert_eq!(agent.fingerprint_sha256.as_deref(), Some("SHA256:agent"));
+        assert!(agent.secret_ref.is_none());
+    }
+
+    #[test]
+    fn rotating_shared_identity_keeps_the_old_secret_for_other_profiles() {
+        let mut first = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut first.connection {
+            ssh.identity_refs = vec![vault_identity("shared-key", "keychain:shared")];
+        }
+        let mut second = first.clone();
+        second.id = "ssh-session-2".to_string();
+        second.name = "Bench SSH 2".to_string();
+        let mut store = SessionStore::default();
+        store.upsert_profile(first);
+        store.upsert_profile(second);
+
+        let (summary, old_secret_ref) = replace_client_identity(
+            &mut store,
+            "ssh-session-1",
+            "shared-key",
+            vault_identity("shared-key", "keychain:rotated"),
+        )
+        .unwrap();
+        let delete_called = std::cell::Cell::new(false);
+        let response = client_identity_mutation_response(
+            &store,
+            summary,
+            old_secret_ref.as_deref(),
+            true,
+            |_| {
+                delete_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(response.old_secret_shared);
+        assert!(!response.old_secret_deleted);
+        assert!(!delete_called.get());
+        assert_eq!(secret_ref_usage_count(&store, "keychain:shared"), 1);
+        assert_eq!(secret_ref_usage_count(&store, "keychain:rotated"), 1);
+    }
+
+    #[test]
+    fn failed_orphan_cleanup_keeps_the_persisted_identity_valid() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.identity_refs = vec![vault_identity("vault-key", "keychain:old")];
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        let (summary, old_secret_ref) = replace_client_identity(
+            &mut store,
+            "ssh-session-1",
+            "vault-key",
+            vault_identity("vault-key", "keychain:new"),
+        )
+        .unwrap();
+        let response = client_identity_mutation_response(
+            &store,
+            summary,
+            old_secret_ref.as_deref(),
+            true,
+            |_| Err("keyring locked".to_string()),
+        );
+        assert!(!response.old_secret_deleted);
+        assert!(!response.old_secret_shared);
+        assert!(response
+            .cleanup_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("keyring locked")));
+        let saved = find_client_identity(&store, "ssh-session-1", "vault-key").unwrap();
+        assert_eq!(saved.secret_ref.as_deref(), Some("keychain:new"));
+    }
+
+    #[test]
+    fn deleting_jump_identity_is_blocked_and_duplicate_ids_are_rejected() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.identity_refs = vec![vault_identity("jump-key", "keychain:jump")];
+            ssh.jumps.push(portmate_core::JumpHop {
+                host: "bastion.example".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                password_secret_ref: None,
+                passphrase_secret_ref: None,
+                identity_ref: Some("jump-key".to_string()),
+                host_key_policy: None,
+            });
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        assert!(
+            remove_client_identity(&mut store, "ssh-session-1", "jump-key")
+                .unwrap_err()
+                .contains("Jump Host")
+        );
+
+        if let ConnectionConfig::Ssh(ssh) = &mut store.profiles[0].connection {
+            ssh.jumps.clear();
+            ssh.identity_refs
+                .push(vault_identity("jump-key", "keychain:duplicate"));
+        }
+        assert!(find_client_identity(&store, "ssh-session-1", "jump-key")
+            .unwrap_err()
+            .contains("重复"));
+    }
+
+    #[test]
+    fn secret_usage_counts_target_jump_and_identity_credentials() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some(" keychain:shared ".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:shared".to_string());
+            ssh.identity_refs = vec![vault_identity("vault-key", "keychain:shared")];
+            ssh.jumps.push(portmate_core::JumpHop {
+                host: "bastion.example".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                password_secret_ref: Some("keychain:shared".to_string()),
+                passphrase_secret_ref: Some("keychain:shared".to_string()),
+                identity_ref: None,
+                host_key_policy: None,
+            });
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        assert_eq!(secret_ref_usage_count(&store, "keychain:shared"), 5);
     }
 
     fn test_shell_profile() -> SessionProfile {

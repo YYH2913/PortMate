@@ -15,6 +15,7 @@ import {
   Folder,
   KeyRound,
   Lock,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -83,6 +84,21 @@ type ClientIdentityItem = {
   profileName: string;
   identity: IdentityRef;
   jumpInUse: boolean;
+};
+type ClientIdentityEditDraft = {
+  profileId: string;
+  identityId: string;
+  label: string;
+  source: IdentityRef["source"];
+  fingerprintSha256: string;
+  path: string;
+  secretRef: string;
+};
+type ClientIdentityMutationResponse = {
+  summary: SessionSummary;
+  oldSecretDeleted: boolean;
+  oldSecretShared: boolean;
+  cleanupWarning?: string | null;
 };
 type HostKeyPromptState = {
   profile: SessionProfile;
@@ -2734,6 +2750,11 @@ function KeyManagerDialog({
   const [clientKeyProfileFilter, setClientKeyProfileFilter] = useState("all");
   const [clientKeyGroupBy, setClientKeyGroupBy] = useState<ClientIdentityGroupBy>("profile");
   const [selectedClientKeyIds, setSelectedClientKeyIds] = useState<string[]>([]);
+  const [editingClientKeyId, setEditingClientKeyId] = useState("");
+  const [clientKeyEditDraft, setClientKeyEditDraft] = useState<ClientIdentityEditDraft | null>(null);
+  const [clientKeyPrivateKey, setClientKeyPrivateKey] = useState("");
+  const [clientKeyPassphrase, setClientKeyPassphrase] = useState("");
+  const [clientKeyMutationBusy, setClientKeyMutationBusy] = useState(false);
   const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
@@ -2771,6 +2792,10 @@ function KeyManagerDialog({
   ));
   const clientIdentityGroups = groupClientIdentityItems(visibleClientIdentityItems, clientKeyGroupBy);
   const selectedClientIdentityItems = clientIdentityItems.filter((item) => selectedClientKeyIds.includes(item.selectionId));
+  const editingClientIdentityItem = clientIdentityItems.find((item) => item.selectionId === editingClientKeyId) ?? null;
+  const editingClientSecretUsage = editingClientIdentityItem?.identity.secretRef
+    ? clientIdentityItems.filter((item) => item.identity.secretRef === editingClientIdentityItem.identity.secretRef).length
+    : 0;
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
 
   useEffect(() => {
@@ -2794,6 +2819,12 @@ function KeyManagerDialog({
   useEffect(() => {
     const validClientIds = new Set(clientIdentityItems.map((item) => item.selectionId));
     setSelectedClientKeyIds((current) => current.filter((id) => validClientIds.has(id)));
+    if (editingClientKeyId && !validClientIds.has(editingClientKeyId)) {
+      setEditingClientKeyId("");
+      setClientKeyEditDraft(null);
+      setClientKeyPrivateKey("");
+      setClientKeyPassphrase("");
+    }
   }, [sessions]);
 
   useEffect(() => {
@@ -3172,22 +3203,15 @@ function KeyManagerDialog({
         if (!isSshLikeProfile(profile)) continue;
         const selected = selectedClientIdentityItems.filter((item) => item.profileId === profile.id);
         if (!selected.length) continue;
-        const removableIds = new Set(selected.filter((item) => !item.jumpInUse).map((item) => item.selectionId));
+        const removableItems = selected.filter((item) => !item.jumpInUse);
         skipped += selected.filter((item) => item.jumpInUse).length;
-        if (!removableIds.size) continue;
-        const saved = await invokeBackend<SessionSummary>("save_session_profile", {
-          profile: prepareSessionProfile({
-            ...profile,
-            connection: {
-              ...profile.connection,
-              identityRefs: profile.connection.identityRefs.filter((identity, index) => (
-                !removableIds.has(clientIdentitySelectionId(profile.id, identity, index))
-              )),
-            },
-          }),
-        });
-        onProfileChange(saved);
-        removed += removableIds.size;
+        for (const item of removableItems) {
+          const response = await invokeBackend<ClientIdentityMutationResponse>("delete_client_identity", {
+            request: { profileId: profile.id, identityId: item.identity.id, deleteSecret: false },
+          });
+          onProfileChange(response.summary);
+          removed += 1;
+        }
       }
       setSelectedClientKeyIds([]);
       setStatus(`已移除 ${removed} 个 client key 引用${skipped ? `，跳过 ${skipped} 个 Jump Host 使用中的 key` : ""}`);
@@ -3200,6 +3224,128 @@ function KeyManagerDialog({
     setSelectedClientKeyIds((current) => selected
       ? Array.from(new Set([...current, selectionId]))
       : current.filter((id) => id !== selectionId));
+  }
+
+  function startEditClientIdentity(item: ClientIdentityItem) {
+    setEditingClientKeyId(item.selectionId);
+    setClientKeyEditDraft({
+      profileId: item.profileId,
+      identityId: item.identity.id,
+      label: item.identity.label,
+      source: item.identity.source,
+      fingerprintSha256: item.identity.fingerprintSha256 ?? "",
+      path: item.identity.path ?? "",
+      secretRef: item.identity.secretRef ?? "",
+    });
+    setClientKeyPrivateKey("");
+    setClientKeyPassphrase("");
+    setError("");
+    setStatus("");
+  }
+
+  function applyClientIdentityMutation(response: ClientIdentityMutationResponse, message: string) {
+    onProfileChange(response.summary);
+    if (clientKeyEditDraft) {
+      const connection = response.summary.profile.connection;
+      if (connection.kind === "ssh" || connection.kind === "tmux") {
+        const identity = connection.identityRefs.find((item) => item.id === clientKeyEditDraft.identityId);
+        if (identity) {
+          setClientKeyEditDraft({
+            profileId: response.summary.profile.id,
+            identityId: identity.id,
+            label: identity.label,
+            source: identity.source,
+            fingerprintSha256: identity.fingerprintSha256 ?? "",
+            path: identity.path ?? "",
+            secretRef: identity.secretRef ?? "",
+          });
+        }
+      }
+    }
+    const suffix = response.cleanupWarning
+      ? ` · ${response.cleanupWarning}`
+      : response.oldSecretDeleted
+        ? " · 旧 secret 已清理"
+        : response.oldSecretShared
+          ? " · 旧 secret 仍被共享，已保留"
+          : "";
+    setStatus(`${message}${suffix}`);
+  }
+
+  async function saveClientIdentity() {
+    if (!clientKeyEditDraft) return;
+    setClientKeyMutationBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      const response = await invokeBackend<ClientIdentityMutationResponse>("update_client_identity", {
+        request: {
+          profileId: clientKeyEditDraft.profileId,
+          identityId: clientKeyEditDraft.identityId,
+          label: clientKeyEditDraft.label,
+          source: clientKeyEditDraft.source,
+          fingerprintSha256: clientKeyEditDraft.fingerprintSha256 || null,
+          path: clientKeyEditDraft.path || null,
+          secretRef: clientKeyEditDraft.secretRef || null,
+        },
+      });
+      applyClientIdentityMutation(response, "Client identity 已更新");
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setClientKeyMutationBusy(false);
+    }
+  }
+
+  async function rotateClientIdentity() {
+    if (!clientKeyEditDraft || !clientKeyPrivateKey.trim()) return;
+    setClientKeyMutationBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      const response = await invokeBackend<ClientIdentityMutationResponse>("rotate_client_identity", {
+        request: {
+          profileId: clientKeyEditDraft.profileId,
+          identityId: clientKeyEditDraft.identityId,
+          privateKey: clientKeyPrivateKey,
+          passphrase: clientKeyPassphrase || null,
+        },
+      });
+      applyClientIdentityMutation(response, "Vault 私钥已轮换");
+      setClientKeyPrivateKey("");
+      setClientKeyPassphrase("");
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setClientKeyMutationBusy(false);
+    }
+  }
+
+  async function deleteEditedClientIdentity(deleteSecret: boolean) {
+    if (!clientKeyEditDraft || editingClientIdentityItem?.jumpInUse) return;
+    const action = deleteSecret ? "移除该引用并清理未共享 secret" : "移除该 identity 引用";
+    if (!window.confirm(`${action}？`)) return;
+    setClientKeyMutationBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      const response = await invokeBackend<ClientIdentityMutationResponse>("delete_client_identity", {
+        request: {
+          profileId: clientKeyEditDraft.profileId,
+          identityId: clientKeyEditDraft.identityId,
+          deleteSecret,
+        },
+      });
+      applyClientIdentityMutation(response, "Client identity 引用已移除");
+      setEditingClientKeyId("");
+      setClientKeyEditDraft(null);
+      setClientKeyPrivateKey("");
+      setClientKeyPassphrase("");
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setClientKeyMutationBusy(false);
+    }
   }
 
   function toggleAgentIdentitySelection(identity: IdentityRef, selected: boolean) {
@@ -3364,7 +3510,7 @@ function KeyManagerDialog({
                 <section key={group.id} className="client-key-group">
                   <header><strong>{group.label}</strong><span>{group.items.length}</span></header>
                   {group.items.map((item) => (
-                    <label key={item.selectionId} className={`client-key-row${item.jumpInUse ? " in-use" : ""}`}>
+                    <div key={item.selectionId} className={`client-key-row${item.jumpInUse ? " in-use" : ""}${editingClientKeyId === item.selectionId ? " editing" : ""}`}>
                       <input type="checkbox" checked={selectedClientKeyIds.includes(item.selectionId)} onChange={(event) => toggleClientIdentitySelection(item.selectionId, event.target.checked)} />
                       <span className="client-key-main">
                         <strong title={item.identity.label}>{item.identity.label}</strong>
@@ -3375,13 +3521,47 @@ function KeyManagerDialog({
                         {clientKeyGroupBy === "source" ? <span>{item.profileName}</span> : null}
                         {item.jumpInUse ? <span className="client-key-in-use">Jump Host 使用中</span> : null}
                       </span>
-                    </label>
+                      <button className="key-icon-button client-key-edit-button" type="button" title="编辑 client identity" aria-label={`编辑 ${item.identity.label}`} onClick={() => startEditClientIdentity(item)}><Pencil size={14} /></button>
+                    </div>
                   ))}
                 </section>
               ))}
               {!clientIdentityItems.length ? <div className="empty-pane top">Profile 中还没有 client identity</div> : null}
               {clientIdentityItems.length && !visibleClientIdentityItems.length ? <div className="empty-pane top">当前筛选没有 client identity</div> : null}
             </div>
+            {clientKeyEditDraft && editingClientIdentityItem ? (
+              <section className="client-key-inspector">
+                <header>
+                  <span><Pencil size={14} /><strong>Identity Inspector</strong></span>
+                  <button className="key-icon-button" type="button" title="关闭检查器" aria-label="关闭 identity 检查器" onClick={() => { setEditingClientKeyId(""); setClientKeyEditDraft(null); }}><X size={14} /></button>
+                </header>
+                <div className="client-key-inspector-grid">
+                  <label><span>Label</span><input value={clientKeyEditDraft.label} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, label: event.target.value })} /></label>
+                  <label><span>Source</span><select value={clientKeyEditDraft.source} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, source: event.target.value as IdentityRef["source"] })}><option value="profile-vault">Profile Vault</option><option value="system-file">System File</option><option value="agent">SSH Agent</option><option value="public-key-only">Public Key</option></select></label>
+                  <label><span>Fingerprint</span><input value={clientKeyEditDraft.fingerprintSha256} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, fingerprintSha256: event.target.value })} placeholder="SHA256:..." /></label>
+                  <label><span>Path / Agent comment</span><input value={clientKeyEditDraft.path} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, path: event.target.value })} disabled={clientKeyEditDraft.source === "profile-vault"} /></label>
+                  <label><span>Identity ID</span><input value={clientKeyEditDraft.identityId} readOnly /></label>
+                  <label><span>Profile</span><input value={editingClientIdentityItem.profileName} readOnly /></label>
+                  {clientKeyEditDraft.source === "profile-vault" ? <label className="client-key-secret-ref"><span>Secret ref</span><input value={clientKeyEditDraft.secretRef} readOnly /></label> : null}
+                </div>
+                <div className="client-key-impact">
+                  <span>{editingClientIdentityItem.jumpInUse ? "Jump Host 使用中" : "未被 Jump Host 使用"}</span>
+                  {editingClientSecretUsage > 1 ? <span>{editingClientSecretUsage} 个 identity 共享此 secret</span> : <span>{editingClientSecretUsage ? "Secret 未共享" : "无 secret"}</span>}
+                </div>
+                <div className="client-key-inspector-actions">
+                  <button type="button" onClick={() => void saveClientIdentity()} disabled={clientKeyMutationBusy}>保存字段</button>
+                  <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(false)} disabled={clientKeyMutationBusy || editingClientIdentityItem.jumpInUse}>移除引用</button>
+                  {editingClientIdentityItem.identity.secretRef ? <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(true)} disabled={clientKeyMutationBusy || editingClientIdentityItem.jumpInUse}>移除并清理 Secret</button> : null}
+                </div>
+                {clientKeyEditDraft.source === "profile-vault" ? (
+                  <div className="client-key-rotation">
+                    <textarea value={clientKeyPrivateKey} onChange={(event) => setClientKeyPrivateKey(event.target.value)} placeholder="新的 OpenSSH private key" />
+                    <input type="password" value={clientKeyPassphrase} onChange={(event) => setClientKeyPassphrase(event.target.value)} placeholder="新私钥口令（可选）" />
+                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyMutationBusy || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <details className="key-import-panel">
               <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
               <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
@@ -4821,9 +5001,8 @@ function SshAdvancedFields({
       if (!secret.trim()) return;
       setJumpStatus("");
       try {
-        const currentRef = field === "passwordSecretRef" ? jump.passwordSecretRef : jump.passphraseSecretRef;
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-          request: { secretRef: currentRef ?? null, secret },
+          request: { secretRef: null, secret },
         });
         const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
         updateJump(index, patch);
@@ -4833,19 +5012,14 @@ function SshAdvancedFields({
         setJumpStatus(formatError(error));
       }
     };
-    const deleteJumpSecret = async (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
+    const deleteJumpSecret = (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
       const jump = ssh.jumps[index];
       const secretRef = field === "passwordSecretRef" ? jump?.passwordSecretRef : jump?.passphraseSecretRef;
       if (!secretRef) return;
       setJumpStatus("");
-      try {
-        await invokeBackend("delete_secret", { secretRef });
-        const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: null } : { passphraseSecretRef: null };
-        updateJump(index, patch);
-        setJumpStatus("已删除跳板凭据");
-      } catch (error) {
-        setJumpStatus(formatError(error));
-      }
+      const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: null } : { passphraseSecretRef: null };
+      updateJump(index, patch);
+      setJumpStatus("保存 Profile 后清理未引用凭据");
     };
     return (
       <>
@@ -5070,17 +5244,12 @@ function SshAdvancedFields({
   }
 
   if (section === "密码") {
-    const deleteSavedSecret = async (field: "passwordSecretRef" | "passphraseSecretRef") => {
+    const deleteSavedSecret = (field: "passwordSecretRef" | "passphraseSecretRef") => {
       const secretRef = ssh[field];
       if (!secretRef) return;
       setSecretStatus("");
-      try {
-        await invokeBackend("delete_secret", { secretRef });
-        onDraftChange({ ...draft, kind, connection: { ...ssh, kind, [field]: null } });
-        setSecretStatus("已删除保存的凭据");
-      } catch (error) {
-        setSecretStatus(formatError(error));
-      }
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, [field]: null } });
+      setSecretStatus("保存 Profile 后清理未引用凭据");
     };
     return (
       <>
@@ -5172,7 +5341,7 @@ function SshAdvancedFields({
       setVaultStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-          request: { secretRef: firstIdentity.secretRef ?? null, secret: vaultPrivateKey },
+          request: { secretRef: null, secret: vaultPrivateKey },
         });
         updateIdentity({ source: "profile-vault", secretRef: response.secretRef, path: null });
         setVaultPrivateKey("");
@@ -5183,19 +5352,13 @@ function SshAdvancedFields({
         setVaultBusy(false);
       }
     };
-    const deleteVaultPrivateKey = async () => {
+    const deleteVaultPrivateKey = () => {
       if (!firstIdentity.secretRef) return;
       setVaultBusy(true);
       setVaultStatus("");
-      try {
-        await invokeBackend("delete_secret", { secretRef: firstIdentity.secretRef });
-        updateIdentity({ secretRef: null });
-        setVaultStatus("已从系统密钥库删除");
-      } catch (error) {
-        setVaultStatus(formatError(error));
-      } finally {
-        setVaultBusy(false);
-      }
+      updateIdentity({ secretRef: null });
+      setVaultStatus("保存 Profile 后清理未引用私钥");
+      setVaultBusy(false);
     };
     return (
       <>
@@ -5920,13 +6083,13 @@ async function persistConnectionSecrets(profile: SessionProfile, credentials: Co
   let connection = profile.connection;
   if (credentials.savePassword && credentials.password) {
     const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-      request: { secretRef: connection.passwordSecretRef ?? null, secret: credentials.password },
+      request: { secretRef: null, secret: credentials.password },
     });
     connection = { ...connection, passwordSecretRef: response.secretRef };
   }
   if (credentials.savePassphrase && credentials.passphrase) {
     const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-      request: { secretRef: connection.passphraseSecretRef ?? null, secret: credentials.passphrase },
+      request: { secretRef: null, secret: credentials.passphrase },
     });
     connection = { ...connection, passphraseSecretRef: response.secretRef };
   }
