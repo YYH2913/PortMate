@@ -42,7 +42,9 @@ struct AgentIdentityFilter {
 }
 
 #[derive(Clone, Default)]
-struct PortMateAgentSigner;
+struct PortMateAgentSigner {
+    socket_path: Option<PathBuf>,
+}
 
 #[derive(Debug)]
 enum PortMateAgentAuthError {
@@ -77,8 +79,9 @@ impl russh::Signer for PortMateAgentSigner {
         to_sign: Vec<u8>,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
         let key = key.clone();
+        let socket_path = self.socket_path.clone();
         async move {
-            sign_with_ssh_agent_on_thread(key, hash_alg, to_sign)
+            sign_with_ssh_agent_on_thread(key, hash_alg, to_sign, socket_path)
                 .await
                 .map_err(PortMateAgentAuthError::Agent)
         }
@@ -1572,7 +1575,7 @@ fn list_host_keys(state: State<'_, AppState>) -> Result<HostKeyStore, String> {
 
 #[tauri::command]
 async fn list_ssh_agent_identities() -> Result<Vec<IdentityRef>, String> {
-    let identities = list_ssh_agent_identities_on_thread().await?;
+    let identities = list_ssh_agent_identities_on_thread(None).await?;
     Ok(identities
         .into_iter()
         .enumerate()
@@ -6828,8 +6831,15 @@ async fn establish_ssh_runtime(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<EstablishedSshRuntime, String> {
-    establish_ssh_runtime_with_timeout(state, profile, password, passphrase, SSH_CONNECT_TIMEOUT)
-        .await
+    establish_ssh_runtime_with_timeout(
+        state,
+        profile,
+        password,
+        passphrase,
+        SSH_CONNECT_TIMEOUT,
+        None,
+    )
+    .await
 }
 
 async fn establish_ssh_runtime_with_timeout(
@@ -6838,6 +6848,7 @@ async fn establish_ssh_runtime_with_timeout(
     password: Option<String>,
     passphrase: Option<String>,
     connect_timeout: Duration,
+    agent_socket_path: Option<PathBuf>,
 ) -> Result<EstablishedSshRuntime, String> {
     let ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
@@ -6888,15 +6899,17 @@ async fn establish_ssh_runtime_with_timeout(
             passphrase: passphrase.as_deref(),
         },
         connect_timeout,
+        agent_socket_path.as_deref(),
     )
     .await?;
 
-    let auth_method = authenticate_ssh(
+    let auth_method = authenticate_ssh_with_agent_socket(
         &mut session,
         ssh.clone(),
         username.clone(),
         password,
         passphrase,
+        agent_socket_path,
     )
     .await
     .map_err(|error| format!("SSH 目标认证失败 {host}:{}: {error}", ssh.endpoint.port))?;
@@ -6969,6 +6982,7 @@ async fn establish_ssh_runtime_with_timeout(
 async fn connect_ssh_target(
     request: SshConnectRequest<'_>,
     connect_timeout: Duration,
+    agent_socket_path: Option<&Path>,
 ) -> Result<
     (
         client::Handle<PortMateSshHandler>,
@@ -7130,12 +7144,13 @@ async fn connect_ssh_target(
             })?
         };
 
-        if let Err(error) = authenticate_ssh(
+        if let Err(error) = authenticate_ssh_with_agent_socket(
             &mut jump_session,
             jump_ssh,
             jump_username,
             jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
             jump_runtime_credential(passphrase, jump.passphrase_secret_ref.as_deref()),
+            agent_socket_path.map(Path::to_path_buf),
         )
         .await
         {
@@ -7673,6 +7688,17 @@ async fn authenticate_ssh(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<AuthMethod, String> {
+    authenticate_ssh_with_agent_socket(session, ssh, username, password, passphrase, None).await
+}
+
+async fn authenticate_ssh_with_agent_socket(
+    session: &mut client::Handle<PortMateSshHandler>,
+    ssh: SshConnection,
+    username: String,
+    password: Option<String>,
+    passphrase: Option<String>,
+    agent_socket_path: Option<PathBuf>,
+) -> Result<AuthMethod, String> {
     let auth_order = ordered_auth_methods(&ssh);
     let mut attempted = Vec::new();
     let mut key_errors = Vec::new();
@@ -7722,6 +7748,7 @@ async fn authenticate_ssh(
                         ssh.identity_policy.identities_only,
                         ssh.agent_policy.offer_mode,
                         ssh.identity_refs.clone(),
+                        agent_socket_path.clone(),
                     )
                     .await
                     {
@@ -7805,6 +7832,7 @@ async fn authenticate_ssh(
                         ssh.identity_policy.identities_only,
                         ssh.agent_policy.offer_mode,
                         ssh.identity_refs.clone(),
+                        agent_socket_path.clone(),
                     )
                     .await
                     {
@@ -7872,6 +7900,7 @@ async fn authenticate_with_agent(
     identities_only: bool,
     offer_mode: portmate_core::AgentOfferMode,
     identity_refs: Vec<IdentityRef>,
+    agent_socket_path: Option<PathBuf>,
 ) -> Result<bool, String> {
     if offer_mode == portmate_core::AgentOfferMode::Disabled {
         return Ok(false);
@@ -7887,7 +7916,7 @@ async fn authenticate_with_agent(
         })
         .collect::<Vec<_>>();
     let allow_unfiltered_agent = !identities_only && agent_refs.is_empty();
-    let identities = list_ssh_agent_identities_on_thread().await?;
+    let identities = list_ssh_agent_identities_on_thread(agent_socket_path.clone()).await?;
     if identities.is_empty() {
         return Ok(false);
     }
@@ -7903,7 +7932,9 @@ async fn authenticate_with_agent(
     } else {
         usize::MAX
     };
-    let mut signer = PortMateAgentSigner;
+    let mut signer = PortMateAgentSigner {
+        socket_path: agent_socket_path,
+    };
 
     for identity in identities {
         if !allow_unfiltered_agent && !agent_identity_matches(&identity, &agent_refs) {
@@ -7926,13 +7957,15 @@ async fn authenticate_with_agent(
     Ok(false)
 }
 
-async fn list_ssh_agent_identities_on_thread() -> Result<Vec<AgentIdentity>, String> {
+async fn list_ssh_agent_identities_on_thread(
+    socket_path: Option<PathBuf>,
+) -> Result<Vec<AgentIdentity>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
         .name("portmate-ssh-agent-list".to_string())
         .spawn(move || {
             let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent().await?;
+                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
                 agent
                     .request_identities()
                     .await
@@ -7950,13 +7983,14 @@ async fn sign_with_ssh_agent_on_thread(
     identity: AgentIdentity,
     hash_alg: Option<HashAlg>,
     data: Vec<u8>,
+    socket_path: Option<PathBuf>,
 ) -> Result<Vec<u8>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
         .name("portmate-ssh-agent-sign".to_string())
         .spawn(move || {
             let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent().await?;
+                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
                 agent
                     .sign_request(&identity, hash_alg, data)
                     .await
@@ -7985,22 +8019,37 @@ fn agent_identity_matches(identity: &AgentIdentity, refs: &[AgentIdentityFilter]
     let public_key = identity.public_key();
     let fingerprint = compute_ssh_sha256_fingerprint(&public_key.public_key_base64()).ok();
     refs.iter().any(|identity_ref| {
-        identity_ref
+        if let Some(expected) = identity_ref
             .fingerprint_sha256
             .as_deref()
-            .is_some_and(|expected| fingerprint.as_deref() == Some(expected))
-            || (!identity_ref.label.trim().is_empty() && identity_ref.label == comment)
-            || identity_ref
-                .path
-                .as_deref()
-                .is_some_and(|path| !path.trim().is_empty() && path == comment)
+            .map(str::trim)
+            .filter(|expected| !expected.is_empty())
+        {
+            return fingerprint.as_deref() == Some(expected);
+        }
+        if let Some(path) = identity_ref
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            return path == comment;
+        }
+        !identity_ref.label.trim().is_empty() && identity_ref.label == comment
     })
 }
 
 async fn connect_ssh_agent(
+    socket_path: Option<&Path>,
 ) -> Result<AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>, String> {
     #[cfg(unix)]
     {
+        if let Some(path) = socket_path {
+            return AgentClient::connect_uds(path)
+                .await
+                .map(|client| client.dynamic())
+                .map_err(|error| format!("无法连接 SSH agent socket {}: {error}", path.display()));
+        }
         AgentClient::connect_env()
             .await
             .map(|client| client.dynamic())
@@ -8009,6 +8058,14 @@ async fn connect_ssh_agent(
 
     #[cfg(windows)]
     {
+        if let Some(path) = socket_path {
+            return AgentClient::connect_named_pipe(path)
+                .await
+                .map(|client| client.dynamic())
+                .map_err(|error| {
+                    format!("无法连接 Windows OpenSSH agent {}: {error}", path.display())
+                });
+        }
         if let Ok(path) = std::env::var("SSH_AUTH_SOCK") {
             if !path.trim().is_empty() {
                 return AgentClient::connect_named_pipe(path)
@@ -11342,6 +11399,55 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn spawn_openssh_test_agent(socket_path: &Path) -> ChildGuard {
+        let child = Command::new("ssh-agent")
+            .args(["-D", "-a"])
+            .arg(socket_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        ChildGuard(Some(child))
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_openssh_test_agent(agent: &mut ChildGuard, socket_path: &Path, label: &str) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if socket_path.exists() {
+                    let status = Command::new("ssh-add")
+                        .arg("-l")
+                        .env("SSH_AUTH_SOCK", socket_path)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .unwrap();
+                    if status.success() || status.code() == Some(1) {
+                        break;
+                    }
+                }
+                if let Some(status) = agent.0.as_mut().unwrap().try_wait().unwrap() {
+                    let mut stderr = String::new();
+                    agent
+                        .0
+                        .as_mut()
+                        .unwrap()
+                        .stderr
+                        .as_mut()
+                        .unwrap()
+                        .read_to_string(&mut stderr)
+                        .unwrap();
+                    panic!("{label} exited early with {status}: {stderr}");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{label} did not start"));
+    }
+
+    #[cfg(unix)]
     async fn wait_for_openssh_test_server(server: &mut ChildGuard, port: u16, label: &str) {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -13789,6 +13895,7 @@ mod tests {
                 None,
                 None,
                 Duration::from_millis(200),
+                None,
             )
             .await
             .err()
@@ -13831,6 +13938,7 @@ mod tests {
                 None,
                 None,
                 Duration::from_millis(200),
+                None,
             )
             .await
             .err()
@@ -13892,6 +14000,7 @@ mod tests {
                 None,
                 None,
                 Duration::from_millis(200),
+                None,
             )
             .await
             .err()
@@ -14124,6 +14233,212 @@ mod tests {
                 .unwrap();
         });
 
+        sshd.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openssh_agent_policy_and_identity_filtering_end_to_end() {
+        let Some(sshd_path) = openssh_test_server_path() else {
+            eprintln!("skipping OpenSSH agent test: sshd is not installed");
+            return;
+        };
+        let client_tools_available = Command::new("sh")
+            .args([
+                "-c",
+                "command -v ssh-agent >/dev/null 2>&1 && command -v ssh-add >/dev/null 2>&1",
+            ])
+            .status()
+            .is_ok_and(|status| status.success());
+        if Command::new("ssh-keygen").arg("-V").output().is_err() || !client_tools_available {
+            eprintln!("skipping OpenSSH agent test: OpenSSH client tools are not installed");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!("portmate-agent-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let host_key = root.join("ssh_host_ed25519_key");
+        let accepted_key = root.join("accepted_agent_ed25519_key");
+        let rejected_key = root.join("rejected_agent_ed25519_key");
+        for key_path in [&host_key, &accepted_key, &rejected_key] {
+            generate_ed25519_test_key(key_path);
+        }
+        let authorized_keys = root.join("authorized_keys");
+        fs::copy(accepted_key.with_extension("pub"), &authorized_keys).unwrap();
+
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let config_path = root.join("sshd_config");
+        write_openssh_test_config(
+            &config_path,
+            &host_key,
+            &root.join("sshd.pid"),
+            &authorized_keys,
+            port,
+        );
+        let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
+        let agent_socket = root.join("agent.sock");
+        let mut agent = spawn_openssh_test_agent(&agent_socket);
+
+        tauri::async_runtime::block_on(async {
+            wait_for_openssh_test_server(&mut sshd, port, "agent-policy sshd").await;
+            wait_for_openssh_test_agent(&mut agent, &agent_socket, "agent-policy ssh-agent").await;
+            for key_path in [&rejected_key, &accepted_key] {
+                let status = Command::new("ssh-add")
+                    .arg(key_path)
+                    .env("SSH_AUTH_SOCK", &agent_socket)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "ssh-add failed for {}",
+                    key_path.display()
+                );
+            }
+
+            let identities = list_ssh_agent_identities_on_thread(Some(agent_socket.clone()))
+                .await
+                .unwrap();
+            assert_eq!(identities.len(), 2);
+            let accepted_public_key = fs::read_to_string(accepted_key.with_extension("pub"))
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string();
+            let accepted_fingerprint =
+                compute_ssh_sha256_fingerprint(&accepted_public_key).unwrap();
+            let accepted_comment = identities
+                .iter()
+                .find(|identity| {
+                    compute_ssh_sha256_fingerprint(&identity.public_key().public_key_base64())
+                        .ok()
+                        .as_deref()
+                        == Some(accepted_fingerprint.as_str())
+                })
+                .unwrap()
+                .comment()
+                .to_string();
+
+            let mut profile = test_ssh_profile();
+            if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+                ssh.endpoint.host = "127.0.0.1".to_string();
+                ssh.endpoint.port = port;
+                ssh.username = openssh_test_username();
+                ssh.reconnect = false;
+                ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+                ssh.host_key_policy.alias = Some("agent-policy-target".to_string());
+                ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+                ssh.identity_policy.identities_only = false;
+                ssh.identity_refs.clear();
+                ssh.agent_policy.enabled = true;
+                ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::AfterProfileKeys;
+            }
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let missing_socket = root.join("missing-agent.sock");
+
+            let mut disabled = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut disabled.connection {
+                ssh.agent_policy.enabled = false;
+                ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &disabled,
+                None,
+                None,
+                SSH_CONNECT_TIMEOUT,
+                Some(missing_socket.clone()),
+            )
+            .await
+            .err()
+            .expect("disabled ssh-agent policy unexpectedly authenticated");
+            assert!(error.contains("没有可尝试的认证方式"), "{error}");
+            assert!(!error.contains("无法连接 SSH agent socket"), "{error}");
+
+            let mut identities_only_without_refs = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut identities_only_without_refs.connection {
+                ssh.identity_policy.identities_only = true;
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &identities_only_without_refs,
+                None,
+                None,
+                SSH_CONNECT_TIMEOUT,
+                Some(missing_socket),
+            )
+            .await
+            .err()
+            .expect("IdentitiesOnly without agent refs unexpectedly authenticated");
+            assert!(error.contains("IdentitiesOnly"), "{error}");
+            assert!(!error.contains("无法连接 SSH agent socket"), "{error}");
+
+            let unfiltered = establish_ssh_runtime_with_timeout(
+                &state,
+                &profile,
+                None,
+                None,
+                SSH_CONNECT_TIMEOUT,
+                Some(agent_socket.clone()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(unfiltered.auth_method, AuthMethod::PublicKey);
+            disconnect_ssh_runtime(unfiltered.runtime, "PortMate agent test").await;
+
+            let matching_ref = IdentityRef {
+                id: "accepted-agent-key".to_string(),
+                label: accepted_comment.clone(),
+                source: IdentitySource::Agent,
+                fingerprint_sha256: Some(accepted_fingerprint),
+                path: Some(accepted_comment.clone()),
+                secret_ref: None,
+            };
+            let mut filtered = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut filtered.connection {
+                ssh.identity_policy.identities_only = true;
+                ssh.identity_refs = vec![matching_ref.clone()];
+            }
+            let filtered_runtime = establish_ssh_runtime_with_timeout(
+                &state,
+                &filtered,
+                None,
+                None,
+                SSH_CONNECT_TIMEOUT,
+                Some(agent_socket.clone()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(filtered_runtime.auth_method, AuthMethod::PublicKey);
+            disconnect_ssh_runtime(filtered_runtime.runtime, "PortMate agent filter test").await;
+
+            let mut mismatched = filtered;
+            if let ConnectionConfig::Ssh(ssh) = &mut mismatched.connection {
+                ssh.identity_refs[0].fingerprint_sha256 =
+                    Some("SHA256:deliberately-wrong-fingerprint".to_string());
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &mismatched,
+                None,
+                None,
+                SSH_CONNECT_TIMEOUT,
+                Some(agent_socket.clone()),
+            )
+            .await
+            .err()
+            .expect("mismatched agent fingerprint was bypassed by its comment");
+            assert!(error.contains("IdentitiesOnly"), "{error}");
+            assert!(error.contains("agent(after-profile-keys)"), "{error}");
+        });
+
+        agent.stop();
         sshd.stop();
         let _ = fs::remove_dir_all(root);
     }
