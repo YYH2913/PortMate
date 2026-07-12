@@ -69,7 +69,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
 - X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。
-- SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置；remote forward 每 15 秒通过远端 `/proc/net/tcp`、`ss` 或 `netstat` 被动核对监听端口，服务端撤销后会重发原 bind request 并记录恢复事件，不支持探测的平台会停止 monitor 而不误报；Stop 在服务端 cancel 拒绝/超时后仍会清理本地路由/runtime 并把 profile 置为 disabled；SSH channel 断开会移除该会话全部旧 tunnel runtime，自动重连成功后从最新 profile 按原 ID、标签和端口逐条恢复 enabled tunnel，单条恢复失败会保留期望状态、记录事件且不阻断会话和其他 tunnel。
+- SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置；remote forward 每 15 秒通过远端 Linux `/proc/net/tcp`/`ss`、FreeBSD `sockstat`、macOS `lsof` 或成功执行的 `netstat -ltn` 被动核对监听端口，服务端撤销后会重发原 bind request 并记录恢复事件；存在但参数不兼容的探测工具会回退为 unsupported，不会把空输出误判为监听丢失；Stop 在服务端 cancel 拒绝/超时后仍会清理本地路由/runtime 并把 profile 置为 disabled；SSH channel 断开会移除该会话全部旧 tunnel runtime，自动重连成功后从最新 profile 按原 ID、标签和端口逐条恢复 enabled tunnel，单条恢复失败会保留期望状态、记录事件且不阻断会话和其他 tunnel。
 
 主要缺口：
 
@@ -189,8 +189,9 @@ npm run build
 - Portable Stronghold Argon2id KDF 的密码/salt 绑定，以及 encrypted snapshot 无明文、错误主密码拒绝、正确密码重开、secret 写入/读取/删除、引用格式和 snapshot 缺失 salt 时不覆盖恢复线索的边界。
 - 文件选择的单选/Ctrl/Command/Shift 状态转换、批次 `fail/overwrite/skip/rename` 冲突策略和路径逃逸拒绝，以及真实 OpenSSH SFTP 远端目录递归下载、空目录保留和冲突重命名。
 - 传输状态本地化、生命周期消息过滤、失败 fallback 和可复制诊断文本，以及中文错误摘要的 UTF-8 安全截断。
+- Remote tunnel listener 探测的 Linux `/proc`/`ss`、FreeBSD `sockstat`、macOS `lsof`、BSD `host.port` 和 unsupported 工具回退解析矩阵。
 
-当前 Rust workspace 自动化测试总数为 102：`portmate` 72、`portmate-kdf` 1、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 12 个前端 transfer/selection/presentation 单元测试。
+当前 Rust workspace 自动化测试总数为 103：`portmate` 73、`portmate-kdf` 1、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 12 个前端 transfer/selection/presentation 单元测试。
 
 主要缺口：
 
@@ -198,7 +199,7 @@ npm run build
 - 已有 `socat` 虚拟串口 loopback 二进制收发和 PTY 消失/重建后的自动重连测试，覆盖 runtime ID 轮换、重连期间拒绝写入和恢复后的双向 I/O；真实硬件和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、子协商 IAC 转义、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；BINARY/NAWS 等更完整 Telnet 选项和更广服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
-- 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；非 Linux 且无 `ss`/`netstat` 的服务端探测矩阵仍待补。
+- 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
 - 没有 Playwright UI/截图/交互回归。
 - 没有 vttest/xterm 兼容性基线。
 
@@ -216,7 +217,7 @@ npm run build
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
-| 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、目标恢复清错、监听器终止、remote forward 被动监听探测/撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，非 Linux 探测和更广服务端矩阵待补。 |
+| 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 部分实现 | 结构化 events/SQLite、append-only raw/text/jsonl 分片、bundle 日志引用已有；查询/归档/清理策略待补。 |
 | 触发器 | 部分实现 | 匹配和主要动作已有；声音、自定义链接等待补。 |
@@ -260,7 +261,7 @@ npm run build
 
 ## 建议的近期执行顺序
 
-1. 集成测试环境与非 Linux tunnel 探测矩阵。
+1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. append-only 日志和 session bundle。
 3. 会话布局持久化和 workspace restore。
 4. Stronghold 主密码轮换与批量迁移。

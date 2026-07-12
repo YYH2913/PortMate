@@ -119,7 +119,7 @@ const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
-const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1; then echo __PORTMATE_SS__; ss -H -ltn 2>/dev/null; elif command -v netstat >/dev/null 2>&1; then echo __PORTMATE_NETSTAT__; netstat -ltn 2>/dev/null; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -8068,7 +8068,27 @@ fn parse_remote_listener_probe(output: &str, port: u16) -> RemoteListenerProbe {
             RemoteListenerProbe::Missing
         };
     }
-    if output.contains("__PORTMATE_SS__") || output.contains("__PORTMATE_NETSTAT__") {
+    if output.contains("__PORTMATE_SOCKSTAT__") {
+        let listening = output
+            .lines()
+            .skip_while(|line| !line.contains("__PORTMATE_SOCKSTAT__"))
+            .skip(1)
+            .any(|line| {
+                !line.to_ascii_uppercase().contains("LOCAL ADDRESS")
+                    && line
+                        .split_whitespace()
+                        .any(|field| socket_endpoint_port(field) == Some(port))
+            });
+        return if listening {
+            RemoteListenerProbe::Listening
+        } else {
+            RemoteListenerProbe::Missing
+        };
+    }
+    if output.contains("__PORTMATE_SS__")
+        || output.contains("__PORTMATE_LSOF__")
+        || output.contains("__PORTMATE_NETSTAT__")
+    {
         let listening = output.lines().any(|line| {
             line.to_ascii_uppercase().contains("LISTEN")
                 && line
@@ -8085,9 +8105,12 @@ fn parse_remote_listener_probe(output: &str, port: u16) -> RemoteListenerProbe {
 }
 
 fn socket_endpoint_port(endpoint: &str) -> Option<u16> {
+    let endpoint = endpoint.trim_matches(|character: char| {
+        character == ',' || character == ';' || character == '(' || character == ')'
+    });
     endpoint
-        .trim_matches(|character: char| character == ',' || character == ';')
         .rsplit_once(':')
+        .or_else(|| endpoint.rsplit_once('.'))
         .and_then(|(_, port)| port.parse::<u16>().ok())
 }
 
@@ -16145,7 +16168,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_tunnel_listener_probe_parses_proc_ss_and_unsupported_outputs() {
+    fn remote_tunnel_listener_probe_parses_linux_bsd_macos_and_unsupported_outputs() {
         let proc_output = "__PORTMATE_PROC__\n  0: 0100007F:0016 00000000:0000 0A 00000000:00000000\n  1: 0100007F:2710 00000000:0000 01 00000000:00000000\n";
         assert_eq!(
             parse_remote_listener_probe(proc_output, 22),
@@ -16169,6 +16192,32 @@ mod tests {
             parse_remote_listener_probe(ss_output, 22),
             RemoteListenerProbe::Missing
         );
+
+        let sockstat_output = "__PORTMATE_SOCKSTAT__\nUSER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\nroot sshd 431 7 tcp4 127.0.0.1:10022 *:*\nroot sshd 431 8 tcp6 [::]:2200 [::]:*\n";
+        assert_eq!(
+            parse_remote_listener_probe(sockstat_output, 10_022),
+            RemoteListenerProbe::Listening
+        );
+        assert_eq!(
+            parse_remote_listener_probe(sockstat_output, 22),
+            RemoteListenerProbe::Missing
+        );
+
+        let lsof_output = "__PORTMATE_LSOF__\nCOMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nsshd 912 root 5u IPv4 0x1 0t0 TCP *:2200 (LISTEN)\n";
+        assert_eq!(
+            parse_remote_listener_probe(lsof_output, 2_200),
+            RemoteListenerProbe::Listening
+        );
+        assert_eq!(
+            parse_remote_listener_probe(lsof_output, 22),
+            RemoteListenerProbe::Missing
+        );
+
+        let bsd_netstat_output = "__PORTMATE_NETSTAT__\ntcp4 0 0 127.0.0.1.10022 *.* LISTEN\n";
+        assert_eq!(
+            parse_remote_listener_probe(bsd_netstat_output, 10_022),
+            RemoteListenerProbe::Listening
+        );
         assert_eq!(
             parse_remote_listener_probe("__PORTMATE_UNSUPPORTED__\n", 22),
             RemoteListenerProbe::Unsupported
@@ -16176,6 +16225,25 @@ mod tests {
         assert_eq!(
             parse_remote_listener_probe("unexpected output", 22),
             RemoteListenerProbe::Unsupported
+        );
+    }
+
+    #[test]
+    fn remote_tunnel_probe_only_marks_successful_cross_platform_tools() {
+        assert!(REMOTE_TUNNEL_PROBE_COMMAND
+            .contains("command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null)"));
+        assert!(REMOTE_TUNNEL_PROBE_COMMAND.contains(
+            "command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null)"
+        ));
+        assert!(REMOTE_TUNNEL_PROBE_COMMAND
+            .contains("command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null)"));
+        assert!(
+            REMOTE_TUNNEL_PROBE_COMMAND.find("sockstat").unwrap()
+                < REMOTE_TUNNEL_PROBE_COMMAND.find("netstat").unwrap()
+        );
+        assert!(
+            REMOTE_TUNNEL_PROBE_COMMAND.find("lsof").unwrap()
+                < REMOTE_TUNNEL_PROBE_COMMAND.find("netstat").unwrap()
         );
     }
 
