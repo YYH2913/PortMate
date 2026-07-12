@@ -3201,6 +3201,7 @@ fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
+    let message = truncate_for_log(&message, 2_000);
     let task = {
         let mut store = match state.store.lock() {
             Ok(store) => store,
@@ -3218,7 +3219,7 @@ fn finish_transfer_task(
             task.bytes_done = bytes;
         }
         task.status = status;
-        task.message = Some(message);
+        task.message = Some(message.clone());
         task.finished_at = Some(Utc::now());
         task.average_bytes_per_second = transfer_average_bps(task);
         let task = task.clone();
@@ -3235,8 +3236,10 @@ fn finish_transfer_task(
         store.record_system_event(
             session_id,
             format!(
-                "PortMate: transfer finished ({:?}, {:?})",
-                task.protocol, task.status
+                "PortMate: transfer finished ({:?}, {:?}): {}",
+                task.protocol,
+                task.status,
+                truncate_for_log(&message, 800)
             ),
         );
         if let Err(error) = save_store(&state.store_path, &store) {
@@ -12622,7 +12625,13 @@ fn truncate_for_log(value: &str, limit: usize) -> String {
     if trimmed.len() <= limit {
         return trimmed.to_string();
     }
-    format!("{}...", &trimmed[..limit])
+    let boundary = trimmed
+        .char_indices()
+        .take_while(|(index, _)| *index <= limit)
+        .map(|(index, _)| index)
+        .last()
+        .unwrap_or(0);
+    format!("{}...", &trimmed[..boundary])
 }
 
 fn profile_requires_runtime(
@@ -15954,6 +15963,13 @@ mod tests {
         assert!(command.contains("mv -f -- \"$part\" \"$target\""));
         assert!(command.contains("src='/tmp/source file.bin'"));
         assert!(command.contains("dst='/tmp/o'\\''clock.bin'"));
+    }
+
+    #[test]
+    fn log_truncation_preserves_utf8_boundaries() {
+        assert_eq!(truncate_for_log("  short message  ", 20), "short message");
+        assert_eq!(truncate_for_log("传输失败详情", 5), "传...");
+        assert_eq!(truncate_for_log("传输失败详情", 6), "传输...");
     }
 
     #[test]

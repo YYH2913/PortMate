@@ -393,8 +393,40 @@ button {
   text-transform: uppercase;
 }
 
-.transfer-row span {
+.transfer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: #cbd8e3;
+  white-space: nowrap;
+}
+
+.transfer-status svg {
+  flex: 0 0 auto;
+}
+
+.status-running .transfer-status svg {
+  animation: transfer-spin 1.2s linear infinite;
+}
+
+.status-completed .transfer-status {
+  color: #7dd3a8;
+}
+
+.status-failed .transfer-status,
+.status-failed .transfer-message {
+  color: #ff9b9b;
+}
+
+.status-cancelled .transfer-status {
+  color: #d1a96b;
+}
+
+.transfer-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
 }
 
 .transfer-row button {
@@ -403,11 +435,40 @@ button {
   font-size: 11px;
 }
 
+.transfer-row .transfer-icon-button {
+  display: inline-grid;
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  place-items: center;
+}
+
 .transfer-row small {
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.transfer-message {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+.transfer-message svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.transfer-message span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .transfer-progress {
@@ -419,6 +480,22 @@ button {
   display: block;
   height: 100%;
   background: var(--cyan);
+}
+
+.status-completed .transfer-progress span {
+  background: #65c894;
+}
+
+.status-failed .transfer-progress span {
+  background: #e56f6f;
+}
+
+.status-cancelled .transfer-progress span {
+  background: #b98b4d;
+}
+
+@keyframes transfer-spin {
+  to { transform: rotate(360deg); }
 }
 
 .transfer-queue-panel {
