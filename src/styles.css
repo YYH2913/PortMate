@@ -2011,6 +2011,236 @@ fieldset label {
   width: min(760px, calc(100vw - 40px));
 }
 
+.log-manager-dialog {
+  grid-template-rows: 46px minmax(0, 1fr) 52px;
+  width: min(960px, calc(100vw - 40px));
+  height: min(700px, calc(100vh - 56px));
+}
+
+.log-manager-content {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px 18px 0;
+}
+
+.log-manager-toolbar {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) minmax(180px, 1fr) 120px 30px 30px;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-manager-toolbar > strong {
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.log-manager-toolbar input,
+.log-manager-toolbar select {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  padding: 0 8px;
+}
+
+.log-manager-toolbar button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  place-items: center;
+}
+
+.log-manager-toolbar button.danger {
+  color: #ff9b9b;
+}
+
+.log-manager-toolbar button:disabled,
+.log-manager-selection button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.log-manager-selection {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-manager-selection span {
+  margin-right: auto;
+}
+
+.log-manager-selection button {
+  min-height: 26px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 9px;
+}
+
+.log-manager-main {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+  border-top: 1px solid var(--line-soft);
+}
+
+.log-shard-list {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line-soft);
+}
+
+.log-shard-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 4px 8px 4px 4px;
+}
+
+.log-shard-row.active {
+  background: rgba(94, 234, 212, 0.08);
+}
+
+.log-shard-row input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--cyan);
+}
+
+.log-shard-row > button {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 5px 4px;
+  text-align: left;
+}
+
+.log-shard-row strong,
+.log-shard-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-shard-row strong {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.log-shard-row span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.log-preview {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: 42px minmax(0, 1fr);
+}
+
+.log-preview header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 0 12px;
+}
+
+.log-preview header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-preview header span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.log-preview pre {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  background: #0b1016;
+  color: #c8d5df;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 12px;
+  white-space: pre;
+}
+
+@media (max-width: 760px) {
+  .log-manager-toolbar {
+    grid-template-columns: minmax(0, 1fr) 112px 30px 30px;
+  }
+
+  .log-manager-toolbar > strong {
+    grid-column: 1 / -1;
+  }
+
+  .log-manager-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 0.8fr) minmax(190px, 1.2fr);
+  }
+
+  .log-shard-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+}
+
+@media (max-width: 480px) {
+  .log-manager-content {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .log-manager-toolbar {
+    grid-template-columns: minmax(0, 1fr) 30px 30px;
+  }
+
+  .log-manager-toolbar input {
+    grid-column: 1 / -1;
+  }
+
+  .log-manager-selection {
+    flex-wrap: wrap;
+  }
+
+  .log-manager-selection span {
+    flex: 1 0 100%;
+  }
+}
+
 .utility-content {
   display: grid;
   gap: 12px;
@@ -2128,6 +2358,7 @@ fieldset label {
   background: rgba(248, 113, 113, 0.08);
   color: var(--red);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .utility-status {

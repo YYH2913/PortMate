@@ -119,13 +119,15 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SQLite v2 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、sysmon_snapshots。
 - SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
 - 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。
+- 入站 terminal stream 可按 profile 设置追加写入 raw/text/jsonl 分片，raw 分片写入返回稳定的相对路径/offset/length `bytesRef`。
+- `工具 -> 日志管理` 可安全枚举 raw/txt/jsonl 分片，按路径和格式筛选、查看受限尾部预览（raw/非 UTF-8 使用 Hex）并批量清理；扫描、预览和删除均有数量/大小上限，symlink、路径穿越和非分片扩展不会进入操作范围。
 - 触发器支持 contains/regex，动作包括高亮、通知、时间线标记、本地命令、发送文本。
 - secret redaction 有核心测试。
 
 主要缺口：
 
-- 最终目标中的 append-only raw/text/jsonl 分片日志还没完整实现；当前主要是 store events 和 SQLite mirror。
-- `bytes_ref`/原始字节流持久化没有完整落地。
+- outbound/system 事件和 transport 解码前二进制流尚未完整进入分片，当前 raw 仍来自入站 terminal text；`bytesRef` 还不是覆盖所有方向的原始字节索引。
+- 历史分片全文查询、按保留周期清理和归档压缩尚未完成。
 - 日志与命令关联、毫秒级分片文件、导出 bundle 的完整离线包还需增强。
 - 触发器动作中的播放声音、自定义链接等还不完整。
 - 传输任务对 local/SFTP/SCP copy loop、远端命令型复制目标大小轮询和 X/Y/ZModem block loop 已有实时进度/速度与取消。
@@ -190,8 +192,9 @@ npm run build
 - 文件选择的单选/Ctrl/Command/Shift 状态转换、批次 `fail/overwrite/skip/rename` 冲突策略和路径逃逸拒绝，以及真实 OpenSSH SFTP 远端目录递归下载、空目录保留和冲突重命名。
 - 传输状态本地化、生命周期消息过滤、失败 fallback 和可复制诊断文本，以及中文错误摘要的 UTF-8 安全截断。
 - Remote tunnel listener 探测的 Linux `/proc`/`ss`、FreeBSD `sockstat`、macOS `lsof`、BSD `host.port` 和 unsupported 工具回退解析矩阵。
+- 日志分片枚举/尾部 UTF-8 与 Hex 预览/批量删除的根目录约束、symlink 跳过、路径穿越拒绝、全量预验证和重复项去重，以及前端路径/格式筛选与全选合并。
 
-当前 Rust workspace 自动化测试总数为 103：`portmate` 73、`portmate-kdf` 1、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 12 个前端 transfer/selection/presentation 单元测试。
+当前 Rust workspace 自动化测试总数为 104：`portmate` 74、`portmate-kdf` 1、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 16 个前端 transfer/selection/presentation/log-shard 单元测试。
 
 主要缺口：
 
@@ -219,7 +222,7 @@ npm run build
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
-| 日志 | 部分实现 | 结构化 events/SQLite、append-only raw/text/jsonl 分片、bundle 日志引用已有；查询/归档/清理策略待补。 |
+| 日志 | 部分实现 | 结构化 events/SQLite、入站 append-only raw/text/jsonl 分片、稳定 raw `bytesRef`、受限 UTF-8/Hex 尾部预览、路径/格式筛选和安全批量清理 UI 已有；outbound/解码前字节、历史全文查询、保留策略和归档待补。 |
 | 触发器 | 部分实现 | 匹配和主要动作已有；声音、自定义链接等待补。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、live IPC 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE 事件流和纯 SSE POST message 响应；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
@@ -245,7 +248,7 @@ npm run build
 
 ### P2：日志、诊断和 MCP 产品化
 
-1. 完善 append-only raw/text/jsonl 分片日志的查询、归档、清理和 UI 入口。
+1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选和批量清理 UI 已完成；继续补历史全文查询、保留周期和归档压缩。
 2. 强化 `export_session_bundle` 交付包：压缩、校验、更多环境诊断和可选脱敏策略。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 扩展：进程、磁盘、网络接口、远端平台兼容。

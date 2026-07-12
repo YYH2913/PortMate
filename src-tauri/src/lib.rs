@@ -116,6 +116,11 @@ const PORTABLE_VAULT_SALT_FILE_NAME: &str = "portmate-vault.salt";
 const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
+const MAX_LOG_SHARDS: usize = 10_000;
+const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
+const MAX_LOG_DELETE_BATCH: usize = 1_000;
+const DEFAULT_LOG_PREVIEW_BYTES: u64 = 64 * 1024;
+const MAX_LOG_PREVIEW_BYTES: u64 = 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
@@ -697,6 +702,32 @@ pub struct ExternalDropResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LogShardInfo {
+    pub path: String,
+    pub format: String,
+    pub size: u64,
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogShardPreview {
+    pub path: String,
+    pub content: String,
+    pub encoding: String,
+    pub bytes_read: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLogShardsResult {
+    pub deleted: usize,
+    pub bytes_deleted: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTunnelRequest {
     pub session_id: String,
     pub mode: TunnelMode,
@@ -1022,6 +1053,28 @@ fn search_logs(
         session_id.as_deref(),
         bounded_log_query_limit(limit),
     ))
+}
+
+#[tauri::command]
+fn list_log_shards(state: State<'_, AppState>) -> Result<Vec<LogShardInfo>, String> {
+    list_log_shards_inner(&state.store_path)
+}
+
+#[tauri::command]
+fn read_log_shard(
+    state: State<'_, AppState>,
+    path: String,
+    max_bytes: Option<u64>,
+) -> Result<LogShardPreview, String> {
+    read_log_shard_inner(&state.store_path, &path, max_bytes)
+}
+
+#[tauri::command]
+fn delete_log_shards(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<DeleteLogShardsResult, String> {
+    delete_log_shards_inner(&state.store_path, &paths)
 }
 
 #[tauri::command]
@@ -12488,6 +12541,261 @@ fn log_root(store_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("logs"))
 }
 
+fn is_log_shard_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "raw" | "txt" | "jsonl"
+            )
+        })
+}
+
+fn relative_log_path(root: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| format!("log shard escaped log root: {}", path.display()))?;
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn list_log_shards_inner(store_path: &Path) -> Result<Vec<LogShardInfo>, String> {
+    let root = log_root(store_path);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut pending = vec![root.clone()];
+    let mut shards = Vec::new();
+    let mut scanned = 0_usize;
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "failed to read log directory {}: {error}",
+                directory.display()
+            )
+        })?;
+        for entry in entries {
+            scanned += 1;
+            if scanned > MAX_LOG_SCAN_ENTRIES {
+                return Err(format!(
+                    "log directory entry limit exceeded ({MAX_LOG_SCAN_ENTRIES})"
+                ));
+            }
+            let entry = entry.map_err(|error| {
+                format!(
+                    "failed to read log directory entry in {}: {error}",
+                    directory.display()
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!(
+                    "failed to inspect log path {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let path = entry.path();
+            if !file_type.is_file() || !is_log_shard_path(&path) {
+                continue;
+            }
+            if shards.len() >= MAX_LOG_SHARDS {
+                return Err(format!("log shard limit exceeded ({MAX_LOG_SHARDS})"));
+            }
+            let metadata = entry.metadata().map_err(|error| {
+                format!("failed to read log metadata {}: {error}", path.display())
+            })?;
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .map(chrono::DateTime::<Utc>::from)
+                .map(|value| value.to_rfc3339());
+            shards.push(LogShardInfo {
+                path: relative_log_path(&root, &path)?,
+                format: path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+                size: metadata.len(),
+                modified_at,
+            });
+        }
+    }
+    shards.sort_by(|left, right| {
+        right
+            .modified_at
+            .cmp(&left.modified_at)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(shards)
+}
+
+fn resolve_log_shard_path(store_path: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative = relative.trim();
+    if relative.is_empty() || relative.contains('\0') || relative.contains('\\') {
+        return Err("invalid log shard path".to_string());
+    }
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || !is_log_shard_path(relative_path)
+    {
+        return Err(format!("invalid log shard path: {relative}"));
+    }
+
+    let root = log_root(store_path);
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve log root {}: {error}", root.display()))?;
+    let candidate = root.join(relative_path);
+    let metadata = fs::symlink_metadata(&candidate)
+        .map_err(|error| format!("log shard not found {relative}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("log shard is not a regular file: {relative}"));
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve log shard {relative}: {error}"))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(format!("log shard escaped log root: {relative}"));
+    }
+    Ok(canonical)
+}
+
+fn read_log_shard_inner(
+    store_path: &Path,
+    relative: &str,
+    max_bytes: Option<u64>,
+) -> Result<LogShardPreview, String> {
+    let path = resolve_log_shard_path(store_path, relative)?;
+    let size = fs::metadata(&path)
+        .map_err(|error| format!("failed to read log metadata {relative}: {error}"))?
+        .len();
+    let max_bytes = max_bytes
+        .unwrap_or(DEFAULT_LOG_PREVIEW_BYTES)
+        .clamp(64, MAX_LOG_PREVIEW_BYTES);
+    let offset = size.saturating_sub(max_bytes);
+    let mut file = fs::File::open(&path)
+        .map_err(|error| format!("failed to open log shard {relative}: {error}"))?;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(|error| format!("failed to seek log shard {relative}: {error}"))?;
+    let mut bytes = Vec::with_capacity((size - offset).min(max_bytes) as usize);
+    file.take(max_bytes)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read log shard {relative}: {error}"))?;
+    let raw = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("raw"));
+    let (encoding, content) = if !raw && std::str::from_utf8(&bytes).is_ok() {
+        (
+            "utf8".to_string(),
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    } else {
+        ("hex".to_string(), format_log_hex(&bytes, offset))
+    };
+    Ok(LogShardPreview {
+        path: relative.to_string(),
+        content,
+        encoding,
+        bytes_read: bytes.len() as u64,
+        truncated: offset > 0,
+    })
+}
+
+fn format_log_hex(bytes: &[u8], offset: u64) -> String {
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(line, chunk)| {
+            let hex = chunk
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = chunk
+                .iter()
+                .map(|byte| {
+                    if byte.is_ascii_graphic() || *byte == b' ' {
+                        char::from(*byte)
+                    } else {
+                        '.'
+                    }
+                })
+                .collect::<String>();
+            format!(
+                "{:08X}  {:<47}  |{}|",
+                offset + (line * 16) as u64,
+                hex,
+                text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn delete_log_shards_inner(
+    store_path: &Path,
+    relative_paths: &[String],
+) -> Result<DeleteLogShardsResult, String> {
+    if relative_paths.is_empty() {
+        return Err("select at least one log shard".to_string());
+    }
+    if relative_paths.len() > MAX_LOG_DELETE_BATCH {
+        return Err(format!(
+            "log delete batch limit exceeded ({MAX_LOG_DELETE_BATCH})"
+        ));
+    }
+    let mut unique = HashSet::new();
+    let mut validated = Vec::new();
+    for relative in relative_paths {
+        if unique.insert(relative.clone()) {
+            let path = resolve_log_shard_path(store_path, relative)?;
+            let size = fs::metadata(&path)
+                .map_err(|error| format!("failed to read log metadata {relative}: {error}"))?
+                .len();
+            validated.push((path, size));
+        }
+    }
+
+    let root = log_root(store_path)
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve log root: {error}"))?;
+    let mut bytes_deleted = 0;
+    for (path, size) in &validated {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed to delete log shard {}: {error}", path.display()))?;
+        bytes_deleted += size;
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            if directory == root || !directory.starts_with(&root) {
+                break;
+            }
+            if fs::remove_dir(directory).is_err() {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    Ok(DeleteLogShardsResult {
+        deleted: validated.len(),
+        bytes_deleted,
+    })
+}
+
 fn sanitize_log_path_segment(segment: &str) -> String {
     let cleaned = segment
         .chars()
@@ -13954,6 +14262,9 @@ pub fn run() {
             read_screen,
             tail_log,
             search_logs,
+            list_log_shards,
+            read_log_shard,
+            delete_log_shards,
             send_text,
             send_bytes,
             send_key,
@@ -15704,6 +16015,76 @@ mod tests {
         assert!(first.ends_with(":0:3"));
         assert!(second.ends_with(":3:2"));
         assert!(raw_path.starts_with(log_root(&store_path)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_shard_management_lists_previews_and_deletes_safely() {
+        let root = std::env::temp_dir().join(format!("portmate-log-manager-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let logs = log_root(&store_path);
+        let nested = logs.join("profile/2026-07-12");
+        fs::create_dir_all(&nested).unwrap();
+        let text_path = nested.join("session.txt");
+        let raw_path = nested.join("session.raw");
+        fs::write(&text_path, "a".repeat(200)).unwrap();
+        fs::write(&raw_path, [0_u8, 0xff, b'A', b' ']).unwrap();
+        fs::write(nested.join("ignored.md"), b"not a shard").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&raw_path, nested.join("linked.raw")).unwrap();
+        }
+
+        let shards = list_log_shards_inner(&store_path).unwrap();
+        assert_eq!(shards.len(), 2);
+        assert!(shards
+            .iter()
+            .any(|shard| shard.path == "profile/2026-07-12/session.txt" && shard.size == 200));
+        assert!(shards
+            .iter()
+            .any(|shard| shard.path == "profile/2026-07-12/session.raw" && shard.format == "raw"));
+
+        let text =
+            read_log_shard_inner(&store_path, "profile/2026-07-12/session.txt", Some(64)).unwrap();
+        assert_eq!(text.encoding, "utf8");
+        assert_eq!(text.bytes_read, 64);
+        assert!(text.truncated);
+        assert_eq!(text.content, "a".repeat(64));
+
+        let raw =
+            read_log_shard_inner(&store_path, "profile/2026-07-12/session.raw", None).unwrap();
+        assert_eq!(raw.encoding, "hex");
+        assert!(raw.content.contains("00 FF 41 20"));
+
+        let batch_error = delete_log_shards_inner(
+            &store_path,
+            &[
+                "profile/2026-07-12/session.txt".to_string(),
+                "../outside.raw".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(batch_error.contains("invalid log shard path"));
+        assert!(
+            text_path.exists(),
+            "validation failure deleted a valid shard"
+        );
+        assert!(read_log_shard_inner(&store_path, "/etc/passwd.raw", None).is_err());
+
+        let deleted = delete_log_shards_inner(
+            &store_path,
+            &[
+                "profile/2026-07-12/session.txt".to_string(),
+                "profile/2026-07-12/session.txt".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(deleted.deleted, 1);
+        assert_eq!(deleted.bytes_deleted, 200);
+        assert!(!text_path.exists());
+        assert!(raw_path.exists());
 
         let _ = fs::remove_dir_all(root);
     }

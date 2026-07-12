@@ -16,6 +16,7 @@ import {
   Clock3,
   Copy,
   File,
+  FileText,
   Folder,
   KeyRound,
   Lock,
@@ -35,8 +36,9 @@ import {
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
+import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
-import type { AuditRecord, AuthMethod, ConnectionConfig, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -47,7 +49,7 @@ const menuGroups = [
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏"] },
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
-  { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "密钥管理器", "MCP Bridge"] },
+  { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
@@ -67,7 +69,7 @@ const terminalSettingTree = [
 const protocolTabs = ["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"] as const;
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "search" | "keys" | "mcp" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "search" | "logs" | "keys" | "mcp" | null;
 type ProtocolTab = (typeof protocolTabs)[number];
 type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
@@ -389,6 +391,10 @@ function handleMenuAction(item: string) {
     }
     if (item === "MCP Bridge") {
       setUtilityDialog("mcp");
+      return;
+    }
+    if (item === "日志管理") {
+      setUtilityDialog("logs");
       return;
     }
     if (item === "关于 PortMate") {
@@ -1307,6 +1313,7 @@ function handleMenuAction(item: string) {
         activateSession(sessionId);
         setUtilityDialog(null);
       }} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "logs" && <LogManagerDialog onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
       {credentialPrompt && <CredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />}
@@ -2864,6 +2871,133 @@ function SearchDialog({
             {!results.length ? <div className="empty-pane top">没有匹配结果</div> : null}
           </div>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function LogManagerDialog({ onClose, onNotice }: { onClose: () => void; onNotice: (message: string) => void }) {
+  const [shards, setShards] = useState<LogShardInfo[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [preview, setPreview] = useState<LogShardPreview | null>(null);
+  const [query, setQuery] = useState("");
+  const [format, setFormat] = useState<LogShardInfo["format"] | "all">("all");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const filtered = filterLogShards(shards, query, format);
+  const selectedPaths = new Set(selected);
+  const totalBytes = shards.reduce((sum, shard) => sum + shard.size, 0);
+
+  async function refreshShards() {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
+      setShards(next);
+      const paths = new Set(next.map((shard) => shard.path));
+      setSelected((current) => current.filter((path) => paths.has(path)));
+      setPreview((current) => current && paths.has(current.path) ? current : null);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshShards();
+  }, []);
+
+  async function openPreview(path: string) {
+    setBusy(true);
+    setError("");
+    try {
+      setPreview(await invokeBackend<LogShardPreview>("read_log_shard", { path, maxBytes: 64 * 1024 }));
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selected.length) return;
+    const selectedSet = new Set(selected);
+    const bytes = shards.filter((shard) => selectedSet.has(shard.path)).reduce((sum, shard) => sum + shard.size, 0);
+    if (!window.confirm(`删除 ${selected.length} 个日志分片（${formatBytes(bytes)}）?`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await invokeBackend<DeleteLogShardsResult>("delete_log_shards", { paths: selected });
+      setSelected([]);
+      setPreview(null);
+      onNotice(`已删除 ${result.deleted} 个分片，释放 ${formatBytes(result.bytesDeleted)}`);
+      const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
+      setShards(next);
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleSelected(path: string) {
+    setSelected((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]);
+  }
+
+  return (
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="wind-dialog log-manager-dialog">
+        <header className="dialog-title">
+          <FileText size={17} />
+          <strong>日志管理</strong>
+          <button type="button" onClick={onClose}><X size={20} /></button>
+        </header>
+        <div className="log-manager-content">
+          <div className="log-manager-toolbar">
+            <strong>{shards.length} 个分片 · {formatBytes(totalBytes)}</strong>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选路径" />
+            <select value={format} onChange={(event) => setFormat(event.target.value as LogShardInfo["format"] | "all")} aria-label="日志格式">
+              <option value="all">全部格式</option>
+              <option value="raw">Raw</option>
+              <option value="txt">Text</option>
+              <option value="jsonl">JSONL</option>
+            </select>
+            <button type="button" title="刷新日志分片" aria-label="刷新日志分片" onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
+            <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={busy || !selected.length}><Trash2 size={15} /></button>
+          </div>
+          <div className="log-manager-selection">
+            <span>{filtered.length} 项 · 已选 {selected.length}</span>
+            <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>全选结果</button>
+            <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>清除</button>
+          </div>
+          <div className="log-manager-main">
+            <div className="log-shard-list">
+              {filtered.map((shard) => (
+                <div key={shard.path} className={`log-shard-row ${preview?.path === shard.path ? "active" : ""}`}>
+                  <input type="checkbox" checked={selectedPaths.has(shard.path)} onChange={() => toggleSelected(shard.path)} aria-label={`选择 ${shard.path}`} />
+                  <button type="button" onClick={() => void openPreview(shard.path)} title={shard.path}>
+                    <strong>{shard.path}</strong>
+                    <span>{shard.format.toUpperCase()} · {formatBytes(shard.size)}{shard.modifiedAt ? ` · ${new Date(shard.modifiedAt).toLocaleString()}` : ""}</span>
+                  </button>
+                </div>
+              ))}
+              {!filtered.length ? <div className="empty-pane top">没有日志分片</div> : null}
+            </div>
+            <div className="log-preview">
+              <header>
+                <strong>{preview?.path ?? "预览"}</strong>
+                {preview ? <span>{preview.encoding.toUpperCase()} · {formatBytes(preview.bytesRead)}{preview.truncated ? " · 尾部" : ""}</span> : null}
+              </header>
+              <pre>{preview?.content ?? "选择日志分片查看内容"}</pre>
+            </div>
+          </div>
+          {error ? <div className="utility-error">{error}</div> : null}
+        </div>
+        <footer className="utility-actions">
+          <button type="button" onClick={onClose}>关闭</button>
+        </footer>
       </section>
     </div>
   );

@@ -196,6 +196,26 @@ export interface SessionEvent {
   annotations: Record<string, string>;
 }
 
+export interface LogShardInfo {
+  path: string;
+  format: "raw" | "txt" | "jsonl";
+  size: number;
+  modifiedAt?: string | null;
+}
+
+export interface LogShardPreview {
+  path: string;
+  content: string;
+  encoding: "utf8" | "hex";
+  bytesRead: number;
+  truncated: boolean;
+}
+
+export interface DeleteLogShardsResult {
+  deleted: number;
+  bytesDeleted: number;
+}
+
 export interface TransferTask {
   id: string;
   sessionId: string;
