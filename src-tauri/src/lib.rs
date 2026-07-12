@@ -110,6 +110,10 @@ const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
+const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
+const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
+const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1; then echo __PORTMATE_SS__; ss -H -ltn 2>/dev/null; elif command -v netstat >/dev/null 2>&1; then echo __PORTMATE_NETSTAT__; netstat -ltn 2>/dev/null; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -176,6 +180,20 @@ struct TunnelForwardTarget {
     metrics: Arc<TunnelMetrics>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteTunnelHealth {
+    Healthy,
+    Restored,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteListenerProbe {
+    Listening,
+    Missing,
+    Unsupported,
+}
+
 #[derive(Debug, Default)]
 struct TunnelMetrics {
     active_connections: AtomicU64,
@@ -221,11 +239,48 @@ impl TunnelMetrics {
         self.touch();
     }
 
+    fn record_error_if_changed(&self, error: &str) -> bool {
+        let changed = if let Ok(mut last_error) = self.last_error.lock() {
+            if last_error.as_deref() == Some(error) {
+                false
+            } else {
+                *last_error = Some(error.to_string());
+                true
+            }
+        } else {
+            false
+        };
+        if changed {
+            self.touch();
+        }
+        changed
+    }
+
     fn clear_error(&self) {
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = None;
         }
         self.touch();
+    }
+
+    fn clear_error_with_prefix(&self, prefix: &str) -> bool {
+        let cleared = if let Ok(mut last_error) = self.last_error.lock() {
+            if last_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with(prefix))
+            {
+                *last_error = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if cleared {
+            self.touch();
+        }
+        cleared
     }
 
     fn touch(&self) {
@@ -6761,11 +6816,12 @@ async fn start_tunnel_runtime(
                 TunnelRuntime {
                     session_id: session_id.to_string(),
                     spec: tunnel.clone(),
-                    metrics,
-                    closed,
+                    metrics: Arc::clone(&metrics),
+                    closed: Arc::clone(&closed),
                 },
             );
         }
+        spawn_remote_tunnel_health_monitor(state.clone(), tunnel.id.clone(), Arc::clone(&closed));
         return Ok((tunnel, None));
     }
 
@@ -6883,6 +6939,215 @@ async fn start_tunnel_runtime(
     });
 
     Ok((tunnel, Some(local_addr)))
+}
+
+fn spawn_remote_tunnel_health_monitor(state: AppState, tunnel_id: String, closed: Arc<AtomicBool>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(REMOTE_TUNNEL_HEALTH_INTERVAL).await;
+            if closed.load(Ordering::SeqCst) {
+                break;
+            }
+            match check_remote_tunnel_health(&state, &tunnel_id).await {
+                Ok(RemoteTunnelHealth::Unsupported) => break,
+                Ok(RemoteTunnelHealth::Healthy | RemoteTunnelHealth::Restored) => {}
+                Err(error) => {
+                    eprintln!("PortMate: remote tunnel health check failed: {error}");
+                }
+            }
+        }
+    });
+}
+
+async fn check_remote_tunnel_health(
+    state: &AppState,
+    tunnel_id: &str,
+) -> Result<RemoteTunnelHealth, String> {
+    let runtime = {
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .get(tunnel_id)
+            .cloned()
+            .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?
+    };
+    if runtime.spec.mode != TunnelMode::Remote {
+        return Err(format!("tunnel is not a remote forward: {tunnel_id}"));
+    }
+    if runtime.closed.load(Ordering::SeqCst) {
+        return Err(format!("remote tunnel is closed: {tunnel_id}"));
+    }
+
+    let result = probe_remote_tunnel_health(state, &runtime).await;
+    match &result {
+        Ok(RemoteTunnelHealth::Healthy) => {
+            if runtime
+                .metrics
+                .clear_error_with_prefix(REMOTE_TUNNEL_HEALTH_ERROR_PREFIX)
+            {
+                record_tunnel_health_event(
+                    state,
+                    &runtime.session_id,
+                    tunnel_id,
+                    "remote forward is healthy again",
+                );
+            }
+        }
+        Ok(RemoteTunnelHealth::Restored) => {
+            runtime
+                .metrics
+                .clear_error_with_prefix(REMOTE_TUNNEL_HEALTH_ERROR_PREFIX);
+            record_tunnel_health_event(
+                state,
+                &runtime.session_id,
+                tunnel_id,
+                "remote forward listener was missing and has been restored",
+            );
+        }
+        Ok(RemoteTunnelHealth::Unsupported) => {}
+        Err(error) => {
+            let message = format!("{REMOTE_TUNNEL_HEALTH_ERROR_PREFIX} {error}");
+            if runtime.metrics.record_error_if_changed(&message) {
+                record_tunnel_health_event(state, &runtime.session_id, tunnel_id, &message);
+            }
+        }
+    }
+    result
+}
+
+async fn probe_remote_tunnel_health(
+    state: &AppState,
+    runtime: &TunnelRuntime,
+) -> Result<RemoteTunnelHealth, String> {
+    let (handle, remote_forwards) = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(&runtime.session_id)
+            .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards)))
+            .ok_or_else(|| format!("SSH runtime is unavailable for {}", runtime.session_id))?
+    };
+
+    let mut routing_restored = false;
+    {
+        let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+        let exact_key = remote_forward_key(&runtime.spec.bind_host, runtime.spec.bind_port);
+        let port_key = remote_forward_port_key(runtime.spec.bind_port);
+        if !forwards.contains_key(&exact_key) || !forwards.contains_key(&port_key) {
+            let target = TunnelForwardTarget {
+                spec: runtime.spec.clone(),
+                metrics: Arc::clone(&runtime.metrics),
+            };
+            forwards.insert(exact_key, target.clone());
+            forwards.insert(port_key, target);
+            routing_restored = true;
+        }
+    }
+
+    let output = match exec_ssh_command_capture(
+        Arc::clone(&handle),
+        REMOTE_TUNNEL_PROBE_COMMAND,
+        REMOTE_TUNNEL_HEALTH_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(error) if error.starts_with("SSH exec 返回非零状态") => {
+            return Ok(RemoteTunnelHealth::Unsupported);
+        }
+        Err(error) => return Err(format!("listener probe failed: {error}")),
+    };
+    match parse_remote_listener_probe(&output, runtime.spec.bind_port) {
+        RemoteListenerProbe::Listening => Ok(if routing_restored {
+            RemoteTunnelHealth::Restored
+        } else {
+            RemoteTunnelHealth::Healthy
+        }),
+        RemoteListenerProbe::Unsupported => Ok(RemoteTunnelHealth::Unsupported),
+        RemoteListenerProbe::Missing => {
+            if runtime.closed.load(Ordering::SeqCst) {
+                return Err("tunnel closed during listener probe".to_string());
+            }
+            let returned_port = {
+                let handle = handle.lock().await;
+                if runtime.closed.load(Ordering::SeqCst) {
+                    return Err("tunnel closed before listener restore".to_string());
+                }
+                handle
+                    .tcpip_forward(
+                        runtime.spec.bind_host.clone(),
+                        u32::from(runtime.spec.bind_port),
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "listener restore failed {}:{}: {error}",
+                            runtime.spec.bind_host, runtime.spec.bind_port
+                        )
+                    })?
+            };
+            if returned_port != 0 && returned_port != u32::from(runtime.spec.bind_port) {
+                return Err(format!(
+                    "listener restore returned unexpected port {returned_port} for {}",
+                    runtime.spec.bind_port
+                ));
+            }
+            Ok(RemoteTunnelHealth::Restored)
+        }
+    }
+}
+
+fn parse_remote_listener_probe(output: &str, port: u16) -> RemoteListenerProbe {
+    if output.contains("__PORTMATE_UNSUPPORTED__") {
+        return RemoteListenerProbe::Unsupported;
+    }
+    if let Some((_, table)) = output.split_once("__PORTMATE_PROC__") {
+        let expected_port = format!("{port:04X}");
+        let listening = table.lines().any(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            fields.len() > 3
+                && fields[3] == "0A"
+                && fields[1]
+                    .rsplit_once(':')
+                    .is_some_and(|(_, value)| value.eq_ignore_ascii_case(&expected_port))
+        });
+        return if listening {
+            RemoteListenerProbe::Listening
+        } else {
+            RemoteListenerProbe::Missing
+        };
+    }
+    if output.contains("__PORTMATE_SS__") || output.contains("__PORTMATE_NETSTAT__") {
+        let listening = output.lines().any(|line| {
+            line.to_ascii_uppercase().contains("LISTEN")
+                && line
+                    .split_whitespace()
+                    .any(|field| socket_endpoint_port(field) == Some(port))
+        });
+        return if listening {
+            RemoteListenerProbe::Listening
+        } else {
+            RemoteListenerProbe::Missing
+        };
+    }
+    RemoteListenerProbe::Unsupported
+}
+
+fn socket_endpoint_port(endpoint: &str) -> Option<u16> {
+    endpoint
+        .trim_matches(|character: char| character == ',' || character == ';')
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+}
+
+fn record_tunnel_health_event(state: &AppState, session_id: &str, tunnel_id: &str, message: &str) {
+    if let Ok(mut store) = state.store.lock() {
+        store.record_system_event(
+            session_id,
+            format!("PortMate: remote tunnel {tunnel_id}: {message}"),
+        );
+        if let Err(error) = save_store(&state.store_path, &store) {
+            eprintln!("PortMate: failed to persist remote tunnel health event: {error}");
+        }
+    }
 }
 
 fn enabled_tunnel_specs(state: &AppState, session_id: &str) -> Result<Vec<TunnelSpec>, String> {
@@ -7059,16 +7324,23 @@ async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelSt
 
     let mut stopped = runtime.spec.clone();
     stopped.enabled = false;
+    runtime.closed.store(true, Ordering::SeqCst);
+    let mut warnings = Vec::new();
 
     if runtime.spec.mode == TunnelMode::Remote {
-        let remote_forward = {
-            let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-            connections
+        let remote_forward = match state.ssh.lock() {
+            Ok(connections) => connections
                 .get(&runtime.session_id)
-                .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards)))
+                .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards))),
+            Err(error) => {
+                warnings.push(format!(
+                    "SSH runtime lock failed during remote cancel: {error}"
+                ));
+                None
+            }
         };
         if let Some((handle, remote_forwards)) = remote_forward {
-            {
+            let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
                 let handle = handle.lock().await;
                 handle
                     .cancel_tcpip_forward(
@@ -7076,19 +7348,33 @@ async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelSt
                         u32::from(runtime.spec.bind_port),
                     )
                     .await
-                    .map_err(|error| {
-                        format!(
-                            "remote SSH tunnel cancel failed {}:{}: {error}",
-                            runtime.spec.bind_host, runtime.spec.bind_port
-                        )
-                    })?;
+            })
+            .await;
+            match cancel {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warnings.push(format!(
+                    "remote SSH tunnel cancel failed {}:{}: {error}",
+                    runtime.spec.bind_host, runtime.spec.bind_port
+                )),
+                Err(_) => warnings.push(format!(
+                    "remote SSH tunnel cancel timed out {}:{}",
+                    runtime.spec.bind_host, runtime.spec.bind_port
+                )),
             }
-            let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
-            forwards.remove(&remote_forward_key(
-                &runtime.spec.bind_host,
-                runtime.spec.bind_port,
-            ));
-            forwards.remove(&remote_forward_port_key(runtime.spec.bind_port));
+            match remote_forwards.lock() {
+                Ok(mut forwards) => {
+                    forwards.remove(&remote_forward_key(
+                        &runtime.spec.bind_host,
+                        runtime.spec.bind_port,
+                    ));
+                    forwards.remove(&remote_forward_port_key(runtime.spec.bind_port));
+                }
+                Err(error) => {
+                    warnings.push(format!("remote forward route cleanup failed: {error}"))
+                }
+            }
+        } else if warnings.is_empty() {
+            warnings.push("SSH runtime unavailable during remote cancel".to_string());
         }
     }
 
@@ -7098,9 +7384,18 @@ async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelSt
             .remove(tunnel_id)
             .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?;
     }
-    runtime.closed.store(true, Ordering::SeqCst);
 
     persist_stopped_tunnel_to_profile_and_log(state, &runtime.session_id, &stopped)?;
+    if !warnings.is_empty() {
+        let warning = warnings.join("; ");
+        runtime.metrics.record_error(&warning);
+        record_tunnel_health_event(
+            state,
+            &runtime.session_id,
+            tunnel_id,
+            &format!("stopped locally with warning: {warning}"),
+        );
+    }
     Ok(runtime.metrics.snapshot(stopped))
 }
 
@@ -14272,6 +14567,80 @@ mod tests {
     }
 
     #[test]
+    fn remote_tunnel_listener_probe_parses_proc_ss_and_unsupported_outputs() {
+        let proc_output = "__PORTMATE_PROC__\n  0: 0100007F:0016 00000000:0000 0A 00000000:00000000\n  1: 0100007F:2710 00000000:0000 01 00000000:00000000\n";
+        assert_eq!(
+            parse_remote_listener_probe(proc_output, 22),
+            RemoteListenerProbe::Listening
+        );
+        assert_eq!(
+            parse_remote_listener_probe(proc_output, 10_000),
+            RemoteListenerProbe::Missing
+        );
+
+        let ss_output = "__PORTMATE_SS__\nLISTEN 0 128 127.0.0.1:10022 0.0.0.0:*\nLISTEN 0 128 [::]:2200 [::]:*\n";
+        assert_eq!(
+            parse_remote_listener_probe(ss_output, 10_022),
+            RemoteListenerProbe::Listening
+        );
+        assert_eq!(
+            parse_remote_listener_probe(ss_output, 2_200),
+            RemoteListenerProbe::Listening
+        );
+        assert_eq!(
+            parse_remote_listener_probe(ss_output, 22),
+            RemoteListenerProbe::Missing
+        );
+        assert_eq!(
+            parse_remote_listener_probe("__PORTMATE_UNSUPPORTED__\n", 22),
+            RemoteListenerProbe::Unsupported
+        );
+        assert_eq!(
+            parse_remote_listener_probe("unexpected output", 22),
+            RemoteListenerProbe::Unsupported
+        );
+    }
+
+    #[test]
+    fn remote_tunnel_health_recovery_preserves_non_health_errors() {
+        let metrics = TunnelMetrics::default();
+        metrics.record_error("remote forward health check failed: listener missing");
+        assert!(metrics.clear_error_with_prefix(REMOTE_TUNNEL_HEALTH_ERROR_PREFIX));
+        assert!(metrics
+            .snapshot(TunnelSpec {
+                id: "remote".to_string(),
+                label: "remote".to_string(),
+                mode: TunnelMode::Remote,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 10_022,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 22,
+                enabled: true,
+            })
+            .last_error
+            .is_none());
+
+        metrics.record_error("remote tunnel target connect failed");
+        assert!(!metrics.clear_error_with_prefix(REMOTE_TUNNEL_HEALTH_ERROR_PREFIX));
+        assert_eq!(
+            metrics
+                .snapshot(TunnelSpec {
+                    id: "remote".to_string(),
+                    label: "remote".to_string(),
+                    mode: TunnelMode::Remote,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 10_022,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: 22,
+                    enabled: true,
+                })
+                .last_error
+                .as_deref(),
+            Some("remote tunnel target connect failed")
+        );
+    }
+
+    #[test]
     fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
         let first_closed = Arc::new(AtomicBool::new(false));
         let second_closed = Arc::new(AtomicBool::new(false));
@@ -15671,8 +16040,115 @@ mod tests {
             })
             .await
             .expect("remote tunnel metrics did not settle");
+
+            let (remote_health_handle, remote_forward_routes) = {
+                let connections = state.ssh.lock().unwrap();
+                let runtime = connections.get(&profile.id).unwrap();
+                (
+                    Arc::clone(&runtime.handle),
+                    Arc::clone(&runtime.remote_forwards),
+                )
+            };
+            {
+                let handle = remote_health_handle.lock().await;
+                handle
+                    .cancel_tcpip_forward(
+                        remote_tunnel.bind_host.clone(),
+                        u32::from(remote_tunnel.bind_port),
+                    )
+                    .await
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match TcpStream::connect(("127.0.0.1", remote_tunnel.bind_port)).await {
+                        Err(_) => break,
+                        Ok(stream) => drop(stream),
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("server-side remote forward cancellation did not close the listener");
+
+            assert_eq!(
+                check_remote_tunnel_health(&state, &remote_tunnel.id)
+                    .await
+                    .unwrap(),
+                RemoteTunnelHealth::Restored
+            );
+            assert!(state
+                .store
+                .lock()
+                .unwrap()
+                .tail_log(&profile.id, 100)
+                .iter()
+                .any(|event| event.text.as_deref().is_some_and(|text| {
+                    text.contains(&remote_tunnel.id)
+                        && text.contains("listener was missing and has been restored")
+                })));
+
+            let restored_remote_echo_listener =
+                TcpListener::bind(remote_echo_address).await.unwrap();
+            let restored_remote_echo = tokio::spawn(async move {
+                let (mut socket, _) = restored_remote_echo_listener.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
+            let mut restored_remote_client =
+                TcpStream::connect(("127.0.0.1", remote_tunnel.bind_port))
+                    .await
+                    .unwrap();
+            restored_remote_client.write_all(b"ping").await.unwrap();
+            let mut restored_remote_response = [0_u8; 4];
+            restored_remote_client
+                .read_exact(&mut restored_remote_response)
+                .await
+                .unwrap();
+            assert_eq!(&restored_remote_response, b"pong");
+            drop(restored_remote_client);
+            restored_remote_echo.await.unwrap();
+
+            {
+                let handle = remote_health_handle.lock().await;
+                handle
+                    .cancel_tcpip_forward(
+                        remote_tunnel.bind_host.clone(),
+                        u32::from(remote_tunnel.bind_port),
+                    )
+                    .await
+                    .unwrap();
+            }
             let stopped = stop_tunnel_inner(&state, &remote_tunnel.id).await.unwrap();
             assert!(!stopped.spec.enabled);
+            assert!(stopped
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("remote SSH tunnel cancel failed")));
+            assert!(list_tunnels_inner(&state, Some(&profile.id))
+                .unwrap()
+                .iter()
+                .all(|status| status.spec.id != remote_tunnel.id));
+            {
+                let routes = remote_forward_routes.lock().unwrap();
+                assert!(!routes.contains_key(&remote_forward_key(
+                    &remote_tunnel.bind_host,
+                    remote_tunnel.bind_port,
+                )));
+                assert!(!routes.contains_key(&remote_forward_port_key(remote_tunnel.bind_port)));
+            }
+            let saved_profile = state.store.lock().unwrap().profile(&profile.id).unwrap();
+            let saved_remote_tunnel = match saved_profile.connection {
+                ConnectionConfig::Ssh(ssh) => ssh
+                    .tunnels
+                    .into_iter()
+                    .find(|tunnel| tunnel.id == remote_tunnel.id)
+                    .unwrap(),
+                _ => panic!("expected SSH profile"),
+            };
+            assert!(!saved_remote_tunnel.enabled);
 
             let reconnect_tunnel = create_tunnel_inner(
                 &state,
