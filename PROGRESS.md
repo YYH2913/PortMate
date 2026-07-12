@@ -69,7 +69,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
 - X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。
-- SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置。
+- SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置；SSH channel 断开会移除该会话全部旧 tunnel runtime，避免自动重连后继续使用失效 handle。
 
 主要缺口：
 
@@ -185,7 +185,7 @@ npm run build
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 77：`portmate` 48、`portmate-core` 18、`portmate-mcp` 11。
+当前 workspace 自动化测试总数为 78：`portmate` 49、`portmate-core` 18、`portmate-mcp` 11。
 
 主要缺口：
 
@@ -193,7 +193,7 @@ npm run build
 - 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传和 lrzsz X/Y/ZModem 双向端到端测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/取消/断线/工具变体矩阵仍待补。
-- 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭，以及 SOCKS5 错误协议 loopback 测试；SSH 连接整体丢失、服务端撤销 remote forward 等更深健康探测仍待补。
+- 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、SSH channel 结束时按 session 清理旧 runtime，以及 SOCKS5 错误协议 loopback 测试；自动重连后按原 ID/端口重建 tunnel、服务端撤销 remote forward 等更深健康探测仍待补。
 - 没有 Playwright UI/截图/交互回归。
 - 没有 vttest/xterm 兼容性基线。
 
@@ -211,7 +211,7 @@ npm run build
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH SFTP 浏览/写操作/上传/远端复制/下载、SCP 上传/下载、五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态和活动 SSH 断开后重连续传已覆盖，外部文件/目录递归拖放及更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控和 XModem 精确长度已覆盖，物理串口、取消/断线和工具变体矩阵待补。 |
-| 隧道 | 部分实现 | local/remote/dynamic 已有，运行中列表、停止入口、连接数/字节/最后错误统计、失败后成功恢复清错、监听器终止清理已接入；三种模式的 OpenSSH 端到端、目标拒绝后原 tunnel 恢复、remote 失败 channel 关闭和 SOCKS5 错误协议 loopback 已覆盖，SSH 整体丢失与服务端撤销 forward 等深度健康探测待补。 |
+| 隧道 | 部分实现 | local/remote/dynamic 已有，运行中列表、停止入口、连接数/字节/最后错误统计、失败后成功恢复清错、监听器终止与 SSH channel 断线旧 runtime 清理已接入；三种模式的 OpenSSH 端到端、目标拒绝后原 tunnel 恢复、remote 失败 channel 关闭和 SOCKS5 错误协议 loopback 已覆盖，自动重连后 tunnel 重建与服务端撤销 forward 等深度健康探测待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 部分实现 | 结构化 events/SQLite、append-only raw/text/jsonl 分片、bundle 日志引用已有；查询/归档/清理策略待补。 |
 | 触发器 | 部分实现 | 匹配和主要动作已有；声音、自定义链接等待补。 |
@@ -225,7 +225,7 @@ npm run build
 
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
-3. 为 tunnel 补齐 SSH 整体丢失、服务端撤销 remote forward 等更深健康探测，并为远端命令型传输补齐更完整的失败状态和错误可视化。
+3. 为 tunnel 补齐自动重连后按原 ID/端口重建、服务端撤销 remote forward 等更深健康探测，并为远端命令型传输补齐更完整的失败状态和错误可视化。
 4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 

@@ -6356,6 +6356,29 @@ fn fail_tunnel_runtime(
     Ok(runtime)
 }
 
+fn fail_session_tunnel_runtimes(
+    tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    session_id: &str,
+    error: &str,
+) -> Result<usize, String> {
+    let mut tunnels = tunnels
+        .lock()
+        .map_err(|lock_error| lock_error.to_string())?;
+    let ids = tunnels
+        .iter()
+        .filter_map(|(id, runtime)| (runtime.session_id == session_id).then_some(id.clone()))
+        .collect::<Vec<_>>();
+    let mut removed = 0;
+    for id in ids {
+        if let Some(runtime) = tunnels.remove(&id) {
+            runtime.metrics.record_error(error);
+            runtime.closed.store(true, Ordering::SeqCst);
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelStatus, String> {
     let runtime = {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
@@ -8680,6 +8703,15 @@ fn read_ssh_channel(
             }
         }
 
+        let stopped_tunnels =
+            match fail_session_tunnel_runtimes(&state.tunnels, &session_id, "SSH channel closed") {
+                Ok(count) => count,
+                Err(error) => {
+                    eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
+                    0
+                }
+            };
+
         let mut should_reconnect = false;
         let removed_current = {
             let mut connections = match io.runtimes.ssh.lock() {
@@ -8711,7 +8743,9 @@ fn read_ssh_channel(
                 );
                 store.record_system_event(
                     &session_id,
-                    "PortMate: SSH channel closed; reconnecting in 1000ms",
+                    format!(
+                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s); reconnecting in 1000ms"
+                    ),
                 );
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist SSH reconnect event: {error}");
@@ -8728,7 +8762,12 @@ fn read_ssh_channel(
                     SessionStatus::Disconnected,
                     Some("SSH channel closed".to_string()),
                 );
-                store.record_system_event(&session_id, "PortMate: SSH channel closed");
+                store.record_system_event(
+                    &session_id,
+                    format!(
+                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s)"
+                    ),
+                );
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist SSH close event: {error}");
                 }
@@ -12800,6 +12839,93 @@ mod tests {
             failed.metrics.snapshot(spec).last_error.as_deref(),
             Some("listener failed")
         );
+    }
+
+    #[test]
+    fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
+        let first_closed = Arc::new(AtomicBool::new(false));
+        let second_closed = Arc::new(AtomicBool::new(false));
+        let other_closed = Arc::new(AtomicBool::new(false));
+        let first_metrics = Arc::new(TunnelMetrics::default());
+        let second_metrics = Arc::new(TunnelMetrics::default());
+        let other_metrics = Arc::new(TunnelMetrics::default());
+        let runtime = |id: &str,
+                       session_id: &str,
+                       metrics: Arc<TunnelMetrics>,
+                       closed: Arc<AtomicBool>| TunnelRuntime {
+            session_id: session_id.to_string(),
+            spec: TunnelSpec {
+                id: id.to_string(),
+                label: id.to_string(),
+                mode: TunnelMode::Local,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 0,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 22,
+                enabled: true,
+            },
+            metrics,
+            closed,
+        };
+        let tunnels = Arc::new(Mutex::new(HashMap::from([
+            (
+                "first".to_string(),
+                runtime(
+                    "first",
+                    "session-a",
+                    Arc::clone(&first_metrics),
+                    Arc::clone(&first_closed),
+                ),
+            ),
+            (
+                "second".to_string(),
+                runtime(
+                    "second",
+                    "session-a",
+                    Arc::clone(&second_metrics),
+                    Arc::clone(&second_closed),
+                ),
+            ),
+            (
+                "other".to_string(),
+                runtime(
+                    "other",
+                    "session-b",
+                    Arc::clone(&other_metrics),
+                    Arc::clone(&other_closed),
+                ),
+            ),
+        ])));
+
+        let removed =
+            fail_session_tunnel_runtimes(&tunnels, "session-a", "SSH channel closed").unwrap();
+        assert_eq!(removed, 2);
+        assert!(first_closed.load(Ordering::SeqCst));
+        assert!(second_closed.load(Ordering::SeqCst));
+        assert!(!other_closed.load(Ordering::SeqCst));
+        assert_eq!(
+            first_metrics
+                .snapshot(TunnelSpec {
+                    id: "first".to_string(),
+                    label: String::new(),
+                    mode: TunnelMode::Local,
+                    bind_host: String::new(),
+                    bind_port: 0,
+                    target_host: String::new(),
+                    target_port: 0,
+                    enabled: false,
+                })
+                .last_error
+                .as_deref(),
+            Some("SSH channel closed")
+        );
+        let remaining = tunnels.lock().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining.contains_key("other"));
+        assert!(other_metrics
+            .snapshot(remaining["other"].spec.clone())
+            .last_error
+            .is_none());
     }
 
     #[test]
