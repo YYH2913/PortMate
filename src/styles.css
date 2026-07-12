@@ -580,6 +580,23 @@ button {
   border-right: 1px solid var(--line-soft);
 }
 
+.file-browser-pane > .file-toolbar {
+  grid-row: 1;
+}
+
+.file-browser-pane > .file-actions {
+  grid-row: 2;
+}
+
+.file-browser-pane > .file-error,
+.file-browser-pane > .file-pane-status {
+  grid-row: 3;
+}
+
+.file-browser-pane > .file-list {
+  grid-row: 4;
+}
+
 .file-browser-pane:last-child {
   border-right: 0;
 }
@@ -643,11 +660,31 @@ button {
   cursor: not-allowed;
 }
 
-.file-error {
+.file-error,
+.file-pane-status {
+  overflow: hidden;
   padding: 7px 9px;
-  border-bottom: 1px solid rgba(248, 113, 113, 0.28);
-  color: var(--red);
+  border-bottom: 1px solid var(--line-soft);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-error {
+  border-bottom-color: rgba(248, 113, 113, 0.28);
+  color: var(--red);
+}
+
+.file-pane-status {
+  color: var(--muted);
+}
+
+.file-pane-status.completed {
+  color: var(--cyan);
+}
+
+.file-pane-status.warning {
+  color: var(--amber);
 }
 
 .file-list {

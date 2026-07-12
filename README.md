@@ -77,7 +77,7 @@ Saved sessions, runtime state, host-key trust decisions, audit rows, and recent 
 
 The `传输 -> SFTP/SCP 传输` dialog supports local file copy, protocol-native SFTP upload/download/remote copy, SCP upload/download, remote-to-remote SCP copy through SSH command channels, and X/Y/ZModem in-band transfers over connected runtimes. Use `remote:/path/file` or `ssh:/path/file` on either side to mark the remote path. ZModem uses the `zmodem2` state machine. Automatic remote modem transfers use lrzsz `rx`/`sx`, `rb`/`sb`, or `rz`/`sz`, gate protocol input behind per-transfer READY markers, and switch SSH PTYs to raw mode for binary integrity. Cancelling a running modem transfer sends three CAN bytes immediately, silent marker/byte waits poll cancellation every 100 ms, and waits fail as soon as the owning session leaves `Connected` so an old worker cannot leak across runtime reconnection.
 
-The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, file properties, local-to-remote upload, remote-to-local download, and pane-to-pane file drag-and-drop through the same SFTP transfer queue.
+The left `文件管理器` panel can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. It supports local/remote dual panes, refresh, parent navigation, recursive new-directory creation, recursive delete with root/current-directory guards, rename, chmod, file properties, local-to-remote upload, remote-to-local download, and pane-to-pane file drag-and-drop. Native desktop file drops can copy external files or recursively expand directory trees into either the local pane or a connected remote pane through the same resumable transfer queue; empty directories are preserved, symbolic links are skipped, and self-copy/target-collision/oversized-batch guards run before the target is modified.
 
 The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text. Telnet Hex/raw byte sends escape `0xFF` as doubled IAC on the wire, while text uses NVT CRLF/`CR NUL` encoding. Incoming Telnet negotiation and NVT decoding retain state across fragmented socket reads, including terminal-type subnegotiation and EOF flushing of a pending CR.
 
@@ -146,9 +146,10 @@ cargo run -p portmate-mcp -- --http
 ## Verification
 
 ```bash
-cargo test -p portmate-core -p portmate-mcp
+npm test
 npm run build
-cargo check -p portmate
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
@@ -177,4 +178,4 @@ The current slice is usable but not yet a full terminal replacement. Implemented
 
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP/SCP upload/download and SFTP remote-copy resume from pre-existing `.portmate-part` prefixes, cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets.
 
-Still pending: server-side remote-forward health probes, external file/directory recursive drag-and-drop, terminal compatibility test baselines, broader MCP HTTP client matrix testing, broader transfer/serial integration matrices, and a portable Stronghold-style vault backend for environments where the native OS keyring is unavailable or intentionally disabled.
+Still pending: server-side remote-forward health probes, richer file conflict policies and remote-directory download workflows, terminal compatibility test baselines, broader MCP HTTP client matrix testing, broader transfer/serial integration matrices, and a portable Stronghold-style vault backend for environments where the native OS keyring is unavailable or intentionally disabled.

@@ -301,6 +301,13 @@ export interface FileProperties {
   created?: string | null;
 }
 
+export interface ExternalDropResult {
+  tasks: TransferTask[];
+  directoriesPrepared: number;
+  skipped: string[];
+  totalBytes: number;
+}
+
 export interface TmuxSessionInfo {
   name: string;
   windows: number;

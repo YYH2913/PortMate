@@ -547,6 +547,24 @@ pub struct StartTransferRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StartExternalDropRequest {
+    pub session_id: String,
+    pub paths: Vec<String>,
+    pub destination: String,
+    pub remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDropResult {
+    pub tasks: Vec<TransferTask>,
+    pub directories_prepared: usize,
+    pub skipped: Vec<String>,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTunnelRequest {
     pub session_id: String,
     pub mode: TunnelMode,
@@ -1844,6 +1862,14 @@ async fn start_transfer(
     request: StartTransferRequest,
 ) -> Result<TransferTask, String> {
     start_transfer_inner(state.inner(), request).await
+}
+
+#[tauri::command]
+async fn start_external_drop(
+    state: State<'_, AppState>,
+    request: StartExternalDropRequest,
+) -> Result<ExternalDropResult, String> {
+    start_external_drop_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -5425,6 +5451,362 @@ fn remote_copy_markers(output: &[u8]) -> RemoteCopyMarkers {
 enum FileOperation {
     CreateDirectory,
     Delete,
+}
+
+const MAX_EXTERNAL_DROP_ROOTS: usize = 512;
+const MAX_EXTERNAL_DROP_ENTRIES: usize = 20_000;
+const MAX_EXTERNAL_DROP_FILES: usize = 5_000;
+
+#[derive(Debug)]
+struct ExternalDropRoot {
+    path: PathBuf,
+    is_dir: bool,
+}
+
+#[derive(Debug)]
+struct ExternalDropFile {
+    source: PathBuf,
+    relative: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct ExternalDropPlan {
+    directories: Vec<PathBuf>,
+    files: Vec<ExternalDropFile>,
+    skipped: Vec<String>,
+    total_bytes: u64,
+}
+
+async fn start_external_drop_inner(
+    state: &AppState,
+    request: StartExternalDropRequest,
+) -> Result<ExternalDropResult, String> {
+    {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if store.profile(&request.session_id).is_none() {
+            return Err(format!("unknown session: {}", request.session_id));
+        }
+    }
+
+    let local_destination = if request.remote {
+        validate_remote_drop_destination(&request.destination)?;
+        None
+    } else {
+        Some(validate_local_drop_destination(&request.destination)?)
+    };
+    let plan = plan_external_drop(&request.paths, local_destination.as_deref())?;
+
+    if request.remote {
+        if !plan.directories.is_empty() || !plan.files.is_empty() {
+            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let sftp = open_sftp_session(handle).await?;
+            let result = async {
+                sftp_create_dir_all(&sftp, request.destination.trim()).await?;
+                for relative in &plan.directories {
+                    let target = remote_join_path(
+                        request.destination.trim(),
+                        &external_relative_remote_path(relative)?,
+                    );
+                    sftp_create_dir_all(&sftp, &target).await?;
+                }
+                Ok::<(), String>(())
+            }
+            .await;
+            let _ = sftp.close().await;
+            result?;
+        }
+    } else if let Some(destination) = &local_destination {
+        for relative in &plan.directories {
+            let target = destination.join(relative);
+            fs::create_dir_all(&target)
+                .map_err(|error| format!("创建拖放目标目录失败 {}: {error}", target.display()))?;
+        }
+    }
+
+    let directories_prepared = plan.directories.len();
+    let total_bytes = plan.total_bytes;
+    let skipped = plan.skipped;
+    let mut tasks = Vec::with_capacity(plan.files.len());
+    for file in plan.files {
+        let source = file
+            .source
+            .to_str()
+            .ok_or_else(|| format!("拖放源路径不是有效 Unicode: {}", file.source.display()))?
+            .to_string();
+        let destination = if request.remote {
+            format!(
+                "remote:{}",
+                remote_join_path(
+                    request.destination.trim(),
+                    &external_relative_remote_path(&file.relative)?,
+                )
+            )
+        } else {
+            local_destination
+                .as_ref()
+                .expect("local drop destination must be available")
+                .join(&file.relative)
+                .display()
+                .to_string()
+        };
+        tasks.push(
+            start_transfer_inner(
+                state,
+                StartTransferRequest {
+                    session_id: request.session_id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source,
+                    destination,
+                },
+            )
+            .await?,
+        );
+    }
+
+    Ok(ExternalDropResult {
+        tasks,
+        directories_prepared,
+        skipped,
+        total_bytes,
+    })
+}
+
+fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() || path.contains('\0') {
+        return Err("远端拖放目标路径不能为空或包含 NUL".to_string());
+    }
+    Ok(())
+}
+
+fn validate_local_drop_destination(path: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err("本地拖放目标路径不能为空或包含 NUL".to_string());
+    }
+    let destination = expand_identity_path(path.trim());
+    let metadata = fs::metadata(&destination).map_err(|error| {
+        format!(
+            "读取本地拖放目标目录失败 {}: {error}",
+            destination.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!("本地拖放目标不是目录: {}", destination.display()));
+    }
+    destination
+        .canonicalize()
+        .map_err(|error| format!("解析本地拖放目标失败 {}: {error}", destination.display()))
+}
+
+fn plan_external_drop(
+    paths: &[String],
+    local_destination: Option<&Path>,
+) -> Result<ExternalDropPlan, String> {
+    if paths.is_empty() {
+        return Err("拖放批次没有源路径".to_string());
+    }
+    if paths.len() > MAX_EXTERNAL_DROP_ROOTS {
+        return Err(format!(
+            "一次最多拖放 {MAX_EXTERNAL_DROP_ROOTS} 个顶层路径，当前为 {} 个",
+            paths.len()
+        ));
+    }
+
+    let mut candidates = Vec::with_capacity(paths.len());
+    let mut skipped = Vec::new();
+    for raw_path in paths {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() || trimmed.contains('\0') {
+            return Err("拖放源路径不能为空或包含 NUL".to_string());
+        }
+        let source = expand_identity_path(trimmed);
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("读取拖放源路径失败 {}: {error}", source.display()))?;
+        if metadata.file_type().is_symlink() {
+            skipped.push(format!("{} (symbolic link)", source.display()));
+            continue;
+        }
+        if !metadata.is_dir() && !metadata.is_file() {
+            skipped.push(format!(
+                "{} (not a regular file or directory)",
+                source.display()
+            ));
+            continue;
+        }
+        let source = source
+            .canonicalize()
+            .map_err(|error| format!("解析拖放源路径失败 {}: {error}", source.display()))?;
+        candidates.push(ExternalDropRoot {
+            path: source,
+            is_dir: metadata.is_dir(),
+        });
+    }
+    candidates.sort_by(|left, right| {
+        left.path
+            .components()
+            .count()
+            .cmp(&right.path.components().count())
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let mut roots: Vec<ExternalDropRoot> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if roots.iter().any(|root| {
+            candidate.path == root.path || (root.is_dir && candidate.path.starts_with(&root.path))
+        }) {
+            skipped.push(format!("{} (already included)", candidate.path.display()));
+            continue;
+        }
+        if candidate.is_dir
+            && local_destination.is_some_and(|destination| destination.starts_with(&candidate.path))
+        {
+            return Err(format!(
+                "拒绝把目录复制到自身或其子目录: {}",
+                candidate.path.display()
+            ));
+        }
+        if let Some(destination) = local_destination {
+            if let Some(name) = candidate.path.file_name() {
+                let target = destination.join(name);
+                if target.exists()
+                    && target
+                        .canonicalize()
+                        .is_ok_and(|target| target == candidate.path)
+                {
+                    return Err(format!(
+                        "拒绝把路径复制到自身: {}",
+                        candidate.path.display()
+                    ));
+                }
+            }
+        }
+        roots.push(candidate);
+    }
+
+    let mut plan = ExternalDropPlan {
+        skipped,
+        ..ExternalDropPlan::default()
+    };
+    let mut visited = 0_usize;
+    for root in roots {
+        let Some(root_name) = root.path.file_name().map(|name| name.to_os_string()) else {
+            return Err(format!("拒绝拖放文件系统根路径: {}", root.path.display()));
+        };
+        if root_name.to_str().is_none() {
+            plan.skipped.push(format!(
+                "{} (path is not valid Unicode)",
+                root.path.display()
+            ));
+            continue;
+        }
+        let mut stack = vec![(root.path, PathBuf::from(root_name))];
+        while let Some((source, relative)) = stack.pop() {
+            visited += 1;
+            if visited > MAX_EXTERNAL_DROP_ENTRIES {
+                return Err(format!(
+                    "拖放目录超过 {MAX_EXTERNAL_DROP_ENTRIES} 个条目，请缩小批次"
+                ));
+            }
+            if external_relative_remote_path(&relative).is_err() {
+                plan.skipped
+                    .push(format!("{} (path is not valid Unicode)", source.display()));
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&source)
+                .map_err(|error| format!("读取拖放目录项失败 {}: {error}", source.display()))?;
+            if metadata.file_type().is_symlink() {
+                plan.skipped
+                    .push(format!("{} (symbolic link)", source.display()));
+                continue;
+            }
+            if metadata.is_dir() {
+                plan.directories.push(relative.clone());
+                let mut children = fs::read_dir(&source)
+                    .map_err(|error| format!("读取拖放目录失败 {}: {error}", source.display()))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("读取拖放目录项失败 {}: {error}", source.display()))?;
+                children.sort_by_key(|entry| entry.file_name());
+                for child in children.into_iter().rev() {
+                    stack.push((child.path(), relative.join(child.file_name())));
+                }
+            } else if metadata.is_file() {
+                if let Some(destination) = local_destination {
+                    let target = destination.join(&relative);
+                    if target.exists() && target.canonicalize().is_ok_and(|target| target == source)
+                    {
+                        return Err(format!("拒绝把文件复制到自身: {}", source.display()));
+                    }
+                }
+                plan.total_bytes = plan
+                    .total_bytes
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| "拖放批次总大小溢出".to_string())?;
+                if plan.files.len() >= MAX_EXTERNAL_DROP_FILES {
+                    return Err(format!(
+                        "一次最多拖放 {MAX_EXTERNAL_DROP_FILES} 个文件，请缩小批次"
+                    ));
+                }
+                plan.files.push(ExternalDropFile { source, relative });
+            } else {
+                plan.skipped.push(format!(
+                    "{} (not a regular file or directory)",
+                    source.display()
+                ));
+            }
+        }
+    }
+
+    plan.directories.sort_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    if let Some(conflict) = plan
+        .directories
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| &pair[0])
+    {
+        return Err(format!(
+            "拖放批次包含冲突的目标目录: {}",
+            conflict.display()
+        ));
+    }
+    plan.files
+        .sort_by(|left, right| left.relative.cmp(&right.relative));
+    let directory_targets = plan.directories.iter().cloned().collect::<HashSet<_>>();
+    let mut file_targets = HashSet::new();
+    for file in &plan.files {
+        if directory_targets.contains(&file.relative) || !file_targets.insert(file.relative.clone())
+        {
+            return Err(format!(
+                "拖放批次包含冲突的目标路径: {}",
+                file.relative.display()
+            ));
+        }
+    }
+    plan.skipped.sort();
+    plan.skipped.dedup();
+    Ok(plan)
+}
+
+fn external_relative_remote_path(path: &Path) -> Result<String, String> {
+    let mut remote = String::new();
+    for component in path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(format!("拖放相对路径无效: {}", path.display()));
+        };
+        let part = part
+            .to_str()
+            .ok_or_else(|| format!("拖放路径不是有效 Unicode: {}", path.display()))?;
+        remote = remote_join_path(&remote, part);
+    }
+    if remote.is_empty() {
+        Err("拖放相对路径不能为空".to_string())
+    } else {
+        Ok(remote)
+    }
 }
 
 async fn list_files_inner(
@@ -11815,6 +12197,7 @@ pub fn run() {
             serial_send_break,
             refresh_sysmon,
             start_transfer,
+            start_external_drop,
             create_tunnel,
             list_tunnels,
             stop_tunnel,
@@ -13271,6 +13654,152 @@ mod tests {
     }
 
     #[test]
+    fn external_drop_plan_preserves_directories_and_skips_unsafe_entries() {
+        let root = std::env::temp_dir().join(format!("portmate-drop-plan-{}", Uuid::new_v4()));
+        let source = root.join("source-tree");
+        let nested = source.join("nested");
+        let empty = source.join("empty");
+        let destination = root.join("destination");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("top.txt"), b"top").unwrap();
+        fs::write(nested.join("payload.bin"), b"payload").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&nested, source.join("nested-link")).unwrap();
+
+        let paths = vec![
+            source.display().to_string(),
+            nested.join("payload.bin").display().to_string(),
+        ];
+        let destination = destination.canonicalize().unwrap();
+        let plan = plan_external_drop(&paths, Some(&destination)).unwrap();
+
+        assert_eq!(
+            plan.directories,
+            vec![
+                PathBuf::from("source-tree"),
+                PathBuf::from("source-tree/empty"),
+                PathBuf::from("source-tree/nested"),
+            ]
+        );
+        assert_eq!(
+            plan.files
+                .iter()
+                .map(|file| file.relative.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("source-tree/nested/payload.bin"),
+                PathBuf::from("source-tree/top.txt"),
+            ]
+        );
+        assert_eq!(plan.total_bytes, 10);
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|item| item.contains("already included")));
+        #[cfg(unix)]
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|item| item.contains("symbolic link")));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_drop_plan_rejects_self_descendants_and_target_conflicts() {
+        let root = std::env::temp_dir().join(format!("portmate-drop-guards-{}", Uuid::new_v4()));
+        let first = root.join("first/shared");
+        let second = root.join("second/shared");
+        let destination = root.join("destination");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(first.join("one.txt"), b"one").unwrap();
+
+        let root_destination = root.canonicalize().unwrap();
+        let self_error = plan_external_drop(
+            &[first.display().to_string()],
+            Some(&root.join("first").canonicalize().unwrap()),
+        )
+        .unwrap_err();
+        assert!(self_error.contains("复制到自身"), "{self_error}");
+
+        let descendant = first.join("child-target");
+        fs::create_dir_all(&descendant).unwrap();
+        let descendant_error = plan_external_drop(
+            &[first.display().to_string()],
+            Some(&descendant.canonicalize().unwrap()),
+        )
+        .unwrap_err();
+        assert!(descendant_error.contains("子目录"), "{descendant_error}");
+
+        let conflict_error = plan_external_drop(
+            &[first.display().to_string(), second.display().to_string()],
+            Some(&destination.canonicalize().unwrap()),
+        )
+        .unwrap_err();
+        assert!(
+            conflict_error.contains("冲突的目标目录"),
+            "{conflict_error}"
+        );
+        assert!(root_destination.is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_drop_local_batch_copies_nested_files_through_transfer_queue() {
+        let root = std::env::temp_dir().join(format!("portmate-drop-local-{}", Uuid::new_v4()));
+        let source = root.join("incoming");
+        let nested = source.join("nested");
+        let empty = source.join("empty");
+        let destination = root.join("destination");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("alpha.txt"), b"alpha").unwrap();
+        fs::write(nested.join("beta.bin"), b"beta").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+        tauri::async_runtime::block_on(async {
+            let result = start_external_drop_inner(
+                &state,
+                StartExternalDropRequest {
+                    session_id: profile.id.clone(),
+                    paths: vec![source.display().to_string()],
+                    destination: destination.display().to_string(),
+                    remote: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.tasks.len(), 2);
+            assert_eq!(result.directories_prepared, 3);
+            assert_eq!(result.total_bytes, 9);
+            assert!(result.skipped.is_empty());
+            for task in result.tasks {
+                let task = wait_for_transfer_terminal_state(&state, &task.id).await;
+                assert_eq!(
+                    task.status,
+                    TransferStatus::Completed,
+                    "local recursive drop failed: {:?}",
+                    task.message
+                );
+            }
+        });
+
+        let copied = destination.join("incoming");
+        assert_eq!(fs::read(copied.join("alpha.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(copied.join("nested/beta.bin")).unwrap(), b"beta");
+        assert!(copied.join("empty").is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn append_log_bytes_returns_stable_byte_refs() {
         let root = std::env::temp_dir().join(format!("portmate-log-test-{}", Uuid::new_v4()));
         let store_path = root.join("portmate-store.sqlite3");
@@ -14165,6 +14694,48 @@ mod tests {
             .await
             .unwrap();
             assert!(sftp_nested.is_dir());
+
+            let drop_source = root.join("external-drop-source");
+            let drop_source_nested = drop_source.join("nested");
+            fs::create_dir_all(drop_source.join("empty")).unwrap();
+            fs::create_dir_all(&drop_source_nested).unwrap();
+            fs::write(drop_source.join("alpha.txt"), b"external-alpha").unwrap();
+            fs::write(drop_source_nested.join("beta.bin"), b"external-beta").unwrap();
+            let drop_remote_target = root.join("external-drop-remote");
+            let drop_result = start_external_drop_inner(
+                &state,
+                StartExternalDropRequest {
+                    session_id: profile.id.clone(),
+                    paths: vec![drop_source.display().to_string()],
+                    destination: drop_remote_target.display().to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(drop_result.tasks.len(), 2);
+            assert_eq!(drop_result.directories_prepared, 3);
+            assert_eq!(drop_result.total_bytes, 27);
+            assert!(drop_result.skipped.is_empty());
+            for task in drop_result.tasks {
+                let task = wait_for_transfer_terminal_state(&state, &task.id).await;
+                assert_eq!(
+                    task.status,
+                    TransferStatus::Completed,
+                    "recursive external SFTP drop failed: {:?}",
+                    task.message
+                );
+            }
+            let dropped_remote_tree = drop_remote_target.join("external-drop-source");
+            assert_eq!(
+                fs::read(dropped_remote_tree.join("alpha.txt")).unwrap(),
+                b"external-alpha"
+            );
+            assert_eq!(
+                fs::read(dropped_remote_tree.join("nested/beta.bin")).unwrap(),
+                b"external-beta"
+            );
+            assert!(dropped_remote_tree.join("empty").is_dir());
 
             let sftp_source = root.join("sftp-upload-source.bin");
             let sftp_payload = b"PortMate OpenSSH SFTP integration payload\n";

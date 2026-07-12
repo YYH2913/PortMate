@@ -77,7 +77,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - GSSAPI 标记为 unsupported。
 - Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH/TCP/Telnet/Serial 自动重连已有初版，断线后会进入 `Reconnecting` 并后台重试；更深连接健康探测还不完整。
 - Serial 的基础断线重开已接入；Hex/时间戳查看已接入活动会话侧栏，但仍缺更完整过滤、导出和独立串口分析窗口。
-- SFTP 文件管理已是 local/remote 双栏并支持 rename/chmod/属性查看，以及本地/远端文件面板之间拖拽上传/下载；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口；外部文件拖放、目录递归拖放和端到端传输矩阵测试还缺。
+- SFTP 文件管理已是 local/remote 双栏并支持 rename/chmod/属性查看，以及本地/远端文件面板之间拖拽上传/下载；Tauri 原生外部拖放可把多个本地文件或完整目录树复制到本地 pane 或上传到已连接远端 pane，保留空目录、跳过 symlink，在目标修改前拒绝自身/子目录复制、同名目标冲突和超限批次，并跟踪整批 task 终态后刷新目标；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口。文件多选、可配置冲突策略和远端目录递归下载仍待补。
 - ZModem 当前限制单文件小于 4 GiB；OpenSSH PTY 上的 lrzsz X/Y/Z 双向传输已有实测，静默 modem 等待可在取消后立即发送 CAN 并快速退出，transport 进入重连态会立即失败旧 worker；物理串口、OpenSSH 活动传输断线、批量和不同工具实现的兼容矩阵仍待补。
 
 ### SSH 身份与 Host Key 隔离
@@ -177,7 +177,7 @@ npm run build
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
 - MCP resource/template、ping、batch、notification、HTTP `202` 和日志 limit 协议边界。
-- 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
+- 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、外部目录树递归上传（含空目录）、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
 - 独立真实 `ssh-agent` 与 OpenSSH 服务上的 agent 禁用、未过滤 offer、`IdentitiesOnly` 空白名单、显式指纹白名单，以及错误指纹不能被相同 comment/path 绕过。
@@ -186,7 +186,7 @@ npm run build
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 
-当前 workspace 自动化测试总数为 86：`portmate` 57、`portmate-core` 18、`portmate-mcp` 11。
+当前 Rust workspace 自动化测试总数为 89：`portmate` 60、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 4 个前端 transfer state 单元测试。
 
 主要缺口：
 
@@ -210,7 +210,7 @@ npm run build
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入和 Agent identity 单条/批量添加已有；identity 字段编辑、轮换和 portable vault 待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；Telnet 高级选项、深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
-| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间文件拖拽上传/下载、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH SFTP 浏览/写操作/上传/远端复制/下载、SCP 上传/下载、五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态和活动 SSH 断开后重连续传已覆盖，外部文件/目录递归拖放及更广服务故障矩阵待补。 |
+| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、空目录保留、安全批次规划、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图与批量取消/重试入口已有；OpenSSH 递归外部目录上传及原有 SFTP/SCP 矩阵已覆盖，文件多选、冲突策略、远端目录递归下载及更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 部分实现 | local/remote/dynamic 已有，运行中列表、停止入口、连接数/字节/最后错误统计、失败后成功恢复清错、监听器终止、SSH channel 断线旧 runtime 清理和自动重连后 enabled tunnel 原规格重建已接入；三种模式的 OpenSSH 端到端、目标拒绝后原 tunnel 恢复、remote 失败 channel 关闭、重建失败隔离和 SOCKS5 错误协议 loopback 已覆盖，服务端撤销 forward 等深度健康探测待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
@@ -232,7 +232,7 @@ npm run build
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
 
-1. 文件管理器继续增强：外部文件/目录递归拖放和端到端传输矩阵测试。
+1. 文件管理器继续增强：文件多选、可配置冲突策略、远端目录递归下载和更广端到端故障矩阵。
 2. 会话布局持久化：任意分屏、pane session binding、启动自动打开、标签颜色、workspace restore。
 3. 同步输入正式化：多 pane 广播、过滤协议、换行策略、延迟、前后缀、明显状态条。
 4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
@@ -256,9 +256,9 @@ npm run build
 
 ## 建议的近期执行顺序
 
-1. 文件管理器外部文件/目录递归拖放和端到端传输矩阵测试。
-2. Tunnel 深度健康探测和失败矩阵。
-3. Client identity 字段编辑、密钥轮换和 portable vault。
+1. Tunnel 深度健康探测和失败矩阵。
+2. Client identity 字段编辑、密钥轮换和 portable vault。
+3. 文件管理器多选、冲突策略和远端目录递归下载。
 4. 集成测试环境。
 5. append-only 日志和 session bundle。
 

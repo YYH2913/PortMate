@@ -5,6 +5,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ArrowUp,
   ChevronDown,
@@ -25,7 +26,8 @@ import {
   X,
 } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
-import type { AuditRecord, AuthMethod, ConnectionConfig, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import { mergeTransfers } from "./transfer-state";
+import type { AuditRecord, AuthMethod, ConnectionConfig, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -1453,6 +1455,13 @@ type FileDragState = {
   entry: FileEntry;
 } | null;
 
+type ExternalDropState = {
+  remote: boolean;
+  taskIds: string[];
+  message: string;
+  status: "planning" | "queued" | "completed" | "warning";
+} | null;
+
 function FileManagerPanel({
   active,
   transfers,
@@ -1469,6 +1478,7 @@ function FileManagerPanel({
   const [propertiesDialog, setPropertiesDialog] = useState<FilePropertiesDialogState>(null);
   const [draggedFile, setDraggedFile] = useState<FileDragState>(null);
   const [dropTarget, setDropTarget] = useState<boolean | null>(null);
+  const [externalDrop, setExternalDrop] = useState<ExternalDropState>(null);
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
 
   useEffect(() => {
@@ -1482,6 +1492,57 @@ function FileManagerPanel({
       setRemotePanel((current) => ({ ...current, entries: [], selected: null, error: "" }));
     }
   }, [canRemote, active?.profile.id]);
+
+  useEffect(() => {
+    setDropTarget(null);
+    setExternalDrop(null);
+  }, [active?.profile.id]);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      if (payload.type === "leave") {
+        setDropTarget(null);
+        return;
+      }
+      const remote = filePaneAtPhysicalPosition(payload.position.x, payload.position.y);
+      if (!active || remote === null || (remote && !canRemote)) {
+        setDropTarget(null);
+        return;
+      }
+      if (payload.type === "drop") {
+        setDropTarget(null);
+        void startExternalDrop(remote, payload.paths);
+      } else {
+        setDropTarget(remote);
+      }
+    }).then((stopListening) => {
+      if (disposed) stopListening();
+      else unlisten = stopListening;
+    }).catch(() => {
+      // Native file-drop events are unavailable in browser preview.
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path]);
+
+  useEffect(() => {
+    if (!externalDrop || externalDrop.status !== "queued" || !externalDrop.taskIds.length) return;
+    const batchTasks = externalDrop.taskIds.map((taskId) => transfers.find((task) => task.id === taskId));
+    if (batchTasks.some((task) => !task)) return;
+    if (batchTasks.some((task) => task?.status === "queued" || task?.status === "running")) return;
+    const failed = batchTasks.filter((task) => task?.status === "failed" || task?.status === "cancelled").length;
+    const message = failed
+      ? `${batchTasks.length - failed}/${batchTasks.length} 个文件完成，${failed} 个失败或取消`
+      : `${batchTasks.length} 个文件传输完成`;
+    setExternalDrop((current) => current ? { ...current, message, status: failed ? "warning" : "completed" } : null);
+    void loadFiles(externalDrop.remote, externalDrop.remote ? remotePanel.path : localPanel.path);
+  }, [externalDrop, transfers]);
 
   function updatePanel(remote: boolean, patch: Partial<FilePanelState>) {
     const setter = remote ? setRemotePanel : setLocalPanel;
@@ -1621,6 +1682,53 @@ function FileManagerPanel({
     }
   }
 
+  async function startExternalDrop(remote: boolean, paths: string[]) {
+    if (!active || (remote && !canRemote) || !paths.length) return;
+    const panel = remote ? remotePanel : localPanel;
+    setExternalDrop({
+      remote,
+      taskIds: [],
+      message: `正在分析 ${paths.length} 个拖放路径`,
+      status: "planning",
+    });
+    updatePanel(remote, { busy: true, error: "" });
+    try {
+      const result = await invokeBackend<ExternalDropResult>("start_external_drop", {
+        request: {
+          sessionId: active.profile.id,
+          paths,
+          destination: panel.path,
+          remote,
+        },
+      });
+      result.tasks.forEach(onTransfer);
+      const parts = [
+        `${result.tasks.length} 个文件`,
+        formatBytes(result.totalBytes),
+        `${result.directoriesPrepared} 个目录`,
+      ];
+      if (result.skipped.length) parts.push(`跳过 ${result.skipped.length} 项`);
+      const message = parts.join(" · ");
+      setExternalDrop({
+        remote,
+        taskIds: result.tasks.map((task) => task.id),
+        message,
+        status: result.tasks.length ? "queued" : result.skipped.length ? "warning" : "completed",
+      });
+      onNotice({ title: "外部拖放已处理", message });
+      if (!result.tasks.length) {
+        await loadFiles(remote, panel.path);
+      }
+    } catch (error) {
+      const message = formatError(error);
+      setExternalDrop(null);
+      updatePanel(remote, { error: message });
+      onNotice({ title: "外部拖放失败", message });
+    } finally {
+      updatePanel(remote, { busy: false });
+    }
+  }
+
   async function startPromptTransfer(remote: boolean) {
     if (!active) return;
     const panel = remote ? remotePanel : localPanel;
@@ -1678,6 +1786,7 @@ function FileManagerPanel({
           onLoad={(path) => void loadFiles(false, path)}
           onSelect={(entry) => setLocalPanel((current) => ({ ...current, selected: entry }))}
           dropActive={dropTarget === false}
+          dropStatus={externalDrop?.remote === false ? externalDrop : null}
           onDragStart={(entry, event) => startFileDrag(false, entry, event)}
           onDragEnd={() => {
             setDraggedFile(null);
@@ -1704,6 +1813,7 @@ function FileManagerPanel({
             onLoad={(path) => void loadFiles(true, path)}
             onSelect={(entry) => setRemotePanel((current) => ({ ...current, selected: entry }))}
             dropActive={dropTarget === true}
+            dropStatus={externalDrop?.remote === true ? externalDrop : null}
             onDragStart={(entry, event) => startFileDrag(true, entry, event)}
             onDragEnd={() => {
               setDraggedFile(null);
@@ -1734,6 +1844,7 @@ function FileBrowserPane({
   canTransfer,
   transferLabel,
   dropActive,
+  dropStatus,
   onPathChange,
   onLoad,
   onSelect,
@@ -1755,6 +1866,7 @@ function FileBrowserPane({
   canTransfer: boolean;
   transferLabel: string;
   dropActive: boolean;
+  dropStatus: ExternalDropState;
   onPathChange: (path: string) => void;
   onLoad: (path: string) => void;
   onSelect: (entry: FileEntry | null) => void;
@@ -1773,6 +1885,7 @@ function FileBrowserPane({
   return (
     <section
       className={dropActive ? "file-browser-pane drop-active" : "file-browser-pane"}
+      data-file-pane={remote ? "remote" : "local"}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -1794,7 +1907,11 @@ function FileBrowserPane({
         <button onClick={onProperties} disabled={!panel.selected}>属性</button>
         <button onClick={onTransfer} disabled={!panel.selected || panel.selected.isDir || !canTransfer}>{transferLabel}</button>
       </div>
-      {panel.error ? <div className="file-error">{panel.error}</div> : null}
+      {panel.error ? (
+        <div className="file-error">{panel.error}</div>
+      ) : dropStatus ? (
+        <div className={`file-pane-status ${dropStatus.status}`}>{dropStatus.message}</div>
+      ) : null}
       <div className="file-list">
         <button className="file-row up" onClick={() => onLoad(parentPath(panel.path, remote))}>
           <Folder size={13} />
@@ -5891,12 +6008,6 @@ function mergeSessionSummaries(current: SessionSummary[], saved: SessionSummary)
   return current.map((session, itemIndex) => itemIndex === index ? saved : session);
 }
 
-function mergeTransfers(current: TransferTask[], saved: TransferTask) {
-  const index = current.findIndex((task) => task.id === saved.id);
-  if (index < 0) return [...current, saved];
-  return current.map((task, itemIndex) => itemIndex === index ? saved : task);
-}
-
 function mergeTunnels(current: TunnelStatus[], saved: TunnelStatus) {
   const index = current.findIndex((tunnel) => tunnel.spec.id === saved.spec.id);
   if (index < 0) return [...current, saved];
@@ -6132,6 +6243,15 @@ function joinFilePath(base: string, name: string, remote: boolean) {
   const separator = remote || base.includes("/") ? "/" : "\\";
   const cleanBase = base.endsWith("/") || base.endsWith("\\") ? base.slice(0, -1) : base;
   return cleanBase ? `${cleanBase}${separator}${name}` : name;
+}
+
+function filePaneAtPhysicalPosition(x: number, y: number): boolean | null {
+  const scale = window.devicePixelRatio || 1;
+  const target = document.elementFromPoint(x / scale, y / scale);
+  const pane = target?.closest<HTMLElement>("[data-file-pane]");
+  if (pane?.dataset.filePane === "remote") return true;
+  if (pane?.dataset.filePane === "local") return false;
+  return null;
 }
 
 function parentPath(path: string, remote: boolean) {
