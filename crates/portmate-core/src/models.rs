@@ -348,6 +348,8 @@ pub struct LoggingSettings {
     pub jsonl: bool,
     pub redact_secrets: bool,
     pub path_template: String,
+    #[serde(default)]
+    pub retention_days: u32,
 }
 
 impl Default for LoggingSettings {
@@ -359,6 +361,7 @@ impl Default for LoggingSettings {
             jsonl: true,
             redact_secrets: true,
             path_template: "{profile}/{date}/{session}.jsonl".to_string(),
+            retention_days: 0,
         }
     }
 }
@@ -609,5 +612,22 @@ mod tests {
         assert!(jump.password_secret_ref.is_none());
         assert!(jump.passphrase_secret_ref.is_none());
         assert!(jump.host_key_policy.is_none());
+    }
+
+    #[test]
+    fn logging_settings_deserialize_without_legacy_retention_field() {
+        let logging: LoggingSettings = serde_json::from_str(
+            r#"{
+                "enabled": true,
+                "raw": false,
+                "text": true,
+                "jsonl": true,
+                "redactSecrets": true,
+                "pathTemplate": "{profile}/{date}/{session}.jsonl"
+            }"#,
+        )
+        .expect("legacy logging settings should deserialize");
+
+        assert_eq!(logging.retention_days, 0);
     }
 }

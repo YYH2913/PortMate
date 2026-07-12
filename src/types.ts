@@ -33,6 +33,7 @@ export interface SessionProfile {
     jsonl: boolean;
     redactSecrets: boolean;
     pathTemplate: string;
+    retentionDays: number;
   };
   triggers: TriggerSpec[];
   transfer: {

@@ -123,6 +123,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - `工具 -> 日志管理` 可安全枚举 raw/txt/jsonl 分片，按路径和格式筛选、查看受限尾部预览（raw/非 UTF-8 使用 Hex）并批量清理；扫描、预览和删除均有数量/大小上限，symlink、路径穿越和非分片扩展不会进入操作范围。
 - 日志管理可全文搜索磁盘 Text/JSONL 分片，包括已从有界 store events 裁剪的历史；支持全部或选中路径，结果带分片、行号、字节偏移和受限上下文，并明确报告命中/单文件/总扫描上限与 warning。Raw 保持 Hex 预览，不伪装成文本搜索。
 - 日志管理可把最多 1,000 个、合计不超过 512 MiB 的选中 raw/txt/jsonl 分片流式归档为原子落盘的 `.tar.gz`，包内 manifest 记录逐文件 SHA-256，并生成 `.sha256` sidecar；源分片保留不删除，路径穿越、symlink、非法扩展和归档过程中截断的文件会被拒绝。
+- 每个 profile 可配置 0..=3650 天自动保留期；旧配置默认关闭。应用启动时后台检查，持续写入时最多每小时复查一次，只按 profile 模板匹配并在删除前二次核对 mtime，随后清理空目录；启用保留期的自定义模板必须含 `{session}` 或 `{profile}`，避免误删共享路径。
 - 日志管理可把选中会话导出为原子落盘的 `.tar.gz` 和 `.sha256` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。默认脱敏同时覆盖 event text 与 `summary.lastLine`，脱敏开启时强制排除 raw；只有显式关闭脱敏并启用 raw 后才按受限 `bytesRef` 读取片段。
 - 触发器支持 contains/regex，动作包括高亮、通知、时间线标记、本地命令、发送文本。
 - secret redaction 有核心测试。
@@ -130,7 +131,6 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - outbound/system 事件和 transport 解码前二进制流尚未完整进入分片，当前 raw 仍来自入站 terminal text；`bytesRef` 还不是覆盖所有方向的原始字节索引。
-- 按保留周期自动清理尚未完成。
 - 日志与命令关联、毫秒级分片文件，以及 bundle 的签名/自定义附件选择还需增强。
 - 触发器动作中的播放声音、自定义链接等还不完整。
 - 传输任务对 local/SFTP/SCP copy loop、远端命令型复制目标大小轮询和 X/Y/ZModem block loop 已有实时进度/速度与取消。
@@ -199,8 +199,9 @@ npm run build
 - `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、脱敏/raw 互斥和 `bytesRef` 范围读取；回归同时覆盖此前遗漏的 `summary.lastLine` 敏感信息泄漏。
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
+- profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 107：`portmate` 77、`portmate-kdf` 1、`portmate-core` 18、`portmate-mcp` 11；`npm test` 另有 16 个前端 transfer/selection/presentation/log-shard 单元测试。
+当前 Rust workspace 自动化测试总数为 109：`portmate` 78、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 16 个前端 transfer/selection/presentation/log-shard 单元测试。
 
 主要缺口：
 
@@ -228,7 +229,7 @@ npm run build
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
-| 日志 | 部分实现 | 结构化 events/SQLite、入站 append-only raw/text/jsonl 分片、稳定 raw `bytesRef`、受限 UTF-8/Hex 尾部预览、路径/格式筛选、磁盘 Text/JSONL 历史全文查询、安全批量清理、保留源文件的通用分片流式归档，以及带 manifest/sidecar 校验和可选 raw 的脱敏 `.tar.gz` session bundle 已有；outbound/解码前字节和自动保留策略待补。 |
+| 日志 | 部分实现 | 结构化 events/SQLite、入站 append-only raw/text/jsonl 分片、稳定 raw `bytesRef`、受限 UTF-8/Hex 尾部预览、路径/格式筛选、磁盘 Text/JSONL 历史全文查询、安全批量清理、profile 自动保留、保留源文件的通用分片流式归档，以及带 manifest/sidecar 校验和可选 raw 的脱敏 `.tar.gz` session bundle 已有；outbound/解码前字节待补。 |
 | 触发器 | 部分实现 | 匹配和主要动作已有；声音、自定义链接等待补。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、live IPC 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE 事件流和纯 SSE POST message 响应；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
@@ -254,7 +255,7 @@ npm run build
 
 ### P2：日志、诊断和 MCP 产品化
 
-1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI 和通用归档已完成；继续补自动保留周期。
+1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档和 profile 自动保留期已完成；继续补 outbound/解码前原始字节。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 扩展：进程、磁盘、网络接口、远端平台兼容。
@@ -271,9 +272,8 @@ npm run build
 ## 建议的近期执行顺序
 
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
-2. append-only 日志自动保留周期；历史全文查询、通用分片归档与压缩 session bundle 已完成。
-3. 会话布局持久化和 workspace restore。
-4. Stronghold 主密码轮换与批量迁移。
-5. 更深连接健康探测和跨平台传输故障矩阵。
+2. 会话布局持久化和 workspace restore。
+3. Stronghold 主密码轮换与批量迁移。
+4. 更深连接健康探测和跨平台传输故障矩阵。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。

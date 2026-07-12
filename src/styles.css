@@ -2367,6 +2367,51 @@ fieldset label {
 }
 
 @media (max-width: 760px) {
+  .session-settings-dialog {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 43px 38px minmax(96px, 140px) minmax(0, 1fr) auto auto;
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .session-settings-dialog .protocol-tabs {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: repeat(6, minmax(86px, 1fr));
+    overflow-x: auto;
+  }
+
+  .session-settings-dialog .session-tree-nav {
+    grid-column: 1;
+    grid-row: 3;
+    margin: 10px 12px 0;
+  }
+
+  .session-settings-dialog .session-form {
+    grid-column: 1;
+    grid-row: 4;
+    padding: 16px 12px;
+  }
+
+  .session-settings-dialog .default-settings {
+    grid-column: 1;
+    grid-row: 5;
+    margin: 0 12px 10px;
+  }
+
+  .session-settings-dialog .dialog-actions {
+    grid-column: 1;
+    grid-row: 6;
+    gap: 6px;
+    padding: 0 12px 12px;
+  }
+
+  .session-settings-dialog .dialog-actions button {
+    flex: 1;
+    min-width: 0;
+    padding: 0 6px;
+  }
+
   .log-manager-dialog {
     height: calc(100vh - 24px);
   }

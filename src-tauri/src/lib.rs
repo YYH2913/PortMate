@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -131,12 +131,19 @@ const MAX_LOG_SHARD_SEARCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_LOG_SHARD_SEARCH_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_LOG_ARCHIVE_PATHS: usize = 1_000;
 const MAX_LOG_ARCHIVE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
+const LOG_RETENTION_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
+
+type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
+
+static LOG_RETENTION_CHECKS: OnceLock<LogRetentionChecks> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1493,6 +1500,7 @@ fn save_session_profile(
 ) -> Result<SessionSummary, String> {
     let profile = normalize_session_profile(profile);
     validate_profile_client_identity_ids(&profile)?;
+    validate_logging_retention(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let old_secret_refs = store
         .profile(&profile.id)
@@ -12585,6 +12593,9 @@ fn append_log_bytes(
     extension: &str,
     bytes: &[u8],
 ) -> Result<String, String> {
+    if let Err(error) = maybe_prune_expired_log_shards(store_path, profile) {
+        eprintln!("PortMate: automatic log retention failed: {error}");
+    }
     let path = log_shard_path(store_path, profile, extension)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -12617,6 +12628,10 @@ fn log_shard_path(
     extension: &str,
 ) -> Result<PathBuf, String> {
     let date = Utc::now().format("%Y-%m-%d").to_string();
+    Ok(log_root(store_path).join(log_shard_relative_path(profile, &date, extension)))
+}
+
+fn log_shard_relative_path(profile: &SessionProfile, date: &str, extension: &str) -> PathBuf {
     let template = profile
         .logging
         .path_template
@@ -12632,20 +12647,179 @@ fn log_shard_path(
         .replace("{profile}", &profile.name)
         .replace("{group}", &profile.group)
         .replace("{session}", &profile.id)
-        .replace("{date}", &date);
+        .replace("{date}", date);
 
-    let mut path = log_root(store_path);
+    let mut path = PathBuf::new();
     for segment in rendered.replace('\\', "/").split('/') {
         let clean = sanitize_log_path_segment(segment);
         if !clean.is_empty() && clean != "." && clean != ".." {
             path.push(clean);
         }
     }
-    if path == log_root(store_path) {
+    if path.as_os_str().is_empty() {
         path.push(sanitize_log_path_segment(&profile.id));
     }
     path.set_extension(extension);
-    Ok(path)
+    path
+}
+
+fn validate_logging_retention(profile: &SessionProfile) -> Result<(), String> {
+    if profile.logging.retention_days == 0 {
+        return Ok(());
+    }
+    let template = profile.logging.path_template.as_str();
+    if !template.contains("{session}") && !template.contains("{profile}") {
+        return Err(
+            "log retention requires {session} or {profile} in the path template".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn maybe_prune_expired_log_shards(
+    store_path: &Path,
+    profile: &SessionProfile,
+) -> Result<(), String> {
+    let retention_days = profile.logging.retention_days;
+    if retention_days == 0 {
+        return Ok(());
+    }
+    validate_logging_retention(profile)?;
+    let key = (store_path.to_path_buf(), profile.id.clone(), retention_days);
+    let checks = LOG_RETENTION_CHECKS.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut checks = checks
+            .lock()
+            .map_err(|error| format!("log retention lock poisoned: {error}"))?;
+        if checks
+            .get(&key)
+            .is_some_and(|checked| checked.elapsed() < LOG_RETENTION_CHECK_INTERVAL)
+        {
+            return Ok(());
+        }
+        checks.insert(key, Instant::now());
+    }
+    prune_expired_log_shards_for_profile(store_path, profile, SystemTime::now()).map(|_| ())
+}
+
+fn prune_expired_log_shards_for_profile(
+    store_path: &Path,
+    profile: &SessionProfile,
+    now: SystemTime,
+) -> Result<DeleteLogShardsResult, String> {
+    if profile.logging.retention_days == 0 {
+        return Ok(DeleteLogShardsResult {
+            deleted: 0,
+            bytes_deleted: 0,
+        });
+    }
+    validate_logging_retention(profile)?;
+    let retention = Duration::from_secs(u64::from(profile.logging.retention_days) * 86_400);
+    let cutoff = now
+        .checked_sub(retention)
+        .ok_or_else(|| "log retention cutoff is outside the system clock range".to_string())?;
+    let pattern = log_shard_relative_path(profile, LOG_RETENTION_DATE_TOKEN, "jsonl");
+    let root = log_root(store_path);
+    let mut candidates = Vec::new();
+    for shard in list_log_shards_inner(store_path)? {
+        let relative = Path::new(&shard.path);
+        if !log_shard_matches_profile_pattern(relative, &pattern) {
+            continue;
+        }
+        let path = resolve_log_shard_path(store_path, &shard.path)?;
+        let metadata = fs::metadata(&path).map_err(|error| {
+            format!(
+                "failed to inspect retained log shard {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.modified().is_ok_and(|modified| modified < cutoff) {
+            candidates.push((path, metadata.len()));
+        }
+    }
+
+    if candidates.is_empty() {
+        return Ok(DeleteLogShardsResult {
+            deleted: 0,
+            bytes_deleted: 0,
+        });
+    }
+
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve log root {}: {error}", root.display()))?;
+    let mut deleted = 0_usize;
+    let mut bytes_deleted = 0_u64;
+    for (path, size) in candidates {
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to recheck retained log shard {}: {error}",
+                    path.display()
+                ));
+            }
+        };
+        if !metadata.modified().is_ok_and(|modified| modified < cutoff) {
+            continue;
+        }
+        fs::remove_file(&path).map_err(|error| {
+            format!(
+                "failed to delete expired log shard {}: {error}",
+                path.display()
+            )
+        })?;
+        deleted += 1;
+        bytes_deleted = bytes_deleted.saturating_add(size);
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            if directory == canonical_root || !directory.starts_with(&canonical_root) {
+                break;
+            }
+            if fs::remove_dir(directory).is_err() {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    Ok(DeleteLogShardsResult {
+        deleted,
+        bytes_deleted,
+    })
+}
+
+fn log_shard_matches_profile_pattern(relative: &Path, pattern: &Path) -> bool {
+    let mut normalized = relative.to_path_buf();
+    normalized.set_extension("jsonl");
+    let actual = normalized
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    let expected = pattern
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected.iter())
+            .all(|(actual, expected)| log_path_component_matches(actual, expected))
+}
+
+fn log_path_component_matches(actual: &str, pattern: &str) -> bool {
+    let Some((prefix, suffix)) = pattern.split_once(LOG_RETENTION_DATE_TOKEN) else {
+        return actual == pattern;
+    };
+    if suffix.contains(LOG_RETENTION_DATE_TOKEN)
+        || !actual.starts_with(prefix)
+        || !actual.ends_with(suffix)
+        || actual.len() < prefix.len() + suffix.len()
+    {
+        return false;
+    }
+    let date = &actual[prefix.len()..actual.len() - suffix.len()];
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
 }
 
 fn log_root(store_path: &Path) -> PathBuf {
@@ -14255,6 +14429,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         .collect();
     profile.kind = session_kind_for_connection(&profile.connection);
     profile.terminal.term = normalized_terminal_name(&profile.terminal.term).to_string();
+    profile.logging.retention_days = profile.logging.retention_days.min(MAX_LOG_RETENTION_DAYS);
 
     match &mut profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
@@ -15011,6 +15186,20 @@ pub fn run() {
             if let Err(error) = save_store(&store_path, &store) {
                 eprintln!("PortMate: failed to initialize persistent store: {error}");
             }
+            let retention_store_path = store_path.clone();
+            let retention_profiles = store.profiles.clone();
+            std::thread::spawn(move || {
+                for profile in retention_profiles {
+                    if let Err(error) =
+                        maybe_prune_expired_log_shards(&retention_store_path, &profile)
+                    {
+                        eprintln!(
+                            "PortMate: startup log retention failed for {}: {error}",
+                            profile.id
+                        );
+                    }
+                }
+            });
             let state = AppState {
                 app_handle: Some(app.handle().clone()),
                 store: Arc::new(Mutex::new(store)),
@@ -16793,6 +16982,60 @@ mod tests {
         assert!(first.ends_with(":0:3"));
         assert!(second.ends_with(":3:2"));
         assert!(raw_path.starts_with(log_root(&store_path)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_retention_prunes_only_expired_profile_shards() {
+        let root = std::env::temp_dir().join(format!("portmate-log-retention-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let now = SystemTime::now();
+        let mut profile = test_shell_profile();
+        profile.logging.retention_days = 30;
+        let empty = prune_expired_log_shards_for_profile(&store_path, &profile, now).unwrap();
+        assert_eq!(empty.deleted, 0);
+        let old_path =
+            log_root(&store_path).join(log_shard_relative_path(&profile, "2026-05-01", "raw"));
+        let fresh_path =
+            log_root(&store_path).join(log_shard_relative_path(&profile, "2026-07-01", "txt"));
+        let mut other = profile.clone();
+        other.id = "session:2".to_string();
+        other.name = "Other Device".to_string();
+        let other_path =
+            log_root(&store_path).join(log_shard_relative_path(&other, "2026-05-01", "jsonl"));
+        for path in [&old_path, &fresh_path, &other_path] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"data").unwrap();
+        }
+        fs::File::options()
+            .write(true)
+            .open(&old_path)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(31 * 86_400))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&fresh_path)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(29 * 86_400))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&other_path)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(60 * 86_400))
+            .unwrap();
+
+        let result = prune_expired_log_shards_for_profile(&store_path, &profile, now).unwrap();
+        assert_eq!(result.deleted, 1);
+        assert_eq!(result.bytes_deleted, 4);
+        assert!(!old_path.exists());
+        assert!(fresh_path.exists());
+        assert!(other_path.exists());
+
+        profile.logging.path_template = "{date}/shared.jsonl".to_string();
+        assert!(validate_logging_retention(&profile).is_err());
 
         let _ = fs::remove_dir_all(root);
     }

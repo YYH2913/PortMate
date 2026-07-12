@@ -5026,6 +5026,9 @@ function SessionSettingsContent({
         <DialogField label="路径:(P)">
           <input value={draft.logging.pathTemplate} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, pathTemplate: event.target.value } })} />
         </DialogField>
+        <DialogField label="保留天数:(D)">
+          <input type="number" min={0} max={3650} value={draft.logging.retentionDays ?? 0} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, retentionDays: Math.min(3650, Math.max(0, Math.trunc(Number(event.target.value) || 0))) } })} />
+        </DialogField>
       </>
     );
   }
@@ -6324,6 +6327,7 @@ function createSessionDraft(): SessionProfile {
       jsonl: true,
       redactSecrets: true,
       pathTemplate: "{profile}/{date}/{session}.jsonl",
+      retentionDays: 0,
     },
     triggers: [],
     transfer: { sftp: true, scp: true, xmodem: true, ymodem: true, zmodem: true, rateLimitBytesPerSecond: null, defaultLocalDir: null },
@@ -6345,6 +6349,11 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
     terminal: {
       ...profile.terminal,
       term: profile.terminal.term.trim() || "xterm-256color",
+    },
+    logging: {
+      ...profile.logging,
+      pathTemplate: profile.logging.pathTemplate.trim() || "{profile}/{date}/{session}.jsonl",
+      retentionDays: Math.min(3650, Math.max(0, Math.trunc(profile.logging.retentionDays ?? 0))),
     },
   };
 }
