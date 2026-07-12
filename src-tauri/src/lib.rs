@@ -90,6 +90,7 @@ const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "2";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const MODEM_SOH: u8 = 0x01;
 const MODEM_STX: u8 = 0x02;
 const MODEM_EOT: u8 = 0x04;
@@ -6827,6 +6828,17 @@ async fn establish_ssh_runtime(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<EstablishedSshRuntime, String> {
+    establish_ssh_runtime_with_timeout(state, profile, password, passphrase, SSH_CONNECT_TIMEOUT)
+        .await
+}
+
+async fn establish_ssh_runtime_with_timeout(
+    state: &AppState,
+    profile: &SessionProfile,
+    password: Option<String>,
+    passphrase: Option<String>,
+    connect_timeout: Duration,
+) -> Result<EstablishedSshRuntime, String> {
     let ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
         _ => return Err("profile is not SSH-backed".to_string()),
@@ -6860,20 +6872,23 @@ async fn establish_ssh_runtime(
         ..Default::default()
     });
 
-    let (mut session, jump_handles) = connect_ssh_target(SshConnectRequest {
-        config: Arc::clone(&config),
-        store: Arc::clone(&state.store),
-        store_path: state.store_path.clone(),
-        profile,
-        ssh: &ssh,
-        host_keys,
-        one_time_host_keys: one_time_host_keys.clone(),
-        observed_key: Arc::clone(&observed_key),
-        host_key_error: Arc::clone(&host_key_error),
-        remote_forwards: Arc::clone(&remote_forwards),
-        password: password.as_deref(),
-        passphrase: passphrase.as_deref(),
-    })
+    let (mut session, jump_handles) = connect_ssh_target(
+        SshConnectRequest {
+            config: Arc::clone(&config),
+            store: Arc::clone(&state.store),
+            store_path: state.store_path.clone(),
+            profile,
+            ssh: &ssh,
+            host_keys,
+            one_time_host_keys: one_time_host_keys.clone(),
+            observed_key: Arc::clone(&observed_key),
+            host_key_error: Arc::clone(&host_key_error),
+            remote_forwards: Arc::clone(&remote_forwards),
+            password: password.as_deref(),
+            passphrase: passphrase.as_deref(),
+        },
+        connect_timeout,
+    )
     .await?;
 
     let auth_method = authenticate_ssh(
@@ -6953,6 +6968,7 @@ async fn establish_ssh_runtime(
 
 async fn connect_ssh_target(
     request: SshConnectRequest<'_>,
+    connect_timeout: Duration,
 ) -> Result<
     (
         client::Handle<PortMateSshHandler>,
@@ -7007,7 +7023,7 @@ async fn connect_ssh_target(
 
     if ssh.jumps.is_empty() {
         let session = tokio::time::timeout(
-            Duration::from_secs(20),
+            connect_timeout,
             client::connect(
                 config,
                 (target_host.clone(), ssh.endpoint.port),
@@ -7061,7 +7077,7 @@ async fn connect_ssh_target(
                 }
             };
             match tokio::time::timeout(
-                Duration::from_secs(20),
+                connect_timeout,
                 client::connect_stream(config.clone(), jump_channel.into_stream(), jump_handler),
             )
             .await
@@ -7091,7 +7107,7 @@ async fn connect_ssh_target(
             }
         } else {
             tokio::time::timeout(
-                Duration::from_secs(20),
+                connect_timeout,
                 client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
             )
             .await
@@ -7182,7 +7198,7 @@ async fn connect_ssh_target(
         }
     };
     let target_session = match tokio::time::timeout(
-        Duration::from_secs(20),
+        connect_timeout,
         client::connect_stream(config, jump_channel.into_stream(), target_handler),
     )
     .await
@@ -11352,6 +11368,17 @@ mod tests {
         .unwrap_or_else(|_| panic!("{label} did not start"));
     }
 
+    #[cfg(unix)]
+    async fn spawn_stalled_ssh_endpoint() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        (port, task)
+    }
+
     #[test]
     fn telnet_negotiator_filters_iac_and_replies() {
         let mut negotiator = TelnetNegotiator::new();
@@ -13751,6 +13778,30 @@ mod tests {
 
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
 
+            let (stalled_first_port, stalled_first) = spawn_stalled_ssh_endpoint().await;
+            let mut timed_out_first = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut timed_out_first.connection {
+                ssh.jumps[0].port = stalled_first_port;
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &timed_out_first,
+                None,
+                None,
+                Duration::from_millis(200),
+            )
+            .await
+            .err()
+            .expect("stalled first Jump Host unexpectedly connected");
+            stalled_first.abort();
+            let _ = stalled_first.await;
+            assert!(error.contains("Jump Host 第 1 跳连接超时"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{stalled_first_port}")),
+                "{error}"
+            );
+            assert!(state.store.lock().unwrap().host_keys.keys.is_empty());
+
             let refused_first_port = {
                 let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
                 reservation.local_addr().unwrap().port()
@@ -13768,6 +13819,30 @@ mod tests {
                 "{error}"
             );
             assert!(state.store.lock().unwrap().host_keys.keys.is_empty());
+
+            let (stalled_second_port, stalled_second) = spawn_stalled_ssh_endpoint().await;
+            let mut timed_out_second = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut timed_out_second.connection {
+                ssh.jumps[1].port = stalled_second_port;
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &timed_out_second,
+                None,
+                None,
+                Duration::from_millis(200),
+            )
+            .await
+            .err()
+            .expect("stalled second Jump Host unexpectedly connected");
+            stalled_second.abort();
+            let _ = stalled_second.await;
+            assert!(error.contains("Jump Host 第 2 跳连接超时"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{stalled_second_port}")),
+                "{error}"
+            );
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
 
             let refused_second_port = {
                 let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -13805,6 +13880,30 @@ mod tests {
             assert!(error.contains("target client key"), "{error}");
             assert!(error.contains("被服务器拒绝"), "{error}");
             assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 1);
+
+            let (stalled_target_port, stalled_target) = spawn_stalled_ssh_endpoint().await;
+            let mut timed_out_target = profile.clone();
+            if let ConnectionConfig::Ssh(ssh) = &mut timed_out_target.connection {
+                ssh.endpoint.port = stalled_target_port;
+            }
+            let error = establish_ssh_runtime_with_timeout(
+                &state,
+                &timed_out_target,
+                None,
+                None,
+                Duration::from_millis(200),
+            )
+            .await
+            .err()
+            .expect("stalled Jump Host target unexpectedly connected");
+            stalled_target.abort();
+            let _ = stalled_target.await;
+            assert!(error.contains("SSH 经 Jump Host 连接超时"), "{error}");
+            assert!(
+                error.contains(&format!("127.0.0.1:{stalled_target_port}")),
+                "{error}"
+            );
+            assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 2);
 
             let mut rejected_target_identities = profile.clone();
             if let ConnectionConfig::Ssh(ssh) = &mut rejected_target_identities.connection {

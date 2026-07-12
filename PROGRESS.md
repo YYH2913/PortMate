@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：Jump Host 混合认证和超时诊断矩阵、真正完整的传输队列体验、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化集成测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：Jump Host 混合认证与 ssh-agent 矩阵、真正完整的传输队列体验、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化集成测试。
 
 ## 当前实现快照
 
@@ -177,7 +177,7 @@ npm run build
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
 - MCP resource/template、ping、batch、notification、HTTP `202` 和日志 limit 协议边界。
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 和流量统计。
-- 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
+- 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复，以及 XModem block padding 精确截断。
 - OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
 - `socat` 虚拟 PTY 上的串口二进制收发，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。
@@ -187,7 +187,7 @@ npm run build
 
 主要缺口：
 
-- 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序和两跳 Jump Host 集成测试；第一/二跳连接拒绝、逐跳独立 identity 拒绝和目标 identity 耗尽已带跳号/端点聚合覆盖，agent 实例、密码/keyboard-interactive 混合认证与真实超时矩阵仍待补。
+- 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序和两跳 Jump Host 集成测试；第一/二跳连接拒绝、三段静默握手超时、逐跳独立 identity 拒绝和目标 identity 耗尽已带跳号/端点聚合覆盖，agent 实例与密码/keyboard-interactive 混合认证矩阵仍待补。
 - 已有 `socat` 虚拟串口 loopback 二进制收发测试；真实硬件、重连和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有最小 loopback mock 测试覆盖 IAC 协商、CRLF 输出、raw byte IAC 转义、Raw TCP 原样字节发送，以及断线自动重连状态恢复；更完整 Telnet/Raw TCP 矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传和 lrzsz X/Y/ZModem 双向端到端测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/取消/断线/工具变体矩阵仍待补。
@@ -202,7 +202,7 @@ npm run build
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
 | WindTerm 风格工作台 | 部分实现 | 主布局和菜单已有，深层交互/快捷键/布局持久化不足。 |
-| SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、逐端认证失败聚合和第二跳 key mismatch 已端到端覆盖，密码/keyboard-interactive 混合认证、真实超时矩阵与 GSSAPI 未完成。 |
+| SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合和第二跳 key mismatch 已端到端覆盖，密码/keyboard-interactive 混合认证、ssh-agent 实例矩阵与 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、Client Key 私钥文件/粘贴导入、Agent identity 列表、host key 字段编辑、复制 host key/agent identity 到 profile 已有；Client Key 分组/批量和更完整高级管理待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 协商/CRLF/raw byte IAC 转义、Telnet/Raw TCP loopback 与 TCP 自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；深度健康探测和完整 Hex viewer 待补。 |
@@ -222,9 +222,9 @@ npm run build
 ### P0：把 alpha 变成稳定可日用版本
 
 1. 补齐 Client Key Manager 分组/批量操作和密钥管理更完整高级管理。
-2. 为 Jump Host 增加密码/keyboard-interactive 混合认证和真实超时覆盖；连接拒绝与逐端 identity 失败诊断已覆盖。
+2. 为 Jump Host 增加密码/keyboard-interactive 混合认证覆盖；连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. 为 tunnel 补齐更深健康探测和失败矩阵，并为远端命令型传输补齐更完整的失败状态和错误可视化。
-4. 扩展端到端集成测试：Jump Host 混合认证/超时、ssh-agent 实例、SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
+4. 扩展端到端集成测试：Jump Host 混合认证、ssh-agent 实例、SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵、虚拟串口重连和 modem 取消/断线。
 5. 扩展自动重连、断线恢复和连接健康检测：SSH/TCP/Telnet/Serial 已有初版，runtime 最近断开时间/原因已可见；下一步补更深健康探测。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
@@ -255,7 +255,7 @@ npm run build
 
 1. Client Key Manager 分组/批量操作和密钥管理高级工作流。
 2. 文件管理器外部文件/目录递归拖放和端到端传输矩阵测试。
-3. Jump Host 密码/keyboard-interactive 混合认证、真实超时和 ssh-agent 矩阵覆盖。
+3. Jump Host 密码/keyboard-interactive 混合认证和 ssh-agent 矩阵覆盖。
 4. 集成测试环境。
 5. append-only 日志和 session bundle。
 
