@@ -14,7 +14,10 @@ tauri-build = { version = "2.5.3", features = [] }
 
 [dependencies]
 portmate-core = { path = "../crates/portmate-core" }
+portmate-kdf = { path = "../crates/portmate-kdf" }
 chrono.workspace = true
+getrandom = "0.3"
+iota_stronghold = "2.1.0"
 keyring = "4.0.1"
 keyring-core = "1.0.0"
 russh = { version = "0.60.1", features = ["async-trait"] }
@@ -30,4 +33,5 @@ serialport = { version = "4.9", default-features = false }
 tauri = { version = "2.10.3", features = [] }
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 uuid.workspace = true
+zeroize = "1"
 zmodem2 = "0.5.0"

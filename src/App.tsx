@@ -23,6 +23,7 @@ import {
   Settings,
   Square,
   Trash2,
+  Unlock,
   UserPlus,
   X,
 } from "lucide-react";
@@ -100,6 +101,12 @@ type ClientIdentityMutationResponse = {
   oldSecretShared: boolean;
   cleanupWarning?: string | null;
 };
+type PortableVaultStatus = {
+  exists: boolean;
+  unlocked: boolean;
+  path: string;
+};
+type SecretStorageChoice = "auto" | "native" | "portable";
 type HostKeyPromptState = {
   profile: SessionProfile;
   message: string;
@@ -2754,10 +2761,15 @@ function KeyManagerDialog({
   const [clientKeyEditDraft, setClientKeyEditDraft] = useState<ClientIdentityEditDraft | null>(null);
   const [clientKeyPrivateKey, setClientKeyPrivateKey] = useState("");
   const [clientKeyPassphrase, setClientKeyPassphrase] = useState("");
+  const [clientKeyStorage, setClientKeyStorage] = useState<SecretStorageChoice>("auto");
   const [clientKeyMutationBusy, setClientKeyMutationBusy] = useState(false);
   const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
+  const [privateKeyStorage, setPrivateKeyStorage] = useState<SecretStorageChoice>("auto");
+  const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
+  const [portableVaultPassword, setPortableVaultPassword] = useState("");
+  const [portableVaultBusy, setPortableVaultBusy] = useState(false);
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
   const [keyProfileFilter, setKeyProfileFilter] = useState("all");
   const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
@@ -2800,6 +2812,7 @@ function KeyManagerDialog({
 
   useEffect(() => {
     void refreshAgentKeys();
+    void refreshPortableVault();
   }, []);
 
   useEffect(() => {
@@ -2838,6 +2851,49 @@ function KeyManagerDialog({
       setAgentKeys(await invokeBackend<IdentityRef[]>("list_ssh_agent_identities", {}));
     } catch {
       setAgentKeys([]);
+    }
+  }
+
+  async function refreshPortableVault() {
+    if (!isBackendAvailable()) return;
+    try {
+      setPortableVault(await invokeBackend<PortableVaultStatus>("portable_vault_status", {}));
+    } catch {
+      setPortableVault(null);
+    }
+  }
+
+  async function unlockPortableVault() {
+    if (!portableVaultPassword) return;
+    const existed = portableVault?.exists ?? false;
+    setPortableVaultBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      const next = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
+        request: { password: portableVaultPassword },
+      });
+      setPortableVault(next);
+      setPortableVaultPassword("");
+      setStatus(existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁");
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setPortableVaultBusy(false);
+    }
+  }
+
+  async function lockPortableVault() {
+    setPortableVaultBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
+      setStatus("Portable vault 已锁定");
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setPortableVaultBusy(false);
     }
   }
 
@@ -2992,7 +3048,7 @@ function KeyManagerDialog({
     try {
       const label = privateKeyLabel.trim() || "profile key";
       const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-        request: { secretRef: null, secret: privateKeyText },
+        request: { secretRef: null, secret: privateKeyText, storage: privateKeyStorage === "auto" ? null : privateKeyStorage },
       });
       const identityRef: IdentityRef = {
         id: `vault:${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`,
@@ -3239,6 +3295,7 @@ function KeyManagerDialog({
     });
     setClientKeyPrivateKey("");
     setClientKeyPassphrase("");
+    setClientKeyStorage(item.identity.secretRef?.startsWith("stronghold:") ? "portable" : "auto");
     setError("");
     setStatus("");
   }
@@ -3309,6 +3366,7 @@ function KeyManagerDialog({
           identityId: clientKeyEditDraft.identityId,
           privateKey: clientKeyPrivateKey,
           passphrase: clientKeyPassphrase || null,
+          storage: clientKeyStorage === "auto" ? null : clientKeyStorage,
         },
       });
       applyClientIdentityMutation(response, "Vault 私钥已轮换");
@@ -3472,6 +3530,13 @@ function KeyManagerDialog({
               <span><KeyRound size={15} /><strong>Client Keys</strong></span>
               <small>{clientIdentityItems.length} identities</small>
             </div>
+            <div className="portable-vault-bar" title={portableVault?.path ?? "Portable Stronghold vault"}>
+              <span className={portableVault?.unlocked ? "unlocked" : ""}>{portableVault?.unlocked ? <Unlock size={14} /> : <Lock size={14} />}<strong>Stronghold</strong><small>{portableVault?.unlocked ? "Unlocked" : portableVault?.exists ? "Locked" : "Not created"}</small></span>
+              <input type="password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder={portableVault?.exists ? "Master password" : "New master password"} disabled={portableVaultBusy || portableVault?.unlocked} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
+              {portableVault?.unlocked
+                ? <button className="key-icon-button" type="button" title="锁定 portable vault" aria-label="锁定 portable vault" onClick={() => void lockPortableVault()} disabled={portableVaultBusy}><Lock size={14} /></button>
+                : <button className="key-icon-button" type="button" title="解锁 portable vault" aria-label="解锁 portable vault" onClick={() => void unlockPortableVault()} disabled={portableVaultBusy || !portableVaultPassword}><Unlock size={14} /></button>}
+            </div>
             <div className="client-key-filters">
               <label className="client-key-search">
                 <Search size={14} />
@@ -3542,6 +3607,7 @@ function KeyManagerDialog({
                   <label><span>Path / Agent comment</span><input value={clientKeyEditDraft.path} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, path: event.target.value })} disabled={clientKeyEditDraft.source === "profile-vault"} /></label>
                   <label><span>Identity ID</span><input value={clientKeyEditDraft.identityId} readOnly /></label>
                   <label><span>Profile</span><input value={editingClientIdentityItem.profileName} readOnly /></label>
+                  {clientKeyEditDraft.source === "profile-vault" ? <label><span>Rotation storage</span><select value={clientKeyStorage} onChange={(event) => setClientKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">Auto / native first</option><option value="native">Native keyring</option><option value="portable" disabled={!portableVault?.unlocked}>Portable Stronghold</option></select></label> : null}
                   {clientKeyEditDraft.source === "profile-vault" ? <label className="client-key-secret-ref"><span>Secret ref</span><input value={clientKeyEditDraft.secretRef} readOnly /></label> : null}
                 </div>
                 <div className="client-key-impact">
@@ -3566,6 +3632,7 @@ function KeyManagerDialog({
               <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
               <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
               <input type="file" accept=".pem,.key,.txt" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
+              <select value={privateKeyStorage} onChange={(event) => setPrivateKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">存储：自动（优先系统）</option><option value="native">存储：系统密钥库</option><option value="portable" disabled={!portableVault?.unlocked}>存储：Portable Stronghold</option></select>
               <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
               <button onClick={() => void importPrivateKeyToProfile()} disabled={!selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
             </details>

@@ -2383,6 +2383,7 @@ fieldset label {
 }
 
 .key-import-panel input,
+.key-import-panel select,
 .key-import-panel textarea {
   width: 100%;
   min-width: 0;
@@ -2390,6 +2391,53 @@ fieldset label {
   background: var(--control);
   color: var(--text);
   padding: 7px 8px;
+  font-size: 12px;
+}
+
+.portable-vault-bar {
+  display: grid;
+  grid-template-columns: minmax(145px, 0.65fr) minmax(150px, 1fr) 30px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.portable-vault-bar > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.portable-vault-bar > span.unlocked {
+  color: var(--cyan);
+}
+
+.portable-vault-bar strong,
+.portable-vault-bar small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-vault-bar small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.portable-vault-bar input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
   font-size: 12px;
 }
 
@@ -2984,6 +3032,14 @@ fieldset label {
   .client-key-inspector-grid,
   .client-key-rotation {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .portable-vault-bar {
+    grid-template-columns: minmax(0, 1fr) 30px;
+  }
+
+  .portable-vault-bar > span {
+    grid-column: 1 / -1;
   }
 
   .client-key-secret-ref {

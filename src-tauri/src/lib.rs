@@ -1,4 +1,5 @@
 use chrono::Utc;
+use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,6 +35,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone)]
 struct AgentIdentityFilter {
@@ -108,6 +111,9 @@ const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
 const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
+const PORTABLE_VAULT_FILE_NAME: &str = "portmate-vault.hold";
+const PORTABLE_VAULT_SALT_FILE_NAME: &str = "portmate-vault.salt";
+const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
@@ -129,6 +135,53 @@ pub struct AppState {
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     store_path: PathBuf,
 }
+
+struct PortableVaultContext {
+    snapshot_path: PathBuf,
+    salt_path: PathBuf,
+    stronghold: Mutex<Option<PortableStronghold>>,
+}
+
+struct PortableStronghold {
+    inner: IotaStronghold,
+    path: SnapshotPath,
+    key_provider: KeyProvider,
+}
+
+impl PortableStronghold {
+    fn new(path: &Path, key: Vec<u8>) -> Result<Self, String> {
+        let path = SnapshotPath::from_path(path);
+        let inner = IotaStronghold::default();
+        let key_provider = KeyProvider::try_from(Zeroizing::new(key))
+            .map_err(|error| format!("portable vault key provider 初始化失败: {error}"))?;
+        if path.exists() {
+            inner
+                .load_snapshot(&key_provider, &path)
+                .map_err(|error| format!("portable vault snapshot 加载失败: {error}"))?;
+        }
+        Ok(Self {
+            inner,
+            path,
+            key_provider,
+        })
+    }
+
+    fn save(&self) -> Result<(), String> {
+        self.inner
+            .commit_with_keyprovider(&self.path, &self.key_provider)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl Deref for PortableStronghold {
+    type Target = IotaStronghold;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+static PORTABLE_VAULT: OnceLock<PortableVaultContext> = OnceLock::new();
 
 struct SshRuntime {
     runtime_id: String,
@@ -724,12 +777,34 @@ pub struct SerialLineRequest {
 pub struct SecretWriteRequest {
     pub secret_ref: Option<String>,
     pub secret: String,
+    pub storage: Option<SecretStorage>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretStorage {
+    Native,
+    Portable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretWriteResponse {
     pub secret_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableVaultStatus {
+    pub exists: bool,
+    pub unlocked: bool,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableVaultUnlockRequest {
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +826,7 @@ pub struct ClientIdentityRotateRequest {
     pub identity_id: String,
     pub private_key: String,
     pub passphrase: Option<String>,
+    pub storage: Option<SecretStorage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1237,7 +1313,7 @@ fn save_session_profile(
     *store = next_store;
     for secret_ref in old_secret_refs {
         if secret_ref_usage_count(&store, &secret_ref) == 0 {
-            if let Err(error) = delete_secret_from_keyring(&secret_ref) {
+            if let Err(error) = delete_secret_from_store(&secret_ref) {
                 eprintln!("PortMate: profile saved but orphan secret cleanup failed: {error}");
             }
         }
@@ -1751,11 +1827,13 @@ fn save_secret(request: SecretWriteRequest) -> Result<SecretWriteResponse, Strin
     if secret.trim().is_empty() {
         return Err("密钥内容不能为空".to_string());
     }
-    let secret_ref = request
-        .secret_ref
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("keychain:{}", Uuid::new_v4()));
-    write_secret_to_keyring(&secret_ref, &secret)?;
+    let secret_ref =
+        if let Some(secret_ref) = request.secret_ref.filter(|value| !value.trim().is_empty()) {
+            write_secret_to_store(&secret_ref, &secret)?;
+            secret_ref
+        } else {
+            write_new_secret(request.storage, &secret)?
+        };
     Ok(SecretWriteResponse { secret_ref })
 }
 
@@ -1768,16 +1846,72 @@ fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), S
             "secretRef 仍被 {usage_count} 个 Profile 凭据引用，无法删除"
         ));
     }
-    delete_secret_from_keyring(&secret_ref)
+    delete_secret_from_store(&secret_ref)
 }
 
 #[tauri::command]
 fn has_secret(secret_ref: String) -> Result<bool, String> {
-    match read_secret_from_keyring(&secret_ref) {
+    match read_secret_from_store(&secret_ref) {
         Ok(_) => Ok(true),
-        Err(error) if error.contains("NoEntry") || error.contains("No credential") => Ok(false),
+        Err(error)
+            if error.contains("NoEntry")
+                || error.contains("No credential")
+                || error.contains("不存在该 secretRef") =>
+        {
+            Ok(false)
+        }
         Err(error) => Err(error),
     }
+}
+
+#[tauri::command]
+fn portable_vault_status() -> Result<PortableVaultStatus, String> {
+    let context = portable_vault_context()?;
+    let unlocked = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
+    Ok(PortableVaultStatus {
+        exists: context.snapshot_path.exists(),
+        unlocked,
+        path: context.snapshot_path.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn unlock_portable_vault(
+    request: PortableVaultUnlockRequest,
+) -> Result<PortableVaultStatus, String> {
+    let context = portable_vault_context()?;
+    let mut password = request.password;
+    if !context.snapshot_path.exists() && password.chars().count() < 8 {
+        password.zeroize();
+        return Err("新建 portable vault 的主密码至少需要 8 个字符".to_string());
+    }
+    let result = open_portable_vault(
+        &context.snapshot_path,
+        &context.salt_path,
+        password.as_str(),
+    );
+    password.zeroize();
+    let stronghold = result?;
+    *context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())? = Some(stronghold);
+    portable_vault_status()
+}
+
+#[tauri::command]
+fn lock_portable_vault() -> Result<PortableVaultStatus, String> {
+    let context = portable_vault_context()?;
+    context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?
+        .take();
+    portable_vault_status()
 }
 
 #[tauri::command]
@@ -1795,7 +1929,7 @@ fn update_client_identity(
             path: request.path,
             secret_ref: request.secret_ref,
         },
-        |secret_ref| read_secret_from_keyring(secret_ref).map(|_| ()),
+        |secret_ref| read_secret_from_store(secret_ref).map(|_| ()),
     )?;
     let new_secret_ref = identity.secret_ref.clone();
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -1816,7 +1950,7 @@ fn update_client_identity(
         summary,
         cleanup_secret_ref.as_deref(),
         true,
-        delete_secret_from_keyring,
+        delete_secret_from_store,
     ))
 }
 
@@ -1832,7 +1966,7 @@ fn rotate_client_identity(
     if private_key.trim().is_empty() {
         return Err("私钥内容不能为空".to_string());
     }
-    let saved_passphrase_ref = {
+    let (saved_passphrase_ref, current_secret_ref) = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         let current = find_client_identity(&store, &request.profile_id, &request.identity_id)?;
         if current.source != IdentitySource::ProfileVault {
@@ -1843,7 +1977,10 @@ fn rotate_client_identity(
             .iter()
             .find(|profile| profile.id == request.profile_id)
             .ok_or_else(|| format!("unknown session: {}", request.profile_id))?;
-        ssh_connection(profile)?.passphrase_secret_ref.clone()
+        (
+            ssh_connection(profile)?.passphrase_secret_ref.clone(),
+            current.secret_ref,
+        )
     };
     let saved_passphrase = saved_passphrase_ref
         .as_deref()
@@ -1863,8 +2000,13 @@ fn rotate_client_identity(
     let fingerprint_sha256 =
         compute_ssh_sha256_fingerprint(&decoded.public_key().public_key_base64())
             .map_err(|error| format!("无法计算新私钥指纹: {error}"))?;
-    let new_secret_ref = format!("keychain:{}", Uuid::new_v4());
-    write_secret_to_keyring(&new_secret_ref, &private_key)?;
+    let storage = request.storage.or_else(|| {
+        current_secret_ref
+            .as_deref()
+            .is_some_and(|secret_ref| secret_ref.trim().starts_with("stronghold:"))
+            .then_some(SecretStorage::Portable)
+    });
+    let new_secret_ref = write_new_secret(storage, &private_key)?;
 
     let result = (|| {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -1892,12 +2034,12 @@ fn rotate_client_identity(
             summary,
             old_secret_ref.as_deref(),
             true,
-            delete_secret_from_keyring,
+            delete_secret_from_store,
         ))
     })();
 
     if result.is_err() {
-        let _ = delete_secret_from_keyring(&new_secret_ref);
+        let _ = delete_secret_from_store(&new_secret_ref);
     }
     result
 }
@@ -1918,7 +2060,7 @@ fn delete_client_identity(
         summary,
         old_secret_ref.as_deref(),
         request.delete_secret,
-        delete_secret_from_keyring,
+        delete_secret_from_store,
     ))
 }
 
@@ -9400,7 +9542,7 @@ fn load_identity_private_key(
             else {
                 return Err("profile-vault identity 缺少 secretRef".to_string());
             };
-            let private_key = read_secret_from_keyring(secret_ref)?;
+            let private_key = read_secret_from_store(secret_ref)?;
             decode_secret_key(&private_key, passphrase)
                 .map(Some)
                 .map_err(|error| format!("profile-vault {secret_ref}: {error}"))
@@ -9717,6 +9859,226 @@ fn ensure_keyring_store() -> Result<(), String> {
         .clone()
 }
 
+fn portable_vault_context() -> Result<&'static PortableVaultContext, String> {
+    PORTABLE_VAULT
+        .get()
+        .ok_or_else(|| "portable vault 尚未初始化".to_string())
+}
+
+fn open_portable_vault(
+    snapshot_path: &Path,
+    salt_path: &Path,
+    password: &str,
+) -> Result<PortableStronghold, String> {
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("无法创建 portable vault 目录 {}: {error}", parent.display())
+        })?;
+    }
+    if snapshot_path.exists() && !salt_path.exists() {
+        return Err("portable vault snapshot 存在，但 salt 文件缺失，已阻止解锁".to_string());
+    }
+    let salt = if salt_path.exists() {
+        let salt = fs::read(salt_path)
+            .map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
+        if salt.len() != portmate_kdf::SALT_LENGTH {
+            return Err(format!(
+                "portable vault salt 长度无效: expected {}, got {}",
+                portmate_kdf::SALT_LENGTH,
+                salt.len()
+            ));
+        }
+        salt
+    } else {
+        let mut salt = vec![0_u8; portmate_kdf::SALT_LENGTH];
+        getrandom::fill(&mut salt)
+            .map_err(|error| format!("无法生成 portable vault salt: {error}"))?;
+        fs::write(salt_path, &salt)
+            .map_err(|error| format!("无法保存 portable vault salt: {error}"))?;
+        salt
+    };
+    let mut key = portmate_kdf::derive_key(password.as_bytes(), &salt)
+        .map_err(|error| format!("portable vault 密钥派生失败: {error}"))?;
+    let existed = snapshot_path.exists();
+    let stronghold_result = PortableStronghold::new(snapshot_path, key.to_vec());
+    key.zeroize();
+    let stronghold =
+        stronghold_result.map_err(|error| format!("portable vault 解锁失败: {error}"))?;
+    if existed {
+        stronghold
+            .load_client(PORTABLE_VAULT_CLIENT)
+            .map_err(|error| format!("portable vault client 加载失败: {error}"))?;
+    } else {
+        stronghold
+            .create_client(PORTABLE_VAULT_CLIENT)
+            .map_err(|error| format!("portable vault client 创建失败: {error}"))?;
+        stronghold
+            .save()
+            .map_err(|error| format!("portable vault 初始化保存失败: {error}"))?;
+    }
+    Ok(stronghold)
+}
+
+fn portable_vault_account(secret_ref: &str) -> Result<&str, String> {
+    let account = secret_ref
+        .trim()
+        .strip_prefix("stronghold:")
+        .ok_or_else(|| "portable secretRef 必须使用 stronghold: 前缀".to_string())?;
+    if account.is_empty() || account.contains('\0') {
+        return Err("secretRef 无效".to_string());
+    }
+    Ok(account)
+}
+
+fn write_secret_to_portable_vault(secret_ref: &str, secret: &str) -> Result<(), String> {
+    let context = portable_vault_context()?;
+    write_secret_to_portable_vault_in(context, secret_ref, secret)
+}
+
+fn write_secret_to_portable_vault_in(
+    context: &PortableVaultContext,
+    secret_ref: &str,
+    secret: &str,
+) -> Result<(), String> {
+    let account = portable_vault_account(secret_ref)?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_ref()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    let client = stronghold
+        .get_client(PORTABLE_VAULT_CLIENT)
+        .map_err(|error| format!("portable vault client 不可用: {error}"))?;
+    let store = client.store();
+    let old_value = store
+        .insert(
+            account.as_bytes().to_vec(),
+            secret.as_bytes().to_vec(),
+            None,
+        )
+        .map_err(|error| format!("写入 portable vault 失败: {error}"))?;
+    if let Err(error) = stronghold.save() {
+        match old_value {
+            Some(old_value) => {
+                let _ = store.insert(account.as_bytes().to_vec(), old_value, None);
+            }
+            None => {
+                let _ = store.delete(account.as_bytes());
+            }
+        }
+        return Err(format!("保存 portable vault snapshot 失败: {error}"));
+    }
+    Ok(())
+}
+
+fn read_secret_from_portable_vault(secret_ref: &str) -> Result<String, String> {
+    let context = portable_vault_context()?;
+    read_secret_from_portable_vault_in(context, secret_ref)
+}
+
+fn read_secret_from_portable_vault_in(
+    context: &PortableVaultContext,
+    secret_ref: &str,
+) -> Result<String, String> {
+    let account = portable_vault_account(secret_ref)?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_ref()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    let client = stronghold
+        .get_client(PORTABLE_VAULT_CLIENT)
+        .map_err(|error| format!("portable vault client 不可用: {error}"))?;
+    let value = client
+        .store()
+        .get(account.as_bytes())
+        .map_err(|error| format!("读取 portable vault 失败: {error}"))?
+        .ok_or_else(|| "portable vault 中不存在该 secretRef".to_string())?;
+    String::from_utf8(value).map_err(|_| "portable vault secret 不是有效 UTF-8".to_string())
+}
+
+fn delete_secret_from_portable_vault(secret_ref: &str) -> Result<(), String> {
+    let context = portable_vault_context()?;
+    delete_secret_from_portable_vault_in(context, secret_ref)
+}
+
+fn delete_secret_from_portable_vault_in(
+    context: &PortableVaultContext,
+    secret_ref: &str,
+) -> Result<(), String> {
+    let account = portable_vault_account(secret_ref)?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_ref()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    let client = stronghold
+        .get_client(PORTABLE_VAULT_CLIENT)
+        .map_err(|error| format!("portable vault client 不可用: {error}"))?;
+    let store = client.store();
+    let old_value = store
+        .delete(account.as_bytes())
+        .map_err(|error| format!("删除 portable vault secret 失败: {error}"))?;
+    if let Err(error) = stronghold.save() {
+        if let Some(old_value) = old_value {
+            let _ = store.insert(account.as_bytes().to_vec(), old_value, None);
+        }
+        return Err(format!("保存 portable vault snapshot 失败: {error}"));
+    }
+    Ok(())
+}
+
+fn write_secret_to_store(secret_ref: &str, secret: &str) -> Result<(), String> {
+    if secret_ref.trim().starts_with("stronghold:") {
+        write_secret_to_portable_vault(secret_ref, secret)
+    } else {
+        write_secret_to_keyring(secret_ref, secret)
+    }
+}
+
+fn write_new_secret(storage: Option<SecretStorage>, secret: &str) -> Result<String, String> {
+    let preferred = storage.unwrap_or(SecretStorage::Native);
+    let secret_ref = match preferred {
+        SecretStorage::Native => format!("keychain:{}", Uuid::new_v4()),
+        SecretStorage::Portable => format!("stronghold:{}", Uuid::new_v4()),
+    };
+    match write_secret_to_store(&secret_ref, secret) {
+        Ok(()) => Ok(secret_ref),
+        Err(native_error) if storage.is_none() && matches!(preferred, SecretStorage::Native) => {
+            let fallback_ref = format!("stronghold:{}", Uuid::new_v4());
+            write_secret_to_portable_vault(&fallback_ref, secret).map_err(|portable_error| {
+                format!(
+                    "系统密钥库写入失败: {native_error}; portable vault fallback 失败: {portable_error}"
+                )
+            })?;
+            Ok(fallback_ref)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn read_secret_from_store(secret_ref: &str) -> Result<String, String> {
+    if secret_ref.trim().starts_with("stronghold:") {
+        read_secret_from_portable_vault(secret_ref)
+    } else {
+        read_secret_from_keyring(secret_ref)
+    }
+}
+
+fn delete_secret_from_store(secret_ref: &str) -> Result<(), String> {
+    if secret_ref.trim().starts_with("stronghold:") {
+        delete_secret_from_portable_vault(secret_ref)
+    } else {
+        delete_secret_from_keyring(secret_ref)
+    }
+}
+
 fn keyring_entry(secret_ref: &str) -> Result<Entry, String> {
     ensure_keyring_store()?;
     let account = secret_ref
@@ -9744,7 +10106,7 @@ fn read_secret_from_keyring(secret_ref: &str) -> Result<String, String> {
 }
 
 fn has_secret_ref(secret_ref: &str) -> bool {
-    read_secret_from_keyring(secret_ref).is_ok()
+    read_secret_from_store(secret_ref).is_ok()
 }
 
 fn build_mcp_http_config(token_available: bool) -> McpHttpConfig {
@@ -9766,7 +10128,7 @@ fn read_optional_secret_ref(
     let Some(secret_ref) = secret_ref.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    read_secret_from_keyring(secret_ref)
+    read_secret_from_store(secret_ref)
         .map(Some)
         .map_err(|error| format!("{label} 已配置 secretRef 但读取失败: {error}"))
 }
@@ -12917,6 +13279,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
+            PORTABLE_VAULT
+                .set(PortableVaultContext {
+                    snapshot_path: data_dir.join(PORTABLE_VAULT_FILE_NAME),
+                    salt_path: data_dir.join(PORTABLE_VAULT_SALT_FILE_NAME),
+                    stronghold: Mutex::new(None),
+                })
+                .map_err(|_| std::io::Error::other("portable vault initialized twice"))?;
             let store_path = data_dir.join(STORE_FILE_NAME);
             let store = load_store(&store_path);
             if let Err(error) = save_store(&store_path, &store) {
@@ -12979,6 +13348,9 @@ pub fn run() {
             save_secret,
             delete_secret,
             has_secret,
+            portable_vault_status,
+            unlock_portable_vault,
+            lock_portable_vault,
             update_client_identity,
             rotate_client_identity,
             delete_client_identity,
@@ -18314,6 +18686,76 @@ mod tests {
         let mut store = SessionStore::default();
         store.upsert_profile(profile);
         assert_eq!(secret_ref_usage_count(&store, "keychain:shared"), 5);
+    }
+
+    #[test]
+    fn portable_stronghold_vault_encrypts_and_reopens_records() {
+        let root = std::env::temp_dir().join(format!("portmate-stronghold-{}", Uuid::new_v4()));
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        let secret = b"portable-private-key-material";
+
+        let context = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap(),
+            )),
+        };
+        write_secret_to_portable_vault_in(
+            &context,
+            "stronghold:identity-1",
+            std::str::from_utf8(secret).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
+            std::str::from_utf8(secret).unwrap()
+        );
+        context.stronghold.lock().unwrap().take();
+
+        let snapshot = fs::read(&snapshot_path).unwrap();
+        assert!(!snapshot
+            .windows(secret.len())
+            .any(|window| window == secret));
+        assert!(open_portable_vault(&snapshot_path, &salt_path, "wrong password").is_err());
+
+        let reopened = open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap();
+        *context.stronghold.lock().unwrap() = Some(reopened);
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
+            std::str::from_utf8(secret).unwrap()
+        );
+        delete_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap();
+        assert!(read_secret_from_portable_vault_in(&context, "stronghold:identity-1").is_err());
+        context.stronghold.lock().unwrap().take();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_secret_refs_require_the_stronghold_prefix_and_account() {
+        assert_eq!(
+            portable_vault_account(" stronghold:identity-1 ").unwrap(),
+            "identity-1"
+        );
+        assert!(portable_vault_account("keychain:identity-1").is_err());
+        assert!(portable_vault_account("stronghold:").is_err());
+    }
+
+    #[test]
+    fn portable_vault_does_not_replace_a_missing_snapshot_salt() {
+        let root = std::env::temp_dir().join(format!("portmate-stronghold-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        fs::write(&snapshot_path, b"encrypted snapshot placeholder").unwrap();
+        let error = match open_portable_vault(&snapshot_path, &salt_path, "correct horse") {
+            Ok(_) => panic!("snapshot without salt must not unlock"),
+            Err(error) => error,
+        };
+        assert!(error.contains("salt 文件缺失"));
+        assert!(!salt_path.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     fn test_shell_profile() -> SessionProfile {
