@@ -22,7 +22,7 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   if (!value || typeof value !== "object") return { ...emptyWorkspaceSnapshot };
   const source = value as Partial<WorkspaceSnapshot>;
   const layout = isWorkspaceLayout(source.layout) ? source.layout : "single";
-  const paneIds = uniqueStrings(source.paneIds).slice(0, 4);
+  const paneIds = validStrings(source.paneIds).slice(0, 4);
   const requestedActiveId = typeof source.activeId === "string" ? source.activeId : "";
   const tabColors = sanitizeTabColors(source.tabColors);
   const split = layout !== "single" && paneIds.length >= 2;
@@ -71,11 +71,9 @@ function isWorkspaceLayout(value: unknown): value is WorkspaceLayout {
   return value === "single" || value === "horizontal" || value === "vertical";
 }
 
-function uniqueStrings(value: unknown): string[] {
+function validStrings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item, index): item is string => (
-    typeof item === "string" && item.length > 0 && value.indexOf(item) === index
-  ));
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function sanitizeTabColors(value: unknown): Record<string, string> {

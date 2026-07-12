@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 
 describe("workspace snapshots", () => {
-  it("sanitizes malformed fields and duplicate panes", () => {
+  it("sanitizes malformed fields while preserving duplicate pane bindings", () => {
     expect(sanitizeWorkspaceSnapshot({
       version: 99,
       layout: "vertical",
@@ -12,7 +12,7 @@ describe("workspace snapshots", () => {
     })).toEqual({
       version: 1,
       layout: "vertical",
-      paneIds: ["a", "b", "c", "d"],
+      paneIds: ["a", "a", "b", "c"],
       activeId: "b",
       tabColors: { a: "#AABBCC" },
     });
@@ -63,5 +63,18 @@ describe("workspace snapshots", () => {
     expect(resolveStartupSessionIds("last", [], workspace, ["a", "b", "c"])).toEqual(["a", "b"]);
     expect(resolveStartupSessionIds("specific", ["c", "missing", "c", "a"], workspace, ["a", "b", "c"])).toEqual(["c", "a"]);
     expect(resolveStartupSessionIds("none", ["a"], workspace, ["a"])).toEqual([]);
+  });
+
+  it("keeps two views of the same session but connects it once", () => {
+    const workspace = sanitizeWorkspaceSnapshot({
+      layout: "horizontal",
+      paneIds: ["a", "a"],
+      activeId: "a",
+    });
+    expect(reconcileWorkspaceSnapshot(workspace, ["a"])).toMatchObject({
+      layout: "horizontal",
+      paneIds: ["a", "a"],
+    });
+    expect(resolveStartupSessionIds("last", [], workspace, ["a"])).toEqual(["a"]);
   });
 });

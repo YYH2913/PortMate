@@ -41,7 +41,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
 - `xterm.js` 终端渲染，FitAddon、SearchAddon、WebLinksAddon 已接入。
-- 分屏布局有水平/垂直/关闭 pane 的基础实现；版本化 workspace snapshot 会统一保存 pane session binding、active session 和标签颜色，兼容迁移旧 localStorage key，并在 profile 列表变化后剔除重复/失效 ID、收敛无效 split。
+- 分屏布局有水平/垂直/关闭 pane 的基础实现；版本化 workspace snapshot 会统一保存 pane session binding、active session 和标签颜色，兼容迁移旧 localStorage key，并在 profile 列表变化后剔除失效 ID、收敛无效 split；同一 session 的多 pane 视图会保留，但启动连接目标只执行一次。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Sysmon/Trigger 相关入口已存在。
@@ -202,7 +202,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 109：`portmate` 78、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 21 个前端 transfer/selection/presentation/log-shard/workspace 单元测试。
+当前 Rust workspace 自动化测试总数为 109：`portmate` 78、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 22 个前端 transfer/selection/presentation/log-shard/workspace 单元测试。
 
 主要缺口：
 
