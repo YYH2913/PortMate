@@ -5,6 +5,7 @@ import {
   buildProfileSecretMigrationRequest,
   canRecoverProfileSecretMigration,
   canExecuteProfileSecretMigration,
+  exportProfileSecretMigrationDiagnostics,
   getProfileSecretMigrationRecovery,
   isProfileSecretMigrationRestartRequired,
   profileSecretMigrationErrorMessage,
@@ -144,6 +145,25 @@ describe("profile secret migration state", () => {
     expect(invokeBackend).toHaveBeenCalledWith("recover_profile_secret_migration", {
       request: { migrationId: pendingRecovery.migrationId },
     });
+  });
+
+  it("exports migration diagnostics through the dedicated backend command", async () => {
+    const result = {
+      path: "/tmp/credential-migration.json",
+      checksumPath: "/tmp/credential-migration.json.sha256",
+      sha256: "a".repeat(64),
+      size: 2048,
+      migrationId: pendingRecovery.migrationId,
+      journalValid: true,
+      warnings: [],
+    };
+    vi.mocked(invokeBackend).mockResolvedValueOnce(result);
+
+    await expect(exportProfileSecretMigrationDiagnostics()).resolves.toEqual(result);
+    expect(invokeBackend).toHaveBeenCalledWith(
+      "export_profile_secret_migration_diagnostics",
+      {},
+    );
   });
 
   it("recognizes restart-required migration failures by their stable code", () => {

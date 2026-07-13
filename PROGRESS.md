@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵与人工冲突诊断、日志与命令关联、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵、日志与命令关联、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
 
 ## 当前实现快照
 
@@ -110,7 +110,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - 目标 host key 扫描已可经多跳 Jump Host 链路执行；多跳连接链路、每跳独立凭据/host-key 策略编辑和逐跳 host key 确认弹窗可用。
 - Bitvise 风格 Host Key Manager / Client Key Manager 已有 Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、Client Key 搜索/分组/批量复制/置顶/安全移除、私钥文件导入、ssh-agent 批量添加、identity 字段检查器和 Vault 私钥轮换。identity 更新/轮换/删除由后端按 immutable ID 原子持久化；共享 secret 不会被原地覆盖或误删，孤儿清理失败只返回 warning，不会留下悬空 Profile 引用。
-- IOTA Stronghold portable vault 已接入：使用独立 Argon2id salt 派生 snapshot key，支持创建/解锁/锁定、`stronghold:` secretRef 路由和显式存储选择；自动模式优先 OS keyring，仅在 native 写入失败且 Stronghold 已解锁时 fallback。SQLite 仍只保存引用。已解锁 vault 可在验证当前密码后更换主密码；新密码至少 8 个字符且必须不同，snapshot 使用新派生 key 通过 Stronghold 临时文件提交，提交成功后才替换内存 provider，原 `stronghold:` 引用和 secret 内容保持不变，旧密码无法再解锁。解锁、保存与换密在进程内共用串行化边界；open/save/rekey 另使用跨进程 OS 文件锁并在写前比较已加载 snapshot 的 SHA-256 版本，stale 实例会被拒绝并要求重新解锁，不能用旧 provider 覆盖换密结果。SSH/Tmux 的目标密码、passphrase、Profile Vault 私钥和逐 Jump Host 凭据可按全部或单个 profile 在 native keyring 与 Stronghold 间双向迁移；同源引用只复制一次，Stronghold 批量写只提交一个 snapshot，native 写入会精确读回，预检 token 和 SessionStore revision 在任何目标写入前复核。Profile 采用 copy-on-write 一次提交，旧 secret 仅在全局无引用且没有建连中 reader 时清理。迁移先以 `synchronous=FULL` 写入不含 secret 正文/正文 hash 的 SQLite journal，目标写入只有在 Prepared 精确读回后才开始；Profile KV、mirror、revision 与 `profiles-committed` 是同一事务中的唯一 commit point。重启后按结构化 credential slot 投影分类：全 OLD 只回收未引用目标，全 NEW 在逐项验证目标及源/目标内容一致后继续源清理，混合/缺失/第三种投影或 provider 不可判定时保留两侧并冻结自动恢复。Key Manager 会在打开、vault 锁/解锁和迁移结束后刷新 pending 状态，提供显式“核对并恢复”，pending/corrupt journal 会阻止新的迁移及相关 Profile/secret/identity mutation。MCP token 始终排除在该范围外。
+- IOTA Stronghold portable vault 已接入：使用独立 Argon2id salt 派生 snapshot key，支持创建/解锁/锁定、`stronghold:` secretRef 路由和显式存储选择；自动模式优先 OS keyring，仅在 native 写入失败且 Stronghold 已解锁时 fallback。SQLite 仍只保存引用。已解锁 vault 可在验证当前密码后更换主密码；新密码至少 8 个字符且必须不同，snapshot 使用新派生 key 通过 Stronghold 临时文件提交，提交成功后才替换内存 provider，原 `stronghold:` 引用和 secret 内容保持不变，旧密码无法再解锁。解锁、保存与换密在进程内共用串行化边界；open/save/rekey 另使用跨进程 OS 文件锁并在写前比较已加载 snapshot 的 SHA-256 版本，stale 实例会被拒绝并要求重新解锁，不能用旧 provider 覆盖换密结果。SSH/Tmux 的目标密码、passphrase、Profile Vault 私钥和逐 Jump Host 凭据可按全部或单个 profile 在 native keyring 与 Stronghold 间双向迁移；同源引用只复制一次，Stronghold 批量写只提交一个 snapshot，native 写入会精确读回，预检 token 和 SessionStore revision 在任何目标写入前复核。Profile 采用 copy-on-write 一次提交，旧 secret 仅在全局无引用且没有建连中 reader 时清理。迁移先以 `synchronous=FULL` 写入不含 secret 正文/正文 hash 的 SQLite journal，目标写入只有在 Prepared 精确读回后才开始；Profile KV、mirror、revision 与 `profiles-committed` 是同一事务中的唯一 commit point。重启后按结构化 credential slot 投影分类：全 OLD 只回收未引用目标，全 NEW 在逐项验证目标及源/目标内容一致后继续源清理，混合/缺失/第三种投影或 provider 不可判定时保留两侧并冻结自动恢复。Key Manager 会在打开、vault 锁/解锁和迁移结束后刷新 pending 状态，提供显式“核对并恢复”，pending/corrupt journal 会阻止新的迁移及相关 Profile/secret/identity mutation。恢复面板还能原子导出 JSON + SHA-256 诊断，包含 before/current/after slot、provider 存在性、引用计数和内容一致性布尔值；secret 正文/正文 hash 以及无法验证的原始 corrupt payload 均不会进入文件。MCP token 始终排除在该范围外。
 
 ### 数据、日志与自动化
 
@@ -197,7 +197,7 @@ npm run build
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
 - Client identity source/immutable ID 校验、重复 ID 拒绝、共享 secret 轮换隔离、Jump Host 删除阻断、全凭据引用计数，以及清理失败后已持久化 Profile 仍保持有效。
 - Portable Stronghold Argon2id KDF 的密码/salt 绑定，以及 encrypted snapshot 无明文、错误主密码拒绝、正确密码重开、secret 写入/读取/删除、引用格式和 snapshot 缺失 salt 时不覆盖恢复线索的边界；主密码轮换覆盖错误当前密码/短密码/同密码拒绝、旧密码失效、新密码重开、secret 保留、旧密码重新解锁不覆盖新 provider、提交失败时旧 snapshot/provider 仍可用，以及第二个 stale 实例不能覆盖已轮换 snapshot。
-- SSH/Tmux profile 凭据迁移覆盖五类 credential slot、SSH/Tmux 显式 scope、共享/legacy native alias、MCP HTTP/IPC 保留引用排除、全部读取预检、Stronghold 单批次提交/回滚/重开、native 精确读回、Profile 提交失败/不确定、源清理 warning、幂等目标、建连中源保留，以及会随迁移计划变化失效的预检 token。恢复测试覆盖 Prepared durable barrier、journal revision/CAS、Profile+journal 原子 checkpoint、结构化槽位 OLD/NEW/MIXED/缺失/交换分类、source missing、provider unavailable、内容 mismatch、Stronghold target unknown、cleanup checkpoint 失败和 corrupt journal 冻结。
+- SSH/Tmux profile 凭据迁移覆盖五类 credential slot、SSH/Tmux 显式 scope、共享/legacy native alias、MCP HTTP/IPC 保留引用排除、全部读取预检、Stronghold 单批次提交/回滚/重开、native 精确读回、Profile 提交失败/不确定、源清理 warning、幂等目标、建连中源保留，以及会随迁移计划变化失效的预检 token。恢复测试覆盖 Prepared durable barrier、journal revision/CAS、Profile+journal 原子 checkpoint、结构化槽位 OLD/NEW/MIXED/缺失/交换分类、source missing、provider unavailable、内容 mismatch、Stronghold target unknown、cleanup checkpoint 失败和 corrupt journal 冻结；诊断回归验证结构化冲突证据、原子 JSON/checksum，以及 provider secret 和损坏 payload/state 均不泄漏。
 - SessionStore CAS 覆盖 stale 第二实例、未更新 revision 的 kv 变更、损坏 SQLite 加载保护、重复加载不旋转 revision；SQLite mirror schema/trigger 的独立变化不制造逻辑快照冲突。
 - 文件选择的单选/Ctrl/Command/Shift 状态转换、批次 `fail/overwrite/skip/rename` 冲突策略和路径逃逸拒绝，以及真实 OpenSSH SFTP 远端目录递归下载、空目录保留和冲突重命名。
 - 传输状态本地化、生命周期消息过滤、失败 fallback 和可复制诊断文本，以及中文错误摘要的 UTF-8 安全截断。
@@ -211,7 +211,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 154：`portmate` 118、`portmate-kdf` 1、`portmate-core` 24、`portmate-mcp` 11；`npm test` 另有 46 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration 单元测试。
+当前 Rust workspace 自动化测试总数为 156：`portmate` 120、`portmate-kdf` 1、`portmate-core` 24、`portmate-mcp` 11；`npm test` 另有 47 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration 单元测试。
 
 主要缺口：
 
@@ -233,7 +233,7 @@ npm run build
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
-| Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护、Argon2id + IOTA Stronghold portable vault/fallback/主密码轮换，以及带预检 token、durable SQLite journal、原子 commit point、跨重启显式恢复和冲突冻结的 SSH/Tmux profile 凭据双向迁移已有；跨平台 provider 故障矩阵和人工冲突诊断工具待补。 |
+| Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护、Argon2id + IOTA Stronghold portable vault/fallback/主密码轮换，以及带预检 token、durable SQLite journal、原子 commit point、跨重启显式恢复、冲突冻结和安全诊断导出的 SSH/Tmux profile 凭据双向迁移已有；跨平台 provider 故障矩阵待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP 自动重连与虚拟串口 PTY 替换自动重连回归、SSH/TCP/Telnet/Serial 初版自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；Telnet 高级选项、深度健康探测和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
@@ -250,7 +250,7 @@ npm run build
 
 ### P0：把 alpha 变成稳定可日用版本
 
-1. Client identity 字段编辑、密钥轮换、引用计数生命周期管理、OS keyring 不可用时的 IOTA Stronghold portable vault/fallback、主密码轮换，以及带 durable journal/跨重启核对的 SSH/Tmux profile 凭据双向批量迁移已完成；继续补 Windows/macOS/Linux 原生 keyring/Stronghold 故障注入矩阵和人工 conflict 诊断导出。
+1. Client identity 字段编辑、密钥轮换、引用计数生命周期管理、OS keyring 不可用时的 IOTA Stronghold portable vault/fallback、主密码轮换，以及带 durable journal/跨重启核对/安全 conflict 诊断导出的 SSH/Tmux profile 凭据双向批量迁移已完成；继续补 Windows/macOS/Linux 原生 keyring/Stronghold 故障注入矩阵。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建、cancel 失败后的本地收敛，以及远端命令型传输失败详情、部分进度、事件摘要和复制诊断均已完成；继续扩展服务端故障矩阵。
 4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵和 modem 的物理串口/OpenSSH 活动传输断线；虚拟串口重连、静默 modem 快速取消和 transport 重连态失败已覆盖。
@@ -262,7 +262,7 @@ npm run build
 2. pane session binding、启动自动连接、标签颜色和 workspace restore 已完成版本化基础实现；继续补任意嵌套分屏。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
 4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
-5. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal 和恢复/重载 UX 已完成；下一步补人工 conflict 诊断/导出与跨平台 provider 回归。
+5. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。
 
 ### P2：日志、诊断和 MCP 产品化
 
@@ -284,7 +284,7 @@ npm run build
 
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. 会话任意嵌套分屏；基础布局持久化、workspace restore 和启动会话策略已完成。
-3. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵与 conflict 诊断导出；durable migration journal、异常提交核对、重载 UX、双向迁移和跨进程 CAS 已完成。
+3. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；durable migration journal、异常提交核对、重载 UX、双向迁移、跨进程 CAS 和 conflict 诊断导出已完成。
 4. 更深连接健康探测和跨平台传输故障矩阵。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。

@@ -91,6 +91,16 @@ export type ProfileSecretMigrationRecoveryResponse = {
   pending: ProfileSecretMigrationRecoverySummary | null;
 };
 
+export type ProfileSecretMigrationDiagnosticExportResult = {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  migrationId: string | null;
+  journalValid: boolean;
+  warnings: string[];
+};
+
 export type ProfileSecretMigrationRecoveryBlockReason =
   | "no-pending-migration"
   | "operation-busy"
@@ -193,6 +203,13 @@ export function recoverProfileSecretMigration(
   return invokeBackend<ProfileSecretMigrationRecoveryResponse>(
     "recover_profile_secret_migration",
     { request },
+  );
+}
+
+export function exportProfileSecretMigrationDiagnostics(): Promise<ProfileSecretMigrationDiagnosticExportResult> {
+  return invokeBackend<ProfileSecretMigrationDiagnosticExportResult>(
+    "export_profile_secret_migration_diagnostics",
+    {},
   );
 }
 

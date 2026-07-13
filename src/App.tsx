@@ -46,8 +46,8 @@ import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } f
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
-import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
-import type { ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
+import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
+import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -3396,6 +3396,8 @@ function KeyManagerDialog({
   const [migrationRecoveryStatusError, setMigrationRecoveryStatusError] = useState("");
   const [migrationRecoveryError, setMigrationRecoveryError] = useState("");
   const [migrationRecoveryWarnings, setMigrationRecoveryWarnings] = useState<string[]>([]);
+  const [migrationDiagnosticBusy, setMigrationDiagnosticBusy] = useState(false);
+  const [migrationDiagnosticResult, setMigrationDiagnosticResult] = useState<ProfileSecretMigrationDiagnosticExportResult | null>(null);
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
   const [keyProfileFilter, setKeyProfileFilter] = useState("all");
   const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
@@ -3435,7 +3437,7 @@ function KeyManagerDialog({
     ? clientIdentityItems.filter((item) => item.identity.secretRef === editingClientIdentityItem.identity.secretRef).length
     : 0;
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
-  const vaultOperationBusy = portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy;
+  const vaultOperationBusy = portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy || migrationDiagnosticBusy;
   const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
   const credentialMutationControlsDisabled = vaultOperationBusy || credentialMutationsFrozen;
   const migrationControlsDisabled = credentialMutationControlsDisabled || migrationRequiresRestart;
@@ -3730,6 +3732,22 @@ function KeyManagerDialog({
     } finally {
       await refreshMigrationRecovery(false);
       setMigrationRecoveryBusy(false);
+    }
+  }
+
+  async function exportPendingProfileSecretMigrationDiagnostics() {
+    if (migrationRecoveryChecking || (!migrationRecovery && !migrationRecoveryStatusError) || !isBackendAvailable()) return;
+    setMigrationDiagnosticBusy(true);
+    setMigrationDiagnosticResult(null);
+    setMigrationRecoveryError("");
+    try {
+      const result = await exportProfileSecretMigrationDiagnostics();
+      setMigrationDiagnosticResult(result);
+      setMigrationRecoveryWarnings(result.warnings);
+    } catch (error) {
+      setMigrationRecoveryError(formatError(error));
+    } finally {
+      setMigrationDiagnosticBusy(false);
     }
   }
 
@@ -4409,6 +4427,9 @@ function KeyManagerDialog({
                         : <button type="button" onClick={() => void recoverPendingProfileSecretMigration()} disabled={migrationRecoveryChecking || !canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy || migrationRequiresRestart)}><RefreshCw size={14} />{migrationRecoveryBusy ? "核对中" : "核对并恢复"}</button>}
                   </>
                 ) : null}
+                {migrationRecovery || migrationRecoveryStatusError ? <button type="button" onClick={() => void exportPendingProfileSecretMigrationDiagnostics()} disabled={migrationRecoveryChecking || vaultOperationBusy}><FileText size={14} />{migrationDiagnosticBusy ? "导出中" : "导出诊断"}</button> : null}
+                {migrationDiagnosticResult ? <p className="portable-vault-migration-diagnostic-result" title={migrationDiagnosticResult.path}>诊断已导出：{migrationDiagnosticResult.path} · {formatBytes(migrationDiagnosticResult.size)} · SHA-256 {migrationDiagnosticResult.sha256.slice(0, 16)}...</p> : null}
+                {migrationDiagnosticResult ? <button type="button" onClick={() => void navigator.clipboard?.writeText(`${migrationDiagnosticResult.path}\n${migrationDiagnosticResult.checksumPath}\nSHA-256 ${migrationDiagnosticResult.sha256}`).catch(() => {})}><Copy size={14} />复制导出信息</button> : null}
                 {migrationRecoveryWarnings.map((warning) => <p className="portable-vault-migration-recovery-warning" key={warning}>{warning}</p>)}
                 {migrationRecoveryStatusError ? <p className="portable-vault-migration-recovery-error" role="alert">状态读取失败：{migrationRecoveryStatusError}</p> : null}
                 {migrationRecoveryStatusError ? <button type="button" onClick={() => void refreshMigrationRecovery()} disabled={migrationRecoveryChecking || vaultOperationBusy}><RefreshCw size={14} />{migrationRecoveryChecking ? "读取中" : "重新读取"}</button> : null}

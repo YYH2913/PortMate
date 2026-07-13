@@ -3372,6 +3372,11 @@ fieldset label {
   margin: 0;
 }
 
+.portable-vault-migration-diagnostic-result {
+  overflow-wrap: anywhere;
+  color: var(--cyan);
+}
+
 .portable-vault-migration-recovery-unlock,
 .portable-vault-migration-recovery-warning {
   color: var(--amber);
