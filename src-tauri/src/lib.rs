@@ -29,7 +29,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -140,6 +140,7 @@ const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
+const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str = "PORTMATE_MIGRATION_RESTART_REQUIRED:";
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
@@ -153,6 +154,8 @@ static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
 pub struct AppState {
     app_handle: Option<AppHandle>,
     pub store: Arc<Mutex<SessionStore>>,
+    credential_ops: Arc<Mutex<()>>,
+    credential_lock_path: PathBuf,
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
@@ -163,6 +166,37 @@ pub struct AppState {
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     store_path: PathBuf,
+}
+
+struct CredentialOperationGuard<'a> {
+    _local: MutexGuard<'a, ()>,
+    _file: fs::File,
+}
+
+fn lock_credential_operations(state: &AppState) -> Result<CredentialOperationGuard<'_>, String> {
+    let local = state
+        .credential_ops
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if let Some(parent) = state.credential_lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建凭据操作锁目录 {}: {error}", parent.display()))?;
+        }
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&state.credential_lock_path)
+        .map_err(|error| format!("无法打开凭据操作锁: {error}"))?;
+    file.lock()
+        .map_err(|error| format!("无法获取凭据操作锁: {error}"))?;
+    Ok(CredentialOperationGuard {
+        _local: local,
+        _file: file,
+    })
 }
 
 struct SystemEventSinkGuard {
@@ -206,6 +240,16 @@ enum PortableVaultSnapshotVersion {
     UnknownAfterCommit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreSnapshotVersion {
+    Missing,
+    Sha256([u8; 32]),
+    UnknownAfterCommit,
+}
+
+static STORE_SNAPSHOT_VERSIONS: OnceLock<Mutex<HashMap<PathBuf, StoreSnapshotVersion>>> =
+    OnceLock::new();
+
 struct PortableStronghold {
     inner: IotaStronghold,
     path: SnapshotPath,
@@ -221,6 +265,130 @@ fn portable_vault_lock_path(snapshot_path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or(PORTABLE_VAULT_FILE_NAME);
     snapshot_path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn store_lock_path(store_path: &Path) -> PathBuf {
+    let file_name = store_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(STORE_FILE_NAME);
+    store_path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn lock_store_snapshot(store_path: &Path) -> Result<fs::File, String> {
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "无法创建 PortMate store 锁目录 {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let lock_path = store_lock_path(store_path);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("无法打开 PortMate store 文件锁: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("无法获取 PortMate store 文件锁: {error}"))?;
+    Ok(lock)
+}
+
+fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotVersion, String> {
+    if store_path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+        if !store_path.exists() {
+            return Ok(StoreSnapshotVersion::Missing);
+        }
+        let connection = SqliteConnection::open(store_path).map_err(|error| {
+            format!(
+                "无法打开 PortMate SQLite store 读取版本 {}: {error}",
+                store_path.display()
+            )
+        })?;
+        let store_json = match connection.query_row(
+            "select value from kv where key = ?1",
+            params![STORE_KEY],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(store_json) => store_json,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Ok(StoreSnapshotVersion::Missing);
+            }
+            Err(error) => {
+                return Err(format!("无法读取 PortMate SQLite store 快照内容: {error}"));
+            }
+        };
+        let has_metadata_table = connection
+            .query_row(
+                "select exists(select 1 from sqlite_master where type = 'table' and name = 'metadata')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("无法检查 PortMate SQLite metadata 表: {error}"))?;
+        let revision = if has_metadata_table {
+            match connection.query_row(
+                "select value from metadata where key = 'storeRevision'",
+                [],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(revision) => Some(revision),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(error) => {
+                    return Err(format!("无法读取 PortMate SQLite store 版本: {error}"));
+                }
+            }
+        } else {
+            None
+        };
+        let mut digest = Sha256::new();
+        digest.update(b"portmate-store-snapshot-v1\0");
+        if let Some(revision) = revision {
+            digest.update((revision.len() as u64).to_le_bytes());
+            digest.update(revision.as_bytes());
+        } else {
+            digest.update(0_u64.to_le_bytes());
+        }
+        digest.update((store_json.len() as u64).to_le_bytes());
+        digest.update(store_json.as_bytes());
+        return Ok(StoreSnapshotVersion::Sha256(digest.finalize().into()));
+    }
+    let bytes = match fs::read(store_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StoreSnapshotVersion::Missing);
+        }
+        Err(error) => return Err(format!("无法读取 PortMate store 指纹: {error}")),
+    };
+    Ok(StoreSnapshotVersion::Sha256(Sha256::digest(bytes).into()))
+}
+
+fn verify_store_snapshot_is_current(store_path: &Path) -> Result<StoreSnapshotVersion, String> {
+    let snapshot_lock = lock_store_snapshot(store_path)?;
+    let current = store_snapshot_version(store_path)?;
+    let mut versions = STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let expected = versions.entry(store_path.to_path_buf()).or_insert(current);
+    let result = if *expected == StoreSnapshotVersion::UnknownAfterCommit {
+        Err(format!(
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} PortMate store 上次提交后无法验证版本，请重启应用后再迁移凭据"
+        ))
+    } else if *expected != current {
+        Err(format!(
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} PortMate store 已被另一实例修改，请重启应用加载最新数据后再迁移凭据"
+        ))
+    } else {
+        Ok(current)
+    };
+    drop(versions);
+    drop(snapshot_lock);
+    result
 }
 
 fn lock_portable_vault_snapshot(snapshot_path: &Path) -> Result<fs::File, String> {
@@ -1182,7 +1350,7 @@ pub struct SecretWriteRequest {
     pub storage: Option<SecretStorage>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecretStorage {
     Native,
@@ -1214,6 +1382,65 @@ pub struct PortableVaultUnlockRequest {
 pub struct PortableVaultRotatePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationRequest {
+    pub target_storage: SecretStorage,
+    pub profile_ids: Vec<String>,
+    #[serde(default = "default_true")]
+    pub cleanup_source: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationPreview {
+    pub plan_token: String,
+    pub target_storage: SecretStorage,
+    pub selected_profile_count: usize,
+    pub affected_profile_count: usize,
+    pub eligible_reference_count: usize,
+    pub eligible_secret_count: usize,
+    pub retained_shared_secret_count: usize,
+    pub retained_in_flight_secret_count: usize,
+    pub already_target_reference_count: usize,
+    pub excluded_reserved_reference_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileSecretCleanupStatus {
+    Deleted,
+    RetainedByRequest,
+    RetainedShared,
+    RetainedInUse,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationItem {
+    pub source_ref: String,
+    pub target_ref: String,
+    pub reference_count: usize,
+    pub remaining_source_references: usize,
+    pub cleanup_status: ProfileSecretCleanupStatus,
+    pub cleanup_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationResponse {
+    pub target_storage: SecretStorage,
+    pub selected_profile_count: usize,
+    pub migrated_profile_count: usize,
+    pub migrated_reference_count: usize,
+    pub migrated_secret_count: usize,
+    pub summaries: Vec<SessionSummary>,
+    pub items: Vec<ProfileSecretMigrationItem>,
+    pub warnings: Vec<String>,
+    pub portable_vault_requires_reunlock: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1997,15 +2224,28 @@ async fn resize_session(
 fn save_session_profile(
     state: State<'_, AppState>,
     profile: SessionProfile,
+    expected_profile: Option<SessionProfile>,
 ) -> Result<SessionSummary, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let profile = normalize_session_profile(profile);
+    let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let old_secret_refs = store
-        .profile(&profile.id)
-        .map(|old_profile| profile_secret_refs(&old_profile))
+    let current_profile = store.profile(&profile.id);
+    validate_expected_profile_credentials(current_profile.as_ref(), expected_profile.as_ref())?;
+    let old_secret_refs = current_profile
+        .as_ref()
+        .map(profile_secret_refs)
         .unwrap_or_default();
+    let new_secret_refs = profile_secret_refs(&profile);
+    for secret_ref in new_secret_refs.difference(&old_secret_refs) {
+        if is_reserved_mcp_secret_ref(secret_ref) {
+            return Err("MCP token 引用不能用作 SSH/Tmux Profile 凭据".to_string());
+        }
+        read_secret_from_store(secret_ref)
+            .map_err(|error| format!("新增 Profile secretRef 无法读取 ({secret_ref}): {error}"))?;
+    }
     let mut next_store = store.clone();
     let summary = next_store.upsert_profile(profile);
     save_store(&state.store_path, &next_store)?;
@@ -2018,6 +2258,28 @@ fn save_session_profile(
         }
     }
     Ok(summary)
+}
+
+fn validate_expected_profile_credentials(
+    current_profile: Option<&SessionProfile>,
+    expected_profile: Option<&SessionProfile>,
+) -> Result<(), String> {
+    match (current_profile, expected_profile) {
+        (Some(current), Some(expected))
+            if profile_secret_ref_occurrences(current)
+                != profile_secret_ref_occurrences(expected) =>
+        {
+            return Err("Profile 凭据已在其他操作中更新，请重新打开设置后再保存".to_string());
+        }
+        (Some(_), None) => {
+            return Err("保存现有 Profile 必须提供 expectedProfile 版本".to_string());
+        }
+        (None, Some(_)) => {
+            return Err("Profile 已被其他操作删除，请刷新会话列表".to_string());
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2237,18 +2499,22 @@ fn trust_scanned_host_key(
     state: State<'_, AppState>,
     request: TrustScannedHostKeyRequest,
 ) -> Result<Option<portmate_core::TrustedHostKey>, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let profile = normalize_session_profile(request.profile);
     let profile_id = profile.id.clone();
-    store.upsert_profile(profile);
+    let policy = ssh_connection(&profile)?.host_key_policy.clone();
     if request.decision == HostKeyDecision::TrustOnce {
-        let trusted = temporary_trusted_host_key(&store, &profile_id, &request.observation)?;
+        let trusted =
+            temporary_trusted_host_key_for_policy(&profile_id, &policy, &request.observation)?;
         drop(store);
         remember_one_time_host_key(state.inner(), &profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
-    let trusted =
-        store.apply_host_key_decision(&profile_id, &request.observation, request.decision)?;
+    let trusted = store
+        .host_keys
+        .apply_decision(&profile_id, &policy, &request.observation, request.decision)
+        .map_err(|error| error.to_string())?;
     save_store(&state.store_path, &store)?;
     Ok(trusted)
 }
@@ -2521,7 +2787,11 @@ async fn list_ssh_agent_identities() -> Result<Vec<IdentityRef>, String> {
 }
 
 #[tauri::command]
-fn save_secret(request: SecretWriteRequest) -> Result<SecretWriteResponse, String> {
+fn save_secret(
+    state: State<'_, AppState>,
+    request: SecretWriteRequest,
+) -> Result<SecretWriteResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let secret = request.secret.trim_end_matches(['\r', '\n']).to_string();
     if secret.trim().is_empty() {
         return Err("密钥内容不能为空".to_string());
@@ -2538,6 +2808,7 @@ fn save_secret(request: SecretWriteRequest) -> Result<SecretWriteResponse, Strin
 
 #[tauri::command]
 fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let usage_count = secret_ref_usage_count(&store, &secret_ref);
     if usage_count > 0 {
@@ -2549,7 +2820,8 @@ fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), S
 }
 
 #[tauri::command]
-fn has_secret(secret_ref: String) -> Result<bool, String> {
+fn has_secret(state: State<'_, AppState>, secret_ref: String) -> Result<bool, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     match read_secret_from_store(&secret_ref) {
         Ok(_) => Ok(true),
         Err(error)
@@ -2564,7 +2836,12 @@ fn has_secret(secret_ref: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn portable_vault_status() -> Result<PortableVaultStatus, String> {
+fn portable_vault_status(state: State<'_, AppState>) -> Result<PortableVaultStatus, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    portable_vault_status_inner()
+}
+
+fn portable_vault_status_inner() -> Result<PortableVaultStatus, String> {
     let context = portable_vault_context()?;
     let unlocked = context
         .stronghold
@@ -2580,34 +2857,90 @@ fn portable_vault_status() -> Result<PortableVaultStatus, String> {
 
 #[tauri::command]
 fn unlock_portable_vault(
+    state: State<'_, AppState>,
     request: PortableVaultUnlockRequest,
 ) -> Result<PortableVaultStatus, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let password = Zeroizing::new(request.password);
     let context = portable_vault_context()?;
     unlock_portable_vault_in(context, password.as_str())?;
-    portable_vault_status()
+    portable_vault_status_inner()
 }
 
 #[tauri::command]
 fn rotate_portable_vault_password(
+    state: State<'_, AppState>,
     request: PortableVaultRotatePasswordRequest,
 ) -> Result<PortableVaultStatus, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let current_password = Zeroizing::new(request.current_password);
     let new_password = Zeroizing::new(request.new_password);
     let context = portable_vault_context()?;
     rotate_portable_vault_password_in(context, current_password.as_str(), new_password.as_str())?;
-    portable_vault_status()
+    portable_vault_status_inner()
 }
 
 #[tauri::command]
-fn lock_portable_vault() -> Result<PortableVaultStatus, String> {
+fn lock_portable_vault(state: State<'_, AppState>) -> Result<PortableVaultStatus, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let context = portable_vault_context()?;
     context
         .stronghold
         .lock()
         .map_err(|error| error.to_string())?
         .take();
-    portable_vault_status()
+    portable_vault_status_inner()
+}
+
+#[tauri::command]
+fn preview_profile_secret_migration(
+    state: State<'_, AppState>,
+    request: ProfileSecretMigrationRequest,
+) -> Result<ProfileSecretMigrationPreview, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    verify_store_snapshot_is_current(&state.store_path)?;
+    let mut plan = build_profile_secret_migration_plan(&store, &request)?;
+    let plan_token = profile_secret_migration_plan_token(&plan, &request);
+    plan.preview.plan_token = plan_token;
+    if plan.preview.eligible_secret_count > 0 {
+        ensure_portable_vault_ready_for_migration()?;
+    }
+    Ok(plan.preview)
+}
+
+#[tauri::command]
+fn migrate_profile_secrets(
+    state: State<'_, AppState>,
+    request: ProfileSecretMigrationRequest,
+    expected_plan_token: String,
+) -> Result<ProfileSecretMigrationResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    verify_store_snapshot_is_current(&state.store_path)?;
+    let plan = build_profile_secret_migration_plan(&store, &request)?;
+    let current_plan_token = profile_secret_migration_plan_token(&plan, &request);
+    if expected_plan_token.trim().is_empty() || expected_plan_token != current_plan_token {
+        return Err("凭据迁移预检已过期，请重新预检后再执行".to_string());
+    }
+    if plan.preview.eligible_secret_count > 0 {
+        ensure_portable_vault_ready_for_migration()?;
+    }
+    migrate_profile_secrets_with_io(
+        &mut store,
+        &request,
+        read_secret_from_store,
+        write_profile_secret_migration_batch,
+        delete_profile_secret_migration_batch,
+        |next_store, affected_profile_ids, target_refs| {
+            persist_profile_secret_migration(
+                &state.store_path,
+                next_store,
+                affected_profile_ids,
+                target_refs,
+            )
+        },
+    )
 }
 
 #[tauri::command]
@@ -2615,6 +2948,7 @@ fn update_client_identity(
     state: State<'_, AppState>,
     request: ClientIdentityUpdateRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let identity = normalize_client_identity(
         &request.identity_id,
         IdentityRef {
@@ -2655,6 +2989,7 @@ fn rotate_client_identity(
     state: State<'_, AppState>,
     request: ClientIdentityRotateRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let private_key = request
         .private_key
         .trim_end_matches(['\r', '\n'])
@@ -2745,6 +3080,7 @@ fn delete_client_identity(
     state: State<'_, AppState>,
     request: ClientIdentityDeleteRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let mut next_store = store.clone();
     let (summary, old_secret_ref) =
@@ -11183,33 +11519,67 @@ fn remove_client_identity(
     Ok((summary, current.secret_ref))
 }
 
-fn secret_ref_usage_count(store: &SessionStore, secret_ref: &str) -> usize {
-    let expected = secret_ref.trim();
-    if expected.is_empty() {
-        return 0;
+fn canonical_secret_ref(secret_ref: &str) -> Option<String> {
+    let secret_ref = secret_ref.trim();
+    if secret_ref.is_empty() || secret_ref.contains('\0') {
+        return None;
     }
+    if let Some(account) = secret_ref.strip_prefix("stronghold:") {
+        return (!account.is_empty()).then(|| format!("stronghold:{account}"));
+    }
+    let account = secret_ref.strip_prefix("keychain:").unwrap_or(secret_ref);
+    (!account.is_empty()).then(|| format!("keychain:{account}"))
+}
+
+fn secret_ref_usage_count(store: &SessionStore, secret_ref: &str) -> usize {
+    let Some(expected) = canonical_secret_ref(secret_ref) else {
+        return 0;
+    };
     store
         .profiles
         .iter()
         .filter_map(|profile| ssh_connection(profile).ok())
         .map(|ssh| {
-            usize::from(ssh.password_secret_ref.as_deref().map(str::trim) == Some(expected))
-                + usize::from(ssh.passphrase_secret_ref.as_deref().map(str::trim) == Some(expected))
-                + ssh
-                    .identity_refs
-                    .iter()
-                    .filter(|identity| {
-                        identity.secret_ref.as_deref().map(str::trim) == Some(expected)
-                    })
-                    .count()
+            usize::from(
+                ssh.password_secret_ref
+                    .as_deref()
+                    .and_then(canonical_secret_ref)
+                    .as_deref()
+                    == Some(expected.as_str()),
+            ) + usize::from(
+                ssh.passphrase_secret_ref
+                    .as_deref()
+                    .and_then(canonical_secret_ref)
+                    .as_deref()
+                    == Some(expected.as_str()),
+            ) + ssh
+                .identity_refs
+                .iter()
+                .filter(|identity| {
+                    identity
+                        .secret_ref
+                        .as_deref()
+                        .and_then(canonical_secret_ref)
+                        .as_deref()
+                        == Some(expected.as_str())
+                })
+                .count()
                 + ssh
                     .jumps
                     .iter()
                     .map(|jump| {
                         usize::from(
-                            jump.password_secret_ref.as_deref().map(str::trim) == Some(expected),
+                            jump.password_secret_ref
+                                .as_deref()
+                                .and_then(canonical_secret_ref)
+                                .as_deref()
+                                == Some(expected.as_str()),
                         ) + usize::from(
-                            jump.passphrase_secret_ref.as_deref().map(str::trim) == Some(expected),
+                            jump.passphrase_secret_ref
+                                .as_deref()
+                                .and_then(canonical_secret_ref)
+                                .as_deref()
+                                == Some(expected.as_str()),
                         )
                     })
                     .sum::<usize>()
@@ -11226,18 +11596,17 @@ fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
         ssh.password_secret_ref.as_deref(),
         ssh.passphrase_secret_ref.as_deref(),
     ] {
-        if let Some(secret_ref) = secret_ref.map(str::trim).filter(|value| !value.is_empty()) {
-            refs.insert(secret_ref.to_string());
+        if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
+            refs.insert(secret_ref);
         }
     }
     for identity in &ssh.identity_refs {
         if let Some(secret_ref) = identity
             .secret_ref
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .and_then(canonical_secret_ref)
         {
-            refs.insert(secret_ref.to_string());
+            refs.insert(secret_ref);
         }
     }
     for jump in &ssh.jumps {
@@ -11245,12 +11614,544 @@ fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
             jump.password_secret_ref.as_deref(),
             jump.passphrase_secret_ref.as_deref(),
         ] {
-            if let Some(secret_ref) = secret_ref.map(str::trim).filter(|value| !value.is_empty()) {
-                refs.insert(secret_ref.to_string());
+            if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
+                refs.insert(secret_ref);
             }
         }
     }
     refs
+}
+
+#[derive(Debug, Clone)]
+struct ProfileSecretMigrationPlan {
+    preview: ProfileSecretMigrationPreview,
+    selected_profile_ids: Vec<String>,
+    affected_profile_ids: Vec<String>,
+    source_ref_counts: BTreeMap<String, usize>,
+    in_flight_source_refs: HashSet<String>,
+}
+
+struct PreparedProfileSecretMigration {
+    source_ref: String,
+    target_ref: String,
+    secret: Zeroizing<String>,
+}
+
+#[derive(Debug)]
+enum ProfileSecretStoreCommit {
+    Committed { warning: Option<String> },
+    NotCommitted(String),
+    Unknown(String),
+}
+
+struct SecretBatchDeleteOutcome {
+    results: BTreeMap<String, Result<(), String>>,
+    portable_vault_requires_reunlock: bool,
+}
+
+fn secret_ref_storage(secret_ref: &str) -> SecretStorage {
+    if canonical_secret_ref(secret_ref)
+        .is_some_and(|secret_ref| secret_ref.starts_with("stronghold:"))
+    {
+        SecretStorage::Portable
+    } else {
+        SecretStorage::Native
+    }
+}
+
+fn is_reserved_mcp_secret_ref(secret_ref: &str) -> bool {
+    canonical_secret_ref(secret_ref).is_some_and(|secret_ref| {
+        secret_ref == MCP_HTTP_TOKEN_REF || secret_ref.starts_with("keychain:ipc-")
+    })
+}
+
+fn new_secret_ref(storage: SecretStorage) -> String {
+    match storage {
+        SecretStorage::Native => format!("keychain:{}", Uuid::new_v4()),
+        SecretStorage::Portable => format!("stronghold:{}", Uuid::new_v4()),
+    }
+}
+
+fn profile_secret_ref_occurrences(profile: &SessionProfile) -> Vec<String> {
+    let Ok(ssh) = ssh_connection(profile) else {
+        return Vec::new();
+    };
+    let mut refs = Vec::new();
+    for secret_ref in [
+        ssh.password_secret_ref.as_deref(),
+        ssh.passphrase_secret_ref.as_deref(),
+    ] {
+        if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
+            refs.push(secret_ref);
+        }
+    }
+    for identity in &ssh.identity_refs {
+        if identity.source != IdentitySource::ProfileVault {
+            continue;
+        }
+        if let Some(secret_ref) = identity
+            .secret_ref
+            .as_deref()
+            .and_then(canonical_secret_ref)
+        {
+            refs.push(secret_ref);
+        }
+    }
+    for jump in &ssh.jumps {
+        for secret_ref in [
+            jump.password_secret_ref.as_deref(),
+            jump.passphrase_secret_ref.as_deref(),
+        ] {
+            if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
+                refs.push(secret_ref);
+            }
+        }
+    }
+    refs
+}
+
+fn build_profile_secret_migration_plan(
+    store: &SessionStore,
+    request: &ProfileSecretMigrationRequest,
+) -> Result<ProfileSecretMigrationPlan, String> {
+    if request.profile_ids.is_empty() {
+        return Err("凭据迁移必须显式选择至少一个 SSH/Tmux Profile".to_string());
+    }
+    let mut requested = HashSet::new();
+    let mut requested_ids = Vec::new();
+    for profile_id in &request.profile_ids {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Err("凭据迁移包含空 Profile ID".to_string());
+        }
+        if requested.insert(profile_id.to_string()) {
+            requested_ids.push(profile_id.to_string());
+        }
+    }
+    for profile_id in &requested_ids {
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+        ssh_connection(profile)?;
+    }
+
+    let selected_profile_ids = store
+        .profiles
+        .iter()
+        .filter(|profile| requested.contains(&profile.id))
+        .map(|profile| profile.id.clone())
+        .collect::<Vec<_>>();
+    let mut source_ref_counts = BTreeMap::<String, usize>::new();
+    let mut affected_profile_ids = Vec::new();
+    let mut in_flight_source_refs = HashSet::new();
+    let mut already_target_reference_count = 0;
+    let mut excluded_reserved_reference_count = 0;
+    for profile in store
+        .profiles
+        .iter()
+        .filter(|profile| requested.contains(&profile.id))
+    {
+        let mut affected = false;
+        let connection_in_flight = store.runtimes.iter().any(|runtime| {
+            runtime.session_id == profile.id
+                && matches!(
+                    runtime.status,
+                    SessionStatus::Connecting | SessionStatus::Reconnecting
+                )
+        });
+        for secret_ref in profile_secret_ref_occurrences(profile) {
+            if is_reserved_mcp_secret_ref(&secret_ref) {
+                excluded_reserved_reference_count += 1;
+            } else if secret_ref_storage(&secret_ref) == request.target_storage {
+                already_target_reference_count += 1;
+            } else {
+                *source_ref_counts.entry(secret_ref.clone()).or_default() += 1;
+                if connection_in_flight {
+                    in_flight_source_refs.insert(secret_ref);
+                }
+                affected = true;
+            }
+        }
+        if affected {
+            affected_profile_ids.push(profile.id.clone());
+        }
+    }
+    let retained_shared_secret_count = source_ref_counts
+        .iter()
+        .filter(|(secret_ref, selected_count)| {
+            secret_ref_usage_count(store, secret_ref) > **selected_count
+        })
+        .count();
+    let eligible_reference_count = source_ref_counts.values().sum();
+    let preview = ProfileSecretMigrationPreview {
+        plan_token: String::new(),
+        target_storage: request.target_storage,
+        selected_profile_count: selected_profile_ids.len(),
+        affected_profile_count: affected_profile_ids.len(),
+        eligible_reference_count,
+        eligible_secret_count: source_ref_counts.len(),
+        retained_shared_secret_count,
+        retained_in_flight_secret_count: in_flight_source_refs.len(),
+        already_target_reference_count,
+        excluded_reserved_reference_count,
+    };
+    Ok(ProfileSecretMigrationPlan {
+        preview,
+        selected_profile_ids,
+        affected_profile_ids,
+        source_ref_counts,
+        in_flight_source_refs,
+    })
+}
+
+fn update_migration_token_field(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_le_bytes());
+    digest.update(value);
+}
+
+fn profile_secret_migration_plan_token(
+    plan: &ProfileSecretMigrationPlan,
+    request: &ProfileSecretMigrationRequest,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"portmate-profile-secret-migration-v1\0");
+    digest.update([match request.target_storage {
+        SecretStorage::Native => 0,
+        SecretStorage::Portable => 1,
+    }]);
+    digest.update([u8::from(request.cleanup_source)]);
+    for profile_id in &plan.selected_profile_ids {
+        update_migration_token_field(&mut digest, profile_id.as_bytes());
+    }
+    digest.update([0xff]);
+    for profile_id in &plan.affected_profile_ids {
+        update_migration_token_field(&mut digest, profile_id.as_bytes());
+    }
+    digest.update([0xfe]);
+    for (secret_ref, count) in &plan.source_ref_counts {
+        update_migration_token_field(&mut digest, secret_ref.as_bytes());
+        digest.update((*count as u64).to_le_bytes());
+    }
+    let mut in_flight_source_refs = plan.in_flight_source_refs.iter().collect::<Vec<_>>();
+    in_flight_source_refs.sort_unstable();
+    digest.update([0xfd]);
+    for secret_ref in in_flight_source_refs {
+        update_migration_token_field(&mut digest, secret_ref.as_bytes());
+    }
+    for count in [
+        plan.preview.retained_shared_secret_count,
+        plan.preview.already_target_reference_count,
+        plan.preview.excluded_reserved_reference_count,
+    ] {
+        digest.update((count as u64).to_le_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn replace_optional_profile_secret_ref(
+    secret_ref: &mut Option<String>,
+    replacements: &HashMap<String, String>,
+) -> usize {
+    let Some(current) = secret_ref.as_deref().and_then(canonical_secret_ref) else {
+        return 0;
+    };
+    let Some(replacement) = replacements.get(&current) else {
+        return 0;
+    };
+    *secret_ref = Some(replacement.clone());
+    1
+}
+
+fn replace_profile_secret_refs(
+    profile: &mut SessionProfile,
+    replacements: &HashMap<String, String>,
+) -> usize {
+    let Ok(ssh) = ssh_connection_mut(profile) else {
+        return 0;
+    };
+    let mut replaced =
+        replace_optional_profile_secret_ref(&mut ssh.password_secret_ref, replacements)
+            + replace_optional_profile_secret_ref(&mut ssh.passphrase_secret_ref, replacements);
+    for identity in &mut ssh.identity_refs {
+        if identity.source == IdentitySource::ProfileVault {
+            replaced += replace_optional_profile_secret_ref(&mut identity.secret_ref, replacements);
+        }
+    }
+    for jump in &mut ssh.jumps {
+        replaced +=
+            replace_optional_profile_secret_ref(&mut jump.password_secret_ref, replacements);
+        replaced +=
+            replace_optional_profile_secret_ref(&mut jump.passphrase_secret_ref, replacements);
+    }
+    replaced
+}
+
+fn profile_secret_refs_match(
+    expected: &SessionStore,
+    persisted: &SessionStore,
+    profile_ids: &[String],
+) -> bool {
+    profile_ids.iter().all(|profile_id| {
+        let expected = expected
+            .profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .map(profile_secret_ref_occurrences);
+        let persisted = persisted
+            .profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .map(profile_secret_ref_occurrences);
+        expected.is_some() && expected == persisted
+    })
+}
+
+fn persisted_store_uses_any_secret_ref(
+    store: &SessionStore,
+    profile_ids: &[String],
+    secret_refs: &[String],
+) -> bool {
+    let secret_refs = secret_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    store
+        .profiles
+        .iter()
+        .filter(|profile| profile_ids.contains(&profile.id))
+        .flat_map(profile_secret_ref_occurrences)
+        .any(|secret_ref| secret_refs.contains(secret_ref.as_str()))
+}
+
+fn migration_error_with_cleanup(
+    message: impl Into<String>,
+    cleanup: &SecretBatchDeleteOutcome,
+) -> String {
+    let failures = cleanup
+        .results
+        .iter()
+        .filter_map(|(secret_ref, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{secret_ref}: {error}"))
+        })
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        message.into()
+    } else {
+        format!(
+            "{}；新目标 secret 回收失败，已保留孤立副本: {}",
+            message.into(),
+            failures.join(" | ")
+        )
+    }
+}
+
+fn migrate_profile_secrets_with_io<ReadSecret, WriteBatch, DeleteBatch, PersistStore>(
+    store: &mut SessionStore,
+    request: &ProfileSecretMigrationRequest,
+    mut read_secret: ReadSecret,
+    mut write_batch: WriteBatch,
+    mut delete_batch: DeleteBatch,
+    mut persist_store: PersistStore,
+) -> Result<ProfileSecretMigrationResponse, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+    WriteBatch: FnMut(SecretStorage, &[PreparedProfileSecretMigration]) -> Result<bool, String>,
+    DeleteBatch: FnMut(SecretStorage, &[String]) -> SecretBatchDeleteOutcome,
+    PersistStore: FnMut(&SessionStore, &[String], &[String]) -> ProfileSecretStoreCommit,
+{
+    let plan = build_profile_secret_migration_plan(store, request)?;
+    if plan.source_ref_counts.is_empty() {
+        return Ok(ProfileSecretMigrationResponse {
+            target_storage: request.target_storage,
+            selected_profile_count: plan.preview.selected_profile_count,
+            migrated_profile_count: 0,
+            migrated_reference_count: 0,
+            migrated_secret_count: 0,
+            summaries: Vec::new(),
+            items: Vec::new(),
+            warnings: (plan.preview.excluded_reserved_reference_count > 0)
+                .then(|| {
+                    format!(
+                        "已排除 {} 个 MCP token 保留引用",
+                        plan.preview.excluded_reserved_reference_count
+                    )
+                })
+                .into_iter()
+                .collect(),
+            portable_vault_requires_reunlock: false,
+        });
+    }
+
+    let mut prepared = Vec::with_capacity(plan.source_ref_counts.len());
+    for source_ref in plan.source_ref_counts.keys() {
+        let secret = read_secret(source_ref).map_err(|error| {
+            format!("凭据迁移预检失败，尚未写入任何目标 secret ({source_ref}): {error}")
+        })?;
+        prepared.push(PreparedProfileSecretMigration {
+            source_ref: source_ref.clone(),
+            target_ref: new_secret_ref(request.target_storage),
+            secret: Zeroizing::new(secret),
+        });
+    }
+
+    let mut portable_vault_requires_reunlock = write_batch(request.target_storage, &prepared)
+        .map_err(|error| format!("凭据迁移目标写入失败，Profile 引用保持不变: {error}"))?;
+    let replacements = prepared
+        .iter()
+        .map(|item| (item.source_ref.clone(), item.target_ref.clone()))
+        .collect::<HashMap<_, _>>();
+    let target_refs = prepared
+        .iter()
+        .map(|item| item.target_ref.clone())
+        .collect::<Vec<_>>();
+    let mut next_store = store.clone();
+    let selected = plan
+        .selected_profile_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let replaced = next_store
+        .profiles
+        .iter_mut()
+        .filter(|profile| selected.contains(profile.id.as_str()))
+        .map(|profile| replace_profile_secret_refs(profile, &replacements))
+        .sum::<usize>();
+    if replaced != plan.preview.eligible_reference_count {
+        let cleanup = delete_batch(request.target_storage, &target_refs);
+        return Err(migration_error_with_cleanup(
+            format!(
+                "凭据迁移内部引用计数不一致: expected {}, got {replaced}",
+                plan.preview.eligible_reference_count
+            ),
+            &cleanup,
+        ));
+    }
+
+    match persist_store(
+        &next_store,
+        &plan.affected_profile_ids,
+        &target_refs,
+    ) {
+        ProfileSecretStoreCommit::Committed { warning } => {
+            let mut warnings = Vec::new();
+            if let Some(warning) = warning {
+                warnings.push(warning);
+            }
+            *store = next_store;
+
+            let mut deletable = Vec::new();
+            let mut remaining = BTreeMap::new();
+            for source_ref in plan.source_ref_counts.keys() {
+                let count = secret_ref_usage_count(store, source_ref);
+                remaining.insert(source_ref.clone(), count);
+                if request.cleanup_source
+                    && count == 0
+                    && !plan.in_flight_source_refs.contains(source_ref)
+                {
+                    deletable.push(source_ref.clone());
+                }
+            }
+            let source_storage = match request.target_storage {
+                SecretStorage::Native => SecretStorage::Portable,
+                SecretStorage::Portable => SecretStorage::Native,
+            };
+            let cleanup = if deletable.is_empty() {
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            } else {
+                delete_batch(source_storage, &deletable)
+            };
+            portable_vault_requires_reunlock |= cleanup.portable_vault_requires_reunlock;
+
+            let target_by_source = prepared
+                .iter()
+                .map(|item| (item.source_ref.as_str(), item.target_ref.as_str()))
+                .collect::<HashMap<_, _>>();
+            let mut items = Vec::with_capacity(plan.source_ref_counts.len());
+            for (source_ref, reference_count) in &plan.source_ref_counts {
+                let remaining_source_references = remaining[source_ref];
+                let (cleanup_status, cleanup_warning) = if !request.cleanup_source {
+                    (ProfileSecretCleanupStatus::RetainedByRequest, None)
+                } else if remaining_source_references > 0 {
+                    (ProfileSecretCleanupStatus::RetainedShared, None)
+                } else if plan.in_flight_source_refs.contains(source_ref) {
+                    (ProfileSecretCleanupStatus::RetainedInUse, None)
+                } else {
+                    match cleanup.results.get(source_ref) {
+                        Some(Ok(())) => (ProfileSecretCleanupStatus::Deleted, None),
+                        Some(Err(error)) => {
+                            let warning = format!("旧 secret {source_ref} 清理失败: {error}");
+                            warnings.push(warning.clone());
+                            (ProfileSecretCleanupStatus::Failed, Some(warning))
+                        }
+                        None => {
+                            let warning = format!("旧 secret {source_ref} 未返回清理结果");
+                            warnings.push(warning.clone());
+                            (ProfileSecretCleanupStatus::Failed, Some(warning))
+                        }
+                    }
+                };
+                items.push(ProfileSecretMigrationItem {
+                    source_ref: source_ref.clone(),
+                    target_ref: target_by_source[source_ref.as_str()].to_string(),
+                    reference_count: *reference_count,
+                    remaining_source_references,
+                    cleanup_status,
+                    cleanup_warning,
+                });
+            }
+            if plan.preview.excluded_reserved_reference_count > 0 {
+                warnings.push(format!(
+                    "已排除 {} 个 MCP token 保留引用",
+                    plan.preview.excluded_reserved_reference_count
+                ));
+            }
+            if portable_vault_requires_reunlock {
+                warnings.push(
+                    "Stronghold snapshot 已提交，但版本指纹刷新失败；请锁定并重新解锁 portable vault"
+                        .to_string(),
+                );
+            }
+            let summaries_by_id = store
+                .summaries()
+                .into_iter()
+                .map(|summary| (summary.profile.id.clone(), summary))
+                .collect::<HashMap<_, _>>();
+            let summaries = plan
+                .affected_profile_ids
+                .iter()
+                .filter_map(|profile_id| summaries_by_id.get(profile_id).cloned())
+                .collect::<Vec<_>>();
+            Ok(ProfileSecretMigrationResponse {
+                target_storage: request.target_storage,
+                selected_profile_count: plan.preview.selected_profile_count,
+                migrated_profile_count: plan.affected_profile_ids.len(),
+                migrated_reference_count: plan.preview.eligible_reference_count,
+                migrated_secret_count: plan.preview.eligible_secret_count,
+                summaries,
+                items,
+                warnings,
+                portable_vault_requires_reunlock,
+            })
+        }
+        ProfileSecretStoreCommit::NotCommitted(error) => {
+            let cleanup = delete_batch(request.target_storage, &target_refs);
+            Err(migration_error_with_cleanup(
+                format!("凭据迁移 Profile 保存失败，原引用保持不变: {error}"),
+                &cleanup,
+            ))
+        }
+        ProfileSecretStoreCommit::Unknown(error) => Err(format!(
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} 凭据迁移 Profile 保存结果无法确认，原引用继续留在当前进程且新目标 secret 已保留；请重启 PortMate 后核对: {error}"
+        )),
+    }
 }
 
 fn client_identity_mutation_response<F>(
@@ -11539,6 +12440,142 @@ fn delete_secret_from_portable_vault_in(
     Ok(())
 }
 
+struct PortableVaultBatchEntry<'a> {
+    secret_ref: &'a str,
+    secret: &'a str,
+}
+
+fn restore_portable_vault_values(
+    store: &iota_stronghold::Store,
+    old_values: &[(Vec<u8>, Option<Vec<u8>>)],
+) {
+    for (account, old_value) in old_values.iter().rev() {
+        match old_value {
+            Some(old_value) => {
+                let _ = store.insert(account.clone(), old_value.clone(), None);
+            }
+            None => {
+                let _ = store.delete(account);
+            }
+        }
+    }
+}
+
+fn write_secret_batch_to_portable_vault(
+    entries: &[PortableVaultBatchEntry<'_>],
+) -> Result<bool, String> {
+    let context = portable_vault_context()?;
+    write_secret_batch_to_portable_vault_in(context, entries)
+}
+
+fn write_secret_batch_to_portable_vault_in(
+    context: &PortableVaultContext,
+    entries: &[PortableVaultBatchEntry<'_>],
+) -> Result<bool, String> {
+    let mut accounts = Vec::with_capacity(entries.len());
+    let mut unique = HashSet::new();
+    for entry in entries {
+        let account = portable_vault_account(entry.secret_ref)?
+            .as_bytes()
+            .to_vec();
+        if !unique.insert(account.clone()) {
+            return Err(format!(
+                "portable vault 批量写入包含重复 secretRef: {}",
+                entry.secret_ref
+            ));
+        }
+        accounts.push(account);
+    }
+    let mut stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_mut()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    stronghold.ensure_snapshot_current()?;
+    let client = stronghold
+        .get_client(PORTABLE_VAULT_CLIENT)
+        .map_err(|error| format!("portable vault client 不可用: {error}"))?;
+    let store = client.store();
+    let mut old_values = Vec::with_capacity(entries.len());
+    for (entry, account) in entries.iter().zip(accounts) {
+        match store.insert(account.clone(), entry.secret.as_bytes().to_vec(), None) {
+            Ok(old_value) => old_values.push((account, old_value)),
+            Err(error) => {
+                restore_portable_vault_values(&store, &old_values);
+                return Err(format!("写入 portable vault 失败: {error}"));
+            }
+        }
+    }
+    if let Err(error) = stronghold.save() {
+        restore_portable_vault_values(&store, &old_values);
+        return Err(format!("保存 portable vault snapshot 失败: {error}"));
+    }
+    Ok(stronghold.snapshot_version == PortableVaultSnapshotVersion::UnknownAfterCommit)
+}
+
+fn delete_secret_batch_from_portable_vault(secret_refs: &[String]) -> Result<bool, String> {
+    let context = portable_vault_context()?;
+    delete_secret_batch_from_portable_vault_in(context, secret_refs)
+}
+
+fn delete_secret_batch_from_portable_vault_in(
+    context: &PortableVaultContext,
+    secret_refs: &[String],
+) -> Result<bool, String> {
+    let mut accounts = Vec::with_capacity(secret_refs.len());
+    let mut unique = HashSet::new();
+    for secret_ref in secret_refs {
+        let account = portable_vault_account(secret_ref)?.as_bytes().to_vec();
+        if !unique.insert(account.clone()) {
+            return Err(format!(
+                "portable vault 批量删除包含重复 secretRef: {secret_ref}"
+            ));
+        }
+        accounts.push(account);
+    }
+    let mut stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_mut()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    stronghold.ensure_snapshot_current()?;
+    let client = stronghold
+        .get_client(PORTABLE_VAULT_CLIENT)
+        .map_err(|error| format!("portable vault client 不可用: {error}"))?;
+    let store = client.store();
+    let mut old_values = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        match store.delete(&account) {
+            Ok(old_value) => old_values.push((account, old_value)),
+            Err(error) => {
+                restore_portable_vault_values(&store, &old_values);
+                return Err(format!("删除 portable vault secret 失败: {error}"));
+            }
+        }
+    }
+    if let Err(error) = stronghold.save() {
+        restore_portable_vault_values(&store, &old_values);
+        return Err(format!("保存 portable vault snapshot 失败: {error}"));
+    }
+    Ok(stronghold.snapshot_version == PortableVaultSnapshotVersion::UnknownAfterCommit)
+}
+
+fn ensure_portable_vault_ready_for_migration() -> Result<(), String> {
+    let context = portable_vault_context()?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = stronghold
+        .as_ref()
+        .ok_or_else(|| "portable vault 已锁定，请先解锁再迁移凭据".to_string())?;
+    stronghold.ensure_snapshot_current()
+}
+
 fn write_secret_to_store(secret_ref: &str, secret: &str) -> Result<(), String> {
     if secret_ref.trim().starts_with("stronghold:") {
         write_secret_to_portable_vault(secret_ref, secret)
@@ -11643,6 +12680,152 @@ fn delete_secret_from_keyring(secret_ref: &str) -> Result<(), String> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除系统密钥库条目失败: {error}")),
+    }
+}
+
+fn delete_native_migration_secrets(secret_refs: &[String]) -> SecretBatchDeleteOutcome {
+    let results = secret_refs
+        .iter()
+        .map(|secret_ref| (secret_ref.clone(), delete_secret_from_keyring(secret_ref)))
+        .collect();
+    SecretBatchDeleteOutcome {
+        results,
+        portable_vault_requires_reunlock: false,
+    }
+}
+
+fn write_profile_secret_migration_batch(
+    storage: SecretStorage,
+    entries: &[PreparedProfileSecretMigration],
+) -> Result<bool, String> {
+    match storage {
+        SecretStorage::Portable => {
+            let entries = entries
+                .iter()
+                .map(|entry| PortableVaultBatchEntry {
+                    secret_ref: &entry.target_ref,
+                    secret: entry.secret.as_str(),
+                })
+                .collect::<Vec<_>>();
+            write_secret_batch_to_portable_vault(&entries)
+        }
+        SecretStorage::Native => {
+            let mut written = Vec::new();
+            for entry in entries {
+                written.push(entry.target_ref.clone());
+                if let Err(error) =
+                    write_secret_to_keyring(&entry.target_ref, entry.secret.as_str())
+                {
+                    let cleanup = delete_native_migration_secrets(&written);
+                    return Err(migration_error_with_cleanup(error, &cleanup));
+                }
+                let verification = match read_secret_from_keyring(&entry.target_ref) {
+                    Ok(secret) => Zeroizing::new(secret),
+                    Err(error) => {
+                        let cleanup = delete_native_migration_secrets(&written);
+                        return Err(migration_error_with_cleanup(
+                            format!("系统密钥库目标读回验证失败: {error}"),
+                            &cleanup,
+                        ));
+                    }
+                };
+                if verification.as_str() != entry.secret.as_str() {
+                    let cleanup = delete_native_migration_secrets(&written);
+                    return Err(migration_error_with_cleanup(
+                        "系统密钥库目标读回内容不一致",
+                        &cleanup,
+                    ));
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn delete_profile_secret_migration_batch(
+    storage: SecretStorage,
+    secret_refs: &[String],
+) -> SecretBatchDeleteOutcome {
+    match storage {
+        SecretStorage::Native => delete_native_migration_secrets(secret_refs),
+        SecretStorage::Portable => match delete_secret_batch_from_portable_vault(secret_refs) {
+            Ok(requires_reunlock) => SecretBatchDeleteOutcome {
+                results: secret_refs
+                    .iter()
+                    .map(|secret_ref| (secret_ref.clone(), Ok(())))
+                    .collect(),
+                portable_vault_requires_reunlock: requires_reunlock,
+            },
+            Err(error) => SecretBatchDeleteOutcome {
+                results: secret_refs
+                    .iter()
+                    .map(|secret_ref| (secret_ref.clone(), Err(error.clone())))
+                    .collect(),
+                portable_vault_requires_reunlock: false,
+            },
+        },
+    }
+}
+
+fn read_persisted_store_for_migration(path: &Path) -> Result<SessionStore, String> {
+    let raw = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+        let connection = SqliteConnection::open(path).map_err(|error| {
+            format!(
+                "failed to open PortMate SQLite store {}: {error}",
+                path.display()
+            )
+        })?;
+        connection
+            .query_row(
+                "select value from kv where key = ?1",
+                params![STORE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| format!("failed to verify PortMate SQLite store: {error}"))?
+    } else {
+        fs::read_to_string(path).map_err(|error| {
+            format!(
+                "failed to verify PortMate JSON store {}: {error}",
+                path.display()
+            )
+        })?
+    };
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("failed to decode persisted PortMate store: {error}"))
+}
+
+fn persist_profile_secret_migration(
+    path: &Path,
+    next_store: &SessionStore,
+    affected_profile_ids: &[String],
+    target_refs: &[String],
+) -> ProfileSecretStoreCommit {
+    match save_store(path, next_store) {
+        Ok(()) => ProfileSecretStoreCommit::Committed { warning: None },
+        Err(save_error) => match read_persisted_store_for_migration(path) {
+            Ok(persisted)
+                if profile_secret_refs_match(next_store, &persisted, affected_profile_ids) =>
+            {
+                ProfileSecretStoreCommit::Committed {
+                    warning: Some(format!(
+                        "Profile 保存返回错误，但磁盘引用已验证为已提交: {save_error}"
+                    )),
+                }
+            }
+            Ok(persisted)
+                if persisted_store_uses_any_secret_ref(
+                    &persisted,
+                    affected_profile_ids,
+                    target_refs,
+                ) =>
+            {
+                ProfileSecretStoreCommit::Unknown(format!("{save_error}; 磁盘包含部分新目标引用"))
+            }
+            Ok(_) => ProfileSecretStoreCommit::NotCommitted(save_error),
+            Err(verify_error) => ProfileSecretStoreCommit::Unknown(format!(
+                "{save_error}; 无法读取磁盘状态: {verify_error}"
+            )),
+        },
     }
 }
 
@@ -11766,10 +12949,18 @@ fn temporary_trusted_host_key(
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
         _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
     };
+    temporary_trusted_host_key_for_policy(profile_id, &policy, observation)
+}
+
+fn temporary_trusted_host_key_for_policy(
+    profile_id: &str,
+    policy: &portmate_core::HostKeyPolicy,
+    observation: &HostKeyObservation,
+) -> Result<portmate_core::TrustedHostKey, String> {
     Ok(portmate_core::TrustedHostKey {
         id: Uuid::new_v4().to_string(),
         profile_id: Some(profile_id.to_string()),
-        alias: observation.target_alias(&policy).to_string(),
+        alias: observation.target_alias(policy).to_string(),
         host: observation.host.clone(),
         port: observation.port,
         algorithm: observation.algorithm.clone(),
@@ -15692,61 +16883,57 @@ fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
     }
 }
 
-fn load_store(path: &Path) -> SessionStore {
-    if let Some(store) = load_store_sqlite(path) {
-        return normalize_loaded_store(store);
+fn load_store(path: &Path) -> Result<SessionStore, String> {
+    let snapshot_lock = lock_store_snapshot(path)?;
+    let initialize_store = !path.exists();
+    let store = if !initialize_store {
+        normalize_loaded_store(load_store_sqlite(path)?)
+    } else {
+        let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
+        if legacy_path.exists() {
+            load_store_json(&legacy_path)?
+        } else {
+            SessionStore::default()
+        }
+    };
+    if initialize_store {
+        save_store_contents(path, &store)?;
     }
-    let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
-    if legacy_path.exists() {
-        return load_store_json(&legacy_path);
-    }
-    SessionStore::default()
+    let version = store_snapshot_version(path)?;
+    STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(path.to_path_buf(), version);
+    drop(snapshot_lock);
+    Ok(store)
 }
 
-fn load_store_sqlite(path: &Path) -> Option<SessionStore> {
-    let connection = SqliteConnection::open(path).ok()?;
-    ensure_store_schema(&connection).ok()?;
+fn load_store_sqlite(path: &Path) -> Result<SessionStore, String> {
+    let connection = SqliteConnection::open(path).map_err(|error| {
+        format!(
+            "failed to open PortMate SQLite store {}: {error}",
+            path.display()
+        )
+    })?;
+    ensure_store_schema(&connection)?;
     let raw = connection
         .query_row(
             "select value from kv where key = ?1",
             params![STORE_KEY],
             |row| row.get::<_, String>(0),
         )
-        .ok()?;
-    match serde_json::from_str::<SessionStore>(&raw) {
-        Ok(store) => Some(store),
-        Err(error) => {
-            eprintln!(
-                "PortMate: failed to parse SQLite store {}: {error}",
-                path.display()
-            );
-            None
-        }
-    }
+        .map_err(|error| format!("failed to read PortMate SQLite store: {error}"))?;
+    serde_json::from_str::<SessionStore>(&raw)
+        .map_err(|error| format!("failed to parse SQLite store {}: {error}", path.display()))
 }
 
-fn load_store_json(path: &Path) -> SessionStore {
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return SessionStore::default();
-        }
-        Err(error) => {
-            eprintln!("PortMate: failed to read store {}: {error}", path.display());
-            return SessionStore::default();
-        }
-    };
-
-    match serde_json::from_str::<SessionStore>(&raw) {
-        Ok(store) => normalize_loaded_store(store),
-        Err(error) => {
-            eprintln!(
-                "PortMate: failed to parse store {}: {error}",
-                path.display()
-            );
-            SessionStore::default()
-        }
-    }
+fn load_store_json(path: &Path) -> Result<SessionStore, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read store {}: {error}", path.display()))?;
+    serde_json::from_str::<SessionStore>(&raw)
+        .map(normalize_loaded_store)
+        .map_err(|error| format!("failed to parse store {}: {error}", path.display()))
 }
 
 fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
@@ -15877,6 +17064,80 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
 }
 
 fn save_store(path: &Path, store: &SessionStore) -> Result<(), String> {
+    let snapshot_lock = lock_store_snapshot(path)?;
+    let current = store_snapshot_version(path)?;
+    let mut expected = {
+        let mut versions = STORE_SNAPSHOT_VERSIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *versions.entry(path.to_path_buf()).or_insert(current)
+    };
+    let result = save_store_checked_locked(path, store, &mut expected, current);
+    STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(path.to_path_buf(), expected);
+    drop(snapshot_lock);
+    result
+}
+
+#[cfg(test)]
+fn save_store_with_expected_snapshot_version(
+    path: &Path,
+    store: &SessionStore,
+    expected: &mut StoreSnapshotVersion,
+) -> Result<(), String> {
+    let snapshot_lock = lock_store_snapshot(path)?;
+    let current = store_snapshot_version(path)?;
+    let result = save_store_checked_locked(path, store, expected, current);
+    drop(snapshot_lock);
+    result
+}
+
+fn save_store_checked_locked(
+    path: &Path,
+    store: &SessionStore,
+    expected: &mut StoreSnapshotVersion,
+    current: StoreSnapshotVersion,
+) -> Result<(), String> {
+    if *expected == StoreSnapshotVersion::UnknownAfterCommit {
+        return Err("PortMate store 上次提交后无法刷新版本，请重启应用后再保存".to_string());
+    }
+    if *expected != current {
+        return Err(
+            "PortMate store 已被另一实例修改，已拒绝陈旧写入；请重启应用加载最新数据".to_string(),
+        );
+    }
+    if let Err(error) = save_store_contents(path, store) {
+        if store_snapshot_version(path).is_ok_and(|after| after != current) {
+            *expected = StoreSnapshotVersion::UnknownAfterCommit;
+        }
+        return Err(error);
+    }
+    match store_snapshot_version(path) {
+        Ok(StoreSnapshotVersion::Sha256(version)) => {
+            *expected = StoreSnapshotVersion::Sha256(version);
+            Ok(())
+        }
+        Ok(StoreSnapshotVersion::Missing) | Ok(StoreSnapshotVersion::UnknownAfterCommit) => {
+            *expected = StoreSnapshotVersion::UnknownAfterCommit;
+            Err(
+                "PortMate store 写入已完成，但持久化快照无法读回验证；请重启应用后再继续保存"
+                    .to_string(),
+            )
+        }
+        Err(error) => {
+            *expected = StoreSnapshotVersion::UnknownAfterCommit;
+            Err(format!(
+                "PortMate store 写入已完成，但提交后版本验证失败；请重启应用: {error}"
+            ))
+        }
+    }
+}
+
+fn save_store_contents(path: &Path, store: &SessionStore) -> Result<(), String> {
     if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
         save_store_sqlite(path, store)?;
         let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
@@ -15922,6 +17183,13 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
         )
         .map_err(|error| format!("failed to save PortMate SQLite store: {error}"))?;
     save_store_sqlite_tables(&connection, store)?;
+    connection
+        .execute(
+            "insert into metadata (key, value) values ('storeRevision', ?1)
+                on conflict(key) do update set value = excluded.value",
+            params![Uuid::new_v4().to_string()],
+        )
+        .map_err(|error| format!("failed to update PortMate store revision: {error}"))?;
     connection
         .execute_batch("COMMIT;")
         .map_err(|error| format!("failed to commit PortMate SQLite transaction: {error}"))?;
@@ -16567,10 +17835,7 @@ pub fn run() {
                 })
                 .map_err(|_| std::io::Error::other("portable vault initialized twice"))?;
             let store_path = data_dir.join(STORE_FILE_NAME);
-            let store = load_store(&store_path);
-            if let Err(error) = save_store(&store_path, &store) {
-                eprintln!("PortMate: failed to initialize persistent store: {error}");
-            }
+            let store = load_store(&store_path).map_err(std::io::Error::other)?;
             let retention_store_path = store_path.clone();
             let retention_profiles = store.profiles.clone();
             std::thread::spawn(move || {
@@ -16588,6 +17853,8 @@ pub fn run() {
             let state = AppState {
                 app_handle: Some(app.handle().clone()),
                 store: Arc::new(Mutex::new(store)),
+                credential_ops: Arc::new(Mutex::new(())),
+                credential_lock_path: data_dir.join("credentials.lock"),
                 system_event_sink: Arc::new(Mutex::new(None)),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
                 shell: Arc::new(Mutex::new(HashMap::new())),
@@ -16654,6 +17921,8 @@ pub fn run() {
             unlock_portable_vault,
             rotate_portable_vault_password,
             lock_portable_vault,
+            preview_profile_secret_migration,
+            migrate_profile_secrets,
             update_client_identity,
             rotate_client_identity,
             delete_client_identity,
@@ -18022,6 +19291,131 @@ mod tests {
         assert!(loaded.audit.is_empty());
         assert!(loaded.timeline.is_empty());
         assert!(loaded.sysmon.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn store_snapshot_cas_rejects_a_stale_second_instance() {
+        let root = std::env::temp_dir().join(format!("portmate-store-cas-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut initial = SessionStore::default();
+        initial.upsert_profile(test_shell_profile());
+        save_store(&store_path, &initial).unwrap();
+
+        let mut second_instance_version = store_snapshot_version(&store_path).unwrap();
+        let mut first_instance = load_store(&store_path).unwrap();
+        let mut second_instance = first_instance.clone();
+        second_instance.profiles[0].name = "saved by second instance".to_string();
+        save_store_with_expected_snapshot_version(
+            &store_path,
+            &second_instance,
+            &mut second_instance_version,
+        )
+        .unwrap();
+
+        first_instance.profiles[0].name = "stale first instance".to_string();
+        let preflight_error = verify_store_snapshot_is_current(&store_path).unwrap_err();
+        assert!(
+            preflight_error.contains(PROFILE_SECRET_MIGRATION_RESTART_REQUIRED),
+            "{preflight_error}"
+        );
+        let error = save_store(&store_path, &first_instance).unwrap_err();
+        assert!(error.contains("另一实例修改"), "{error}");
+        let persisted = load_store_sqlite(&store_path).unwrap();
+        assert_eq!(persisted.profiles[0].name, "saved by second instance");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn store_snapshot_version_detects_kv_changes_without_revision_changes() {
+        let root = std::env::temp_dir().join(format!("portmate-store-cas-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut initial = SessionStore::default();
+        initial.upsert_profile(test_shell_profile());
+        save_store(&store_path, &initial).unwrap();
+
+        let mut expected = store_snapshot_version(&store_path).unwrap();
+        let mut externally_changed = initial.clone();
+        externally_changed.profiles[0].name = "legacy writer".to_string();
+        let raw = serde_json::to_string_pretty(&externally_changed).unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute(
+                "update kv set value = ?1 where key = ?2",
+                params![raw, STORE_KEY],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_ne!(store_snapshot_version(&store_path).unwrap(), expected);
+        let error = save_store_with_expected_snapshot_version(&store_path, &initial, &mut expected)
+            .unwrap_err();
+        assert!(error.contains("另一实例修改"), "{error}");
+        assert_eq!(
+            load_store_sqlite(&store_path).unwrap().profiles[0].name,
+            "legacy writer"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loading_an_existing_store_does_not_advance_its_revision() {
+        let root = std::env::temp_dir().join(format!("portmate-store-load-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_shell_profile());
+        save_store(&store_path, &store).unwrap();
+        let mut first_instance_version = store_snapshot_version(&store_path).unwrap();
+
+        let second_instance = load_store(&store_path).unwrap();
+        assert_eq!(
+            store_snapshot_version(&store_path).unwrap(),
+            first_instance_version
+        );
+        save_store_with_expected_snapshot_version(
+            &store_path,
+            &second_instance,
+            &mut first_instance_version,
+        )
+        .unwrap();
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loading_corrupt_sqlite_fails_without_replacing_the_snapshot() {
+        let root = std::env::temp_dir().join(format!("portmate-store-load-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_shell_profile());
+        save_store(&store_path, &store).unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute(
+                "update kv set value = ?1 where key = ?2",
+                params!["{not-json", STORE_KEY],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = load_store(&store_path).unwrap_err();
+        assert!(error.contains("failed to parse SQLite store"), "{error}");
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        let persisted: String = connection
+            .query_row(
+                "select value from kv where key = ?1",
+                params![STORE_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, "{not-json");
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23368,6 +24762,582 @@ mod tests {
     }
 
     #[test]
+    fn profile_secret_migration_preserves_sharing_scope_and_reserved_tokens() {
+        let mut first = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut first.connection {
+            ssh.password_secret_ref = Some(" keychain:shared ".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:target-passphrase".to_string());
+            ssh.identity_refs = vec![
+                vault_identity("shared-key", "keychain:shared"),
+                vault_identity("portable-key", "stronghold:already-portable"),
+            ];
+            ssh.jumps = vec![
+                portmate_core::JumpHop {
+                    host: "bastion.example".to_string(),
+                    port: 22,
+                    username: "root".to_string(),
+                    password_secret_ref: Some("keychain:jump-password".to_string()),
+                    passphrase_secret_ref: Some("keychain:jump-passphrase".to_string()),
+                    identity_ref: None,
+                    host_key_policy: None,
+                },
+                portmate_core::JumpHop {
+                    host: "reserved.example".to_string(),
+                    port: 22,
+                    username: "root".to_string(),
+                    password_secret_ref: Some(MCP_HTTP_TOKEN_REF.to_string()),
+                    passphrase_secret_ref: None,
+                    identity_ref: None,
+                    host_key_policy: None,
+                },
+            ];
+        }
+        let mut unselected = test_ssh_profile();
+        unselected.id = "ssh-session-2".to_string();
+        unselected.name = "Unselected SSH".to_string();
+        if let ConnectionConfig::Ssh(ssh) = &mut unselected.connection {
+            ssh.password_secret_ref = Some("shared".to_string());
+        }
+        let mut tmux = test_ssh_profile();
+        tmux.id = "tmux-session-1".to_string();
+        tmux.name = "Selected Tmux".to_string();
+        tmux.kind = SessionKind::Tmux;
+        let mut tmux_ssh = match tmux.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        tmux_ssh.password_secret_ref = Some("keychain:tmux-password".to_string());
+        tmux.connection = ConnectionConfig::Tmux(tmux_ssh);
+
+        let mut store = SessionStore::default();
+        store.upsert_profile(first);
+        store.upsert_profile(unselected.clone());
+        store.upsert_profile(tmux);
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec!["ssh-session-1".to_string(), "tmux-session-1".to_string()],
+            cleanup_source: true,
+        };
+        let plan = build_profile_secret_migration_plan(&store, &request).unwrap();
+        assert_eq!(plan.preview.selected_profile_count, 2);
+        assert_eq!(plan.preview.affected_profile_count, 2);
+        assert_eq!(plan.preview.eligible_reference_count, 6);
+        assert_eq!(plan.preview.eligible_secret_count, 5);
+        assert_eq!(plan.preview.retained_shared_secret_count, 1);
+        assert_eq!(plan.preview.already_target_reference_count, 1);
+        assert_eq!(plan.preview.excluded_reserved_reference_count, 1);
+        let plan_token = profile_secret_migration_plan_token(&plan, &request);
+        assert_eq!(plan_token.len(), 64);
+        let mut changed_store = store.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut changed_store.profiles[0].connection {
+            ssh.password_secret_ref = Some("keychain:changed".to_string());
+        }
+        let changed_plan = build_profile_secret_migration_plan(&changed_store, &request).unwrap();
+        assert_ne!(
+            profile_secret_migration_plan_token(&changed_plan, &request),
+            plan_token
+        );
+        let mut unrelated_store = store.clone();
+        unrelated_store.profiles[0].name = "renamed only".to_string();
+        let unrelated_plan =
+            build_profile_secret_migration_plan(&unrelated_store, &request).unwrap();
+        assert_eq!(
+            profile_secret_migration_plan_token(&unrelated_plan, &request),
+            plan_token
+        );
+
+        let source_values = HashMap::from([
+            ("keychain:shared".to_string(), "secret-shared".to_string()),
+            (
+                "keychain:target-passphrase".to_string(),
+                "secret-target-passphrase".to_string(),
+            ),
+            (
+                "keychain:jump-password".to_string(),
+                "secret-jump-password".to_string(),
+            ),
+            (
+                "keychain:jump-passphrase".to_string(),
+                "secret-jump-passphrase".to_string(),
+            ),
+            (
+                "keychain:tmux-password".to_string(),
+                "secret-tmux-password".to_string(),
+            ),
+        ]);
+        let written = std::rc::Rc::new(std::cell::RefCell::new(HashMap::new()));
+        let deleted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let persisted = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let source_values_for_write = source_values.clone();
+        let response = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |secret_ref| {
+                source_values
+                    .get(secret_ref)
+                    .cloned()
+                    .ok_or_else(|| format!("missing test secret: {secret_ref}"))
+            },
+            {
+                let written = std::rc::Rc::clone(&written);
+                move |storage, entries| {
+                    assert_eq!(storage, SecretStorage::Portable);
+                    let mut written = written.borrow_mut();
+                    for entry in entries {
+                        assert_eq!(
+                            entry.secret.as_str(),
+                            source_values_for_write[&entry.source_ref]
+                        );
+                        written.insert(entry.target_ref.clone(), entry.secret.to_string());
+                    }
+                    Ok(false)
+                }
+            },
+            {
+                let deleted = std::rc::Rc::clone(&deleted);
+                move |storage, secret_refs| {
+                    assert_eq!(storage, SecretStorage::Native);
+                    deleted.borrow_mut().extend(secret_refs.iter().cloned());
+                    SecretBatchDeleteOutcome {
+                        results: secret_refs
+                            .iter()
+                            .map(|secret_ref| (secret_ref.clone(), Ok(())))
+                            .collect(),
+                        portable_vault_requires_reunlock: false,
+                    }
+                }
+            },
+            {
+                let persisted = std::rc::Rc::clone(&persisted);
+                move |next_store, _, _| {
+                    *persisted.borrow_mut() = Some(next_store.clone());
+                    ProfileSecretStoreCommit::Committed { warning: None }
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.selected_profile_count, 2);
+        assert_eq!(response.migrated_profile_count, 2);
+        assert_eq!(response.migrated_reference_count, 6);
+        assert_eq!(response.migrated_secret_count, 5);
+        assert_eq!(response.summaries.len(), 2);
+        assert_eq!(written.borrow().len(), 5);
+        assert_eq!(deleted.borrow().len(), 4);
+        assert!(!deleted.borrow().contains(&"keychain:shared".to_string()));
+        assert!(persisted.borrow().is_some());
+
+        let migrated = store.profile("ssh-session-1").unwrap();
+        let migrated_ssh = ssh_connection(&migrated).unwrap();
+        let shared_target = migrated_ssh.password_secret_ref.as_deref().unwrap();
+        assert!(shared_target.starts_with("stronghold:"));
+        assert_eq!(
+            migrated_ssh.identity_refs[0].secret_ref.as_deref(),
+            Some(shared_target)
+        );
+        assert_eq!(
+            migrated_ssh.identity_refs[1].secret_ref.as_deref(),
+            Some("stronghold:already-portable")
+        );
+        assert_eq!(
+            migrated_ssh.jumps[1].password_secret_ref.as_deref(),
+            Some(MCP_HTTP_TOKEN_REF)
+        );
+        assert_eq!(store.profile("ssh-session-2").unwrap(), unselected);
+        let shared_item = response
+            .items
+            .iter()
+            .find(|item| item.source_ref == "keychain:shared")
+            .unwrap();
+        assert_eq!(shared_item.reference_count, 2);
+        assert_eq!(shared_item.remaining_source_references, 1);
+        assert_eq!(
+            shared_item.cleanup_status,
+            ProfileSecretCleanupStatus::RetainedShared
+        );
+        let encoded = serde_json::to_string(&response).unwrap();
+        for secret in source_values.values() {
+            assert!(!encoded.contains(secret));
+        }
+    }
+
+    #[test]
+    fn profile_secret_migration_rolls_back_targets_when_store_did_not_commit() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("keychain:old".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile.clone());
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec![profile.id.clone()],
+            cleanup_source: true,
+        };
+        let deleted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let error = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |_| Ok("private value".to_string()),
+            |_, _| Ok(false),
+            {
+                let deleted = std::rc::Rc::clone(&deleted);
+                move |storage, refs| {
+                    assert_eq!(storage, SecretStorage::Portable);
+                    deleted.borrow_mut().extend(refs.iter().cloned());
+                    SecretBatchDeleteOutcome {
+                        results: refs
+                            .iter()
+                            .map(|secret_ref| (secret_ref.clone(), Ok(())))
+                            .collect(),
+                        portable_vault_requires_reunlock: false,
+                    }
+                }
+            },
+            |_, _, _| ProfileSecretStoreCommit::NotCommitted("disk full".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("disk full"));
+        assert_eq!(deleted.borrow().len(), 1);
+        assert!(deleted.borrow()[0].starts_with("stronghold:"));
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+        assert!(!deleted.borrow().contains(&"keychain:old".to_string()));
+    }
+
+    #[test]
+    fn profile_secret_migration_keeps_both_sides_when_store_commit_is_unknown() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("keychain:old".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile.clone());
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec![profile.id.clone()],
+            cleanup_source: true,
+        };
+        let delete_called = std::cell::Cell::new(false);
+        let error = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |_| Ok("private value".to_string()),
+            |_, _| Ok(false),
+            |_, _| {
+                delete_called.set(true);
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_, _, _| ProfileSecretStoreCommit::Unknown("commit state unavailable".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("无法确认"));
+        assert!(!delete_called.get());
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+    }
+
+    #[test]
+    fn profile_secret_migration_preflights_all_reads_before_writing() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("keychain:a".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:b".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile.clone());
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec![profile.id.clone()],
+            cleanup_source: true,
+        };
+        let write_called = std::cell::Cell::new(false);
+        let error = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |secret_ref| {
+                if secret_ref == "keychain:b" {
+                    Err("unavailable".to_string())
+                } else {
+                    Ok("first value".to_string())
+                }
+            },
+            |_, _| {
+                write_called.set(true);
+                Ok(false)
+            },
+            |_, _| SecretBatchDeleteOutcome {
+                results: BTreeMap::new(),
+                portable_vault_requires_reunlock: false,
+            },
+            |_, _, _| ProfileSecretStoreCommit::Committed { warning: None },
+        )
+        .unwrap_err();
+        assert!(error.contains("尚未写入任何目标"));
+        assert!(!write_called.get());
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+    }
+
+    #[test]
+    fn profile_secret_migration_reports_post_commit_cleanup_failure() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("stronghold:old".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Native,
+            profile_ids: vec!["ssh-session-1".to_string()],
+            cleanup_source: true,
+        };
+        let response = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |_| Ok("private value".to_string()),
+            |storage, _| {
+                assert_eq!(storage, SecretStorage::Native);
+                Ok(false)
+            },
+            |storage, refs| {
+                assert_eq!(storage, SecretStorage::Portable);
+                SecretBatchDeleteOutcome {
+                    results: refs
+                        .iter()
+                        .map(|secret_ref| {
+                            (secret_ref.clone(), Err("snapshot read-only".to_string()))
+                        })
+                        .collect(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_, _, _| ProfileSecretStoreCommit::Committed { warning: None },
+        )
+        .unwrap();
+        assert_eq!(response.migrated_secret_count, 1);
+        assert_eq!(
+            response.items[0].cleanup_status,
+            ProfileSecretCleanupStatus::Failed
+        );
+        assert!(response.warnings[0].contains("snapshot read-only"));
+        assert!(ssh_connection(&store.profile("ssh-session-1").unwrap())
+            .unwrap()
+            .password_secret_ref
+            .as_deref()
+            .is_some_and(|secret_ref| secret_ref.starts_with("keychain:")));
+    }
+
+    #[test]
+    fn profile_secret_migration_is_idempotent_and_requires_explicit_ssh_scope() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("stronghold:already-portable".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile.clone());
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec![profile.id.clone(), profile.id.clone()],
+            cleanup_source: true,
+        };
+        let response = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |_| panic!("idempotent migration must not read secrets"),
+            |_, _| panic!("idempotent migration must not write secrets"),
+            |_, _| panic!("idempotent migration must not delete secrets"),
+            |_, _, _| panic!("idempotent migration must not save the store"),
+        )
+        .unwrap();
+        assert_eq!(response.selected_profile_count, 1);
+        assert_eq!(response.migrated_secret_count, 0);
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+
+        let empty_scope = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: Vec::new(),
+            cleanup_source: true,
+        };
+        assert!(build_profile_secret_migration_plan(&store, &empty_scope)
+            .unwrap_err()
+            .contains("显式选择"));
+        let shell = test_shell_profile();
+        let shell_id = shell.id.clone();
+        store.upsert_profile(shell);
+        let non_ssh_scope = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec![shell_id],
+            cleanup_source: true,
+        };
+        assert!(build_profile_secret_migration_plan(&store, &non_ssh_scope)
+            .unwrap_err()
+            .contains("不是 SSH/Tmux"));
+        assert!(is_reserved_mcp_secret_ref(MCP_HTTP_TOKEN_REF));
+        assert!(is_reserved_mcp_secret_ref("mcp-http-token"));
+        assert!(is_reserved_mcp_secret_ref("keychain:ipc-test-token"));
+        assert!(is_reserved_mcp_secret_ref("ipc-test-token"));
+    }
+
+    #[test]
+    fn stale_profile_credentials_are_rejected_after_migration() {
+        let mut old = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut old.connection {
+            ssh.password_secret_ref = Some("keychain:old".to_string());
+        }
+        let mut current = old.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut current.connection {
+            ssh.password_secret_ref = Some("stronghold:new".to_string());
+        }
+        assert!(
+            validate_expected_profile_credentials(Some(&current), Some(&old))
+                .unwrap_err()
+                .contains("其他操作中更新")
+        );
+        validate_expected_profile_credentials(Some(&current), Some(&current)).unwrap();
+        assert!(validate_expected_profile_credentials(Some(&current), None)
+            .unwrap_err()
+            .contains("expectedProfile"));
+    }
+
+    #[test]
+    fn migration_retains_source_secrets_for_an_in_flight_connection() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("keychain:old".to_string());
+        }
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        store.runtimes[0].status = SessionStatus::Connecting;
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec!["ssh-session-1".to_string()],
+            cleanup_source: true,
+        };
+        let response = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |_| Ok("private value".to_string()),
+            |_, _| Ok(false),
+            |_, refs| {
+                assert!(refs.is_empty(), "in-flight source must not be deleted");
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_, _, _| ProfileSecretStoreCommit::Committed { warning: None },
+        )
+        .unwrap();
+        assert_eq!(
+            response.items[0].cleanup_status,
+            ProfileSecretCleanupStatus::RetainedInUse
+        );
+        assert_eq!(response.items[0].remaining_source_references, 0);
+    }
+
+    #[test]
+    fn portable_vault_batch_write_and_delete_commit_once_and_reopen() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-stronghold-batch-{}", Uuid::new_v4()));
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        let context = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap(),
+            )),
+        };
+        let entries = [
+            PortableVaultBatchEntry {
+                secret_ref: "stronghold:first",
+                secret: "first-private-value",
+            },
+            PortableVaultBatchEntry {
+                secret_ref: "stronghold:second",
+                secret: "second-private-value",
+            },
+        ];
+        assert!(!write_secret_batch_to_portable_vault_in(&context, &entries).unwrap());
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:first").unwrap(),
+            "first-private-value"
+        );
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:second").unwrap(),
+            "second-private-value"
+        );
+        assert!(!delete_secret_batch_from_portable_vault_in(
+            &context,
+            &["stronghold:first".to_string()]
+        )
+        .unwrap());
+        context.stronghold.lock().unwrap().take();
+        let reopened = open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap();
+        *context.stronghold.lock().unwrap() = Some(reopened);
+        assert!(read_secret_from_portable_vault_in(&context, "stronghold:first").is_err());
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:second").unwrap(),
+            "second-private-value"
+        );
+        context.stronghold.lock().unwrap().take();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_vault_batch_commit_failure_restores_all_in_memory_values() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-stronghold-batch-fail-{}", Uuid::new_v4()));
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        let context = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap(),
+            )),
+        };
+        write_secret_to_portable_vault_in(&context, "stronghold:existing", "preserved").unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"block snapshot commit").unwrap();
+        {
+            let mut stronghold = context.stronghold.lock().unwrap();
+            stronghold.as_mut().unwrap().path =
+                SnapshotPath::from_path(blocked_parent.join("vault.hold"));
+        }
+        let entries = [
+            PortableVaultBatchEntry {
+                secret_ref: "stronghold:first-new",
+                secret: "first-private-value",
+            },
+            PortableVaultBatchEntry {
+                secret_ref: "stronghold:second-new",
+                secret: "second-private-value",
+            },
+        ];
+        assert!(write_secret_batch_to_portable_vault_in(&context, &entries)
+            .unwrap_err()
+            .contains("保存 portable vault"));
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:existing").unwrap(),
+            "preserved"
+        );
+        assert!(read_secret_from_portable_vault_in(&context, "stronghold:first-new").is_err());
+        assert!(read_secret_from_portable_vault_in(&context, "stronghold:second-new").is_err());
+        context.stronghold.lock().unwrap().take();
+        let reopened = open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap();
+        *context.stronghold.lock().unwrap() = Some(reopened);
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:existing").unwrap(),
+            "preserved"
+        );
+        assert!(read_secret_from_portable_vault_in(&context, "stronghold:first-new").is_err());
+        context.stronghold.lock().unwrap().take();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn portable_stronghold_vault_encrypts_and_reopens_records() {
         let root = std::env::temp_dir().join(format!("portmate-stronghold-{}", Uuid::new_v4()));
         let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
@@ -23592,6 +25562,8 @@ mod tests {
         AppState {
             app_handle: None,
             store: Arc::new(Mutex::new(store)),
+            credential_ops: Arc::new(Mutex::new(())),
+            credential_lock_path: store_path.with_file_name("test-credentials.lock"),
             system_event_sink: Arc::new(Mutex::new(None)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
             shell: Arc::new(Mutex::new(HashMap::new())),

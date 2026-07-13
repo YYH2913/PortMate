@@ -3291,6 +3291,181 @@ fieldset label {
   opacity: 0.55;
 }
 
+.portable-vault-migration {
+  padding: 0 0 7px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.portable-vault-migration summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+}
+
+.portable-vault-migration summary::-webkit-details-marker {
+  display: none;
+}
+
+.portable-vault-migration[open] summary {
+  color: var(--text);
+}
+
+.portable-vault-migration-config {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.portable-vault-migration-direction {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 1px;
+  background: var(--line);
+}
+
+.portable-vault-migration-direction button,
+.portable-vault-migration-preview-button,
+.portable-vault-migration-preview > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.portable-vault-migration-direction button[aria-pressed="true"] {
+  background: var(--panel-3);
+  color: var(--cyan);
+}
+
+.portable-vault-migration-config > label:not(.portable-vault-migration-cleanup) {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.portable-vault-migration-config select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.portable-vault-migration-cleanup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.portable-vault-migration-cleanup input {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.portable-vault-migration-preview-button {
+  align-self: end;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.portable-vault-migration button:disabled,
+.portable-vault-migration select:disabled,
+.portable-vault-migration input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.portable-vault-migration-preview,
+.portable-vault-migration-result,
+.portable-vault-migration-error {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.portable-vault-migration-preview dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 6px;
+  background: var(--line-soft);
+}
+
+.portable-vault-migration-preview dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px 6px;
+  background: var(--control);
+}
+
+.portable-vault-migration-preview dt {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-vault-migration-preview dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.portable-vault-migration-preview p,
+.portable-vault-migration-result p {
+  margin: 4px 0 0;
+  color: var(--amber);
+}
+
+.portable-vault-migration-preview > button {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  color: var(--cyan);
+}
+
+.portable-vault-migration-result {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+}
+
+.portable-vault-migration-result strong {
+  color: var(--cyan);
+  font-size: 11px;
+}
+
+.portable-vault-migration-error {
+  color: var(--red);
+}
+
 .key-import-panel textarea {
   min-height: 112px;
   resize: vertical;
@@ -3894,6 +4069,15 @@ fieldset label {
 
   .portable-vault-rotation-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .portable-vault-migration-config,
+  .portable-vault-migration-direction {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .portable-vault-migration-preview dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .client-key-secret-ref {
