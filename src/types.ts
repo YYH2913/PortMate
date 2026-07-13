@@ -61,10 +61,20 @@ export interface HostKeyPolicy {
   checkIp: boolean;
 }
 
+export type ProxyKind = "http-connect" | "socks5";
+
+export interface ProxyConfig {
+  enabled: boolean;
+  kind: ProxyKind;
+  host: string;
+  port: number;
+}
+
 export interface SshConnection {
   endpoint: { host: string; port: number };
   username: string;
   reconnect: boolean;
+  proxy: ProxyConfig;
   passwordSecretRef?: string | null;
   passphraseSecretRef?: string | null;
   hostKeyPolicy: HostKeyPolicy;
@@ -117,6 +127,7 @@ export interface TcpConnection {
   host: string;
   port: number;
   reconnect: boolean;
+  proxy: ProxyConfig;
   reconnectDelayMs: number;
   keepaliveEnabled: boolean;
   keepaliveIdleSeconds: number;

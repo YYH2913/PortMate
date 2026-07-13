@@ -40,6 +40,7 @@ import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySe
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
+import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
@@ -49,7 +50,7 @@ import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspace
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 
@@ -6206,28 +6207,7 @@ function SshAdvancedFields({
   }
 
   if (section === "代理") {
-    return (
-      <>
-        <DialogField label="启用:(E)">
-          <select value={prefs.sshProxyEnabled ? "on" : "off"} onChange={(event) => updatePref("sshProxyEnabled", event.target.value === "on")}>
-            <option value="off">关闭</option>
-            <option value="on">开启</option>
-          </select>
-        </DialogField>
-        <DialogField label="类型:(T)">
-          <select value={prefs.sshProxyType} onChange={(event) => updatePref("sshProxyType", event.target.value)}>
-            <option>SOCKS5</option>
-            <option>HTTP</option>
-          </select>
-        </DialogField>
-        <DialogField label="主机:(H)">
-          <input value={prefs.sshProxyHost} onChange={(event) => updatePref("sshProxyHost", event.target.value)} />
-        </DialogField>
-        <DialogField label="端口:(P)">
-          <input value={prefs.sshProxyPort} onChange={(event) => updatePref("sshProxyPort", event.target.value)} />
-        </DialogField>
-      </>
-    );
+    return <ProxyAdvancedFields proxy={ssh.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, proxy } })} />;
   }
 
   if (section === "验证") {
@@ -6531,6 +6511,31 @@ function SshAdvancedFields({
   );
 }
 
+function ProxyAdvancedFields({ proxy, onChange }: { proxy: ProxyConfig; onChange: (proxy: ProxyConfig) => void }) {
+  const update = (patch: Partial<ProxyConfig>) => onChange({ ...proxy, ...patch });
+  return (
+    <>
+      <DialogToggleField label="启用代理:" checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
+      {proxy.enabled ? (
+        <>
+          <DialogField label="协议:">
+            <select value={proxy.kind} onChange={(event) => update({ kind: event.target.value as ProxyConfig["kind"] })}>
+              <option value="socks5">SOCKS5</option>
+              <option value="http-connect">HTTP CONNECT</option>
+            </select>
+          </DialogField>
+          <DialogField label="代理主机:">
+            <input value={proxy.host} onChange={(event) => update({ host: event.target.value })} />
+          </DialogField>
+          <DialogField label="代理端口:">
+            <input type="number" min={1} max={65535} value={proxy.port} onChange={(event) => update({ port: Number(event.target.value) })} />
+          </DialogField>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function TcpLikeAdvancedFields({
   protocol,
   section,
@@ -6613,28 +6618,7 @@ function TcpLikeAdvancedFields({
     );
   }
 
-  return (
-    <>
-      <DialogField label="启用:(E)">
-        <select value={protocol === "Telnet" ? (prefs.telnetProxyEnabled ? "on" : "off") : prefs.tcpProxyEnabled ? "on" : "off"} onChange={(event) => protocol === "Telnet" ? updatePref("telnetProxyEnabled", event.target.value === "on") : updatePref("tcpProxyEnabled", event.target.value === "on")}>
-          <option value="off">关闭</option>
-          <option value="on">开启</option>
-        </select>
-      </DialogField>
-      <DialogField label="类型:(T)">
-        <select value={protocol === "Telnet" ? prefs.telnetProxyType : prefs.tcpProxyType} onChange={(event) => protocol === "Telnet" ? updatePref("telnetProxyType", event.target.value) : updatePref("tcpProxyType", event.target.value)}>
-          <option>SOCKS5</option>
-          <option>HTTP</option>
-        </select>
-      </DialogField>
-      <DialogField label="主机:(H)">
-        <input value={protocol === "Telnet" ? prefs.telnetProxyHost : prefs.tcpProxyHost} onChange={(event) => protocol === "Telnet" ? updatePref("telnetProxyHost", event.target.value) : updatePref("tcpProxyHost", event.target.value)} />
-      </DialogField>
-      <DialogField label="端口:(P)">
-        <input value={protocol === "Telnet" ? prefs.telnetProxyPort : prefs.tcpProxyPort} onChange={(event) => protocol === "Telnet" ? updatePref("telnetProxyPort", event.target.value) : updatePref("tcpProxyPort", event.target.value)} />
-      </DialogField>
-    </>
-  );
+  return <ProxyAdvancedFields proxy={tcp.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...tcp, kind, proxy } })} />;
 }
 
 function SerialAdvancedFields({
@@ -6910,10 +6894,6 @@ function createSessionPrefs() {
     sshSysmon: false,
     sshKeepaliveSeconds: "30",
     sshCompression: false,
-    sshProxyEnabled: false,
-    sshProxyType: "SOCKS5",
-    sshProxyHost: "127.0.0.1",
-    sshProxyPort: "1080",
     sshPasswordMode: "prompt",
     sshKeyboardInteractive: true,
     sshKexAlgorithm: "curve25519-sha256",
@@ -6926,14 +6906,6 @@ function createSessionPrefs() {
     sshX11Display: "localhost:10.0",
     sshX11Trusted: false,
     telnetLocalEcho: false,
-    telnetProxyEnabled: false,
-    telnetProxyType: "SOCKS5",
-    telnetProxyHost: "127.0.0.1",
-    telnetProxyPort: "1080",
-    tcpProxyEnabled: false,
-    tcpProxyType: "SOCKS5",
-    tcpProxyHost: "127.0.0.1",
-    tcpProxyPort: "1080",
     serialNewline: "CRLF",
   };
 }
@@ -6999,6 +6971,7 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
       ...connection,
       host: connection.host.trim(),
       port: Number.isFinite(connection.port) ? Math.min(65535, Math.max(0, Math.trunc(connection.port))) : 0,
+      proxy: normalizeProxyConfig(connection.proxy),
     });
   }
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {
@@ -7007,6 +6980,7 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
   const alias = connection.hostKeyPolicy.alias?.trim();
   return {
     ...connection,
+    proxy: normalizeProxyConfig(connection.proxy),
     jumps: connection.jumps
       .map((jump) => ({
         host: jump.host.trim(),
@@ -7383,6 +7357,7 @@ function createTcpConnection(kind: "telnet" | "tcp"): Extract<ConnectionConfig, 
     host: "",
     port: kind === "telnet" ? 23 : 0,
     reconnect: true,
+    proxy: { ...proxyDefaults },
     ...tcpConnectionDefaults,
   };
 }
@@ -7393,6 +7368,7 @@ function createSshConnection(): Extract<ConnectionConfig, { kind: "ssh" | "tmux"
     endpoint: { host: "", port: 22 },
     username: "",
     reconnect: true,
+    proxy: { ...proxyDefaults },
     passwordSecretRef: null,
     passphraseSecretRef: null,
     hostKeyPolicy: {

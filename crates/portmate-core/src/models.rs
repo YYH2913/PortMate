@@ -235,6 +235,52 @@ pub enum TunnelMode {
     Dynamic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProxyKind {
+    HttpConnect,
+    #[default]
+    Socks5,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub kind: ProxyKind,
+    #[serde(default = "default_proxy_host")]
+    pub host: String,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+}
+
+fn default_proxy_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+const fn default_proxy_port() -> u16 {
+    1080
+}
+
+impl ProxyConfig {
+    pub fn normalize(&mut self) {
+        self.host = self.host.trim().to_string();
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: ProxyKind::Socks5,
+            host: default_proxy_host(),
+            port: default_proxy_port(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshConnection {
@@ -242,6 +288,8 @@ pub struct SshConnection {
     pub username: String,
     #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     #[serde(default)]
     pub password_secret_ref: Option<String>,
     #[serde(default)]
@@ -288,6 +336,8 @@ pub struct TcpConnection {
     pub port: u16,
     #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     #[serde(default = "default_tcp_reconnect_delay_ms")]
     pub reconnect_delay_ms: u64,
     #[serde(default = "default_true")]
@@ -354,6 +404,7 @@ impl Default for TcpConnection {
             host: String::new(),
             port: 0,
             reconnect: true,
+            proxy: ProxyConfig::default(),
             reconnect_delay_ms: DEFAULT_TCP_RECONNECT_DELAY_MS,
             keepalive_enabled: true,
             keepalive_idle_seconds: DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS,
@@ -725,6 +776,10 @@ mod tests {
         )
         .expect("legacy TCP connection should deserialize");
         assert_eq!(legacy.reconnect_delay_ms, DEFAULT_TCP_RECONNECT_DELAY_MS);
+        assert!(!legacy.proxy.enabled);
+        assert_eq!(legacy.proxy.kind, ProxyKind::Socks5);
+        assert_eq!(legacy.proxy.host, "127.0.0.1");
+        assert_eq!(legacy.proxy.port, 1080);
         assert!(legacy.keepalive_enabled);
         assert_eq!(
             legacy.keepalive_idle_seconds,

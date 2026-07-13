@@ -7,10 +7,10 @@ use portmate_core::{
     compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, resource_templates,
     tool_definitions, AuthMethod, ConnectionConfig, EventDirection, EventStream, HostKeyDecision,
     HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef,
-    IdentitySource, McpGrant, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus,
-    SessionStore, SessionSummary, SshConnection, SysmonSnapshot, TcpConnection, TimelineMark,
-    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
-    TunnelSpec,
+    IdentitySource, McpGrant, McpScope, ProxyConfig, ProxyKind, SessionEvent, SessionKind,
+    SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonSnapshot,
+    TcpConnection, TimelineMark, TransferProtocol, TransferStatus, TransferTask, TriggerAction,
+    TrustedHostKey, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -151,6 +151,7 @@ const MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
 const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
 const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_HTTP_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
@@ -3827,6 +3828,255 @@ async fn handle_ipc_request(
     }
 }
 
+fn proxy_target_authority(host: &str, port: u16) -> Result<String, String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("代理目标主机不能为空".to_string());
+    }
+    if host.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+        return Err("代理目标主机不能包含换行符".to_string());
+    }
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        Ok(format!("[{host}]:{port}"))
+    } else {
+        Ok(format!("{host}:{port}"))
+    }
+}
+
+fn normalized_enabled_proxy(proxy: &ProxyConfig) -> Result<Option<ProxyConfig>, String> {
+    if !proxy.enabled {
+        return Ok(None);
+    }
+    let mut proxy = proxy.clone();
+    proxy.normalize();
+    if proxy.host.is_empty() {
+        return Err("代理主机不能为空".to_string());
+    }
+    if proxy
+        .host
+        .bytes()
+        .any(|byte| byte == b'\r' || byte == b'\n')
+    {
+        return Err("代理主机不能包含换行符".to_string());
+    }
+    if proxy.port == 0 {
+        return Err("代理端口必须在 1-65535 之间".to_string());
+    }
+    Ok(Some(proxy))
+}
+
+async fn connect_target_stream(
+    target_host: &str,
+    target_port: u16,
+    proxy: &ProxyConfig,
+    label: &str,
+) -> Result<TcpStream, String> {
+    let authority = proxy_target_authority(target_host, target_port)?;
+    let Some(proxy) = normalized_enabled_proxy(proxy)? else {
+        return TcpStream::connect((target_host, target_port))
+            .await
+            .map_err(|error| format!("{label} 连接失败 {authority}: {error}"));
+    };
+    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
+        .await
+        .map_err(|error| {
+            format!(
+                "{label} 代理连接失败 {}:{}: {error}",
+                proxy.host, proxy.port
+            )
+        })?;
+    match proxy.kind {
+        ProxyKind::HttpConnect => {
+            perform_http_connect(&mut stream, &authority, label).await?;
+        }
+        ProxyKind::Socks5 => {
+            perform_socks5_connect(&mut stream, target_host.trim(), target_port, label).await?;
+        }
+    }
+    Ok(stream)
+}
+
+async fn perform_http_connect(
+    stream: &mut TcpStream,
+    authority: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request = format!(
+        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|error| format!("{label} HTTP CONNECT 请求失败: {error}"))?;
+
+    let mut response = Vec::with_capacity(256);
+    let mut byte = [0_u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        if response.len() >= MAX_HTTP_CONNECT_RESPONSE_BYTES {
+            return Err(format!(
+                "{label} HTTP CONNECT 响应头超过 {} bytes",
+                MAX_HTTP_CONNECT_RESPONSE_BYTES
+            ));
+        }
+        stream
+            .read_exact(&mut byte)
+            .await
+            .map_err(|error| format!("{label} HTTP CONNECT 响应读取失败: {error}"))?;
+        response.push(byte[0]);
+    }
+    let response = std::str::from_utf8(&response)
+        .map_err(|_| format!("{label} HTTP CONNECT 响应不是有效 ASCII/UTF-8"))?;
+    let status_line = response
+        .split("\r\n")
+        .next()
+        .ok_or_else(|| format!("{label} HTTP CONNECT 响应缺少状态行"))?;
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next().unwrap_or_default();
+    let status = parts
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| format!("{label} HTTP CONNECT 状态行无效: {status_line}"))?;
+    if !version.starts_with("HTTP/") {
+        return Err(format!("{label} HTTP CONNECT 状态行无效: {status_line}"));
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("{label} HTTP CONNECT 被代理拒绝: {status_line}"));
+    }
+    Ok(())
+}
+
+async fn perform_socks5_connect(
+    stream: &mut TcpStream,
+    target_host: &str,
+    target_port: u16,
+    label: &str,
+) -> Result<(), String> {
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .map_err(|error| format!("{label} SOCKS5 协商请求失败: {error}"))?;
+    let mut greeting = [0_u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|error| format!("{label} SOCKS5 协商响应失败: {error}"))?;
+    if greeting[0] != 0x05 {
+        return Err(format!("{label} SOCKS5 代理返回未知版本: {}", greeting[0]));
+    }
+    if greeting[1] != 0x00 {
+        return Err(format!(
+            "{label} SOCKS5 代理不接受无认证方式: 0x{:02x}",
+            greeting[1]
+        ));
+    }
+
+    let host = target_host.as_bytes();
+    if host.is_empty() || host.len() > u8::MAX as usize {
+        return Err(format!("{label} SOCKS5 目标主机长度必须为 1-255 bytes"));
+    }
+    let mut request = Vec::with_capacity(host.len() + 7);
+    request.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, host.len() as u8]);
+    request.extend_from_slice(host);
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|error| format!("{label} SOCKS5 CONNECT 请求失败: {error}"))?;
+
+    let mut header = [0_u8; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|error| format!("{label} SOCKS5 CONNECT 响应失败: {error}"))?;
+    if header[0] != 0x05 {
+        return Err(format!(
+            "{label} SOCKS5 CONNECT 返回未知版本: {}",
+            header[0]
+        ));
+    }
+    if header[1] != 0x00 {
+        return Err(format!(
+            "{label} SOCKS5 CONNECT 被拒绝: {} (0x{:02x})",
+            socks5_reply_label(header[1]),
+            header[1]
+        ));
+    }
+    let address_len = match header[3] {
+        0x01 => 4,
+        0x03 => {
+            let mut len = [0_u8; 1];
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|error| format!("{label} SOCKS5 响应域名长度读取失败: {error}"))?;
+            usize::from(len[0])
+        }
+        0x04 => 16,
+        other => {
+            return Err(format!(
+                "{label} SOCKS5 CONNECT 返回未知地址类型: 0x{other:02x}"
+            ));
+        }
+    };
+    let mut bound_address_and_port = vec![0_u8; address_len + 2];
+    stream
+        .read_exact(&mut bound_address_and_port)
+        .await
+        .map_err(|error| format!("{label} SOCKS5 CONNECT 地址读取失败: {error}"))?;
+    Ok(())
+}
+
+fn socks5_reply_label(reply: u8) -> &'static str {
+    match reply {
+        0x01 => "general failure",
+        0x02 => "connection not allowed",
+        0x03 => "network unreachable",
+        0x04 => "host unreachable",
+        0x05 => "connection refused",
+        0x06 => "TTL expired",
+        0x07 => "command not supported",
+        0x08 => "address type not supported",
+        _ => "unknown failure",
+    }
+}
+
+#[derive(Debug)]
+enum SshTransportConnectError {
+    Timeout,
+    Transport(String),
+    Handshake(String),
+}
+
+async fn connect_ssh_transport<H>(
+    config: Arc<client::Config>,
+    target_host: &str,
+    target_port: u16,
+    proxy: &ProxyConfig,
+    handler: H,
+    timeout: Duration,
+    label: &str,
+) -> Result<client::Handle<H>, SshTransportConnectError>
+where
+    H: client::Handler + Send + 'static,
+    H::Error: std::fmt::Display,
+{
+    tokio::time::timeout(timeout, async {
+        let stream = connect_target_stream(target_host, target_port, proxy, label)
+            .await
+            .map_err(SshTransportConnectError::Transport)?;
+        if config.nodelay {
+            stream
+                .set_nodelay(true)
+                .map_err(|error| SshTransportConnectError::Transport(error.to_string()))?;
+        }
+        client::connect_stream(config, stream, handler)
+            .await
+            .map_err(|error| SshTransportConnectError::Handshake(error.to_string()))
+    })
+    .await
+    .map_err(|_| SshTransportConnectError::Timeout)?
+}
+
 async fn scan_ssh_host_key_inner(
     state: &AppState,
     profile: SessionProfile,
@@ -3880,18 +4130,32 @@ async fn scan_ssh_host_key_inner(
             return Ok(result);
         }
     } else {
-        let session = tokio::time::timeout(
+        let session = connect_ssh_transport(
+            config,
+            &host,
+            ssh.endpoint.port,
+            &ssh.proxy,
+            handler,
             Duration::from_secs(12),
-            client::connect(config, (host.clone(), ssh.endpoint.port), handler),
+            "SSH host key 扫描",
         )
-        .await
-        .map_err(|_| format!("SSH host key 扫描超时: {host}:{}", ssh.endpoint.port))?
-        .map_err(|error| {
-            format!(
-                "SSH host key 扫描失败: {host}:{}: {error}",
-                ssh.endpoint.port
-            )
-        })?;
+        .await;
+        let session = match session {
+            Ok(session) => session,
+            Err(SshTransportConnectError::Timeout) => {
+                return Err(format!(
+                    "SSH host key 扫描超时: {host}:{}",
+                    ssh.endpoint.port
+                ));
+            }
+            Err(SshTransportConnectError::Transport(error)) => return Err(error),
+            Err(SshTransportConnectError::Handshake(error)) => {
+                return Err(format!(
+                    "SSH host key 扫描失败: {host}:{}: {error}",
+                    ssh.endpoint.port
+                ));
+            }
+        };
         let _ = session
             .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
             .await;
@@ -4033,19 +4297,25 @@ async fn scan_ssh_host_key_via_jump(
                 }
             }
         } else {
-            match tokio::time::timeout(
+            match connect_ssh_transport(
+                config.clone(),
+                &jump_host,
+                jump_port,
+                &ssh.proxy,
+                jump_handler,
                 Duration::from_secs(12),
-                client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
+                &jump_label,
             )
             .await
             {
-                Ok(Ok(session)) => session,
-                Err(_) => {
+                Ok(session) => session,
+                Err(SshTransportConnectError::Timeout) => {
                     return Err(format!(
                         "Jump Host host key 扫描连接超时: {jump_host}:{jump_port}"
                     ));
                 }
-                Ok(Err(error)) => {
+                Err(SshTransportConnectError::Transport(error)) => return Err(error),
+                Err(SshTransportConnectError::Handshake(error)) => {
                     if let Some(result) = host_key_scan_result_for_policy(
                         profile,
                         ssh,
@@ -10378,23 +10648,30 @@ async fn connect_ssh_target(
     });
 
     if ssh.jumps.is_empty() {
-        let session = tokio::time::timeout(
+        let session = connect_ssh_transport(
+            config,
+            &target_host,
+            ssh.endpoint.port,
+            &ssh.proxy,
+            target_handler,
             connect_timeout,
-            client::connect(
-                config,
-                (target_host.clone(), ssh.endpoint.port),
-                target_handler,
-            ),
+            "SSH",
         )
-        .await
-        .map_err(|_| format!("SSH 连接超时: {target_host}:{}", ssh.endpoint.port))?
-        .map_err(|error| {
-            host_key_error
-                .lock()
-                .ok()
-                .and_then(|reason| reason.clone())
-                .unwrap_or_else(|| format!("SSH 握手失败: {error}"))
-        })?;
+        .await;
+        let session = match session {
+            Ok(session) => session,
+            Err(SshTransportConnectError::Timeout) => {
+                return Err(format!("SSH 连接超时: {target_host}:{}", ssh.endpoint.port));
+            }
+            Err(SshTransportConnectError::Transport(error)) => return Err(error),
+            Err(SshTransportConnectError::Handshake(error)) => {
+                return Err(host_key_error
+                    .lock()
+                    .ok()
+                    .and_then(|reason| reason.clone())
+                    .unwrap_or_else(|| format!("SSH 握手失败: {error}")));
+            }
+        };
         return Ok((session, Vec::new()));
     }
 
@@ -10462,28 +10739,38 @@ async fn connect_ssh_target(
                 }
             }
         } else {
-            tokio::time::timeout(
+            let jump_transport_label = format!("Jump Host 第 {} 跳", index + 1);
+            match connect_ssh_transport(
+                config.clone(),
+                &jump_host,
+                jump_port,
+                &ssh.proxy,
+                jump_handler,
                 connect_timeout,
-                client::connect(config.clone(), (jump_host.clone(), jump_port), jump_handler),
+                &jump_transport_label,
             )
             .await
-            .map_err(|_| {
-                format!(
-                    "Jump Host 第 {} 跳连接超时: {jump_host}:{jump_port}",
-                    index + 1
-                )
-            })?
-            .map_err(|error| {
-                let reason = jump_key_error
-                    .lock()
-                    .ok()
-                    .and_then(|reason| reason.clone())
-                    .unwrap_or_else(|| error.to_string());
-                format!(
-                    "Jump Host 第 {} 跳 SSH 握手失败 {jump_host}:{jump_port}: {reason}",
-                    index + 1
-                )
-            })?
+            {
+                Ok(session) => session,
+                Err(SshTransportConnectError::Timeout) => {
+                    return Err(format!(
+                        "Jump Host 第 {} 跳连接超时: {jump_host}:{jump_port}",
+                        index + 1
+                    ));
+                }
+                Err(SshTransportConnectError::Transport(error)) => return Err(error),
+                Err(SshTransportConnectError::Handshake(error)) => {
+                    let reason = jump_key_error
+                        .lock()
+                        .ok()
+                        .and_then(|reason| reason.clone())
+                        .unwrap_or(error);
+                    return Err(format!(
+                        "Jump Host 第 {} 跳 SSH 握手失败 {jump_host}:{jump_port}: {reason}",
+                        index + 1
+                    ));
+                }
+            }
         };
 
         if let Err(error) = authenticate_ssh_with_agent_socket(
@@ -10690,6 +10977,7 @@ fn jump_ssh_connection(
         },
         username: jump.username.trim().to_string(),
         reconnect: ssh.reconnect,
+        proxy: ssh.proxy.clone(),
         password_secret_ref: jump
             .password_secret_ref
             .as_ref()
@@ -10904,11 +11192,10 @@ fn latest_tcp_reconnect_profile(
 async fn connect_tcp_socket(tcp: &TcpConnection, label: &str) -> Result<TcpStream, String> {
     let stream = tokio::time::timeout(
         Duration::from_secs(15),
-        TcpStream::connect((tcp.host.as_str(), tcp.port)),
+        connect_target_stream(&tcp.host, tcp.port, &tcp.proxy, label),
     )
     .await
-    .map_err(|_| format!("{label} 连接超时: {}:{}", tcp.host, tcp.port))?
-    .map_err(|error| format!("{label} 连接失败: {}:{}: {error}", tcp.host, tcp.port))?;
+    .map_err(|_| format!("{label} 连接超时: {}:{}", tcp.host, tcp.port))??;
     configure_tcp_socket(&stream, label, tcp)?;
     Ok(stream)
 }
@@ -19377,6 +19664,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
                 ssh.endpoint.port = 22;
             }
             ssh.username = ssh.username.trim().to_string();
+            ssh.proxy.normalize();
             let alias = ssh
                 .host_key_policy
                 .alias
@@ -19430,6 +19718,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         }
         ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => {
             tcp.host = tcp.host.trim().to_string();
+            tcp.proxy.normalize();
             tcp.normalize_health_settings();
         }
         ConnectionConfig::Serial(serial) => {
@@ -21083,6 +21372,122 @@ mod tests {
         (port, counters, task)
     }
 
+    async fn read_test_http_header(stream: &mut TcpStream) -> Vec<u8> {
+        let mut header = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !header.ends_with(b"\r\n\r\n") {
+            assert!(header.len() < MAX_HTTP_CONNECT_RESPONSE_BYTES);
+            stream.read_exact(&mut byte).await.unwrap();
+            header.push(byte[0]);
+        }
+        header
+    }
+
+    fn test_connect_target(header: &[u8]) -> (String, u16) {
+        let header = std::str::from_utf8(header).unwrap();
+        let authority = header
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap();
+        let (host, port) = authority.rsplit_once(':').unwrap();
+        (
+            host.trim_matches(['[', ']']).to_string(),
+            port.parse().unwrap(),
+        )
+    }
+
+    async fn spawn_test_http_connect_proxy(
+        response_status: u16,
+    ) -> (u16, Arc<AtomicU64>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(AtomicU64::new(0));
+        let task_connections = Arc::clone(&connections);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut client, _)) = listener.accept().await else {
+                    return;
+                };
+                let connections = Arc::clone(&task_connections);
+                tokio::spawn(async move {
+                    let header = read_test_http_header(&mut client).await;
+                    connections.fetch_add(1, Ordering::SeqCst);
+                    if response_status != 200 {
+                        client
+                            .write_all(
+                                format!("HTTP/1.1 {response_status} Rejected\r\n\r\n").as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                    let (host, port) = test_connect_target(&header);
+                    let Ok(mut target) = TcpStream::connect((host.as_str(), port)).await else {
+                        let _ = client
+                            .write_all(b"HTTP/1.1 502 Target Unavailable\r\n\r\n")
+                            .await;
+                        return;
+                    };
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
+                });
+            }
+        });
+        (port, connections, task)
+    }
+
+    async fn spawn_test_socks5_proxy(
+        reply: u8,
+    ) -> (u16, Arc<AtomicU64>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(AtomicU64::new(0));
+        let task_connections = Arc::clone(&connections);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut client, _)) = listener.accept().await else {
+                    return;
+                };
+                let connections = Arc::clone(&task_connections);
+                tokio::spawn(async move {
+                    let mut greeting = [0_u8; 3];
+                    client.read_exact(&mut greeting).await.unwrap();
+                    assert_eq!(greeting, [0x05, 0x01, 0x00]);
+                    client.write_all(&[0x05, 0x00]).await.unwrap();
+
+                    let mut request_header = [0_u8; 5];
+                    client.read_exact(&mut request_header).await.unwrap();
+                    assert_eq!(&request_header[..4], &[0x05, 0x01, 0x00, 0x03]);
+                    let mut host = vec![0_u8; usize::from(request_header[4])];
+                    client.read_exact(&mut host).await.unwrap();
+                    let mut port_bytes = [0_u8; 2];
+                    client.read_exact(&mut port_bytes).await.unwrap();
+                    connections.fetch_add(1, Ordering::SeqCst);
+                    if reply != 0 {
+                        client
+                            .write_all(&[0x05, reply, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                    let host = String::from_utf8(host).unwrap();
+                    let port = u16::from_be_bytes(port_bytes);
+                    let mut target = TcpStream::connect((host.as_str(), port)).await.unwrap();
+                    client
+                        .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
+                });
+            }
+        });
+        (port, connections, task)
+    }
+
     #[cfg(unix)]
     async fn wait_for_openssh_test_server(server: &mut ChildGuard, port: u16, label: &str) {
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -21754,6 +22159,8 @@ mod tests {
                 let _ = drop_replacement_rx.await;
                 drop(socket);
             });
+            let (proxy_port, proxy_connections, proxy_task) =
+                spawn_test_http_connect_proxy(200).await;
 
             let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
                 host: "127.0.0.1".to_string(),
@@ -21793,6 +22200,12 @@ mod tests {
                     port: replacement_address.port(),
                     reconnect: true,
                     reconnect_delay_ms: 100,
+                    proxy: ProxyConfig {
+                        enabled: true,
+                        kind: ProxyKind::HttpConnect,
+                        host: "127.0.0.1".to_string(),
+                        port: proxy_port,
+                    },
                     ..Default::default()
                 });
                 store.upsert_profile(updated);
@@ -21869,6 +22282,9 @@ mod tests {
             assert!(screen.contains("reconnecting in 5000ms"));
             assert!(screen.contains("socket reconnected"));
             assert!(screen.contains("reconnect stopped"));
+            assert!(proxy_connections.load(Ordering::SeqCst) >= 1);
+            proxy_task.abort();
+            let _ = proxy_task.await;
             let _ = fs::remove_dir_all(root);
         });
     }
@@ -22849,6 +23265,134 @@ mod tests {
     }
 
     #[test]
+    fn tcp_proxy_transports_forward_and_report_rejections() {
+        tauri::async_runtime::block_on(async {
+            let target = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let target_port = target.local_addr().unwrap().port();
+            let target_task = tokio::spawn(async move {
+                for payload in [
+                    b"http-ok".as_slice(),
+                    b"socks-ok".as_slice(),
+                    b"direct-ok".as_slice(),
+                ] {
+                    let (mut socket, _) = target.accept().await.unwrap();
+                    socket.write_all(payload).await.unwrap();
+                }
+            });
+
+            let (http_port, http_connections, http_task) = spawn_test_http_connect_proxy(200).await;
+            let http = TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: target_port,
+                proxy: ProxyConfig {
+                    enabled: true,
+                    kind: ProxyKind::HttpConnect,
+                    host: "127.0.0.1".to_string(),
+                    port: http_port,
+                },
+                ..Default::default()
+            };
+            let mut stream = connect_tcp_socket(&http, "TCP").await.unwrap();
+            let mut payload = [0_u8; 7];
+            stream.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&payload, b"http-ok");
+            drop(stream);
+
+            let (socks_port, socks_connections, socks_task) = spawn_test_socks5_proxy(0).await;
+            let socks = TcpConnection {
+                proxy: ProxyConfig {
+                    enabled: true,
+                    kind: ProxyKind::Socks5,
+                    host: "127.0.0.1".to_string(),
+                    port: socks_port,
+                },
+                ..http.clone()
+            };
+            let mut stream = connect_tcp_socket(&socks, "Telnet").await.unwrap();
+            let mut payload = [0_u8; 8];
+            stream.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&payload, b"socks-ok");
+            drop(stream);
+
+            let disabled = TcpConnection {
+                proxy: ProxyConfig {
+                    enabled: false,
+                    host: "invalid\r\nproxy".to_string(),
+                    port: 0,
+                    ..socks.proxy.clone()
+                },
+                ..socks.clone()
+            };
+            let mut stream = connect_tcp_socket(&disabled, "TCP").await.unwrap();
+            let mut payload = [0_u8; 9];
+            stream.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&payload, b"direct-ok");
+            drop(stream);
+            target_task.await.unwrap();
+            assert_eq!(http_connections.load(Ordering::SeqCst), 1);
+            assert_eq!(socks_connections.load(Ordering::SeqCst), 1);
+
+            let (rejected_http_port, _, rejected_http_task) =
+                spawn_test_http_connect_proxy(407).await;
+            let rejected_http = TcpConnection {
+                proxy: ProxyConfig {
+                    port: rejected_http_port,
+                    ..http.proxy.clone()
+                },
+                ..http.clone()
+            };
+            let error = connect_tcp_socket(&rejected_http, "TCP").await.unwrap_err();
+            assert!(error.contains("407 Rejected"), "{error}");
+
+            let (rejected_socks_port, _, rejected_socks_task) = spawn_test_socks5_proxy(0x05).await;
+            let rejected_socks = TcpConnection {
+                proxy: ProxyConfig {
+                    enabled: true,
+                    kind: ProxyKind::Socks5,
+                    host: "127.0.0.1".to_string(),
+                    port: rejected_socks_port,
+                },
+                ..http
+            };
+            let error = connect_tcp_socket(&rejected_socks, "TCP")
+                .await
+                .unwrap_err();
+            assert!(error.contains("connection refused (0x05)"), "{error}");
+
+            let invalid_proxy = TcpConnection {
+                proxy: ProxyConfig {
+                    enabled: true,
+                    host: "   ".to_string(),
+                    port: 0,
+                    ..ProxyConfig::default()
+                },
+                ..rejected_socks.clone()
+            };
+            let error = connect_tcp_socket(&invalid_proxy, "TCP").await.unwrap_err();
+            assert!(error.contains("代理主机不能为空"), "{error}");
+
+            let injected_target = TcpConnection {
+                host: "target.example\r\nX-Injected: true".to_string(),
+                ..rejected_socks
+            };
+            let error = connect_tcp_socket(&injected_target, "TCP")
+                .await
+                .unwrap_err();
+            assert!(error.contains("代理目标主机不能包含换行符"), "{error}");
+
+            for task in [
+                http_task,
+                socks_task,
+                rejected_http_task,
+                rejected_socks_task,
+            ] {
+                task.abort();
+                let _ = task.await;
+            }
+        });
+    }
+
+    #[test]
     fn tcp_reconnect_profile_reloads_latest_endpoint_and_disable_state() {
         let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
             host: "old.example".to_string(),
@@ -22872,6 +23416,12 @@ mod tests {
             host: "new.example".to_string(),
             port: 4242,
             reconnect: true,
+            proxy: ProxyConfig {
+                enabled: true,
+                kind: ProxyKind::HttpConnect,
+                host: "proxy.example".to_string(),
+                port: 3128,
+            },
             reconnect_delay_ms: 2_500,
             keepalive_enabled: false,
             keepalive_idle_seconds: 90,
@@ -22892,6 +23442,10 @@ mod tests {
             ("new.example".to_string(), 4242, "TCP")
         );
         assert_eq!(tcp.reconnect_delay_ms, 2_500);
+        assert!(tcp.proxy.enabled);
+        assert_eq!(tcp.proxy.kind, ProxyKind::HttpConnect);
+        assert_eq!(tcp.proxy.host, "proxy.example");
+        assert_eq!(tcp.proxy.port, 3128);
         assert!(!tcp.keepalive_enabled);
         assert_eq!(tcp.keepalive_idle_seconds, 90);
         assert_eq!(tcp.keepalive_interval_seconds, 15);
@@ -23118,6 +23672,12 @@ mod tests {
         if let ConnectionConfig::Ssh(ssh) = &mut updated.connection {
             ssh.endpoint.host = "new.example".to_string();
             ssh.username = "new-user".to_string();
+            ssh.proxy = ProxyConfig {
+                enabled: true,
+                kind: ProxyKind::HttpConnect,
+                host: "proxy.example".to_string(),
+                port: 3128,
+            };
             ssh.password_secret_ref = Some("keychain:new-password".to_string());
             ssh.passphrase_secret_ref = Some("keychain:new-passphrase".to_string());
         }
@@ -23138,6 +23698,10 @@ mod tests {
         };
         assert_eq!(latest.endpoint.host, "new.example");
         assert_eq!(latest.username, "new-user");
+        assert!(latest.proxy.enabled);
+        assert_eq!(latest.proxy.kind, ProxyKind::HttpConnect);
+        assert_eq!(latest.proxy.host, "proxy.example");
+        assert_eq!(latest.proxy.port, 3128);
         assert_eq!(
             latest.password_secret_ref.as_deref(),
             Some("keychain:new-password")
@@ -27397,6 +27961,8 @@ mod tests {
             let (password_jump_port, counters, password_jump_task) =
                 spawn_mixed_auth_test_server(&password_jump_host_key, mixed_username, mixed_secret)
                     .await;
+            let (proxy_port, proxy_connections, proxy_task) =
+                spawn_test_http_connect_proxy(200).await;
 
             let openssh_username = openssh_test_username();
             let mut profile = test_ssh_profile();
@@ -27405,6 +27971,12 @@ mod tests {
                 ssh.endpoint.port = target_port;
                 ssh.username = openssh_username.clone();
                 ssh.reconnect = false;
+                ssh.proxy = ProxyConfig {
+                    enabled: true,
+                    kind: ProxyKind::HttpConnect,
+                    host: "127.0.0.1".to_string(),
+                    port: proxy_port,
+                };
                 ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
                 ssh.host_key_policy.alias = Some("mixed-auth-target".to_string());
                 ssh.identity_refs = vec![
@@ -27455,6 +28027,15 @@ mod tests {
                 ];
             }
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+            let scan = scan_ssh_host_key_inner(&state, profile.clone(), Some(mixed_secret), None)
+                .await
+                .unwrap();
+            assert_eq!(scan.label.as_deref(), Some("目标 SSH"));
+            counters.password_successes.store(0, Ordering::SeqCst);
+            counters
+                .keyboard_interactive_successes
+                .store(0, Ordering::SeqCst);
 
             let mut password_profile = profile.clone();
             if let ConnectionConfig::Ssh(ssh) = &mut password_profile.connection {
@@ -27518,6 +28099,9 @@ mod tests {
                 .await
                 .unwrap();
 
+            assert_eq!(proxy_connections.load(Ordering::SeqCst), 4);
+            proxy_task.abort();
+            let _ = proxy_task.await;
             password_jump_task.abort();
             let _ = password_jump_task.await;
         });
@@ -29868,6 +30452,7 @@ mod tests {
                 },
                 username: "root".to_string(),
                 reconnect: true,
+                proxy: portmate_core::ProxyConfig::default(),
                 password_secret_ref: None,
                 passphrase_secret_ref: None,
                 host_key_policy: portmate_core::HostKeyPolicy::profile_alias("bench-device"),

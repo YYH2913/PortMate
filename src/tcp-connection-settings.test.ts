@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TcpConnection } from "./types";
+import { proxyDefaults } from "./proxy-settings";
 import {
   normalizeTcpConnectionSettings,
   tcpConnectionBounds,
@@ -12,6 +13,7 @@ describe("TCP connection settings", () => {
       host: "console.example",
       port: 23,
       reconnect: true,
+      proxy: proxyDefaults,
     } as TcpConnection;
 
     expect(normalizeTcpConnectionSettings(legacy)).toEqual({
@@ -25,6 +27,7 @@ describe("TCP connection settings", () => {
       host: "console.example",
       port: 23,
       reconnect: true,
+      proxy: proxyDefaults,
       reconnectDelayMs: -4,
       keepaliveEnabled: true,
       keepaliveIdleSeconds: Number.MAX_SAFE_INTEGER,
@@ -43,6 +46,7 @@ describe("TCP connection settings", () => {
       host: "console.example",
       port: 2323,
       reconnect: false,
+      proxy: proxyDefaults,
       reconnectDelayMs: 2_500,
       keepaliveEnabled: false,
       keepaliveIdleSeconds: 90,
