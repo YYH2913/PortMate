@@ -41,6 +41,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
+import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
@@ -6062,6 +6063,11 @@ function SshAdvancedFields({
   const [jumpStatus, setJumpStatus] = useState("");
 
   if (section === "连接") {
+    const updateSsh = (patch: Partial<typeof ssh>) => onDraftChange({
+      ...draft,
+      kind,
+      connection: { ...ssh, ...patch, kind },
+    });
     const updateJump = (index: number, patch: Partial<JumpHop>) => {
       const jumps = ssh.jumps.map((jump, jumpIndex) => (jumpIndex === index ? { ...jump, ...patch } : jump));
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps } });
@@ -6187,11 +6193,31 @@ function SshAdvancedFields({
             </button>
           </div>
         </DialogField>
-        <DialogField label="KeepAlive:">
-          <input value={prefs.sshKeepaliveSeconds} onChange={(event) => updatePref("sshKeepaliveSeconds", event.target.value)} />
-        </DialogField>
+        <DialogToggleField label="SSH 保活:" checked={ssh.keepaliveEnabled} onChange={(keepaliveEnabled) => updateSsh({ keepaliveEnabled })} />
+        {ssh.keepaliveEnabled ? (
+          <>
+            <DialogField label="探测间隔(s):">
+              <input
+                type="number"
+                min={sshConnectionBounds.keepaliveIntervalSeconds.min}
+                max={sshConnectionBounds.keepaliveIntervalSeconds.max}
+                value={ssh.keepaliveIntervalSeconds}
+                onChange={(event) => updateSsh({ keepaliveIntervalSeconds: Number(event.target.value) })}
+              />
+            </DialogField>
+            <DialogField label="未响应上限:">
+              <input
+                type="number"
+                min={sshConnectionBounds.keepaliveMaxMissed.min}
+                max={sshConnectionBounds.keepaliveMaxMissed.max}
+                value={ssh.keepaliveMaxMissed}
+                onChange={(event) => updateSsh({ keepaliveMaxMissed: Number(event.target.value) })}
+              />
+            </DialogField>
+          </>
+        ) : null}
         <DialogField label="断线重连:">
-          <select value={ssh.reconnect ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, reconnect: event.target.value === "on" } })}>
+          <select value={ssh.reconnect ? "on" : "off"} onChange={(event) => updateSsh({ reconnect: event.target.value === "on" })}>
             <option value="on">开启</option>
             <option value="off">关闭</option>
           </select>
@@ -6892,7 +6918,6 @@ function createSessionPrefs() {
     rightClickPaste: false,
     reconnectPolicy: "on-disconnect",
     sshSysmon: false,
-    sshKeepaliveSeconds: "30",
     sshCompression: false,
     sshPasswordMode: "prompt",
     sshKeyboardInteractive: true,
@@ -6977,15 +7002,18 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {
     return connection;
   }
-  const alias = connection.hostKeyPolicy.alias?.trim();
-  return {
+  const normalized = normalizeSshConnectionSettings({
     ...connection,
     proxy: normalizeProxyConfig(connection.proxy),
-    jumps: connection.jumps
+  });
+  const alias = normalized.hostKeyPolicy.alias?.trim();
+  return {
+    ...normalized,
+    jumps: normalized.jumps
       .map((jump) => ({
         host: jump.host.trim(),
         port: Number.isFinite(jump.port) && jump.port > 0 ? Math.min(65535, Math.trunc(jump.port)) : 22,
-        username: jump.username.trim() || connection.username.trim(),
+        username: jump.username.trim() || normalized.username.trim(),
         passwordSecretRef: jump.passwordSecretRef?.trim() || null,
         passphraseSecretRef: jump.passphraseSecretRef?.trim() || null,
         identityRef: jump.identityRef?.trim() || null,
@@ -6993,14 +7021,14 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
       }))
       .filter((jump) => jump.host),
     hostKeyPolicy: {
-      ...connection.hostKeyPolicy,
+      ...normalized.hostKeyPolicy,
       alias: alias || profileId,
     },
-    trustedHostKeys: connection.trustedHostKeys.filter((key) => key.scope !== "profile" || !key.profileId || key.profileId === profileId),
+    trustedHostKeys: normalized.trustedHostKeys.filter((key) => key.scope !== "profile" || !key.profileId || key.profileId === profileId),
     identityPolicy: {
-      ...connection.identityPolicy,
-      authOrder: connection.identityPolicy.authOrder.map(normalizeAuthMethod).filter((method, index, methods) => methods.indexOf(method) === index),
-      lastSuccessful: connection.identityPolicy.lastSuccessful ? normalizeAuthMethod(connection.identityPolicy.lastSuccessful) : null,
+      ...normalized.identityPolicy,
+      authOrder: normalized.identityPolicy.authOrder.map(normalizeAuthMethod).filter((method, index, methods) => methods.indexOf(method) === index),
+      lastSuccessful: normalized.identityPolicy.lastSuccessful ? normalizeAuthMethod(normalized.identityPolicy.lastSuccessful) : null,
     },
   };
 }
@@ -7368,6 +7396,7 @@ function createSshConnection(): Extract<ConnectionConfig, { kind: "ssh" | "tmux"
     endpoint: { host: "", port: 22 },
     username: "",
     reconnect: true,
+    ...sshConnectionDefaults,
     proxy: { ...proxyDefaults },
     passwordSecretRef: null,
     passphraseSecretRef: null,

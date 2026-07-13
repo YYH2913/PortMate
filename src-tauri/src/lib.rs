@@ -10457,10 +10457,11 @@ async fn establish_ssh_runtime_with_timeout_mode(
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
-    let ssh = match &profile.connection {
+    let mut ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
         _ => return Err("profile is not SSH-backed".to_string()),
     };
+    ssh.normalize_health_settings();
 
     let host = ssh.endpoint.host.trim().to_string();
     if host.is_empty() {
@@ -10483,12 +10484,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
     let host_key_error = Arc::new(Mutex::new(None));
     let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
 
-    let config = Arc::new(client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
-        keepalive_max: 3,
-        nodelay: true,
-        ..Default::default()
-    });
+    let config = Arc::new(ssh_client_config(&ssh));
 
     let (mut session, jump_handles) = connect_ssh_target(
         SshConnectRequest {
@@ -10588,6 +10584,17 @@ async fn establish_ssh_runtime_with_timeout_mode(
         auth_method,
         closed,
     })
+}
+
+fn ssh_client_config(ssh: &SshConnection) -> client::Config {
+    client::Config {
+        keepalive_interval: ssh
+            .keepalive_enabled
+            .then(|| Duration::from_secs(ssh.keepalive_interval_seconds)),
+        keepalive_max: ssh.keepalive_max_missed as usize,
+        nodelay: true,
+        ..Default::default()
+    }
 }
 
 async fn connect_ssh_target(
@@ -10977,6 +10984,9 @@ fn jump_ssh_connection(
         },
         username: jump.username.trim().to_string(),
         reconnect: ssh.reconnect,
+        keepalive_enabled: ssh.keepalive_enabled,
+        keepalive_interval_seconds: ssh.keepalive_interval_seconds,
+        keepalive_max_missed: ssh.keepalive_max_missed,
         proxy: ssh.proxy.clone(),
         password_secret_ref: jump
             .password_secret_ref
@@ -19664,6 +19674,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
                 ssh.endpoint.port = 22;
             }
             ssh.username = ssh.username.trim().to_string();
+            ssh.normalize_health_settings();
             ssh.proxy.normalize();
             let alias = ssh
                 .host_key_policy
@@ -23672,6 +23683,9 @@ mod tests {
         if let ConnectionConfig::Ssh(ssh) = &mut updated.connection {
             ssh.endpoint.host = "new.example".to_string();
             ssh.username = "new-user".to_string();
+            ssh.keepalive_enabled = true;
+            ssh.keepalive_interval_seconds = 75;
+            ssh.keepalive_max_missed = 7;
             ssh.proxy = ProxyConfig {
                 enabled: true,
                 kind: ProxyKind::HttpConnect,
@@ -23698,6 +23712,9 @@ mod tests {
         };
         assert_eq!(latest.endpoint.host, "new.example");
         assert_eq!(latest.username, "new-user");
+        assert!(latest.keepalive_enabled);
+        assert_eq!(latest.keepalive_interval_seconds, 75);
+        assert_eq!(latest.keepalive_max_missed, 7);
         assert!(latest.proxy.enabled);
         assert_eq!(latest.proxy.kind, ProxyKind::HttpConnect);
         assert_eq!(latest.proxy.host, "proxy.example");
@@ -23739,6 +23756,28 @@ mod tests {
         assert!(latest_ssh_reconnect_profile(&state, "ssh-session-1")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn ssh_client_config_applies_profile_keepalive_settings() {
+        let mut profile = test_ssh_profile();
+        let ssh = match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        ssh.keepalive_enabled = true;
+        ssh.keepalive_interval_seconds = 75;
+        ssh.keepalive_max_missed = 7;
+
+        let config = ssh_client_config(ssh);
+        assert_eq!(config.keepalive_interval, Some(Duration::from_secs(75)));
+        assert_eq!(config.keepalive_max, 7);
+        assert!(config.nodelay);
+
+        ssh.keepalive_enabled = false;
+        let config = ssh_client_config(ssh);
+        assert_eq!(config.keepalive_interval, None);
+        assert_eq!(config.keepalive_max, 7);
     }
 
     #[test]
@@ -30452,6 +30491,9 @@ mod tests {
                 },
                 username: "root".to_string(),
                 reconnect: true,
+                keepalive_enabled: true,
+                keepalive_interval_seconds: portmate_core::DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
+                keepalive_max_missed: portmate_core::DEFAULT_SSH_KEEPALIVE_MAX_MISSED,
                 proxy: portmate_core::ProxyConfig::default(),
                 password_secret_ref: None,
                 passphrase_secret_ref: None,

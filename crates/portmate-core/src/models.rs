@@ -288,6 +288,12 @@ pub struct SshConnection {
     pub username: String,
     #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default = "default_true")]
+    pub keepalive_enabled: bool,
+    #[serde(default = "default_ssh_keepalive_interval_seconds")]
+    pub keepalive_interval_seconds: u64,
+    #[serde(default = "default_ssh_keepalive_max_missed")]
+    pub keepalive_max_missed: u32,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
@@ -301,6 +307,33 @@ pub struct SshConnection {
     pub agent_policy: AgentPolicy,
     pub jumps: Vec<JumpHop>,
     pub tunnels: Vec<TunnelSpec>,
+}
+
+pub const MIN_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 1;
+pub const MAX_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 3_600;
+pub const DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 30;
+pub const MIN_SSH_KEEPALIVE_MAX_MISSED: u32 = 1;
+pub const MAX_SSH_KEEPALIVE_MAX_MISSED: u32 = 20;
+pub const DEFAULT_SSH_KEEPALIVE_MAX_MISSED: u32 = 3;
+
+const fn default_ssh_keepalive_interval_seconds() -> u64 {
+    DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS
+}
+
+const fn default_ssh_keepalive_max_missed() -> u32 {
+    DEFAULT_SSH_KEEPALIVE_MAX_MISSED
+}
+
+impl SshConnection {
+    pub fn normalize_health_settings(&mut self) {
+        self.keepalive_interval_seconds = self.keepalive_interval_seconds.clamp(
+            MIN_SSH_KEEPALIVE_INTERVAL_SECONDS,
+            MAX_SSH_KEEPALIVE_INTERVAL_SECONDS,
+        );
+        self.keepalive_max_missed = self
+            .keepalive_max_missed
+            .clamp(MIN_SSH_KEEPALIVE_MAX_MISSED, MAX_SSH_KEEPALIVE_MAX_MISSED);
+    }
 }
 
 fn default_true() -> bool {
@@ -763,6 +796,58 @@ mod tests {
         assert!(!logging.enabled);
         assert!(!logging.raw);
         assert!(logging.redact_secrets);
+    }
+
+    #[test]
+    fn ssh_connection_deserializes_legacy_health_defaults_and_clamps_values() {
+        let mut legacy: SshConnection = serde_json::from_str(
+            r#"{
+                "endpoint": {"host": "device.example", "port": 22},
+                "username": "root",
+                "reconnect": true,
+                "hostKeyPolicy": {
+                    "mode": "strict",
+                    "alias": "legacy-device",
+                    "trustScope": "profile",
+                    "allowRotation": false,
+                    "checkIp": false
+                },
+                "trustedHostKeys": [],
+                "identityPolicy": {
+                    "identitiesOnly": true,
+                    "authOrder": ["public-key", "keyboard-interactive", "password"],
+                    "recordSuccess": true,
+                    "lastSuccessful": null
+                },
+                "identityRefs": [],
+                "agentPolicy": {
+                    "enabled": false,
+                    "forwarding": false,
+                    "offerMode": "after-profile-keys"
+                },
+                "jumps": [],
+                "tunnels": []
+            }"#,
+        )
+        .expect("legacy SSH connection should deserialize");
+
+        assert!(legacy.keepalive_enabled);
+        assert_eq!(
+            legacy.keepalive_interval_seconds,
+            DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            legacy.keepalive_max_missed,
+            DEFAULT_SSH_KEEPALIVE_MAX_MISSED
+        );
+        legacy.keepalive_interval_seconds = 0;
+        legacy.keepalive_max_missed = u32::MAX;
+        legacy.normalize_health_settings();
+        assert_eq!(
+            legacy.keepalive_interval_seconds,
+            MIN_SSH_KEEPALIVE_INTERVAL_SECONDS
+        );
+        assert_eq!(legacy.keepalive_max_missed, MAX_SSH_KEEPALIVE_MAX_MISSED);
     }
 
     #[test]
