@@ -117,6 +117,11 @@ export interface TcpConnection {
   host: string;
   port: number;
   reconnect: boolean;
+  reconnectDelayMs: number;
+  keepaliveEnabled: boolean;
+  keepaliveIdleSeconds: number;
+  keepaliveIntervalSeconds: number;
+  keepaliveRetries: number;
 }
 
 export interface TrustedHostKey {

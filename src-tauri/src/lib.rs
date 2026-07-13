@@ -8,8 +8,9 @@ use portmate_core::{
     tool_definitions, AuthMethod, ConnectionConfig, EventDirection, EventStream, HostKeyDecision,
     HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef,
     IdentitySource, McpGrant, McpScope, SessionEvent, SessionKind, SessionProfile, SessionStatus,
-    SessionStore, SessionSummary, SshConnection, SysmonSnapshot, TimelineMark, TransferProtocol,
-    TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
+    SessionStore, SessionSummary, SshConnection, SysmonSnapshot, TcpConnection, TimelineMark,
+    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
+    TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -149,9 +150,7 @@ const MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES: u64 = 1024 * 1024;
 const MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
 const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
-const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
-const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-const TCP_KEEPALIVE_RETRIES: u32 = 3;
+const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
@@ -10831,19 +10830,23 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
     Ok(summary)
 }
 
-fn tcp_connection_details(profile: &SessionProfile) -> Result<(String, u16, &'static str), String> {
-    let (host, port, label) = match &profile.connection {
-        ConnectionConfig::Tcp(tcp) => (tcp.host.trim().to_string(), tcp.port, "TCP"),
-        ConnectionConfig::Telnet(tcp) => (tcp.host.trim().to_string(), tcp.port, "Telnet"),
+fn tcp_connection_details(
+    profile: &SessionProfile,
+) -> Result<(TcpConnection, &'static str), String> {
+    let (mut tcp, label) = match &profile.connection {
+        ConnectionConfig::Tcp(tcp) => (tcp.clone(), "TCP"),
+        ConnectionConfig::Telnet(tcp) => (tcp.clone(), "Telnet"),
         _ => return Err("profile is not TCP/Telnet-backed".to_string()),
     };
-    if host.is_empty() {
+    tcp.host = tcp.host.trim().to_string();
+    tcp.normalize_health_settings();
+    if tcp.host.is_empty() {
         return Err(format!("{label} 主机不能为空"));
     }
-    if port == 0 {
+    if tcp.port == 0 {
         return Err(format!("{label} 端口不能为空"));
     }
-    Ok((host, port, label))
+    Ok((tcp, label))
 }
 
 fn tcp_reconnect_enabled(profile: &SessionProfile) -> bool {
@@ -10898,26 +10901,39 @@ fn latest_tcp_reconnect_profile(
     Ok(tcp_reconnect_enabled(&profile).then_some(profile))
 }
 
-async fn connect_tcp_socket(host: &str, port: u16, label: &str) -> Result<TcpStream, String> {
-    let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((host, port)))
-        .await
-        .map_err(|_| format!("{label} 连接超时: {host}:{port}"))?
-        .map_err(|error| format!("{label} 连接失败: {host}:{port}: {error}"))?;
-    configure_tcp_socket(&stream, label)?;
+async fn connect_tcp_socket(tcp: &TcpConnection, label: &str) -> Result<TcpStream, String> {
+    let stream = tokio::time::timeout(
+        Duration::from_secs(15),
+        TcpStream::connect((tcp.host.as_str(), tcp.port)),
+    )
+    .await
+    .map_err(|_| format!("{label} 连接超时: {}:{}", tcp.host, tcp.port))?
+    .map_err(|error| format!("{label} 连接失败: {}:{}: {error}", tcp.host, tcp.port))?;
+    configure_tcp_socket(&stream, label, tcp)?;
     Ok(stream)
 }
 
-fn configure_tcp_socket(stream: &TcpStream, label: &str) -> Result<(), String> {
+fn configure_tcp_socket(
+    stream: &TcpStream,
+    label: &str,
+    tcp: &TcpConnection,
+) -> Result<(), String> {
     stream
         .set_nodelay(true)
         .map_err(|error| format!("{label} 设置 TCP_NODELAY 失败: {error}"))?;
-    SockRef::from(stream)
-        .set_tcp_keepalive(&tcp_keepalive_config())
+    let socket = SockRef::from(stream);
+    if !tcp.keepalive_enabled {
+        return socket
+            .set_keepalive(false)
+            .map_err(|error| format!("{label} 关闭 TCP keepalive 失败: {error}"));
+    }
+    socket
+        .set_tcp_keepalive(&tcp_keepalive_config(tcp))
         .map_err(|error| format!("{label} 设置 TCP keepalive 失败: {error}"))
 }
 
-fn tcp_keepalive_config() -> TcpKeepalive {
-    let keepalive = TcpKeepalive::new().with_time(TCP_KEEPALIVE_IDLE);
+fn tcp_keepalive_config(tcp: &TcpConnection) -> TcpKeepalive {
+    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(tcp.keepalive_idle_seconds));
     #[cfg(any(
         target_os = "android",
         target_os = "dragonfly",
@@ -10935,7 +10951,7 @@ fn tcp_keepalive_config() -> TcpKeepalive {
         target_os = "cygwin",
         all(target_os = "wasi", not(target_env = "p1")),
     ))]
-    let keepalive = keepalive.with_interval(TCP_KEEPALIVE_INTERVAL);
+    let keepalive = keepalive.with_interval(Duration::from_secs(tcp.keepalive_interval_seconds));
     #[cfg(any(
         target_os = "android",
         target_os = "dragonfly",
@@ -10953,15 +10969,24 @@ fn tcp_keepalive_config() -> TcpKeepalive {
         target_os = "cygwin",
         all(target_os = "wasi", not(target_env = "p1")),
     ))]
-    let keepalive = keepalive.with_retries(TCP_KEEPALIVE_RETRIES);
+    let keepalive = keepalive.with_retries(tcp.keepalive_retries);
     keepalive
+}
+
+fn tcp_reconnect_delay(profile: &SessionProfile) -> Duration {
+    match &profile.connection {
+        ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => {
+            Duration::from_millis(tcp.reconnect_delay_ms)
+        }
+        _ => Duration::from_millis(portmate_core::DEFAULT_TCP_RECONNECT_DELAY_MS),
+    }
 }
 
 async fn open_tcp_session(
     state: &AppState,
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
-    let (host, port, label) = tcp_connection_details(&profile)?;
+    let (tcp, label) = tcp_connection_details(&profile)?;
     if let Some(existing) = {
         let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id)
@@ -10971,7 +10996,7 @@ async fn open_tcp_session(
         let _ = writer.shutdown().await;
     }
 
-    let stream = connect_tcp_socket(&host, port, label).await?;
+    let stream = connect_tcp_socket(&tcp, label).await?;
 
     let runtime_id = Uuid::new_v4().to_string();
     let (read_half, write_half) = stream.into_split();
@@ -16001,14 +16026,22 @@ fn read_tcp_stream(
             }
         }
 
-        let reconnect_enabled = !closed.load(Ordering::SeqCst)
-            && io
-                .store
-                .lock()
-                .ok()
-                .and_then(|store| store.profile(&session_id))
-                .map(normalize_session_profile)
-                .is_some_and(|latest| tcp_reconnect_enabled(&latest));
+        let reconnect_profile = (!closed.load(Ordering::SeqCst))
+            .then(|| {
+                io.store
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.profile(&session_id))
+                    .map(normalize_session_profile)
+                    .filter(tcp_reconnect_enabled)
+            })
+            .flatten();
+        let reconnect_delay_ms = reconnect_profile
+            .as_ref()
+            .map(tcp_reconnect_delay)
+            .unwrap_or_default()
+            .as_millis();
+        let reconnect_enabled = reconnect_profile.is_some();
         let mut should_reconnect = false;
         let removed_current = {
             let mut connections = match io.runtimes.tcp.lock() {
@@ -16040,7 +16073,9 @@ fn read_tcp_stream(
                 );
                 store.record_system_event(
                     &session_id,
-                    format!("PortMate: {label} socket closed; reconnecting in 1000ms"),
+                    format!(
+                        "PortMate: {label} socket closed; reconnecting in {reconnect_delay_ms}ms"
+                    ),
                 );
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist {label} reconnect event: {error}");
@@ -16149,7 +16184,10 @@ fn record_tcp_reconnect_failure_if_pending(
     );
     store.record_system_event(
         session_id,
-        format!("PortMate: {label} reconnect failed: {error}; retrying in 1000ms"),
+        format!(
+            "PortMate: {label} reconnect failed: {error}; retrying in {}ms",
+            tcp_reconnect_delay(attempt).as_millis()
+        ),
     );
     if let Err(save_error) = save_store(&state.store_path, &store) {
         eprintln!("PortMate: failed to persist {label} reconnect failure: {save_error}");
@@ -16210,17 +16248,62 @@ enum TcpReconnectInstallDecision {
     Failed(String),
 }
 
+async fn wait_for_tcp_reconnect_attempt(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    let started = Instant::now();
+    loop {
+        if !tcp_reconnect_pending(state, session_id, runtime_id, closed) {
+            return false;
+        }
+        let profile = match latest_tcp_reconnect_profile(state, session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_tcp_reconnect_if_disabled(
+                    state,
+                    session_id,
+                    runtime_id,
+                    "automatic reconnect disabled while waiting for the next attempt",
+                ) {
+                    return false;
+                }
+                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "PortMate: failed to load TCP/Telnet reconnect delay from latest profile: {error}"
+                );
+                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
+                continue;
+            }
+        };
+        let remaining = tcp_reconnect_delay(&profile).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return true;
+        }
+        tokio::time::sleep(remaining.min(RECONNECT_DELAY_POLL_INTERVAL)).await;
+    }
+}
+
 async fn reconnect_tcp_session(
     state: AppState,
     session_id: String,
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
-    let reconnect_delay = Duration::from_millis(1000);
-
     loop {
-        tokio::time::sleep(reconnect_delay).await;
-        if !tcp_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+        if !wait_for_tcp_reconnect_attempt(
+            &state,
+            &session_id,
+            &previous_runtime_id,
+            closed.as_ref(),
+        )
+        .await
+        {
             return;
         }
 
@@ -16242,7 +16325,7 @@ async fn reconnect_tcp_session(
                 continue;
             }
         };
-        let (host, port, label) = match tcp_connection_details(&profile) {
+        let (tcp, label) = match tcp_connection_details(&profile) {
             Ok(details) => details,
             Err(error) => {
                 match record_tcp_reconnect_failure_if_pending(
@@ -16272,7 +16355,7 @@ async fn reconnect_tcp_session(
             }
         };
 
-        let stream = match connect_tcp_socket(&host, port, label).await {
+        let stream = match connect_tcp_socket(&tcp, label).await {
             Ok(stream) => stream,
             Err(error) => {
                 match record_tcp_reconnect_failure_if_pending(
@@ -19347,6 +19430,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         }
         ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => {
             tcp.host = tcp.host.trim().to_string();
+            tcp.normalize_health_settings();
         }
         ConnectionConfig::Serial(serial) => {
             serial.port = serial.port.trim().to_string();
@@ -21186,6 +21270,7 @@ mod tests {
                     host: "127.0.0.1".to_string(),
                     port: address.port(),
                     reconnect: false,
+                    ..Default::default()
                 }));
             profile.logging.enabled = true;
             profile.logging.raw = true;
@@ -21307,6 +21392,7 @@ mod tests {
                     host: "127.0.0.1".to_string(),
                     port: address.port(),
                     reconnect: false,
+                    ..Default::default()
                 }));
             profile.logging.enabled = true;
             profile.logging.raw = true;
@@ -21393,6 +21479,7 @@ mod tests {
                     host: "127.0.0.1".to_string(),
                     port: address.port(),
                     reconnect: false,
+                    ..Default::default()
                 }));
             profile.logging.enabled = true;
             profile.logging.raw = true;
@@ -21519,9 +21606,12 @@ mod tests {
                 assert_eq!(raw, [0x01, TELNET_IAC, TELNET_IAC]);
             });
 
-            let mut client = connect_tcp_socket("127.0.0.1", address.port(), "Telnet")
-                .await
-                .unwrap();
+            let tcp = TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                ..Default::default()
+            };
+            let mut client = connect_tcp_socket(&tcp, "Telnet").await.unwrap();
             let mut incoming = [0_u8; 10];
             client.read_exact(&mut incoming).await.unwrap();
             let mut negotiator = TelnetNegotiator::new();
@@ -21565,6 +21655,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: address.port(),
                 reconnect: true,
+                ..Default::default()
             }));
             let root = std::env::temp_dir().join(format!("portmate-tcp-test-{}", Uuid::new_v4()));
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
@@ -21668,6 +21759,8 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: first_address.port(),
                 reconnect: true,
+                reconnect_delay_ms: 5_000,
+                ..Default::default()
             }));
             let root = std::env::temp_dir().join(format!(
                 "portmate-tcp-latest-reconnect-test-{}",
@@ -21699,14 +21792,16 @@ mod tests {
                     host: "127.0.0.1".to_string(),
                     port: replacement_address.port(),
                     reconnect: true,
+                    reconnect_delay_ms: 100,
+                    ..Default::default()
                 });
                 store.upsert_profile(updated);
                 save_store(&state.store_path, &store).unwrap();
             }
 
-            tokio::time::timeout(Duration::from_secs(4), replacement_connected_rx)
+            tokio::time::timeout(Duration::from_millis(800), replacement_connected_rx)
                 .await
-                .expect("TCP reconnect did not use the updated endpoint")
+                .expect("TCP reconnect did not use the updated endpoint and shorter delay")
                 .expect("replacement TCP server dropped its connection signal");
             tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
@@ -21771,6 +21866,7 @@ mod tests {
             .expect("disabling TCP reconnect did not remove the pending runtime");
 
             let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("reconnecting in 5000ms"));
             assert!(screen.contains("socket reconnected"));
             assert!(screen.contains("reconnect stopped"));
             let _ = fs::remove_dir_all(root);
@@ -21792,6 +21888,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: address.port(),
                 reconnect: true,
+                ..Default::default()
             }));
             let root = std::env::temp_dir().join(format!(
                 "portmate-tcp-disable-connected-test-{}",
@@ -21851,6 +21948,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: address.port(),
                 reconnect: false,
+                ..Default::default()
             }));
             let root =
                 std::env::temp_dir().join(format!("portmate-modem-cancel-{}", Uuid::new_v4()));
@@ -21944,6 +22042,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: address.port(),
                 reconnect: true,
+                ..Default::default()
             }));
             let root =
                 std::env::temp_dir().join(format!("portmate-modem-disconnect-{}", Uuid::new_v4()));
@@ -22029,9 +22128,12 @@ mod tests {
                 assert_eq!(raw, [0x01, TELNET_IAC]);
             });
 
-            let mut client = connect_tcp_socket("127.0.0.1", address.port(), "TCP")
-                .await
-                .unwrap();
+            let tcp = TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                ..Default::default()
+            };
+            let mut client = connect_tcp_socket(&tcp, "TCP").await.unwrap();
             client.write_all(&[0x01, TELNET_IAC]).await.unwrap();
 
             tokio::time::timeout(Duration::from_secs(2), server)
@@ -22655,9 +22757,11 @@ mod tests {
             host: " 127.0.0.1 ".to_string(),
             port: 2323,
             reconnect: true,
+            ..Default::default()
         }));
+        let (tcp, label) = tcp_connection_details(&profile).unwrap();
         assert_eq!(
-            tcp_connection_details(&profile).unwrap(),
+            (tcp.host, tcp.port, label),
             ("127.0.0.1".to_string(), 2323, "TCP")
         );
         assert!(tcp_reconnect_enabled(&profile));
@@ -22666,9 +22770,11 @@ mod tests {
             host: "console.lab".to_string(),
             port: 23,
             reconnect: false,
+            ..Default::default()
         });
+        let (tcp, label) = tcp_connection_details(&profile).unwrap();
         assert_eq!(
-            tcp_connection_details(&profile).unwrap(),
+            (tcp.host, tcp.port, label),
             ("console.lab".to_string(), 23, "Telnet")
         );
         assert!(!tcp_reconnect_enabled(&profile));
@@ -22677,6 +22783,7 @@ mod tests {
             host: " ".to_string(),
             port: 23,
             reconnect: true,
+            ..Default::default()
         });
         assert!(tcp_connection_details(&profile)
             .unwrap_err()
@@ -22686,6 +22793,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 0,
             reconnect: true,
+            ..Default::default()
         });
         assert!(tcp_connection_details(&profile)
             .unwrap_err()
@@ -22704,23 +22812,35 @@ mod tests {
                 drop(socket);
             });
 
-            let stream = connect_tcp_socket("127.0.0.1", address.port(), "TCP")
-                .await
-                .unwrap();
+            let mut tcp = TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                keepalive_idle_seconds: 45,
+                keepalive_interval_seconds: 7,
+                keepalive_retries: 5,
+                ..Default::default()
+            };
+            let stream = connect_tcp_socket(&tcp, "TCP").await.unwrap();
             let socket = SockRef::from(&stream);
             assert!(socket.keepalive().unwrap());
             #[cfg(target_os = "linux")]
             {
-                assert_eq!(socket.tcp_keepalive_time().unwrap(), TCP_KEEPALIVE_IDLE);
+                assert_eq!(
+                    socket.tcp_keepalive_time().unwrap(),
+                    Duration::from_secs(tcp.keepalive_idle_seconds)
+                );
                 assert_eq!(
                     socket.tcp_keepalive_interval().unwrap(),
-                    TCP_KEEPALIVE_INTERVAL
+                    Duration::from_secs(tcp.keepalive_interval_seconds)
                 );
                 assert_eq!(
                     socket.tcp_keepalive_retries().unwrap(),
-                    TCP_KEEPALIVE_RETRIES
+                    tcp.keepalive_retries
                 );
             }
+            tcp.keepalive_enabled = false;
+            configure_tcp_socket(&stream, "TCP", &tcp).unwrap();
+            assert!(!socket.keepalive().unwrap());
 
             drop(stream);
             let _ = release_tx.send(());
@@ -22734,6 +22854,7 @@ mod tests {
             host: "old.example".to_string(),
             port: 2323,
             reconnect: true,
+            ..Default::default()
         }));
         let state = test_app_state(profile.clone(), PathBuf::from("tcp-reconnect-test.sqlite3"));
         assert!(tcp_reconnect_attempt_matches_profile(&profile, &profile));
@@ -22751,6 +22872,11 @@ mod tests {
             host: "new.example".to_string(),
             port: 4242,
             reconnect: true,
+            reconnect_delay_ms: 2_500,
+            keepalive_enabled: false,
+            keepalive_idle_seconds: 90,
+            keepalive_interval_seconds: 15,
+            keepalive_retries: 6,
         });
         state.store.lock().unwrap().upsert_profile(updated);
         assert_eq!(
@@ -22760,10 +22886,16 @@ mod tests {
         let latest = latest_tcp_reconnect_profile(&state, &profile.id)
             .unwrap()
             .unwrap();
+        let (tcp, label) = tcp_connection_details(&latest).unwrap();
         assert_eq!(
-            tcp_connection_details(&latest).unwrap(),
+            (tcp.host, tcp.port, label),
             ("new.example".to_string(), 4242, "TCP")
         );
+        assert_eq!(tcp.reconnect_delay_ms, 2_500);
+        assert!(!tcp.keepalive_enabled);
+        assert_eq!(tcp.keepalive_idle_seconds, 90);
+        assert_eq!(tcp.keepalive_interval_seconds, 15);
+        assert_eq!(tcp.keepalive_retries, 6);
 
         let mut disabled = latest;
         if let ConnectionConfig::Tcp(tcp) = &mut disabled.connection {
@@ -23778,6 +23910,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: address.port(),
                 reconnect: false,
+                ..Default::default()
             }));
             let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
             let stream = TcpStream::connect(address).await.unwrap();
@@ -25146,6 +25279,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 9,
                 reconnect: true,
+                ..Default::default()
             }));
             let root =
                 std::env::temp_dir().join(format!("portmate-modem-disconnect-{}", Uuid::new_v4()));

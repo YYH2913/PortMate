@@ -286,7 +286,81 @@ pub struct ShellConnection {
 pub struct TcpConnection {
     pub host: String,
     pub port: u16,
+    #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default = "default_tcp_reconnect_delay_ms")]
+    pub reconnect_delay_ms: u64,
+    #[serde(default = "default_true")]
+    pub keepalive_enabled: bool,
+    #[serde(default = "default_tcp_keepalive_idle_seconds")]
+    pub keepalive_idle_seconds: u64,
+    #[serde(default = "default_tcp_keepalive_interval_seconds")]
+    pub keepalive_interval_seconds: u64,
+    #[serde(default = "default_tcp_keepalive_retries")]
+    pub keepalive_retries: u32,
+}
+
+pub const MIN_TCP_RECONNECT_DELAY_MS: u64 = 100;
+pub const MAX_TCP_RECONNECT_DELAY_MS: u64 = 60_000;
+pub const DEFAULT_TCP_RECONNECT_DELAY_MS: u64 = 1_000;
+pub const MIN_TCP_KEEPALIVE_IDLE_SECONDS: u64 = 1;
+pub const MAX_TCP_KEEPALIVE_IDLE_SECONDS: u64 = 86_400;
+pub const DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS: u64 = 30;
+pub const MIN_TCP_KEEPALIVE_INTERVAL_SECONDS: u64 = 1;
+pub const MAX_TCP_KEEPALIVE_INTERVAL_SECONDS: u64 = 3_600;
+pub const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS: u64 = 10;
+pub const MIN_TCP_KEEPALIVE_RETRIES: u32 = 1;
+pub const MAX_TCP_KEEPALIVE_RETRIES: u32 = 20;
+pub const DEFAULT_TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+const fn default_tcp_reconnect_delay_ms() -> u64 {
+    DEFAULT_TCP_RECONNECT_DELAY_MS
+}
+
+const fn default_tcp_keepalive_idle_seconds() -> u64 {
+    DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS
+}
+
+const fn default_tcp_keepalive_interval_seconds() -> u64 {
+    DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS
+}
+
+const fn default_tcp_keepalive_retries() -> u32 {
+    DEFAULT_TCP_KEEPALIVE_RETRIES
+}
+
+impl TcpConnection {
+    pub fn normalize_health_settings(&mut self) {
+        self.reconnect_delay_ms = self
+            .reconnect_delay_ms
+            .clamp(MIN_TCP_RECONNECT_DELAY_MS, MAX_TCP_RECONNECT_DELAY_MS);
+        self.keepalive_idle_seconds = self.keepalive_idle_seconds.clamp(
+            MIN_TCP_KEEPALIVE_IDLE_SECONDS,
+            MAX_TCP_KEEPALIVE_IDLE_SECONDS,
+        );
+        self.keepalive_interval_seconds = self.keepalive_interval_seconds.clamp(
+            MIN_TCP_KEEPALIVE_INTERVAL_SECONDS,
+            MAX_TCP_KEEPALIVE_INTERVAL_SECONDS,
+        );
+        self.keepalive_retries = self
+            .keepalive_retries
+            .clamp(MIN_TCP_KEEPALIVE_RETRIES, MAX_TCP_KEEPALIVE_RETRIES);
+    }
+}
+
+impl Default for TcpConnection {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: 0,
+            reconnect: true,
+            reconnect_delay_ms: DEFAULT_TCP_RECONNECT_DELAY_MS,
+            keepalive_enabled: true,
+            keepalive_idle_seconds: DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS,
+            keepalive_interval_seconds: DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS,
+            keepalive_retries: DEFAULT_TCP_KEEPALIVE_RETRIES,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -638,5 +712,47 @@ mod tests {
         assert!(!logging.enabled);
         assert!(!logging.raw);
         assert!(logging.redact_secrets);
+    }
+
+    #[test]
+    fn tcp_connection_deserializes_legacy_health_defaults_and_clamps_values() {
+        let legacy: TcpConnection = serde_json::from_str(
+            r#"{
+                "host": "console.example",
+                "port": 23,
+                "reconnect": true
+            }"#,
+        )
+        .expect("legacy TCP connection should deserialize");
+        assert_eq!(legacy.reconnect_delay_ms, DEFAULT_TCP_RECONNECT_DELAY_MS);
+        assert!(legacy.keepalive_enabled);
+        assert_eq!(
+            legacy.keepalive_idle_seconds,
+            DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS
+        );
+        assert_eq!(
+            legacy.keepalive_interval_seconds,
+            DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS
+        );
+        assert_eq!(legacy.keepalive_retries, DEFAULT_TCP_KEEPALIVE_RETRIES);
+
+        let mut invalid = TcpConnection {
+            reconnect_delay_ms: 0,
+            keepalive_idle_seconds: u64::MAX,
+            keepalive_interval_seconds: 0,
+            keepalive_retries: u32::MAX,
+            ..TcpConnection::default()
+        };
+        invalid.normalize_health_settings();
+        assert_eq!(invalid.reconnect_delay_ms, MIN_TCP_RECONNECT_DELAY_MS);
+        assert_eq!(
+            invalid.keepalive_idle_seconds,
+            MAX_TCP_KEEPALIVE_IDLE_SECONDS
+        );
+        assert_eq!(
+            invalid.keepalive_interval_seconds,
+            MIN_TCP_KEEPALIVE_INTERVAL_SECONDS
+        );
+        assert_eq!(invalid.keepalive_retries, MAX_TCP_KEEPALIVE_RETRIES);
     }
 }

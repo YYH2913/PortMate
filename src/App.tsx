@@ -44,6 +44,7 @@ import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings,
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
+import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
@@ -6549,17 +6550,57 @@ function TcpLikeAdvancedFields({
   const tcp = draft.connection.kind === kind ? draft.connection : createTcpConnection(kind);
 
   if (section === "连接") {
+    const updateTcp = (patch: Partial<typeof tcp>) => onDraftChange({
+      ...draft,
+      kind,
+      connection: { ...tcp, ...patch, kind },
+    });
     return (
       <>
-        <DialogField label="重连:(R)">
-          <select value={tcp.reconnect ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...tcp, kind, reconnect: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
+        <DialogToggleField label="自动重连:" checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
+        <DialogField label="重连延迟(ms):">
+          <input
+            type="number"
+            min={tcpConnectionBounds.reconnectDelayMs.min}
+            max={tcpConnectionBounds.reconnectDelayMs.max}
+            step={100}
+            disabled={!tcp.reconnect}
+            value={tcp.reconnectDelayMs}
+            onChange={(event) => updateTcp({ reconnectDelayMs: Number(event.target.value) })}
+          />
         </DialogField>
-        <DialogField label="延迟:(D)">
-          <input value={String(prefs.reconnectDelayMs)} onChange={(event) => updatePref("reconnectDelayMs", Number(event.target.value))} />
-        </DialogField>
+        <DialogToggleField label="TCP KeepAlive:" checked={tcp.keepaliveEnabled} onChange={(keepaliveEnabled) => updateTcp({ keepaliveEnabled })} />
+        {tcp.keepaliveEnabled ? (
+          <>
+            <DialogField label="空闲时间(s):">
+              <input
+                type="number"
+                min={tcpConnectionBounds.keepaliveIdleSeconds.min}
+                max={tcpConnectionBounds.keepaliveIdleSeconds.max}
+                value={tcp.keepaliveIdleSeconds}
+                onChange={(event) => updateTcp({ keepaliveIdleSeconds: Number(event.target.value) })}
+              />
+            </DialogField>
+            <DialogField label="探测间隔(s):">
+              <input
+                type="number"
+                min={tcpConnectionBounds.keepaliveIntervalSeconds.min}
+                max={tcpConnectionBounds.keepaliveIntervalSeconds.max}
+                value={tcp.keepaliveIntervalSeconds}
+                onChange={(event) => updateTcp({ keepaliveIntervalSeconds: Number(event.target.value) })}
+              />
+            </DialogField>
+            <DialogField label="失败次数:">
+              <input
+                type="number"
+                min={tcpConnectionBounds.keepaliveRetries.min}
+                max={tcpConnectionBounds.keepaliveRetries.max}
+                value={tcp.keepaliveRetries}
+                onChange={(event) => updateTcp({ keepaliveRetries: Number(event.target.value) })}
+              />
+            </DialogField>
+          </>
+        ) : null}
         {protocol === "Telnet" ? (
           <DialogField label="回显:(E)">
             <select value={prefs.telnetLocalEcho ? "on" : "off"} onChange={(event) => updatePref("telnetLocalEcho", event.target.value === "on")}>
@@ -6567,14 +6608,7 @@ function TcpLikeAdvancedFields({
               <option value="on">本地回显</option>
             </select>
           </DialogField>
-        ) : (
-          <DialogField label="KeepAlive:">
-            <select value={prefs.tcpKeepalive ? "on" : "off"} onChange={(event) => updatePref("tcpKeepalive", event.target.value === "on")}>
-              <option value="off">关闭</option>
-              <option value="on">开启</option>
-            </select>
-          </DialogField>
-        )}
+        ) : null}
       </>
     );
   }
@@ -6873,7 +6907,6 @@ function createSessionPrefs() {
     copyOnSelect: true,
     rightClickPaste: false,
     reconnectPolicy: "on-disconnect",
-    reconnectDelayMs: 1000,
     sshSysmon: false,
     sshKeepaliveSeconds: "30",
     sshCompression: false,
@@ -6897,7 +6930,6 @@ function createSessionPrefs() {
     telnetProxyType: "SOCKS5",
     telnetProxyHost: "127.0.0.1",
     telnetProxyPort: "1080",
-    tcpKeepalive: false,
     tcpProxyEnabled: false,
     tcpProxyType: "SOCKS5",
     tcpProxyHost: "127.0.0.1",
@@ -6962,6 +6994,13 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
 }
 
 function normalizeConnectionConfig(connection: ConnectionConfig, profileId: string): ConnectionConfig {
+  if (connection.kind === "tcp" || connection.kind === "telnet") {
+    return normalizeTcpConnectionSettings({
+      ...connection,
+      host: connection.host.trim(),
+      port: Number.isFinite(connection.port) ? Math.min(65535, Math.max(0, Math.trunc(connection.port))) : 0,
+    });
+  }
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {
     return connection;
   }
@@ -7344,6 +7383,7 @@ function createTcpConnection(kind: "telnet" | "tcp"): Extract<ConnectionConfig, 
     host: "",
     port: kind === "telnet" ? 23 : 0,
     reconnect: true,
+    ...tcpConnectionDefaults,
   };
 }
 

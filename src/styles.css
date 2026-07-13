@@ -2537,7 +2537,7 @@ fieldset label {
 
   .session-settings-dialog {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 43px 38px minmax(96px, 140px) minmax(0, 1fr) auto auto;
+    grid-template-rows: 43px 76px minmax(96px, 140px) minmax(0, 1fr) auto auto;
     width: calc(100vw - 24px);
     height: calc(100vh - 24px);
   }
@@ -2545,8 +2545,9 @@ fieldset label {
   .session-settings-dialog .protocol-tabs {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: repeat(6, minmax(86px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(2, 38px);
+    overflow: hidden;
   }
 
   .session-settings-dialog .session-tree-nav {
