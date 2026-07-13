@@ -97,7 +97,7 @@ impl russh::Signer for PortMateAgentSigner {
 const STORE_FILE_NAME: &str = "portmate-store.sqlite3";
 const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
 const STORE_KEY: &str = "session-store";
-const SQLITE_SCHEMA_VERSION: &str = "2";
+const SQLITE_SCHEMA_VERSION: &str = "3";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const MODEM_SOH: u8 = 0x01;
@@ -141,6 +141,10 @@ const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check fai
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
 const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str = "PORTMATE_MIGRATION_RESTART_REQUIRED:";
+const PROFILE_SECRET_MIGRATION_JOURNAL_VERSION: u32 = 1;
+const MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES: u64 = 1024 * 1024;
+const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
+const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
@@ -1432,6 +1436,8 @@ pub struct ProfileSecretMigrationItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSecretMigrationResponse {
+    pub migration_id: Option<String>,
+    pub recovery_pending: bool,
     pub target_storage: SecretStorage,
     pub selected_profile_count: usize,
     pub migrated_profile_count: usize,
@@ -1441,6 +1447,58 @@ pub struct ProfileSecretMigrationResponse {
     pub items: Vec<ProfileSecretMigrationItem>,
     pub warnings: Vec<String>,
     pub portable_vault_requires_reunlock: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileSecretMigrationJournalState {
+    TargetWritePending,
+    TargetsVerified,
+    ProfilesCommitted,
+    SourceCleanupPending,
+    TargetCleanupPending,
+    NeedsResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileSecretMigrationRecoveryDisposition {
+    NotCommitted,
+    Committed,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationRecoverySummary {
+    pub migration_id: String,
+    pub state: ProfileSecretMigrationJournalState,
+    pub disposition: ProfileSecretMigrationRecoveryDisposition,
+    pub target_storage: SecretStorage,
+    pub cleanup_source: bool,
+    pub profile_count: usize,
+    pub secret_count: usize,
+    pub requires_portable_vault_unlock: bool,
+    pub can_recover: bool,
+    pub message: String,
+    pub created_at: chrono::DateTime<Utc>,
+    pub updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationRecoveryRequest {
+    pub migration_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSecretMigrationRecoveryResponse {
+    pub migration_id: String,
+    pub resolved: bool,
+    pub action: String,
+    pub warnings: Vec<String>,
+    pub pending: Option<ProfileSecretMigrationRecoverySummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2227,6 +2285,7 @@ fn save_session_profile(
     expected_profile: Option<SessionProfile>,
 ) -> Result<SessionSummary, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let profile = normalize_session_profile(profile);
     let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
@@ -2792,6 +2851,7 @@ fn save_secret(
     request: SecretWriteRequest,
 ) -> Result<SecretWriteResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let secret = request.secret.trim_end_matches(['\r', '\n']).to_string();
     if secret.trim().is_empty() {
         return Err("密钥内容不能为空".to_string());
@@ -2809,6 +2869,7 @@ fn save_secret(
 #[tauri::command]
 fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let usage_count = secret_ref_usage_count(&store, &secret_ref);
     if usage_count > 0 {
@@ -2855,6 +2916,17 @@ fn portable_vault_status_inner() -> Result<PortableVaultStatus, String> {
     })
 }
 
+fn portable_vault_recovery_ready() -> Result<bool, String> {
+    let context = portable_vault_context()?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(stronghold.as_ref().is_some_and(|stronghold| {
+        stronghold.snapshot_version != PortableVaultSnapshotVersion::UnknownAfterCommit
+    }))
+}
+
 #[tauri::command]
 fn unlock_portable_vault(
     state: State<'_, AppState>,
@@ -2873,6 +2945,7 @@ fn rotate_portable_vault_password(
     request: PortableVaultRotatePasswordRequest,
 ) -> Result<PortableVaultStatus, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let current_password = Zeroizing::new(request.current_password);
     let new_password = Zeroizing::new(request.new_password);
     let context = portable_vault_context()?;
@@ -2900,6 +2973,7 @@ fn preview_profile_secret_migration(
     let _credential_guard = lock_credential_operations(state.inner())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     verify_store_snapshot_is_current(&state.store_path)?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let mut plan = build_profile_secret_migration_plan(&store, &request)?;
     let plan_token = profile_secret_migration_plan_token(&plan, &request);
     plan.preview.plan_token = plan_token;
@@ -2918,6 +2992,7 @@ fn migrate_profile_secrets(
     let _credential_guard = lock_credential_operations(state.inner())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     verify_store_snapshot_is_current(&state.store_path)?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let plan = build_profile_secret_migration_plan(&store, &request)?;
     let current_plan_token = profile_secret_migration_plan_token(&plan, &request);
     if expected_plan_token.trim().is_empty() || expected_plan_token != current_plan_token {
@@ -2926,21 +3001,90 @@ fn migrate_profile_secrets(
     if plan.preview.eligible_secret_count > 0 {
         ensure_portable_vault_ready_for_migration()?;
     }
-    migrate_profile_secrets_with_io(
+    migrate_profile_secrets_with_journal_io(
         &mut store,
         &request,
         read_secret_from_store,
         write_profile_secret_migration_batch,
         delete_profile_secret_migration_batch,
-        |next_store, affected_profile_ids, target_refs| {
+        |next_store, affected_profile_ids, target_refs, migration_id| {
             persist_profile_secret_migration(
                 &state.store_path,
                 next_store,
                 affected_profile_ids,
                 target_refs,
+                migration_id,
             )
         },
+        |event| persist_profile_secret_migration_journal_event(&state.store_path, event),
     )
+}
+
+#[tauri::command]
+fn get_profile_secret_migration_recovery(
+    state: State<'_, AppState>,
+) -> Result<Option<ProfileSecretMigrationRecoverySummary>, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    verify_store_snapshot_is_current(&state.store_path)?;
+    let Some(journal) = load_profile_secret_migration_journal(&state.store_path)? else {
+        return Ok(None);
+    };
+    Ok(Some(profile_secret_migration_recovery_summary(
+        &store,
+        &journal,
+        portable_vault_recovery_ready()?,
+    )))
+}
+
+#[tauri::command]
+fn recover_profile_secret_migration(
+    state: State<'_, AppState>,
+    request: ProfileSecretMigrationRecoveryRequest,
+) -> Result<ProfileSecretMigrationRecoveryResponse, String> {
+    let migration_id = request.migration_id.trim().to_string();
+    Uuid::parse_str(&migration_id).map_err(|_| "凭据迁移恢复 ID 无效".to_string())?;
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    verify_store_snapshot_is_current(&state.store_path)?;
+    let Some(journal) = load_profile_secret_migration_journal(&state.store_path)? else {
+        return Ok(ProfileSecretMigrationRecoveryResponse {
+            migration_id,
+            resolved: true,
+            action: "already-resolved".to_string(),
+            warnings: Vec::new(),
+            pending: None,
+        });
+    };
+    if journal.payload.migration_id != migration_id {
+        return Err(format!(
+            "当前待恢复迁移为 {}，与请求 ID 不一致",
+            journal.payload.migration_id
+        ));
+    }
+    let outcome = recover_profile_secret_migration_with_io(
+        &store,
+        &journal,
+        probe_secret_from_store,
+        delete_profile_secret_migration_batch,
+        |event| persist_profile_secret_migration_journal_event(&state.store_path, event),
+    )?;
+    let pending = load_profile_secret_migration_journal(&state.store_path)?
+        .map(|journal| {
+            Ok::<_, String>(profile_secret_migration_recovery_summary(
+                &store,
+                &journal,
+                portable_vault_recovery_ready()?,
+            ))
+        })
+        .transpose()?;
+    Ok(ProfileSecretMigrationRecoveryResponse {
+        migration_id,
+        resolved: outcome.resolved,
+        action: outcome.action,
+        warnings: outcome.warnings,
+        pending,
+    })
 }
 
 #[tauri::command]
@@ -2949,6 +3093,7 @@ fn update_client_identity(
     request: ClientIdentityUpdateRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let identity = normalize_client_identity(
         &request.identity_id,
         IdentityRef {
@@ -2990,6 +3135,7 @@ fn rotate_client_identity(
     request: ClientIdentityRotateRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let private_key = request
         .private_key
         .trim_end_matches(['\r', '\n'])
@@ -3081,6 +3227,7 @@ fn delete_client_identity(
     request: ClientIdentityDeleteRequest,
 ) -> Result<ClientIdentityMutationResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let mut next_store = store.clone();
     let (summary, old_secret_ref) =
@@ -8918,9 +9065,13 @@ async fn start_tunnel_runtime(
                             .await
                         };
                         match result {
-                            Ok(()) => metrics.clear_error(),
+                            Ok(()) => {
+                                metrics.clear_error();
+                                metrics.connection_closed();
+                            }
                             Err(error) => {
                                 metrics.record_error(&error);
+                                metrics.connection_closed();
                                 if let Ok(mut store) = store.lock() {
                                     store.record_system_event(
                                         &session_id,
@@ -8934,7 +9085,6 @@ async fn start_tunnel_runtime(
                                 }
                             }
                         }
-                        metrics.connection_closed();
                     });
                 }
                 Ok(Err(error)) => {
@@ -11631,6 +11781,82 @@ struct ProfileSecretMigrationPlan {
     in_flight_source_refs: HashSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationJournalProfile {
+    profile_id: String,
+    before: ProfileSecretMigrationJournalProjection,
+    after: ProfileSecretMigrationJournalProjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationJournalProjection {
+    password_secret_ref: Option<String>,
+    passphrase_secret_ref: Option<String>,
+    identity_secret_refs: BTreeMap<String, String>,
+    jumps: Vec<ProfileSecretMigrationJournalJumpProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationJournalJumpProjection {
+    password_secret_ref: Option<String>,
+    passphrase_secret_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationJournalItem {
+    source_ref: String,
+    target_ref: String,
+    reference_count: usize,
+    in_flight_at_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationJournalPayload {
+    version: u32,
+    migration_id: String,
+    target_storage: SecretStorage,
+    cleanup_source: bool,
+    plan_token: String,
+    selected_profile_ids: Vec<String>,
+    profiles: Vec<ProfileSecretMigrationJournalProfile>,
+    items: Vec<ProfileSecretMigrationJournalItem>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedProfileSecretMigrationJournal {
+    state: ProfileSecretMigrationJournalState,
+    payload: ProfileSecretMigrationJournalPayload,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+enum ProfileSecretMigrationJournalEvent {
+    Prepared(ProfileSecretMigrationJournalPayload),
+    Transition {
+        migration_id: String,
+        state: ProfileSecretMigrationJournalState,
+    },
+    Clear {
+        migration_id: String,
+    },
+}
+
+enum ProfileSecretMigrationJournalVerification {
+    Active {
+        migration_id: String,
+        state: ProfileSecretMigrationJournalState,
+        payload_json: Option<String>,
+    },
+    Cleared {
+        migration_id: String,
+    },
+}
+
 struct PreparedProfileSecretMigration {
     source_ref: String,
     target_ref: String,
@@ -11647,6 +11873,18 @@ enum ProfileSecretStoreCommit {
 struct SecretBatchDeleteOutcome {
     results: BTreeMap<String, Result<(), String>>,
     portable_vault_requires_reunlock: bool,
+}
+
+enum SecretProbeResult {
+    Present(Zeroizing<String>),
+    Missing,
+    Unavailable(String),
+}
+
+struct ProfileSecretMigrationRecoveryOutcome {
+    resolved: bool,
+    action: String,
+    warnings: Vec<String>,
 }
 
 fn secret_ref_storage(secret_ref: &str) -> SecretStorage {
@@ -11850,6 +12088,192 @@ fn profile_secret_migration_plan_token(
     format!("{:x}", digest.finalize())
 }
 
+fn journal_optional_secret_ref(
+    secret_ref: Option<&str>,
+    label: &str,
+) -> Result<Option<String>, String> {
+    match secret_ref {
+        Some(secret_ref) => canonical_secret_ref(secret_ref)
+            .map(Some)
+            .ok_or_else(|| format!("凭据迁移恢复记录包含无效的 {label} secretRef")),
+        None => Ok(None),
+    }
+}
+
+fn profile_secret_migration_projection(
+    profile: &SessionProfile,
+) -> Result<ProfileSecretMigrationJournalProjection, String> {
+    let ssh = ssh_connection(profile)?;
+    let mut identity_secret_refs = BTreeMap::new();
+    for identity in &ssh.identity_refs {
+        if identity.source != IdentitySource::ProfileVault {
+            continue;
+        }
+        let identity_id = identity.id.trim();
+        if identity_id.is_empty() || identity_id != identity.id {
+            return Err(format!(
+                "Profile {} 包含无效的 Vault identity ID",
+                profile.id
+            ));
+        }
+        let secret_ref =
+            journal_optional_secret_ref(identity.secret_ref.as_deref(), "Vault identity")?
+                .ok_or_else(|| {
+                    format!(
+                        "Profile {} 的 Vault identity {} 缺少 secretRef",
+                        profile.id, identity.id
+                    )
+                })?;
+        if identity_secret_refs
+            .insert(identity.id.clone(), secret_ref)
+            .is_some()
+        {
+            return Err(format!(
+                "Profile {} 包含重复的 Vault identity ID: {}",
+                profile.id, identity.id
+            ));
+        }
+    }
+    let jumps = ssh
+        .jumps
+        .iter()
+        .enumerate()
+        .map(|(index, jump)| {
+            Ok(ProfileSecretMigrationJournalJumpProjection {
+                password_secret_ref: journal_optional_secret_ref(
+                    jump.password_secret_ref.as_deref(),
+                    &format!("Jump Host #{} password", index + 1),
+                )?,
+                passphrase_secret_ref: journal_optional_secret_ref(
+                    jump.passphrase_secret_ref.as_deref(),
+                    &format!("Jump Host #{} passphrase", index + 1),
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(ProfileSecretMigrationJournalProjection {
+        password_secret_ref: journal_optional_secret_ref(
+            ssh.password_secret_ref.as_deref(),
+            "SSH password",
+        )?,
+        passphrase_secret_ref: journal_optional_secret_ref(
+            ssh.passphrase_secret_ref.as_deref(),
+            "SSH passphrase",
+        )?,
+        identity_secret_refs,
+        jumps,
+    })
+}
+
+fn profile_secret_projection_ref_counts(
+    projection: &ProfileSecretMigrationJournalProjection,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    let mut secret_refs = Vec::new();
+    secret_refs.extend(projection.password_secret_ref.iter());
+    secret_refs.extend(projection.passphrase_secret_ref.iter());
+    secret_refs.extend(projection.identity_secret_refs.values());
+    for jump in &projection.jumps {
+        secret_refs.extend(jump.password_secret_ref.iter());
+        secret_refs.extend(jump.passphrase_secret_ref.iter());
+    }
+    for secret_ref in secret_refs {
+        let secret_ref = secret_ref.clone();
+        *counts.entry(secret_ref).or_default() += 1;
+    }
+    counts
+}
+
+fn replace_journal_projection_ref(
+    secret_ref: &mut Option<String>,
+    replacements: &HashMap<&str, &str>,
+) -> usize {
+    let Some(current) = secret_ref.as_deref() else {
+        return 0;
+    };
+    let Some(replacement) = replacements.get(current) else {
+        return 0;
+    };
+    *secret_ref = Some((*replacement).to_string());
+    1
+}
+
+fn replace_journal_projection_refs(
+    projection: &mut ProfileSecretMigrationJournalProjection,
+    replacements: &HashMap<&str, &str>,
+) -> usize {
+    let mut replaced =
+        replace_journal_projection_ref(&mut projection.password_secret_ref, replacements)
+            + replace_journal_projection_ref(&mut projection.passphrase_secret_ref, replacements);
+    for secret_ref in projection.identity_secret_refs.values_mut() {
+        if let Some(replacement) = replacements.get(secret_ref.as_str()) {
+            *secret_ref = (*replacement).to_string();
+            replaced += 1;
+        }
+    }
+    for jump in &mut projection.jumps {
+        replaced += replace_journal_projection_ref(&mut jump.password_secret_ref, replacements);
+        replaced += replace_journal_projection_ref(&mut jump.passphrase_secret_ref, replacements);
+    }
+    replaced
+}
+
+fn build_profile_secret_migration_journal(
+    store: &SessionStore,
+    next_store: &SessionStore,
+    plan: &ProfileSecretMigrationPlan,
+    request: &ProfileSecretMigrationRequest,
+    prepared: &[PreparedProfileSecretMigration],
+) -> Result<ProfileSecretMigrationJournalPayload, String> {
+    let mut profiles = Vec::with_capacity(plan.affected_profile_ids.len());
+    for profile_id in &plan.affected_profile_ids {
+        let before = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .ok_or_else(|| format!("迁移恢复记录缺少原 Profile: {profile_id}"))?;
+        let after = next_store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .ok_or_else(|| format!("迁移恢复记录缺少目标 Profile: {profile_id}"))?;
+        profiles.push(ProfileSecretMigrationJournalProfile {
+            profile_id: profile_id.clone(),
+            before: profile_secret_migration_projection(before)?,
+            after: profile_secret_migration_projection(after)?,
+        });
+    }
+    let target_by_source = prepared
+        .iter()
+        .map(|item| (item.source_ref.as_str(), item.target_ref.as_str()))
+        .collect::<HashMap<_, _>>();
+    let items = plan
+        .source_ref_counts
+        .iter()
+        .map(|(source_ref, reference_count)| {
+            let target_ref = target_by_source
+                .get(source_ref.as_str())
+                .ok_or_else(|| format!("迁移恢复记录缺少目标引用: {source_ref}"))?;
+            Ok(ProfileSecretMigrationJournalItem {
+                source_ref: source_ref.clone(),
+                target_ref: (*target_ref).to_string(),
+                reference_count: *reference_count,
+                in_flight_at_start: plan.in_flight_source_refs.contains(source_ref),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(ProfileSecretMigrationJournalPayload {
+        version: PROFILE_SECRET_MIGRATION_JOURNAL_VERSION,
+        migration_id: Uuid::new_v4().to_string(),
+        target_storage: request.target_storage,
+        cleanup_source: request.cleanup_source,
+        plan_token: profile_secret_migration_plan_token(plan, request),
+        selected_profile_ids: plan.selected_profile_ids.clone(),
+        profiles,
+        items,
+    })
+}
+
 fn replace_optional_profile_secret_ref(
     secret_ref: &mut Option<String>,
     replacements: &HashMap<String, String>,
@@ -11888,43 +12312,6 @@ fn replace_profile_secret_refs(
     replaced
 }
 
-fn profile_secret_refs_match(
-    expected: &SessionStore,
-    persisted: &SessionStore,
-    profile_ids: &[String],
-) -> bool {
-    profile_ids.iter().all(|profile_id| {
-        let expected = expected
-            .profiles
-            .iter()
-            .find(|profile| profile.id == *profile_id)
-            .map(profile_secret_ref_occurrences);
-        let persisted = persisted
-            .profiles
-            .iter()
-            .find(|profile| profile.id == *profile_id)
-            .map(profile_secret_ref_occurrences);
-        expected.is_some() && expected == persisted
-    })
-}
-
-fn persisted_store_uses_any_secret_ref(
-    store: &SessionStore,
-    profile_ids: &[String],
-    secret_refs: &[String],
-) -> bool {
-    let secret_refs = secret_refs
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    store
-        .profiles
-        .iter()
-        .filter(|profile| profile_ids.contains(&profile.id))
-        .flat_map(profile_secret_ref_occurrences)
-        .any(|secret_ref| secret_refs.contains(secret_ref.as_str()))
-}
-
 fn migration_error_with_cleanup(
     message: impl Into<String>,
     cleanup: &SecretBatchDeleteOutcome,
@@ -11950,12 +12337,610 @@ fn migration_error_with_cleanup(
     }
 }
 
+impl ProfileSecretMigrationJournalState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetWritePending => "target-write-pending",
+            Self::TargetsVerified => "targets-verified",
+            Self::ProfilesCommitted => "profiles-committed",
+            Self::SourceCleanupPending => "source-cleanup-pending",
+            Self::TargetCleanupPending => "target-cleanup-pending",
+            Self::NeedsResolution => "needs-resolution",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "target-write-pending" => Ok(Self::TargetWritePending),
+            "targets-verified" => Ok(Self::TargetsVerified),
+            "profiles-committed" => Ok(Self::ProfilesCommitted),
+            "source-cleanup-pending" => Ok(Self::SourceCleanupPending),
+            "target-cleanup-pending" => Ok(Self::TargetCleanupPending),
+            "needs-resolution" => Ok(Self::NeedsResolution),
+            _ => Err(format!("未知的凭据迁移恢复状态: {value}")),
+        }
+    }
+}
+
+fn validate_journal_projection(
+    projection: &ProfileSecretMigrationJournalProjection,
+    label: &str,
+) -> Result<(), String> {
+    for identity_id in projection.identity_secret_refs.keys() {
+        if identity_id.is_empty() || identity_id.trim() != identity_id {
+            return Err(format!("凭据迁移恢复记录包含无效的 {label} identity ID"));
+        }
+    }
+    for secret_ref in profile_secret_projection_ref_counts(projection).keys() {
+        if canonical_secret_ref(secret_ref).as_deref() != Some(secret_ref.as_str()) {
+            return Err(format!("凭据迁移恢复记录包含无效的 {label} secretRef"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_profile_secret_migration_journal(
+    payload: &ProfileSecretMigrationJournalPayload,
+) -> Result<(), String> {
+    if payload.version != PROFILE_SECRET_MIGRATION_JOURNAL_VERSION {
+        return Err(format!("不支持的凭据迁移恢复记录版本: {}", payload.version));
+    }
+    Uuid::parse_str(&payload.migration_id).map_err(|_| "凭据迁移恢复记录 ID 无效".to_string())?;
+    if payload.plan_token.len() != 64
+        || !payload
+            .plan_token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("凭据迁移恢复记录 plan token 无效".to_string());
+    }
+    if payload.selected_profile_ids.is_empty()
+        || payload.profiles.is_empty()
+        || payload.items.is_empty()
+        || payload.profiles.len() > MAX_PROFILE_SECRET_MIGRATION_PROFILES
+        || payload.items.len() > MAX_PROFILE_SECRET_MIGRATION_ITEMS
+    {
+        return Err("凭据迁移恢复记录范围无效".to_string());
+    }
+    let mut selected = HashSet::new();
+    for profile_id in &payload.selected_profile_ids {
+        if profile_id.trim() != profile_id
+            || profile_id.is_empty()
+            || !selected.insert(profile_id.as_str())
+        {
+            return Err("凭据迁移恢复记录包含无效或重复 Profile ID".to_string());
+        }
+    }
+    let mut mappings = HashMap::new();
+    let mut targets = HashSet::new();
+    for item in &payload.items {
+        if item.reference_count == 0
+            || canonical_secret_ref(&item.source_ref).as_deref() != Some(item.source_ref.as_str())
+            || canonical_secret_ref(&item.target_ref).as_deref() != Some(item.target_ref.as_str())
+            || is_reserved_mcp_secret_ref(&item.source_ref)
+            || is_reserved_mcp_secret_ref(&item.target_ref)
+            || secret_ref_storage(&item.source_ref) == payload.target_storage
+            || secret_ref_storage(&item.target_ref) != payload.target_storage
+            || mappings
+                .insert(item.source_ref.as_str(), item.target_ref.as_str())
+                .is_some()
+            || !targets.insert(item.target_ref.as_str())
+        {
+            return Err("凭据迁移恢复记录包含无效或重复 secret 映射".to_string());
+        }
+        let target_account = item
+            .target_ref
+            .split_once(':')
+            .map(|(_, account)| account)
+            .unwrap_or_default();
+        Uuid::parse_str(target_account)
+            .map_err(|_| "凭据迁移恢复记录 targetRef 不是 PortMate UUID".to_string())?;
+    }
+    let mut profile_ids = HashSet::new();
+    let mut mapped_totals = BTreeMap::<String, usize>::new();
+    for profile in &payload.profiles {
+        if !selected.contains(profile.profile_id.as_str())
+            || !profile_ids.insert(profile.profile_id.as_str())
+        {
+            return Err("凭据迁移恢复记录包含未知或重复的受影响 Profile".to_string());
+        }
+        validate_journal_projection(&profile.before, "before")?;
+        validate_journal_projection(&profile.after, "after")?;
+        let before_counts = profile_secret_projection_ref_counts(&profile.before);
+        let mut expected_after = profile.before.clone();
+        let replaced = replace_journal_projection_refs(&mut expected_after, &mappings);
+        for (secret_ref, count) in before_counts {
+            if mappings.contains_key(secret_ref.as_str()) {
+                *mapped_totals.entry(secret_ref).or_default() += count;
+            }
+        }
+        if expected_after != profile.after || replaced == 0 {
+            return Err("凭据迁移恢复记录的 before/after Profile 投影不一致".to_string());
+        }
+    }
+    for item in &payload.items {
+        if mapped_totals.get(&item.source_ref).copied() != Some(item.reference_count) {
+            return Err("凭据迁移恢复记录的引用计数不一致".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn parse_journal_timestamp(value: &str, label: &str) -> Result<chrono::DateTime<Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| format!("凭据迁移恢复记录 {label} 时间无效: {error}"))
+}
+
+fn load_profile_secret_migration_journal_from_connection(
+    connection: &SqliteConnection,
+) -> Result<Option<LoadedProfileSecretMigrationJournal>, String> {
+    let row = connection.query_row(
+        "select id, state, payload_json, created_at, updated_at
+         from profile_secret_migrations where active = 1 limit 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        },
+    );
+    let (migration_id, state, payload_json, created_at, updated_at) = match row {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(format!("无法读取凭据迁移恢复记录: {error}")),
+    };
+    if payload_json.len() as u64 > MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES {
+        return Err("凭据迁移恢复记录超过大小限制".to_string());
+    }
+    let payload = serde_json::from_str::<ProfileSecretMigrationJournalPayload>(&payload_json)
+        .map_err(|error| format!("凭据迁移恢复记录 JSON 损坏: {error}"))?;
+    validate_profile_secret_migration_journal(&payload)?;
+    if payload.migration_id != migration_id {
+        return Err("凭据迁移恢复记录 row ID 与 payload ID 不一致".to_string());
+    }
+    Ok(Some(LoadedProfileSecretMigrationJournal {
+        state: ProfileSecretMigrationJournalState::parse(&state)?,
+        payload,
+        created_at: parse_journal_timestamp(&created_at, "createdAt")?,
+        updated_at: parse_journal_timestamp(&updated_at, "updatedAt")?,
+    }))
+}
+
+fn load_profile_secret_migration_journal(
+    path: &Path,
+) -> Result<Option<LoadedProfileSecretMigrationJournal>, String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("sqlite3") {
+        return Err("凭据迁移恢复记录只支持 SQLite SessionStore".to_string());
+    }
+    let connection = SqliteConnection::open(path)
+        .map_err(|error| format!("无法打开 SQLite 读取凭据迁移恢复记录: {error}"))?;
+    ensure_store_schema(&connection)?;
+    load_profile_secret_migration_journal_from_connection(&connection)
+}
+
+fn ensure_no_pending_profile_secret_migration(path: &Path) -> Result<(), String> {
+    if let Some(journal) = load_profile_secret_migration_journal(path)? {
+        return Err(format!(
+            "存在待恢复的凭据迁移 {}（{}），请先核对并恢复后再修改凭据",
+            journal.payload.migration_id,
+            journal.state.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn profile_secret_migration_projection_disposition(
+    store: &SessionStore,
+    payload: &ProfileSecretMigrationJournalPayload,
+) -> ProfileSecretMigrationRecoveryDisposition {
+    let mut all_before = true;
+    let mut all_after = true;
+    for profile in &payload.profiles {
+        let Some(current) = store
+            .profiles
+            .iter()
+            .find(|current| current.id == profile.profile_id)
+        else {
+            return ProfileSecretMigrationRecoveryDisposition::Conflict;
+        };
+        let Ok(current) = profile_secret_migration_projection(current) else {
+            return ProfileSecretMigrationRecoveryDisposition::Conflict;
+        };
+        all_before &= current == profile.before;
+        all_after &= current == profile.after;
+    }
+    match (all_before, all_after) {
+        (true, false) => ProfileSecretMigrationRecoveryDisposition::NotCommitted,
+        (false, true) => ProfileSecretMigrationRecoveryDisposition::Committed,
+        _ => ProfileSecretMigrationRecoveryDisposition::Conflict,
+    }
+}
+
+fn profile_secret_migration_disposition(
+    store: &SessionStore,
+    journal: &LoadedProfileSecretMigrationJournal,
+) -> ProfileSecretMigrationRecoveryDisposition {
+    let projection = profile_secret_migration_projection_disposition(store, &journal.payload);
+    match (projection, journal.state) {
+        (
+            ProfileSecretMigrationRecoveryDisposition::NotCommitted,
+            ProfileSecretMigrationJournalState::TargetWritePending
+            | ProfileSecretMigrationJournalState::TargetsVerified
+            | ProfileSecretMigrationJournalState::TargetCleanupPending,
+        ) => ProfileSecretMigrationRecoveryDisposition::NotCommitted,
+        (
+            ProfileSecretMigrationRecoveryDisposition::Committed,
+            ProfileSecretMigrationJournalState::ProfilesCommitted
+            | ProfileSecretMigrationJournalState::SourceCleanupPending,
+        ) => ProfileSecretMigrationRecoveryDisposition::Committed,
+        _ => ProfileSecretMigrationRecoveryDisposition::Conflict,
+    }
+}
+
+fn profile_secret_migration_recovery_summary(
+    store: &SessionStore,
+    journal: &LoadedProfileSecretMigrationJournal,
+    portable_vault_ready: bool,
+) -> ProfileSecretMigrationRecoverySummary {
+    let disposition = profile_secret_migration_disposition(store, journal);
+    let conflict = disposition == ProfileSecretMigrationRecoveryDisposition::Conflict;
+    let requires_portable_vault_unlock = !portable_vault_ready && !conflict;
+    let message = match (disposition, requires_portable_vault_unlock) {
+        (ProfileSecretMigrationRecoveryDisposition::NotCommitted, true) => {
+            "Profile 仍使用原凭据；请重新解锁 portable vault 后核对并回收目标副本".to_string()
+        }
+        (ProfileSecretMigrationRecoveryDisposition::NotCommitted, false) => {
+            "Profile 仍使用原凭据；可核对源凭据并回收未引用的目标副本".to_string()
+        }
+        (ProfileSecretMigrationRecoveryDisposition::Committed, true) => {
+            "Profile 已切换到目标凭据；请重新解锁 portable vault 后核对并完成源清理".to_string()
+        }
+        (ProfileSecretMigrationRecoveryDisposition::Committed, false) => {
+            "Profile 已切换到目标凭据；可核对两侧内容并完成源清理".to_string()
+        }
+        (ProfileSecretMigrationRecoveryDisposition::Conflict, _) => {
+            "Profile 凭据投影与迁移记录冲突；已冻结两侧 secret，需要人工核对".to_string()
+        }
+    };
+    ProfileSecretMigrationRecoverySummary {
+        migration_id: journal.payload.migration_id.clone(),
+        state: journal.state,
+        disposition,
+        target_storage: journal.payload.target_storage,
+        cleanup_source: journal.payload.cleanup_source,
+        profile_count: journal.payload.profiles.len(),
+        secret_count: journal.payload.items.len(),
+        requires_portable_vault_unlock,
+        can_recover: !conflict,
+        message,
+        created_at: journal.created_at,
+        updated_at: journal.updated_at,
+    }
+}
+
+fn migration_source_ref_is_in_flight(
+    store: &SessionStore,
+    payload: &ProfileSecretMigrationJournalPayload,
+    source_ref: &str,
+) -> bool {
+    payload.profiles.iter().any(|profile| {
+        profile_secret_projection_ref_counts(&profile.before).contains_key(source_ref)
+            && store.runtimes.iter().any(|runtime| {
+                runtime.session_id == profile.profile_id
+                    && matches!(
+                        runtime.status,
+                        SessionStatus::Connecting | SessionStatus::Reconnecting
+                    )
+            })
+    })
+}
+
+fn profile_secret_migration_needs_resolution<JournalUpdate>(
+    journal: &LoadedProfileSecretMigrationJournal,
+    reason: String,
+    journal_update: &mut JournalUpdate,
+) -> Result<ProfileSecretMigrationRecoveryOutcome, String>
+where
+    JournalUpdate: FnMut(ProfileSecretMigrationJournalEvent) -> Result<(), String>,
+{
+    if journal.state != ProfileSecretMigrationJournalState::NeedsResolution {
+        journal_update(ProfileSecretMigrationJournalEvent::Transition {
+            migration_id: journal.payload.migration_id.clone(),
+            state: ProfileSecretMigrationJournalState::NeedsResolution,
+        })
+        .map_err(|error| format!("无法冻结冲突的凭据迁移恢复记录: {error}"))?;
+    }
+    Ok(ProfileSecretMigrationRecoveryOutcome {
+        resolved: false,
+        action: "needs-resolution".to_string(),
+        warnings: vec![reason],
+    })
+}
+
+fn blocked_profile_secret_migration_recovery(
+    message: String,
+) -> ProfileSecretMigrationRecoveryOutcome {
+    ProfileSecretMigrationRecoveryOutcome {
+        resolved: false,
+        action: "blocked".to_string(),
+        warnings: vec![message],
+    }
+}
+
+fn recover_profile_secret_migration_with_io<ProbeSecret, DeleteBatch, JournalUpdate>(
+    store: &SessionStore,
+    journal: &LoadedProfileSecretMigrationJournal,
+    mut probe_secret: ProbeSecret,
+    mut delete_batch: DeleteBatch,
+    mut journal_update: JournalUpdate,
+) -> Result<ProfileSecretMigrationRecoveryOutcome, String>
+where
+    ProbeSecret: FnMut(&str) -> SecretProbeResult,
+    DeleteBatch: FnMut(SecretStorage, &[String]) -> SecretBatchDeleteOutcome,
+    JournalUpdate: FnMut(ProfileSecretMigrationJournalEvent) -> Result<(), String>,
+{
+    let migration_id = &journal.payload.migration_id;
+    match profile_secret_migration_disposition(store, journal) {
+        ProfileSecretMigrationRecoveryDisposition::Conflict => {
+            return profile_secret_migration_needs_resolution(
+                journal,
+                "Profile 出现混合、缺失或第三种凭据投影；自动恢复未修改 Profile 或 provider"
+                    .to_string(),
+                &mut journal_update,
+            );
+        }
+        ProfileSecretMigrationRecoveryDisposition::NotCommitted => {
+            for item in &journal.payload.items {
+                match probe_secret(&item.source_ref) {
+                    SecretProbeResult::Present(_) => {}
+                    SecretProbeResult::Missing => {
+                        return profile_secret_migration_needs_resolution(
+                            journal,
+                            format!(
+                                "Profile 仍引用源 secret，但 provider 中已缺失: {}",
+                                item.source_ref
+                            ),
+                            &mut journal_update,
+                        );
+                    }
+                    SecretProbeResult::Unavailable(error) => {
+                        return Ok(blocked_profile_secret_migration_recovery(format!(
+                            "无法核对源 secret {}: {error}",
+                            item.source_ref
+                        )));
+                    }
+                }
+            }
+            for item in &journal.payload.items {
+                let usage_count = secret_ref_usage_count(store, &item.target_ref);
+                if usage_count > 0 {
+                    return profile_secret_migration_needs_resolution(
+                        journal,
+                        format!(
+                            "未提交迁移的目标 secret 已被 {usage_count} 个当前 Profile 引用: {}",
+                            item.target_ref
+                        ),
+                        &mut journal_update,
+                    );
+                }
+            }
+            let mut present_targets = Vec::new();
+            for item in &journal.payload.items {
+                match probe_secret(&item.target_ref) {
+                    SecretProbeResult::Present(_) => present_targets.push(item.target_ref.clone()),
+                    SecretProbeResult::Missing => {}
+                    SecretProbeResult::Unavailable(error) => {
+                        return Ok(blocked_profile_secret_migration_recovery(format!(
+                            "无法核对目标 secret {}: {error}",
+                            item.target_ref
+                        )));
+                    }
+                }
+            }
+            journal_update(ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetCleanupPending,
+            })
+            .map_err(|error| format!("目标回滚前无法保存恢复 checkpoint: {error}"))?;
+            let cleanup = if present_targets.is_empty() {
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            } else {
+                delete_batch(journal.payload.target_storage, &present_targets)
+            };
+            let mut warnings = cleanup
+                .results
+                .iter()
+                .filter_map(|(secret_ref, result)| {
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|error| format!("目标 secret {secret_ref} 回收失败: {error}"))
+                })
+                .collect::<Vec<_>>();
+            let cleanup_complete = !cleanup.portable_vault_requires_reunlock
+                && present_targets
+                    .iter()
+                    .all(|secret_ref| matches!(cleanup.results.get(secret_ref), Some(Ok(()))));
+            if cleanup.portable_vault_requires_reunlock {
+                warnings.push("portable vault 回滚提交状态需要重新锁定并解锁后核对".to_string());
+            }
+            if !cleanup_complete {
+                return Ok(ProfileSecretMigrationRecoveryOutcome {
+                    resolved: false,
+                    action: "rollback-pending".to_string(),
+                    warnings,
+                });
+            }
+            if let Err(error) = journal_update(ProfileSecretMigrationJournalEvent::Clear {
+                migration_id: migration_id.clone(),
+            }) {
+                warnings.push(format!("目标已回滚，但恢复记录清除失败: {error}"));
+                return Ok(ProfileSecretMigrationRecoveryOutcome {
+                    resolved: false,
+                    action: "rollback-complete-journal-pending".to_string(),
+                    warnings,
+                });
+            }
+            return Ok(ProfileSecretMigrationRecoveryOutcome {
+                resolved: true,
+                action: "rolled-back-targets".to_string(),
+                warnings,
+            });
+        }
+        ProfileSecretMigrationRecoveryDisposition::Committed => {}
+    }
+
+    let mut target_values = HashMap::new();
+    for item in &journal.payload.items {
+        match probe_secret(&item.target_ref) {
+            SecretProbeResult::Present(secret) => {
+                target_values.insert(item.target_ref.as_str(), secret);
+            }
+            SecretProbeResult::Missing => {
+                return profile_secret_migration_needs_resolution(
+                    journal,
+                    format!(
+                        "Profile 已引用目标 secret，但 provider 中已缺失: {}",
+                        item.target_ref
+                    ),
+                    &mut journal_update,
+                );
+            }
+            SecretProbeResult::Unavailable(error) => {
+                return Ok(blocked_profile_secret_migration_recovery(format!(
+                    "无法核对目标 secret {}: {error}",
+                    item.target_ref
+                )));
+            }
+        }
+    }
+
+    let mut present_sources = HashSet::new();
+    for item in &journal.payload.items {
+        match probe_secret(&item.source_ref) {
+            SecretProbeResult::Present(source) => {
+                let target = target_values
+                    .get(item.target_ref.as_str())
+                    .expect("all target values were probed");
+                if source.as_str() != target.as_str() {
+                    return profile_secret_migration_needs_resolution(
+                        journal,
+                        format!(
+                            "源与目标 secret 内容不一致，已保留两侧: {} -> {}",
+                            item.source_ref, item.target_ref
+                        ),
+                        &mut journal_update,
+                    );
+                }
+                present_sources.insert(item.source_ref.clone());
+            }
+            SecretProbeResult::Missing => {}
+            SecretProbeResult::Unavailable(error) => {
+                return Ok(blocked_profile_secret_migration_recovery(format!(
+                    "无法核对源 secret {}: {error}",
+                    item.source_ref
+                )));
+            }
+        }
+    }
+
+    let mut deletable_sources = Vec::new();
+    let mut deferred_in_flight = Vec::new();
+    if journal.payload.cleanup_source {
+        for item in &journal.payload.items {
+            if !present_sources.contains(&item.source_ref)
+                || secret_ref_usage_count(store, &item.source_ref) > 0
+            {
+                continue;
+            }
+            if migration_source_ref_is_in_flight(store, &journal.payload, &item.source_ref) {
+                deferred_in_flight.push(item.source_ref.clone());
+            } else {
+                deletable_sources.push(item.source_ref.clone());
+            }
+        }
+        journal_update(ProfileSecretMigrationJournalEvent::Transition {
+            migration_id: migration_id.clone(),
+            state: ProfileSecretMigrationJournalState::SourceCleanupPending,
+        })
+        .map_err(|error| format!("源清理前无法保存恢复 checkpoint: {error}"))?;
+    }
+
+    let source_storage = match journal.payload.target_storage {
+        SecretStorage::Native => SecretStorage::Portable,
+        SecretStorage::Portable => SecretStorage::Native,
+    };
+    let cleanup = if deletable_sources.is_empty() {
+        SecretBatchDeleteOutcome {
+            results: BTreeMap::new(),
+            portable_vault_requires_reunlock: false,
+        }
+    } else {
+        delete_batch(source_storage, &deletable_sources)
+    };
+    let mut warnings = cleanup
+        .results
+        .iter()
+        .filter_map(|(secret_ref, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("源 secret {secret_ref} 清理失败: {error}"))
+        })
+        .collect::<Vec<_>>();
+    if !deferred_in_flight.is_empty() {
+        warnings.push(format!(
+            "{} 个源 secret 仍被建连中的会话使用，已延后清理",
+            deferred_in_flight.len()
+        ));
+    }
+    if cleanup.portable_vault_requires_reunlock {
+        warnings.push("portable vault 清理提交状态需要重新锁定并解锁后核对".to_string());
+    }
+    let cleanup_complete = !cleanup.portable_vault_requires_reunlock
+        && deferred_in_flight.is_empty()
+        && deletable_sources
+            .iter()
+            .all(|secret_ref| matches!(cleanup.results.get(secret_ref), Some(Ok(()))));
+    if !cleanup_complete {
+        return Ok(ProfileSecretMigrationRecoveryOutcome {
+            resolved: false,
+            action: "source-cleanup-pending".to_string(),
+            warnings,
+        });
+    }
+    if let Err(error) = journal_update(ProfileSecretMigrationJournalEvent::Clear {
+        migration_id: migration_id.clone(),
+    }) {
+        warnings.push(format!("迁移已核对完成，但恢复记录清除失败: {error}"));
+        return Ok(ProfileSecretMigrationRecoveryOutcome {
+            resolved: false,
+            action: "cleanup-complete-journal-pending".to_string(),
+            warnings,
+        });
+    }
+    Ok(ProfileSecretMigrationRecoveryOutcome {
+        resolved: true,
+        action: "finalized-source-cleanup".to_string(),
+        warnings,
+    })
+}
+
+#[cfg(test)]
 fn migrate_profile_secrets_with_io<ReadSecret, WriteBatch, DeleteBatch, PersistStore>(
     store: &mut SessionStore,
     request: &ProfileSecretMigrationRequest,
-    mut read_secret: ReadSecret,
-    mut write_batch: WriteBatch,
-    mut delete_batch: DeleteBatch,
+    read_secret: ReadSecret,
+    write_batch: WriteBatch,
+    delete_batch: DeleteBatch,
     mut persist_store: PersistStore,
 ) -> Result<ProfileSecretMigrationResponse, String>
 where
@@ -11964,9 +12949,46 @@ where
     DeleteBatch: FnMut(SecretStorage, &[String]) -> SecretBatchDeleteOutcome,
     PersistStore: FnMut(&SessionStore, &[String], &[String]) -> ProfileSecretStoreCommit,
 {
+    migrate_profile_secrets_with_journal_io(
+        store,
+        request,
+        read_secret,
+        write_batch,
+        delete_batch,
+        |next_store, affected_profile_ids, target_refs, _| {
+            persist_store(next_store, affected_profile_ids, target_refs)
+        },
+        |_| Ok(()),
+    )
+}
+
+fn migrate_profile_secrets_with_journal_io<
+    ReadSecret,
+    WriteBatch,
+    DeleteBatch,
+    PersistStore,
+    JournalUpdate,
+>(
+    store: &mut SessionStore,
+    request: &ProfileSecretMigrationRequest,
+    mut read_secret: ReadSecret,
+    mut write_batch: WriteBatch,
+    mut delete_batch: DeleteBatch,
+    mut persist_store: PersistStore,
+    mut journal_update: JournalUpdate,
+) -> Result<ProfileSecretMigrationResponse, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+    WriteBatch: FnMut(SecretStorage, &[PreparedProfileSecretMigration]) -> Result<bool, String>,
+    DeleteBatch: FnMut(SecretStorage, &[String]) -> SecretBatchDeleteOutcome,
+    PersistStore: FnMut(&SessionStore, &[String], &[String], &str) -> ProfileSecretStoreCommit,
+    JournalUpdate: FnMut(ProfileSecretMigrationJournalEvent) -> Result<(), String>,
+{
     let plan = build_profile_secret_migration_plan(store, request)?;
     if plan.source_ref_counts.is_empty() {
         return Ok(ProfileSecretMigrationResponse {
+            migration_id: None,
+            recovery_pending: false,
             target_storage: request.target_storage,
             selected_profile_count: plan.preview.selected_profile_count,
             migrated_profile_count: 0,
@@ -11999,8 +13021,6 @@ where
         });
     }
 
-    let mut portable_vault_requires_reunlock = write_batch(request.target_storage, &prepared)
-        .map_err(|error| format!("凭据迁移目标写入失败，Profile 引用保持不变: {error}"))?;
     let replacements = prepared
         .iter()
         .map(|item| (item.source_ref.clone(), item.target_ref.clone()))
@@ -12022,13 +13042,50 @@ where
         .map(|profile| replace_profile_secret_refs(profile, &replacements))
         .sum::<usize>();
     if replaced != plan.preview.eligible_reference_count {
-        let cleanup = delete_batch(request.target_storage, &target_refs);
-        return Err(migration_error_with_cleanup(
-            format!(
-                "凭据迁移内部引用计数不一致: expected {}, got {replaced}",
-                plan.preview.eligible_reference_count
-            ),
-            &cleanup,
+        return Err(format!(
+            "凭据迁移内部引用计数不一致: expected {}, got {replaced}",
+            plan.preview.eligible_reference_count
+        ));
+    }
+
+    let journal =
+        build_profile_secret_migration_journal(store, &next_store, &plan, request, &prepared)?;
+    let migration_id = journal.migration_id.clone();
+    journal_update(ProfileSecretMigrationJournalEvent::Prepared(journal))
+        .map_err(|error| format!("凭据迁移恢复记录未能在目标写入前持久化，操作已中止: {error}"))?;
+
+    let mut portable_vault_requires_reunlock = match write_batch(request.target_storage, &prepared)
+    {
+        Ok(requires_reunlock) => requires_reunlock,
+        Err(error) => {
+            let _ = journal_update(ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetCleanupPending,
+            });
+            return Err(format!(
+                "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} 凭据迁移目标写入失败，Profile 引用保持不变；恢复记录 {migration_id} 已保留用于核对目标副本: {error}"
+            ));
+        }
+    };
+    if portable_vault_requires_reunlock {
+        let checkpoint = journal_update(ProfileSecretMigrationJournalEvent::Transition {
+            migration_id: migration_id.clone(),
+            state: ProfileSecretMigrationJournalState::TargetCleanupPending,
+        });
+        let checkpoint_warning = checkpoint
+            .err()
+            .map(|error| format!("；恢复记录 checkpoint 更新失败: {error}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} portable vault 目标 snapshot 已提交，但版本指纹无法确认；Profile 引用保持不变，恢复记录 {migration_id} 已保留，锁定并重新解锁 vault 后再核对{checkpoint_warning}"
+        ));
+    }
+    if let Err(error) = journal_update(ProfileSecretMigrationJournalEvent::Transition {
+        migration_id: migration_id.clone(),
+        state: ProfileSecretMigrationJournalState::TargetsVerified,
+    }) {
+        return Err(format!(
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} 目标 secret 已写入，但恢复 checkpoint 保存失败；为避免误删，Profile 原引用与两侧 secret 均已保留，恢复记录 {migration_id} 待重启核对: {error}"
         ));
     }
 
@@ -12036,6 +13093,7 @@ where
         &next_store,
         &plan.affected_profile_ids,
         &target_refs,
+        &migration_id,
     ) {
         ProfileSecretStoreCommit::Committed { warning } => {
             let mut warnings = Vec::new();
@@ -12043,6 +13101,16 @@ where
                 warnings.push(warning);
             }
             *store = next_store;
+            let mut journal_checkpoint_failed = false;
+            if let Err(error) = journal_update(ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::SourceCleanupPending,
+            }) {
+                journal_checkpoint_failed = true;
+                warnings.push(format!(
+                    "Profile 已提交，但恢复记录 checkpoint 更新失败: {error}"
+                ));
+            }
 
             let mut deletable = Vec::new();
             let mut remaining = BTreeMap::new();
@@ -12050,6 +13118,7 @@ where
                 let count = secret_ref_usage_count(store, source_ref);
                 remaining.insert(source_ref.clone(), count);
                 if request.cleanup_source
+                    && !journal_checkpoint_failed
                     && count == 0
                     && !plan.in_flight_source_refs.contains(source_ref)
                 {
@@ -12083,6 +13152,11 @@ where
                     (ProfileSecretCleanupStatus::RetainedShared, None)
                 } else if plan.in_flight_source_refs.contains(source_ref) {
                     (ProfileSecretCleanupStatus::RetainedInUse, None)
+                } else if journal_checkpoint_failed {
+                    let warning = format!(
+                        "旧 secret {source_ref} 因恢复 checkpoint 未确认而保留"
+                    );
+                    (ProfileSecretCleanupStatus::Failed, Some(warning))
                 } else {
                     match cleanup.results.get(source_ref) {
                         Some(Ok(())) => (ProfileSecretCleanupStatus::Deleted, None),
@@ -12129,7 +13203,33 @@ where
                 .iter()
                 .filter_map(|profile_id| summaries_by_id.get(profile_id).cloned())
                 .collect::<Vec<_>>();
+            let mut recovery_pending = journal_checkpoint_failed
+                || portable_vault_requires_reunlock
+                || items.iter().any(|item| {
+                    matches!(
+                        item.cleanup_status,
+                        ProfileSecretCleanupStatus::Failed
+                            | ProfileSecretCleanupStatus::RetainedInUse
+                    )
+                });
+            if recovery_pending {
+                if let Err(error) =
+                    journal_update(ProfileSecretMigrationJournalEvent::Transition {
+                        migration_id: migration_id.clone(),
+                        state: ProfileSecretMigrationJournalState::SourceCleanupPending,
+                    })
+                {
+                    warnings.push(format!("恢复记录保持 pending 失败: {error}"));
+                }
+            } else if let Err(error) = journal_update(ProfileSecretMigrationJournalEvent::Clear {
+                migration_id: migration_id.clone(),
+            }) {
+                recovery_pending = true;
+                warnings.push(format!("迁移已完成，但恢复记录清除失败: {error}"));
+            }
             Ok(ProfileSecretMigrationResponse {
+                migration_id: Some(migration_id),
+                recovery_pending,
                 target_storage: request.target_storage,
                 selected_profile_count: plan.preview.selected_profile_count,
                 migrated_profile_count: plan.affected_profile_ids.len(),
@@ -12142,14 +13242,51 @@ where
             })
         }
         ProfileSecretStoreCommit::NotCommitted(error) => {
-            let cleanup = delete_batch(request.target_storage, &target_refs);
-            Err(migration_error_with_cleanup(
+            let checkpoint = journal_update(ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetCleanupPending,
+            });
+            let cleanup = if checkpoint.is_ok() {
+                delete_batch(request.target_storage, &target_refs)
+            } else {
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            };
+            let cleanup_complete = !cleanup.portable_vault_requires_reunlock
+                && target_refs.iter().all(|target_ref| {
+                    matches!(cleanup.results.get(target_ref), Some(Ok(())))
+                });
+            let mut recovery_pending = checkpoint.is_err() || !cleanup_complete;
+            let mut journal_error = checkpoint.err();
+            if !recovery_pending {
+                if let Err(error) =
+                    journal_update(ProfileSecretMigrationJournalEvent::Clear {
+                        migration_id: migration_id.clone(),
+                    })
+                {
+                    recovery_pending = true;
+                    journal_error = Some(error);
+                }
+            }
+            let mut message = migration_error_with_cleanup(
                 format!("凭据迁移 Profile 保存失败，原引用保持不变: {error}"),
                 &cleanup,
-            ))
+            );
+            if let Some(journal_error) = journal_error {
+                message.push_str(&format!("；恢复记录更新失败: {journal_error}"));
+            }
+            if recovery_pending {
+                Err(format!(
+                    "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} {message}；恢复记录 {migration_id} 已保留"
+                ))
+            } else {
+                Err(message)
+            }
         }
         ProfileSecretStoreCommit::Unknown(error) => Err(format!(
-            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} 凭据迁移 Profile 保存结果无法确认，原引用继续留在当前进程且新目标 secret 已保留；请重启 PortMate 后核对: {error}"
+            "{PROFILE_SECRET_MIGRATION_RESTART_REQUIRED} 凭据迁移 Profile 保存结果无法确认，原引用继续留在当前进程且新目标 secret 已保留；恢复记录 {migration_id} 已持久化，请重启 PortMate 后核对: {error}"
         )),
     }
 }
@@ -12407,6 +13544,45 @@ fn read_secret_from_portable_vault_in(
     String::from_utf8(value).map_err(|_| "portable vault secret 不是有效 UTF-8".to_string())
 }
 
+fn probe_secret_from_portable_vault(secret_ref: &str) -> SecretProbeResult {
+    let context = match portable_vault_context() {
+        Ok(context) => context,
+        Err(error) => return SecretProbeResult::Unavailable(error),
+    };
+    let account = match portable_vault_account(secret_ref) {
+        Ok(account) => account,
+        Err(error) => return SecretProbeResult::Unavailable(error),
+    };
+    let stronghold = match context.stronghold.lock() {
+        Ok(stronghold) => stronghold,
+        Err(error) => return SecretProbeResult::Unavailable(error.to_string()),
+    };
+    let Some(stronghold) = stronghold.as_ref() else {
+        return SecretProbeResult::Unavailable("portable vault 已锁定".to_string());
+    };
+    if let Err(error) = stronghold.ensure_snapshot_current() {
+        return SecretProbeResult::Unavailable(error);
+    }
+    let client = match stronghold.get_client(PORTABLE_VAULT_CLIENT) {
+        Ok(client) => client,
+        Err(error) => {
+            return SecretProbeResult::Unavailable(format!(
+                "portable vault client 不可用: {error}"
+            ));
+        }
+    };
+    match client.store().get(account.as_bytes()) {
+        Ok(Some(value)) => match String::from_utf8(value) {
+            Ok(value) => SecretProbeResult::Present(Zeroizing::new(value)),
+            Err(_) => {
+                SecretProbeResult::Unavailable("portable vault secret 不是有效 UTF-8".to_string())
+            }
+        },
+        Ok(None) => SecretProbeResult::Missing,
+        Err(error) => SecretProbeResult::Unavailable(format!("读取 portable vault 失败: {error}")),
+    }
+}
+
 fn delete_secret_from_portable_vault(secret_ref: &str) -> Result<(), String> {
     let context = portable_vault_context()?;
     delete_secret_from_portable_vault_in(context, secret_ref)
@@ -12613,6 +13789,14 @@ fn read_secret_from_store(secret_ref: &str) -> Result<String, String> {
     }
 }
 
+fn probe_secret_from_store(secret_ref: &str) -> SecretProbeResult {
+    if secret_ref.trim().starts_with("stronghold:") {
+        probe_secret_from_portable_vault(secret_ref)
+    } else {
+        probe_secret_from_keyring(secret_ref)
+    }
+}
+
 fn delete_secret_from_store(secret_ref: &str) -> Result<(), String> {
     if secret_ref.trim().starts_with("stronghold:") {
         delete_secret_from_portable_vault(secret_ref)
@@ -12645,6 +13829,18 @@ fn read_secret_from_keyring(secret_ref: &str) -> Result<String, String> {
     entry
         .get_password()
         .map_err(|error| format!("读取系统密钥库失败: {error:?}"))
+}
+
+fn probe_secret_from_keyring(secret_ref: &str) -> SecretProbeResult {
+    let entry = match keyring_entry(secret_ref) {
+        Ok(entry) => entry,
+        Err(error) => return SecretProbeResult::Unavailable(error),
+    };
+    match entry.get_password() {
+        Ok(secret) => SecretProbeResult::Present(Zeroizing::new(secret)),
+        Err(keyring_core::Error::NoEntry) => SecretProbeResult::Missing,
+        Err(error) => SecretProbeResult::Unavailable(format!("读取系统密钥库失败: {error:?}")),
+    }
 }
 
 fn has_secret_ref(secret_ref: &str) -> bool {
@@ -12797,35 +13993,52 @@ fn read_persisted_store_for_migration(path: &Path) -> Result<SessionStore, Strin
 fn persist_profile_secret_migration(
     path: &Path,
     next_store: &SessionStore,
-    affected_profile_ids: &[String],
-    target_refs: &[String],
+    _affected_profile_ids: &[String],
+    _target_refs: &[String],
+    migration_id: &str,
 ) -> ProfileSecretStoreCommit {
-    match save_store(path, next_store) {
+    match save_store_with_profile_secret_migration_checkpoint(path, next_store, migration_id) {
         Ok(()) => ProfileSecretStoreCommit::Committed { warning: None },
-        Err(save_error) => match read_persisted_store_for_migration(path) {
-            Ok(persisted)
-                if profile_secret_refs_match(next_store, &persisted, affected_profile_ids) =>
-            {
-                ProfileSecretStoreCommit::Committed {
-                    warning: Some(format!(
-                        "Profile 保存返回错误，但磁盘引用已验证为已提交: {save_error}"
-                    )),
+        Err(save_error) => {
+            let persisted = read_persisted_store_for_migration(path);
+            let journal = load_profile_secret_migration_journal(path);
+            match (persisted, journal) {
+                (Ok(persisted), Ok(Some(journal)))
+                    if journal.payload.migration_id == migration_id =>
+                {
+                    match profile_secret_migration_disposition(&persisted, &journal) {
+                        ProfileSecretMigrationRecoveryDisposition::Committed => {
+                            ProfileSecretStoreCommit::Committed {
+                                warning: Some(format!(
+                                    "Profile 保存返回错误，但磁盘 Profile 与 journal 已精确验证为已提交: {save_error}"
+                                )),
+                            }
+                        }
+                        ProfileSecretMigrationRecoveryDisposition::NotCommitted => {
+                            ProfileSecretStoreCommit::NotCommitted(save_error)
+                        }
+                        ProfileSecretMigrationRecoveryDisposition::Conflict => {
+                            ProfileSecretStoreCommit::Unknown(format!(
+                                "{save_error}; 磁盘 Profile 与 journal 投影冲突"
+                            ))
+                        }
+                    }
                 }
+                (Ok(_), Ok(Some(journal))) => ProfileSecretStoreCommit::Unknown(format!(
+                    "{save_error}; 当前恢复记录 ID {} 与迁移 {migration_id} 不一致",
+                    journal.payload.migration_id
+                )),
+                (Ok(_), Ok(None)) => ProfileSecretStoreCommit::Unknown(format!(
+                    "{save_error}; 提交后找不到迁移恢复记录"
+                )),
+                (Err(verify_error), _) => ProfileSecretStoreCommit::Unknown(format!(
+                    "{save_error}; 无法读取磁盘状态: {verify_error}"
+                )),
+                (_, Err(verify_error)) => ProfileSecretStoreCommit::Unknown(format!(
+                    "{save_error}; 无法读取迁移恢复记录: {verify_error}"
+                )),
             }
-            Ok(persisted)
-                if persisted_store_uses_any_secret_ref(
-                    &persisted,
-                    affected_profile_ids,
-                    target_refs,
-                ) =>
-            {
-                ProfileSecretStoreCommit::Unknown(format!("{save_error}; 磁盘包含部分新目标引用"))
-            }
-            Ok(_) => ProfileSecretStoreCommit::NotCommitted(save_error),
-            Err(verify_error) => ProfileSecretStoreCommit::Unknown(format!(
-                "{save_error}; 无法读取磁盘状态: {verify_error}"
-            )),
-        },
+        }
     }
 }
 
@@ -17083,6 +18296,321 @@ fn save_store(path: &Path, store: &SessionStore) -> Result<(), String> {
     result
 }
 
+fn save_store_with_profile_secret_migration_checkpoint(
+    path: &Path,
+    store: &SessionStore,
+    migration_id: &str,
+) -> Result<(), String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("sqlite3") {
+        return Err("凭据迁移恢复记录只支持 SQLite SessionStore".to_string());
+    }
+    let snapshot_lock = lock_store_snapshot(path)?;
+    let current = store_snapshot_version(path)?;
+    let mut expected = {
+        let mut versions = STORE_SNAPSHOT_VERSIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *versions.entry(path.to_path_buf()).or_insert(current)
+    };
+    let result = save_store_checked_locked_with_writer(
+        path,
+        store,
+        &mut expected,
+        current,
+        |path, store| {
+            save_store_contents_with_profile_secret_migration_checkpoint(path, store, migration_id)
+        },
+    );
+    STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(path.to_path_buf(), expected);
+    drop(snapshot_lock);
+    result
+}
+
+fn journal_transition_allowed(
+    current: ProfileSecretMigrationJournalState,
+    next: ProfileSecretMigrationJournalState,
+) -> bool {
+    current == next
+        || matches!(
+            (current, next),
+            (
+                ProfileSecretMigrationJournalState::TargetWritePending,
+                ProfileSecretMigrationJournalState::TargetsVerified
+                    | ProfileSecretMigrationJournalState::TargetCleanupPending
+                    | ProfileSecretMigrationJournalState::NeedsResolution
+            ) | (
+                ProfileSecretMigrationJournalState::TargetsVerified,
+                ProfileSecretMigrationJournalState::ProfilesCommitted
+                    | ProfileSecretMigrationJournalState::TargetCleanupPending
+                    | ProfileSecretMigrationJournalState::NeedsResolution
+            ) | (
+                ProfileSecretMigrationJournalState::ProfilesCommitted,
+                ProfileSecretMigrationJournalState::SourceCleanupPending
+                    | ProfileSecretMigrationJournalState::NeedsResolution
+            ) | (
+                ProfileSecretMigrationJournalState::SourceCleanupPending
+                    | ProfileSecretMigrationJournalState::TargetCleanupPending,
+                ProfileSecretMigrationJournalState::NeedsResolution
+            )
+        )
+}
+
+fn persist_profile_secret_migration_journal_event(
+    path: &Path,
+    event: ProfileSecretMigrationJournalEvent,
+) -> Result<(), String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("sqlite3") {
+        return Err("凭据迁移恢复记录只支持 SQLite SessionStore".to_string());
+    }
+    let prepared_json = match &event {
+        ProfileSecretMigrationJournalEvent::Prepared(payload) => {
+            validate_profile_secret_migration_journal(payload)?;
+            let payload_json = serde_json::to_string(payload)
+                .map_err(|error| format!("无法编码凭据迁移恢复记录: {error}"))?;
+            if payload_json.len() as u64 > MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES {
+                return Err("凭据迁移恢复记录超过大小限制".to_string());
+            }
+            Some(payload_json)
+        }
+        _ => None,
+    };
+    let verification = match &event {
+        ProfileSecretMigrationJournalEvent::Prepared(payload) => {
+            ProfileSecretMigrationJournalVerification::Active {
+                migration_id: payload.migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetWritePending,
+                payload_json: prepared_json.clone(),
+            }
+        }
+        ProfileSecretMigrationJournalEvent::Transition {
+            migration_id,
+            state,
+        } => ProfileSecretMigrationJournalVerification::Active {
+            migration_id: migration_id.clone(),
+            state: *state,
+            payload_json: None,
+        },
+        ProfileSecretMigrationJournalEvent::Clear { migration_id } => {
+            ProfileSecretMigrationJournalVerification::Cleared {
+                migration_id: migration_id.clone(),
+            }
+        }
+    };
+    mutate_store_metadata_checked(
+        path,
+        move |connection| match event {
+            ProfileSecretMigrationJournalEvent::Prepared(payload) => {
+                connection
+                    .execute(
+                        "insert into profile_secret_migrations
+                     (id, state, active, payload_json, created_at, updated_at)
+                     values (?1, ?2, 1, ?3,
+                             strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                             strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                        params![
+                            &payload.migration_id,
+                            ProfileSecretMigrationJournalState::TargetWritePending.as_str(),
+                            prepared_json.expect("prepared journal JSON must exist")
+                        ],
+                    )
+                    .map_err(|error| format!("无法创建凭据迁移恢复记录: {error}"))?;
+                Ok(())
+            }
+            ProfileSecretMigrationJournalEvent::Transition {
+                migration_id,
+                state,
+            } => {
+                if state == ProfileSecretMigrationJournalState::ProfilesCommitted {
+                    return Err(
+                        "profiles-committed 只能与 Profile store 在同一事务提交".to_string()
+                    );
+                }
+                let current = connection
+                    .query_row(
+                        "select state from profile_secret_migrations where id = ?1 and active = 1",
+                        params![&migration_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| format!("无法读取凭据迁移恢复状态: {error}"))?;
+                let current = ProfileSecretMigrationJournalState::parse(&current)?;
+                if !journal_transition_allowed(current, state) {
+                    return Err(format!(
+                        "拒绝无效的凭据迁移恢复状态转换: {} -> {}",
+                        current.as_str(),
+                        state.as_str()
+                    ));
+                }
+                let updated = connection
+                    .execute(
+                        "update profile_secret_migrations
+                     set state = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                     where id = ?2 and active = 1",
+                        params![state.as_str(), &migration_id],
+                    )
+                    .map_err(|error| format!("无法更新凭据迁移恢复状态: {error}"))?;
+                if updated != 1 {
+                    return Err(format!("凭据迁移恢复记录不存在: {migration_id}"));
+                }
+                Ok(())
+            }
+            ProfileSecretMigrationJournalEvent::Clear { migration_id } => {
+                let deleted = connection
+                    .execute(
+                        "delete from profile_secret_migrations where id = ?1 and active = 1",
+                        params![&migration_id],
+                    )
+                    .map_err(|error| format!("无法清除凭据迁移恢复记录: {error}"))?;
+                if deleted != 1 {
+                    return Err(format!("凭据迁移恢复记录不存在: {migration_id}"));
+                }
+                Ok(())
+            }
+        },
+        move |connection| verify_profile_secret_migration_journal_event(connection, &verification),
+    )
+}
+
+fn verify_profile_secret_migration_journal_event(
+    connection: &SqliteConnection,
+    verification: &ProfileSecretMigrationJournalVerification,
+) -> Result<(), String> {
+    match verification {
+        ProfileSecretMigrationJournalVerification::Active {
+            migration_id,
+            state,
+            payload_json,
+        } => {
+            let (persisted_state, persisted_payload) = connection
+                .query_row(
+                    "select state, payload_json from profile_secret_migrations
+                     where id = ?1 and active = 1",
+                    params![migration_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|error| format!("无法读回凭据迁移恢复记录: {error}"))?;
+            if persisted_state != state.as_str() {
+                return Err(format!(
+                    "凭据迁移恢复记录状态读回不一致: expected {}, got {persisted_state}",
+                    state.as_str()
+                ));
+            }
+            if payload_json
+                .as_ref()
+                .is_some_and(|expected| expected != &persisted_payload)
+            {
+                return Err("凭据迁移恢复记录 payload 读回不一致".to_string());
+            }
+            Ok(())
+        }
+        ProfileSecretMigrationJournalVerification::Cleared { migration_id } => {
+            let remaining = connection
+                .query_row(
+                    "select count(*) from profile_secret_migrations where id = ?1",
+                    params![migration_id],
+                    |row| row.get::<_, usize>(0),
+                )
+                .map_err(|error| format!("无法验证凭据迁移恢复记录已清除: {error}"))?;
+            if remaining != 0 {
+                return Err(format!("凭据迁移恢复记录未被清除: {migration_id}"));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn mutate_store_metadata_checked<F, V>(
+    path: &Path,
+    mutation: F,
+    verification: V,
+) -> Result<(), String>
+where
+    F: FnOnce(&SqliteConnection) -> Result<(), String>,
+    V: FnOnce(&SqliteConnection) -> Result<(), String>,
+{
+    let snapshot_lock = lock_store_snapshot(path)?;
+    let current = store_snapshot_version(path)?;
+    let mut expected = {
+        let mut versions = STORE_SNAPSHOT_VERSIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *versions.entry(path.to_path_buf()).or_insert(current)
+    };
+    let write_result = if expected == StoreSnapshotVersion::UnknownAfterCommit {
+        Err("PortMate store 上次提交后无法刷新版本，请重启应用后再保存".to_string())
+    } else if expected != current {
+        Err("PortMate store 已被另一实例修改，已拒绝陈旧写入；请重启应用加载最新数据".to_string())
+    } else {
+        (|| {
+            let connection = SqliteConnection::open(path)
+                .map_err(|error| format!("无法打开 SQLite 更新迁移恢复记录: {error}"))?;
+            connection
+                .execute_batch("PRAGMA synchronous = FULL;")
+                .map_err(|error| format!("无法启用迁移恢复记录完整同步: {error}"))?;
+            ensure_store_schema(&connection)?;
+            connection
+                .execute_batch("BEGIN IMMEDIATE;")
+                .map_err(|error| format!("无法开始迁移恢复记录事务: {error}"))?;
+            let transaction_result = (|| {
+                mutation(&connection)?;
+                connection
+                    .execute(
+                        "insert into metadata (key, value) values ('storeRevision', ?1)
+                         on conflict(key) do update set value = excluded.value",
+                        params![Uuid::new_v4().to_string()],
+                    )
+                    .map_err(|error| format!("无法更新迁移恢复记录 revision: {error}"))?;
+                Ok(())
+            })();
+            if let Err(error) = transaction_result {
+                let _ = connection.execute_batch("ROLLBACK;");
+                return Err(error);
+            }
+            connection
+                .execute_batch("COMMIT;")
+                .map_err(|error| format!("无法提交迁移恢复记录: {error}"))?;
+            verification(&connection)?;
+            Ok(())
+        })()
+    };
+    let result = match write_result {
+        Ok(()) => match store_snapshot_version(path) {
+            Ok(StoreSnapshotVersion::Sha256(version)) => {
+                expected = StoreSnapshotVersion::Sha256(version);
+                Ok(())
+            }
+            Ok(StoreSnapshotVersion::Missing) | Ok(StoreSnapshotVersion::UnknownAfterCommit) => {
+                expected = StoreSnapshotVersion::UnknownAfterCommit;
+                Err("迁移恢复记录已写入，但提交后无法验证；请重启 PortMate".to_string())
+            }
+            Err(error) => {
+                expected = StoreSnapshotVersion::UnknownAfterCommit;
+                Err(format!(
+                    "迁移恢复记录已写入，但提交后版本验证失败；请重启 PortMate: {error}"
+                ))
+            }
+        },
+        Err(error) => {
+            if store_snapshot_version(path).is_ok_and(|after| after != current) {
+                expected = StoreSnapshotVersion::UnknownAfterCommit;
+            }
+            Err(error)
+        }
+    };
+    STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(path.to_path_buf(), expected);
+    drop(snapshot_lock);
+    result
+}
+
 #[cfg(test)]
 fn save_store_with_expected_snapshot_version(
     path: &Path,
@@ -17102,6 +18630,19 @@ fn save_store_checked_locked(
     expected: &mut StoreSnapshotVersion,
     current: StoreSnapshotVersion,
 ) -> Result<(), String> {
+    save_store_checked_locked_with_writer(path, store, expected, current, save_store_contents)
+}
+
+fn save_store_checked_locked_with_writer<F>(
+    path: &Path,
+    store: &SessionStore,
+    expected: &mut StoreSnapshotVersion,
+    current: StoreSnapshotVersion,
+    write_contents: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &SessionStore) -> Result<(), String>,
+{
     if *expected == StoreSnapshotVersion::UnknownAfterCommit {
         return Err("PortMate store 上次提交后无法刷新版本，请重启应用后再保存".to_string());
     }
@@ -17110,7 +18651,7 @@ fn save_store_checked_locked(
             "PortMate store 已被另一实例修改，已拒绝陈旧写入；请重启应用加载最新数据".to_string(),
         );
     }
-    if let Err(error) = save_store_contents(path, store) {
+    if let Err(error) = write_contents(path, store) {
         if store_snapshot_version(path).is_ok_and(|after| after != current) {
             *expected = StoreSnapshotVersion::UnknownAfterCommit;
         }
@@ -17149,7 +18690,35 @@ fn save_store_contents(path: &Path, store: &SessionStore) -> Result<(), String> 
     save_store_json(path, store)
 }
 
+fn save_store_contents_with_profile_secret_migration_checkpoint(
+    path: &Path,
+    store: &SessionStore,
+    migration_id: &str,
+) -> Result<(), String> {
+    save_store_sqlite_with_profile_secret_migration_checkpoint(
+        path,
+        store,
+        Some((
+            migration_id,
+            ProfileSecretMigrationJournalState::ProfilesCommitted,
+        )),
+    )?;
+    let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
+    if let Err(error) = save_store_json(&legacy_path, store) {
+        eprintln!("PortMate: failed to update JSON compatibility store: {error}");
+    }
+    Ok(())
+}
+
 fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
+    save_store_sqlite_with_profile_secret_migration_checkpoint(path, store, None)
+}
+
+fn save_store_sqlite_with_profile_secret_migration_checkpoint(
+    path: &Path,
+    store: &SessionStore,
+    migration_checkpoint: Option<(&str, ProfileSecretMigrationJournalState)>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -17164,6 +18733,9 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
             path.display()
         )
     })?;
+    connection
+        .execute_batch("PRAGMA synchronous = FULL;")
+        .map_err(|error| format!("failed to enable full SQLite synchronization: {error}"))?;
     ensure_store_schema(&connection)?;
     let bytes = serde_json::to_string_pretty(store)
         .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
@@ -17179,10 +18751,42 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
         .execute(
             "insert into kv (key, value, updated_at) values (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now')) \
              on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at",
-            params![STORE_KEY, bytes],
+            params![STORE_KEY, &bytes],
         )
         .map_err(|error| format!("failed to save PortMate SQLite store: {error}"))?;
     save_store_sqlite_tables(&connection, store)?;
+    if let Some((migration_id, state)) = migration_checkpoint {
+        let current = connection
+            .query_row(
+                "select state from profile_secret_migrations where id = ?1 and active = 1",
+                params![migration_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| {
+                format!("failed to read profile secret migration checkpoint: {error}")
+            })?;
+        let current = ProfileSecretMigrationJournalState::parse(&current)?;
+        if !journal_transition_allowed(current, state) {
+            return Err(format!(
+                "refusing invalid profile secret migration checkpoint: {} -> {}",
+                current.as_str(),
+                state.as_str()
+            ));
+        }
+        let updated = connection
+            .execute(
+                "update profile_secret_migrations
+                 set state = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 where id = ?2 and active = 1",
+                params![state.as_str(), migration_id],
+            )
+            .map_err(|error| format!("failed to checkpoint profile secret migration: {error}"))?;
+        if updated != 1 {
+            return Err(format!(
+                "active profile secret migration journal is missing: {migration_id}"
+            ));
+        }
+    }
     connection
         .execute(
             "insert into metadata (key, value) values ('storeRevision', ?1)
@@ -17193,6 +18797,33 @@ fn save_store_sqlite(path: &Path, store: &SessionStore) -> Result<(), String> {
     connection
         .execute_batch("COMMIT;")
         .map_err(|error| format!("failed to commit PortMate SQLite transaction: {error}"))?;
+    let persisted_bytes = connection
+        .query_row(
+            "select value from kv where key = ?1",
+            params![STORE_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("failed to read back PortMate SQLite store: {error}"))?;
+    if persisted_bytes != bytes {
+        return Err("PortMate SQLite store read-back did not match committed contents".to_string());
+    }
+    if let Some((migration_id, state)) = migration_checkpoint {
+        let persisted_state = connection
+            .query_row(
+                "select state from profile_secret_migrations where id = ?1 and active = 1",
+                params![migration_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| {
+                format!("failed to read back profile secret migration checkpoint: {error}")
+            })?;
+        if persisted_state != state.as_str() {
+            return Err(format!(
+                "profile secret migration checkpoint read-back mismatch: expected {}, got {persisted_state}",
+                state.as_str()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -17311,6 +18942,14 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
                 raw_json text not null,
                 primary key (session_id, ts)
             );
+            create table if not exists profile_secret_migrations (
+                id text primary key not null,
+                state text not null,
+                active integer not null check (active in (0, 1)),
+                payload_json text not null,
+                created_at text not null,
+                updated_at text not null
+            );
             create index if not exists idx_events_session_ts on events(session_id, ts);
             create index if not exists idx_events_text on events(text);
             create index if not exists idx_transfers_session on transfers(session_id);
@@ -17318,7 +18957,9 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
             create index if not exists idx_audit_session_ts on mcp_audit(session_id, ts);
             create index if not exists idx_timeline_session_ts on timeline_marks(session_id, ts);
             create index if not exists idx_sysmon_session_ts on sysmon_snapshots(session_id, ts);
-            insert into metadata (key, value) values ('schemaVersion', '2')
+            create unique index if not exists idx_profile_secret_migrations_active
+                on profile_secret_migrations(active) where active = 1;
+            insert into metadata (key, value) values ('schemaVersion', '3')
                 on conflict(key) do update set value = excluded.value;",
         )
         .map_err(|error| format!("failed to initialize PortMate SQLite schema: {error}"))?;
@@ -17923,6 +19564,8 @@ pub fn run() {
             lock_portable_vault,
             preview_profile_secret_migration,
             migrate_profile_secrets,
+            get_profile_secret_migration_recovery,
+            recover_profile_secret_migration,
             update_client_identity,
             rotate_client_identity,
             delete_client_identity,
@@ -19325,6 +20968,278 @@ mod tests {
         let persisted = load_store_sqlite(&store_path).unwrap();
         assert_eq!(persisted.profiles[0].name, "saved by second instance");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn journal_mutations_are_durable_barriers_and_advance_store_revision() {
+        let fixture = test_migration_journal_fixture();
+        let root = std::env::temp_dir().join(format!("portmate-journal-cas-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &fixture.before).unwrap();
+        let version_before = store_snapshot_version(&store_path).unwrap();
+
+        persist_profile_secret_migration_journal_event(
+            &store_path,
+            ProfileSecretMigrationJournalEvent::Prepared(fixture.journal.payload.clone()),
+        )
+        .unwrap();
+        let version_prepared = store_snapshot_version(&store_path).unwrap();
+        assert_ne!(version_prepared, version_before);
+        let loaded = load_profile_secret_migration_journal(&store_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.state,
+            ProfileSecretMigrationJournalState::TargetWritePending
+        );
+        assert_eq!(loaded.payload, fixture.journal.payload);
+        let encoded = serde_json::to_string(&loaded.payload).unwrap();
+        for secret in ["private-a", "private-b"] {
+            assert!(!encoded.contains(secret));
+            assert!(!encoded.contains(&format!("{:x}", Sha256::digest(secret.as_bytes()))));
+        }
+
+        let mut stale = version_before;
+        let error =
+            save_store_with_expected_snapshot_version(&store_path, &fixture.before, &mut stale)
+                .unwrap_err();
+        assert!(error.contains("另一实例修改"), "{error}");
+        persist_profile_secret_migration_journal_event(
+            &store_path,
+            ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: fixture.journal.payload.migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetsVerified,
+            },
+        )
+        .unwrap();
+        let version_verified = store_snapshot_version(&store_path).unwrap();
+        assert_ne!(version_verified, version_prepared);
+        assert_eq!(
+            load_profile_secret_migration_journal(&store_path)
+                .unwrap()
+                .unwrap()
+                .state,
+            ProfileSecretMigrationJournalState::TargetsVerified
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_and_profiles_committed_checkpoint_are_one_validated_transaction() {
+        let fixture = test_migration_journal_fixture();
+        let root = std::env::temp_dir().join(format!("portmate-journal-atomic-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &fixture.before).unwrap();
+        persist_profile_secret_migration_journal_event(
+            &store_path,
+            ProfileSecretMigrationJournalEvent::Prepared(fixture.journal.payload.clone()),
+        )
+        .unwrap();
+
+        let error = save_store_with_profile_secret_migration_checkpoint(
+            &store_path,
+            &fixture.after,
+            &fixture.journal.payload.migration_id,
+        )
+        .unwrap_err();
+        assert!(error.contains("invalid profile secret migration checkpoint"));
+        assert_eq!(
+            profile_secret_migration_projection(
+                &load_store_sqlite(&store_path).unwrap().profiles[0]
+            )
+            .unwrap(),
+            fixture.journal.payload.profiles[0].before
+        );
+        assert_eq!(
+            load_profile_secret_migration_journal(&store_path)
+                .unwrap()
+                .unwrap()
+                .state,
+            ProfileSecretMigrationJournalState::TargetWritePending
+        );
+
+        persist_profile_secret_migration_journal_event(
+            &store_path,
+            ProfileSecretMigrationJournalEvent::Transition {
+                migration_id: fixture.journal.payload.migration_id.clone(),
+                state: ProfileSecretMigrationJournalState::TargetsVerified,
+            },
+        )
+        .unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute_batch(
+                "create trigger fail_profile_migration_checkpoint
+                 before update of state on profile_secret_migrations
+                 when new.state = 'profiles-committed'
+                 begin select raise(abort, 'injected checkpoint failure'); end;",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(save_store_with_profile_secret_migration_checkpoint(
+            &store_path,
+            &fixture.after,
+            &fixture.journal.payload.migration_id,
+        )
+        .is_err());
+        assert_eq!(
+            profile_secret_migration_projection(
+                &load_store_sqlite(&store_path).unwrap().profiles[0]
+            )
+            .unwrap(),
+            fixture.journal.payload.profiles[0].before
+        );
+        assert_eq!(
+            load_profile_secret_migration_journal(&store_path)
+                .unwrap()
+                .unwrap()
+                .state,
+            ProfileSecretMigrationJournalState::TargetsVerified
+        );
+
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute_batch("drop trigger fail_profile_migration_checkpoint;")
+            .unwrap();
+        drop(connection);
+        save_store_with_profile_secret_migration_checkpoint(
+            &store_path,
+            &fixture.after,
+            &fixture.journal.payload.migration_id,
+        )
+        .unwrap();
+        assert_eq!(
+            profile_secret_migration_projection(
+                &load_store_sqlite(&store_path).unwrap().profiles[0]
+            )
+            .unwrap(),
+            fixture.journal.payload.profiles[0].after
+        );
+        assert_eq!(
+            load_profile_secret_migration_journal(&store_path)
+                .unwrap()
+                .unwrap()
+                .state,
+            ProfileSecretMigrationJournalState::ProfilesCommitted
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepared_journal_is_visible_before_any_target_side_effect() {
+        let fixture = test_migration_journal_fixture();
+        let root =
+            std::env::temp_dir().join(format!("portmate-journal-barrier-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &fixture.before).unwrap();
+        let target_side_effect = std::cell::Cell::new(false);
+        let mut in_memory = fixture.before.clone();
+        let error = migrate_profile_secrets_with_journal_io(
+            &mut in_memory,
+            &ProfileSecretMigrationRequest {
+                target_storage: SecretStorage::Portable,
+                profile_ids: vec!["ssh-session-1".to_string()],
+                cleanup_source: true,
+            },
+            |secret_ref| {
+                fixture
+                    .values
+                    .get(secret_ref)
+                    .cloned()
+                    .ok_or_else(|| "missing".to_string())
+            },
+            |_, _| {
+                let loaded = load_profile_secret_migration_journal(&store_path)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    loaded.state,
+                    ProfileSecretMigrationJournalState::TargetWritePending
+                );
+                assert_eq!(
+                    profile_secret_migration_projection(
+                        &load_store_sqlite(&store_path).unwrap().profiles[0]
+                    )
+                    .unwrap(),
+                    loaded.payload.profiles[0].before
+                );
+                target_side_effect.set(true);
+                Err("injected provider failure".to_string())
+            },
+            |_, _| panic!("write failure recovery must be driven by the durable journal"),
+            |_, _, _, _| panic!("Profile commit must not run after target write failure"),
+            |event| persist_profile_secret_migration_journal_event(&store_path, event),
+        )
+        .unwrap_err();
+        assert!(target_side_effect.get());
+        assert!(error.contains("injected provider failure"));
+        assert_eq!(
+            profile_secret_migration_projection(&in_memory.profiles[0]).unwrap(),
+            fixture.journal.payload.profiles[0].before
+        );
+        assert_eq!(
+            load_profile_secret_migration_journal(&store_path)
+                .unwrap()
+                .unwrap()
+                .state,
+            ProfileSecretMigrationJournalState::TargetCleanupPending
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_active_journal_freezes_new_credential_mutations() {
+        let fixture = test_migration_journal_fixture();
+        let root =
+            std::env::temp_dir().join(format!("portmate-journal-corrupt-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &fixture.before).unwrap();
+        persist_profile_secret_migration_journal_event(
+            &store_path,
+            ProfileSecretMigrationJournalEvent::Prepared(fixture.journal.payload.clone()),
+        )
+        .unwrap();
+        assert!(ensure_no_pending_profile_secret_migration(&store_path)
+            .unwrap_err()
+            .contains("待恢复"));
+        let mut unsupported = fixture.journal.payload.clone();
+        unsupported.version = PROFILE_SECRET_MIGRATION_JOURNAL_VERSION + 1;
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute(
+                "update profile_secret_migrations set payload_json = ?1 where active = 1",
+                params![serde_json::to_string(&unsupported).unwrap()],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ensure_no_pending_profile_secret_migration(&store_path)
+            .unwrap_err()
+            .contains("不支持"));
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute(
+                "update profile_secret_migrations set payload_json = '{broken' where active = 1",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ensure_no_pending_profile_secret_migration(&store_path)
+            .unwrap_err()
+            .contains("JSON 损坏"));
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        let active = connection
+            .query_row(
+                "select count(*) from profile_secret_migrations where active = 1",
+                [],
+                |row| row.get::<_, usize>(0),
+            )
+            .unwrap();
+        assert_eq!(active, 1);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -24762,6 +26677,497 @@ mod tests {
     }
 
     #[test]
+    fn migration_projection_classifies_old_new_and_slot_conflicts() {
+        let fixture = test_migration_journal_fixture();
+        assert_eq!(
+            profile_secret_migration_disposition(&fixture.before, &fixture.journal),
+            ProfileSecretMigrationRecoveryDisposition::NotCommitted
+        );
+
+        let mut committed = fixture.journal.clone();
+        committed.state = ProfileSecretMigrationJournalState::ProfilesCommitted;
+        assert_eq!(
+            profile_secret_migration_disposition(&fixture.after, &committed),
+            ProfileSecretMigrationRecoveryDisposition::Committed
+        );
+
+        let mut partial = fixture.before.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut partial.profiles[0].connection {
+            ssh.password_secret_ref = fixture
+                .journal
+                .payload
+                .items
+                .first()
+                .map(|item| item.target_ref.clone());
+        }
+        assert_eq!(
+            profile_secret_migration_disposition(&partial, &fixture.journal),
+            ProfileSecretMigrationRecoveryDisposition::Conflict
+        );
+
+        let mut swapped = fixture.before.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut swapped.profiles[0].connection {
+            std::mem::swap(&mut ssh.password_secret_ref, &mut ssh.passphrase_secret_ref);
+        }
+        assert_eq!(
+            profile_secret_migration_disposition(&swapped, &fixture.journal),
+            ProfileSecretMigrationRecoveryDisposition::Conflict,
+            "equal ref counts must not hide credential-slot swaps"
+        );
+
+        let mut missing = fixture.before.clone();
+        missing.profiles.clear();
+        assert_eq!(
+            profile_secret_migration_disposition(&missing, &fixture.journal),
+            ProfileSecretMigrationRecoveryDisposition::Conflict
+        );
+        assert_eq!(
+            profile_secret_migration_disposition(&fixture.after, &fixture.journal),
+            ProfileSecretMigrationRecoveryDisposition::Conflict,
+            "a NEW projection cannot be paired with a pre-commit journal state"
+        );
+    }
+
+    #[test]
+    fn recovery_rolls_back_only_unreferenced_targets_for_old_projection() {
+        let fixture = test_migration_journal_fixture();
+        let values = std::rc::Rc::new(std::cell::RefCell::new(fixture.values.clone()));
+        let deleted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.before,
+            &fixture.journal,
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |secret_ref| match values.borrow().get(secret_ref).cloned() {
+                    Some(value) => SecretProbeResult::Present(Zeroizing::new(value)),
+                    None => SecretProbeResult::Missing,
+                }
+            },
+            {
+                let values = std::rc::Rc::clone(&values);
+                let deleted = std::rc::Rc::clone(&deleted);
+                move |storage, secret_refs| {
+                    assert_eq!(storage, SecretStorage::Portable);
+                    let results = secret_refs
+                        .iter()
+                        .map(|secret_ref| {
+                            values.borrow_mut().remove(secret_ref);
+                            deleted.borrow_mut().push(secret_ref.clone());
+                            (secret_ref.clone(), Ok(()))
+                        })
+                        .collect();
+                    SecretBatchDeleteOutcome {
+                        results,
+                        portable_vault_requires_reunlock: false,
+                    }
+                }
+            },
+            {
+                let events = std::rc::Rc::clone(&events);
+                move |event| {
+                    events.borrow_mut().push(match event {
+                        ProfileSecretMigrationJournalEvent::Prepared(_) => "prepared".to_string(),
+                        ProfileSecretMigrationJournalEvent::Transition { state, .. } => {
+                            state.as_str().to_string()
+                        }
+                        ProfileSecretMigrationJournalEvent::Clear { .. } => "clear".to_string(),
+                    });
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+        assert!(outcome.resolved);
+        assert_eq!(outcome.action, "rolled-back-targets");
+        assert_eq!(deleted.borrow().len(), fixture.journal.payload.items.len());
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["target-cleanup-pending", "clear"]
+        );
+        for item in &fixture.journal.payload.items {
+            assert!(values.borrow().contains_key(&item.source_ref));
+            assert!(!values.borrow().contains_key(&item.target_ref));
+        }
+    }
+
+    #[test]
+    fn recovery_freezes_old_projection_when_source_is_missing_or_provider_unavailable() {
+        let fixture = test_migration_journal_fixture();
+        let missing_source = fixture.journal.payload.items[0].source_ref.clone();
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.before,
+            &fixture.journal,
+            |secret_ref| {
+                if secret_ref == missing_source {
+                    SecretProbeResult::Missing
+                } else {
+                    SecretProbeResult::Present(Zeroizing::new("private".to_string()))
+                }
+            },
+            |_, _| panic!("missing authoritative source must preserve targets"),
+            |event| {
+                assert!(matches!(
+                    event,
+                    ProfileSecretMigrationJournalEvent::Transition {
+                        state: ProfileSecretMigrationJournalState::NeedsResolution,
+                        ..
+                    }
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!outcome.resolved);
+        assert_eq!(outcome.action, "needs-resolution");
+
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.before,
+            &fixture.journal,
+            |_| SecretProbeResult::Unavailable("keyring service offline".to_string()),
+            |_, _| panic!("unavailable provider must not be treated as missing"),
+            |_| panic!("provider unavailability must keep the current journal state"),
+        )
+        .unwrap();
+        assert_eq!(outcome.action, "blocked");
+        assert!(outcome.warnings[0].contains("offline"));
+    }
+
+    #[test]
+    fn recovery_finalizes_new_projection_only_after_exact_secret_verification() {
+        let fixture = test_migration_journal_fixture();
+        let mut journal = fixture.journal.clone();
+        journal.state = ProfileSecretMigrationJournalState::ProfilesCommitted;
+        let values = std::rc::Rc::new(std::cell::RefCell::new(fixture.values.clone()));
+        let deleted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.after,
+            &journal,
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |secret_ref| match values.borrow().get(secret_ref).cloned() {
+                    Some(value) => SecretProbeResult::Present(Zeroizing::new(value)),
+                    None => SecretProbeResult::Missing,
+                }
+            },
+            {
+                let values = std::rc::Rc::clone(&values);
+                let deleted = std::rc::Rc::clone(&deleted);
+                move |storage, secret_refs| {
+                    assert_eq!(storage, SecretStorage::Native);
+                    let results = secret_refs
+                        .iter()
+                        .map(|secret_ref| {
+                            values.borrow_mut().remove(secret_ref);
+                            deleted.borrow_mut().push(secret_ref.clone());
+                            (secret_ref.clone(), Ok(()))
+                        })
+                        .collect();
+                    SecretBatchDeleteOutcome {
+                        results,
+                        portable_vault_requires_reunlock: false,
+                    }
+                }
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(outcome.resolved);
+        assert_eq!(outcome.action, "finalized-source-cleanup");
+        assert_eq!(deleted.borrow().len(), journal.payload.items.len());
+        for item in &journal.payload.items {
+            assert!(!values.borrow().contains_key(&item.source_ref));
+            assert!(values.borrow().contains_key(&item.target_ref));
+        }
+
+        let mismatched_source = journal.payload.items[0].source_ref.clone();
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.after,
+            &journal,
+            |secret_ref| {
+                let value = if secret_ref == mismatched_source {
+                    "changed-source"
+                } else if secret_ref.ends_with("11111111-1111-4111-8111-111111111111") {
+                    "private-a"
+                } else {
+                    "private-b"
+                };
+                SecretProbeResult::Present(Zeroizing::new(value.to_string()))
+            },
+            |_, _| panic!("mismatched values must preserve both providers"),
+            |event| {
+                assert!(matches!(
+                    event,
+                    ProfileSecretMigrationJournalEvent::Transition {
+                        state: ProfileSecretMigrationJournalState::NeedsResolution,
+                        ..
+                    }
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.action, "needs-resolution");
+    }
+
+    #[test]
+    fn recovery_retries_partial_source_cleanup_idempotently() {
+        let fixture = test_migration_journal_fixture();
+        let mut journal = fixture.journal.clone();
+        journal.state = ProfileSecretMigrationJournalState::ProfilesCommitted;
+        let values = std::rc::Rc::new(std::cell::RefCell::new(fixture.values.clone()));
+        let first_delete = std::cell::Cell::new(true);
+        let first = recover_profile_secret_migration_with_io(
+            &fixture.after,
+            &journal,
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |secret_ref| match values.borrow().get(secret_ref).cloned() {
+                    Some(value) => SecretProbeResult::Present(Zeroizing::new(value)),
+                    None => SecretProbeResult::Missing,
+                }
+            },
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |_, secret_refs| {
+                    let results = secret_refs
+                        .iter()
+                        .enumerate()
+                        .map(|(index, secret_ref)| {
+                            if first_delete.get() && index == 1 {
+                                (
+                                    secret_ref.clone(),
+                                    Err("injected keyring failure".to_string()),
+                                )
+                            } else {
+                                values.borrow_mut().remove(secret_ref);
+                                (secret_ref.clone(), Ok(()))
+                            }
+                        })
+                        .collect();
+                    first_delete.set(false);
+                    SecretBatchDeleteOutcome {
+                        results,
+                        portable_vault_requires_reunlock: false,
+                    }
+                }
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!first.resolved);
+        assert_eq!(first.action, "source-cleanup-pending");
+        assert_eq!(
+            fixture
+                .journal
+                .payload
+                .items
+                .iter()
+                .filter(|item| values.borrow().contains_key(&item.source_ref))
+                .count(),
+            1
+        );
+
+        journal.state = ProfileSecretMigrationJournalState::SourceCleanupPending;
+        let second = recover_profile_secret_migration_with_io(
+            &fixture.after,
+            &journal,
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |secret_ref| match values.borrow().get(secret_ref).cloned() {
+                    Some(value) => SecretProbeResult::Present(Zeroizing::new(value)),
+                    None => SecretProbeResult::Missing,
+                }
+            },
+            {
+                let values = std::rc::Rc::clone(&values);
+                move |_, secret_refs| SecretBatchDeleteOutcome {
+                    results: secret_refs
+                        .iter()
+                        .map(|secret_ref| {
+                            values.borrow_mut().remove(secret_ref);
+                            (secret_ref.clone(), Ok(()))
+                        })
+                        .collect(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(second.resolved);
+        assert_eq!(second.action, "finalized-source-cleanup");
+        assert!(fixture
+            .journal
+            .payload
+            .items
+            .iter()
+            .all(|item| !values.borrow().contains_key(&item.source_ref)));
+    }
+
+    #[test]
+    fn recovery_freezes_new_projection_when_a_target_is_missing() {
+        let fixture = test_migration_journal_fixture();
+        let mut journal = fixture.journal.clone();
+        journal.state = ProfileSecretMigrationJournalState::ProfilesCommitted;
+        let missing_target = journal.payload.items[0].target_ref.clone();
+        let outcome = recover_profile_secret_migration_with_io(
+            &fixture.after,
+            &journal,
+            |secret_ref| {
+                if secret_ref == missing_target {
+                    SecretProbeResult::Missing
+                } else {
+                    let value = if secret_ref.contains("source-a")
+                        || secret_ref.ends_with("11111111-1111-4111-8111-111111111111")
+                    {
+                        "private-a"
+                    } else {
+                        "private-b"
+                    };
+                    SecretProbeResult::Present(Zeroizing::new(value.to_string()))
+                }
+            },
+            |_, _| panic!("missing authoritative target must preserve source copies"),
+            |event| {
+                assert!(matches!(
+                    event,
+                    ProfileSecretMigrationJournalEvent::Transition {
+                        state: ProfileSecretMigrationJournalState::NeedsResolution,
+                        ..
+                    }
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!outcome.resolved);
+        assert_eq!(outcome.action, "needs-resolution");
+    }
+
+    #[test]
+    fn recovery_preserves_both_sides_for_mixed_projection_without_provider_access() {
+        let fixture = test_migration_journal_fixture();
+        let mut mixed = fixture.before.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut mixed.profiles[0].connection {
+            ssh.password_secret_ref = Some(fixture.journal.payload.items[0].target_ref.clone());
+        }
+        let outcome = recover_profile_secret_migration_with_io(
+            &mixed,
+            &fixture.journal,
+            |_| panic!("conflict classification must precede provider access"),
+            |_, _| panic!("mixed projection must preserve both providers"),
+            |event| {
+                assert!(matches!(
+                    event,
+                    ProfileSecretMigrationJournalEvent::Transition {
+                        state: ProfileSecretMigrationJournalState::NeedsResolution,
+                        ..
+                    }
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!outcome.resolved);
+        assert_eq!(outcome.action, "needs-resolution");
+    }
+
+    #[test]
+    fn migration_does_not_commit_profiles_when_portable_target_commit_is_unknown() {
+        let fixture = test_migration_journal_fixture();
+        let mut store = fixture.before.clone();
+        let error = migrate_profile_secrets_with_journal_io(
+            &mut store,
+            &ProfileSecretMigrationRequest {
+                target_storage: SecretStorage::Portable,
+                profile_ids: vec!["ssh-session-1".to_string()],
+                cleanup_source: true,
+            },
+            |secret_ref| {
+                fixture
+                    .values
+                    .get(secret_ref)
+                    .cloned()
+                    .ok_or_else(|| "missing".to_string())
+            },
+            |storage, _| {
+                assert_eq!(storage, SecretStorage::Portable);
+                Ok(true)
+            },
+            |_, _| panic!("unknown portable commit must preserve both providers"),
+            |_, _, _, _| panic!("unknown portable commit must not switch Profile refs"),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains(PROFILE_SECRET_MIGRATION_RESTART_REQUIRED));
+        assert!(error.contains("版本指纹无法确认"));
+        assert_eq!(
+            profile_secret_migration_projection(&store.profiles[0]).unwrap(),
+            fixture.journal.payload.profiles[0].before
+        );
+    }
+
+    #[test]
+    fn migration_preserves_sources_when_cleanup_checkpoint_cannot_be_verified() {
+        let fixture = test_migration_journal_fixture();
+        let mut store = fixture.before.clone();
+        let delete_called = std::cell::Cell::new(false);
+        let response = migrate_profile_secrets_with_journal_io(
+            &mut store,
+            &ProfileSecretMigrationRequest {
+                target_storage: SecretStorage::Portable,
+                profile_ids: vec!["ssh-session-1".to_string()],
+                cleanup_source: true,
+            },
+            |secret_ref| {
+                fixture
+                    .values
+                    .get(secret_ref)
+                    .cloned()
+                    .ok_or_else(|| "missing".to_string())
+            },
+            |_, _| Ok(false),
+            |_, _| {
+                delete_called.set(true);
+                SecretBatchDeleteOutcome {
+                    results: BTreeMap::new(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_, _, _, _| ProfileSecretStoreCommit::Committed { warning: None },
+            |event| match event {
+                ProfileSecretMigrationJournalEvent::Transition {
+                    state: ProfileSecretMigrationJournalState::SourceCleanupPending,
+                    ..
+                } => Err("injected checkpoint read-back failure".to_string()),
+                _ => Ok(()),
+            },
+        )
+        .unwrap();
+        assert!(!delete_called.get());
+        assert!(response.recovery_pending);
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("checkpoint")));
+        assert!(response
+            .items
+            .iter()
+            .all(|item| item.cleanup_status == ProfileSecretCleanupStatus::Failed));
+        let projection = profile_secret_migration_projection(&store.profiles[0]).unwrap();
+        assert_ne!(projection, fixture.journal.payload.profiles[0].before);
+        assert!(projection
+            .password_secret_ref
+            .as_deref()
+            .is_some_and(|secret_ref| secret_ref.starts_with("stronghold:")));
+        assert!(projection
+            .passphrase_secret_ref
+            .as_deref()
+            .is_some_and(|secret_ref| secret_ref.starts_with("stronghold:")));
+    }
+
+    #[test]
     fn profile_secret_migration_preserves_sharing_scope_and_reserved_tokens() {
         let mut first = test_ssh_profile();
         if let ConnectionConfig::Ssh(ssh) = &mut first.connection {
@@ -25652,6 +28058,72 @@ mod tests {
             logging: portmate_core::LoggingSettings::default(),
             triggers: Vec::new(),
             transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    struct TestMigrationJournalFixture {
+        before: SessionStore,
+        after: SessionStore,
+        journal: LoadedProfileSecretMigrationJournal,
+        values: HashMap<String, String>,
+    }
+
+    fn test_migration_journal_fixture() -> TestMigrationJournalFixture {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.password_secret_ref = Some("keychain:source-a".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:source-b".to_string());
+        }
+        let mut before = SessionStore::default();
+        before.upsert_profile(profile);
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec!["ssh-session-1".to_string()],
+            cleanup_source: true,
+        };
+        let plan = build_profile_secret_migration_plan(&before, &request).unwrap();
+        let prepared = vec![
+            PreparedProfileSecretMigration {
+                source_ref: "keychain:source-a".to_string(),
+                target_ref: "stronghold:11111111-1111-4111-8111-111111111111".to_string(),
+                secret: Zeroizing::new("private-a".to_string()),
+            },
+            PreparedProfileSecretMigration {
+                source_ref: "keychain:source-b".to_string(),
+                target_ref: "stronghold:22222222-2222-4222-8222-222222222222".to_string(),
+                secret: Zeroizing::new("private-b".to_string()),
+            },
+        ];
+        let replacements = prepared
+            .iter()
+            .map(|item| (item.source_ref.clone(), item.target_ref.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut after = before.clone();
+        replace_profile_secret_refs(&mut after.profiles[0], &replacements);
+        let payload =
+            build_profile_secret_migration_journal(&before, &after, &plan, &request, &prepared)
+                .unwrap();
+        validate_profile_secret_migration_journal(&payload).unwrap();
+        let now = Utc::now();
+        let values = prepared
+            .iter()
+            .flat_map(|item| {
+                [
+                    (item.source_ref.clone(), item.secret.to_string()),
+                    (item.target_ref.clone(), item.secret.to_string()),
+                ]
+            })
+            .collect();
+        TestMigrationJournalFixture {
+            before,
+            after,
+            journal: LoadedProfileSecretMigrationJournal {
+                state: ProfileSecretMigrationJournalState::TargetWritePending,
+                payload,
+                created_at: now,
+                updated_at: now,
+            },
+            values,
         }
     }
 }

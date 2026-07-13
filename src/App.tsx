@@ -46,8 +46,8 @@ import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } f
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
-import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
-import type { ProfileSecretMigrationPreview, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
+import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
+import type { ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -86,6 +86,21 @@ const sessionKindLabels: Record<SessionKind, string> = {
   shell: "Shell",
   telnet: "Telnet",
   tcp: "Raw TCP",
+};
+
+const migrationRecoveryStateLabels: Record<ProfileSecretMigrationRecoverySummary["state"], string> = {
+  "target-write-pending": "目标写入待核对",
+  "targets-verified": "目标已验证",
+  "profiles-committed": "Profile 已提交",
+  "source-cleanup-pending": "源清理待完成",
+  "target-cleanup-pending": "目标回滚待完成",
+  "needs-resolution": "需要人工核对",
+};
+
+const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoverySummary["disposition"], string> = {
+  "not-committed": "原引用生效",
+  committed: "目标引用生效",
+  conflict: "投影冲突",
 };
 
 type SettingsDialog = "terminal" | "session" | null;
@@ -3375,6 +3390,12 @@ function KeyManagerDialog({
   const [migrationResult, setMigrationResult] = useState<ProfileSecretMigrationResponse | null>(null);
   const [migrationError, setMigrationError] = useState("");
   const [migrationRequiresRestart, setMigrationRequiresRestart] = useState(false);
+  const [migrationRecovery, setMigrationRecovery] = useState<ProfileSecretMigrationRecoverySummary | null>(null);
+  const [migrationRecoveryBusy, setMigrationRecoveryBusy] = useState(false);
+  const [migrationRecoveryChecking, setMigrationRecoveryChecking] = useState(isBackendAvailable);
+  const [migrationRecoveryStatusError, setMigrationRecoveryStatusError] = useState("");
+  const [migrationRecoveryError, setMigrationRecoveryError] = useState("");
+  const [migrationRecoveryWarnings, setMigrationRecoveryWarnings] = useState<string[]>([]);
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
   const [keyProfileFilter, setKeyProfileFilter] = useState("all");
   const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
@@ -3414,13 +3435,16 @@ function KeyManagerDialog({
     ? clientIdentityItems.filter((item) => item.identity.secretRef === editingClientIdentityItem.identity.secretRef).length
     : 0;
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
-  const vaultOperationBusy = portableVaultBusy || migrationBusy !== null;
-  const migrationControlsDisabled = vaultOperationBusy || migrationRequiresRestart;
+  const vaultOperationBusy = portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy;
+  const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
+  const credentialMutationControlsDisabled = vaultOperationBusy || credentialMutationsFrozen;
+  const migrationControlsDisabled = credentialMutationControlsDisabled || migrationRequiresRestart;
   const migrationCleanupSummary = migrationResult ? summarizeProfileSecretCleanup(migrationResult.items) : null;
 
   useEffect(() => {
     void refreshAgentKeys();
     void refreshPortableVault();
+    void refreshMigrationRecovery();
   }, []);
 
   useEffect(() => {
@@ -3503,6 +3527,26 @@ function KeyManagerDialog({
     }
   }
 
+  async function refreshMigrationRecovery(clearError = true) {
+    if (!isBackendAvailable()) {
+      setMigrationRecoveryChecking(false);
+      return;
+    }
+    setMigrationRecoveryChecking(true);
+    try {
+      const pending = await getProfileSecretMigrationRecovery();
+      setMigrationRecovery(pending);
+      setMigrationRecoveryStatusError("");
+      if (pending) setMigrationPreviewState(null);
+      if (clearError) setMigrationRecoveryError("");
+    } catch (error) {
+      setMigrationRecoveryStatusError(formatError(error));
+      if (clearError) setMigrationRecoveryError("");
+    } finally {
+      setMigrationRecoveryChecking(false);
+    }
+  }
+
   async function unlockPortableVault() {
     if (!portableVaultPassword) return;
     const existed = portableVault?.exists ?? false;
@@ -3517,6 +3561,7 @@ function KeyManagerDialog({
       setPortableVault(next);
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
+      await refreshMigrationRecovery();
     } catch (error) {
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "error", message: formatError(error) });
@@ -3535,6 +3580,7 @@ function KeyManagerDialog({
       setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
+      await refreshMigrationRecovery();
     } catch (error) {
       setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
@@ -3582,7 +3628,7 @@ function KeyManagerDialog({
   }
 
   async function previewProfileSecretMigration() {
-    if (!portableVault?.unlocked || migrationRequiresRestart || !isBackendAvailable()) return;
+    if (!portableVault?.unlocked || migrationRequiresRestart || migrationRecovery || !isBackendAvailable()) return;
     setMigrationBusy("preview");
     setMigrationError("");
     setMigrationResult(null);
@@ -3602,7 +3648,7 @@ function KeyManagerDialog({
   }
 
   async function migrateProfileSecrets() {
-    if (!portableVault?.unlocked || migrationRequiresRestart || !migrationPreviewState || !isBackendAvailable()) return;
+    if (!portableVault?.unlocked || migrationRequiresRestart || migrationRecovery || !migrationPreviewState || !isBackendAvailable()) return;
     let request: ProfileSecretMigrationRequest;
     try {
       request = currentMigrationRequest();
@@ -3615,7 +3661,7 @@ function KeyManagerDialog({
       setMigrationError("迁移设置已变化，请重新预检");
       return;
     }
-    if (!canExecuteProfileSecretMigration(migrationPreviewState.preview, true, false)) return;
+    if (!canExecuteProfileSecretMigration(migrationPreviewState.preview, true, false, Boolean(migrationRecovery))) return;
     setMigrationBusy("migrate");
     setMigrationError("");
     try {
@@ -3645,7 +3691,45 @@ function KeyManagerDialog({
       setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
       setMigrationError(profileSecretMigrationErrorMessage(message));
     } finally {
+      await refreshMigrationRecovery();
       setMigrationBusy(null);
+    }
+  }
+
+  async function recoverPendingProfileSecretMigration() {
+    if (!migrationRecovery || migrationRecoveryChecking || migrationRecoveryStatusError || migrationRequiresRestart || !isBackendAvailable()) return;
+    if (!canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy)) return;
+    setMigrationRecoveryBusy(true);
+    setMigrationRecoveryError("");
+    setMigrationRecoveryWarnings([]);
+    try {
+      const result = await recoverProfileSecretMigration(migrationRecovery.migrationId);
+      setMigrationRecovery(result.pending);
+      setMigrationRecoveryWarnings(
+        result.warnings.length || !result.resolved
+          ? result.warnings
+          : ["恢复记录已核对并清除"],
+      );
+      setMigrationRequiresRestart(false);
+      setMigrationPreviewState(null);
+      if (result.resolved) {
+        setMigrationRecoveryError("");
+      }
+      if (result.pending?.requiresPortableVaultUnlock && portableVault?.unlocked) {
+        try {
+          setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
+          setPortableVaultFeedback({ kind: "status", message: "恢复 checkpoint 待核对；Stronghold 已锁定，请重新解锁" });
+        } catch (lockError) {
+          setPortableVaultFeedback({ kind: "error", message: `恢复记录已保留，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
+        }
+      }
+    } catch (error) {
+      const message = formatError(error);
+      setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
+      setMigrationRecoveryError(profileSecretMigrationErrorMessage(message));
+    } finally {
+      await refreshMigrationRecovery(false);
+      setMigrationRecoveryBusy(false);
     }
   }
 
@@ -4195,7 +4279,7 @@ function KeyManagerDialog({
             </div>
             <div className="key-batch-actions">
               <span>{selectedHostKeyIds.length} selected</span>
-              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={!selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
+              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={credentialMutationControlsDisabled || !selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
               <button type="button" onClick={() => void deleteSelectedHostKeys()} disabled={!selectedHostKeyIds.length}>删除</button>
             </div>
             {visibleHostKeys.map((key) => (
@@ -4208,7 +4292,7 @@ function KeyManagerDialog({
                 <small>{key.scope} · {key.label ?? key.host}</small>
                 <div className="key-row-actions">
                   <button onClick={() => startEditKey(key)}>编辑</button>
-                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={!selectedProfile}>复制到 Profile</button>
+                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={credentialMutationControlsDisabled || !selectedProfile}>复制到 Profile</button>
                   <button onClick={() => void deleteKey(key.id)}>删除</button>
                 </div>
               </div>
@@ -4296,17 +4380,45 @@ function KeyManagerDialog({
               <details className="portable-vault-rotation" onToggle={(event) => { if (!event.currentTarget.open) { clearPortableVaultRotation(); setPortableVaultFeedback(null); } }}>
                 <summary><RefreshCw size={14} /><span>更换主密码</span></summary>
                 <div className="portable-vault-rotation-fields">
-                  <label><span>当前主密码</span><input type="password" autoComplete="current-password" value={portableVaultCurrentPassword} onChange={(event) => setPortableVaultCurrentPassword(event.target.value)} disabled={vaultOperationBusy} /></label>
-                  <label><span>新主密码</span><input type="password" autoComplete="new-password" value={portableVaultNewPassword} onChange={(event) => setPortableVaultNewPassword(event.target.value)} disabled={vaultOperationBusy} /></label>
-                  <label><span>确认新主密码</span><input type="password" autoComplete="new-password" value={portableVaultConfirmPassword} onChange={(event) => setPortableVaultConfirmPassword(event.target.value)} disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void rotatePortableVaultPassword(); }} /></label>
-                  <button type="button" onClick={() => void rotatePortableVaultPassword()} disabled={vaultOperationBusy || !portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword}><RefreshCw size={14} />更换主密码</button>
+                  <label><span>当前主密码</span><input type="password" autoComplete="current-password" value={portableVaultCurrentPassword} onChange={(event) => setPortableVaultCurrentPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
+                  <label><span>新主密码</span><input type="password" autoComplete="new-password" value={portableVaultNewPassword} onChange={(event) => setPortableVaultNewPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
+                  <label><span>确认新主密码</span><input type="password" autoComplete="new-password" value={portableVaultConfirmPassword} onChange={(event) => setPortableVaultConfirmPassword(event.target.value)} disabled={credentialMutationControlsDisabled} onKeyDown={(event) => { if (event.key === "Enter") void rotatePortableVaultPassword(); }} /></label>
+                  <button type="button" onClick={() => void rotatePortableVaultPassword()} disabled={credentialMutationControlsDisabled || !portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword}><RefreshCw size={14} />更换主密码</button>
                 </div>
               </details>
             ) : null}
-            {portableVault?.unlocked || migrationResult || migrationError ? (
+            {migrationRecovery || migrationRecoveryStatusError || migrationRecoveryError || migrationRecoveryWarnings.length ? (
+              <section className={`portable-vault-migration-recovery${migrationRecovery?.disposition === "conflict" ? " conflict" : ""}`} aria-live="polite">
+                <header>
+                  <span>{migrationRecovery || migrationRecoveryStatusError ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}<strong>{migrationRecovery ? "待恢复的凭据迁移" : migrationRecoveryStatusError ? "无法核对凭据迁移状态" : "凭据迁移恢复完成"}</strong></span>
+                  {migrationRecovery ? <small>{migrationRecoveryDispositionLabels[migrationRecovery.disposition]}</small> : null}
+                </header>
+                {migrationRecovery ? (
+                  <>
+                    <dl>
+                      <div><dt>阶段</dt><dd>{migrationRecoveryStateLabels[migrationRecovery.state]}</dd></div>
+                      <div><dt>Profile</dt><dd>{migrationRecovery.profileCount}</dd></div>
+                      <div><dt>Secret</dt><dd>{migrationRecovery.secretCount}</dd></div>
+                    </dl>
+                    <p>{migrationRecovery.message}</p>
+                    {migrationRecovery.requiresPortableVaultUnlock ? <p className="portable-vault-migration-recovery-unlock"><Lock size={13} />请先锁定并重新解锁 Stronghold</p> : null}
+                    {migrationRecovery.disposition === "conflict" || migrationRecovery.state === "needs-resolution"
+                      ? <p className="portable-vault-migration-recovery-manual">自动恢复已停止；请人工核对 Profile 引用与两侧 provider，PortMate 不会自动改写 Profile。</p>
+                      : migrationRecoveryStatusError
+                        ? null
+                        : <button type="button" onClick={() => void recoverPendingProfileSecretMigration()} disabled={migrationRecoveryChecking || !canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy || migrationRequiresRestart)}><RefreshCw size={14} />{migrationRecoveryBusy ? "核对中" : "核对并恢复"}</button>}
+                  </>
+                ) : null}
+                {migrationRecoveryWarnings.map((warning) => <p className="portable-vault-migration-recovery-warning" key={warning}>{warning}</p>)}
+                {migrationRecoveryStatusError ? <p className="portable-vault-migration-recovery-error" role="alert">状态读取失败：{migrationRecoveryStatusError}</p> : null}
+                {migrationRecoveryStatusError ? <button type="button" onClick={() => void refreshMigrationRecovery()} disabled={migrationRecoveryChecking || vaultOperationBusy}><RefreshCw size={14} />{migrationRecoveryChecking ? "读取中" : "重新读取"}</button> : null}
+                {migrationRecoveryError ? <p className="portable-vault-migration-recovery-error" role="alert">{migrationRecoveryError}</p> : null}
+              </section>
+            ) : null}
+            {portableVault?.unlocked || migrationResult || migrationError || migrationRecovery ? (
               <details className="portable-vault-migration">
                 <summary><ArrowRightLeft size={14} /><span>迁移 Profile 凭据</span></summary>
-                {portableVault?.unlocked ? (
+                {portableVault?.unlocked && !migrationRecovery ? (
                   <>
                     <div className="portable-vault-migration-config">
                       <div className="portable-vault-migration-direction" role="group" aria-label="凭据迁移方向">
@@ -4328,7 +4440,7 @@ function KeyManagerDialog({
                         {migrationPreviewState.preview.alreadyTargetReferenceCount ? <p>{migrationPreviewState.preview.alreadyTargetReferenceCount} 个引用已位于目标存储</p> : null}
                         {migrationPreviewState.preview.retainedInFlightSecretCount ? <p>{migrationPreviewState.preview.retainedInFlightSecretCount} 个源 Secret 因建连中而保留</p> : null}
                         {migrationPreviewState.preview.excludedReservedReferenceCount ? <p>{migrationPreviewState.preview.excludedReservedReferenceCount} 个 MCP token 保留引用已排除</p> : null}
-                        <button type="button" onClick={() => void migrateProfileSecrets()} disabled={!canExecuteProfileSecretMigration(migrationPreviewState.preview, portableVault.unlocked, migrationControlsDisabled)}><ArrowRightLeft size={14} />{migrationBusy === "migrate" ? "迁移中" : migrationPreviewState.preview.eligibleSecretCount ? "确认迁移" : "无需迁移"}</button>
+                        <button type="button" onClick={() => void migrateProfileSecrets()} disabled={!canExecuteProfileSecretMigration(migrationPreviewState.preview, portableVault.unlocked, migrationControlsDisabled, Boolean(migrationRecovery))}><ArrowRightLeft size={14} />{migrationBusy === "migrate" ? "迁移中" : migrationPreviewState.preview.eligibleSecretCount ? "确认迁移" : "无需迁移"}</button>
                       </div>
                     ) : null}
                   </>
@@ -4371,9 +4483,9 @@ function KeyManagerDialog({
               <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={!visibleClientIdentityItems.length}>全选结果</button>
               <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={!selectedClientKeyIds.length}>清除</button>
               <div className="client-key-command-group">
-                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={!selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
-                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={!selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
-                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={!selectedClientIdentityItems.length}><Trash2 size={15} /></button>
+                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
+                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
+                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length}><Trash2 size={15} /></button>
               </div>
             </div>
             <div className="client-key-groups">
@@ -4421,15 +4533,15 @@ function KeyManagerDialog({
                   {editingClientSecretUsage > 1 ? <span>{editingClientSecretUsage} 个 identity 共享此 secret</span> : <span>{editingClientSecretUsage ? "Secret 未共享" : "无 secret"}</span>}
                 </div>
                 <div className="client-key-inspector-actions">
-                  <button type="button" onClick={() => void saveClientIdentity()} disabled={clientKeyMutationBusy}>保存字段</button>
-                  <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(false)} disabled={clientKeyMutationBusy || editingClientIdentityItem.jumpInUse}>移除引用</button>
-                  {editingClientIdentityItem.identity.secretRef ? <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(true)} disabled={clientKeyMutationBusy || editingClientIdentityItem.jumpInUse}>移除并清理 Secret</button> : null}
+                  <button type="button" onClick={() => void saveClientIdentity()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled}>保存字段</button>
+                  <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(false)} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || editingClientIdentityItem.jumpInUse}>移除引用</button>
+                  {editingClientIdentityItem.identity.secretRef ? <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(true)} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || editingClientIdentityItem.jumpInUse}>移除并清理 Secret</button> : null}
                 </div>
                 {clientKeyEditDraft.source === "profile-vault" ? (
                   <div className="client-key-rotation">
                     <textarea value={clientKeyPrivateKey} onChange={(event) => setClientKeyPrivateKey(event.target.value)} placeholder="新的 OpenSSH private key" />
                     <input type="password" value={clientKeyPassphrase} onChange={(event) => setClientKeyPassphrase(event.target.value)} placeholder="新私钥口令（可选）" />
-                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyMutationBusy || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
+                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
                   </div>
                 ) : null}
               </section>
@@ -4440,7 +4552,7 @@ function KeyManagerDialog({
               <input type="file" accept=".pem,.key,.txt" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
               <select value={privateKeyStorage} onChange={(event) => setPrivateKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">存储：自动（优先系统）</option><option value="native">存储：系统密钥库</option><option value="portable" disabled={!portableVault?.unlocked}>存储：Portable Stronghold</option></select>
               <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
-              <button onClick={() => void importPrivateKeyToProfile()} disabled={!selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={credentialMutationControlsDisabled || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
             </details>
             <div className="key-agent-header agent-section-header">
               <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>
@@ -4450,7 +4562,7 @@ function KeyManagerDialog({
               <span>{selectedAgentKeys.length} selected</span>
               <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={!agentKeys.length}>全选</button>
               <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={!selectedAgentKeyIds.length}>清除</button>
-              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={!selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
+              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={credentialMutationControlsDisabled || !selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
             </div>
             <div className="agent-key-list">
               {agentKeys.map((identity, index) => (
@@ -4461,7 +4573,7 @@ function KeyManagerDialog({
                     <code title={identity.fingerprintSha256 ?? ""}>{identity.fingerprintSha256 ?? "未识别指纹"}</code>
                   </span>
                   <span className="client-key-meta"><span>{identity.path ?? "ssh-agent"}</span></span>
-                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={!selectedProfile}><UserPlus size={15} /></button>
+                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={credentialMutationControlsDisabled || !selectedProfile}><UserPlus size={15} /></button>
                 </div>
               ))}
               {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}

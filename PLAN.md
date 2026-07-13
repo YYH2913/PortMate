@@ -26,7 +26,7 @@
   - host key 变更时默认阻断，并给出“替换设备/系统重装/疑似 MITM”三种处理路径：临时信任一次、追加为同 profile 新 host key、替换旧 host key。
   - client identity 默认 `IdentitiesOnly` 行为：只尝试 profile 指定私钥；agent 默认可选但不抢先遍历全部 key。
   - 每个 profile 可配置认证顺序：`publickey -> keyboard-interactive -> password`，并记录实际成功方式供下次优先使用。
-  - 密码、passphrase、private key 内容、MCP token 进入系统 keychain/Stronghold；SQLite 只保存引用和 metadata。Portable Stronghold 主密码轮换必须验证当前密码并通过临时文件提交 encrypted snapshot；snapshot open/save/rekey 还必须通过跨进程文件锁和版本校验拒绝 stale provider 覆盖。SSH/Tmux profile 凭据在 keychain/Stronghold 间的批量迁移采用 copy-on-write 引用切换：预检 token 必须绑定准确迁移计划并在写 secret 前验证 SessionStore revision，同一源引用只复制一次，全部目标写入验证和 profile 持久化成功后再清理全局未引用的旧 secret；提交结果无法确认时保留两侧副本并要求重启核对，MCP token 不进入该迁移范围。
+  - 密码、passphrase、private key 内容、MCP token 进入系统 keychain/Stronghold；SQLite 只保存引用和 metadata。Portable Stronghold 主密码轮换必须验证当前密码并通过临时文件提交 encrypted snapshot；snapshot open/save/rekey 还必须通过跨进程文件锁和版本校验拒绝 stale provider 覆盖。SSH/Tmux profile 凭据在 keychain/Stronghold 间的批量迁移采用 copy-on-write 引用切换：预检 token 必须绑定准确迁移计划并在写 secret 前验证 SessionStore revision，同一源引用只复制一次，全部目标写入验证和 profile 持久化成功后再清理全局未引用的旧 secret；MCP token 不进入该迁移范围。迁移的 SQLite journal 必须先以 `synchronous=FULL` 提交并精确读回，且不得保存 secret 正文或正文 hash；Profile KV/mirror/revision 与 `profiles-committed` checkpoint 必须在同一事务。该 checkpoint 是唯一 commit point：之前只能回收未引用目标，之后只能在目标可读且源/目标一致时继续源清理；OLD/NEW 以结构化 credential slot 投影判定，MIXED/缺失/第三状态一律保留两侧并转人工核对，provider unavailable 则阻塞本次恢复并保留 journal 供重试。active/corrupt journal 必须冻结新的迁移和相关凭据 mutation，恢复动作必须可跨重启幂等重试。
 
 ## Architecture
 - Rust 后端分为 `core`、`transport`、`terminal`、`transfer`、`mcp`、`storage`、`security` 模块；React 前端负责工作台 UI、终端渲染、布局和交互。
@@ -61,7 +61,7 @@
 
 ## Test Plan
 - SSH 专项测试：同 IP 不同 host key、同 host 多算法 host key、profile 级 host key alias、host key rotation、agent 禁用/启用、指定 identity 顺序、MaxAuthTries 场景。
-- 单元测试：配置 schema、权限判定、触发器匹配、日志分片、时间线关联、secret redaction、Stronghold 主密码换密成功/失败回退、旧密码失效与 `secretRef` 保持，以及 profile 凭据迁移的共享引用、范围隔离、MCP token 排除、批量提交与故障回滚。
+- 单元测试：配置 schema、权限判定、触发器匹配、日志分片、时间线关联、secret redaction、Stronghold 主密码换密成功/失败回退、旧密码失效与 `secretRef` 保持，以及 profile 凭据迁移的共享引用、范围隔离、MCP token 排除、批量提交与故障回滚。迁移恢复还需覆盖 Prepared barrier、Profile+journal 原子 commit、revision/CAS、OLD/NEW/MIXED/缺失/槽位交换、source/target missing、内容 mismatch、provider unavailable、Stronghold commit unknown、逐项删除失败、重复恢复和 corrupt/未知版本 journal 冻结。
 - 集成测试：虚拟串口 loopback、测试 SSH server、Telnet/Raw TCP mock、SFTP/SCP/X/Y/ZModem 传输、端口转发。
 - 终端测试：xterm 兼容序列、Unicode、鼠标、复制粘贴、全屏程序、vttest 基线、长日志性能。
 - MCP 测试：初始化、tools/resources/prompts、白名单授权、拒绝未授权写入、stdio bridge、HTTP Origin/token。

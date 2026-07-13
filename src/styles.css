@@ -3291,6 +3291,111 @@ fieldset label {
   opacity: 0.55;
 }
 
+.portable-vault-migration-recovery {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0 8px 9px;
+  border-bottom: 1px solid var(--line-soft);
+  border-left: 2px solid var(--amber);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.portable-vault-migration-recovery.conflict {
+  border-left-color: var(--red);
+}
+
+.portable-vault-migration-recovery header,
+.portable-vault-migration-recovery header > span,
+.portable-vault-migration-recovery-unlock {
+  display: flex;
+  align-items: center;
+}
+
+.portable-vault-migration-recovery header {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.portable-vault-migration-recovery header > span,
+.portable-vault-migration-recovery-unlock {
+  gap: 6px;
+}
+
+.portable-vault-migration-recovery header strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.portable-vault-migration-recovery header small {
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.portable-vault-migration-recovery.conflict header small,
+.portable-vault-migration-recovery-manual,
+.portable-vault-migration-recovery-error {
+  color: var(--red);
+}
+
+.portable-vault-migration-recovery dl {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(48px, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--line-soft);
+}
+
+.portable-vault-migration-recovery dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px 6px;
+  background: var(--control);
+}
+
+.portable-vault-migration-recovery dt {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-vault-migration-recovery dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+}
+
+.portable-vault-migration-recovery p {
+  margin: 0;
+}
+
+.portable-vault-migration-recovery-unlock,
+.portable-vault-migration-recovery-warning {
+  color: var(--amber);
+}
+
+.portable-vault-migration-recovery > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--cyan);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.portable-vault-migration-recovery > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .portable-vault-migration {
   padding: 0 0 7px;
   border-bottom: 1px solid var(--line-soft);
@@ -4078,6 +4183,14 @@ fieldset label {
 
   .portable-vault-migration-preview dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portable-vault-migration-recovery dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portable-vault-migration-recovery dl > div:first-child {
+    grid-column: 1 / -1;
   }
 
   .client-key-secret-ref {
