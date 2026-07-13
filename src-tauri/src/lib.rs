@@ -10979,6 +10979,51 @@ fn serial_reconnect_enabled(profile: &SessionProfile) -> bool {
     }
 }
 
+fn serial_reconnect_attempt_matches_profile(
+    attempt: &SessionProfile,
+    latest: &SessionProfile,
+) -> bool {
+    let attempt = normalize_session_profile(attempt.clone());
+    let latest = normalize_session_profile(latest.clone());
+    serial_reconnect_enabled(&latest) && attempt.connection == latest.connection
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SerialReconnectProfileState {
+    Current,
+    Changed,
+    Disabled,
+}
+
+fn serial_reconnect_profile_state(
+    store: &SessionStore,
+    session_id: &str,
+    attempt: &SessionProfile,
+) -> SerialReconnectProfileState {
+    let Some(latest) = store.profile(session_id).map(normalize_session_profile) else {
+        return SerialReconnectProfileState::Disabled;
+    };
+    if !serial_reconnect_enabled(&latest) {
+        return SerialReconnectProfileState::Disabled;
+    }
+    if !serial_reconnect_attempt_matches_profile(attempt, &latest) {
+        return SerialReconnectProfileState::Changed;
+    }
+    SerialReconnectProfileState::Current
+}
+
+fn latest_serial_reconnect_profile(
+    io: &SessionIo,
+    session_id: &str,
+) -> Result<Option<SessionProfile>, String> {
+    let store = io.store.lock().map_err(|error| error.to_string())?;
+    let Some(profile) = store.profile(session_id) else {
+        return Ok(None);
+    };
+    let profile = normalize_session_profile(profile);
+    Ok(serial_reconnect_enabled(&profile).then_some(profile))
+}
+
 fn open_configured_serial_port(
     serial: &portmate_core::SerialConnection,
     port_name: &str,
@@ -16507,6 +16552,14 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
+        let reconnect_enabled = !closed.load(Ordering::SeqCst)
+            && io
+                .store
+                .lock()
+                .ok()
+                .and_then(|store| store.profile(&session_id))
+                .map(normalize_session_profile)
+                .is_some_and(|latest| serial_reconnect_enabled(&latest));
         let mut should_reconnect = false;
         let removed_current = {
             let mut connections = match io.runtimes.serial.lock() {
@@ -16517,7 +16570,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 .get(&session_id)
                 .is_some_and(|runtime| runtime.runtime_id == runtime_id)
             {
-                if serial_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
+                if reconnect_enabled {
                     if let Some(runtime) = connections.get_mut(&session_id) {
                         runtime.writer = None;
                     }
@@ -16547,7 +16600,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                     eprintln!("PortMate: failed to persist serial reconnect event: {error}");
                 }
             }
-            spawn_serial_reconnect(io, profile, runtime_id, port_name, closed);
+            spawn_serial_reconnect(io, session_id, runtime_id, closed);
             return;
         }
 
@@ -16579,62 +16632,160 @@ fn serial_reconnect_pending(
     if closed.load(Ordering::SeqCst) {
         return false;
     }
-    io.runtimes
-        .serial
-        .lock()
-        .ok()
-        .and_then(|connections| {
-            connections
-                .get(session_id)
-                .map(|runtime| runtime.runtime_id == runtime_id)
+    let connections = match io.runtimes.serial.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    io.store.lock().ok().is_some_and(|store| {
+        store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
         })
-        .unwrap_or(false)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SerialReconnectFailureDisposition {
+    Recorded,
+    RetryLatestProfile,
+    StopDisabled,
+    Superseded,
+}
+
+fn record_serial_reconnect_failure_if_pending(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    attempt: &SessionProfile,
+    port_name: &str,
+    error: &str,
+) -> SerialReconnectFailureDisposition {
+    if closed.load(Ordering::SeqCst) {
+        return SerialReconnectFailureDisposition::Superseded;
+    }
+    let connections = match io.runtimes.serial.lock() {
+        Ok(connections) => connections,
+        Err(_) => return SerialReconnectFailureDisposition::Superseded,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return SerialReconnectFailureDisposition::Superseded;
+    }
+    let mut store = match io.store.lock() {
+        Ok(store) => store,
+        Err(_) => return SerialReconnectFailureDisposition::Superseded,
+    };
+    if !store.runtimes.iter().any(|runtime| {
+        runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
+    }) {
+        return SerialReconnectFailureDisposition::Superseded;
+    }
+    match serial_reconnect_profile_state(&store, session_id, attempt) {
+        SerialReconnectProfileState::Current => {}
+        SerialReconnectProfileState::Changed => {
+            return SerialReconnectFailureDisposition::RetryLatestProfile;
+        }
+        SerialReconnectProfileState::Disabled => {
+            return SerialReconnectFailureDisposition::StopDisabled;
+        }
+    }
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Reconnecting,
+        Some(format!("serial reconnect failed on {port_name}: {error}")),
+    );
+    store.record_system_event(
+        session_id,
+        format!("PortMate: serial reconnect failed on {port_name}: {error}; retrying in 1000ms"),
+    );
+    if let Err(save_error) = save_store(&io.store_path, &store) {
+        eprintln!("PortMate: failed to persist serial reconnect failure: {save_error}");
+    }
+    SerialReconnectFailureDisposition::Recorded
+}
+
+fn stop_pending_serial_reconnect_if_disabled(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    reason: &str,
+) -> bool {
+    let mut connections = match io.runtimes.serial.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    let mut store = match io.store.lock() {
+        Ok(store) => store,
+        Err(_) => return false,
+    };
+    let reconnect_disabled = store
+        .profile(session_id)
+        .map(normalize_session_profile)
+        .is_none_or(|profile| !serial_reconnect_enabled(&profile));
+    if !reconnect_disabled {
+        return false;
+    }
+    if let Some(runtime) = connections.remove(session_id) {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Disconnected,
+        Some(reason.to_string()),
+    );
+    store.record_system_event(
+        session_id,
+        format!("PortMate: serial reconnect stopped: {reason}"),
+    );
+    if let Err(error) = save_store(&io.store_path, &store) {
+        eprintln!("PortMate: failed to persist serial reconnect stop: {error}");
+    }
+    true
 }
 
 fn spawn_serial_reconnect(
     io: SessionIo,
-    profile: SessionProfile,
+    session_id: String,
     previous_runtime_id: String,
-    port_name: String,
     closed: Arc<AtomicBool>,
 ) {
-    let thread_name = format!("portmate-serial-reconnect-{}", profile.id);
+    let thread_name = format!("portmate-serial-reconnect-{session_id}");
     if let Err(error) = std::thread::Builder::new()
         .name(thread_name)
-        .spawn(move || {
-            reconnect_serial_session(io, profile, previous_runtime_id, port_name, closed)
-        })
+        .spawn(move || reconnect_serial_session(io, session_id, previous_runtime_id, closed))
     {
         eprintln!("PortMate: failed to start serial reconnect thread: {error}");
     }
 }
 
+enum SerialReconnectInstallDecision {
+    Installed,
+    Retry,
+    Stop,
+    Superseded,
+    Failed(String),
+}
+
 fn reconnect_serial_session(
     io: SessionIo,
-    profile: SessionProfile,
+    session_id: String,
     previous_runtime_id: String,
-    port_name: String,
     closed: Arc<AtomicBool>,
 ) {
-    let session_id = profile.id.clone();
-    let (serial, _) = match serial_connection_details(&profile) {
-        Ok(details) => details,
-        Err(error) => {
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Error,
-                    Some(format!("serial reconnect cannot start: {error}")),
-                );
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: serial reconnect cannot start: {error}"),
-                );
-                let _ = save_store(&io.store_path, &store);
-            }
-            return;
-        }
-    };
     let reconnect_delay = Duration::from_millis(1000);
 
     loop {
@@ -16643,29 +16794,84 @@ fn reconnect_serial_session(
             return;
         }
 
+        let profile = match latest_serial_reconnect_profile(&io, &session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_serial_reconnect_if_disabled(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    "automatic reconnect disabled by latest profile",
+                ) {
+                    return;
+                }
+                continue;
+            }
+            Err(error) => {
+                eprintln!("PortMate: failed to load latest serial reconnect profile: {error}");
+                continue;
+            }
+        };
+        let (serial, port_name) = match serial_connection_details(&profile) {
+            Ok(details) => details,
+            Err(error) => {
+                let attempted_port = match &profile.connection {
+                    ConnectionConfig::Serial(serial) => serial.port.trim(),
+                    _ => "<non-serial>",
+                };
+                match record_serial_reconnect_failure_if_pending(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &profile,
+                    attempted_port,
+                    &error,
+                ) {
+                    SerialReconnectFailureDisposition::Recorded
+                    | SerialReconnectFailureDisposition::RetryLatestProfile => continue,
+                    SerialReconnectFailureDisposition::StopDisabled => {
+                        if stop_pending_serial_reconnect_if_disabled(
+                            &io,
+                            &session_id,
+                            &previous_runtime_id,
+                            "automatic reconnect disabled while validating the latest profile",
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    SerialReconnectFailureDisposition::Superseded => return,
+                }
+            }
+        };
         let (port, reader) = match open_configured_serial_port(&serial, &port_name) {
             Ok(port) => port,
             Err(error) => {
-                if !serial_reconnect_pending(&io, &session_id, &previous_runtime_id, &closed) {
-                    return;
-                }
-                if let Ok(mut store) = io.store.lock() {
-                    let _ = store.set_runtime_status_with_reason(
-                        &session_id,
-                        SessionStatus::Reconnecting,
-                        Some(format!("serial reconnect failed on {port_name}: {error}")),
-                    );
-                    store.record_system_event(
-                        &session_id,
-                        format!(
-                            "PortMate: serial reconnect failed on {port_name}: {error}; retrying in 1000ms"
-                        ),
-                    );
-                    if let Err(error) = save_store(&io.store_path, &store) {
-                        eprintln!("PortMate: failed to persist serial reconnect failure: {error}");
+                match record_serial_reconnect_failure_if_pending(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &profile,
+                    &port_name,
+                    &error,
+                ) {
+                    SerialReconnectFailureDisposition::Recorded
+                    | SerialReconnectFailureDisposition::RetryLatestProfile => continue,
+                    SerialReconnectFailureDisposition::StopDisabled => {
+                        if stop_pending_serial_reconnect_if_disabled(
+                            &io,
+                            &session_id,
+                            &previous_runtime_id,
+                            "automatic reconnect disabled while the previous attempt was running",
+                        ) {
+                            return;
+                        }
+                        continue;
                     }
+                    SerialReconnectFailureDisposition::Superseded => return,
                 }
-                continue;
             }
         };
 
@@ -16673,33 +16879,73 @@ fn reconnect_serial_session(
         let writer = Arc::new(Mutex::new(port));
         let (tap, _) = broadcast::channel(1024);
         let next_closed = Arc::new(AtomicBool::new(false));
-        let inserted = {
-            let mut connections = match io.runtimes.serial.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
-                && !closed.load(Ordering::SeqCst)
-            {
-                connections.insert(
-                    session_id.clone(),
-                    SerialRuntime {
-                        runtime_id: runtime_id.clone(),
-                        writer: Some(Arc::clone(&writer)),
-                        tap: tap.clone(),
-                        closed: Arc::clone(&next_closed),
-                    },
-                );
-                true
-            } else {
-                false
+        let install = match io.runtimes.serial.lock() {
+            Err(error) => SerialReconnectInstallDecision::Failed(error.to_string()),
+            Ok(mut connections) => {
+                if connections
+                    .get(&session_id)
+                    .is_none_or(|runtime| runtime.runtime_id != previous_runtime_id)
+                    || closed.load(Ordering::SeqCst)
+                {
+                    SerialReconnectInstallDecision::Superseded
+                } else {
+                    match io.store.lock() {
+                        Err(error) => SerialReconnectInstallDecision::Failed(error.to_string()),
+                        Ok(mut store) => {
+                            match serial_reconnect_profile_state(&store, &session_id, &profile) {
+                                SerialReconnectProfileState::Changed => {
+                                    SerialReconnectInstallDecision::Retry
+                                }
+                                SerialReconnectProfileState::Disabled => {
+                                    if let Some(runtime) = connections.remove(&session_id) {
+                                        runtime.closed.store(true, Ordering::SeqCst);
+                                    }
+                                    let reason = "automatic reconnect disabled while the previous attempt was running";
+                                    let _ = store.set_runtime_status_with_reason(
+                                        &session_id,
+                                        SessionStatus::Disconnected,
+                                        Some(reason.to_string()),
+                                    );
+                                    store.record_system_event(
+                                        &session_id,
+                                        format!("PortMate: serial reconnect stopped: {reason}"),
+                                    );
+                                    if let Err(error) = save_store(&io.store_path, &store) {
+                                        eprintln!(
+                                            "PortMate: failed to persist serial reconnect stop: {error}"
+                                        );
+                                    }
+                                    SerialReconnectInstallDecision::Stop
+                                }
+                                SerialReconnectProfileState::Current => {
+                                    connections.insert(
+                                        session_id.clone(),
+                                        SerialRuntime {
+                                            runtime_id: runtime_id.clone(),
+                                            writer: Some(Arc::clone(&writer)),
+                                            tap: tap.clone(),
+                                            closed: Arc::clone(&next_closed),
+                                        },
+                                    );
+                                    SerialReconnectInstallDecision::Installed
+                                }
+                            }
+                        }
+                    }
+                }
             }
         };
-
-        if !inserted {
-            return;
+        if !matches!(install, SerialReconnectInstallDecision::Installed) {
+            match install {
+                SerialReconnectInstallDecision::Retry => continue,
+                SerialReconnectInstallDecision::Stop
+                | SerialReconnectInstallDecision::Superseded => return,
+                SerialReconnectInstallDecision::Failed(error) => {
+                    eprintln!("PortMate: failed to install serial reconnect runtime: {error}");
+                    return;
+                }
+                SerialReconnectInstallDecision::Installed => unreachable!(),
+            }
         }
 
         if let Err(error) = spawn_serial_reader(SerialReadTask {
@@ -22474,6 +22720,138 @@ mod tests {
     }
 
     #[test]
+    fn serial_reconnect_profile_reloads_latest_port_and_disable_state() {
+        let profile = test_serial_profile(portmate_core::SerialConnection {
+            port: " /dev/ttyUSB0 ".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+        });
+        let state = test_app_state(
+            profile.clone(),
+            PathBuf::from("serial-reconnect-test.sqlite3"),
+        );
+        assert!(serial_reconnect_attempt_matches_profile(&profile, &profile));
+        assert_eq!(
+            serial_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            SerialReconnectProfileState::Current
+        );
+
+        let mut renamed = profile.clone();
+        renamed.name = "Renamed Serial".to_string();
+        assert!(serial_reconnect_attempt_matches_profile(&profile, &renamed));
+
+        let mut updated = profile.clone();
+        if let ConnectionConfig::Serial(serial) = &mut updated.connection {
+            serial.port = " /dev/ttyUSB1 ".to_string();
+            serial.baud_rate = 57_600;
+        }
+        state.store.lock().unwrap().upsert_profile(updated);
+        assert_eq!(
+            serial_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            SerialReconnectProfileState::Changed
+        );
+        let latest = latest_serial_reconnect_profile(&state.session_io(), &profile.id)
+            .unwrap()
+            .unwrap();
+        let (serial, port_name) = serial_connection_details(&latest).unwrap();
+        assert_eq!(port_name, "/dev/ttyUSB1");
+        assert_eq!(serial.baud_rate, 57_600);
+
+        let mut disabled = latest;
+        if let ConnectionConfig::Serial(serial) = &mut disabled.connection {
+            serial.reconnect = false;
+        }
+        state.store.lock().unwrap().upsert_profile(disabled);
+        assert_eq!(
+            serial_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            SerialReconnectProfileState::Disabled
+        );
+        assert!(
+            latest_serial_reconnect_profile(&state.session_io(), &profile.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn disabling_serial_reconnect_removes_pending_runtime() {
+        let profile = test_serial_profile(portmate_core::SerialConnection {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+        });
+        let root = std::env::temp_dir().join(format!(
+            "portmate-serial-disable-pending-test-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let runtime_id = "pending-serial-runtime".to_string();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (tap, _) = broadcast::channel(8);
+        state.serial.lock().unwrap().insert(
+            profile.id.clone(),
+            SerialRuntime {
+                runtime_id: runtime_id.clone(),
+                writer: None,
+                tap,
+                closed: Arc::clone(&closed),
+            },
+        );
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .set_runtime_status_with_reason(
+                    &profile.id,
+                    SessionStatus::Reconnecting,
+                    Some("test reconnect".to_string()),
+                )
+                .unwrap();
+            let mut disabled = store.profile(&profile.id).unwrap();
+            if let ConnectionConfig::Serial(serial) = &mut disabled.connection {
+                serial.reconnect = false;
+            }
+            store.upsert_profile(disabled);
+        }
+
+        assert!(stop_pending_serial_reconnect_if_disabled(
+            &state.session_io(),
+            &profile.id,
+            &runtime_id,
+            "automatic reconnect disabled by test",
+        ));
+        assert!(closed.load(Ordering::SeqCst));
+        assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+        let runtime = state
+            .store
+            .lock()
+            .unwrap()
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == profile.id)
+            .unwrap()
+            .runtime;
+        assert_eq!(runtime.status, SessionStatus::Disconnected);
+        assert_eq!(
+            runtime.last_disconnect_reason.as_deref(),
+            Some("automatic reconnect disabled by test")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn ssh_reconnect_enabled_reads_ssh_and_tmux_profiles() {
         let mut profile = test_ssh_profile();
         assert!(ssh_reconnect_enabled(&profile));
@@ -27351,9 +27729,11 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("portmate-serial-reconnect-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let portmate_pty = root.join("portmate.pty");
-        let peer_pty = root.join("peer.pty");
-        let spawn_socat = || {
+        let first_portmate_pty = root.join("first-portmate.pty");
+        let first_peer_pty = root.join("first-peer.pty");
+        let replacement_portmate_pty = root.join("replacement-portmate.pty");
+        let replacement_peer_pty = root.join("replacement-peer.pty");
+        let spawn_socat = |portmate_pty: &Path, peer_pty: &Path| {
             let child = Command::new("socat")
                 .args(["-d", "-d"])
                 .arg(format!("pty,raw,echo=0,link={}", portmate_pty.display()))
@@ -27365,13 +27745,13 @@ mod tests {
                 .unwrap();
             ChildGuard(Some(child))
         };
-        let mut socat = spawn_socat();
+        let mut socat = spawn_socat(&first_portmate_pty, &first_peer_pty);
 
         tauri::async_runtime::block_on(async {
-            wait_for_socat_pty_pair(&mut socat, &portmate_pty, &peer_pty).await;
+            wait_for_socat_pty_pair(&mut socat, &first_portmate_pty, &first_peer_pty).await;
 
             let profile = test_serial_profile(portmate_core::SerialConnection {
-                port: portmate_pty.display().to_string(),
+                port: first_portmate_pty.display().to_string(),
                 baud_rate: 115_200,
                 data_bits: 8,
                 stop_bits: 1,
@@ -27392,7 +27772,7 @@ mod tests {
                 .unwrap()
                 .runtime_id
                 .clone();
-            let peer = serialport::new(peer_pty.display().to_string(), 115_200)
+            let peer = serialport::new(first_peer_pty.display().to_string(), 115_200)
                 .timeout(Duration::from_secs(2))
                 .open()
                 .unwrap();
@@ -27430,11 +27810,21 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("串口正在重连"), "{error}");
 
-            let _ = fs::remove_file(&portmate_pty);
-            let _ = fs::remove_file(&peer_pty);
-            socat = spawn_socat();
-            wait_for_socat_pty_pair(&mut socat, &portmate_pty, &peer_pty).await;
-            let mut peer = serialport::new(peer_pty.display().to_string(), 115_200)
+            let _ = fs::remove_file(&first_portmate_pty);
+            let _ = fs::remove_file(&first_peer_pty);
+            socat = spawn_socat(&replacement_portmate_pty, &replacement_peer_pty);
+            wait_for_socat_pty_pair(&mut socat, &replacement_portmate_pty, &replacement_peer_pty)
+                .await;
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut updated = store.profile(&profile.id).unwrap();
+                if let ConnectionConfig::Serial(serial) = &mut updated.connection {
+                    serial.port = replacement_portmate_pty.display().to_string();
+                }
+                store.upsert_profile(updated);
+                save_store(&state.store_path, &store).unwrap();
+            }
+            let mut peer = serialport::new(replacement_peer_pty.display().to_string(), 115_200)
                 .timeout(Duration::from_secs(2))
                 .open()
                 .unwrap();
@@ -27491,14 +27881,51 @@ mod tests {
                 .expect("reconnected serial runtime tap closed");
             assert_eq!(received, peer_reply);
 
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut disabled = store.profile(&profile.id).unwrap();
+                if let ConnectionConfig::Serial(serial) = &mut disabled.connection {
+                    serial.reconnect = false;
+                }
+                store.upsert_profile(disabled);
+                save_store(&state.store_path, &store).unwrap();
+            }
+            socat.stop();
+            drop(peer);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let runtime_removed = !state.serial.lock().unwrap().contains_key(&profile.id);
+                    let status = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap()
+                        .runtime
+                        .status;
+                    assert_ne!(
+                        status,
+                        SessionStatus::Reconnecting,
+                        "serial disconnect ignored the latest reconnect=false setting"
+                    );
+                    if runtime_removed && status == SessionStatus::Disconnected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("disabling serial reconnect did not disconnect the active runtime");
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+
             let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
             assert!(screen.contains("serial port closed"));
             assert!(screen.contains("serial port reconnected"));
-            let closed = close_session_inner(&state, profile.id.clone())
-                .await
-                .unwrap();
-            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(screen.contains(&replacement_portmate_pty.display().to_string()));
+            assert_eq!(screen.matches("reconnecting in 1000ms").count(), 1);
         });
 
         socat.stop();
