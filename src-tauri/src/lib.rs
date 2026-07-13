@@ -199,34 +199,140 @@ struct PortableVaultContext {
     stronghold: Mutex<Option<PortableStronghold>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortableVaultSnapshotVersion {
+    Missing,
+    Sha256([u8; 32]),
+    UnknownAfterCommit,
+}
+
 struct PortableStronghold {
     inner: IotaStronghold,
     path: SnapshotPath,
+    snapshot_path: PathBuf,
+    snapshot_version: PortableVaultSnapshotVersion,
+    opened_existing_snapshot: bool,
     key_provider: KeyProvider,
+}
+
+fn portable_vault_lock_path(snapshot_path: &Path) -> PathBuf {
+    let file_name = snapshot_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(PORTABLE_VAULT_FILE_NAME);
+    snapshot_path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn lock_portable_vault_snapshot(snapshot_path: &Path) -> Result<fs::File, String> {
+    let lock_path = portable_vault_lock_path(snapshot_path);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("无法打开 portable vault 文件锁: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("无法获取 portable vault 文件锁: {error}"))?;
+    Ok(lock)
+}
+
+fn portable_vault_snapshot_version(
+    snapshot_path: &Path,
+) -> Result<PortableVaultSnapshotVersion, String> {
+    let bytes = match fs::read(snapshot_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PortableVaultSnapshotVersion::Missing);
+        }
+        Err(error) => return Err(format!("无法读取 portable vault snapshot 指纹: {error}")),
+    };
+    Ok(PortableVaultSnapshotVersion::Sha256(
+        Sha256::digest(bytes).into(),
+    ))
 }
 
 impl PortableStronghold {
     fn new(path: &Path, key: Vec<u8>) -> Result<Self, String> {
+        let key = Zeroizing::new(key);
+        let snapshot_lock = lock_portable_vault_snapshot(path)?;
+        let snapshot_path = path.to_path_buf();
         let path = SnapshotPath::from_path(path);
         let inner = IotaStronghold::default();
-        let key_provider = KeyProvider::try_from(Zeroizing::new(key))
+        let key_provider = KeyProvider::try_from(key)
             .map_err(|error| format!("portable vault key provider 初始化失败: {error}"))?;
-        if path.exists() {
+        let opened_existing_snapshot = path.exists();
+        if opened_existing_snapshot {
             inner
                 .load_snapshot(&key_provider, &path)
                 .map_err(|error| format!("portable vault snapshot 加载失败: {error}"))?;
         }
+        let snapshot_version = portable_vault_snapshot_version(&snapshot_path)?;
+        drop(snapshot_lock);
         Ok(Self {
             inner,
             path,
+            snapshot_path,
+            snapshot_version,
+            opened_existing_snapshot,
             key_provider,
         })
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn ensure_snapshot_current(&self) -> Result<(), String> {
+        let snapshot_lock = lock_portable_vault_snapshot(&self.snapshot_path)?;
+        let result = self.ensure_snapshot_current_locked();
+        drop(snapshot_lock);
+        result
+    }
+
+    fn ensure_snapshot_current_locked(&self) -> Result<(), String> {
+        if self.snapshot_version == PortableVaultSnapshotVersion::UnknownAfterCommit {
+            return Err("portable vault snapshot 提交后无法刷新版本，请锁定后重新解锁".to_string());
+        }
+        let current = portable_vault_snapshot_version(&self.snapshot_path)?;
+        if current != self.snapshot_version {
+            return Err(
+                "portable vault snapshot 已被另一 PortMate 实例修改，请锁定后重新解锁".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn refresh_snapshot_version_after_commit(&mut self) {
+        match portable_vault_snapshot_version(&self.snapshot_path) {
+            Ok(version) => self.snapshot_version = version,
+            Err(error) => {
+                self.snapshot_version = PortableVaultSnapshotVersion::UnknownAfterCommit;
+                eprintln!("PortMate: {error}; portable vault must be reopened before reuse");
+            }
+        }
+    }
+
+    fn save(&mut self) -> Result<(), String> {
+        let snapshot_lock = lock_portable_vault_snapshot(&self.snapshot_path)?;
+        self.ensure_snapshot_current_locked()?;
         self.inner
             .commit_with_keyprovider(&self.path, &self.key_provider)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.refresh_snapshot_version_after_commit();
+        drop(snapshot_lock);
+        Ok(())
+    }
+
+    fn rekey(&mut self, key: Vec<u8>) -> Result<(), String> {
+        let key = Zeroizing::new(key);
+        let snapshot_lock = lock_portable_vault_snapshot(&self.snapshot_path)?;
+        self.ensure_snapshot_current_locked()?;
+        let key_provider = KeyProvider::try_from(key)
+            .map_err(|error| format!("portable vault key provider 初始化失败: {error}"))?;
+        self.inner
+            .commit_with_keyprovider(&self.path, &key_provider)
+            .map_err(|error| format!("portable vault 换密提交失败: {error}"))?;
+        self.key_provider = key_provider;
+        self.refresh_snapshot_version_after_commit();
+        drop(snapshot_lock);
+        Ok(())
     }
 }
 
@@ -279,6 +385,7 @@ type SerialPortPair = (SerialPortHandle, SerialPortHandle);
 #[derive(Clone)]
 struct TunnelRuntime {
     session_id: String,
+    ssh_runtime_id: String,
     spec: TunnelSpec,
     metrics: Arc<TunnelMetrics>,
     closed: Arc<AtomicBool>,
@@ -445,6 +552,13 @@ struct SshConnectRequest<'a> {
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     password: Option<&'a str>,
     passphrase: Option<&'a str>,
+    enforce_profile_snapshot: bool,
+}
+
+#[derive(Clone, Copy)]
+struct HostKeyPersistenceGuard<'a> {
+    profile_id: &'a str,
+    expected_profile: Option<&'a SessionProfile>,
 }
 
 struct SshHandlerParams {
@@ -1093,6 +1207,13 @@ pub struct PortableVaultStatus {
 #[serde(rename_all = "camelCase")]
 pub struct PortableVaultUnlockRequest {
     pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableVaultRotatePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2461,23 +2582,20 @@ fn portable_vault_status() -> Result<PortableVaultStatus, String> {
 fn unlock_portable_vault(
     request: PortableVaultUnlockRequest,
 ) -> Result<PortableVaultStatus, String> {
+    let password = Zeroizing::new(request.password);
     let context = portable_vault_context()?;
-    let mut password = request.password;
-    if !context.snapshot_path.exists() && password.chars().count() < 8 {
-        password.zeroize();
-        return Err("新建 portable vault 的主密码至少需要 8 个字符".to_string());
-    }
-    let result = open_portable_vault(
-        &context.snapshot_path,
-        &context.salt_path,
-        password.as_str(),
-    );
-    password.zeroize();
-    let stronghold = result?;
-    *context
-        .stronghold
-        .lock()
-        .map_err(|error| error.to_string())? = Some(stronghold);
+    unlock_portable_vault_in(context, password.as_str())?;
+    portable_vault_status()
+}
+
+#[tauri::command]
+fn rotate_portable_vault_password(
+    request: PortableVaultRotatePasswordRequest,
+) -> Result<PortableVaultStatus, String> {
+    let current_password = Zeroizing::new(request.current_password);
+    let new_password = Zeroizing::new(request.new_password);
+    let context = portable_vault_context()?;
+    rotate_portable_vault_password_in(context, current_password.as_str(), new_password.as_str())?;
     portable_vault_status()
 }
 
@@ -8249,8 +8367,14 @@ async fn create_tunnel_inner(
         target_port: request.target_port,
         enabled: true,
     };
-    let (tunnel, local_addr) =
-        start_tunnel_runtime(state, &request.session_id, tunnel, request.label.is_none()).await?;
+    let (tunnel, local_addr) = start_tunnel_runtime(
+        state,
+        &request.session_id,
+        tunnel,
+        request.label.is_none(),
+        None,
+    )
+    .await?;
     persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, local_addr)?;
     Ok(tunnel)
 }
@@ -8260,18 +8384,27 @@ async fn start_tunnel_runtime(
     session_id: &str,
     mut tunnel: TunnelSpec,
     relabel_assigned_port: bool,
+    expected_runtime_id: Option<&str>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>), String> {
-    let (handle, remote_forwards) = {
+    let (handle, remote_forwards, ssh_runtime_id) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections
+        let runtime = connections
             .get(session_id)
-            .map(|runtime| {
-                (
-                    Arc::clone(&runtime.handle),
-                    Arc::clone(&runtime.remote_forwards),
-                )
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
             })
-            .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能创建 tunnel".to_string())?
+            .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能创建 tunnel".to_string())?;
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if !store.runtimes.iter().any(|summary| {
+            summary.session_id == session_id && summary.status == SessionStatus::Connected
+        }) {
+            return Err("需要先连接 SSH/Tmux 会话才能创建 tunnel".to_string());
+        }
+        (
+            Arc::clone(&runtime.handle),
+            Arc::clone(&runtime.remote_forwards),
+            runtime.runtime_id.clone(),
+        )
     };
 
     if tunnel.id.trim().is_empty() {
@@ -8315,7 +8448,25 @@ async fn start_tunnel_runtime(
             }
         }
         let metrics = Arc::new(TunnelMetrics::default());
+        let closed = Arc::new(AtomicBool::new(false));
         {
+            let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+            if connections
+                .get(session_id)
+                .is_none_or(|runtime| runtime.runtime_id != ssh_runtime_id)
+            {
+                return Err("SSH runtime changed while creating tunnel".to_string());
+            }
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            if !store.runtimes.iter().any(|runtime| {
+                runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+            }) {
+                return Err("SSH session disconnected while creating tunnel".to_string());
+            }
+            let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+            if tunnels.contains_key(&tunnel.id) {
+                return Err(format!("tunnel already running: {}", tunnel.id));
+            }
             let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
             let target = TunnelForwardTarget {
                 spec: tunnel.clone(),
@@ -8326,14 +8477,11 @@ async fn start_tunnel_runtime(
                 target.clone(),
             );
             forwards.insert(remote_forward_port_key(tunnel.bind_port), target);
-        }
-        let closed = Arc::new(AtomicBool::new(false));
-        {
-            let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
             tunnels.insert(
                 tunnel.id.clone(),
                 TunnelRuntime {
                     session_id: session_id.to_string(),
+                    ssh_runtime_id: ssh_runtime_id.clone(),
                     spec: tunnel.clone(),
                     metrics: Arc::clone(&metrics),
                     closed: Arc::clone(&closed),
@@ -8370,11 +8518,28 @@ async fn start_tunnel_runtime(
     let closed = Arc::new(AtomicBool::new(false));
     let metrics = Arc::new(TunnelMetrics::default());
     {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        if connections
+            .get(session_id)
+            .is_none_or(|runtime| runtime.runtime_id != ssh_runtime_id)
+        {
+            return Err("SSH runtime changed while creating tunnel".to_string());
+        }
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if !store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+        }) {
+            return Err("SSH session disconnected while creating tunnel".to_string());
+        }
         let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        if tunnels.contains_key(&tunnel.id) {
+            return Err(format!("tunnel already running: {}", tunnel.id));
+        }
         tunnels.insert(
             tunnel.id.clone(),
             TunnelRuntime {
                 session_id: session_id.to_string(),
+                ssh_runtime_id: ssh_runtime_id.clone(),
                 spec: tunnel.clone(),
                 metrics: Arc::clone(&metrics),
                 closed: Arc::clone(&closed),
@@ -8387,6 +8552,7 @@ async fn start_tunnel_runtime(
     let store_path = state.store_path.clone();
     let tunnel_registry = Arc::clone(&state.tunnels);
     let tunnel_for_task = tunnel.clone();
+    let ssh_runtime_id_for_task = ssh_runtime_id;
     tauri::async_runtime::spawn(async move {
         loop {
             if closed.load(Ordering::SeqCst) {
@@ -8437,18 +8603,28 @@ async fn start_tunnel_runtime(
                 }
                 Ok(Err(error)) => {
                     let message = format!("SSH tunnel accept failed: {error}");
-                    if let Err(registry_error) =
-                        fail_tunnel_runtime(&tunnel_registry, &tunnel_for_task.id, &message)
-                    {
-                        closed.store(true, Ordering::SeqCst);
-                        metrics.record_error(&format!("{message}; {registry_error}"));
-                    }
-                    if let Ok(mut store) = store.lock() {
-                        let mut stopped = tunnel_for_task.clone();
-                        stopped.enabled = false;
-                        mark_tunnel_stopped_in_store(&mut store, &session_id, &stopped);
-                        store.record_system_event(&session_id, format!("PortMate: {message}"));
-                        let _ = save_store(&store_path, &store);
+                    let removed = match fail_tunnel_runtime_if_owned(
+                        &tunnel_registry,
+                        &tunnel_for_task.id,
+                        &ssh_runtime_id_for_task,
+                        &message,
+                    ) {
+                        Ok(Some(_)) => true,
+                        Ok(None) => false,
+                        Err(registry_error) => {
+                            closed.store(true, Ordering::SeqCst);
+                            metrics.record_error(&format!("{message}; {registry_error}"));
+                            false
+                        }
+                    };
+                    if removed {
+                        if let Ok(mut store) = store.lock() {
+                            let mut stopped = tunnel_for_task.clone();
+                            stopped.enabled = false;
+                            mark_tunnel_stopped_in_store(&mut store, &session_id, &stopped);
+                            store.record_system_event(&session_id, format!("PortMate: {message}"));
+                            let _ = save_store(&store_path, &store);
+                        }
                     }
                     break;
                 }
@@ -8541,6 +8717,7 @@ async fn probe_remote_tunnel_health(
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
             .get(&runtime.session_id)
+            .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
             .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards)))
             .ok_or_else(|| format!("SSH runtime is unavailable for {}", runtime.session_id))?
     };
@@ -8707,7 +8884,14 @@ fn enabled_tunnel_specs(state: &AppState, session_id: &str) -> Result<Vec<Tunnel
         .collect())
 }
 
-async fn restore_enabled_tunnels(state: &AppState, session_id: &str) -> (usize, usize) {
+async fn restore_enabled_tunnels(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+) -> (usize, usize) {
+    if !ssh_runtime_connected(state, session_id, runtime_id) {
+        return (0, 0);
+    }
     let tunnels = match enabled_tunnel_specs(state, session_id) {
         Ok(tunnels) => tunnels,
         Err(error) => {
@@ -8718,9 +8902,21 @@ async fn restore_enabled_tunnels(state: &AppState, session_id: &str) -> (usize, 
     let mut restored = 0;
     let mut failed = 0;
     for tunnel in tunnels {
+        if !ssh_runtime_connected(state, session_id, runtime_id) {
+            break;
+        }
         let tunnel_id = tunnel.id.clone();
-        match start_tunnel_runtime(state, session_id, tunnel, false).await {
+        match start_tunnel_runtime(state, session_id, tunnel, false, Some(runtime_id)).await {
             Ok((tunnel, local_addr)) => {
+                if !ssh_runtime_connected(state, session_id, runtime_id) {
+                    let _ = fail_tunnel_runtime_if_owned(
+                        &state.tunnels,
+                        &tunnel_id,
+                        runtime_id,
+                        "SSH reconnect superseded while restoring tunnel",
+                    );
+                    break;
+                }
                 restored += 1;
                 if let Err(error) =
                     persist_tunnel_to_profile_and_log(state, session_id, &tunnel, local_addr)
@@ -8734,6 +8930,9 @@ async fn restore_enabled_tunnels(state: &AppState, session_id: &str) -> (usize, 
                 }
             }
             Err(error) => {
+                if !ssh_runtime_connected(state, session_id, runtime_id) {
+                    break;
+                }
                 failed += 1;
                 record_tunnel_restore_failure(state, session_id, Some(&tunnel_id), &error);
             }
@@ -8816,15 +9015,22 @@ fn list_tunnels_inner(
     Ok(statuses)
 }
 
-fn fail_tunnel_runtime(
+fn fail_tunnel_runtime_if_owned(
     tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     tunnel_id: &str,
+    ssh_runtime_id: &str,
     error: &str,
 ) -> Result<Option<TunnelRuntime>, String> {
-    let runtime = tunnels
+    let mut tunnels = tunnels
         .lock()
-        .map_err(|lock_error| lock_error.to_string())?
-        .remove(tunnel_id);
+        .map_err(|lock_error| lock_error.to_string())?;
+    if tunnels
+        .get(tunnel_id)
+        .is_none_or(|runtime| runtime.ssh_runtime_id != ssh_runtime_id)
+    {
+        return Ok(None);
+    }
+    let runtime = tunnels.remove(tunnel_id);
     if let Some(runtime) = &runtime {
         runtime.metrics.record_error(error);
         runtime.closed.store(true, Ordering::SeqCst);
@@ -8873,6 +9079,7 @@ async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelSt
         let remote_forward = match state.ssh.lock() {
             Ok(connections) => connections
                 .get(&runtime.session_id)
+                .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
                 .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards))),
             Err(error) => {
                 warnings.push(format!(
@@ -9401,17 +9608,35 @@ async fn establish_ssh_runtime(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<EstablishedSshRuntime, String> {
-    establish_ssh_runtime_with_timeout(
+    establish_ssh_runtime_with_timeout_mode(
         state,
         profile,
         password,
         passphrase,
         SSH_CONNECT_TIMEOUT,
         None,
+        false,
     )
     .await
 }
 
+async fn establish_ssh_reconnect_runtime(
+    state: &AppState,
+    profile: &SessionProfile,
+) -> Result<EstablishedSshRuntime, String> {
+    establish_ssh_runtime_with_timeout_mode(
+        state,
+        profile,
+        None,
+        None,
+        SSH_CONNECT_TIMEOUT,
+        None,
+        true,
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn establish_ssh_runtime_with_timeout(
     state: &AppState,
     profile: &SessionProfile,
@@ -9419,6 +9644,27 @@ async fn establish_ssh_runtime_with_timeout(
     passphrase: Option<String>,
     connect_timeout: Duration,
     agent_socket_path: Option<PathBuf>,
+) -> Result<EstablishedSshRuntime, String> {
+    establish_ssh_runtime_with_timeout_mode(
+        state,
+        profile,
+        password,
+        passphrase,
+        connect_timeout,
+        agent_socket_path,
+        false,
+    )
+    .await
+}
+
+async fn establish_ssh_runtime_with_timeout_mode(
+    state: &AppState,
+    profile: &SessionProfile,
+    password: Option<String>,
+    passphrase: Option<String>,
+    connect_timeout: Duration,
+    agent_socket_path: Option<PathBuf>,
+    enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
     let ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
@@ -9467,6 +9713,7 @@ async fn establish_ssh_runtime_with_timeout(
             remote_forwards: Arc::clone(&remote_forwards),
             password: password.as_deref(),
             passphrase: passphrase.as_deref(),
+            enforce_profile_snapshot,
         },
         connect_timeout,
         agent_socket_path.as_deref(),
@@ -9486,7 +9733,10 @@ async fn establish_ssh_runtime_with_timeout(
 
     persist_observed_host_key(
         &state.store,
-        &profile.id,
+        HostKeyPersistenceGuard {
+            profile_id: &profile.id,
+            expected_profile: enforce_profile_snapshot.then_some(profile),
+        },
         &observed_key,
         &one_time_host_keys,
     )?;
@@ -9573,6 +9823,7 @@ async fn connect_ssh_target(
         remote_forwards,
         password,
         passphrase,
+        enforce_profile_snapshot,
     } = request;
     let one_time_host_key_ids = one_time_host_keys
         .iter()
@@ -9740,7 +9991,10 @@ async fn connect_ssh_target(
         if let Err(error) = persist_observed_host_key_with_policy(
             &store,
             &store_path,
-            &profile.id,
+            HostKeyPersistenceGuard {
+                profile_id: &profile.id,
+                expected_profile: enforce_profile_snapshot.then_some(profile),
+            },
             &jump_policy,
             &observed_jump_key,
             &one_time_host_keys,
@@ -11062,6 +11316,19 @@ fn portable_vault_context() -> Result<&'static PortableVaultContext, String> {
         .ok_or_else(|| "portable vault 尚未初始化".to_string())
 }
 
+fn read_portable_vault_salt(salt_path: &Path) -> Result<Vec<u8>, String> {
+    let salt =
+        fs::read(salt_path).map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
+    if salt.len() != portmate_kdf::SALT_LENGTH {
+        return Err(format!(
+            "portable vault salt 长度无效: expected {}, got {}",
+            portmate_kdf::SALT_LENGTH,
+            salt.len()
+        ));
+    }
+    Ok(salt)
+}
+
 fn open_portable_vault(
     snapshot_path: &Path,
     salt_path: &Path,
@@ -11072,20 +11339,12 @@ fn open_portable_vault(
             format!("无法创建 portable vault 目录 {}: {error}", parent.display())
         })?;
     }
+    let salt_lock = lock_portable_vault_snapshot(snapshot_path)?;
     if snapshot_path.exists() && !salt_path.exists() {
         return Err("portable vault snapshot 存在，但 salt 文件缺失，已阻止解锁".to_string());
     }
     let salt = if salt_path.exists() {
-        let salt = fs::read(salt_path)
-            .map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
-        if salt.len() != portmate_kdf::SALT_LENGTH {
-            return Err(format!(
-                "portable vault salt 长度无效: expected {}, got {}",
-                portmate_kdf::SALT_LENGTH,
-                salt.len()
-            ));
-        }
-        salt
+        read_portable_vault_salt(salt_path)?
     } else {
         let mut salt = vec![0_u8; portmate_kdf::SALT_LENGTH];
         getrandom::fill(&mut salt)
@@ -11094,14 +11353,14 @@ fn open_portable_vault(
             .map_err(|error| format!("无法保存 portable vault salt: {error}"))?;
         salt
     };
+    drop(salt_lock);
     let mut key = portmate_kdf::derive_key(password.as_bytes(), &salt)
         .map_err(|error| format!("portable vault 密钥派生失败: {error}"))?;
-    let existed = snapshot_path.exists();
     let stronghold_result = PortableStronghold::new(snapshot_path, key.to_vec());
     key.zeroize();
-    let stronghold =
+    let mut stronghold =
         stronghold_result.map_err(|error| format!("portable vault 解锁失败: {error}"))?;
-    if existed {
+    if stronghold.opened_existing_snapshot {
         stronghold
             .load_client(PORTABLE_VAULT_CLIENT)
             .map_err(|error| format!("portable vault client 加载失败: {error}"))?;
@@ -11114,6 +11373,54 @@ fn open_portable_vault(
             .map_err(|error| format!("portable vault 初始化保存失败: {error}"))?;
     }
     Ok(stronghold)
+}
+
+fn unlock_portable_vault_in(context: &PortableVaultContext, password: &str) -> Result<(), String> {
+    let mut unlocked = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if !context.snapshot_path.exists() && password.chars().count() < 8 {
+        return Err("新建 portable vault 的主密码至少需要 8 个字符".to_string());
+    }
+    let stronghold = open_portable_vault(&context.snapshot_path, &context.salt_path, password)?;
+    *unlocked = Some(stronghold);
+    Ok(())
+}
+
+fn rotate_portable_vault_password_in(
+    context: &PortableVaultContext,
+    current_password: &str,
+    new_password: &str,
+) -> Result<(), String> {
+    if !context.snapshot_path.exists() {
+        return Err("portable vault 尚未创建".to_string());
+    }
+    if new_password.chars().count() < 8 {
+        return Err("portable vault 新主密码至少需要 8 个字符".to_string());
+    }
+    if current_password == new_password {
+        return Err("portable vault 新主密码必须与当前密码不同".to_string());
+    }
+
+    let mut unlocked = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let stronghold = unlocked
+        .as_mut()
+        .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    let verification =
+        open_portable_vault(&context.snapshot_path, &context.salt_path, current_password)
+            .map_err(|error| format!("portable vault 当前主密码验证失败: {error}"))?;
+    drop(verification);
+
+    let salt = read_portable_vault_salt(&context.salt_path)?;
+    let mut key = portmate_kdf::derive_key(new_password.as_bytes(), &salt)
+        .map_err(|error| format!("portable vault 新密钥派生失败: {error}"))?;
+    let result = stronghold.rekey(key.to_vec());
+    key.zeroize();
+    result
 }
 
 fn portable_vault_account(secret_ref: &str) -> Result<&str, String> {
@@ -11138,12 +11445,12 @@ fn write_secret_to_portable_vault_in(
     secret: &str,
 ) -> Result<(), String> {
     let account = portable_vault_account(secret_ref)?;
-    let stronghold = context
+    let mut stronghold = context
         .stronghold
         .lock()
         .map_err(|error| error.to_string())?;
     let stronghold = stronghold
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| "portable vault 已锁定".to_string())?;
     let client = stronghold
         .get_client(PORTABLE_VAULT_CLIENT)
@@ -11187,6 +11494,7 @@ fn read_secret_from_portable_vault_in(
     let stronghold = stronghold
         .as_ref()
         .ok_or_else(|| "portable vault 已锁定".to_string())?;
+    stronghold.ensure_snapshot_current()?;
     let client = stronghold
         .get_client(PORTABLE_VAULT_CLIENT)
         .map_err(|error| format!("portable vault client 不可用: {error}"))?;
@@ -11208,12 +11516,12 @@ fn delete_secret_from_portable_vault_in(
     secret_ref: &str,
 ) -> Result<(), String> {
     let account = portable_vault_account(secret_ref)?;
-    let stronghold = context
+    let mut stronghold = context
         .stronghold
         .lock()
         .map_err(|error| error.to_string())?;
     let stronghold = stronghold
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| "portable vault 已锁定".to_string())?;
     let client = stronghold
         .get_client(PORTABLE_VAULT_CLIENT)
@@ -11350,10 +11658,11 @@ fn expand_identity_path(path: &str) -> PathBuf {
 
 fn persist_observed_host_key(
     store: &Arc<Mutex<SessionStore>>,
-    profile_id: &str,
+    guard: HostKeyPersistenceGuard<'_>,
     observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
     one_time_host_keys: &[TrustedHostKey],
 ) -> Result<(), String> {
+    let profile_id = guard.profile_id;
     let observation = observed_key
         .lock()
         .map_err(|error| error.to_string())?
@@ -11363,6 +11672,13 @@ fn persist_observed_host_key(
     let profile = store
         .profile(profile_id)
         .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+    if let Some(expected_profile) = guard.expected_profile {
+        if !ssh_establishment_profile_matches(expected_profile, &profile) {
+            return Err(format!(
+                "SSH profile changed while establishing session: {profile_id}"
+            ));
+        }
+    }
     let policy = match profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
         _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
@@ -11522,18 +11838,29 @@ fn one_time_host_keys_snapshot_from(
 fn persist_observed_host_key_with_policy(
     store: &Arc<Mutex<SessionStore>>,
     store_path: &Path,
-    profile_id: &str,
+    guard: HostKeyPersistenceGuard<'_>,
     policy: &portmate_core::HostKeyPolicy,
     observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
     one_time_host_keys: &[TrustedHostKey],
     label: &str,
 ) -> Result<(), String> {
+    let profile_id = guard.profile_id;
     let observation = observed_key
         .lock()
         .map_err(|error| error.to_string())?
         .clone()
         .ok_or_else(|| format!("{label} 未收到服务器 host key"))?;
     let mut store = store.lock().map_err(|error| error.to_string())?;
+    if let Some(expected_profile) = guard.expected_profile {
+        let latest_profile = store
+            .profile(profile_id)
+            .ok_or_else(|| format!("unknown session: {profile_id}"))?;
+        if !ssh_establishment_profile_matches(expected_profile, &latest_profile) {
+            return Err(format!(
+                "SSH profile changed while establishing session: {profile_id}"
+            ));
+        }
+    }
     if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
         let fingerprint = observation
             .fingerprint_sha256()
@@ -11728,39 +12055,42 @@ fn read_ssh_channel(
             }
         }
 
-        let stopped_tunnels =
-            match fail_session_tunnel_runtimes(&state.tunnels, &session_id, "SSH channel closed") {
-                Ok(count) => count,
-                Err(error) => {
-                    eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
-                    0
-                }
-            };
-
-        let mut should_reconnect = false;
-        let removed_current = {
+        let should_reconnect = {
             let mut connections = match io.runtimes.ssh.lock() {
                 Ok(connections) => connections,
                 Err(_) => return,
             };
             if connections
                 .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+                .is_none_or(|runtime| runtime.runtime_id != runtime_id)
             {
-                if ssh_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
-                    should_reconnect = true;
-                    false
-                } else {
-                    connections.remove(&session_id);
-                    true
-                }
-            } else {
-                false
+                return;
             }
-        };
 
-        if should_reconnect {
-            if let Ok(mut store) = io.store.lock() {
+            let mut store = match io.store.lock() {
+                Ok(store) => store,
+                Err(_) => {
+                    connections.remove(&session_id);
+                    return;
+                }
+            };
+            let stopped_tunnels = match fail_session_tunnel_runtimes(
+                &state.tunnels,
+                &session_id,
+                "SSH channel closed",
+            ) {
+                Ok(count) => count,
+                Err(error) => {
+                    eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
+                    0
+                }
+            };
+            let reconnect_enabled = !closed.load(Ordering::SeqCst)
+                && store
+                    .profile(&session_id)
+                    .map(normalize_session_profile)
+                    .is_some_and(|latest| ssh_reconnect_enabled(&latest));
+            if reconnect_enabled {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Reconnecting,
@@ -11775,13 +12105,11 @@ fn read_ssh_channel(
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist SSH reconnect event: {error}");
                 }
-            }
-            tauri::async_runtime::spawn(reconnect_ssh_session(state, profile, runtime_id, closed));
-            return;
-        }
-
-        if removed_current {
-            if let Ok(mut store) = io.store.lock() {
+                true
+            } else {
+                if let Some(runtime) = connections.remove(&session_id) {
+                    runtime.closed.store(true, Ordering::SeqCst);
+                }
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
@@ -11796,7 +12124,14 @@ fn read_ssh_channel(
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist SSH close event: {error}");
                 }
+                false
             }
+        };
+
+        if should_reconnect {
+            tauri::async_runtime::spawn(reconnect_ssh_session(
+                state, session_id, runtime_id, closed,
+            ));
         }
     })
 }
@@ -11808,6 +12143,55 @@ fn ssh_reconnect_enabled(profile: &SessionProfile) -> bool {
     }
 }
 
+fn ssh_establishment_profile_matches(attempt: &SessionProfile, latest: &SessionProfile) -> bool {
+    let attempt = normalize_session_profile(attempt.clone());
+    let latest = normalize_session_profile(latest.clone());
+    attempt.connection == latest.connection && attempt.terminal == latest.terminal
+}
+
+fn ssh_reconnect_attempt_matches_profile(
+    attempt: &SessionProfile,
+    latest: &SessionProfile,
+) -> bool {
+    ssh_reconnect_enabled(latest) && ssh_establishment_profile_matches(attempt, latest)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshReconnectProfileState {
+    Current,
+    Changed,
+    Disabled,
+}
+
+fn ssh_reconnect_profile_state(
+    store: &SessionStore,
+    session_id: &str,
+    attempt: &SessionProfile,
+) -> SshReconnectProfileState {
+    let Some(latest) = store.profile(session_id).map(normalize_session_profile) else {
+        return SshReconnectProfileState::Disabled;
+    };
+    if !ssh_reconnect_enabled(&latest) {
+        return SshReconnectProfileState::Disabled;
+    }
+    if !ssh_reconnect_attempt_matches_profile(attempt, &latest) {
+        return SshReconnectProfileState::Changed;
+    }
+    SshReconnectProfileState::Current
+}
+
+fn latest_ssh_reconnect_profile(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<SessionProfile>, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let Some(profile) = store.profile(session_id) else {
+        return Ok(None);
+    };
+    let profile = normalize_session_profile(profile);
+    Ok(ssh_reconnect_enabled(&profile).then_some(profile))
+}
+
 fn ssh_reconnect_pending(
     state: &AppState,
     session_id: &str,
@@ -11817,16 +12201,151 @@ fn ssh_reconnect_pending(
     if closed.load(Ordering::SeqCst) {
         return false;
     }
-    state
-        .ssh
-        .lock()
-        .ok()
-        .and_then(|connections| {
-            connections
-                .get(session_id)
-                .map(|runtime| runtime.runtime_id == runtime_id)
+    let connections = match state.ssh.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    state.store.lock().ok().is_some_and(|store| {
+        store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
         })
-        .unwrap_or(false)
+    })
+}
+
+fn ssh_runtime_connected(state: &AppState, session_id: &str, runtime_id: &str) -> bool {
+    let connections = match state.ssh.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if !connections.get(session_id).is_some_and(|runtime| {
+        runtime.runtime_id == runtime_id && !runtime.closed.load(Ordering::SeqCst)
+    }) {
+        return false;
+    }
+    state.store.lock().ok().is_some_and(|store| {
+        store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+        })
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshReconnectFailureDisposition {
+    Recorded,
+    RetryLatestProfile,
+    StopDisabled,
+    Superseded,
+}
+
+fn record_ssh_reconnect_failure_if_pending(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    attempt: Option<&SessionProfile>,
+    error: &str,
+) -> SshReconnectFailureDisposition {
+    if closed.load(Ordering::SeqCst) {
+        return SshReconnectFailureDisposition::Superseded;
+    }
+    let connections = match state.ssh.lock() {
+        Ok(connections) => connections,
+        Err(_) => return SshReconnectFailureDisposition::Superseded,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return SshReconnectFailureDisposition::Superseded;
+    }
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(_) => return SshReconnectFailureDisposition::Superseded,
+    };
+    if !store.runtimes.iter().any(|runtime| {
+        runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
+    }) {
+        return SshReconnectFailureDisposition::Superseded;
+    }
+    if let Some(attempt) = attempt {
+        match ssh_reconnect_profile_state(&store, session_id, attempt) {
+            SshReconnectProfileState::Current => {}
+            SshReconnectProfileState::Changed => {
+                return SshReconnectFailureDisposition::RetryLatestProfile;
+            }
+            SshReconnectProfileState::Disabled => {
+                return SshReconnectFailureDisposition::StopDisabled;
+            }
+        }
+    }
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Reconnecting,
+        Some(format!("SSH reconnect failed: {error}")),
+    );
+    store.record_system_event(
+        session_id,
+        format!("PortMate: SSH reconnect failed: {error}; retrying in 1000ms"),
+    );
+    if let Err(save_error) = save_store(&state.store_path, &store) {
+        eprintln!("PortMate: failed to persist SSH reconnect failure: {save_error}");
+    }
+    SshReconnectFailureDisposition::Recorded
+}
+
+fn stop_pending_ssh_reconnect_if_disabled(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    reason: &str,
+) -> bool {
+    let mut connections = match state.ssh.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(_) => return false,
+    };
+    let reconnect_disabled = store
+        .profile(session_id)
+        .map(normalize_session_profile)
+        .is_none_or(|profile| !ssh_reconnect_enabled(&profile));
+    if !reconnect_disabled {
+        return false;
+    }
+    if let Some(runtime) = connections.remove(session_id) {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    let stopped_tunnels =
+        fail_session_tunnel_runtimes(&state.tunnels, session_id, reason).unwrap_or_default();
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Disconnected,
+        Some(reason.to_string()),
+    );
+    store.record_system_event(
+        session_id,
+        format!(
+            "PortMate: SSH reconnect stopped: {reason}; stopped {stopped_tunnels} tunnel runtime(s)"
+        ),
+    );
+    if let Err(error) = save_store(&state.store_path, &store) {
+        eprintln!("PortMate: failed to persist SSH reconnect stop: {error}");
+    }
+    true
 }
 
 async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
@@ -11844,13 +12363,20 @@ async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
     }
 }
 
+enum SshReconnectInstallDecision {
+    Installed(Box<SessionProfile>),
+    Retry,
+    Stop,
+    Superseded,
+    Failed(String),
+}
+
 async fn reconnect_ssh_session(
     state: AppState,
-    profile: SessionProfile,
+    session_id: String,
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
-    let session_id = profile.id.clone();
     let reconnect_delay = Duration::from_millis(1000);
 
     loop {
@@ -11859,27 +12385,60 @@ async fn reconnect_ssh_session(
             return;
         }
 
-        let established = match establish_ssh_runtime(&state, &profile, None, None).await {
-            Ok(established) => established,
-            Err(error) => {
-                if !ssh_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+        let profile = match latest_ssh_reconnect_profile(&state, &session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_ssh_reconnect_if_disabled(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    "automatic reconnect disabled by latest profile",
+                ) {
                     return;
                 }
-                if let Ok(mut store) = state.store.lock() {
-                    let _ = store.set_runtime_status_with_reason(
-                        &session_id,
-                        SessionStatus::Reconnecting,
-                        Some(format!("SSH reconnect failed: {error}")),
-                    );
-                    store.record_system_event(
-                        &session_id,
-                        format!("PortMate: SSH reconnect failed: {error}; retrying in 1000ms"),
-                    );
-                    if let Err(error) = save_store(&state.store_path, &store) {
-                        eprintln!("PortMate: failed to persist SSH reconnect failure: {error}");
-                    }
+                continue;
+            }
+            Err(error) => {
+                if record_ssh_reconnect_failure_if_pending(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    None,
+                    &error,
+                ) == SshReconnectFailureDisposition::Superseded
+                {
+                    return;
                 }
                 continue;
+            }
+        };
+        let established = match establish_ssh_reconnect_runtime(&state, &profile).await {
+            Ok(established) => established,
+            Err(error) => {
+                match record_ssh_reconnect_failure_if_pending(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    Some(&profile),
+                    &error,
+                ) {
+                    SshReconnectFailureDisposition::Recorded
+                    | SshReconnectFailureDisposition::RetryLatestProfile => continue,
+                    SshReconnectFailureDisposition::StopDisabled => {
+                        if stop_pending_ssh_reconnect_if_disabled(
+                            &state,
+                            &session_id,
+                            &previous_runtime_id,
+                            "automatic reconnect disabled while the previous attempt was running",
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    SshReconnectFailureDisposition::Superseded => return,
+                }
             }
         };
         let EstablishedSshRuntime {
@@ -11891,45 +12450,135 @@ async fn reconnect_ssh_session(
             closed: next_closed,
         } = established;
         let mut runtime = Some(runtime);
-        let inserted = {
-            let mut connections = match state.ssh.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
-                && !closed.load(Ordering::SeqCst)
-            {
-                connections.insert(session_id.clone(), runtime.take().expect("runtime present"));
-                true
-            } else {
-                false
+        let install = match state.ssh.lock() {
+            Err(error) => SshReconnectInstallDecision::Failed(error.to_string()),
+            Ok(mut connections) => {
+                if connections
+                    .get(&session_id)
+                    .is_none_or(|runtime| runtime.runtime_id != previous_runtime_id)
+                    || closed.load(Ordering::SeqCst)
+                {
+                    SshReconnectInstallDecision::Superseded
+                } else {
+                    match state.store.lock() {
+                        Err(error) => SshReconnectInstallDecision::Failed(error.to_string()),
+                        Ok(mut store) => {
+                            let latest = store.profile(&session_id).map(normalize_session_profile);
+                            match latest {
+                                Some(latest) if !ssh_reconnect_enabled(&latest) => {
+                                    SshReconnectInstallDecision::Stop
+                                }
+                                Some(latest)
+                                    if !ssh_reconnect_attempt_matches_profile(
+                                        &profile, &latest,
+                                    ) =>
+                                {
+                                    SshReconnectInstallDecision::Retry
+                                }
+                                Some(latest) => {
+                                    connections.insert(
+                                        session_id.clone(),
+                                        runtime.take().expect("runtime present"),
+                                    );
+                                    let _ = store.record_auth_success(&session_id, auth_method);
+                                    if let Err(error) = store.open_session(&session_id) {
+                                        store.record_system_event(
+                                            &session_id,
+                                            format!(
+                                                "PortMate: SSH reconnect status update failed: {error}"
+                                            ),
+                                        );
+                                    }
+                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                        eprintln!(
+                                            "PortMate: failed to persist SSH reconnect status: {error}"
+                                        );
+                                    }
+                                    SshReconnectInstallDecision::Installed(Box::new(latest))
+                                }
+                                None => SshReconnectInstallDecision::Stop,
+                            }
+                        }
+                    }
+                }
             }
         };
 
-        if !inserted {
-            if let Some(runtime) = runtime {
-                disconnect_ssh_runtime(runtime, "PortMate SSH reconnect superseded").await;
+        let installed_profile = match install {
+            SshReconnectInstallDecision::Installed(profile) => *profile,
+            SshReconnectInstallDecision::Retry => {
+                disconnect_ssh_runtime(
+                    runtime.take().expect("uninstalled runtime present"),
+                    "PortMate SSH reconnect profile changed",
+                )
+                .await;
+                continue;
             }
-            return;
-        }
-
-        let one_time_cleanup_error = take_one_time_host_keys(&state, &session_id).err();
+            SshReconnectInstallDecision::Stop => {
+                disconnect_ssh_runtime(
+                    runtime.take().expect("uninstalled runtime present"),
+                    "PortMate SSH reconnect disabled",
+                )
+                .await;
+                if stop_pending_ssh_reconnect_if_disabled(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    "automatic reconnect disabled by latest profile",
+                ) {
+                    return;
+                }
+                continue;
+            }
+            SshReconnectInstallDecision::Superseded => {
+                disconnect_ssh_runtime(
+                    runtime.take().expect("uninstalled runtime present"),
+                    "PortMate SSH reconnect superseded",
+                )
+                .await;
+                return;
+            }
+            SshReconnectInstallDecision::Failed(error) => {
+                disconnect_ssh_runtime(
+                    runtime.take().expect("uninstalled runtime present"),
+                    "PortMate SSH reconnect state unavailable",
+                )
+                .await;
+                eprintln!("PortMate: failed to install SSH reconnect runtime: {error}");
+                return;
+            }
+        };
 
         tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
             state: state.clone(),
-            profile: profile.clone(),
-            runtime_id,
+            profile: installed_profile,
+            runtime_id: runtime_id.clone(),
             tap,
             read_half,
-            closed: next_closed,
+            closed: Arc::clone(&next_closed),
         }));
 
-        let (restored_tunnels, failed_tunnels) = restore_enabled_tunnels(&state, &session_id).await;
+        let one_time_cleanup_error = take_one_time_host_keys(&state, &session_id).err();
+        let (restored_tunnels, failed_tunnels) =
+            restore_enabled_tunnels(&state, &session_id, &runtime_id).await;
 
+        let connections = match state.ssh.lock() {
+            Ok(connections) => connections,
+            Err(_) => return,
+        };
+        if connections
+            .get(&session_id)
+            .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+            || next_closed.load(Ordering::SeqCst)
+        {
+            return;
+        }
         if let Ok(mut store) = state.store.lock() {
-            let _ = store.record_auth_success(&session_id, auth_method);
+            if !store.runtimes.iter().any(|runtime| {
+                runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+            }) {
+                return;
+            }
             store.record_system_event(
                 &session_id,
                 format!(
@@ -11940,12 +12589,6 @@ async fn reconnect_ssh_session(
                 store.record_system_event(
                     &session_id,
                     format!("PortMate: failed to consume one-time host key trust: {error}"),
-                );
-            }
-            if let Err(error) = store.open_session(&session_id) {
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: SSH reconnect status update failed: {error}"),
                 );
             }
             if let Err(error) = save_store(&state.store_path, &store) {
@@ -16009,6 +16652,7 @@ pub fn run() {
             has_secret,
             portable_vault_status,
             unlock_portable_vault,
+            rotate_portable_vault_password,
             lock_portable_vault,
             update_client_identity,
             rotate_client_identity,
@@ -17472,6 +18116,90 @@ mod tests {
         });
         profile.kind = SessionKind::Tmux;
         assert!(ssh_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn ssh_reconnect_profile_reloads_latest_store_snapshot() {
+        let mut profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.endpoint.host = "old.example".to_string();
+            ssh.username = "old-user".to_string();
+            ssh.password_secret_ref = Some("keychain:old-password".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:old-passphrase".to_string());
+        }
+        let state = test_app_state(profile.clone(), PathBuf::from("reconnect-test.sqlite3"));
+        assert!(ssh_reconnect_attempt_matches_profile(&profile, &profile));
+        assert_eq!(
+            ssh_reconnect_profile_state(&state.store.lock().unwrap(), "ssh-session-1", &profile,),
+            SshReconnectProfileState::Current
+        );
+        let mut terminal_updated = profile.clone();
+        terminal_updated.terminal.rows += 1;
+        assert!(!ssh_reconnect_attempt_matches_profile(
+            &profile,
+            &terminal_updated
+        ));
+        let mut updated = profile.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut updated.connection {
+            ssh.endpoint.host = "new.example".to_string();
+            ssh.username = "new-user".to_string();
+            ssh.password_secret_ref = Some("keychain:new-password".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:new-passphrase".to_string());
+        }
+        state.store.lock().unwrap().upsert_profile(updated);
+
+        assert_eq!(
+            ssh_reconnect_profile_state(&state.store.lock().unwrap(), "ssh-session-1", &profile,),
+            SshReconnectProfileState::Changed
+        );
+
+        let latest = latest_ssh_reconnect_profile(&state, "ssh-session-1")
+            .unwrap()
+            .unwrap();
+        assert!(!ssh_reconnect_attempt_matches_profile(&profile, &latest));
+        let latest = match latest.connection {
+            ConnectionConfig::Ssh(ssh) => ssh,
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(latest.endpoint.host, "new.example");
+        assert_eq!(latest.username, "new-user");
+        assert_eq!(
+            latest.password_secret_ref.as_deref(),
+            Some("keychain:new-password")
+        );
+        assert_eq!(
+            latest.passphrase_secret_ref.as_deref(),
+            Some("keychain:new-passphrase")
+        );
+
+        let mut disabled = state
+            .store
+            .lock()
+            .unwrap()
+            .profile("ssh-session-1")
+            .unwrap();
+        if let ConnectionConfig::Ssh(ssh) = &mut disabled.connection {
+            ssh.reconnect = false;
+        }
+        state.store.lock().unwrap().upsert_profile(disabled);
+        assert_eq!(
+            ssh_reconnect_profile_state(&state.store.lock().unwrap(), "ssh-session-1", &profile,),
+            SshReconnectProfileState::Disabled
+        );
+        assert!(latest_ssh_reconnect_profile(&state, "ssh-session-1")
+            .unwrap()
+            .is_none());
+
+        let mut non_ssh = test_shell_profile();
+        non_ssh.id = "ssh-session-1".to_string();
+        state.store.lock().unwrap().upsert_profile(non_ssh);
+        assert_eq!(
+            ssh_reconnect_profile_state(&state.store.lock().unwrap(), "ssh-session-1", &profile,),
+            SshReconnectProfileState::Disabled
+        );
+        assert!(latest_ssh_reconnect_profile(&state, "ssh-session-1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -19240,14 +19968,26 @@ mod tests {
             spec.id.clone(),
             TunnelRuntime {
                 session_id: "ssh-session-1".to_string(),
+                ssh_runtime_id: "runtime-new".to_string(),
                 spec: spec.clone(),
                 metrics: Arc::clone(&failed_metrics),
                 closed: Arc::clone(&failed_closed),
             },
         )])));
-        let failed = fail_tunnel_runtime(&tunnels, &spec.id, "listener failed")
-            .unwrap()
-            .unwrap();
+        assert!(fail_tunnel_runtime_if_owned(
+            &tunnels,
+            &spec.id,
+            "runtime-old",
+            "stale listener failed"
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(tunnels.lock().unwrap().len(), 1);
+        assert!(!failed_closed.load(Ordering::SeqCst));
+        let failed =
+            fail_tunnel_runtime_if_owned(&tunnels, &spec.id, "runtime-new", "listener failed")
+                .unwrap()
+                .unwrap();
         assert!(tunnels.lock().unwrap().is_empty());
         assert!(failed_closed.load(Ordering::SeqCst));
         assert_eq!(
@@ -19388,6 +20128,7 @@ mod tests {
                        metrics: Arc<TunnelMetrics>,
                        closed: Arc<AtomicBool>| TunnelRuntime {
             session_id: session_id.to_string(),
+            ssh_runtime_id: format!("runtime-{session_id}"),
             spec: TunnelSpec {
                 id: id.to_string(),
                 label: id.to_string(),
@@ -22650,15 +23391,45 @@ mod tests {
             read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
             std::str::from_utf8(secret).unwrap()
         );
-        context.stronghold.lock().unwrap().take();
-
+        let salt_before = fs::read(&salt_path).unwrap();
         let snapshot = fs::read(&snapshot_path).unwrap();
         assert!(!snapshot
             .windows(secret.len())
             .any(|window| window == secret));
         assert!(open_portable_vault(&snapshot_path, &salt_path, "wrong password").is_err());
 
-        let reopened = open_portable_vault(&snapshot_path, &salt_path, "correct horse").unwrap();
+        let wrong_current =
+            rotate_portable_vault_password_in(&context, "wrong password", "new correct horse")
+                .unwrap_err();
+        assert!(wrong_current.contains("当前主密码验证失败"));
+        assert!(
+            rotate_portable_vault_password_in(&context, "correct horse", "short")
+                .unwrap_err()
+                .contains("至少需要 8 个字符")
+        );
+        assert!(
+            rotate_portable_vault_password_in(&context, "correct horse", "correct horse")
+                .unwrap_err()
+                .contains("必须与当前密码不同")
+        );
+        rotate_portable_vault_password_in(&context, "correct horse", "new correct horse").unwrap();
+        assert_eq!(fs::read(&salt_path).unwrap(), salt_before);
+        assert!(unlock_portable_vault_in(&context, "correct horse").is_err());
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
+            std::str::from_utf8(secret).unwrap()
+        );
+
+        context.stronghold.lock().unwrap().take();
+        assert!(open_portable_vault(&snapshot_path, &salt_path, "correct horse").is_err());
+        assert!(
+            rotate_portable_vault_password_in(&context, "new correct horse", "third password")
+                .unwrap_err()
+                .contains("已锁定")
+        );
+
+        let reopened =
+            open_portable_vault(&snapshot_path, &salt_path, "new correct horse").unwrap();
         *context.stronghold.lock().unwrap() = Some(reopened);
         assert_eq!(
             read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
@@ -22667,6 +23438,106 @@ mod tests {
         delete_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap();
         assert!(read_secret_from_portable_vault_in(&context, "stronghold:identity-1").is_err());
         context.stronghold.lock().unwrap().take();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_vault_rekey_failure_keeps_old_snapshot_and_provider() {
+        let root = std::env::temp_dir().join(format!("portmate-rekey-fail-{}", Uuid::new_v4()));
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        let context = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "current password").unwrap(),
+            )),
+        };
+        write_secret_to_portable_vault_in(&context, "stronghold:identity-1", "private material")
+            .unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"block snapshot commit").unwrap();
+        {
+            let mut stronghold = context.stronghold.lock().unwrap();
+            stronghold.as_mut().unwrap().path =
+                SnapshotPath::from_path(blocked_parent.join("vault.hold"));
+        }
+
+        let error =
+            rotate_portable_vault_password_in(&context, "current password", "replacement password")
+                .unwrap_err();
+        assert!(error.contains("换密提交失败"));
+        assert_eq!(
+            read_secret_from_portable_vault_in(&context, "stronghold:identity-1").unwrap(),
+            "private material"
+        );
+        context.stronghold.lock().unwrap().take();
+        assert!(open_portable_vault(&snapshot_path, &salt_path, "current password").is_ok());
+        assert!(open_portable_vault(&snapshot_path, &salt_path, "replacement password").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_vault_stale_instance_cannot_overwrite_rotated_snapshot() {
+        let root = std::env::temp_dir().join(format!("portmate-rekey-stale-{}", Uuid::new_v4()));
+        let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+        let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        let current = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "current password").unwrap(),
+            )),
+        };
+        write_secret_to_portable_vault_in(&current, "stronghold:identity-1", "original").unwrap();
+        let stale = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "current password").unwrap(),
+            )),
+        };
+
+        rotate_portable_vault_password_in(&current, "current password", "replacement password")
+            .unwrap();
+        let error = write_secret_to_portable_vault_in(
+            &stale,
+            "stronghold:identity-2",
+            "stale process write",
+        )
+        .unwrap_err();
+        assert!(error.contains("另一 PortMate 实例修改"));
+        assert!(open_portable_vault(&snapshot_path, &salt_path, "current password").is_err());
+
+        stale.stronghold.lock().unwrap().take();
+        current.stronghold.lock().unwrap().take();
+        let reopened = PortableVaultContext {
+            snapshot_path: snapshot_path.clone(),
+            salt_path: salt_path.clone(),
+            stronghold: Mutex::new(Some(
+                open_portable_vault(&snapshot_path, &salt_path, "replacement password").unwrap(),
+            )),
+        };
+        assert_eq!(
+            read_secret_from_portable_vault_in(&reopened, "stronghold:identity-1").unwrap(),
+            "original"
+        );
+        assert!(read_secret_from_portable_vault_in(&reopened, "stronghold:identity-2").is_err());
+        reopened
+            .stronghold
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .snapshot_version = PortableVaultSnapshotVersion::UnknownAfterCommit;
+        assert!(
+            read_secret_from_portable_vault_in(&reopened, "stronghold:identity-1")
+                .unwrap_err()
+                .contains("重新解锁")
+        );
+        reopened.stronghold.lock().unwrap().take();
+
         let _ = fs::remove_dir_all(root);
     }
 

@@ -3347,6 +3347,10 @@ function KeyManagerDialog({
   const [privateKeyStorage, setPrivateKeyStorage] = useState<SecretStorageChoice>("auto");
   const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
   const [portableVaultPassword, setPortableVaultPassword] = useState("");
+  const [portableVaultCurrentPassword, setPortableVaultCurrentPassword] = useState("");
+  const [portableVaultNewPassword, setPortableVaultNewPassword] = useState("");
+  const [portableVaultConfirmPassword, setPortableVaultConfirmPassword] = useState("");
+  const [portableVaultFeedback, setPortableVaultFeedback] = useState<{ kind: "error" | "status"; message: string } | null>(null);
   const [portableVaultBusy, setPortableVaultBusy] = useState(false);
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
   const [keyProfileFilter, setKeyProfileFilter] = useState("all");
@@ -3423,6 +3427,18 @@ function KeyManagerDialog({
     setSelectedAgentKeyIds((current) => current.filter((id) => validAgentIds.has(id)));
   }, [agentKeys]);
 
+  useEffect(() => {
+    if (portableVault && !portableVault.unlocked) {
+      clearPortableVaultRotation();
+    }
+  }, [portableVault?.unlocked]);
+
+  function clearPortableVaultRotation() {
+    setPortableVaultCurrentPassword("");
+    setPortableVaultNewPassword("");
+    setPortableVaultConfirmPassword("");
+  }
+
   async function refreshAgentKeys() {
     if (!isBackendAvailable()) return;
     try {
@@ -3445,6 +3461,7 @@ function KeyManagerDialog({
     if (!portableVaultPassword) return;
     const existed = portableVault?.exists ?? false;
     setPortableVaultBusy(true);
+    setPortableVaultFeedback(null);
     setError("");
     setStatus("");
     try {
@@ -3453,9 +3470,10 @@ function KeyManagerDialog({
       });
       setPortableVault(next);
       setPortableVaultPassword("");
-      setStatus(existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁");
+      setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
     } catch (error) {
-      setError(formatError(error));
+      setPortableVaultPassword("");
+      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
       setPortableVaultBusy(false);
     }
@@ -3463,13 +3481,55 @@ function KeyManagerDialog({
 
   async function lockPortableVault() {
     setPortableVaultBusy(true);
+    clearPortableVaultRotation();
+    setPortableVaultFeedback(null);
     setError("");
     setStatus("");
     try {
       setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
-      setStatus("Portable vault 已锁定");
+      clearPortableVaultRotation();
+      setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
     } catch (error) {
-      setError(formatError(error));
+      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+    } finally {
+      setPortableVaultBusy(false);
+    }
+  }
+
+  async function rotatePortableVaultPassword() {
+    setPortableVaultFeedback(null);
+    setError("");
+    setStatus("");
+    if (!portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword) {
+      setPortableVaultFeedback({ kind: "error", message: "请填写当前密码、新密码和确认密码" });
+      return;
+    }
+    if (Array.from(portableVaultNewPassword).length < 8) {
+      setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码至少需要 8 个字符" });
+      return;
+    }
+    if (portableVaultNewPassword !== portableVaultConfirmPassword) {
+      setPortableVaultFeedback({ kind: "error", message: "Portable vault 两次输入的新主密码不一致" });
+      return;
+    }
+    if (portableVaultCurrentPassword === portableVaultNewPassword) {
+      setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码必须与当前密码不同" });
+      return;
+    }
+    setPortableVaultBusy(true);
+    try {
+      const next = await invokeBackend<PortableVaultStatus>("rotate_portable_vault_password", {
+        request: {
+          currentPassword: portableVaultCurrentPassword,
+          newPassword: portableVaultNewPassword,
+        },
+      });
+      setPortableVault(next);
+      clearPortableVaultRotation();
+      setPortableVaultFeedback({ kind: "status", message: "Portable vault 主密码已更换" });
+    } catch (error) {
+      clearPortableVaultRotation();
+      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
       setPortableVaultBusy(false);
     }
@@ -4115,6 +4175,18 @@ function KeyManagerDialog({
                 ? <button className="key-icon-button" type="button" title="锁定 portable vault" aria-label="锁定 portable vault" onClick={() => void lockPortableVault()} disabled={portableVaultBusy}><Lock size={14} /></button>
                 : <button className="key-icon-button" type="button" title="解锁 portable vault" aria-label="解锁 portable vault" onClick={() => void unlockPortableVault()} disabled={portableVaultBusy || !portableVaultPassword}><Unlock size={14} /></button>}
             </div>
+            {portableVaultFeedback ? <div className={`portable-vault-feedback ${portableVaultFeedback.kind}`} role={portableVaultFeedback.kind === "error" ? "alert" : "status"} aria-live="polite">{portableVaultFeedback.message}</div> : null}
+            {portableVault?.unlocked ? (
+              <details className="portable-vault-rotation" onToggle={(event) => { if (!event.currentTarget.open) { clearPortableVaultRotation(); setPortableVaultFeedback(null); } }}>
+                <summary><RefreshCw size={14} /><span>更换主密码</span></summary>
+                <div className="portable-vault-rotation-fields">
+                  <label><span>当前主密码</span><input type="password" autoComplete="current-password" value={portableVaultCurrentPassword} onChange={(event) => setPortableVaultCurrentPassword(event.target.value)} disabled={portableVaultBusy} /></label>
+                  <label><span>新主密码</span><input type="password" autoComplete="new-password" value={portableVaultNewPassword} onChange={(event) => setPortableVaultNewPassword(event.target.value)} disabled={portableVaultBusy} /></label>
+                  <label><span>确认新主密码</span><input type="password" autoComplete="new-password" value={portableVaultConfirmPassword} onChange={(event) => setPortableVaultConfirmPassword(event.target.value)} disabled={portableVaultBusy} onKeyDown={(event) => { if (event.key === "Enter") void rotatePortableVaultPassword(); }} /></label>
+                  <button type="button" onClick={() => void rotatePortableVaultPassword()} disabled={portableVaultBusy || !portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword}><RefreshCw size={14} />更换主密码</button>
+                </div>
+              </details>
+            ) : null}
             <div className="client-key-filters">
               <label className="client-key-search">
                 <Search size={14} />
