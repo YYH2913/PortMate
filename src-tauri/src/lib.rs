@@ -1222,8 +1222,10 @@ async fn send_key(
     session_id: String,
     key: String,
 ) -> Result<SessionEvent, String> {
-    let text = terminal_key_sequence(&key)?;
-    send_text_inner(state.inner().session_io(), session_id, text).await
+    let io = state.inner().session_io();
+    let text =
+        terminal_key_sequence_for_protocol(&key, is_telnet_session(&io.store, &session_id)?)?;
+    send_text_inner(io, session_id, text).await
 }
 
 #[tauri::command]
@@ -1232,11 +1234,9 @@ async fn run_command(
     session_id: String,
     command: String,
 ) -> Result<SessionEvent, String> {
-    let mut text = command;
-    if !text.ends_with('\n') && !text.ends_with('\r') {
-        text.push('\n');
-    }
-    send_text_inner(state.inner().session_io(), session_id, text).await
+    let io = state.inner().session_io();
+    let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
+    send_text_inner(io, session_id, text).await
 }
 
 async fn send_text_inner(
@@ -1370,13 +1370,7 @@ fn outbound_text_for_session(
     session_id: &str,
     text: &str,
 ) -> Result<String, String> {
-    let is_telnet = {
-        let store = store.lock().map_err(|error| error.to_string())?;
-        store
-            .profile(session_id)
-            .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_)))
-    };
-    if is_telnet {
+    if is_telnet_session(store, session_id)? {
         Ok(encode_telnet_outbound_text(text))
     } else {
         Ok(text.to_string())
@@ -1388,17 +1382,18 @@ fn outbound_bytes_for_session(
     session_id: &str,
     bytes: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let is_telnet = {
-        let store = store.lock().map_err(|error| error.to_string())?;
-        store
-            .profile(session_id)
-            .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_)))
-    };
-    Ok(if is_telnet {
+    Ok(if is_telnet_session(store, session_id)? {
         encode_telnet_outbound_bytes(bytes)
     } else {
         bytes.to_vec()
     })
+}
+
+fn is_telnet_session(store: &Arc<Mutex<SessionStore>>, session_id: &str) -> Result<bool, String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    Ok(store
+        .profile(session_id)
+        .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_))))
 }
 
 fn encode_telnet_outbound_text(text: &str) -> String {
@@ -2724,17 +2719,21 @@ async fn handle_ipc_request(
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let key = ipc_string_arg(&request.args, "key")?.to_string();
             guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
-            let text = terminal_key_sequence(&key)?;
+            let text = terminal_key_sequence_for_protocol(
+                &key,
+                is_telnet_session(&state.store, &session_id)?,
+            )?;
             let event = send_text_inner(state.session_io(), session_id, text).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "run_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            let mut text = ipc_string_arg(&request.args, "command")?.to_string();
+            let command = ipc_string_arg(&request.args, "command")?.to_string();
             guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
-            if !text.ends_with('\n') && !text.ends_with('\r') {
-                text.push('\n');
-            }
+            let text = terminate_command_for_protocol(
+                command,
+                is_telnet_session(&state.store, &session_id)?,
+            );
             let event = send_text_inner(state.session_io(), session_id, text).await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
@@ -14337,6 +14336,24 @@ fn terminal_key_sequence(key: &str) -> Result<String, String> {
     Ok(sequence)
 }
 
+fn terminal_key_sequence_for_protocol(key: &str, is_telnet: bool) -> Result<String, String> {
+    let sequence = terminal_key_sequence(key)?;
+    if is_telnet && sequence == "\r" {
+        Ok("\r\n".to_string())
+    } else {
+        Ok(sequence)
+    }
+}
+
+fn terminate_command_for_protocol(mut command: String, is_telnet: bool) -> String {
+    let needs_terminator = !command.ends_with('\n') && !command.ends_with('\r');
+    let telnet_bare_cr = is_telnet && command.ends_with('\r') && !command.ends_with("\r\n");
+    if needs_terminator || telnet_bare_cr {
+        command.push('\n');
+    }
+    command
+}
+
 fn default_shell_program() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
@@ -15702,6 +15719,22 @@ mod tests {
             "a\r\0b\r\nc\r\n"
         );
         assert_eq!(encode_telnet_outbound_text("ÿ\n"), "ÿ\r\n");
+        assert_eq!(
+            terminal_key_sequence_for_protocol("Enter", true).unwrap(),
+            "\r\n"
+        );
+        assert_eq!(
+            terminal_key_sequence_for_protocol("Enter", false).unwrap(),
+            "\r"
+        );
+        assert_eq!(
+            terminate_command_for_protocol("show\r".to_string(), true),
+            "show\r\n"
+        );
+        assert_eq!(
+            terminate_command_for_protocol("show\r".to_string(), false),
+            "show\r"
+        );
         assert_eq!(
             encode_telnet_outbound_bytes(&[0x01, TELNET_IAC]),
             vec![0x01, TELNET_IAC, TELNET_IAC]

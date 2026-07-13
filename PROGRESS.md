@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-07-12
+审查日期：2026-07-13
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -8,7 +8,7 @@
 
 本次审查覆盖当前仓库内的桌面端、共享核心库、MCP bridge 和项目说明：
 
-- 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`。
+- 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`、`src/sync-input-state.ts`。
 - Tauri 后端：`src-tauri/src/lib.rs`、`src-tauri/Cargo.toml`。
 - 共享核心：`crates/portmate-core/src/models.rs`、`store.rs`、`host_keys.rs`、`mcp.rs`、`triggers.rs`、`redaction.rs`。
 - MCP stdio bridge：`crates/portmate-mcp/src/main.rs`。
@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：身份字段编辑与密钥轮换/生命周期、真正完整的传输队列体验、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化集成测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：Stronghold 主密码轮换与 keychain/Stronghold 批量迁移、精确双向原始日志、终端兼容性测试、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
 
 ## 当前实现快照
 
@@ -45,7 +45,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Sysmon/Trigger 相关入口已存在。
-- 同步输入、底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
+- 同步输入会把输入按 FIFO 顺序发送到源 pane 和经过协议过滤的已连接 pane；支持按协议换行、0..5000 ms 目标间延迟、显式批量发送各应用一次的受限前后缀、失败/即时取消反馈和明显目标计数。普通 XTerm 键击及原生 bracketed 键盘粘贴保持无前后缀的流式输入，顶部菜单、上下文和中键粘贴走批量路径。源会话始终保留，重复 pane binding 只发送一次；设置持久化但开关每次启动默认关闭。
+- 底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
 - 终端交互支持选择即复制、右键/中键粘贴。
 
 主要缺口：
@@ -165,18 +166,19 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
+cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 npm run build
 ```
 
-`npm run build` 当前有 Vite chunk size warning：主 JS chunk 约 723 kB，功能上不阻断构建，发布前可通过 code splitting 或调整 chunk 策略处理。
+`npm run build` 当前有 Vite chunk size warning：主 JS chunk 约 784 kB，功能上不阻断构建，发布前可通过 code splitting 或调整 chunk 策略处理。
 
 已有单元测试覆盖：
 
 - Host key alias 隔离、同 alias key mismatch、多算法 host key。
 - Store open/close、profile upsert、MCP write scope、send_text redaction/audit。
 - Trigger contains/regex、七类动作前端字段往返、多动作后端 dispatch、自定义链接替换和声音/通知/高亮 runtime effect。
+- 同步输入设置归一化、目标协议过滤、换行/显式批量发送前后缀变换、Telnet CRLF、FIFO 批次顺序、交互输入不重复包裹、部分失败和关闭后即时取消剩余目标。
 - Secret redaction。
 - JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
@@ -201,7 +203,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 110：`portmate` 79、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 24 个前端 transfer/selection/presentation/log-shard/workspace/trigger 单元测试。
+当前 Rust workspace 自动化测试总数为 110：`portmate` 79、`portmate-kdf` 1、`portmate-core` 19、`portmate-mcp` 11；`npm test` 另有 35 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input 单元测试。
 
 主要缺口：
 
@@ -220,6 +222,7 @@ npm run build
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
 | WindTerm 风格工作台 | 部分实现 | 主布局和菜单、最多 4 pane 的水平/垂直布局、版本化 snapshot、pane/active/tab color 恢复、旧 key 迁移和启动会话策略已有；任意嵌套分屏和快捷键体系不足。 |
+| 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖，GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护，以及 Argon2id + IOTA Stronghold portable vault/fallback 已有；主密码轮换和批量迁移待补。 |
@@ -249,7 +252,7 @@ npm run build
 
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
 2. pane session binding、启动自动连接、标签颜色和 workspace restore 已完成版本化基础实现；继续补任意嵌套分屏。
-3. 同步输入正式化：多 pane 广播、过滤协议、换行策略、延迟、前后缀、明显状态条。
+3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
 4. 串口工具增强：完整 Hex viewer、收发过滤/导出、重连状态可视化。
 5. 密钥管理器继续增强：Stronghold 主密码轮换和 keychain/Stronghold 批量迁移；portable vault、解锁状态、Client identity 字段编辑、密钥轮换与底层 secret 生命周期管理已完成。
 

@@ -1235,6 +1235,18 @@ button {
   font-size: 12px;
 }
 
+.sync-status {
+  min-width: 72px;
+}
+
+.sync-status.active {
+  padding: 2px 7px;
+  border: 1px solid rgba(244, 184, 96, 0.55);
+  background: rgba(244, 184, 96, 0.12);
+  color: var(--amber);
+  font-weight: 600;
+}
+
 .send-textarea {
   width: 100%;
   height: 100%;
@@ -1280,7 +1292,7 @@ button {
 .terminal-settings-dialog {
   grid-template-columns: 296px minmax(0, 1fr);
   grid-template-rows: 43px minmax(0, 1fr) 58px;
-  width: 866px;
+  width: min(866px, calc(100vw - 24px));
   height: min(900px, calc(100vh - 36px));
 }
 
@@ -2461,6 +2473,68 @@ fieldset label {
 }
 
 @media (max-width: 760px) {
+  body {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .wind-root {
+    width: 100vw;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .wind-menu {
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .menu-row {
+    flex: 0 0 auto;
+  }
+
+  .menu-tools {
+    display: none;
+  }
+
+  .terminal-settings-dialog {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 43px minmax(110px, 160px) minmax(0, 1fr) 58px;
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .terminal-settings-dialog > .settings-tree {
+    grid-column: 1;
+    grid-row: 2;
+    margin: 10px 12px 0;
+  }
+
+  .terminal-settings-dialog > .settings-content {
+    grid-column: 1;
+    grid-row: 3;
+    padding: 16px 12px 0;
+  }
+
+  .terminal-settings-dialog > .dialog-footer {
+    grid-column: 1;
+    grid-row: 4;
+    min-width: 0;
+  }
+
+  .terminal-settings-dialog .dialog-note {
+    display: none;
+  }
+
+  .terminal-settings-dialog .dialog-actions.inline {
+    flex: 1;
+  }
+
+  .terminal-settings-dialog .dialog-actions.inline button {
+    flex: 1;
+    min-width: 0;
+  }
+
   .session-settings-dialog {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 43px 38px minmax(96px, 140px) minmax(0, 1fr) auto auto;

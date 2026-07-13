@@ -39,6 +39,8 @@ import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySe
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
+import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
+import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
@@ -67,13 +69,21 @@ const terminalSettingTree = [
   { label: "代理" },
   { label: "安全" },
   { label: "标签" },
-  { label: "终端", children: ["Auto Completion", "命令历史", "鼠标追踪"] },
+  { label: "终端", children: ["同步输入", "Auto Completion", "命令历史", "鼠标追踪"] },
   { label: "文本", children: ["二进制", "插入符", "字体", "高亮", "换行"] },
   { label: "小部件", children: ["文件管理器", "快捷栏"] },
   { label: "X Server", children: ["扩展"] },
 ] as const;
 
 const protocolTabs = ["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"] as const;
+const sessionKindLabels: Record<SessionKind, string> = {
+  ssh: "SSH",
+  tmux: "Tmux",
+  serial: "Serial",
+  shell: "Shell",
+  telnet: "Telnet",
+  tcp: "Raw TCP",
+};
 
 type SettingsDialog = "terminal" | "session" | null;
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "search" | "logs" | "keys" | "mcp" | null;
@@ -234,7 +244,10 @@ export default function App() {
   const [sendIntervalMs, setSendIntervalMs] = useState(1000);
   const [sendTarget, setSendTarget] = useState<SendTarget>("active");
   const [sendBusy, setSendBusy] = useState(false);
-  const [syncInput, setSyncInput] = useState(() => loadLocalValue("portmate.syncInput", false));
+  const [syncInput, setSyncInput] = useState(false);
+  const [syncInputSettings, setSyncInputSettings] = useState<SyncInputSettings>(() => (
+    normalizeSyncInputSettings(loadLocalValue<unknown>("portmate.syncInputSettings", defaultSyncInputSettings))
+  ));
   const [commandHistory, setCommandHistory] = useState<string[]>(() => loadLocalValue("portmate.commandHistory", []));
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
@@ -247,12 +260,23 @@ export default function App() {
   const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
   const credentialResolverRef = useRef<((credentials: ConnectionCredentials | null) => void) | null>(null);
   const startupAppliedRef = useRef(false);
+  const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
+  const syncInputRef = useRef(false);
   const logSignatureRef = useRef<Record<string, string>>({});
   const sessionsSignatureRef = useRef("");
 
   const active = sessions.find((session) => session.profile.id === activeId);
   const activeStatus = active?.runtime.status;
   const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
+  syncInputRef.current = syncInput;
+
+  function updateSyncInput(enabled: boolean) {
+    if (!enabled && syncInputRef.current) {
+      syncInputDispatcherRef.current.cancelBroadcasts();
+    }
+    syncInputRef.current = enabled;
+    setSyncInput(enabled);
+  }
 
   useEffect(() => {
     void refresh();
@@ -294,8 +318,8 @@ export default function App() {
   }, [workspaceLayout, paneIds, activeId, tabColors]);
 
   useEffect(() => {
-    saveLocalValue("portmate.syncInput", syncInput);
-  }, [syncInput]);
+    saveLocalValue("portmate.syncInputSettings", syncInputSettings);
+  }, [syncInputSettings]);
 
   useEffect(() => {
     saveLocalValue("portmate.commandHistory", commandHistory.slice(0, 200));
@@ -461,6 +485,16 @@ export default function App() {
       .filter((session): session is SessionSummary => Boolean(session));
   }, [activeId, paneIds, sessions, workspaceLayout]);
 
+  const syncInputTargetCount = useMemo(() => resolveSyncInputTargets(
+    activeId,
+    paneSessions.map((session) => ({
+      id: session.profile.id,
+      kind: session.profile.kind,
+      connected: session.runtime.status === "connected",
+    })),
+    syncInputSettings,
+  ).length, [activeId, paneSessions, syncInputSettings]);
+
 function handleMenuAction(item: string) {
     if (item === "终端设置") {
       setDialog("terminal");
@@ -501,7 +535,7 @@ function handleMenuAction(item: string) {
       void navigator.clipboard?.readText().then((text) => {
         if (!active || !text) return;
         if (item === "粘贴确认" && !window.confirm(`粘贴 ${text.length} 个字符到 ${active.profile.name}?`)) return;
-        void sendTerminalInput(active.profile.id, text);
+        void routeTerminalInput(active.profile.id, text, "atomic");
       }).catch((error) => setNotice({ title: item, message: formatError(error) }));
       return;
     }
@@ -523,7 +557,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "同步输入") {
-      setSyncInput((current) => !current);
+      updateSyncInput(!syncInputRef.current);
       return;
     }
     if (item === "水平拆分" || item === "垂直拆分") {
@@ -699,7 +733,7 @@ function handleMenuAction(item: string) {
     const session = contextSession(sessionId);
     if (!session) return;
     const text = await navigator.clipboard?.readText().catch(() => "");
-    if (text) await routeTerminalInput(session.profile.id, text);
+    if (text) await routeTerminalInput(session.profile.id, text, "atomic");
   }
 
   async function closeSessionsByIds(ids: string[]) {
@@ -730,10 +764,10 @@ function handleMenuAction(item: string) {
     const target = contextSession(sessionId);
     switch (action) {
       case "sync-on":
-        setSyncInput(true);
+        updateSyncInput(true);
         return;
       case "sync-off":
-        setSyncInput(false);
+        updateSyncInput(false);
         return;
       case "rename":
         void renameSessionFromContext(sessionId);
@@ -1000,22 +1034,51 @@ function handleMenuAction(item: string) {
     });
   }
 
-  async function routeTerminalInput(sessionId: string, text: string) {
-    if (!syncInput) {
-      await sendTerminalInput(sessionId, text);
-      return;
+  function routeTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin = "interactive"): Promise<void> {
+    const broadcastEnabled = syncInputRef.current;
+    const settings = syncInputSettings;
+    const candidates = paneSessions.map((session) => ({
+      id: session.profile.id,
+      kind: session.profile.kind,
+      connected: session.runtime.status === "connected",
+    }));
+    if (!candidates.some((candidate) => candidate.id === sessionId)) {
+      const source = sessions.find((session) => session.profile.id === sessionId);
+      if (source) {
+        candidates.unshift({
+          id: source.profile.id,
+          kind: source.profile.kind,
+          connected: source.runtime.status === "connected",
+        });
+      }
     }
-    const targets = paneSessions
-      .filter((session) => session.runtime.status === "connected")
-      .map((session) => session.profile.id);
-    const uniqueTargets = Array.from(new Set(targets.length ? targets : [sessionId]));
-    await Promise.all(uniqueTargets.map((target) => sendTerminalInput(target, text)));
+    return syncInputDispatcherRef.current.enqueue({
+      sourceId: sessionId,
+      text,
+      broadcastEnabled,
+      applyAffixes: origin === "atomic",
+      settings,
+      candidates,
+    }, sendTerminalInput, () => syncInputRef.current).then((result) => {
+      if (!result.failed.length && !result.skipped.length) return;
+      const failedNames = result.failed.map((targetId) => (
+        sessions.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
+      ));
+      const details = [
+        failedNames.length ? `${failedNames.length} 个目标发送失败：${failedNames.join(", ")}` : "",
+        result.skipped.length ? `${result.skipped.length} 个剩余目标已取消` : "",
+      ].filter(Boolean).join("；");
+      setNotice({
+        title: failedNames.length ? "同步输入失败" : "同步输入已停止",
+        message: details,
+      });
+    });
   }
 
   async function sendTerminalInput(sessionId: string, text: string) {
     if (!sessionId || !text) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return;
+    if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
       if (isBackendAvailable()) {
@@ -1031,13 +1094,14 @@ function handleMenuAction(item: string) {
         ...current,
         [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(session.profile, `PortMate: send failed: ${formatError(error)}`)],
       }));
+      throw error;
     }
   }
 
   async function sendTerminalBytes(sessionId: string, bytes: number[]) {
     if (!sessionId || !bytes.length) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return;
+    if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
       if (isBackendAvailable()) {
@@ -1053,6 +1117,7 @@ function handleMenuAction(item: string) {
         ...current,
         [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(session.profile, `PortMate: send failed: ${formatError(error)}`)],
       }));
+      throw error;
     }
   }
 
@@ -1275,7 +1340,7 @@ function handleMenuAction(item: string) {
             activeId={activeId}
             eventsBySession={logs}
             blockSelection={blockSelection}
-            onInput={(sessionId, text) => void routeTerminalInput(sessionId, text)}
+            onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onActivate={activateSession}
             onClosePane={closeWorkspacePane}
           />
@@ -1333,7 +1398,7 @@ function handleMenuAction(item: string) {
                 <option value="connected">全部已连接</option>
               </select>
             </label>
-            {syncInput ? <span className="sync-badge">同步输入开启</span> : null}
+            {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
           </div>
           <textarea
             className="send-textarea"
@@ -1353,7 +1418,7 @@ function handleMenuAction(item: string) {
       <footer className="status-bar">
         <span>就绪</span>
         <span />
-        <span>{syncInput ? "同步输入" : "远程模式"}</span>
+        <span className={syncInput ? "sync-status active" : "sync-status"}>{syncInput ? `同步输入 · ${syncInputTargetCount}` : "远程模式"}</span>
         <span>窗口 -1×-1</span>
         <span>行 1</span>
         <span>字符 0</span>
@@ -1377,7 +1442,7 @@ function handleMenuAction(item: string) {
         />
       )}
 
-      {dialog === "terminal" && <TerminalSettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === "terminal" && <TerminalSettingsDialog syncSettings={syncInputSettings} onSyncSettingsChange={setSyncInputSettings} onClose={() => setDialog(null)} />}
       {dialog === "session" && (
         <SessionSettingsDialog
           draft={draft}
@@ -2259,7 +2324,7 @@ function TerminalPaneGrid({
   activeId: string;
   eventsBySession: Record<string, SessionEvent[]>;
   blockSelection: boolean;
-  onInput: (sessionId: string, text: string) => void;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (sessionId: string) => void;
   onClosePane: (paneIndex: number) => void;
 }) {
@@ -2290,7 +2355,7 @@ function TerminalPaneGrid({
   );
 }
 
-function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; events: SessionEvent[]; onInput: (sessionId: string, text: string) => void }) {
+function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; events: SessionEvent[]; onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -2299,6 +2364,8 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
   const inputFlushTimerRef = useRef<number | null>(null);
   const lastSizeRef = useRef("");
   const lastCopiedSelectionRef = useRef("");
+  const onInputRef = useRef(onInput);
+  onInputRef.current = onInput;
 
   // Returns whether `id` was already seen. Bounded so a session that stays
   // connected for hours doesn't grow this Set forever; clearing early just
@@ -2355,11 +2422,18 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
       const text = pendingInputRef.current;
       pendingInputRef.current = "";
       if (text) {
-        onInput(active.profile.id, text);
+        onInputRef.current(active.profile.id, text, "interactive");
       }
     };
     const inputDisposable = term.onData((text) => {
       pendingInputRef.current += text;
+      if (/[\x00-\x1f\x7f]/.test(text)) {
+        if (inputFlushTimerRef.current !== null) {
+          window.clearTimeout(inputFlushTimerRef.current);
+        }
+        flushInput();
+        return;
+      }
       if (inputFlushTimerRef.current === null) {
         inputFlushTimerRef.current = window.setTimeout(flushInput, 12);
       }
@@ -2373,7 +2447,7 @@ function TerminalCanvas({ active, events, onInput }: { active?: SessionSummary; 
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
       void navigator.clipboard?.readText().then((text) => {
-        if (text) onInput(active.profile.id, text);
+        if (text) onInputRef.current(active.profile.id, text, "atomic");
       }).catch(() => {});
     };
     const pasteOnMiddleClick = (event: MouseEvent) => {
@@ -4536,14 +4610,24 @@ function writeTerminalEvent(term: XTerm, event: SessionEvent) {
   term.write(event.text);
 }
 
-function TerminalSettingsDialog({ onClose }: { onClose: () => void }) {
+function TerminalSettingsDialog({
+  syncSettings,
+  onSyncSettingsChange,
+  onClose,
+}: {
+  syncSettings: SyncInputSettings;
+  onSyncSettingsChange: (settings: SyncInputSettings) => void;
+  onClose: () => void;
+}) {
   const [activeItem, setActiveItem] = useState("应用");
   const [prefs, setPrefs] = useState<TerminalPrefs>(() => loadLocalValue("portmate.terminalPrefs", createTerminalPrefs()));
+  const [syncDraft, setSyncDraft] = useState(syncSettings);
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const showRestartNote = ["应用", "外观", "字体", "扩展"].includes(activeItem);
 
   function savePrefs() {
     saveLocalValue("portmate.terminalPrefs", prefs);
+    onSyncSettingsChange(normalizeSyncInputSettings(syncDraft));
     onClose();
   }
 
@@ -4575,7 +4659,7 @@ function TerminalSettingsDialog({ onClose }: { onClose: () => void }) {
         })}
       </aside>
       <section className="settings-content">
-        <TerminalSettingsContent activeItem={activeItem} prefs={prefs} updatePref={updatePref} />
+        <TerminalSettingsContent activeItem={activeItem} prefs={prefs} updatePref={updatePref} syncSettings={syncDraft} onSyncSettingsChange={setSyncDraft} />
       </section>
       <div className="dialog-footer">
         <div className="dialog-note">{showRestartNote ? "* 需要重启才能生效" : ""}</div>
@@ -4592,10 +4676,14 @@ function TerminalSettingsContent({
   activeItem,
   prefs,
   updatePref,
+  syncSettings,
+  onSyncSettingsChange,
 }: {
   activeItem: string;
   prefs: TerminalPrefs;
   updatePref: <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => void;
+  syncSettings: SyncInputSettings;
+  onSyncSettingsChange: (settings: SyncInputSettings) => void;
 }) {
   switch (activeItem) {
     case "应用":
@@ -4686,6 +4774,40 @@ function TerminalSettingsContent({
           <SettingsSection title="输入">
             <SettingCheck label="粘贴前确认" checked={prefs.confirmPaste} onChange={(value) => updatePref("confirmPaste", value)} />
             <SettingCheck label="右键粘贴" checked={prefs.rightClickPaste} onChange={(value) => updatePref("rightClickPaste", value)} />
+          </SettingsSection>
+        </>
+      );
+    case "同步输入":
+      return (
+        <>
+          <SettingsSection title="目标协议">
+            {allSyncProtocols.map((protocol) => (
+              <SettingCheck
+                key={protocol}
+                label={sessionKindLabels[protocol]}
+                checked={syncSettings.protocols.includes(protocol)}
+                onChange={(checked) => onSyncSettingsChange({
+                  ...syncSettings,
+                  protocols: checked
+                    ? [...syncSettings.protocols, protocol]
+                    : syncSettings.protocols.filter((item) => item !== protocol),
+                })}
+              />
+            ))}
+          </SettingsSection>
+          <SettingsSection title="输入变换">
+            <label className="setting-row">
+              <span>换行策略:</span>
+              <select value={syncSettings.newlineMode} onChange={(event) => onSyncSettingsChange({ ...syncSettings, newlineMode: event.target.value as SyncNewlineMode })}>
+                <option value="protocol">按协议</option>
+                <option value="preserve">保持原样</option>
+                <option value="lf">LF</option>
+                <option value="crlf">CRLF</option>
+              </select>
+            </label>
+            <SettingInput label="目标间延迟(ms):" type="number" value={syncSettings.delayMs} onChange={(value) => onSyncSettingsChange({ ...syncSettings, delayMs: Math.min(5000, Math.max(0, Math.trunc(Number(value) || 0))) })} />
+            <SettingInput label="批量发送前缀:" value={syncSettings.prefix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, prefix: value.slice(0, 1024) })} />
+            <SettingInput label="批量发送后缀:" value={syncSettings.suffix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, suffix: value.slice(0, 1024) })} />
           </SettingsSection>
         </>
       );
@@ -5026,12 +5148,6 @@ function SessionSettingsContent({
           <select value={prefs.localEcho ? "on" : "off"} onChange={(event) => updatePref("localEcho", event.target.value === "on")}>
             <option value="off">由远端控制</option>
             <option value="on">本地回显</option>
-          </select>
-        </DialogField>
-        <DialogField label="同步:(S)">
-          <select value={prefs.syncInput ? "on" : "off"} onChange={(event) => updatePref("syncInput", event.target.value === "on")}>
-            <option value="off">关闭</option>
-            <option value="on">广播输入</option>
           </select>
         </DialogField>
         <DialogField label="焦点:(F)">
@@ -6387,7 +6503,6 @@ function createSessionPrefs() {
     bellMode: "visual",
     visualBell: true,
     localEcho: false,
-    syncInput: false,
     focusMode: false,
     backspaceMode: "DEL",
     altSendsEscape: true,

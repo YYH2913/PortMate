@@ -50,7 +50,7 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - `Session`: new session, session settings, duplicate tab, startup sessions, layout restore
    - `Edit`: copy, paste, paste dialog, search, online search
    - `View`: session tree, explorer pane, shell pane, quick bar, split views, focus mode
-   - `Terminal`: sync input, command sender, completion, free type, lock screen
+   - `Mode`: remote mode, local mode, synchronized input, free type, lock screen
    - `Transfer`: SFTP, SCP, X/Y/ZModem
    - `Tools`: forwarding, Sysmon, triggers, logs, MCP bridge, key manager
    - `Preferences`: global settings, font, color scheme, tab color, transparency, mouse behavior
@@ -67,6 +67,7 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - SSH/TCP/Telnet/Serial reconnect keeps a disconnected runtime in `Reconnecting` and retries in the background until the user closes or manually reconnects the session
    - Trigger matching and actions for timeline marks, notifications, highlights, local commands, send-text automation, custom links, and sound
    - Terminal type, font, rows, cols, scrollback, theme
+   - Synchronized-input protocol filters, newline mode, inter-target delay, and explicit batch-send prefix/suffix
    - Logging formats, redaction, path template
    - Transfer protocols
    - Workbench/global preferences modeled after WindTerm settings
@@ -76,6 +77,8 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
 Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend.
 
 The frontend persists a versioned workspace snapshot containing horizontal/vertical pane bindings, the active session, and validated tab colors, while migrating the earlier split localStorage keys. Startup mode can connect no sessions, the last restored panes, or a configured session list after the first profile load; targets are deduplicated, stale IDs are discarded, and credential-requiring sessions are opened sequentially. `会话 -> 还原布局` reloads and reconciles the saved snapshot against the current profile set.
+
+Synchronized input broadcasts each queued input batch from its source pane to the other connected pane sessions exactly once. `工具 -> 终端设置 -> 同步输入` filters additional targets by protocol and configures protocol-aware/preserved/LF/CRLF newlines, a bounded delay between targets, and bounded prefix/suffix text for explicit batch sends. Interactive XTerm input, including its native bracketed keyboard paste, remains an unframed stream; menu, context-menu, and middle-click paste each receive the prefix and suffix exactly once. The source is never filtered out, batches retain FIFO order, and disabling synchronization immediately cancels remaining extra targets without dropping or delaying subsequent source input. Settings persist locally, but the synchronization switch itself always starts disabled so reopening PortMate cannot unexpectedly broadcast keystrokes.
 
 The session automation editor manages multiple contains/regex triggers and multiple ordered actions per trigger. Timeline marks, notifications, highlights, send-text, local commands, custom-link templates, and bell/chime/alert sounds share typed frontend/Rust models. Runtime visual effects are emitted to the desktop immediately; command and send-text actions remain on the existing backend dispatch paths, and all matches retain system-event/timeline diagnostics.
 
@@ -162,7 +165,7 @@ cargo run -p portmate-mcp -- --http
 ```bash
 npm test
 npm run build
-cargo test --workspace
+cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
