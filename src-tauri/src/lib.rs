@@ -10849,6 +10849,51 @@ fn tcp_reconnect_enabled(profile: &SessionProfile) -> bool {
     }
 }
 
+fn tcp_reconnect_attempt_matches_profile(
+    attempt: &SessionProfile,
+    latest: &SessionProfile,
+) -> bool {
+    let attempt = normalize_session_profile(attempt.clone());
+    let latest = normalize_session_profile(latest.clone());
+    tcp_reconnect_enabled(&latest) && attempt.connection == latest.connection
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpReconnectProfileState {
+    Current,
+    Changed,
+    Disabled,
+}
+
+fn tcp_reconnect_profile_state(
+    store: &SessionStore,
+    session_id: &str,
+    attempt: &SessionProfile,
+) -> TcpReconnectProfileState {
+    let Some(latest) = store.profile(session_id).map(normalize_session_profile) else {
+        return TcpReconnectProfileState::Disabled;
+    };
+    if !tcp_reconnect_enabled(&latest) {
+        return TcpReconnectProfileState::Disabled;
+    }
+    if !tcp_reconnect_attempt_matches_profile(attempt, &latest) {
+        return TcpReconnectProfileState::Changed;
+    }
+    TcpReconnectProfileState::Current
+}
+
+fn latest_tcp_reconnect_profile(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<SessionProfile>, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let Some(profile) = store.profile(session_id) else {
+        return Ok(None);
+    };
+    let profile = normalize_session_profile(profile);
+    Ok(tcp_reconnect_enabled(&profile).then_some(profile))
+}
+
 async fn connect_tcp_socket(host: &str, port: u16, label: &str) -> Result<TcpStream, String> {
     let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((host, port)))
         .await
@@ -15859,6 +15904,14 @@ fn read_tcp_stream(
             }
         }
 
+        let reconnect_enabled = !closed.load(Ordering::SeqCst)
+            && io
+                .store
+                .lock()
+                .ok()
+                .and_then(|store| store.profile(&session_id))
+                .map(normalize_session_profile)
+                .is_some_and(|latest| tcp_reconnect_enabled(&latest));
         let mut should_reconnect = false;
         let removed_current = {
             let mut connections = match io.runtimes.tcp.lock() {
@@ -15869,7 +15922,7 @@ fn read_tcp_stream(
                 .get(&session_id)
                 .is_some_and(|runtime| runtime.runtime_id == runtime_id)
             {
-                if tcp_reconnect_enabled(&profile) && !closed.load(Ordering::SeqCst) {
+                if reconnect_enabled {
                     should_reconnect = true;
                     false
                 } else {
@@ -15897,7 +15950,7 @@ fn read_tcp_stream(
                 }
             }
             tauri::async_runtime::spawn(reconnect_tcp_session(
-                state, profile, runtime_id, label, closed,
+                state, session_id, runtime_id, closed,
             ));
             return;
         }
@@ -15927,33 +15980,145 @@ fn tcp_reconnect_pending(
     if closed.load(Ordering::SeqCst) {
         return false;
     }
-    state
-        .tcp
-        .lock()
-        .ok()
-        .and_then(|connections| {
-            connections
-                .get(session_id)
-                .map(|runtime| runtime.runtime_id == runtime_id)
+    let connections = match state.tcp.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    state.store.lock().ok().is_some_and(|store| {
+        store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
         })
-        .unwrap_or(false)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpReconnectFailureDisposition {
+    Recorded,
+    RetryLatestProfile,
+    StopDisabled,
+    Superseded,
+}
+
+fn record_tcp_reconnect_failure_if_pending(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    attempt: &SessionProfile,
+    label: &str,
+    error: &str,
+) -> TcpReconnectFailureDisposition {
+    if closed.load(Ordering::SeqCst) {
+        return TcpReconnectFailureDisposition::Superseded;
+    }
+    let connections = match state.tcp.lock() {
+        Ok(connections) => connections,
+        Err(_) => return TcpReconnectFailureDisposition::Superseded,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return TcpReconnectFailureDisposition::Superseded;
+    }
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(_) => return TcpReconnectFailureDisposition::Superseded,
+    };
+    if !store.runtimes.iter().any(|runtime| {
+        runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
+    }) {
+        return TcpReconnectFailureDisposition::Superseded;
+    }
+    match tcp_reconnect_profile_state(&store, session_id, attempt) {
+        TcpReconnectProfileState::Current => {}
+        TcpReconnectProfileState::Changed => {
+            return TcpReconnectFailureDisposition::RetryLatestProfile;
+        }
+        TcpReconnectProfileState::Disabled => {
+            return TcpReconnectFailureDisposition::StopDisabled;
+        }
+    }
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Reconnecting,
+        Some(format!("{label} reconnect failed: {error}")),
+    );
+    store.record_system_event(
+        session_id,
+        format!("PortMate: {label} reconnect failed: {error}; retrying in 1000ms"),
+    );
+    if let Err(save_error) = save_store(&state.store_path, &store) {
+        eprintln!("PortMate: failed to persist {label} reconnect failure: {save_error}");
+    }
+    TcpReconnectFailureDisposition::Recorded
+}
+
+fn stop_pending_tcp_reconnect_if_disabled(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    reason: &str,
+) -> bool {
+    let mut connections = match state.tcp.lock() {
+        Ok(connections) => connections,
+        Err(_) => return false,
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return false;
+    }
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(_) => return false,
+    };
+    let reconnect_disabled = store
+        .profile(session_id)
+        .map(normalize_session_profile)
+        .is_none_or(|profile| !tcp_reconnect_enabled(&profile));
+    if !reconnect_disabled {
+        return false;
+    }
+    if let Some(runtime) = connections.remove(session_id) {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Disconnected,
+        Some(reason.to_string()),
+    );
+    store.record_system_event(
+        session_id,
+        format!("PortMate: TCP/Telnet reconnect stopped: {reason}"),
+    );
+    if let Err(error) = save_store(&state.store_path, &store) {
+        eprintln!("PortMate: failed to persist TCP/Telnet reconnect stop: {error}");
+    }
+    true
+}
+
+enum TcpReconnectInstallDecision {
+    Installed,
+    Retry,
+    Stop,
+    Superseded,
+    Failed(String),
 }
 
 async fn reconnect_tcp_session(
     state: AppState,
-    profile: SessionProfile,
+    session_id: String,
     previous_runtime_id: String,
-    label: String,
     closed: Arc<AtomicBool>,
 ) {
-    let session_id = profile.id.clone();
-    let (host, port, connect_label) = match tcp_connection_details(&profile) {
-        Ok(details) => details,
-        Err(error) => {
-            record_connection_failure(&state, &session_id, &error);
-            return;
-        }
-    };
     let reconnect_delay = Duration::from_millis(1000);
 
     loop {
@@ -15962,27 +16127,81 @@ async fn reconnect_tcp_session(
             return;
         }
 
-        let stream = match connect_tcp_socket(&host, port, connect_label).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                if !tcp_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+        let profile = match latest_tcp_reconnect_profile(&state, &session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_tcp_reconnect_if_disabled(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    "automatic reconnect disabled by latest profile",
+                ) {
                     return;
                 }
-                if let Ok(mut store) = state.store.lock() {
-                    let _ = store.set_runtime_status_with_reason(
-                        &session_id,
-                        SessionStatus::Reconnecting,
-                        Some(format!("{label} reconnect failed: {error}")),
-                    );
-                    store.record_system_event(
-                        &session_id,
-                        format!("PortMate: {label} reconnect failed: {error}; retrying in 1000ms"),
-                    );
-                    if let Err(error) = save_store(&state.store_path, &store) {
-                        eprintln!("PortMate: failed to persist {label} reconnect failure: {error}");
-                    }
-                }
                 continue;
+            }
+            Err(error) => {
+                eprintln!("PortMate: failed to load latest TCP/Telnet reconnect profile: {error}");
+                continue;
+            }
+        };
+        let (host, port, label) = match tcp_connection_details(&profile) {
+            Ok(details) => details,
+            Err(error) => {
+                match record_tcp_reconnect_failure_if_pending(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &profile,
+                    "TCP/Telnet",
+                    &error,
+                ) {
+                    TcpReconnectFailureDisposition::Recorded
+                    | TcpReconnectFailureDisposition::RetryLatestProfile => continue,
+                    TcpReconnectFailureDisposition::StopDisabled => {
+                        if stop_pending_tcp_reconnect_if_disabled(
+                            &state,
+                            &session_id,
+                            &previous_runtime_id,
+                            "automatic reconnect disabled while validating the latest profile",
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    TcpReconnectFailureDisposition::Superseded => return,
+                }
+            }
+        };
+
+        let stream = match connect_tcp_socket(&host, port, label).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                match record_tcp_reconnect_failure_if_pending(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &profile,
+                    label,
+                    &error,
+                ) {
+                    TcpReconnectFailureDisposition::Recorded
+                    | TcpReconnectFailureDisposition::RetryLatestProfile => continue,
+                    TcpReconnectFailureDisposition::StopDisabled => {
+                        if stop_pending_tcp_reconnect_if_disabled(
+                            &state,
+                            &session_id,
+                            &previous_runtime_id,
+                            "automatic reconnect disabled while the previous attempt was running",
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    TcpReconnectFailureDisposition::Superseded => return,
+                }
             }
         };
 
@@ -15991,55 +16210,102 @@ async fn reconnect_tcp_session(
         let writer = Arc::new(tokio::sync::Mutex::new(write_half));
         let (tap, _) = broadcast::channel(1024);
         let next_closed = Arc::new(AtomicBool::new(false));
-        let inserted = {
-            let mut connections = match state.tcp.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == previous_runtime_id)
-                && !closed.load(Ordering::SeqCst)
-            {
-                connections.insert(
-                    session_id.clone(),
-                    TcpRuntime {
-                        runtime_id: runtime_id.clone(),
-                        writer: Arc::clone(&writer),
-                        tap: tap.clone(),
-                        closed: Arc::clone(&next_closed),
-                    },
-                );
-                true
-            } else {
-                false
+        let install = match state.tcp.lock() {
+            Err(error) => TcpReconnectInstallDecision::Failed(error.to_string()),
+            Ok(mut connections) => {
+                if connections
+                    .get(&session_id)
+                    .is_none_or(|runtime| runtime.runtime_id != previous_runtime_id)
+                    || closed.load(Ordering::SeqCst)
+                {
+                    TcpReconnectInstallDecision::Superseded
+                } else {
+                    match state.store.lock() {
+                        Err(error) => TcpReconnectInstallDecision::Failed(error.to_string()),
+                        Ok(mut store) => {
+                            match tcp_reconnect_profile_state(&store, &session_id, &profile) {
+                                TcpReconnectProfileState::Changed => {
+                                    TcpReconnectInstallDecision::Retry
+                                }
+                                TcpReconnectProfileState::Disabled => {
+                                    if let Some(runtime) = connections.remove(&session_id) {
+                                        runtime.closed.store(true, Ordering::SeqCst);
+                                    }
+                                    let reason = "automatic reconnect disabled while the previous attempt was running";
+                                    let _ = store.set_runtime_status_with_reason(
+                                        &session_id,
+                                        SessionStatus::Disconnected,
+                                        Some(reason.to_string()),
+                                    );
+                                    store.record_system_event(
+                                        &session_id,
+                                        format!("PortMate: TCP/Telnet reconnect stopped: {reason}"),
+                                    );
+                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                        eprintln!(
+                                            "PortMate: failed to persist TCP/Telnet reconnect stop: {error}"
+                                        );
+                                    }
+                                    TcpReconnectInstallDecision::Stop
+                                }
+                                TcpReconnectProfileState::Current => {
+                                    connections.insert(
+                                        session_id.clone(),
+                                        TcpRuntime {
+                                            runtime_id: runtime_id.clone(),
+                                            writer: Arc::clone(&writer),
+                                            tap: tap.clone(),
+                                            closed: Arc::clone(&next_closed),
+                                        },
+                                    );
+                                    store.record_system_event(
+                                        &session_id,
+                                        format!("PortMate: {label} socket reconnected"),
+                                    );
+                                    if let Err(error) = store.open_session(&session_id) {
+                                        store.record_system_event(
+                                            &session_id,
+                                            format!(
+                                                "PortMate: reconnect status update failed: {error}"
+                                            ),
+                                        );
+                                    }
+                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                        eprintln!(
+                                            "PortMate: failed to persist {label} reconnect success: {error}"
+                                        );
+                                    }
+                                    TcpReconnectInstallDecision::Installed
+                                }
+                            }
+                        }
+                    }
+                }
             }
         };
 
-        if !inserted {
+        if !matches!(install, TcpReconnectInstallDecision::Installed) {
             let mut writer = writer.lock().await;
             let _ = writer.shutdown().await;
-            return;
-        }
-
-        if let Ok(mut store) = state.store.lock() {
-            store.record_system_event(&session_id, format!("PortMate: {label} socket reconnected"));
-            if let Err(error) = store.open_session(&session_id) {
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: reconnect status update failed: {error}"),
-                );
-            }
-            if let Err(error) = save_store(&state.store_path, &store) {
-                eprintln!("PortMate: failed to persist {label} reconnect success: {error}");
+            drop(writer);
+            match install {
+                TcpReconnectInstallDecision::Retry => continue,
+                TcpReconnectInstallDecision::Stop | TcpReconnectInstallDecision::Superseded => {
+                    return
+                }
+                TcpReconnectInstallDecision::Failed(error) => {
+                    eprintln!("PortMate: failed to install TCP/Telnet reconnect runtime: {error}");
+                    return;
+                }
+                TcpReconnectInstallDecision::Installed => unreachable!(),
             }
         }
 
         tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
             state: state.clone(),
-            profile: profile.clone(),
+            profile,
             runtime_id,
-            label: label.clone(),
+            label: label.to_string(),
             tap,
             writer,
             read_half,
@@ -21077,6 +21343,199 @@ mod tests {
     }
 
     #[test]
+    fn tcp_reconnect_uses_latest_endpoint_and_stops_when_disabled() {
+        tauri::async_runtime::block_on(async {
+            let first_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let first_address = first_listener.local_addr().unwrap();
+            let first_server = tokio::spawn(async move {
+                let (socket, _) = first_listener.accept().await.unwrap();
+                drop(first_listener);
+                drop(socket);
+            });
+
+            let replacement_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let replacement_address = replacement_listener.local_addr().unwrap();
+            let (replacement_connected_tx, replacement_connected_rx) =
+                tokio::sync::oneshot::channel();
+            let (drop_replacement_tx, drop_replacement_rx) = tokio::sync::oneshot::channel();
+            let replacement_server = tokio::spawn(async move {
+                let (socket, _) = replacement_listener.accept().await.unwrap();
+                drop(replacement_listener);
+                let _ = replacement_connected_tx.send(());
+                let _ = drop_replacement_rx.await;
+                drop(socket);
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: first_address.port(),
+                reconnect: true,
+            }));
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tcp-latest-reconnect-test-{}",
+                Uuid::new_v4()
+            ));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            first_server.await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let reconnecting = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Reconnecting
+                    });
+                    if reconnecting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP runtime never entered reconnecting state before profile update");
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut updated = store.profile(&profile.id).unwrap();
+                updated.connection = ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: replacement_address.port(),
+                    reconnect: true,
+                });
+                store.upsert_profile(updated);
+                save_store(&state.store_path, &store).unwrap();
+            }
+
+            tokio::time::timeout(Duration::from_secs(4), replacement_connected_rx)
+                .await
+                .expect("TCP reconnect did not use the updated endpoint")
+                .expect("replacement TCP server dropped its connection signal");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let connected = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Connected
+                    });
+                    if connected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP runtime did not commit the updated endpoint connection");
+
+            let _ = drop_replacement_tx.send(());
+            replacement_server.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let reconnecting = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Reconnecting
+                    });
+                    if reconnecting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("updated TCP runtime never re-entered reconnecting state");
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut disabled = store.profile(&profile.id).unwrap();
+                if let ConnectionConfig::Tcp(tcp) = &mut disabled.connection {
+                    tcp.reconnect = false;
+                }
+                store.upsert_profile(disabled);
+                save_store(&state.store_path, &store).unwrap();
+            }
+
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let runtime_removed = !state.tcp.lock().unwrap().contains_key(&profile.id);
+                    let disconnected = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Disconnected
+                            && runtime
+                                .last_disconnect_reason
+                                .as_deref()
+                                .is_some_and(|reason| reason.contains("disabled"))
+                    });
+                    if runtime_removed && disconnected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("disabling TCP reconnect did not remove the pending runtime");
+
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("socket reconnected"));
+            assert!(screen.contains("reconnect stopped"));
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn tcp_disconnect_observes_reconnect_disabled_while_connected() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let _ = release_rx.await;
+                drop(socket);
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: true,
+            }));
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tcp-disable-connected-test-{}",
+                Uuid::new_v4()
+            ));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut disabled = store.profile(&profile.id).unwrap();
+                if let ConnectionConfig::Tcp(tcp) = &mut disabled.connection {
+                    tcp.reconnect = false;
+                }
+                store.upsert_profile(disabled);
+                save_store(&state.store_path, &store).unwrap();
+            }
+            let _ = release_tx.send(());
+            server.await.unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let runtime_removed = !state.tcp.lock().unwrap().contains_key(&profile.id);
+                    let disconnected = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Disconnected
+                    });
+                    if runtime_removed && disconnected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP disconnect ignored the latest reconnect=false setting");
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(!screen.contains("reconnecting in 1000ms"));
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
     fn cancelling_silent_xmodem_sends_can_and_stops_worker() {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -21933,6 +22392,57 @@ mod tests {
         assert!(tcp_connection_details(&profile)
             .unwrap_err()
             .contains("端口不能为空"));
+    }
+
+    #[test]
+    fn tcp_reconnect_profile_reloads_latest_endpoint_and_disable_state() {
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "old.example".to_string(),
+            port: 2323,
+            reconnect: true,
+        }));
+        let state = test_app_state(profile.clone(), PathBuf::from("tcp-reconnect-test.sqlite3"));
+        assert!(tcp_reconnect_attempt_matches_profile(&profile, &profile));
+        assert_eq!(
+            tcp_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            TcpReconnectProfileState::Current
+        );
+
+        let mut renamed = profile.clone();
+        renamed.name = "Renamed TCP".to_string();
+        assert!(tcp_reconnect_attempt_matches_profile(&profile, &renamed));
+
+        let mut updated = profile.clone();
+        updated.connection = ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "new.example".to_string(),
+            port: 4242,
+            reconnect: true,
+        });
+        state.store.lock().unwrap().upsert_profile(updated);
+        assert_eq!(
+            tcp_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            TcpReconnectProfileState::Changed
+        );
+        let latest = latest_tcp_reconnect_profile(&state, &profile.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tcp_connection_details(&latest).unwrap(),
+            ("new.example".to_string(), 4242, "TCP")
+        );
+
+        let mut disabled = latest;
+        if let ConnectionConfig::Tcp(tcp) = &mut disabled.connection {
+            tcp.reconnect = false;
+        }
+        state.store.lock().unwrap().upsert_profile(disabled);
+        assert_eq!(
+            tcp_reconnect_profile_state(&state.store.lock().unwrap(), &profile.id, &profile),
+            TcpReconnectProfileState::Disabled
+        );
+        assert!(latest_tcp_reconnect_profile(&state, &profile.id)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
