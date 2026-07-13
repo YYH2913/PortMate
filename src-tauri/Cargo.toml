@@ -32,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 serialport = { version = "4.9", default-features = false }
+socket2 = { version = "0.6.3", features = ["all"] }
 tar = "0.4.46"
 tauri = { version = "2.10.3", features = [] }
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }

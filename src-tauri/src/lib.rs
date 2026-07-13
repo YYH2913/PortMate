@@ -22,6 +22,7 @@ use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use socket2::{SockRef, TcpKeepalive};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
@@ -148,6 +149,9 @@ const MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES: u64 = 1024 * 1024;
 const MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
 const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
@@ -10899,10 +10903,58 @@ async fn connect_tcp_socket(host: &str, port: u16, label: &str) -> Result<TcpStr
         .await
         .map_err(|_| format!("{label} 连接超时: {host}:{port}"))?
         .map_err(|error| format!("{label} 连接失败: {host}:{port}: {error}"))?;
+    configure_tcp_socket(&stream, label)?;
+    Ok(stream)
+}
+
+fn configure_tcp_socket(stream: &TcpStream, label: &str) -> Result<(), String> {
     stream
         .set_nodelay(true)
         .map_err(|error| format!("{label} 设置 TCP_NODELAY 失败: {error}"))?;
-    Ok(stream)
+    SockRef::from(stream)
+        .set_tcp_keepalive(&tcp_keepalive_config())
+        .map_err(|error| format!("{label} 设置 TCP keepalive 失败: {error}"))
+}
+
+fn tcp_keepalive_config() -> TcpKeepalive {
+    let keepalive = TcpKeepalive::new().with_time(TCP_KEEPALIVE_IDLE);
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "fuchsia",
+        target_os = "illumos",
+        target_os = "ios",
+        target_os = "visionos",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "windows",
+        target_os = "cygwin",
+        all(target_os = "wasi", not(target_env = "p1")),
+    ))]
+    let keepalive = keepalive.with_interval(TCP_KEEPALIVE_INTERVAL);
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "fuchsia",
+        target_os = "illumos",
+        target_os = "ios",
+        target_os = "visionos",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "windows",
+        target_os = "cygwin",
+        all(target_os = "wasi", not(target_env = "p1")),
+    ))]
+    let keepalive = keepalive.with_retries(TCP_KEEPALIVE_RETRIES);
+    keepalive
 }
 
 async fn open_tcp_session(
@@ -22638,6 +22690,42 @@ mod tests {
         assert!(tcp_connection_details(&profile)
             .unwrap_err()
             .contains("端口不能为空"));
+    }
+
+    #[test]
+    fn tcp_socket_enables_bounded_kernel_keepalive() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let _ = release_rx.await;
+                drop(socket);
+            });
+
+            let stream = connect_tcp_socket("127.0.0.1", address.port(), "TCP")
+                .await
+                .unwrap();
+            let socket = SockRef::from(&stream);
+            assert!(socket.keepalive().unwrap());
+            #[cfg(target_os = "linux")]
+            {
+                assert_eq!(socket.tcp_keepalive_time().unwrap(), TCP_KEEPALIVE_IDLE);
+                assert_eq!(
+                    socket.tcp_keepalive_interval().unwrap(),
+                    TCP_KEEPALIVE_INTERVAL
+                );
+                assert_eq!(
+                    socket.tcp_keepalive_retries().unwrap(),
+                    TCP_KEEPALIVE_RETRIES
+                );
+            }
+
+            drop(stream);
+            let _ = release_tx.send(());
+            server.await.unwrap();
+        });
     }
 
     #[test]
