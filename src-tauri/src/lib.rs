@@ -29,7 +29,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -142,8 +142,10 @@ const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; th
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
+type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 
 static LOG_RETENTION_CHECKS: OnceLock<LogRetentionChecks> = OnceLock::new();
+static LOG_SHARD_LOCKS: OnceLock<LogShardLocks> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct AppState {
@@ -11261,10 +11263,11 @@ fn read_ssh_channel(
                 ChannelMsg::Data { data } => {
                     let bytes = data.to_vec();
                     let _ = tap.send(bytes.clone());
-                    record_channel_text(
+                    record_channel_bytes(
                         &io,
                         &session_id,
                         EventStream::Stdout,
+                        &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
                     );
                     has_unpersisted_stream = true;
@@ -11277,10 +11280,11 @@ fn read_ssh_channel(
                     } else {
                         EventStream::Stdout
                     };
-                    record_channel_text(
+                    record_channel_bytes(
                         &io,
                         &session_id,
                         stream,
+                        &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
                     );
                     has_unpersisted_stream = true;
@@ -11765,14 +11769,15 @@ fn read_tcp_stream(
                     } else {
                         (buffer[..size].to_vec(), Vec::new())
                     };
+                    record_channel_bytes(
+                        &io,
+                        &session_id,
+                        EventStream::Stdout,
+                        &buffer[..size],
+                        String::from_utf8_lossy(&bytes).to_string(),
+                    );
                     if !bytes.is_empty() {
                         let _ = tap.send(bytes.clone());
-                        record_channel_text(
-                            &io,
-                            &session_id,
-                            EventStream::Stdout,
-                            String::from_utf8_lossy(&bytes).to_string(),
-                        );
                         has_unpersisted_stream = true;
                     }
                     for reply in replies {
@@ -11823,10 +11828,11 @@ fn read_tcp_stream(
             let bytes = negotiator.finish();
             if !bytes.is_empty() {
                 let _ = tap.send(bytes.clone());
-                record_channel_text(
+                record_channel_bytes(
                     &io,
                     &session_id,
                     EventStream::Stdout,
+                    &[],
                     String::from_utf8_lossy(&bytes).to_string(),
                 );
                 has_unpersisted_stream = true;
@@ -12069,10 +12075,11 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 Ok(size) => {
                     let bytes = buffer[..size].to_vec();
                     let _ = tap.send(bytes.clone());
-                    record_channel_text(
+                    record_channel_bytes(
                         &io,
                         &session_id,
                         EventStream::Stdout,
+                        &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
                     );
                     has_unpersisted_stream = true;
@@ -12181,10 +12188,11 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 Ok(size) => {
                     let bytes = buffer[..size].to_vec();
                     let _ = tap.send(bytes.clone());
-                    record_channel_text(
+                    record_channel_bytes(
                         &io,
                         &session_id,
                         EventStream::Stdout,
+                        &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
                     );
                     has_unpersisted_stream = true;
@@ -12468,11 +12476,17 @@ fn reconnect_serial_session(
     }
 }
 
-fn record_channel_text(io: &SessionIo, session_id: &str, stream: EventStream, text: String) {
+fn record_channel_bytes(
+    io: &SessionIo,
+    session_id: &str,
+    stream: EventStream,
+    raw_bytes: &[u8],
+    text: String,
+) {
+    let bytes_ref = append_raw_and_text_log_shards(io, session_id, stream, raw_bytes, &text);
     if text.is_empty() {
         return;
     }
-    let bytes_ref = append_raw_and_text_log_shards(io, session_id, stream, &text);
     let mut live_event = None;
     let local_commands = if let Ok(mut store) = io.store.lock() {
         live_event = store
@@ -12527,6 +12541,7 @@ fn append_raw_and_text_log_shards(
     io: &SessionIo,
     session_id: &str,
     stream: EventStream,
+    raw_bytes: &[u8],
     text: &str,
 ) -> Option<String> {
     let profile = logging_profile(io, session_id)?;
@@ -12535,14 +12550,14 @@ fn append_raw_and_text_log_shards(
     }
 
     let mut raw_ref = None;
-    if profile.logging.raw {
-        match append_log_bytes(&io.store_path, &profile, "raw", text.as_bytes()) {
+    if profile.logging.raw && !raw_bytes.is_empty() {
+        match append_log_bytes(&io.store_path, &profile, "raw", raw_bytes) {
             Ok(reference) => raw_ref = Some(reference),
             Err(error) => eprintln!("PortMate: failed to append raw log shard: {error}"),
         }
     }
 
-    if profile.logging.text {
+    if profile.logging.text && !text.is_empty() {
         let mut line = if profile.logging.redact_secrets {
             redact_secrets(text)
         } else {
@@ -12605,6 +12620,10 @@ fn append_log_bytes(
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create log dir {}: {error}", parent.display()))?;
     }
+    let path_lock = log_shard_lock(&path)?;
+    let _guard = path_lock
+        .lock()
+        .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -12623,7 +12642,25 @@ fn append_log_bytes(
         .unwrap_or(path.as_path())
         .display()
         .to_string();
-    Ok(format!("{relative}:{offset}:{}", bytes.len()))
+    Ok(format!(
+        "v2:{relative}:{offset}:{}:{}",
+        bytes.len(),
+        sha256_hex(bytes)
+    ))
+}
+
+fn log_shard_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
+    let mut locks = LOG_SHARD_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "log shard lock registry poisoned".to_string())?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    Ok(lock)
 }
 
 fn log_shard_path(
@@ -12754,7 +12791,11 @@ fn prune_expired_log_shards_for_profile(
         .map_err(|error| format!("failed to resolve log root {}: {error}", root.display()))?;
     let mut deleted = 0_usize;
     let mut bytes_deleted = 0_u64;
-    for (path, size) in candidates {
+    for (path, _) in candidates {
+        let path_lock = log_shard_lock(&path)?;
+        let _guard = path_lock
+            .lock()
+            .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -12775,7 +12816,7 @@ fn prune_expired_log_shards_for_profile(
             )
         })?;
         deleted += 1;
-        bytes_deleted = bytes_deleted.saturating_add(size);
+        bytes_deleted = bytes_deleted.saturating_add(metadata.len());
         let mut parent = path.parent();
         while let Some(directory) = parent {
             if directory == canonical_root || !directory.starts_with(&canonical_root) {
@@ -13067,7 +13108,14 @@ fn delete_log_shards_inner(
         .canonicalize()
         .map_err(|error| format!("failed to resolve log root: {error}"))?;
     let mut bytes_deleted = 0;
-    for (path, size) in &validated {
+    for (path, _) in &validated {
+        let path_lock = log_shard_lock(path)?;
+        let _guard = path_lock
+            .lock()
+            .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
+        let size = fs::metadata(path)
+            .map_err(|error| format!("failed to read log metadata {}: {error}", path.display()))?
+            .len();
         fs::remove_file(path)
             .map_err(|error| format!("failed to delete log shard {}: {error}", path.display()))?;
         bytes_deleted += size;
@@ -13491,6 +13539,75 @@ fn read_log_bytes_ref(
     store_path: &Path,
     reference: &str,
 ) -> Result<(String, u64, Vec<u8>), String> {
+    let parsed = parse_log_bytes_ref(reference)?;
+    if parsed.length > MAX_BUNDLE_LOG_SEGMENT_BYTES {
+        return Err(format!(
+            "log segment exceeds {MAX_BUNDLE_LOG_SEGMENT_BYTES} byte limit"
+        ));
+    }
+    let path = resolve_log_shard_path(store_path, &parsed.relative)?;
+    let path_lock = log_shard_lock(&path)?;
+    let _guard = path_lock
+        .lock()
+        .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
+    let size = fs::metadata(&path)
+        .map_err(|error| format!("failed to read referenced log metadata: {error}"))?
+        .len();
+    let end = parsed
+        .offset
+        .checked_add(parsed.length)
+        .ok_or_else(|| "bytesRef range overflow".to_string())?;
+    if end > size {
+        return Err(format!(
+            "bytesRef range {}..{end} exceeds shard size {size}",
+            parsed.offset
+        ));
+    }
+    let mut file = fs::File::open(&path)
+        .map_err(|error| format!("failed to open referenced log shard: {error}"))?;
+    file.seek(std::io::SeekFrom::Start(parsed.offset))
+        .map_err(|error| format!("failed to seek referenced log shard: {error}"))?;
+    let mut bytes = vec![0_u8; parsed.length as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|error| format!("failed to read referenced log segment: {error}"))?;
+    if parsed
+        .sha256
+        .as_deref()
+        .is_some_and(|expected| expected != sha256_hex(&bytes))
+    {
+        return Err("bytesRef content mismatch: log shard was replaced or modified".to_string());
+    }
+    Ok((parsed.relative, parsed.offset, bytes))
+}
+
+struct ParsedLogBytesRef {
+    relative: String,
+    offset: u64,
+    length: u64,
+    sha256: Option<String>,
+}
+
+fn parse_log_bytes_ref(reference: &str) -> Result<ParsedLogBytesRef, String> {
+    if let Some(reference) = reference.strip_prefix("v2:") {
+        let mut parts = reference.rsplitn(4, ':');
+        let sha256 = parts.next().filter(|value| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        let length = parts.next().and_then(|value| value.parse::<u64>().ok());
+        let offset = parts.next().and_then(|value| value.parse::<u64>().ok());
+        let relative = parts.next().filter(|value| !value.is_empty());
+        if let (Some(sha256), Some(length), Some(offset), Some(relative)) =
+            (sha256, length, offset, relative)
+        {
+            return Ok(ParsedLogBytesRef {
+                relative: relative.to_string(),
+                offset,
+                length,
+                sha256: Some(sha256.to_ascii_lowercase()),
+            });
+        }
+    }
+
     let mut parts = reference.rsplitn(3, ':');
     let length = parts
         .next()
@@ -13504,31 +13621,12 @@ fn read_log_bytes_ref(
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "invalid bytesRef path".to_string())?;
-    if length > MAX_BUNDLE_LOG_SEGMENT_BYTES {
-        return Err(format!(
-            "log segment exceeds {MAX_BUNDLE_LOG_SEGMENT_BYTES} byte limit"
-        ));
-    }
-    let path = resolve_log_shard_path(store_path, relative)?;
-    let size = fs::metadata(&path)
-        .map_err(|error| format!("failed to read referenced log metadata: {error}"))?
-        .len();
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| "bytesRef range overflow".to_string())?;
-    if end > size {
-        return Err(format!(
-            "bytesRef range {offset}..{end} exceeds shard size {size}"
-        ));
-    }
-    let mut file = fs::File::open(&path)
-        .map_err(|error| format!("failed to open referenced log shard: {error}"))?;
-    file.seek(std::io::SeekFrom::Start(offset))
-        .map_err(|error| format!("failed to seek referenced log shard: {error}"))?;
-    let mut bytes = vec![0_u8; length as usize];
-    file.read_exact(&mut bytes)
-        .map_err(|error| format!("failed to read referenced log segment: {error}"))?;
-    Ok((relative.to_string(), offset, bytes))
+    Ok(ParsedLogBytesRef {
+        relative: relative.to_string(),
+        offset,
+        length,
+        sha256: None,
+    })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -15814,12 +15912,14 @@ mod tests {
                 );
             });
 
-            let profile =
+            let mut profile =
                 test_tcp_profile(ConnectionConfig::Telnet(portmate_core::TcpConnection {
                     host: "127.0.0.1".to_string(),
                     port: address.port(),
                     reconnect: false,
                 }));
+            profile.logging.enabled = true;
+            profile.logging.raw = true;
             let root =
                 std::env::temp_dir().join(format!("portmate-telnet-test-{}", Uuid::new_v4()));
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
@@ -15860,6 +15960,24 @@ mod tests {
                 .collect::<String>();
             assert_eq!(stdout, "left\r|\r\n!tail\r");
             assert!(!stdout.contains('\0'));
+            let expected_raw = [
+                b"left\r".as_slice(),
+                &[0, b'|', b'\r'],
+                &[b'\n', TELNET_IAC],
+                &[TELNET_WILL],
+                &[
+                    TELNET_OPT_ECHO,
+                    TELNET_IAC,
+                    TELNET_SB,
+                    TELNET_OPT_TERMINAL_TYPE,
+                ],
+                &[TELNET_TTYPE_SEND, TELNET_IAC],
+                &[TELNET_SE, b'!'],
+                b"tail\r".as_slice(),
+            ]
+            .concat();
+            let raw_path = log_shard_path(&state.store_path, &profile, "raw").unwrap();
+            assert_eq!(fs::read(raw_path).unwrap(), expected_raw);
             let _ = fs::remove_dir_all(root);
         });
     }
@@ -17062,9 +17180,121 @@ mod tests {
         let raw = fs::read(&raw_path).unwrap();
 
         assert_eq!(raw, b"abcde");
-        assert!(first.ends_with(":0:3"));
-        assert!(second.ends_with(":3:2"));
+        let first_ref = parse_log_bytes_ref(&first).unwrap();
+        let second_ref = parse_log_bytes_ref(&second).unwrap();
+        assert_eq!((first_ref.offset, first_ref.length), (0, 3));
+        assert_eq!((second_ref.offset, second_ref.length), (3, 2));
+        assert!(first_ref.sha256.is_some());
+        assert!(second_ref.sha256.is_some());
         assert!(raw_path.starts_with(log_root(&store_path)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inbound_event_refs_exact_transport_bytes_before_text_decoding() {
+        let root = std::env::temp_dir().join(format!("portmate-log-inbound-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        profile.logging.text = false;
+        profile.logging.jsonl = false;
+        let state = test_app_state(profile.clone(), store_path.clone());
+        let wire = [b'A', 0xff, 0x00, 0x80, b'B'];
+
+        record_channel_bytes(
+            &state.session_io(),
+            &profile.id,
+            EventStream::Stdout,
+            &wire,
+            String::from_utf8_lossy(&wire).to_string(),
+        );
+
+        let event = state.store.lock().unwrap().events.last().cloned().unwrap();
+        assert_ne!(event.text.as_deref().unwrap().as_bytes(), wire);
+        let reference = event.bytes_ref.as_deref().unwrap();
+        assert_eq!(read_log_bytes_ref(&store_path, reference).unwrap().2, wire);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bytes_ref_detects_recreated_shards_and_reads_legacy_refs() {
+        let root = std::env::temp_dir().join(format!("portmate-log-ref-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let profile = test_shell_profile();
+        let old_ref = append_log_bytes(&store_path, &profile, "raw", b"AAAA").unwrap();
+        let parsed = parse_log_bytes_ref(&old_ref).unwrap();
+        let legacy_ref = format!("{}:0:4", parsed.relative);
+        assert_eq!(
+            read_log_bytes_ref(&store_path, &legacy_ref).unwrap().2,
+            b"AAAA"
+        );
+        let ambiguous_path = log_root(&store_path).join("v2:legacy.raw");
+        fs::write(&ambiguous_path, b"CCCC").unwrap();
+        assert_eq!(
+            read_log_bytes_ref(&store_path, "v2:legacy.raw:0:4")
+                .unwrap()
+                .2,
+            b"CCCC"
+        );
+
+        delete_log_shards_inner(&store_path, std::slice::from_ref(&parsed.relative)).unwrap();
+        let new_ref = append_log_bytes(&store_path, &profile, "raw", b"BBBB").unwrap();
+        let error = read_log_bytes_ref(&store_path, &old_ref).unwrap_err();
+        assert!(
+            error.contains("content mismatch"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            read_log_bytes_ref(&store_path, &new_ref).unwrap().2,
+            b"BBBB"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn append_log_bytes_serializes_concurrent_writers() {
+        let root = std::env::temp_dir().join(format!("portmate-log-race-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.path_template = "shared/{date}/transport.jsonl".to_string();
+        let barrier = Arc::new(std::sync::Barrier::new(48));
+        let results = Arc::new(Mutex::new(Vec::new()));
+
+        std::thread::scope(|scope| {
+            for index in 0_u8..48 {
+                let barrier = Arc::clone(&barrier);
+                let results = Arc::clone(&results);
+                let store_path = store_path.clone();
+                let profile = profile.clone();
+                scope.spawn(move || {
+                    let payload = vec![index, 0xff, 0x00, 0x80, index.wrapping_add(1)];
+                    barrier.wait();
+                    let reference =
+                        append_log_bytes(&store_path, &profile, "raw", &payload).unwrap();
+                    results.lock().unwrap().push((payload, reference));
+                });
+            }
+        });
+
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 48);
+        let mut ranges = Vec::new();
+        for (expected, reference) in results.iter() {
+            let (_, offset, actual) = read_log_bytes_ref(&store_path, reference).unwrap();
+            assert_eq!(&actual, expected);
+            ranges.push((offset, offset + actual.len() as u64));
+        }
+        ranges.sort_unstable();
+        let mut expected_offset = 0_u64;
+        for (start, end) in ranges {
+            assert_eq!(start, expected_offset);
+            expected_offset = end;
+        }
+        assert_eq!(expected_offset, 48 * 5);
 
         let _ = fs::remove_dir_all(root);
     }

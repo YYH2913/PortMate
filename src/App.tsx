@@ -5213,7 +5213,7 @@ function SessionSettingsContent({
             <option value="off">关闭</option>
           </select>
         </DialogField>
-        <DialogField label="Raw:(R)">
+        <DialogField label="Raw（不脱敏）:(R)">
           <select value={draft.logging.raw ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, raw: event.target.value === "on" } })}>
             <option value="on">开启</option>
             <option value="off">关闭</option>

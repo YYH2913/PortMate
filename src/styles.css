@@ -1299,7 +1299,7 @@ button {
 .session-settings-dialog {
   grid-template-columns: 328px minmax(0, 1fr);
   grid-template-rows: 43px 38px minmax(0, 1fr) 58px;
-  width: 962px;
+  width: min(962px, calc(100vw - 24px));
   height: min(956px, calc(100vh - 36px));
 }
 

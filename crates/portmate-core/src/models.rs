@@ -355,8 +355,8 @@ pub struct LoggingSettings {
 impl Default for LoggingSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
-            raw: true,
+            enabled: false,
+            raw: false,
             text: true,
             jsonl: true,
             redact_secrets: true,
@@ -630,5 +630,13 @@ mod tests {
         .expect("legacy logging settings should deserialize");
 
         assert_eq!(logging.retention_days, 0);
+    }
+
+    #[test]
+    fn logging_defaults_do_not_capture_unredacted_raw_bytes() {
+        let logging = LoggingSettings::default();
+        assert!(!logging.enabled);
+        assert!(!logging.raw);
+        assert!(logging.redact_secrets);
     }
 }
