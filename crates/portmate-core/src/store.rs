@@ -3,11 +3,93 @@ use crate::models::*;
 use crate::redaction::redact_secrets;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 const MAX_EVENTS_PER_SESSION: usize = 5000;
 const EVENT_TRIM_BATCH: usize = 512;
+const MAX_SYSTEM_EVENT_OUTBOX: usize = 4096;
+
+type SystemEventEnvelope = (SessionEvent, Option<SessionProfile>);
+
+#[derive(Debug, Default)]
+enum SystemEventSinkStatus {
+    #[default]
+    Inactive,
+    Active(SyncSender<()>),
+    Failed(String),
+}
+
+#[derive(Debug, Default)]
+struct SystemEventSinkState {
+    status: SystemEventSinkStatus,
+    outbox: VecDeque<SystemEventEnvelope>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SystemEventSinkRuntime {
+    state: Arc<Mutex<SystemEventSinkState>>,
+}
+
+impl SystemEventSinkRuntime {
+    fn set_notifier(&self, sender: SyncSender<()>) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "system event sink state poisoned".to_string())?;
+        state.status = SystemEventSinkStatus::Active(sender.clone());
+        if !state.outbox.is_empty() {
+            if let Err(std::sync::mpsc::TrySendError::Disconnected(())) = sender.try_send(()) {
+                let error = "system event sink worker disconnected".to_string();
+                state.status = SystemEventSinkStatus::Failed(error.clone());
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_notifier(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.status = SystemEventSinkStatus::Inactive;
+        }
+    }
+
+    fn enqueue(&self, event: SessionEvent, profile: Option<SessionProfile>) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "system event sink state poisoned".to_string())?;
+        let notifier = match &state.status {
+            SystemEventSinkStatus::Inactive => return Ok(()),
+            SystemEventSinkStatus::Active(notifier) => notifier.clone(),
+            SystemEventSinkStatus::Failed(error) => return Err(error.clone()),
+        };
+        if state.outbox.len() >= MAX_SYSTEM_EVENT_OUTBOX {
+            return Err(format!(
+                "system event sink backlog exceeded {MAX_SYSTEM_EVENT_OUTBOX} events"
+            ));
+        }
+        state.outbox.push_back((event, profile));
+        match notifier.try_send(()) {
+            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(())) => Ok(()),
+            Err(std::sync::mpsc::TrySendError::Disconnected(())) => {
+                state.outbox.pop_back();
+                let error = "system event sink worker disconnected".to_string();
+                state.status = SystemEventSinkStatus::Failed(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn drain(&self) -> Vec<SystemEventEnvelope> {
+        self.state
+            .lock()
+            .map(|mut state| state.outbox.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,9 +108,26 @@ pub struct SessionStore {
     /// so bounding a chatty session's log no longer rescans every session's events.
     #[serde(skip)]
     event_counts: HashMap<String, usize>,
+    /// Runtime-only bounded outbox for the desktop system-event sink. Cloned
+    /// stores share it because several Tauri mutations use a
+    /// clone-then-persist-then-swap transaction pattern.
+    #[serde(skip)]
+    system_event_sink: SystemEventSinkRuntime,
 }
 
 impl SessionStore {
+    pub fn set_system_event_notifier(&mut self, sender: SyncSender<()>) -> Result<(), String> {
+        self.system_event_sink.set_notifier(sender)
+    }
+
+    pub fn clear_system_event_notifier(&mut self) {
+        self.system_event_sink.clear_notifier();
+    }
+
+    pub fn drain_system_event_outbox(&mut self) -> Vec<(SessionEvent, Option<SessionProfile>)> {
+        self.system_event_sink.drain()
+    }
+
     pub fn profile(&self, session_id: &str) -> Option<SessionProfile> {
         self.profiles
             .iter()
@@ -316,7 +415,7 @@ impl SessionStore {
     }
 
     fn push_system_event(&mut self, session_id: &str, text: String) {
-        let event = SessionEvent {
+        let mut event = SessionEvent {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
             pane_id: format!("{session_id}:main"),
@@ -327,6 +426,10 @@ impl SessionStore {
             text: Some(text),
             annotations: BTreeMap::new(),
         };
+        let profile = self.profile(session_id);
+        if let Err(error) = self.system_event_sink.enqueue(event.clone(), profile) {
+            event.annotations.insert("loggingError".to_string(), error);
+        }
         self.events.push(event);
         self.trim_events_if_needed(session_id);
     }
@@ -743,6 +846,82 @@ mod tests {
             .screen("test-session")
             .unwrap()
             .contains("disconnected"));
+    }
+
+    #[test]
+    fn system_event_notifier_coalesces_direct_and_lifecycle_events() {
+        let mut store = test_store();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+
+        store.record_system_event("test-session", "PortMate: direct diagnostic");
+        store.open_session("test-session").unwrap();
+        store.close_session("test-session").unwrap();
+
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(receiver.try_recv().is_err());
+        let queued = store.drain_system_event_outbox();
+        assert_eq!(queued.len(), 3);
+        assert!(queued.iter().all(|(event, profile)| {
+            event.direction == EventDirection::System
+                && event.stream == EventStream::Control
+                && profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.id == "test-session")
+        }));
+        let events = store.events.iter().rev().take(3).collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| {
+            event.direction == EventDirection::System
+                && event.stream == EventStream::Control
+                && event.bytes_ref.is_none()
+        }));
+        assert!(events[2]
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("direct diagnostic")));
+        assert!(events[1]
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("connected")));
+        assert!(events[0]
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("disconnected")));
+    }
+
+    #[test]
+    fn system_event_outbox_is_bounded_and_reports_overflow() {
+        let mut store = test_store();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+
+        for index in 0..=MAX_SYSTEM_EVENT_OUTBOX {
+            store.record_system_event("test-session", format!("diagnostic {index}"));
+        }
+
+        assert_eq!(
+            store.drain_system_event_outbox().len(),
+            MAX_SYSTEM_EVENT_OUTBOX
+        );
+        assert!(store.events.last().is_some_and(|event| {
+            event
+                .annotations
+                .get("loggingError")
+                .is_some_and(|error| error.contains("backlog exceeded"))
+        }));
+
+        drop(receiver);
+        store.record_system_event("test-session", "disconnected worker one");
+        store.record_system_event("test-session", "disconnected worker two");
+        assert!(store.events.iter().rev().take(2).all(|event| {
+            event
+                .annotations
+                .get("loggingError")
+                .is_some_and(|error| error.contains("worker disconnected"))
+        }));
     }
 
     #[test]

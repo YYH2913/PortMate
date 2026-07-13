@@ -153,6 +153,7 @@ static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
 pub struct AppState {
     app_handle: Option<AppHandle>,
     pub store: Arc<Mutex<SessionStore>>,
+    system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
@@ -162,6 +163,34 @@ pub struct AppState {
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     store_path: PathBuf,
+}
+
+struct SystemEventSinkGuard {
+    store: Weak<Mutex<SessionStore>>,
+    shutdown: std::sync::mpsc::Sender<()>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl SystemEventSinkGuard {
+    fn shutdown(&self) {
+        if let Some(store) = self.store.upgrade() {
+            if let Ok(mut store) = store.lock() {
+                store.clear_system_event_notifier();
+            }
+        }
+        let _ = self.shutdown.send(());
+        if let Ok(mut worker) = self.worker.lock() {
+            if let Some(worker) = worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+}
+
+impl Drop for SystemEventSinkGuard {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 struct PortableVaultContext {
@@ -486,6 +515,114 @@ impl AppState {
             store: Arc::clone(&self.store),
             runtimes: self.runtimes(),
             store_path: self.store_path.clone(),
+        }
+    }
+}
+
+fn install_system_event_sink(state: &AppState) -> Result<(), String> {
+    if state
+        .system_event_sink
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err("system event sink is already installed".to_string());
+    }
+
+    let (notifier, wakeups) = std::sync::mpsc::sync_channel(1);
+    let (shutdown, shutdown_rx) = std::sync::mpsc::channel();
+    let store = Arc::downgrade(&state.store);
+    let store_path = state.store_path.clone();
+    let app_handle = state.app_handle.clone();
+    let worker_store = store.clone();
+    let worker = std::thread::Builder::new()
+        .name("portmate-system-event-sink".to_string())
+        .spawn(move || {
+            run_system_event_sink(
+                &worker_store,
+                &store_path,
+                app_handle.as_ref(),
+                wakeups,
+                shutdown_rx,
+            );
+        })
+        .map_err(|error| format!("failed to start system event sink: {error}"))?;
+    let guard = SystemEventSinkGuard {
+        store,
+        shutdown,
+        worker: Mutex::new(Some(worker)),
+    };
+    let install_result = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .set_system_event_notifier(notifier);
+    if let Err(error) = install_result {
+        guard.shutdown();
+        return Err(error);
+    }
+    *state
+        .system_event_sink
+        .lock()
+        .map_err(|error| error.to_string())? = Some(guard);
+    Ok(())
+}
+
+fn shutdown_system_event_sink(state: &AppState) {
+    let guard = state
+        .system_event_sink
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    if let Some(guard) = guard {
+        guard.shutdown();
+    }
+}
+
+fn run_system_event_sink(
+    store: &Weak<Mutex<SessionStore>>,
+    store_path: &Path,
+    app_handle: Option<&AppHandle>,
+    wakeups: std::sync::mpsc::Receiver<()>,
+    shutdown: std::sync::mpsc::Receiver<()>,
+) {
+    loop {
+        if shutdown.try_recv().is_ok() {
+            drain_system_event_outbox(store, store_path, app_handle);
+            return;
+        }
+        match wakeups.recv_timeout(Duration::from_millis(100)) {
+            Ok(()) => drain_system_event_outbox(store, store_path, app_handle),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                drain_system_event_outbox(store, store_path, app_handle);
+                return;
+            }
+        }
+    }
+}
+
+fn drain_system_event_outbox(
+    store: &Weak<Mutex<SessionStore>>,
+    store_path: &Path,
+    app_handle: Option<&AppHandle>,
+) {
+    loop {
+        let events = match store.upgrade() {
+            Some(store) => match store.lock() {
+                Ok(mut store) => store.drain_system_event_outbox(),
+                Err(error) => {
+                    eprintln!("PortMate: system event outbox lock failed: {error}");
+                    return;
+                }
+            },
+            None => return,
+        };
+        if events.is_empty() {
+            return;
+        }
+        for (event, profile) in events {
+            publish_system_event(store, store_path, app_handle, event, profile);
         }
     }
 }
@@ -12760,9 +12897,8 @@ fn record_channel_bytes(
     if text.is_empty() {
         return;
     }
-    let mut live_event = None;
-    let local_commands = if let Ok(mut store) = io.store.lock() {
-        live_event = store
+    let live_event = if let Ok(mut store) = io.store.lock() {
+        let mut event = store
             .record_stream_event_with_bytes_ref(
                 session_id,
                 EventDirection::Inbound,
@@ -12771,24 +12907,17 @@ fn record_channel_bytes(
                 shard_append.bytes_ref,
             )
             .ok();
-        if let Some(event) = live_event.as_mut() {
+        if let Some(event) = event.as_mut() {
             append_logging_errors(event, &shard_append.errors);
             sync_stored_event(&mut store, event);
         }
-        let (trigger_dispatch, trigger_changed_store) =
-            apply_trigger_actions_locked(&mut store, session_id, &text);
-        if trigger_changed_store {
-            if let Err(error) = save_store(&io.store_path, &store) {
-                eprintln!("PortMate: failed to persist trigger actions: {error}");
-            }
-        }
-        trigger_dispatch
+        event
     } else {
         eprintln!(
             "PortMate: session store lock poisoned; dropping event for {session_id} \
              (live push and persistence degraded until the app restarts)"
         );
-        TriggerDispatch::default()
+        None
     };
     if let Some(mut event) = live_event {
         if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
@@ -12801,6 +12930,21 @@ fn record_channel_bytes(
             let _ = app_handle.emit("portmate-session-event", event);
         }
     }
+    let local_commands = if let Ok(mut store) = io.store.lock() {
+        let (trigger_dispatch, trigger_changed_store) =
+            apply_trigger_actions_locked(&mut store, session_id, &text);
+        if trigger_changed_store {
+            if let Err(error) = save_store(&io.store_path, &store) {
+                eprintln!("PortMate: failed to persist trigger actions: {error}");
+            }
+        }
+        trigger_dispatch
+    } else {
+        eprintln!(
+            "PortMate: session store lock poisoned; dropping trigger actions for {session_id}"
+        );
+        TriggerDispatch::default()
+    };
     if let Some(app_handle) = &io.app_handle {
         for effect in local_commands.effects {
             let _ = app_handle.emit("portmate-trigger-effect", effect);
@@ -12817,6 +12961,79 @@ fn record_channel_bytes(
     for text in local_commands.send_texts {
         spawn_trigger_send_text(io.clone(), session_id.to_string(), text);
     }
+}
+
+fn publish_system_event(
+    store: &Weak<Mutex<SessionStore>>,
+    store_path: &Path,
+    app_handle: Option<&AppHandle>,
+    mut event: SessionEvent,
+    profile: Option<SessionProfile>,
+) {
+    if let Some(profile) = profile {
+        if let Err(error) = append_system_text_log_shard(store_path, &profile, &event) {
+            append_logging_error(&mut event, error);
+        }
+        if let Err(error) = append_jsonl_log_shard_for_profile(store_path, &profile, &event) {
+            append_logging_error(&mut event, error);
+        }
+    } else {
+        let session_id = event.session_id.clone();
+        append_logging_error(
+            &mut event,
+            format!("system event profile unavailable for session {session_id}"),
+        );
+    }
+
+    if event.annotations.contains_key("loggingError") {
+        if let Some(store) = store.upgrade() {
+            if let Ok(mut store) = store.lock() {
+                sync_stored_event(&mut store, &event);
+                if let Err(error) = save_store(store_path, &store) {
+                    append_logging_error(
+                        &mut event,
+                        format!("store save after system log failure failed: {error}"),
+                    );
+                    sync_stored_event(&mut store, &event);
+                }
+            }
+        }
+    }
+
+    if let Some(app_handle) = app_handle {
+        let _ = app_handle.emit("portmate-session-event", event);
+    }
+}
+
+fn append_system_text_log_shard(
+    store_path: &Path,
+    profile: &SessionProfile,
+    event: &SessionEvent,
+) -> Result<(), String> {
+    if !profile.logging.enabled || !profile.logging.text {
+        return Ok(());
+    }
+    let Some(text) = event.text.as_deref() else {
+        return Ok(());
+    };
+    if text.is_empty() {
+        return Ok(());
+    }
+    let mut line = if profile.logging.redact_secrets {
+        redact_secrets(text)
+    } else {
+        text.to_string()
+    };
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+    append_log_bytes(store_path, profile, "txt", line.as_bytes())
+        .map(|_| ())
+        .map_err(|error| {
+            let error = format!("system text shard append failed: {error}");
+            eprintln!("PortMate: {error}");
+            error
+        })
 }
 
 #[derive(Default)]
@@ -12881,6 +13098,14 @@ fn append_jsonl_log_shard(
     event: &SessionEvent,
 ) -> Result<(), String> {
     let profile = logging_profile(io, session_id)?;
+    append_jsonl_log_shard_for_profile(&io.store_path, &profile, event)
+}
+
+fn append_jsonl_log_shard_for_profile(
+    store_path: &Path,
+    profile: &SessionProfile,
+    event: &SessionEvent,
+) -> Result<(), String> {
     if !profile.logging.enabled || !profile.logging.jsonl {
         return Ok(());
     }
@@ -12891,7 +13116,7 @@ fn append_jsonl_log_shard(
     let mut line = serde_json::to_vec(&event)
         .map_err(|error| format!("JSONL serialization failed: {error}"))?;
     line.push(b'\n');
-    append_log_bytes(&io.store_path, &profile, "jsonl", &line)
+    append_log_bytes(store_path, profile, "jsonl", &line)
         .map(|_| ())
         .map_err(|error| {
             let error = format!("JSONL shard append failed: {error}");
@@ -15208,7 +15433,9 @@ fn save_store_sqlite_tables(
         )
         .map_err(|error| format!("failed to clear PortMate SQLite mirror tables: {error}"))?;
 
-    let mirrored_event_ids = sqlite_string_keys(connection, "select id from events", "event")?;
+    let mirrored_events =
+        sqlite_string_map(connection, "select id, raw_json from events", "event")?;
+    let mirrored_event_ids = mirrored_events.keys().cloned().collect::<HashSet<_>>();
     let current_event_ids = store
         .events
         .iter()
@@ -15283,29 +15510,55 @@ fn save_store_sqlite_tables(
     }
 
     for event in &store.events {
-        if mirrored_event_ids.contains(&event.id) {
+        let raw_json = json_text(event)?;
+        if mirrored_events.get(&event.id) == Some(&raw_json) {
             continue;
         }
-        connection
-            .execute(
-                "insert into events (
+        if mirrored_events.contains_key(&event.id) {
+            connection
+                .execute(
+                    "update events set
+                        session_id = ?2, pane_id = ?3, ts = ?4, direction = ?5, stream = ?6,
+                        bytes_ref = ?7, text = ?8, annotations_json = ?9, raw_json = ?10
+                     where id = ?1",
+                    params![
+                        event.id,
+                        event.session_id,
+                        event.pane_id,
+                        event.ts.to_rfc3339(),
+                        enum_text(&event.direction)?,
+                        enum_text(&event.stream)?,
+                        event.bytes_ref,
+                        event.text,
+                        json_text(&event.annotations)?,
+                        raw_json,
+                    ],
+                )
+                .map_err(|error| {
+                    format!("failed to update mirrored event {}: {error}", event.id)
+                })?;
+        } else {
+            connection
+                .execute(
+                    "insert into events (
                     id, session_id, pane_id, ts, direction, stream, bytes_ref, text,
                     annotations_json, raw_json
                 ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    event.id,
-                    event.session_id,
-                    event.pane_id,
-                    event.ts.to_rfc3339(),
-                    enum_text(&event.direction)?,
-                    enum_text(&event.stream)?,
-                    event.bytes_ref,
-                    event.text,
-                    json_text(&event.annotations)?,
-                    json_text(event)?,
-                ],
-            )
-            .map_err(|error| format!("failed to mirror event {}: {error}", event.id))?;
+                    params![
+                        event.id,
+                        event.session_id,
+                        event.pane_id,
+                        event.ts.to_rfc3339(),
+                        enum_text(&event.direction)?,
+                        enum_text(&event.stream)?,
+                        event.bytes_ref,
+                        event.text,
+                        json_text(&event.annotations)?,
+                        raw_json,
+                    ],
+                )
+                .map_err(|error| format!("failed to mirror event {}: {error}", event.id))?;
+        }
     }
     for id in mirrored_event_ids.difference(&current_event_ids) {
         connection
@@ -15508,6 +15761,28 @@ fn sqlite_string_keys(
     Ok(keys)
 }
 
+fn sqlite_string_map(
+    connection: &SqliteConnection,
+    query: &str,
+    label: &str,
+) -> Result<HashMap<String, String>, String> {
+    let mut statement = connection
+        .prepare(query)
+        .map_err(|error| format!("failed to query mirrored {label} values: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed to read mirrored {label} values: {error}"))?;
+    let mut values = HashMap::new();
+    for row in rows {
+        let (key, value) =
+            row.map_err(|error| format!("failed to decode mirrored {label} value: {error}"))?;
+        values.insert(key, value);
+    }
+    Ok(values)
+}
+
 fn sqlite_sysmon_keys(connection: &SqliteConnection) -> Result<HashSet<(String, String)>, String> {
     let mut statement = connection
         .prepare("select session_id, ts from sysmon_snapshots")
@@ -15670,6 +15945,7 @@ pub fn run() {
             let state = AppState {
                 app_handle: Some(app.handle().clone()),
                 store: Arc::new(Mutex::new(store)),
+                system_event_sink: Arc::new(Mutex::new(None)),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
                 shell: Arc::new(Mutex::new(HashMap::new())),
                 tcp: Arc::new(Mutex::new(HashMap::new())),
@@ -15680,6 +15956,7 @@ pub fn run() {
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 store_path,
             };
+            install_system_event_sink(&state).map_err(std::io::Error::other)?;
             start_ipc_server(
                 state.clone(),
                 data_dir.join("portmate-ipc.json"),
@@ -15756,8 +16033,18 @@ pub fn run() {
             stop_tunnel,
             mcp_manifest
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running PortMate");
+        .build(tauri::generate_context!())
+        .expect("error while building PortMate")
+        .run(|app_handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+            ) {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    shutdown_system_event_sink(state.inner());
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -17007,6 +17294,10 @@ mod tests {
             .unwrap();
         drop(connection);
 
+        let updated_event_id = store.events[0].id.clone();
+        store.events[0]
+            .annotations
+            .insert("loggingError".to_string(), "text shard failed".to_string());
         store.record_system_event(&session_id, "third event");
         save_store(&store_path, &store).unwrap();
         let connection = SqliteConnection::open(&store_path).unwrap();
@@ -17025,6 +17316,27 @@ mod tests {
             assert_eq!(mirror_count(table, "insert"), 0, "{table}");
             assert_eq!(mirror_count(table, "delete"), 0, "{table}");
         }
+        let (updated_raw_json, updated_annotations_json): (String, String) = connection
+            .query_row(
+                "select raw_json, annotations_json from events where id = ?1",
+                params![updated_event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let updated_event: SessionEvent = serde_json::from_str(&updated_raw_json).unwrap();
+        assert_eq!(
+            updated_event
+                .annotations
+                .get("loggingError")
+                .map(String::as_str),
+            Some("text shard failed")
+        );
+        let updated_annotations: BTreeMap<String, String> =
+            serde_json::from_str(&updated_annotations_json).unwrap();
+        assert_eq!(
+            updated_annotations.get("loggingError").map(String::as_str),
+            Some("text shard failed")
+        );
         connection
             .execute("update mirror_test_counts set count = 0", [])
             .unwrap();
@@ -17751,6 +18063,125 @@ mod tests {
         assert_ne!(event.text.as_deref().unwrap().as_bytes(), wire);
         let reference = event.bytes_ref.as_deref().unwrap();
         assert_eq!(read_log_bytes_ref(&store_path, reference).unwrap().2, wire);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_event_sink_writes_redacted_text_and_jsonl_once_without_raw() {
+        let root = std::env::temp_dir().join(format!("portmate-system-sink-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
+        profile.logging.redact_secrets = true;
+        let state = test_app_state(profile.clone(), store_path.clone());
+        let raw_path = log_shard_path(&store_path, &profile, "raw").unwrap();
+        append_log_bytes(&store_path, &profile, "raw", b"raw-sentinel").unwrap();
+        install_system_event_sink(&state).unwrap();
+
+        let event_ids = {
+            let mut store = state.store.lock().unwrap();
+            store.record_system_event(&profile.id, "PortMate: password=hunter2");
+            store.open_session(&profile.id).unwrap();
+            store.close_session(&profile.id).unwrap();
+            let event_ids = store
+                .events
+                .iter()
+                .rev()
+                .take(3)
+                .map(|event| event.id.clone())
+                .collect::<HashSet<_>>();
+            save_store(&store_path, &store).unwrap();
+            save_store(&store_path, &store).unwrap();
+            event_ids
+        };
+
+        shutdown_system_event_sink(&state);
+        let jsonl_path = log_shard_path(&store_path, &profile, "jsonl").unwrap();
+        let jsonl = fs::read_to_string(&jsonl_path).unwrap();
+
+        let persisted = jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<SessionEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(persisted.len(), 3);
+        assert_eq!(
+            persisted
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<HashSet<_>>(),
+            event_ids
+        );
+        assert!(persisted.iter().all(|event| {
+            event.direction == EventDirection::System
+                && event.stream == EventStream::Control
+                && event.bytes_ref.is_none()
+                && !event
+                    .text
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("hunter2")
+        }));
+        let text_path = log_shard_path(&store_path, &profile, "txt").unwrap();
+        let text = fs::read_to_string(text_path).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert!(!text.contains("hunter2"));
+        assert_eq!(fs::read(raw_path).unwrap(), b"raw-sentinel");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trigger_system_jsonl_follows_the_inbound_event_that_caused_it() {
+        let root = std::env::temp_dir().join(format!("portmate-trigger-sink-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.enabled = true;
+        profile.logging.raw = false;
+        profile.logging.text = false;
+        profile.logging.jsonl = true;
+        profile.triggers = vec![portmate_core::TriggerSpec {
+            id: "cause-trigger".to_string(),
+            label: "Cause".to_string(),
+            matcher: portmate_core::TriggerMatcher::Contains {
+                text: "CAUSE".to_string(),
+                case_sensitive: true,
+            },
+            actions: vec![TriggerAction::TimelineMark {
+                label: "cause-mark".to_string(),
+            }],
+            enabled: true,
+        }];
+        let state = test_app_state(profile.clone(), store_path.clone());
+        install_system_event_sink(&state).unwrap();
+
+        record_channel_bytes(
+            &state.session_io(),
+            &profile.id,
+            EventStream::Stdout,
+            b"CAUSE\n",
+            "CAUSE\n".to_string(),
+        );
+        shutdown_system_event_sink(&state);
+
+        let jsonl_path = log_shard_path(&store_path, &profile, "jsonl").unwrap();
+        let events = fs::read_to_string(jsonl_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<SessionEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].direction, EventDirection::Inbound);
+        assert_eq!(events[0].text.as_deref(), Some("CAUSE\n"));
+        assert_eq!(events[1].direction, EventDirection::System);
+        assert!(events[1]
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("trigger matched (Cause)")));
+        assert!(events.iter().all(|event| event.bytes_ref.is_none()));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -22290,6 +22721,7 @@ mod tests {
         AppState {
             app_handle: None,
             store: Arc::new(Mutex::new(store)),
+            system_event_sink: Arc::new(Mutex::new(None)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
             shell: Arc::new(Mutex::new(HashMap::new())),
             tcp: Arc::new(Mutex::new(HashMap::new())),
