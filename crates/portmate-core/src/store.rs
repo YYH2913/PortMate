@@ -202,6 +202,25 @@ impl SessionStore {
         text: impl Into<String>,
         bytes_ref: Option<String>,
     ) -> Result<SessionEvent, String> {
+        self.record_event(
+            session_id,
+            direction,
+            stream,
+            Some(text.into()),
+            bytes_ref,
+            BTreeMap::new(),
+        )
+    }
+
+    pub fn record_event(
+        &mut self,
+        session_id: &str,
+        direction: EventDirection,
+        stream: EventStream,
+        text: Option<String>,
+        bytes_ref: Option<String>,
+        annotations: BTreeMap<String, String>,
+    ) -> Result<SessionEvent, String> {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
         }
@@ -221,8 +240,8 @@ impl SessionStore {
             direction,
             stream,
             bytes_ref,
-            text: Some(text.into()),
-            annotations: BTreeMap::new(),
+            text,
+            annotations,
         };
         self.events.push(event.clone());
         self.trim_events_if_needed(session_id);
@@ -430,6 +449,16 @@ impl SessionStore {
         session_id: &str,
         text: &str,
     ) -> Result<SessionEvent, String> {
+        self.send_text_with_bytes_ref(actor, session_id, text, None)
+    }
+
+    pub fn send_text_with_bytes_ref(
+        &mut self,
+        actor: &str,
+        session_id: &str,
+        text: &str,
+        bytes_ref: Option<String>,
+    ) -> Result<SessionEvent, String> {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
         }
@@ -441,7 +470,7 @@ impl SessionStore {
             ts: Utc::now(),
             direction: EventDirection::Outbound,
             stream: EventStream::Stdout,
-            bytes_ref: None,
+            bytes_ref,
             text: Some(redacted),
             annotations: BTreeMap::from([("actor".to_string(), actor.to_string())]),
         };
@@ -624,6 +653,45 @@ mod tests {
             .unwrap();
         assert!(!event.text.unwrap().contains("hunter2"));
         assert_eq!(store.audit.last().unwrap().action, "send_text");
+    }
+
+    #[test]
+    fn send_text_preserves_raw_bytes_reference_while_redacting_text() {
+        let mut store = test_store();
+        let event = store
+            .send_text_with_bytes_ref(
+                "test",
+                "test-session",
+                "password=hunter2\n",
+                Some("v2:session.raw:0:3:digest".to_string()),
+            )
+            .unwrap();
+        assert_eq!(
+            event.bytes_ref.as_deref(),
+            Some("v2:session.raw:0:3:digest")
+        );
+        assert!(!event.text.unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn binary_control_events_allow_bytes_without_fake_text() {
+        let mut store = test_store();
+        let event = store
+            .record_event(
+                "test-session",
+                EventDirection::Outbound,
+                EventStream::Control,
+                None,
+                Some("v2:session.raw:0:3:digest".to_string()),
+                BTreeMap::from([("origin".to_string(), "telnet-negotiation".to_string())]),
+            )
+            .unwrap();
+        assert!(event.text.is_none());
+        assert!(event.bytes_ref.is_some());
+        assert_eq!(
+            event.annotations.get("origin").map(String::as_str),
+            Some("telnet-negotiation")
+        );
     }
 
     #[test]

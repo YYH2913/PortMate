@@ -22,7 +22,7 @@ use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::ops::Deref;
@@ -143,9 +143,11 @@ const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
+type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
 static LOG_RETENTION_CHECKS: OnceLock<LogRetentionChecks> = OnceLock::new();
 static LOG_SHARD_LOCKS: OnceLock<LogShardLocks> = OnceLock::new();
+static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1246,6 +1248,8 @@ async fn send_text_inner(
     session_id: String,
     text: String,
 ) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, &session_id)?;
+    let _lane_guard = lane.lock().await;
     let wire_text = outbound_text_for_session(&io.store, &session_id, &text)?;
     write_session_bytes(
         &io.store,
@@ -1257,11 +1261,12 @@ async fn send_text_inner(
         wire_text.as_bytes(),
     )
     .await?;
-
-    let mut store = io.store.lock().map_err(|error| error.to_string())?;
-    let event = store.send_text("desktop-user", &session_id, &text)?;
-    save_store(&io.store_path, &store)?;
-    Ok(event)
+    Ok(record_outbound_user_event(
+        &io,
+        &session_id,
+        &text,
+        wire_text.as_bytes(),
+    ))
 }
 
 async fn send_bytes_inner(
@@ -1269,6 +1274,8 @@ async fn send_bytes_inner(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, &session_id)?;
+    let _lane_guard = lane.lock().await;
     let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
     write_session_bytes(
         &io.store,
@@ -1280,12 +1287,250 @@ async fn send_bytes_inner(
         &wire_bytes,
     )
     .await?;
+    let text = format_outbound_byte_summary(&bytes);
+    Ok(record_outbound_user_event(
+        &io,
+        &session_id,
+        &text,
+        &wire_bytes,
+    ))
+}
 
-    let mut store = io.store.lock().map_err(|error| error.to_string())?;
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    let event = store.send_text("desktop-user", &session_id, &text)?;
-    save_store(&io.store_path, &store)?;
-    Ok(event)
+fn record_outbound_user_event(
+    io: &SessionIo,
+    session_id: &str,
+    text: &str,
+    wire_bytes: &[u8],
+) -> SessionEvent {
+    let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, text);
+    let mut event = match io.store.lock() {
+        Ok(mut store) => {
+            let event = store.send_text_with_bytes_ref(
+                "desktop-user",
+                session_id,
+                text,
+                shard_append.bytes_ref.clone(),
+            );
+            match event {
+                Ok(mut event) => {
+                    append_logging_errors(&mut event, &shard_append.errors);
+                    sync_stored_event(&mut store, &event);
+                    if let Err(error) = save_store(&io.store_path, &store) {
+                        eprintln!(
+                            "PortMate: outbound transport succeeded but store save failed: {error}"
+                        );
+                        append_logging_error(&mut event, format!("store save failed: {error}"));
+                        sync_stored_event(&mut store, &event);
+                    }
+                    event
+                }
+                Err(error) => fallback_outbound_event(
+                    session_id,
+                    text,
+                    shard_append.bytes_ref.clone(),
+                    merge_logging_error_messages(&shard_append.errors, error),
+                ),
+            }
+        }
+        Err(error) => fallback_outbound_event(
+            session_id,
+            text,
+            shard_append.bytes_ref,
+            merge_logging_error_messages(
+                &shard_append.errors,
+                format!("session store lock poisoned: {error}"),
+            ),
+        ),
+    };
+    if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
+        append_logging_error(&mut event, error);
+        if let Ok(mut store) = io.store.lock() {
+            sync_stored_event(&mut store, &event);
+            if let Err(error) = save_store(&io.store_path, &store) {
+                append_logging_error(
+                    &mut event,
+                    format!("store save after JSONL failure failed: {error}"),
+                );
+                sync_stored_event(&mut store, &event);
+            }
+        }
+    }
+    if let Some(app_handle) = &io.app_handle {
+        let _ = app_handle.emit("portmate-session-event", event.clone());
+    }
+    event
+}
+
+fn record_outbound_control_event(
+    io: &SessionIo,
+    session_id: &str,
+    wire_bytes: &[u8],
+    origin: &str,
+    persist_store: bool,
+) -> SessionEvent {
+    let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, "");
+    let annotations = BTreeMap::from([
+        ("origin".to_string(), origin.to_string()),
+        ("wireBytes".to_string(), wire_bytes.len().to_string()),
+    ]);
+    let mut event = match io.store.lock() {
+        Ok(mut store) => match store.record_event(
+            session_id,
+            EventDirection::Outbound,
+            EventStream::Control,
+            None,
+            shard_append.bytes_ref.clone(),
+            annotations.clone(),
+        ) {
+            Ok(mut event) => {
+                append_logging_errors(&mut event, &shard_append.errors);
+                sync_stored_event(&mut store, &event);
+                if persist_store {
+                    if let Err(error) = save_store(&io.store_path, &store) {
+                        eprintln!(
+                            "PortMate: outbound control succeeded but store save failed: {error}"
+                        );
+                        append_logging_error(&mut event, format!("store save failed: {error}"));
+                        sync_stored_event(&mut store, &event);
+                    }
+                }
+                event
+            }
+            Err(error) => fallback_outbound_control_event(
+                session_id,
+                shard_append.bytes_ref.clone(),
+                annotations,
+                merge_logging_error_messages(&shard_append.errors, error),
+            ),
+        },
+        Err(error) => fallback_outbound_control_event(
+            session_id,
+            shard_append.bytes_ref,
+            annotations,
+            merge_logging_error_messages(
+                &shard_append.errors,
+                format!("session store lock poisoned: {error}"),
+            ),
+        ),
+    };
+    if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
+        append_logging_error(&mut event, error);
+        if let Ok(mut store) = io.store.lock() {
+            sync_stored_event(&mut store, &event);
+            if persist_store {
+                if let Err(error) = save_store(&io.store_path, &store) {
+                    append_logging_error(
+                        &mut event,
+                        format!("store save after JSONL failure failed: {error}"),
+                    );
+                    sync_stored_event(&mut store, &event);
+                }
+            }
+        }
+    }
+    if let Some(app_handle) = &io.app_handle {
+        let _ = app_handle.emit("portmate-session-event", event.clone());
+    }
+    event
+}
+
+fn fallback_outbound_control_event(
+    session_id: &str,
+    bytes_ref: Option<String>,
+    mut annotations: BTreeMap<String, String>,
+    error: String,
+) -> SessionEvent {
+    eprintln!("PortMate: outbound control succeeded but event persistence degraded: {error}");
+    annotations.insert("loggingError".to_string(), error);
+    SessionEvent {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        pane_id: format!("{session_id}:main"),
+        ts: Utc::now(),
+        direction: EventDirection::Outbound,
+        stream: EventStream::Control,
+        bytes_ref,
+        text: None,
+        annotations,
+    }
+}
+
+fn fallback_outbound_event(
+    session_id: &str,
+    text: &str,
+    bytes_ref: Option<String>,
+    error: String,
+) -> SessionEvent {
+    eprintln!("PortMate: outbound transport succeeded but event persistence degraded: {error}");
+    SessionEvent {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        pane_id: format!("{session_id}:main"),
+        ts: Utc::now(),
+        direction: EventDirection::Outbound,
+        stream: EventStream::Stdout,
+        bytes_ref,
+        text: Some(redact_secrets(text)),
+        annotations: BTreeMap::from([
+            ("actor".to_string(), "desktop-user".to_string()),
+            ("loggingError".to_string(), error),
+        ]),
+    }
+}
+
+fn format_outbound_byte_summary(bytes: &[u8]) -> String {
+    format!("Binary payload: {} bytes", bytes.len())
+}
+
+fn append_logging_error(event: &mut SessionEvent, error: impl Into<String>) {
+    let error = error.into();
+    if error.is_empty() {
+        return;
+    }
+    let current = event
+        .annotations
+        .entry("loggingError".to_string())
+        .or_default();
+    if !current.is_empty() {
+        current.push_str("; ");
+    }
+    current.push_str(&error);
+}
+
+fn append_logging_errors(event: &mut SessionEvent, errors: &[String]) {
+    for error in errors {
+        append_logging_error(event, error.clone());
+    }
+}
+
+fn merge_logging_error_messages(errors: &[String], error: String) -> String {
+    let mut messages = errors.to_vec();
+    messages.push(error);
+    messages.join("; ")
+}
+
+fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
+    if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
+        *stored = event.clone();
+    }
+}
+
+fn outbound_lane(
+    store_path: &Path,
+    session_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let key = (store_path.to_path_buf(), session_id.to_string());
+    let mut lanes = OUTBOUND_LANES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "outbound lane registry poisoned".to_string())?;
+    lanes.retain(|_, lane| lane.strong_count() > 0);
+    if let Some(lane) = lanes.get(&key).and_then(Weak::upgrade) {
+        return Ok(lane);
+    }
+    let lane = Arc::new(tokio::sync::Mutex::new(()));
+    lanes.insert(key, Arc::downgrade(&lane));
+    Ok(lane)
 }
 
 async fn write_session_bytes(
@@ -4278,6 +4523,10 @@ async fn write_runtime_bytes(
     session_id: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
+    let io = state.session_io();
+    let lane = outbound_lane(&io.store_path, session_id)?;
+    let _lane_guard = lane.lock().await;
+    let wire_bytes = outbound_bytes_for_session(&io.store, session_id, bytes)?;
     let ssh_writer = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -4287,9 +4536,10 @@ async fn write_runtime_bytes(
     if let Some(writer) = ssh_writer {
         let writer = writer.lock().await;
         writer
-            .data(bytes)
+            .data(wire_bytes.as_slice())
             .await
             .map_err(|error| format!("SSH modem 写入失败: {error}"))?;
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
         return Ok(());
     }
 
@@ -4302,11 +4552,12 @@ async fn write_runtime_bytes(
     if let Some(writer) = shell_writer {
         let mut writer = writer.lock().map_err(|error| error.to_string())?;
         writer
-            .write_all(bytes)
+            .write_all(&wire_bytes)
             .map_err(|error| format!("Shell modem 写入失败: {error}"))?;
         writer
             .flush()
             .map_err(|error| format!("Shell modem 刷新失败: {error}"))?;
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
         return Ok(());
     }
 
@@ -4319,9 +4570,10 @@ async fn write_runtime_bytes(
     if let Some(writer) = tcp_writer {
         let mut writer = writer.lock().await;
         writer
-            .write_all(bytes)
+            .write_all(&wire_bytes)
             .await
             .map_err(|error| format!("TCP/Telnet modem 写入失败: {error}"))?;
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
         return Ok(());
     }
 
@@ -4335,11 +4587,12 @@ async fn write_runtime_bytes(
         Some(Some(writer)) => {
             let mut writer = writer.lock().map_err(|error| error.to_string())?;
             writer
-                .write_all(bytes)
+                .write_all(&wire_bytes)
                 .map_err(|error| format!("串口 modem 写入失败: {error}"))?;
             writer
                 .flush()
                 .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
+            record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
             return Ok(());
         }
         Some(None) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
@@ -11781,8 +12034,21 @@ fn read_tcp_stream(
                         has_unpersisted_stream = true;
                     }
                     for reply in replies {
-                        let mut writer = writer.lock().await;
-                        if let Err(error) = writer.write_all(&reply).await {
+                        let lane = match outbound_lane(&io.store_path, &session_id) {
+                            Ok(lane) => lane,
+                            Err(error) => {
+                                eprintln!(
+                                    "PortMate: Telnet negotiation outbound lane failed: {error}"
+                                );
+                                break 'read_loop;
+                            }
+                        };
+                        let _lane_guard = lane.lock().await;
+                        let write_result = {
+                            let mut writer = writer.lock().await;
+                            writer.write_all(&reply).await
+                        };
+                        if let Err(error) = write_result {
                             if let Ok(mut store) = io.store.lock() {
                                 store.record_system_event(
                                     &session_id,
@@ -11796,6 +12062,13 @@ fn read_tcp_stream(
                             }
                             break 'read_loop;
                         }
+                        record_outbound_control_event(
+                            &io,
+                            &session_id,
+                            &reply,
+                            "telnet-negotiation",
+                            true,
+                        );
                     }
                     if bytes.is_empty() {
                         continue;
@@ -12483,7 +12756,7 @@ fn record_channel_bytes(
     raw_bytes: &[u8],
     text: String,
 ) {
-    let bytes_ref = append_raw_and_text_log_shards(io, session_id, stream, raw_bytes, &text);
+    let shard_append = append_raw_and_text_log_shards(io, session_id, raw_bytes, &text);
     if text.is_empty() {
         return;
     }
@@ -12495,9 +12768,13 @@ fn record_channel_bytes(
                 EventDirection::Inbound,
                 stream,
                 text.clone(),
-                bytes_ref,
+                shard_append.bytes_ref,
             )
             .ok();
+        if let Some(event) = live_event.as_mut() {
+            append_logging_errors(event, &shard_append.errors);
+            sync_stored_event(&mut store, event);
+        }
         let (trigger_dispatch, trigger_changed_store) =
             apply_trigger_actions_locked(&mut store, session_id, &text);
         if trigger_changed_store {
@@ -12513,8 +12790,13 @@ fn record_channel_bytes(
         );
         TriggerDispatch::default()
     };
-    if let Some(event) = live_event {
-        append_jsonl_log_shard(io, session_id, &event);
+    if let Some(mut event) = live_event {
+        if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
+            append_logging_error(&mut event, error);
+            if let Ok(mut store) = io.store.lock() {
+                sync_stored_event(&mut store, &event);
+            }
+        }
         if let Some(app_handle) = &io.app_handle {
             let _ = app_handle.emit("portmate-session-event", event);
         }
@@ -12537,23 +12819,40 @@ fn record_channel_bytes(
     }
 }
 
+#[derive(Default)]
+struct LogShardAppend {
+    bytes_ref: Option<String>,
+    errors: Vec<String>,
+}
+
 fn append_raw_and_text_log_shards(
     io: &SessionIo,
     session_id: &str,
-    stream: EventStream,
     raw_bytes: &[u8],
     text: &str,
-) -> Option<String> {
-    let profile = logging_profile(io, session_id)?;
+) -> LogShardAppend {
+    let profile = match logging_profile(io, session_id) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return LogShardAppend {
+                errors: vec![error],
+                ..LogShardAppend::default()
+            };
+        }
+    };
     if !profile.logging.enabled {
-        return None;
+        return LogShardAppend::default();
     }
 
-    let mut raw_ref = None;
+    let mut result = LogShardAppend::default();
     if profile.logging.raw && !raw_bytes.is_empty() {
         match append_log_bytes(&io.store_path, &profile, "raw", raw_bytes) {
-            Ok(reference) => raw_ref = Some(reference),
-            Err(error) => eprintln!("PortMate: failed to append raw log shard: {error}"),
+            Ok(reference) => result.bytes_ref = Some(reference),
+            Err(error) => {
+                let error = format!("raw shard append failed: {error}");
+                eprintln!("PortMate: {error}");
+                result.errors.push(error);
+            }
         }
     }
 
@@ -12567,43 +12866,46 @@ fn append_raw_and_text_log_shards(
             line.push('\n');
         }
         if let Err(error) = append_log_bytes(&io.store_path, &profile, "txt", line.as_bytes()) {
-            eprintln!("PortMate: failed to append text log shard: {error}");
+            let error = format!("text shard append failed: {error}");
+            eprintln!("PortMate: {error}");
+            result.errors.push(error);
         }
     }
 
-    if raw_ref.is_none() && matches!(stream, EventStream::Stdout | EventStream::Stderr) {
-        // `bytesRef` points at the raw shard when enabled; when raw logging is off,
-        // the store event still carries text/jsonl without pretending a byte shard exists.
-        return None;
-    }
-    raw_ref
+    result
 }
 
-fn append_jsonl_log_shard(io: &SessionIo, session_id: &str, event: &SessionEvent) {
-    let Some(profile) = logging_profile(io, session_id) else {
-        return;
-    };
+fn append_jsonl_log_shard(
+    io: &SessionIo,
+    session_id: &str,
+    event: &SessionEvent,
+) -> Result<(), String> {
+    let profile = logging_profile(io, session_id)?;
     if !profile.logging.enabled || !profile.logging.jsonl {
-        return;
+        return Ok(());
     }
     let mut event = event.clone();
     if profile.logging.redact_secrets {
         event.text = event.text.map(|text| redact_secrets(&text));
     }
-    let Ok(mut line) = serde_json::to_vec(&event) else {
-        return;
-    };
+    let mut line = serde_json::to_vec(&event)
+        .map_err(|error| format!("JSONL serialization failed: {error}"))?;
     line.push(b'\n');
-    if let Err(error) = append_log_bytes(&io.store_path, &profile, "jsonl", &line) {
-        eprintln!("PortMate: failed to append jsonl log shard: {error}");
-    }
+    append_log_bytes(&io.store_path, &profile, "jsonl", &line)
+        .map(|_| ())
+        .map_err(|error| {
+            let error = format!("JSONL shard append failed: {error}");
+            eprintln!("PortMate: {error}");
+            error
+        })
 }
 
-fn logging_profile(io: &SessionIo, session_id: &str) -> Option<SessionProfile> {
+fn logging_profile(io: &SessionIo, session_id: &str) -> Result<SessionProfile, String> {
     io.store
         .lock()
-        .ok()
-        .and_then(|store| store.profile(session_id))
+        .map_err(|error| format!("session store lock poisoned while resolving logging: {error}"))?
+        .profile(session_id)
+        .ok_or_else(|| format!("unknown session while resolving logging: {session_id}"))
 }
 
 fn append_log_bytes(
@@ -15882,9 +16184,6 @@ mod tests {
                         TELNET_SB,
                         TELNET_OPT_TERMINAL_TYPE,
                     ],
-                    &[TELNET_TTYPE_SEND, TELNET_IAC],
-                    &[TELNET_SE, b'!'],
-                    b"tail\r".as_slice(),
                 ] {
                     socket.write_all(chunk).await.unwrap();
                     tokio::task::yield_now().await;
@@ -15893,6 +16192,10 @@ mod tests {
                 let mut option_reply = [0_u8; 3];
                 socket.read_exact(&mut option_reply).await.unwrap();
                 assert_eq!(option_reply, [TELNET_IAC, TELNET_DO, TELNET_OPT_ECHO]);
+                for chunk in [&[TELNET_TTYPE_SEND, TELNET_IAC][..], &[TELNET_SE, b'!'][..]] {
+                    socket.write_all(chunk).await.unwrap();
+                    tokio::task::yield_now().await;
+                }
                 let mut terminal_reply = vec![0_u8; 20];
                 socket.read_exact(&mut terminal_reply).await.unwrap();
                 assert_eq!(
@@ -15910,6 +16213,7 @@ mod tests {
                     ]
                     .concat()
                 );
+                socket.write_all(b"tail\r").await.unwrap();
             });
 
             let mut profile =
@@ -15960,6 +16264,19 @@ mod tests {
                 .collect::<String>();
             assert_eq!(stdout, "left\r|\r\n!tail\r");
             assert!(!stdout.contains('\0'));
+            let option_reply = [TELNET_IAC, TELNET_DO, TELNET_OPT_ECHO];
+            let terminal_reply = [
+                [
+                    TELNET_IAC,
+                    TELNET_SB,
+                    TELNET_OPT_TERMINAL_TYPE,
+                    TELNET_TTYPE_IS,
+                ]
+                .as_slice(),
+                b"xterm-256color".as_slice(),
+                [TELNET_IAC, TELNET_SE].as_slice(),
+            ]
+            .concat();
             let expected_raw = [
                 b"left\r".as_slice(),
                 &[0, b'|', b'\r'],
@@ -15971,13 +16288,232 @@ mod tests {
                     TELNET_SB,
                     TELNET_OPT_TERMINAL_TYPE,
                 ],
+                option_reply.as_slice(),
                 &[TELNET_TTYPE_SEND, TELNET_IAC],
                 &[TELNET_SE, b'!'],
+                terminal_reply.as_slice(),
                 b"tail\r".as_slice(),
             ]
             .concat();
             let raw_path = log_shard_path(&state.store_path, &profile, "raw").unwrap();
             assert_eq!(fs::read(raw_path).unwrap(), expected_raw);
+            let control_bytes = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == profile.id
+                        && event.direction == EventDirection::Outbound
+                        && event.stream == EventStream::Control
+                })
+                .map(|event| {
+                    read_log_bytes_ref(&state.store_path, event.bytes_ref.as_deref().unwrap())
+                        .unwrap()
+                        .2
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(control_bytes, vec![option_reply.to_vec(), terminal_reply]);
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn telnet_user_sends_bind_exact_wire_bytes_to_outbound_events() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut text = [0_u8; 6];
+                socket.read_exact(&mut text).await.unwrap();
+                assert_eq!(&text, b"show\r\n");
+                let mut raw = [0_u8; 3];
+                socket.read_exact(&mut raw).await.unwrap();
+                assert_eq!(raw, [0x01, TELNET_IAC, TELNET_IAC]);
+                let mut modem = [0_u8; 3];
+                socket.read_exact(&mut modem).await.unwrap();
+                assert_eq!(modem, [MODEM_CAN, TELNET_IAC, TELNET_IAC]);
+            });
+
+            let mut profile =
+                test_tcp_profile(ConnectionConfig::Telnet(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                }));
+            profile.logging.enabled = true;
+            profile.logging.raw = true;
+            profile.logging.text = false;
+            profile.logging.jsonl = false;
+            let root =
+                std::env::temp_dir().join(format!("portmate-telnet-send-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            let text_event =
+                send_text_inner(state.session_io(), profile.id.clone(), "show\n".to_string())
+                    .await
+                    .unwrap();
+            let bytes_event = send_bytes_inner(
+                state.session_io(),
+                profile.id.clone(),
+                vec![0x01, TELNET_IAC],
+            )
+            .await
+            .unwrap();
+            write_runtime_bytes(&state, &profile.id, &[MODEM_CAN, TELNET_IAC])
+                .await
+                .unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("Telnet send server timed out")
+                .expect("Telnet send server failed");
+            assert_eq!(text_event.direction, EventDirection::Outbound);
+            assert_eq!(bytes_event.direction, EventDirection::Outbound);
+            assert_eq!(bytes_event.text.as_deref(), Some("Binary payload: 2 bytes"));
+            assert_eq!(
+                read_log_bytes_ref(&state.store_path, text_event.bytes_ref.as_deref().unwrap())
+                    .unwrap()
+                    .2,
+                b"show\r\n"
+            );
+            assert_eq!(
+                read_log_bytes_ref(&state.store_path, bytes_event.bytes_ref.as_deref().unwrap())
+                    .unwrap()
+                    .2,
+                [0x01, TELNET_IAC, TELNET_IAC]
+            );
+            let modem_event = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .find(|event| {
+                    event.direction == EventDirection::Outbound
+                        && event.stream == EventStream::Control
+                        && event.annotations.get("origin").map(String::as_str) == Some("modem")
+                })
+                .cloned()
+                .unwrap();
+            assert!(modem_event.text.is_none());
+            assert_eq!(
+                read_log_bytes_ref(&state.store_path, modem_event.bytes_ref.as_deref().unwrap())
+                    .unwrap()
+                    .2,
+                [MODEM_CAN, TELNET_IAC, TELNET_IAC]
+            );
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn concurrent_outbound_lane_matches_wire_raw_and_event_order() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = [0_u8; 6];
+                socket.read_exact(&mut received).await.unwrap();
+                received.to_vec()
+            });
+
+            let mut profile =
+                test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                }));
+            profile.logging.enabled = true;
+            profile.logging.raw = true;
+            profile.logging.text = false;
+            profile.logging.jsonl = false;
+            let root =
+                std::env::temp_dir().join(format!("portmate-outbound-lane-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: Uuid::new_v4().to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                },
+            );
+
+            let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+            let lane_guard = lane.lock().await;
+            let barrier = Arc::new(tokio::sync::Barrier::new(4));
+            let first = {
+                let io = state.session_io();
+                let session_id = profile.id.clone();
+                let barrier = Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    send_bytes_inner(io, session_id, vec![0x11, 0xa1]).await
+                })
+            };
+            let second = {
+                let io = state.session_io();
+                let session_id = profile.id.clone();
+                let barrier = Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    send_bytes_inner(io, session_id, vec![0x22, 0xa2]).await
+                })
+            };
+            let modem = {
+                let state = state.clone();
+                let session_id = profile.id.clone();
+                let barrier = Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    write_runtime_bytes(&state, &session_id, &[0x33, 0xa3]).await
+                })
+            };
+            barrier.wait().await;
+            tokio::task::yield_now().await;
+            assert!(!first.is_finished());
+            assert!(!second.is_finished());
+            assert!(!modem.is_finished());
+            drop(lane_guard);
+            first.await.unwrap().unwrap();
+            second.await.unwrap().unwrap();
+            modem.await.unwrap().unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("TCP server timed out")
+                .expect("TCP server failed");
+
+            let event_bytes = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == profile.id
+                        && event.direction == EventDirection::Outbound
+                        && event.bytes_ref.is_some()
+                })
+                .flat_map(|event| {
+                    read_log_bytes_ref(&state.store_path, event.bytes_ref.as_deref().unwrap())
+                        .unwrap()
+                        .2
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(event_bytes, received);
+            let raw_path = log_shard_path(&state.store_path, &profile, "raw").unwrap();
+            assert_eq!(fs::read(raw_path).unwrap(), received);
+
             let _ = fs::remove_dir_all(root);
         });
     }
@@ -17215,6 +17751,109 @@ mod tests {
         assert_ne!(event.text.as_deref().unwrap().as_bytes(), wire);
         let reference = event.bytes_ref.as_deref().unwrap();
         assert_eq!(read_log_bytes_ref(&store_path, reference).unwrap().2, wire);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn outbound_persistence_failure_returns_a_success_event_without_payload_loss() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = [0_u8; 7];
+                socket.read_exact(&mut received).await.unwrap();
+                assert_eq!(&received, b"status\n");
+            });
+
+            let root =
+                std::env::temp_dir().join(format!("portmate-outbound-save-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"block sqlite parent creation").unwrap();
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+            }));
+            let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: Uuid::new_v4().to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                },
+            );
+
+            let event = send_text_inner(
+                state.session_io(),
+                profile.id.clone(),
+                "status\n".to_string(),
+            )
+            .await
+            .expect("a logging failure must not turn a successful transport write into an error");
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("TCP server timed out")
+                .expect("TCP server failed");
+
+            assert_eq!(event.direction, EventDirection::Outbound);
+            assert_eq!(event.text.as_deref(), Some("status\n"));
+            assert!(event.annotations.contains_key("loggingError"));
+            let stored = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .find(|stored| stored.id == event.id)
+                .cloned()
+                .unwrap();
+            assert_eq!(stored.annotations, event.annotations);
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn outbound_shard_failures_are_reported_without_reversible_binary_text() {
+        let root = std::env::temp_dir().join(format!("portmate-outbound-shard-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("logs"), b"block shard directory creation").unwrap();
+        let mut profile = test_shell_profile();
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
+        let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+        let payload = b"password=hunter2";
+        let summary = format_outbound_byte_summary(payload);
+
+        let event = record_outbound_user_event(&state.session_io(), &profile.id, &summary, payload);
+
+        assert_eq!(event.text.as_deref(), Some("Binary payload: 16 bytes"));
+        assert!(!event.text.as_deref().unwrap().contains("hunter2"));
+        assert!(!event.text.as_deref().unwrap().contains("70 61 73"));
+        let logging_error = event.annotations.get("loggingError").unwrap();
+        assert!(logging_error.contains("raw shard append failed"));
+        assert!(logging_error.contains("text shard append failed"));
+        assert!(logging_error.contains("JSONL shard append failed"));
+        let stored = state
+            .store
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .find(|stored| stored.id == event.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(stored.annotations, event.annotations);
 
         let _ = fs::remove_dir_all(root);
     }
