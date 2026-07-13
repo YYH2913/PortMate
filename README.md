@@ -65,7 +65,7 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - Serial port, baud rate, parity, flow control, DTR/RTS, reconnect
    - Shell/TCP/Telnet/Tmux fields when those session types are selected
    - SSH/TCP/Telnet/Serial reconnect keeps a disconnected runtime in `Reconnecting` and retries in the background until the user closes or manually reconnects the session
-   - Trigger matching and actions for timeline marks, notifications, highlights, local commands, and send-text automation
+   - Trigger matching and actions for timeline marks, notifications, highlights, local commands, send-text automation, custom links, and sound
    - Terminal type, font, rows, cols, scrollback, theme
    - Logging formats, redaction, path template
    - Transfer protocols
@@ -76,6 +76,8 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
 Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend.
 
 The frontend persists a versioned workspace snapshot containing horizontal/vertical pane bindings, the active session, and validated tab colors, while migrating the earlier split localStorage keys. Startup mode can connect no sessions, the last restored panes, or a configured session list after the first profile load; targets are deduplicated, stale IDs are discarded, and credential-requiring sessions are opened sequentially. `会话 -> 还原布局` reloads and reconciles the saved snapshot against the current profile set.
+
+The session automation editor manages multiple contains/regex triggers and multiple ordered actions per trigger. Timeline marks, notifications, highlights, send-text, local commands, custom-link templates, and bell/chime/alert sounds share typed frontend/Rust models. Runtime visual effects are emitted to the desktop immediately; command and send-text actions remain on the existing backend dispatch paths, and all matches retain system-event/timeline diagnostics.
 
 Inbound terminal streams can also be appended to profile-configured `raw`, `txt`, and `jsonl` shards below the desktop data directory's `logs/` root. `工具 -> 日志管理` enumerates only regular shard files under that root, supports path/format filtering, reads a bounded tail preview (`raw` and invalid UTF-8 as Hex), and batch-deletes fully validated selections while pruning empty directories. Symlinks, traversal paths, unsupported extensions, oversized scans, previews, and delete batches are rejected or skipped.
 

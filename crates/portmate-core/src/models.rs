@@ -419,6 +419,7 @@ pub enum TriggerAction {
     Notification { message: String },
     TimelineMark { label: String },
     CustomLink { url_template: String },
+    Sound { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

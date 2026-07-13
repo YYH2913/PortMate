@@ -40,9 +40,10 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
+import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 
@@ -355,6 +356,39 @@ export default function App() {
       })
       .catch(() => {});
 
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<TriggerEffect>("portmate-trigger-effect", (event) => {
+      if (disposed) return;
+      const effect = event.payload;
+      if (effect.kind === "highlight") {
+        if (/^#[0-9a-f]{6}$/i.test(effect.value)) {
+          setTabColors((current) => ({ ...current, [effect.sessionId]: effect.value }));
+        }
+        return;
+      }
+      if (effect.kind === "sound") {
+        void playTriggerSound(effect.value).catch(() => {});
+        return;
+      }
+      setNotice({
+        title: effect.kind === "custom-link" ? `触发链接 · ${effect.triggerLabel}` : effect.triggerLabel,
+        message: effect.value,
+      });
+    })
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       unlisten?.();
@@ -5415,77 +5449,112 @@ function ShellProcessFields({
 }
 
 function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraftChange: (draft: SessionProfile) => void }) {
-  const trigger = draft.triggers[0] ?? createDefaultTrigger();
-  const matcher = trigger.matcher as { type?: string; text?: string; pattern?: string; case_sensitive?: boolean };
-  const firstAction = trigger.actions[0] as { type?: string; label?: string; message?: string; color?: string; command?: string };
+  function setTriggers(triggers: TriggerSpec[]) {
+    onDraftChange({ ...draft, triggers });
+  }
 
-  function updateTrigger(patch: Partial<TriggerSpec>) {
-    const next = { ...trigger, ...patch };
-    onDraftChange({ ...draft, triggers: [next, ...draft.triggers.slice(1)] });
+  function updateTrigger(index: number, patch: Partial<TriggerSpec>) {
+    setTriggers(draft.triggers.map((trigger, triggerIndex) => (
+      triggerIndex === index ? { ...trigger, ...patch } : trigger
+    )));
+  }
+
+  function updateAction(triggerIndex: number, actionIndex: number, action: TriggerAction) {
+    const trigger = draft.triggers[triggerIndex];
+    updateTrigger(triggerIndex, {
+      actions: trigger.actions.map((item, index) => (index === actionIndex ? action : item)),
+    });
   }
 
   return (
-    <>
-      <DialogField label="启用:(E)">
-        <select value={trigger.enabled ? "on" : "off"} onChange={(event) => updateTrigger({ enabled: event.target.value === "on" })}>
-          <option value="on">开启</option>
-          <option value="off">关闭</option>
-        </select>
-      </DialogField>
-      <DialogField label="名称:(N)">
-        <input value={trigger.label} onChange={(event) => updateTrigger({ label: event.target.value })} />
-      </DialogField>
-      <DialogField label="匹配:(M)">
-        <select
-          value={matcher.type === "regex" ? "regex" : "contains"}
-          onChange={(event) => updateTrigger({
-            matcher: event.target.value === "regex"
-              ? { type: "regex", pattern: matcher.pattern || matcher.text || "" }
-              : { type: "contains", text: matcher.text || matcher.pattern || "", case_sensitive: false },
-          })}
-        >
-          <option value="contains">包含文本</option>
-          <option value="regex">正则表达式</option>
-        </select>
-      </DialogField>
-      <DialogField label="内容:(T)">
-        <input
-          value={matcher.type === "regex" ? matcher.pattern ?? "" : matcher.text ?? ""}
-          onChange={(event) => updateTrigger({
-            matcher: matcher.type === "regex"
-              ? { type: "regex", pattern: event.target.value }
-              : { type: "contains", text: event.target.value, case_sensitive: Boolean(matcher.case_sensitive) },
-          })}
-        />
-      </DialogField>
-      <DialogField label="大小写:(C)">
-        <select
-          value={matcher.case_sensitive ? "on" : "off"}
-          onChange={(event) => updateTrigger({ matcher: { type: "contains", text: matcher.text ?? "", case_sensitive: event.target.value === "on" } })}
-          disabled={matcher.type === "regex"}
-        >
-          <option value="off">忽略</option>
-          <option value="on">区分</option>
-        </select>
-      </DialogField>
-      <DialogField label="动作:(A)">
-        <select
-          value={firstAction.type ?? "timeline-mark"}
-          onChange={(event) => updateTrigger({ actions: [defaultTriggerAction(event.target.value)] })}
-        >
-          <option value="timeline-mark">时间线标记</option>
-          <option value="notification">通知</option>
-          <option value="highlight">高亮</option>
-          <option value="local-command">本地命令</option>
-        </select>
-      </DialogField>
-      <DialogField label="参数:(P)">
-        <input
-          value={firstAction.label ?? firstAction.message ?? firstAction.color ?? firstAction.command ?? ""}
-          onChange={(event) => updateTrigger({ actions: [patchTriggerAction(firstAction.type ?? "timeline-mark", event.target.value)] })}
-        />
-      </DialogField>
-    </>
+    <div className="trigger-editor">
+      {draft.triggers.map((trigger, triggerIndex) => {
+        const matcherValue = trigger.matcher.type === "regex" ? trigger.matcher.pattern : trigger.matcher.text;
+        return (
+          <section className="trigger-item" key={trigger.id}>
+            <header className="trigger-item-header">
+              <label className="trigger-enabled">
+                <input type="checkbox" checked={trigger.enabled} onChange={(event) => updateTrigger(triggerIndex, { enabled: event.target.checked })} />
+                <span>启用</span>
+              </label>
+              <input aria-label="触发器名称" value={trigger.label} onChange={(event) => updateTrigger(triggerIndex, { label: event.target.value })} />
+              <button type="button" className="icon-button" title="删除触发器" aria-label="删除触发器" onClick={() => setTriggers(draft.triggers.filter((_, index) => index !== triggerIndex))}><Trash2 size={14} /></button>
+            </header>
+            <div className="trigger-matcher-row">
+              <select
+                aria-label="匹配类型"
+                value={trigger.matcher.type}
+                onChange={(event) => updateTrigger(triggerIndex, {
+                  matcher: event.target.value === "regex"
+                    ? { type: "regex", pattern: matcherValue }
+                    : { type: "contains", text: matcherValue, case_sensitive: false },
+                })}
+              >
+                <option value="contains">包含文本</option>
+                <option value="regex">正则表达式</option>
+              </select>
+              <input
+                aria-label="匹配内容"
+                value={matcherValue}
+                onChange={(event) => updateTrigger(triggerIndex, {
+                  matcher: trigger.matcher.type === "regex"
+                    ? { type: "regex", pattern: event.target.value }
+                    : { ...trigger.matcher, text: event.target.value },
+                })}
+              />
+              <label className="trigger-case-toggle">
+                <input
+                  type="checkbox"
+                  checked={trigger.matcher.type === "contains" && trigger.matcher.case_sensitive}
+                  disabled={trigger.matcher.type === "regex"}
+                  onChange={(event) => {
+                    if (trigger.matcher.type === "contains") {
+                      updateTrigger(triggerIndex, { matcher: { ...trigger.matcher, case_sensitive: event.target.checked } });
+                    }
+                  }}
+                />
+                <span>区分大小写</span>
+              </label>
+            </div>
+            <div className="trigger-action-list">
+              {trigger.actions.map((action, actionIndex) => (
+                <div className="trigger-action-row" key={`${trigger.id}-${actionIndex}`}>
+                  <select
+                    aria-label="动作类型"
+                    value={action.type}
+                    onChange={(event) => updateAction(triggerIndex, actionIndex, defaultTriggerAction(event.target.value as TriggerAction["type"]))}
+                  >
+                    <option value="timeline-mark">时间线标记</option>
+                    <option value="notification">通知</option>
+                    <option value="highlight">高亮</option>
+                    <option value="send-text">发送文本</option>
+                    <option value="local-command">本地命令</option>
+                    <option value="custom-link">自定义链接</option>
+                    <option value="sound">声音</option>
+                  </select>
+                  {action.type === "sound" ? (
+                    <select aria-label="声音" value={action.name} onChange={(event) => updateAction(triggerIndex, actionIndex, { type: "sound", name: event.target.value })}>
+                      <option value="bell">Bell</option>
+                      <option value="chime">Chime</option>
+                      <option value="alert">Alert</option>
+                    </select>
+                  ) : (
+                    <input
+                      aria-label="动作参数"
+                      value={triggerActionValue(action)}
+                      onChange={(event) => updateAction(triggerIndex, actionIndex, patchTriggerAction(action.type, event.target.value))}
+                    />
+                  )}
+                  <button type="button" className="icon-button" title="删除动作" aria-label="删除动作" onClick={() => updateTrigger(triggerIndex, { actions: trigger.actions.filter((_, index) => index !== actionIndex) })}><Trash2 size={14} /></button>
+                </div>
+              ))}
+              <button type="button" className="trigger-add-action" onClick={() => updateTrigger(triggerIndex, { actions: [...trigger.actions, defaultTriggerAction("timeline-mark")] })}><Plus size={14} />添加动作</button>
+            </div>
+          </section>
+        );
+      })}
+      <button type="button" className="trigger-add" onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />添加触发器</button>
+    </div>
   );
 }
 
@@ -6549,32 +6618,24 @@ function createDefaultTrigger(): TriggerSpec {
   };
 }
 
-function defaultTriggerAction(type: string) {
-  switch (type) {
-    case "notification":
-      return { type, message: "触发器命中" };
-    case "highlight":
-      return { type, color: "#f4b860" };
-    case "local-command":
-      return { type, command: "" };
-    case "timeline-mark":
-    default:
-      return { type: "timeline-mark", label: "mark" };
-  }
-}
-
-function patchTriggerAction(type: string, value: string) {
-  switch (type) {
-    case "notification":
-      return { type, message: value };
-    case "highlight":
-      return { type, color: value };
-    case "local-command":
-      return { type, command: value };
-    case "timeline-mark":
-    default:
-      return { type: "timeline-mark", label: value };
-  }
+async function playTriggerSound(name: string) {
+  const AudioContextClass = window.AudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const frequency = name === "alert" ? 880 : name === "chime" ? 660 : 440;
+  oscillator.frequency.value = frequency;
+  oscillator.type = name === "alert" ? "square" : "sine";
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.015);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.24);
+  oscillator.addEventListener("ended", () => void context.close(), { once: true });
+  await context.resume();
 }
 
 function setSessionStatus(session: SessionSummary, status: SessionStatus): SessionSummary {

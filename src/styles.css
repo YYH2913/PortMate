@@ -1545,6 +1545,100 @@ fieldset label {
   padding-top: 8px;
 }
 
+.trigger-editor,
+.trigger-action-list {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.trigger-item {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(15, 23, 32, 0.48);
+}
+
+.trigger-item-header,
+.trigger-matcher-row,
+.trigger-action-row {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.trigger-item-header {
+  grid-template-columns: auto minmax(0, 1fr) 32px;
+}
+
+.trigger-matcher-row {
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+}
+
+.trigger-action-row {
+  grid-template-columns: 150px minmax(0, 1fr) 32px;
+}
+
+.trigger-item input,
+.trigger-item select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  padding: 0 8px;
+}
+
+.trigger-enabled,
+.trigger-case-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.trigger-enabled input,
+.trigger-case-toggle input {
+  width: 14px;
+  height: 14px;
+}
+
+.trigger-item .icon-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: #ff9b9b;
+}
+
+.trigger-add,
+.trigger-add-action {
+  display: inline-flex;
+  width: max-content;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+}
+
+.trigger-add-action {
+  justify-self: end;
+}
+
 .jump-list {
   display: grid;
   gap: 8px;
@@ -2410,6 +2504,24 @@ fieldset label {
     flex: 1;
     min-width: 0;
     padding: 0 6px;
+  }
+
+  .trigger-matcher-row,
+  .trigger-action-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .trigger-matcher-row > select,
+  .trigger-matcher-row > input {
+    grid-column: 1 / -1;
+  }
+
+  .trigger-case-toggle {
+    grid-column: 1;
+  }
+
+  .trigger-action-row > select:first-child {
+    grid-column: 1 / -1;
   }
 
   .log-manager-dialog {

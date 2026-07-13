@@ -167,9 +167,30 @@ export interface TunnelStatus {
 export interface TriggerSpec {
   id: string;
   label: string;
-  matcher: Record<string, unknown>;
-  actions: Record<string, unknown>[];
+  matcher: TriggerMatcher;
+  actions: TriggerAction[];
   enabled: boolean;
+}
+
+export type TriggerMatcher =
+  | { type: "contains"; text: string; case_sensitive: boolean }
+  | { type: "regex"; pattern: string };
+
+export type TriggerAction =
+  | { type: "highlight"; color: string }
+  | { type: "send-text"; text: string }
+  | { type: "local-command"; command: string }
+  | { type: "notification"; message: string }
+  | { type: "timeline-mark"; label: string }
+  | { type: "custom-link"; url_template: string }
+  | { type: "sound"; name: string };
+
+export interface TriggerEffect {
+  sessionId: string;
+  triggerId: string;
+  triggerLabel: string;
+  kind: "highlight" | "notification" | "custom-link" | "sound";
+  value: string;
 }
 
 export interface SessionRuntime {

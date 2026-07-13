@@ -12506,6 +12506,11 @@ fn record_channel_text(io: &SessionIo, session_id: &str, stream: EventStream, te
             let _ = app_handle.emit("portmate-session-event", event);
         }
     }
+    if let Some(app_handle) = &io.app_handle {
+        for effect in local_commands.effects {
+            let _ = app_handle.emit("portmate-trigger-effect", effect);
+        }
+    }
     for command in local_commands.local_commands {
         spawn_trigger_command(
             Arc::clone(&io.store),
@@ -13763,6 +13768,17 @@ fn sanitize_log_path_segment(segment: &str) -> String {
 struct TriggerDispatch {
     local_commands: Vec<String>,
     send_texts: Vec<String>,
+    effects: Vec<TriggerEffect>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TriggerEffect {
+    session_id: String,
+    trigger_id: String,
+    trigger_label: String,
+    kind: String,
+    value: String,
 }
 
 fn apply_trigger_actions_locked(
@@ -13793,6 +13809,13 @@ fn apply_trigger_actions_locked(
                             trigger_match.label
                         ),
                     );
+                    dispatch.effects.push(TriggerEffect {
+                        session_id: session_id.to_string(),
+                        trigger_id: trigger_match.trigger_id.clone(),
+                        trigger_label: trigger_match.label.clone(),
+                        kind: "highlight".to_string(),
+                        value: color,
+                    });
                 }
                 TriggerAction::SendText { text } => {
                     store.record_system_event(
@@ -13811,6 +13834,13 @@ fn apply_trigger_actions_locked(
                         session_id,
                         format!("PortMate notification: {message}"),
                     );
+                    dispatch.effects.push(TriggerEffect {
+                        session_id: session_id.to_string(),
+                        trigger_id: trigger_match.trigger_id.clone(),
+                        trigger_label: trigger_match.label.clone(),
+                        kind: "notification".to_string(),
+                        value: message,
+                    });
                 }
                 TriggerAction::TimelineMark { label } => {
                     store.timeline.push(TimelineMark {
@@ -13827,6 +13857,26 @@ fn apply_trigger_actions_locked(
                         session_id,
                         format!("PortMate: trigger custom link ({url})"),
                     );
+                    dispatch.effects.push(TriggerEffect {
+                        session_id: session_id.to_string(),
+                        trigger_id: trigger_match.trigger_id.clone(),
+                        trigger_label: trigger_match.label.clone(),
+                        kind: "custom-link".to_string(),
+                        value: url,
+                    });
+                }
+                TriggerAction::Sound { name } => {
+                    store.record_system_event(
+                        session_id,
+                        format!("PortMate: trigger sound ({name})"),
+                    );
+                    dispatch.effects.push(TriggerEffect {
+                        session_id: session_id.to_string(),
+                        trigger_id: trigger_match.trigger_id.clone(),
+                        trigger_label: trigger_match.label.clone(),
+                        kind: "sound".to_string(),
+                        value: name,
+                    });
                 }
             }
         }
@@ -17038,6 +17088,64 @@ mod tests {
         assert!(validate_logging_retention(&profile).is_err());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trigger_actions_dispatch_all_runtime_effects() {
+        let mut profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        profile.triggers = vec![portmate_core::TriggerSpec {
+            id: "panic-trigger".to_string(),
+            label: "Panic".to_string(),
+            matcher: portmate_core::TriggerMatcher::Contains {
+                text: "panic".to_string(),
+                case_sensitive: false,
+            },
+            actions: vec![
+                TriggerAction::Highlight {
+                    color: "#f87171".to_string(),
+                },
+                TriggerAction::Notification {
+                    message: "panic detected".to_string(),
+                },
+                TriggerAction::CustomLink {
+                    url_template: "https://example.test/search?q={text}".to_string(),
+                },
+                TriggerAction::Sound {
+                    name: "alert".to_string(),
+                },
+                TriggerAction::SendText {
+                    text: "status\n".to_string(),
+                },
+                TriggerAction::LocalCommand {
+                    command: "echo panic".to_string(),
+                },
+                TriggerAction::TimelineMark {
+                    label: "panic-mark".to_string(),
+                },
+            ],
+            enabled: true,
+        }];
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+
+        let (dispatch, changed) =
+            apply_trigger_actions_locked(&mut store, &session_id, "KERNEL PANIC");
+        assert!(changed);
+        assert_eq!(dispatch.send_texts, vec!["status\n"]);
+        assert_eq!(dispatch.local_commands, vec!["echo panic"]);
+        assert_eq!(dispatch.effects.len(), 4);
+        assert_eq!(dispatch.effects[0].kind, "highlight");
+        assert_eq!(dispatch.effects[0].value, "#f87171");
+        assert_eq!(dispatch.effects[1].kind, "notification");
+        assert_eq!(dispatch.effects[2].kind, "custom-link");
+        assert_eq!(
+            dispatch.effects[2].value,
+            "https://example.test/search?q=KERNEL PANIC"
+        );
+        assert_eq!(dispatch.effects[3].kind, "sound");
+        assert_eq!(dispatch.effects[3].value, "alert");
+        assert!(store.timeline.iter().any(|mark| mark.label == "panic-mark"));
     }
 
     #[test]
