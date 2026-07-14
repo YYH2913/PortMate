@@ -169,10 +169,96 @@ const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
+const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
+const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if ($env:OS -eq 'Windows_NT') {
+    [Console]::Out.WriteLine('Windows')
+} else {
+    [Console]::Out.WriteLine([Environment]::OSVersion.Platform)
+}
+"#;
+const REMOTE_WINDOWS_SYSMON_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$os = Get-CimInstance -ClassName Win32_OperatingSystem
+$computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+$logicalProcessors = [Math]::Max(1, [int]$computer.NumberOfLogicalProcessors)
+$memoryTotal = [uint64]([uint64]$os.TotalVisibleMemorySize * 1024)
+$memoryAvailable = [uint64]([uint64]$os.FreePhysicalMemory * 1024)
+$uptime = [uint64][Math]::Max(0, ((Get-Date) - $os.LastBootUpTime).TotalSeconds)
+
+$cpuSample = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq '_Total' } |
+    Select-Object -First 1
+$cpuPercent = if ($null -eq $cpuSample) {
+    0.0
+} else {
+    [Math]::Min(100.0, [Math]::Max(0.0, [double]$cpuSample.PercentProcessorTime))
+}
+
+$processes = @(Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue |
+    Where-Object { [uint32]$_.IDProcess -gt 0 -and $_.Name -ne '_Total' } |
+    Sort-Object -Property @{Expression = {[uint64]$_.PercentProcessorTime}; Descending = $true}, @{Expression = {[uint64]$_.WorkingSet}; Descending = $true} |
+    Select-Object -First 8 |
+    ForEach-Object {
+        [ordered]@{
+            pid = [uint32]$_.IDProcess
+            name = [string]$_.Name
+            cpuPercent = [Math]::Min(100.0, [Math]::Max(0.0, [double]$_.PercentProcessorTime / $logicalProcessors))
+            rssBytes = [uint64]$_.WorkingSet
+        }
+    })
+
+$disks = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue |
+    Sort-Object -Property DeviceID |
+    Select-Object -First 16 |
+    ForEach-Object {
+        $filesystem = if ([string]::IsNullOrWhiteSpace([string]$_.FileSystem)) { [string]$_.DeviceID } else { [string]$_.FileSystem }
+        [ordered]@{
+            filesystem = $filesystem
+            mountPoint = [string]$_.DeviceID
+            totalBytes = [uint64]$_.Size
+            availableBytes = [uint64]$_.FreeSpace
+        }
+    })
+
+$rawNetworks = @{}
+@(Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue) |
+    ForEach-Object { $rawNetworks[[string]$_.Name] = $_ }
+$networkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
+    Sort-Object -Property @{Expression = {[uint64]$_.BytesReceivedPersec + [uint64]$_.BytesSentPersec}; Descending = $true} |
+    Select-Object -First 32 |
+    ForEach-Object {
+        $raw = $rawNetworks[[string]$_.Name]
+        [ordered]@{
+            name = [string]$_.Name
+            rxBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesReceivedPersec }
+            txBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesSentPersec }
+            rxKbps = [Math]::Max(0.0, [double]$_.BytesReceivedPersec / 1024.0)
+            txKbps = [Math]::Max(0.0, [double]$_.BytesSentPersec / 1024.0)
+        }
+    })
+
+$payload = [ordered]@{
+    uptimeSeconds = $uptime
+    cpuPercent = $cpuPercent
+    memoryTotalBytes = $memoryTotal
+    memoryAvailableBytes = $memoryAvailable
+    processes = $processes
+    disks = $disks
+    networkInterfaces = $networkInterfaces
+}
+[Console]::Out.WriteLine('__PORTMATE_WINDOWS_SYSMON_JSON__')
+[Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 4 -Compress))
+"#;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
@@ -20468,12 +20554,7 @@ async fn collect_remote_sysmon(
     session_id: &str,
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
 ) -> Result<SysmonSnapshot, String> {
-    let platform = exec_ssh_command_capture(
-        handle.clone(),
-        REMOTE_SYSMON_PLATFORM_COMMAND,
-        Duration::from_secs(3),
-    )
-    .await?;
+    let platform = detect_remote_sysmon_platform(handle.clone()).await?;
     match platform
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -20506,12 +20587,72 @@ async fn collect_remote_sysmon(
             .await?;
             parse_remote_freebsd_sysmon_output(session_id, &output)
         }
+        Some("Windows") => {
+            let command = windows_powershell_command(REMOTE_WINDOWS_SYSMON_SCRIPT);
+            let output =
+                exec_ssh_command_capture(handle, &command, Duration::from_secs(12)).await?;
+            parse_remote_windows_sysmon_output(session_id, &output)
+        }
         Some(platform) => Err(format!(
             "远端 Sysmon 暂不支持 {}",
             bounded_sysmon_label(platform, 64)
         )),
         None => Err("远端 Sysmon 无法识别操作系统".to_string()),
     }
+}
+
+async fn detect_remote_sysmon_platform(
+    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+) -> Result<String, String> {
+    if let Ok(output) = exec_ssh_command_capture(
+        handle.clone(),
+        REMOTE_SYSMON_PLATFORM_COMMAND,
+        Duration::from_secs(3),
+    )
+    .await
+    {
+        if let Some(platform) = remote_sysmon_platform_label(&output) {
+            return Ok(platform);
+        }
+    }
+
+    let command = windows_powershell_command(REMOTE_WINDOWS_PLATFORM_SCRIPT);
+    let output = exec_ssh_command_capture(handle, &command, Duration::from_secs(4))
+        .await
+        .map_err(|_| {
+            "远端 Sysmon 无法识别操作系统（uname 与 Windows PowerShell 探测均失败）".to_string()
+        })?;
+    remote_sysmon_platform_label(&output)
+        .map(|platform| {
+            if platform.eq_ignore_ascii_case("Win32NT") {
+                "Windows".to_string()
+            } else {
+                platform
+            }
+        })
+        .ok_or_else(|| "远端 Sysmon 无法识别操作系统".to_string())
+}
+
+fn remote_sysmon_platform_label(output: &str) -> Option<String> {
+    let platform = output.lines().find(|line| !line.trim().is_empty())?.trim();
+    if !platform.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/')
+    }) {
+        return None;
+    }
+    let platform = bounded_sysmon_label(platform, 64);
+    (!platform.is_empty()).then_some(platform)
+}
+
+fn windows_powershell_command(script: &str) -> String {
+    let mut utf16le = Vec::with_capacity(script.len().saturating_mul(2));
+    for unit in script.encode_utf16() {
+        utf16le.extend_from_slice(&unit.to_le_bytes());
+    }
+    format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        BASE64_STANDARD.encode(utf16le)
+    )
 }
 
 async fn exec_ssh_command_capture(
@@ -20754,6 +20895,186 @@ fn parse_remote_freebsd_sysmon_output_at(
         memory_available_bytes,
         processes: parse_sysmon_processes(processes),
         disks: parse_sysmon_disks(disks),
+        network_interfaces,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteWindowsSysmonSample {
+    uptime_seconds: u64,
+    cpu_percent: f32,
+    memory_total_bytes: u64,
+    memory_available_bytes: u64,
+    #[serde(default)]
+    processes: Vec<RemoteWindowsSysmonProcess>,
+    #[serde(default)]
+    disks: Vec<RemoteWindowsSysmonDisk>,
+    #[serde(default)]
+    network_interfaces: Vec<RemoteWindowsSysmonNetworkInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteWindowsSysmonProcess {
+    pid: u32,
+    name: String,
+    cpu_percent: f32,
+    rss_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteWindowsSysmonDisk {
+    filesystem: String,
+    mount_point: String,
+    total_bytes: u64,
+    available_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteWindowsSysmonNetworkInterface {
+    name: String,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    rx_kbps: f32,
+    tx_kbps: f32,
+}
+
+fn parse_remote_windows_sysmon_output(
+    session_id: &str,
+    output: &str,
+) -> Result<SysmonSnapshot, String> {
+    parse_remote_windows_sysmon_output_at(session_id, output, Utc::now())
+}
+
+fn parse_remote_windows_sysmon_output_at(
+    session_id: &str,
+    output: &str,
+    sampled_at: DateTime<Utc>,
+) -> Result<SysmonSnapshot, String> {
+    let payload = output
+        .split_once(REMOTE_WINDOWS_SYSMON_JSON_MARKER)
+        .map(|(_, payload)| payload.trim())
+        .filter(|payload| !payload.is_empty())
+        .ok_or_else(|| "远端未提供 Windows Sysmon JSON 标记".to_string())?;
+    let sample = serde_json::from_str::<RemoteWindowsSysmonSample>(payload)
+        .map_err(|error| format!("远端 Windows Sysmon JSON 无效: {error}"))?;
+
+    let cpu_percent = bounded_sysmon_percent(sample.cpu_percent);
+    let memory_total_bytes = sample.memory_total_bytes;
+    let memory_available_bytes = sample.memory_available_bytes.min(memory_total_bytes);
+    let memory_percent = if memory_total_bytes == 0 {
+        0.0
+    } else {
+        (memory_total_bytes - memory_available_bytes) as f32 / memory_total_bytes as f32 * 100.0
+    };
+
+    let mut processes = sample
+        .processes
+        .into_iter()
+        .filter_map(|process| {
+            let name = bounded_sysmon_label(&process.name, 128);
+            if process.pid == 0 || name.is_empty() {
+                return None;
+            }
+            Some(SysmonProcess {
+                pid: process.pid,
+                name,
+                cpu_percent: bounded_sysmon_percent(process.cpu_percent),
+                memory_percent: if memory_total_bytes == 0 {
+                    0.0
+                } else {
+                    (process.rss_bytes as f32 / memory_total_bytes as f32 * 100.0).clamp(0.0, 100.0)
+                },
+                rss_bytes: process.rss_bytes,
+            })
+        })
+        .collect::<Vec<_>>();
+    processes.sort_by(|left, right| {
+        right
+            .cpu_percent
+            .total_cmp(&left.cpu_percent)
+            .then_with(|| right.rss_bytes.cmp(&left.rss_bytes))
+            .then_with(|| left.pid.cmp(&right.pid))
+    });
+    processes.truncate(MAX_SYSMON_PROCESSES);
+
+    let mut mount_points = HashSet::new();
+    let mut disks = sample
+        .disks
+        .into_iter()
+        .filter_map(|disk| {
+            let filesystem = bounded_sysmon_label(&disk.filesystem, 256);
+            let mount_point = bounded_sysmon_label(&disk.mount_point, 256);
+            let mount_key = mount_point.to_ascii_lowercase();
+            if filesystem.is_empty()
+                || mount_point.is_empty()
+                || disk.total_bytes == 0
+                || !mount_points.insert(mount_key)
+            {
+                return None;
+            }
+            let available_bytes = disk.available_bytes.min(disk.total_bytes);
+            Some(SysmonDisk {
+                filesystem,
+                mount_point,
+                total_bytes: disk.total_bytes,
+                available_bytes,
+                used_percent: (disk.total_bytes - available_bytes) as f32 / disk.total_bytes as f32
+                    * 100.0,
+            })
+        })
+        .collect::<Vec<_>>();
+    disks.sort_by(|left, right| left.mount_point.cmp(&right.mount_point));
+    disks.truncate(MAX_SYSMON_DISKS);
+
+    let mut interface_names = HashSet::new();
+    let mut network_interfaces = sample
+        .network_interfaces
+        .into_iter()
+        .filter_map(|interface| {
+            let name = bounded_sysmon_label(&interface.name, 64);
+            if name.is_empty() || !interface_names.insert(name.to_ascii_lowercase()) {
+                return None;
+            }
+            Some(SysmonNetworkInterface {
+                name,
+                rx_bytes: interface.rx_bytes,
+                tx_bytes: interface.tx_bytes,
+                rx_kbps: bounded_sysmon_rate(interface.rx_kbps),
+                tx_kbps: bounded_sysmon_rate(interface.tx_kbps),
+            })
+        })
+        .collect::<Vec<_>>();
+    network_interfaces.sort_by(|left, right| {
+        let left_rate = left.rx_kbps + left.tx_kbps;
+        let right_rate = right.rx_kbps + right.tx_kbps;
+        right_rate
+            .total_cmp(&left_rate)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    network_interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
+    let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
+
+    if sample.uptime_seconds == 0 && memory_total_bytes == 0 && cpu_percent == 0.0 {
+        return Err("远端未提供 Windows Sysmon 数据".to_string());
+    }
+
+    Ok(SysmonSnapshot {
+        session_id: session_id.to_string(),
+        ts: sampled_at,
+        uptime_seconds: sample.uptime_seconds,
+        cpu_percent,
+        memory_percent,
+        rx_kbps,
+        tx_kbps,
+        load_average: [0.0; 3],
+        memory_total_bytes,
+        memory_available_bytes,
+        processes,
+        disks,
         network_interfaces,
     })
 }
@@ -21200,8 +21521,30 @@ fn parse_nonnegative_f32(value: &str) -> Option<f32> {
         .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
+fn bounded_sysmon_percent(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn bounded_sysmon_rate(value: f32) -> f32 {
+    const MAX_RATE_KIB_PER_SECOND: f32 = u64::MAX as f32 / 1024.0;
+    if value.is_finite() {
+        value.clamp(0.0, MAX_RATE_KIB_PER_SECOND)
+    } else {
+        0.0
+    }
+}
+
 fn bounded_sysmon_label(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
+    value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -25009,6 +25352,129 @@ mod tests {
         assert_eq!(snapshot.processes[1].name, "service worker");
         assert_eq!(snapshot.disks.len(), 1);
         assert_eq!(snapshot.disks[0].mount_point, "/");
+    }
+
+    #[test]
+    fn windows_powershell_command_uses_exact_utf16le_encoded_script() {
+        let script = "[Console]::Out.WriteLine('PortMate ✓')";
+        let command = windows_powershell_command(script);
+        let encoded = command
+            .strip_prefix("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ")
+            .unwrap();
+        let bytes = BASE64_STANDARD.decode(encoded).unwrap();
+        assert_eq!(bytes.len() % 2, 0);
+        let units = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(String::from_utf16(&units).unwrap(), script);
+        assert!(!REMOTE_WINDOWS_SYSMON_SCRIPT
+            .to_ascii_lowercase()
+            .contains("commandline"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 8"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 16"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 32"));
+        assert_eq!(
+            remote_sysmon_platform_label("\r\nLinux\r\n").as_deref(),
+            Some("Linux")
+        );
+        assert_eq!(
+            remote_sysmon_platform_label("sh : The term 'sh' is not recognized"),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_windows_sysmon_json_is_bounded_and_sanitized() {
+        let processes = (0..10)
+            .map(|index| {
+                serde_json::json!({
+                    "pid": index + 1,
+                    "name": format!(" process-{index}\u{0007} "),
+                    "cpuPercent": 150.0 - index as f32,
+                    "rssBytes": 100 + index,
+                })
+            })
+            .collect::<Vec<_>>();
+        let disks = (0..18)
+            .map(|index| {
+                serde_json::json!({
+                    "filesystem": "NTFS",
+                    "mountPoint": format!("D{index}:"),
+                    "totalBytes": 1000,
+                    "availableBytes": 2000,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut network_interfaces = (0..34)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!(" nic-{index}-{}\n", "x".repeat(80)),
+                    "rxBytes": index * 1000,
+                    "txBytes": index * 500,
+                    "rxKbps": index as f32,
+                    "txKbps": index as f32 / 2.0,
+                })
+            })
+            .collect::<Vec<_>>();
+        network_interfaces.push(serde_json::json!({
+            "name": format!(" NIC-33-{} ", "X".repeat(80)),
+            "rxBytes": 999_000,
+            "txBytes": 999_000,
+            "rxKbps": 999.0,
+            "txKbps": 999.0,
+        }));
+        let payload = serde_json::json!({
+            "uptimeSeconds": 123,
+            "cpuPercent": 150.0,
+            "memoryTotalBytes": 1000,
+            "memoryAvailableBytes": 1200,
+            "processes": processes,
+            "disks": disks,
+            "networkInterfaces": network_interfaces,
+        });
+        let output =
+            format!("ignored preface\r\n{REMOTE_WINDOWS_SYSMON_JSON_MARKER}\r\n{payload}\r\n");
+        let sampled_at = "2026-07-14T12:34:56Z".parse::<DateTime<Utc>>().unwrap();
+        let snapshot =
+            parse_remote_windows_sysmon_output_at("windows-session", &output, sampled_at).unwrap();
+
+        assert_eq!(snapshot.session_id, "windows-session");
+        assert_eq!(snapshot.ts, sampled_at);
+        assert_eq!(snapshot.uptime_seconds, 123);
+        assert_eq!(snapshot.cpu_percent, 100.0);
+        assert_eq!(snapshot.memory_available_bytes, 1000);
+        assert_eq!(snapshot.memory_percent, 0.0);
+        assert_eq!(snapshot.load_average, [0.0; 3]);
+        assert_eq!(snapshot.processes.len(), MAX_SYSMON_PROCESSES);
+        assert!(snapshot.processes.iter().all(|process| {
+            process.cpu_percent == 100.0
+                && process.memory_percent <= 100.0
+                && !process.name.chars().any(char::is_control)
+        }));
+        assert_eq!(snapshot.disks.len(), MAX_SYSMON_DISKS);
+        assert!(snapshot
+            .disks
+            .iter()
+            .all(|disk| disk.available_bytes == disk.total_bytes && disk.used_percent == 0.0));
+        assert_eq!(
+            snapshot.network_interfaces.len(),
+            MAX_SYSMON_NETWORK_INTERFACES
+        );
+        assert!(snapshot.network_interfaces.iter().all(|interface| {
+            interface.name.chars().count() <= 64 && !interface.name.chars().any(char::is_control)
+        }));
+        assert_eq!(
+            snapshot
+                .network_interfaces
+                .iter()
+                .map(|interface| interface.name.to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+                .len(),
+            snapshot.network_interfaces.len()
+        );
+        assert_eq!((snapshot.rx_kbps, snapshot.tx_kbps), (560.0, 280.0));
+        assert!(parse_remote_windows_sysmon_output("windows-session", "{}").is_err());
     }
 
     #[cfg(target_os = "linux")]

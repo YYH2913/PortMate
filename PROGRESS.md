@@ -223,10 +223,10 @@ npm run build
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
-- Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev` 与 macOS/FreeBSD `netstat -ibn` 每接口采样速率/重复行去重/动态列定位/计数器重置及 32 条边界、完整远端 marker 输出、真实本机 Linux `/proc`/`ps`/`df` 采样、SQLite v3→v4 details 迁移，以及默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并和 CPU/内存/RX/TX 趋势量程。
+- Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、SQLite v3→v4 details 迁移，以及默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并和 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 214：`portmate` 153、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 68 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 216：`portmate` 155、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 68 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -254,7 +254,7 @@ npm run build
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
-| Sysmon | 大部分实现 | 本机 Linux 与 SSH/Tmux Linux/macOS/FreeBSD 的 CPU、内存、load average、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；远端先用 `uname -s` 选择有界采样器，不支持的平台明确拒绝；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/FreeBSD SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
+| Sysmon | 大部分实现 | 本机 Linux 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；Windows 在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；命令关联与毫秒级分片待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
@@ -284,7 +284,7 @@ npm run build
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序和 system Text/JSONL sink 已完成；继续补命令关联与毫秒级分片。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
-4. Sysmon 的进程、磁盘、网络接口、Linux/macOS/FreeBSD 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/FreeBSD 主机矩阵、其他 BSD 与独立常驻侧栏。
+4. Sysmon 的进程、磁盘、网络接口、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/FreeBSD/Windows 主机矩阵、其他 BSD 与独立常驻侧栏。
 5. Playwright UI 回归、vttest/Unicode/鼠标/全屏程序兼容基线。
 
 ### P3：架构整理与发布准备
