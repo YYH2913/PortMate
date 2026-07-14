@@ -136,6 +136,11 @@ npm run desktop:build
 
 The terminal renderer is pinned to `@xterm/xterm@6.0.0` with matching current `@xterm/addon-*` packages.
 
+The terminal runtime is loaded as a separate Vite chunk. The current production build emits an
+approximately 425 kB main JS chunk and a 381 kB xterm chunk, with xterm CSS split alongside it;
+the previous approximately 805 kB single-chunk warning is eliminated without raising the warning
+threshold.
+
 To run the MCP bridge:
 
 ```bash

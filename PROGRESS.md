@@ -182,7 +182,7 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 当前有 Vite chunk size warning：主 JS chunk 约 805 kB，功能上不阻断构建，发布前可通过 code splitting 或调整 chunk 策略处理。
+`npm run build` 已把 xterm 运行时和 CSS 拆为真实 lazy chunk：主 JS 约 425 kB、终端 JS 约 381 kB、主 CSS 约 62 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器预览已验证动态模块能渲染终端空态且工作台布局不塌陷。
 
 已有单元测试覆盖：
 
@@ -239,7 +239,7 @@ npm run build
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
-| WindTerm 风格工作台 | 部分实现 | 主布局和菜单、最多 4 pane 的水平/垂直布局、版本化 snapshot、pane/active/tab color 恢复、旧 key 迁移和启动会话策略已有；任意嵌套分屏和快捷键体系不足。 |
+| WindTerm 风格工作台 | 部分实现 | 主布局和菜单、最多 4 pane 的水平/垂直布局、版本化 snapshot、pane/active/tab color 恢复、旧 key 迁移、启动会话策略及 xterm/CSS lazy chunk 已有；任意嵌套分屏和快捷键体系不足。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、无认证 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；代理认证、健康故障矩阵和 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
