@@ -817,6 +817,22 @@ impl SessionStore {
             .cloned()
     }
 
+    pub fn sysmon_history_for(&self, session_id: &str, limit: usize) -> Vec<SysmonSnapshot> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut snapshots = self
+            .sysmon
+            .iter()
+            .rev()
+            .filter(|snapshot| snapshot.session_id == session_id)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        snapshots.reverse();
+        snapshots
+    }
+
     pub fn timeline_for(&self, session_id: &str) -> Vec<TimelineMark> {
         self.timeline
             .iter()
@@ -1330,6 +1346,21 @@ mod tests {
         }
         assert!(store.sysmon.len() <= MAX_SYSMON_SNAPSHOTS_PER_SESSION + AUX_HISTORY_TRIM_BATCH);
         assert_ne!(store.sysmon[0].uptime_seconds, 0);
+        let recent_sysmon = store.sysmon_history_for("test-session", 3);
+        assert_eq!(recent_sysmon.len(), 3);
+        assert!(recent_sysmon
+            .windows(2)
+            .all(|pair| pair[0].ts <= pair[1].ts));
+        assert_eq!(
+            recent_sysmon.last().map(|snapshot| snapshot.uptime_seconds),
+            store
+                .sysmon
+                .iter()
+                .rev()
+                .find(|snapshot| snapshot.session_id == "test-session")
+                .map(|snapshot| snapshot.uptime_seconds)
+        );
+        assert!(store.sysmon_history_for("test-session", 0).is_empty());
 
         for index in 0..(MAX_TERMINAL_TRANSFERS_PER_SESSION + 2) {
             store.record_transfer(test_transfer(

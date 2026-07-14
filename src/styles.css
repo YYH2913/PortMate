@@ -2508,6 +2508,133 @@ fieldset label {
   text-align: right;
 }
 
+.sysmon-trend-view {
+  display: grid;
+  min-width: 0;
+  min-height: 220px;
+  height: 100%;
+  grid-template-rows: 38px minmax(0, 1fr) 28px auto;
+  padding: 0 10px;
+  animation: sysmon-trend-in 160ms ease-out;
+}
+
+.sysmon-trend-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sysmon-trend-modes {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+}
+
+.sysmon-trend-modes button {
+  min-width: 66px;
+  height: 24px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.sysmon-trend-modes button + button {
+  border-left: 1px solid var(--line);
+}
+
+.sysmon-trend-modes button.active {
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--text);
+}
+
+.sysmon-trend-legend {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.sysmon-trend-legend span {
+  white-space: nowrap;
+}
+
+.sysmon-trend-legend span::before {
+  width: 7px;
+  height: 2px;
+  display: inline-block;
+  margin-right: 5px;
+  background: currentColor;
+  content: "";
+  vertical-align: middle;
+}
+
+.sysmon-trend-legend b {
+  color: #dce9f3;
+  font-weight: 400;
+}
+
+.sysmon-trend-legend .cpu { color: var(--cyan); }
+.sysmon-trend-legend .memory { color: var(--amber); }
+.sysmon-trend-legend .rx { color: var(--blue); }
+.sysmon-trend-legend .tx { color: var(--pink); }
+
+.sysmon-trend-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sysmon-trend-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sysmon-trend-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sysmon-trend-range {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.sysmon-trend-range b {
+  color: #b9c8d5;
+  font-weight: 400;
+}
+
+.sysmon-trend-range span:last-child {
+  text-align: right;
+}
+
+.sysmon-trend-view > .utility-error {
+  margin: 8px 0;
+}
+
+@keyframes sysmon-trend-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .sysmon-empty {
   display: flex;
   min-height: 150px;

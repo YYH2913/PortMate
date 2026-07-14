@@ -127,6 +127,8 @@ const PORTABLE_VAULT_SALT_FILE_NAME: &str = "portmate-vault.salt";
 const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
+const DEFAULT_SYSMON_HISTORY_QUERY_LIMIT: usize = 120;
+const MAX_SYSMON_HISTORY_QUERY_LIMIT: usize = 240;
 const MAX_LOG_SHARDS: usize = 10_000;
 const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
 const MAX_LOG_DELETE_BATCH: usize = 1_000;
@@ -4075,6 +4077,30 @@ async fn refresh_sysmon(
     store.record_system_event(&session_id, "PortMate: sysmon snapshot refreshed");
     save_store(&state.store_path, &store)?;
     Ok(snapshot)
+}
+
+#[tauri::command]
+fn list_sysmon_history(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<SysmonSnapshot>, String> {
+    let limit = validate_sysmon_history_query_limit(limit)?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    if store.profile(&session_id).is_none() {
+        return Err(format!("unknown session: {session_id}"));
+    }
+    Ok(store.sysmon_history_for(&session_id, limit))
+}
+
+fn validate_sysmon_history_query_limit(limit: Option<usize>) -> Result<usize, String> {
+    let limit = limit.unwrap_or(DEFAULT_SYSMON_HISTORY_QUERY_LIMIT);
+    if !(1..=MAX_SYSMON_HISTORY_QUERY_LIMIT).contains(&limit) {
+        return Err(format!(
+            "Sysmon history limit must be between 1 and {MAX_SYSMON_HISTORY_QUERY_LIMIT}"
+        ));
+    }
+    Ok(limit)
 }
 
 #[tauri::command]
@@ -22962,6 +22988,7 @@ pub fn run() {
             serial_set_lines,
             serial_send_break,
             refresh_sysmon,
+            list_sysmon_history,
             start_transfer,
             start_external_drop,
             start_file_batch,
@@ -24813,6 +24840,23 @@ mod tests {
         assert!(error.contains("stdout"));
         assert!(error.contains("4"));
         assert_eq!(buffer, before_overflow);
+    }
+
+    #[test]
+    fn sysmon_history_query_limit_defaults_and_rejects_out_of_range_values() {
+        assert_eq!(
+            validate_sysmon_history_query_limit(None).unwrap(),
+            DEFAULT_SYSMON_HISTORY_QUERY_LIMIT
+        );
+        assert_eq!(validate_sysmon_history_query_limit(Some(1)).unwrap(), 1);
+        assert_eq!(
+            validate_sysmon_history_query_limit(Some(MAX_SYSMON_HISTORY_QUERY_LIMIT)).unwrap(),
+            MAX_SYSMON_HISTORY_QUERY_LIMIT
+        );
+        assert!(validate_sysmon_history_query_limit(Some(0)).is_err());
+        assert!(
+            validate_sysmon_history_query_limit(Some(MAX_SYSMON_HISTORY_QUERY_LIMIT + 1)).is_err()
+        );
     }
 
     #[test]

@@ -49,6 +49,8 @@ import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
+import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
+import type { SysmonTrendMode } from "./sysmon-history";
 import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
@@ -1550,7 +1552,7 @@ function handleMenuAction(item: string) {
         setNotice({ title: "Tmux", message });
         void refreshActiveLog(active.profile.id);
       }} />}
-      {utilityDialog === "sysmon" && active && <SysmonDialog session={active} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "sysmon" && active && <SysmonDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "search" && <SearchDialog state={searchDialog} sessions={sessions} logs={logs} onChange={setSearchDialog} onSelect={(sessionId) => {
         activateSession(sessionId);
         setUtilityDialog(null);
@@ -3052,22 +3054,176 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
   );
 }
 
+function SysmonTrendView({
+  history,
+  mode,
+  onModeChange,
+  error,
+}: {
+  history: SysmonSnapshot[];
+  mode: SysmonTrendMode;
+  onModeChange: (mode: SysmonTrendMode) => void;
+  error: string;
+}) {
+  const latest = history[history.length - 1];
+  const first = history[0];
+  const usageMode = mode === "usage";
+
+  return (
+    <section className="sysmon-trend-view">
+      <header className="sysmon-trend-toolbar">
+        <div className="sysmon-trend-modes" role="group" aria-label="趋势指标">
+          <button type="button" className={usageMode ? "active" : ""} onClick={() => onModeChange("usage")}>利用率</button>
+          <button type="button" className={!usageMode ? "active" : ""} onClick={() => onModeChange("network")}>网络</button>
+        </div>
+        <div className="sysmon-trend-legend">
+          <span className={usageMode ? "cpu" : "rx"}>{usageMode ? "CPU" : "RX"} <b>{latest ? formatSysmonTrendValue(latest, mode, 0) : "-"}</b></span>
+          <span className={usageMode ? "memory" : "tx"}>{usageMode ? "内存" : "TX"} <b>{latest ? formatSysmonTrendValue(latest, mode, 1) : "-"}</b></span>
+        </div>
+      </header>
+      <div className="sysmon-trend-stage">
+        <SysmonTrendCanvas history={history} mode={mode} />
+        {!history.length ? <div className="sysmon-trend-empty">暂无历史样本</div> : null}
+      </div>
+      <footer className="sysmon-trend-range">
+        <span>{first ? formatEventClock(first.ts) : "--:--:--"}</span>
+        <b>{history.length} 个样本</b>
+        <span>{latest ? formatEventClock(latest.ts) : "--:--:--"}</span>
+      </footer>
+      {error ? <div className="utility-error">{error}</div> : null}
+    </section>
+  );
+}
+
+function SysmonTrendCanvas({ history, mode }: { history: SysmonSnapshot[]; mode: SysmonTrendMode }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const width = Math.max(1, Math.floor(canvas.clientWidth));
+      const height = Math.max(1, Math.floor(canvas.clientHeight));
+      const scale = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(width * scale);
+      canvas.height = Math.floor(height * scale);
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+      context.clearRect(0, 0, width, height);
+
+      const plot = { left: 44, right: 12, top: 14, bottom: 22 };
+      const plotWidth = Math.max(1, width - plot.left - plot.right);
+      const plotHeight = Math.max(1, height - plot.top - plot.bottom);
+      const maximum = sysmonTrendMax(history, mode);
+      context.font = '10px "JetBrains Mono", monospace';
+      context.lineWidth = 1;
+      context.textAlign = "right";
+      context.textBaseline = "middle";
+
+      for (let index = 0; index <= 4; index += 1) {
+        const ratio = index / 4;
+        const y = plot.top + plotHeight * ratio;
+        context.strokeStyle = index === 4 ? "#344252" : "#26323f";
+        context.beginPath();
+        context.moveTo(plot.left, y + 0.5);
+        context.lineTo(width - plot.right, y + 0.5);
+        context.stroke();
+        context.fillStyle = "#8da0b3";
+        context.fillText(formatSysmonTrendAxis(maximum * (1 - ratio), mode), plot.left - 7, y);
+      }
+
+      if (!history.length) return;
+      const timestamps = history.map((snapshot) => Date.parse(snapshot.ts));
+      const start = timestamps[0];
+      const span = Math.max(1, timestamps[timestamps.length - 1] - start);
+      const xAt = (index: number) => history.length === 1
+        ? plot.left + plotWidth / 2
+        : plot.left + ((timestamps[index] - start) / span) * plotWidth;
+      const colors = mode === "usage" ? ["#5eead4", "#f4b860"] : ["#68a7ff", "#e879f9"];
+
+      for (const series of [0, 1] as const) {
+        context.strokeStyle = colors[series];
+        context.lineWidth = 1.6;
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        context.beginPath();
+        history.forEach((snapshot, index) => {
+          const value = Math.min(maximum, sysmonTrendValue(snapshot, mode, series));
+          const x = xAt(index);
+          const y = plot.top + plotHeight * (1 - value / maximum);
+          if (index === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        });
+        context.stroke();
+
+        const lastIndex = history.length - 1;
+        const lastValue = Math.min(maximum, sysmonTrendValue(history[lastIndex], mode, series));
+        context.fillStyle = colors[series];
+        context.beginPath();
+        context.arc(xAt(lastIndex), plot.top + plotHeight * (1 - lastValue / maximum), 2.5, 0, Math.PI * 2);
+        context.fill();
+      }
+    };
+
+    draw();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(draw);
+    observer?.observe(canvas);
+    window.addEventListener("resize", draw);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", draw);
+    };
+  }, [history, mode]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="sysmon-trend-canvas"
+      role="img"
+      aria-label={`${mode === "usage" ? "CPU 和内存利用率" : "网络接收和发送速率"}趋势，${history.length} 个样本`}
+    />
+  );
+}
+
 function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: () => void }) {
   const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
-  const [tab, setTab] = useState<"processes" | "disks" | "network">("processes");
+  const [history, setHistory] = useState<SysmonSnapshot[]>([]);
+  const [tab, setTab] = useState<"processes" | "disks" | "network" | "trends">("processes");
+  const [trendMode, setTrendMode] = useState<SysmonTrendMode>("usage");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     setSnapshot(null);
+    setHistory([]);
+    setHistoryError("");
+    void loadSysmonHistory();
     void refreshSysmon();
   }, [session.profile.id]);
+
+  async function loadSysmonHistory() {
+    try {
+      const loaded = await invokeBackend<SysmonSnapshot[]>("list_sysmon_history", {
+        sessionId: session.profile.id,
+        limit: 120,
+      });
+      setHistory((current) => normalizeSysmonHistory([...current, ...loaded], session.profile.id, 120));
+      setHistoryError("");
+    } catch (error) {
+      setHistoryError(formatError(error));
+    }
+  }
 
   async function refreshSysmon() {
     setBusy(true);
     setError("");
     try {
-      setSnapshot(await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id }));
+      const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id });
+      setSnapshot(next);
+      setHistory((current) => mergeSysmonHistory(current, next, 120));
     } catch (error) {
       setError(formatError(error));
     } finally {
@@ -3111,9 +3267,13 @@ function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: 
             <button className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>进程 <span>{processes.length}</span></button>
             <button className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>磁盘 <span>{disks.length}</span></button>
             <button className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>网络 <span>{interfaces.length}</span></button>
+            <button className={tab === "trends" ? "active" : ""} onClick={() => setTab("trends")}>趋势 <span>{history.length}</span></button>
           </nav>
 
           <div className="sysmon-table-wrap">
+            {tab === "trends" ? (
+              <SysmonTrendView history={history} mode={trendMode} onModeChange={setTrendMode} error={historyError} />
+            ) : null}
             {tab === "processes" ? (
               <table className="sysmon-table sysmon-process-table">
                 <thead><tr><th>PID</th><th>进程</th><th>CPU</th><th>内存</th><th>RSS</th></tr></thead>
@@ -3156,7 +3316,7 @@ function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: 
             {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
               <div className="sysmon-empty">当前采样没有可显示的{tab === "processes" ? "进程" : tab === "disks" ? "磁盘" : "网络接口"}明细</div>
             ) : null}
-            {!snapshot && !error ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
+            {!snapshot && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
           </div>
           {error ? <div className="utility-error">{error}</div> : null}
         </div>
@@ -7824,6 +7984,24 @@ function sysmonPercentLevel(percent: number) {
   if (percent >= 80) return "critical";
   if (percent >= 60) return "warning";
   return "normal";
+}
+
+function formatSysmonTrendValue(snapshot: SysmonSnapshot, mode: SysmonTrendMode, series: 0 | 1) {
+  const value = sysmonTrendValue(snapshot, mode, series);
+  return mode === "usage" ? `${value.toFixed(1)}%` : formatSysmonTrendRate(value);
+}
+
+function formatSysmonTrendAxis(value: number, mode: SysmonTrendMode) {
+  if (mode === "usage") return `${Math.round(value)}%`;
+  if (value >= 1024) return `${(value / 1024).toFixed(value >= 10_240 ? 0 : 1)}M`;
+  return `${Math.round(value)}K`;
+}
+
+function formatSysmonTrendRate(kibibytesPerSecond: number) {
+  if (kibibytesPerSecond >= 1024) {
+    return `${(kibibytesPerSecond / 1024).toFixed(1)} MiB/s`;
+  }
+  return `${kibibytesPerSecond.toFixed(1)} KiB/s`;
 }
 
 function formatFileMode(mode?: number | null) {
