@@ -7,6 +7,7 @@ export interface WorkspaceView {
   id: string;
   sessionId: string;
   title: string;
+  color: string;
 }
 
 export interface WorkspacePaneNode {
@@ -68,8 +69,9 @@ export function createWorkspaceView(
   sessionId: string,
   id = createWorkspaceNodeId("view"),
   title = "",
+  color = "",
 ): WorkspaceView {
-  return { id, sessionId, title };
+  return { id, sessionId, title, color: sanitizeViewColor(color) };
 }
 
 export function createWorkspacePane(
@@ -90,7 +92,10 @@ export function createWorkspacePaneFromViews(
   views: WorkspaceView[],
   activeViewId: string,
 ): WorkspacePaneNode | null {
-  const normalizedViews = views.slice(0, MAX_WORKSPACE_GROUP_TABS).map((view) => ({ ...view }));
+  const normalizedViews = views.slice(0, MAX_WORKSPACE_GROUP_TABS).map((view) => ({
+    ...view,
+    color: sanitizeViewColor(view.color),
+  }));
   if (!normalizedViews.length) return null;
   const activeView = normalizedViews.find((view) => view.id === activeViewId) ?? normalizedViews[0];
   return {
@@ -342,6 +347,7 @@ export function duplicateWorkspacePaneView(
     id: duplicateId,
     sessionId: source.sessionId,
     title: title ?? source.title,
+    color: source.color,
   }, index + 1);
 }
 
@@ -363,6 +369,27 @@ export function renameWorkspacePaneView(
   }
   const first = renameWorkspacePaneView(root.first, paneId, viewId, title);
   const second = renameWorkspacePaneView(root.second, paneId, viewId, title);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function setWorkspacePaneViewColor(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+  color: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const index = root.views.findIndex((view) => view.id === viewId);
+    const cleanColor = sanitizeViewColor(color);
+    if (index < 0 || root.views[index].color === cleanColor) return root;
+    const views = [...root.views];
+    views[index] = { ...views[index], color: cleanColor };
+    return createWorkspacePaneFromViews(root.id, views, root.activeViewId)!;
+  }
+  const first = setWorkspacePaneViewColor(root.first, paneId, viewId, color);
+  const second = setWorkspacePaneViewColor(root.second, paneId, viewId, color);
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
 }
 
@@ -410,14 +437,27 @@ export function moveWorkspacePaneView(
   sourcePaneId: string,
   targetPaneId: string,
   viewId: string,
+  targetIndex = Number.POSITIVE_INFINITY,
 ): WorkspaceNode | null {
-  if (!root || sourcePaneId === targetPaneId) return root;
+  if (!root) return root;
   const source = findWorkspacePane(root, sourcePaneId);
   const target = findWorkspacePane(root, targetPaneId);
   const view = source?.views.find((candidate) => candidate.id === viewId);
-  if (!source || !target || !view || target.views.some((candidate) => candidate.id === viewId)) return root;
+  if (!source || !target || !view) return root;
+  if (sourcePaneId === targetPaneId) {
+    const sourceIndex = source.views.findIndex((candidate) => candidate.id === viewId);
+    const requestedIndex = Number.isFinite(targetIndex) ? Math.trunc(targetIndex) : source.views.length;
+    const boundedIndex = Math.min(source.views.length, Math.max(0, requestedIndex));
+    const insertionIndex = sourceIndex < boundedIndex ? boundedIndex - 1 : boundedIndex;
+    if (sourceIndex === insertionIndex) return root;
+    const views = source.views.filter((candidate) => candidate.id !== viewId);
+    views.splice(insertionIndex, 0, { ...view });
+    return replaceWorkspacePaneViews(root, sourcePaneId, views, view.id);
+  }
+  if (target.views.some((candidate) => candidate.id === viewId)) return root;
   if (target.views.length >= MAX_WORKSPACE_GROUP_TABS) return root;
-  return moveWorkspacePaneViewInNode(root, sourcePaneId, targetPaneId, view);
+  const withoutView = removeWorkspacePaneView(root, sourcePaneId, viewId);
+  return withoutView ? insertWorkspacePaneView(withoutView, targetPaneId, view, targetIndex) : root;
 }
 
 export function removeWorkspacePaneSession(
@@ -547,29 +587,17 @@ function mergeWorkspacePaneGroupsInNode(
   return first === root.first && second === root.second ? root : { ...root, first, second };
 }
 
-function moveWorkspacePaneViewInNode(
+function replaceWorkspacePaneViews(
   root: WorkspaceNode,
-  sourcePaneId: string,
-  targetPaneId: string,
-  view: WorkspaceView,
-): WorkspaceNode | null {
+  paneId: string,
+  views: WorkspaceView[],
+  activeViewId: string,
+): WorkspaceNode {
   if (root.kind === "pane") {
-    if (root.id === targetPaneId) {
-      return createWorkspacePaneFromViews(root.id, [...root.views, { ...view }], view.id);
-    }
-    if (root.id !== sourcePaneId) return root;
-    const removedIndex = root.views.findIndex((candidate) => candidate.id === view.id);
-    const views = root.views.filter((candidate) => candidate.id !== view.id);
-    if (!views.length) return null;
-    const activeViewId = root.activeViewId === view.id
-      ? views[Math.min(removedIndex, views.length - 1)].id
-      : root.activeViewId;
-    return createWorkspacePaneFromViews(root.id, views, activeViewId);
+    return root.id === paneId ? createWorkspacePaneFromViews(root.id, views, activeViewId)! : root;
   }
-  const first = moveWorkspacePaneViewInNode(root.first, sourcePaneId, targetPaneId, view);
-  const second = moveWorkspacePaneViewInNode(root.second, sourcePaneId, targetPaneId, view);
-  if (!first) return second;
-  if (!second) return first;
+  const first = replaceWorkspacePaneViews(root.first, paneId, views, activeViewId);
+  const second = replaceWorkspacePaneViews(root.second, paneId, views, activeViewId);
   return first === root.first && second === root.second ? root : { ...root, first, second };
 }
 
@@ -807,6 +835,7 @@ function sanitizeWorkspaceNode(
         id: uniqueViewId(`view-${paneId}-${index + 1}`, state),
         sessionId,
         title: "",
+        color: "",
       }));
     if (!views.length || state.paneCount >= MAX_WORKSPACE_PANES) return null;
     const requestedActiveViewId = cleanString(source.activeViewId, 128);
@@ -871,6 +900,7 @@ function createSanitizedPane(
     id: uniqueViewId(`view-${paneId}-${index + 1}`, state),
     sessionId: candidate,
     title: "",
+    color: "",
   }));
   const activeView = views.find((view) => view.sessionId === sessionId) ?? views[0];
   if (!activeView) return null;
@@ -930,6 +960,7 @@ function sanitizeWorkspaceViews(value: unknown, paneId: string, state: SanitizeS
       id: uniqueViewId(requestedId, state),
       sessionId,
       title: cleanString(source.title, 128),
+      color: sanitizeViewColor(source.color),
     });
     if (views.length >= MAX_WORKSPACE_GROUP_TABS) break;
   }
@@ -961,6 +992,10 @@ function uniqueStrings(values: string[]): string[] {
 function cleanString(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   return [...value.trim()].filter((character) => !/\p{C}/u.test(character)).slice(0, maxLength).join("");
+}
+
+function sanitizeViewColor(value: unknown): string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : "";
 }
 
 function sanitizeTabColors(value: unknown): Record<string, string> {

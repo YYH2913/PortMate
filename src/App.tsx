@@ -59,7 +59,7 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -80,7 +80,7 @@ const menuGroups = [
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
+  { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
 
@@ -139,6 +139,7 @@ type NoticeState = { title: string; message: string } | null;
 type SearchDialogState = { mode: "sessions" | "logs"; query: string };
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
+type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
 type ClosedWorkspaceView = { view: WorkspaceView; paneId: string; index: number };
 type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
 type HostKeyEditDraft = {
@@ -216,12 +217,18 @@ const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]> = {
 };
 
 const tabColorChoices = [
-  { label: "青色", value: "#5eead4" },
-  { label: "蓝色", value: "#68a7ff" },
-  { label: "紫色", value: "#a78bfa" },
-  { label: "琥珀", value: "#f4b860" },
-  { label: "红色", value: "#f87171" },
-  { label: "绿色", value: "#37d67a" },
+  { label: "深青", value: "#008B8B" },
+  { label: "深粉", value: "#FF1493" },
+  { label: "森林绿", value: "#228B22" },
+  { label: "金菊", value: "#DAA520" },
+  { label: "印度红", value: "#CD5C5C" },
+  { label: "兰紫", value: "#BA55D3" },
+  { label: "板岩蓝", value: "#7B68EE" },
+  { label: "橄榄", value: "#808000" },
+  { label: "红色", value: "#FF0000" },
+  { label: "皇家蓝", value: "#4169E1" },
+  { label: "钢蓝", value: "#4682B4" },
+  { label: "水鸭", value: "#008080" },
 ];
 
 export default function App() {
@@ -260,6 +267,7 @@ export default function App() {
   const [zoomedPaneId, setZoomedPaneId] = useState("");
   const [workspaceGroupMove, setWorkspaceGroupMove] = useState<WorkspaceGroupMoveRequest>(null);
   const [workspaceViewRename, setWorkspaceViewRename] = useState<WorkspaceViewRenameRequest>(null);
+  const [workspaceViewContextMenu, setWorkspaceViewContextMenu] = useState<WorkspaceViewContextMenuState>(null);
   const [closedWorkspaceViews, setClosedWorkspaceViews] = useState<ClosedWorkspaceView[]>([]);
   const [workspaceKeymap, setWorkspaceKeymap] = useState<WorkspaceKeymap>(() => (
     normalizeWorkspaceKeymap(loadLocalValue<unknown>(
@@ -282,6 +290,10 @@ export default function App() {
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
 
   const active = sessions.find((session) => session.profile.id === activeId);
+  const workspaceContextPane = workspaceViewContextMenu
+    ? findWorkspacePane(workspaceRoot, workspaceViewContextMenu.paneId)
+    : undefined;
+  const workspaceContextView = workspaceContextPane?.views.find((view) => view.id === workspaceViewContextMenu?.viewId);
   const activeStatus = active?.runtime.status;
   const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
   syncInputRef.current = syncInput;
@@ -775,6 +787,11 @@ function handleMenuAction(item: string) {
       openWorkspaceViewRename();
       return;
     }
+    if (item === "设置标签页颜色") {
+      const pane = findWorkspacePane(workspaceRoot, activePaneId);
+      if (pane) openWorkspaceViewContextMenu(pane.id, pane.activeViewId, window.innerWidth / 2, 44);
+      return;
+    }
     const viewGroupSplit = workspaceViewGroupSplitActions[item];
     if (viewGroupSplit) {
       splitWorkspaceViewToGroup(viewGroupSplit.direction, viewGroupSplit.placement);
@@ -918,6 +935,7 @@ function handleMenuAction(item: string) {
       activateSession(sessionId);
     }
     setOpenMenu(null);
+    setWorkspaceViewContextMenu(null);
     setContextMenu({ x: event.clientX, y: event.clientY, sessionId: nextSessionId });
   }
 
@@ -1253,6 +1271,22 @@ function handleMenuAction(item: string) {
     if (paneId) focusWorkspacePaneInput(paneId);
   }
 
+  function openWorkspaceViewContextMenu(paneId: string, viewId: string, x: number, y: number) {
+    const pane = findWorkspacePane(workspaceRoot, paneId);
+    const view = pane?.views.find((candidate) => candidate.id === viewId);
+    if (!pane || !view) return;
+    activateWorkspacePane(pane.id, view.id);
+    setOpenMenu(null);
+    setContextMenu(null);
+    setWorkspaceViewContextMenu({ x, y, paneId: pane.id, viewId: view.id });
+  }
+
+  function changeWorkspaceViewColor(paneId: string, viewId: string, color: string) {
+    setWorkspaceRoot((current) => setWorkspacePaneViewColor(current, paneId, viewId, color));
+    setWorkspaceViewContextMenu(null);
+    focusWorkspacePaneInput(paneId);
+  }
+
   function closeWorkspaceViews(paneId: string, viewIds: string[]) {
     const panes = workspacePaneLeaves(workspaceRoot);
     const source = panes.find((pane) => pane.id === paneId);
@@ -1415,19 +1449,31 @@ function handleMenuAction(item: string) {
 
   function moveWorkspaceView(sourcePaneId: string, targetPaneId: string) {
     const source = findWorkspacePane(workspaceRoot, sourcePaneId);
+    if (!source || sourcePaneId === targetPaneId) return;
+    const activeView = workspacePaneActiveView(source);
+    moveWorkspaceViewToIndex(sourcePaneId, activeView.id, targetPaneId, Number.POSITIVE_INFINITY);
+  }
+
+  function moveWorkspaceViewToIndex(
+    sourcePaneId: string,
+    viewId: string,
+    targetPaneId: string,
+    targetIndex: number,
+  ) {
+    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
     const target = findWorkspacePane(workspaceRoot, targetPaneId);
-    if (!source || !target || sourcePaneId === targetPaneId) return;
-    if (target.views.length >= MAX_WORKSPACE_GROUP_TABS) {
+    const view = source?.views.find((candidate) => candidate.id === viewId);
+    if (!source || !target || !view) return;
+    if (sourcePaneId !== targetPaneId && target.views.length >= MAX_WORKSPACE_GROUP_TABS) {
       setNotice({ title: "移动视图到分组", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
       return;
     }
-    const activeView = workspacePaneActiveView(source);
-    const nextRoot = moveWorkspacePaneView(workspaceRoot, sourcePaneId, targetPaneId, activeView.id);
+    const nextRoot = moveWorkspacePaneView(workspaceRoot, sourcePaneId, targetPaneId, view.id, targetIndex);
     if (nextRoot === workspaceRoot) return;
     setWorkspaceRoot(nextRoot);
     setActivePaneId(targetPaneId);
-    setActiveId(activeView.sessionId);
-    setZoomedPaneId("");
+    setActiveId(view.sessionId);
+    setZoomedPaneId((current) => current ? targetPaneId : "");
     setWorkspaceGroupMove(null);
     focusWorkspacePaneInput(targetPaneId);
   }
@@ -1466,6 +1512,7 @@ function handleMenuAction(item: string) {
       viewId: activeView!.id,
       sessionId: activeView!.sessionId,
       title: activeView!.title,
+      color: activeView!.color,
     };
     try {
       await openDetachedPaneWindow(request, activeView!.title || session.profile.name);
@@ -1490,7 +1537,7 @@ function handleMenuAction(item: string) {
       setNotice({ title: "返回主窗口失败", message: "原会话已不存在。" });
       return;
     }
-    const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title };
+    const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color };
     const alreadyReturned = workspacePaneLeaves(workspaceRoot).find((pane) => pane.views.some((view) => view.id === command.viewId));
     if (alreadyReturned) {
       setWorkspaceRoot(activateWorkspacePaneView(workspaceRoot, alreadyReturned.id, command.viewId));
@@ -1949,7 +1996,10 @@ function handleMenuAction(item: string) {
   }
 
   return (
-    <main className="wind-root" onContextMenu={openAppContextMenu} onClick={() => setContextMenu(null)}>
+    <main className="wind-root" onContextMenu={openAppContextMenu} onClick={() => {
+      setContextMenu(null);
+      setWorkspaceViewContextMenu(null);
+    }}>
       <header className="wind-menu">
         <div className="menu-row">
           {menuGroups.map((group) => (
@@ -1962,7 +2012,8 @@ function handleMenuAction(item: string) {
                   {group.items.map((item) => (
                     <button
                       key={item}
-                      onClick={() => {
+                      onClick={(event) => {
+                        event.stopPropagation();
                         handleMenuAction(item);
                         setOpenMenu(null);
                       }}
@@ -2072,9 +2123,11 @@ function handleMenuAction(item: string) {
             onCloseView={closeWorkspaceViews}
             onDuplicateView={duplicateActiveWorkspaceView}
             onRenameView={openWorkspaceViewRename}
+            onOpenViewContextMenu={openWorkspaceViewContextMenu}
             onClosePane={closeWorkspacePane}
             onDetachPane={(paneId) => void detachWorkspacePane(paneId)}
             onMoveView={(paneId) => setWorkspaceGroupMove({ paneId, mode: "view" })}
+            onMoveViewDrop={moveWorkspaceViewToIndex}
             onSplitRatioChange={(splitId, ratio) => {
               setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
             }}
@@ -2181,6 +2234,29 @@ function handleMenuAction(item: string) {
           onColor={(color) => {
             setTabColorFromContext(contextMenu.sessionId, color);
             setContextMenu(null);
+          }}
+        />
+      )}
+
+      {workspaceViewContextMenu && workspaceContextPane && workspaceContextView && (
+        <WorkspaceViewContextMenu
+          state={workspaceViewContextMenu}
+          view={workspaceContextView}
+          label={workspaceContextView.title || sessions.find((session) => session.profile.id === workspaceContextView.sessionId)?.profile.name || "会话"}
+          canDuplicate={workspaceContextPane.views.length < MAX_WORKSPACE_GROUP_TABS}
+          canClose={workspacePaneLeaves(workspaceRoot).reduce((count, pane) => count + pane.views.length, 0) > 1}
+          onColor={(color) => changeWorkspaceViewColor(workspaceContextPane.id, workspaceContextView.id, color)}
+          onDuplicate={() => {
+            setWorkspaceViewContextMenu(null);
+            duplicateActiveWorkspaceView(workspaceContextPane.id, workspaceContextView.id);
+          }}
+          onRename={() => {
+            setWorkspaceViewContextMenu(null);
+            openWorkspaceViewRename(workspaceContextPane.id, workspaceContextView.id);
+          }}
+          onClose={() => {
+            setWorkspaceViewContextMenu(null);
+            closeWorkspaceViews(workspaceContextPane.id, [workspaceContextView.id]);
           }}
         />
       )}
@@ -3255,9 +3331,11 @@ function TerminalPaneGrid({
   onCloseView,
   onDuplicateView,
   onRenameView,
+  onOpenViewContextMenu,
   onClosePane,
   onDetachPane,
   onMoveView,
+  onMoveViewDrop,
   onSplitRatioChange,
 }: {
   root: WorkspaceNode | null;
@@ -3272,9 +3350,11 @@ function TerminalPaneGrid({
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
   onRenameView: (paneId: string, viewId?: string) => void;
+  onOpenViewContextMenu: (paneId: string, viewId: string, x: number, y: number) => void;
   onClosePane: (paneId: string) => void;
   onDetachPane: (paneId: string) => void;
   onMoveView: (paneId: string) => void;
+  onMoveViewDrop: (sourcePaneId: string, viewId: string, targetPaneId: string, targetIndex: number) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 }) {
   if (!root) {
@@ -3297,9 +3377,11 @@ function TerminalPaneGrid({
         onCloseView={onCloseView}
         onDuplicateView={onDuplicateView}
         onRenameView={onRenameView}
+        onOpenViewContextMenu={onOpenViewContextMenu}
         onClosePane={onClosePane}
         onDetachPane={onDetachPane}
         onMoveView={onMoveView}
+        onMoveViewDrop={onMoveViewDrop}
         onSplitRatioChange={onSplitRatioChange}
       />
     </div>
@@ -3319,9 +3401,11 @@ type TerminalWorkspaceNodeProps = {
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
   onRenameView: (paneId: string, viewId?: string) => void;
+  onOpenViewContextMenu: (paneId: string, viewId: string, x: number, y: number) => void;
   onClosePane: (paneId: string) => void;
   onDetachPane: (paneId: string) => void;
   onMoveView: (paneId: string) => void;
+  onMoveViewDrop: (sourcePaneId: string, viewId: string, targetPaneId: string, targetIndex: number) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 };
 
@@ -3341,12 +3425,74 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
       onMouseDown={() => props.onActivate(node.id, node.activeViewId)}
     >
       <header>
-        <div className="workspace-pane-tabs" role="tablist" aria-label="分组视图">
-          {groupViews.map(({ view, session: item }) => {
+        <div
+          className="workspace-pane-tabs"
+          role="tablist"
+          aria-label="分组视图"
+          onDragOver={(event) => {
+            if (!isWorkspaceViewDrag(event.dataTransfer) || event.target !== event.currentTarget) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            markWorkspaceDropTarget(event.currentTarget, "end");
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearWorkspaceDropTarget(event.currentTarget);
+          }}
+          onDrop={(event) => {
+            if (event.target !== event.currentTarget) return;
+            const source = readWorkspaceViewDrag(event.dataTransfer);
+            clearWorkspaceDropIndicators();
+            if (!source) return;
+            event.preventDefault();
+            event.stopPropagation();
+            props.onMoveViewDrop(source.paneId, source.viewId, node.id, node.views.length);
+          }}
+        >
+          {groupViews.map(({ view, session: item }, index) => {
             const isActiveView = view.id === node.activeViewId;
             const label = view.title || item.profile.name;
             return (
-              <div className={isActiveView ? "workspace-pane-tab active" : "workspace-pane-tab"} role="presentation" data-view-id={view.id} key={view.id}>
+              <div
+                className={`workspace-pane-tab${isActiveView ? " active" : ""}${view.color ? " has-color" : ""}`}
+                role="presentation"
+                data-view-id={view.id}
+                draggable
+                key={view.id}
+                style={view.color ? { "--workspace-view-color": view.color } as CSSProperties : undefined}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  props.onOpenViewContextMenu(node.id, view.id, event.clientX, event.clientY);
+                }}
+                onDragStart={(event) => {
+                  event.stopPropagation();
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData(WORKSPACE_VIEW_DRAG_TYPE, JSON.stringify({ paneId: node.id, viewId: view.id }));
+                }}
+                onDragEnd={clearWorkspaceDropIndicators}
+                onDragOver={(event) => {
+                  if (!isWorkspaceViewDrag(event.dataTransfer)) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "move";
+                  const position = event.clientX < event.currentTarget.getBoundingClientRect().left + event.currentTarget.offsetWidth / 2
+                    ? "before"
+                    : "after";
+                  markWorkspaceDropTarget(event.currentTarget, position);
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearWorkspaceDropTarget(event.currentTarget);
+                }}
+                onDrop={(event) => {
+                  const source = readWorkspaceViewDrag(event.dataTransfer);
+                  const position = event.currentTarget.dataset.dropPosition;
+                  clearWorkspaceDropIndicators();
+                  if (!source || (position !== "before" && position !== "after")) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  props.onMoveViewDrop(source.paneId, source.viewId, node.id, position === "before" ? index : index + 1);
+                }}
+              >
                 <button
                   type="button"
                   role="tab"
@@ -3564,6 +3710,110 @@ function focusWorkspacePaneInput(paneId: string) {
       .find((item) => item.dataset.paneId === paneId);
     pane?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus({ preventScroll: true });
   });
+}
+
+const WORKSPACE_VIEW_DRAG_TYPE = "application/x-portmate-workspace-view";
+
+function isWorkspaceViewDrag(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes(WORKSPACE_VIEW_DRAG_TYPE);
+}
+
+function readWorkspaceViewDrag(dataTransfer: DataTransfer): { paneId: string; viewId: string } | null {
+  if (!isWorkspaceViewDrag(dataTransfer)) return null;
+  try {
+    const source = JSON.parse(dataTransfer.getData(WORKSPACE_VIEW_DRAG_TYPE)) as Record<string, unknown>;
+    const paneId = typeof source.paneId === "string" ? source.paneId : "";
+    const viewId = typeof source.viewId === "string" ? source.viewId : "";
+    if (!paneId || !viewId || paneId.length > 128 || viewId.length > 128 || /[\u0000-\u001f\u007f]/.test(`${paneId}${viewId}`)) return null;
+    return { paneId, viewId };
+  } catch {
+    return null;
+  }
+}
+
+function markWorkspaceDropTarget(element: HTMLElement, position: "before" | "after" | "end") {
+  clearWorkspaceDropIndicators();
+  element.dataset.dropPosition = position;
+}
+
+function clearWorkspaceDropTarget(element: HTMLElement) {
+  delete element.dataset.dropPosition;
+}
+
+function clearWorkspaceDropIndicators() {
+  document.querySelectorAll<HTMLElement>("[data-drop-position]").forEach(clearWorkspaceDropTarget);
+}
+
+function WorkspaceViewContextMenu({
+  state,
+  view,
+  label,
+  canDuplicate,
+  canClose,
+  onColor,
+  onDuplicate,
+  onRename,
+  onClose,
+}: {
+  state: NonNullable<WorkspaceViewContextMenuState>;
+  view: WorkspaceView;
+  label: string;
+  canDuplicate: boolean;
+  canClose: boolean;
+  onColor: (color: string) => void;
+  onDuplicate: () => void;
+  onRename: () => void;
+  onClose: () => void;
+}) {
+  const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
+  const top = Math.max(8, Math.min(state.y, window.innerHeight - 310));
+  return (
+    <div
+      className="portmate-context-menu workspace-view-context-menu"
+      style={{ left, top }}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <div className="workspace-view-context-title" title={label}>
+        <span className={view.color ? "tab-mark colored" : "tab-mark"} style={view.color ? { background: view.color } : undefined} />
+        <strong>{label}</strong>
+      </div>
+      <span className="context-section-label">标签颜色</span>
+      <div className="workspace-view-color-grid" role="group" aria-label="标签颜色">
+        {tabColorChoices.map((color) => (
+          <button
+            key={color.value}
+            type="button"
+            className={view.color === color.value ? "active" : ""}
+            title={color.label}
+            aria-label={color.label}
+            aria-pressed={view.color === color.value}
+            onClick={() => onColor(color.value)}
+          >
+            <span style={{ background: color.value }} />
+          </button>
+        ))}
+        <button
+          type="button"
+          className={!view.color ? "active clear" : "clear"}
+          title="清除颜色"
+          aria-label="清除颜色"
+          aria-pressed={!view.color}
+          onClick={() => onColor("")}
+        >
+          <Ban size={13} />
+        </button>
+      </div>
+      <ContextDivider />
+      <ContextMenuButton label="复制视图" disabled={!canDuplicate} onClick={onDuplicate} />
+      <ContextMenuButton label="重命名视图" onClick={onRename} />
+      <ContextDivider />
+      <ContextMenuButton label="关闭视图" disabled={!canClose} onClick={onClose} />
+    </div>
+  );
 }
 
 function PortMateContextMenu({

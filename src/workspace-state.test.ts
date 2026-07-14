@@ -20,6 +20,7 @@ import {
   moveWorkspacePaneView,
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
+  setWorkspacePaneViewColor,
   splitWorkspacePane,
   splitWorkspacePaneSessionToGroup,
   splitWorkspacePaneViewToGroup,
@@ -263,8 +264,8 @@ describe("workspace snapshots", () => {
         id: "group-a",
         activeViewId: "view-b",
         views: [
-          { id: "view-a", sessionId: "session-a", title: "Primary" },
-          { id: "view-b", sessionId: "session-a", title: "Mirror" },
+          { id: "view-a", sessionId: "session-a", title: "Primary", color: "#228b22" },
+          { id: "view-b", sessionId: "session-a", title: "Mirror", color: "invalid" },
         ],
       },
       activePaneId: "group-a",
@@ -274,7 +275,8 @@ describe("workspace snapshots", () => {
 
     expect(snapshot.version).toBe(4);
     expect(pane.sessionIds).toEqual(["session-a", "session-a"]);
-    expect(workspacePaneActiveView(pane)).toMatchObject({ id: "view-b", title: "Mirror" });
+    expect(pane.views[0].color).toBe("#228B22");
+    expect(workspacePaneActiveView(pane)).toMatchObject({ id: "view-b", title: "Mirror", color: "" });
     const activated = activateWorkspacePaneView(snapshot.root, pane.id, "view-a")!;
     expect(workspacePaneActiveView(findWorkspacePane(activated, pane.id)!)).toMatchObject({ id: "view-a", title: "Primary" });
   });
@@ -287,7 +289,8 @@ describe("workspace snapshots", () => {
       activeId: "a",
     });
     const source = findWorkspacePane(snapshot.root, "group-a")!.views[0];
-    const duplicated = duplicateWorkspacePaneView(snapshot.root, "group-a", source.id, "view-copy", "Router Mirror")!;
+    const colored = setWorkspacePaneViewColor(snapshot.root, "group-a", source.id, "#4169e1")!;
+    const duplicated = duplicateWorkspacePaneView(colored, "group-a", source.id, "view-copy", "Router Mirror")!;
     const renamed = renameWorkspacePaneView(duplicated, "group-a", source.id, "Router Primary")!;
     const pane = findWorkspacePane(renamed, "group-a")!;
 
@@ -297,8 +300,11 @@ describe("workspace snapshots", () => {
       [pane.views[2].id, "b", ""],
     ]);
     expect(pane.activeViewId).toBe("view-copy");
+    expect(pane.views.slice(0, 2).map((view) => view.color)).toEqual(["#4169E1", "#4169E1"]);
     const closed = removeWorkspacePaneView(renamed, "group-a", source.id)!;
     expect(findWorkspacePane(closed, "group-a")?.views.map((view) => view.id)).toEqual(["view-copy", pane.views[2].id]);
+    const cleared = setWorkspacePaneViewColor(closed, "group-a", "view-copy", "not-a-color")!;
+    expect(findWorkspacePane(cleared, "group-a")?.views[0].color).toBe("");
   });
 
   it("moves and splits the exact aliased view among duplicate session bindings", () => {
@@ -314,26 +320,51 @@ describe("workspace snapshots", () => {
           id: "group-a",
           activeViewId: "view-mirror",
           views: [
-            { id: "view-primary", sessionId: "a", title: "Primary" },
-            { id: "view-mirror", sessionId: "a", title: "Mirror" },
+            { id: "view-primary", sessionId: "a", title: "Primary", color: "" },
+            { id: "view-mirror", sessionId: "a", title: "Mirror", color: "#FF1493" },
           ],
         },
         second: {
           kind: "pane",
           id: "group-b",
           activeViewId: "view-b",
-          views: [{ id: "view-b", sessionId: "b", title: "" }],
+          views: [{ id: "view-b", sessionId: "b", title: "", color: "" }],
         },
       },
       activePaneId: "group-a",
       activeId: "a",
     });
-    const moved = moveWorkspacePaneView(snapshot.root, "group-a", "group-b", "view-mirror")!;
+    const moved = moveWorkspacePaneView(snapshot.root, "group-a", "group-b", "view-mirror", 0)!;
     expect(findWorkspacePane(moved, "group-a")?.views.map((view) => view.id)).toEqual(["view-primary"]);
-    expect(findWorkspacePane(moved, "group-b")?.views.map((view) => view.id)).toEqual(["view-b", "view-mirror"]);
+    expect(findWorkspacePane(moved, "group-b")?.views.map((view) => view.id)).toEqual(["view-mirror", "view-b"]);
     const split = splitWorkspacePaneViewToGroup(moved, "group-b", "view-mirror", "horizontal", "group-c", "split-c")!;
-    expect(findWorkspacePane(split, "group-c")?.views).toEqual([{ id: "view-mirror", sessionId: "a", title: "Mirror" }]);
+    expect(findWorkspacePane(split, "group-c")?.views).toEqual([{ id: "view-mirror", sessionId: "a", title: "Mirror", color: "#FF1493" }]);
     expect(findWorkspacePane(split, "group-b")?.views.map((view) => view.id)).toEqual(["view-b"]);
+  });
+
+  it("reorders exact views within a group using insertion slots", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "pane",
+        id: "group-a",
+        activeViewId: "view-b",
+        views: [
+          { id: "view-a", sessionId: "a", title: "", color: "" },
+          { id: "view-b", sessionId: "b", title: "", color: "#008B8B" },
+          { id: "view-c", sessionId: "c", title: "", color: "" },
+        ],
+      },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+
+    const first = moveWorkspacePaneView(snapshot.root, "group-a", "group-a", "view-c", 0)!;
+    expect(findWorkspacePane(first, "group-a")?.views.map((view) => view.id)).toEqual(["view-c", "view-a", "view-b"]);
+    expect(findWorkspacePane(first, "group-a")?.activeViewId).toBe("view-c");
+    const last = moveWorkspacePaneView(first, "group-a", "group-a", "view-c", 3)!;
+    expect(findWorkspacePane(last, "group-a")?.views.map((view) => view.id)).toEqual(["view-a", "view-b", "view-c"]);
+    expect(findWorkspacePane(last, "group-a")?.views[1].color).toBe("#008B8B");
   });
 
   it("repairs duplicate v4 view ids and removes only unavailable session views", () => {

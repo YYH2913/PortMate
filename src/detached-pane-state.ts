@@ -7,6 +7,7 @@ export type DetachedPaneRequest = {
   viewId: string;
   sessionId: string;
   title: string;
+  color: string;
 };
 
 export type DetachedPaneCommand = DetachedPaneRequest & {
@@ -28,6 +29,7 @@ export function buildDetachedPanePath(request: DetachedPaneRequest): string {
     viewId: request.viewId,
     sessionId: request.sessionId,
     title: request.title,
+    color: request.color,
   });
   return `/?${params.toString()}`;
 }
@@ -40,8 +42,9 @@ export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | 
   const viewId = cleanRouteId(params.get("viewId"));
   const sessionId = cleanRouteId(params.get("sessionId"));
   const title = cleanRouteTitle(params.get("title"));
-  if (!windowIdPattern.test(windowId) || !paneId || !viewId || !sessionId || title === null) return null;
-  return { windowId, paneId, viewId, sessionId, title };
+  const color = cleanRouteColor(params.get("color"));
+  if (!windowIdPattern.test(windowId) || !paneId || !viewId || !sessionId || title === null || color === null) return null;
+  return { windowId, paneId, viewId, sessionId, title, color };
 }
 
 export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
@@ -55,6 +58,7 @@ export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneComman
     viewId: typeof source.viewId === "string" ? source.viewId : "",
     sessionId: typeof source.sessionId === "string" ? source.sessionId : "",
     title: typeof source.title === "string" ? source.title : "",
+    color: typeof source.color === "string" ? source.color : "",
   })}`);
   return request ? { ...request, action: source.action } : null;
 }
@@ -79,4 +83,9 @@ function cleanRouteTitle(value: string | null): string | null {
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
   const clean = raw.trim();
   return [...clean].length <= 128 ? clean : null;
+}
+
+function cleanRouteColor(value: string | null): string | null {
+  if (!value) return "";
+  return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : null;
 }

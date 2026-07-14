@@ -70,6 +70,10 @@ body.detached-window {
   font-size: 12px;
 }
 
+.detached-pane-toolbar.colored {
+  border-top: 2px solid;
+}
+
 .detached-pane-toolbar .detached-brand {
   color: var(--cyan);
   font-weight: 700;
@@ -1448,6 +1452,7 @@ button {
 }
 
 .workspace-pane-tabs {
+  position: relative;
   display: flex;
   align-self: stretch;
   flex: 1;
@@ -1470,6 +1475,7 @@ button {
 }
 
 .workspace-pane-tab {
+  position: relative;
   display: flex;
   align-items: center;
   flex: 0 1 140px;
@@ -1481,6 +1487,41 @@ button {
   background: transparent;
   color: var(--muted);
   font-size: 10px;
+}
+
+.workspace-pane-tab.has-color {
+  background: color-mix(in srgb, var(--workspace-view-color) 20%, transparent);
+}
+
+.workspace-pane-tab.has-color:hover,
+.workspace-pane-tab.has-color.active {
+  background: color-mix(in srgb, var(--workspace-view-color) 32%, #17212b);
+}
+
+.workspace-pane-tab[data-drop-position="before"]::before,
+.workspace-pane-tab[data-drop-position="after"]::after,
+.workspace-pane-tabs[data-drop-position="end"]::after {
+  position: absolute;
+  z-index: 2;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  background: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(7, 19, 27, 0.9);
+  content: "";
+  pointer-events: none;
+}
+
+.workspace-pane-tab[data-drop-position="before"]::before {
+  left: -1px;
+}
+
+.workspace-pane-tab[data-drop-position="after"]::after {
+  right: -1px;
+}
+
+.workspace-pane-tabs[data-drop-position="end"]::after {
+  right: 2px;
 }
 
 .workspace-pane-tab-label {
@@ -1542,6 +1583,11 @@ button {
   background: var(--muted);
 }
 
+.workspace-pane-tab.has-color .tab-mark,
+.workspace-pane-tab.has-color.active .tab-mark {
+  background: var(--workspace-view-color);
+}
+
 .workspace-pane-tab:hover,
 .workspace-pane-tab.active {
   background: #17212b;
@@ -1550,6 +1596,76 @@ button {
 
 .workspace-pane-tab.active .tab-mark {
   background: var(--cyan);
+}
+
+.workspace-view-context-menu {
+  width: 244px;
+}
+
+.workspace-view-context-title {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+}
+
+.workspace-view-context-title .tab-mark {
+  width: 6px;
+  height: 6px;
+  background: var(--muted);
+}
+
+.workspace-view-context-title strong {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-section-label {
+  padding: 4px 8px 3px;
+  color: #a8b2bc;
+  font-size: 10px;
+}
+
+.workspace-view-color-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 26px);
+  gap: 4px;
+  padding: 4px 8px 7px;
+}
+
+.workspace-view-color-grid button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-view-color-grid button:hover,
+.workspace-view-color-grid button.active {
+  border-color: rgba(215, 222, 230, 0.68);
+  background: #3b3f43;
+}
+
+.workspace-view-color-grid button > span {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+}
+
+.workspace-view-color-grid button.clear {
+  border-style: dashed;
 }
 
 .terminal-pane header > span {

@@ -72,7 +72,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   return (
     <main className="detached-pane-root" data-window-id={request.windowId} data-pane-id={request.paneId}>
-      <header className="detached-pane-toolbar">
+      <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
         <strong>{request.title || session?.profile.name || "会话不可用"}</strong>
         <span className={`tab-status ${session?.runtime.status ?? "disconnected"}`} />
