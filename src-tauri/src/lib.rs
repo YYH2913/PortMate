@@ -4014,12 +4014,16 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
             token_ref: endpoint_token_ref,
             store_path: state.store_path.display().to_string(),
         };
-        match serde_json::to_vec_pretty(&endpoint)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| fs::write(&endpoint_path, bytes).map_err(|error| error.to_string()))
-        {
+        match write_ipc_endpoint_file(&endpoint_path, &endpoint) {
             Ok(()) => {}
             Err(error) => {
+                if let Some(token_ref) = endpoint.token_ref.as_deref() {
+                    if let Err(cleanup_error) = delete_secret_from_keyring(token_ref) {
+                        eprintln!(
+                            "PortMate: failed to clean up unused MCP IPC token {token_ref}: {cleanup_error}"
+                        );
+                    }
+                }
                 eprintln!("PortMate: failed to write MCP IPC endpoint: {error}");
                 return;
             }
@@ -4041,6 +4045,47 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
             }
         }
     });
+}
+
+fn write_ipc_endpoint_file(path: &Path, endpoint: &IpcEndpointFile) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(endpoint)
+        .map_err(|error| format!("failed to encode MCP IPC endpoint: {error}"))?;
+    write_private_atomic_file(path, &bytes, "MCP IPC endpoint")
+}
+
+fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create {label} directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let prefix = format!(
+        ".{}.",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("portmate-private")
+    );
+    let mut temp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|error| format!("failed to create temporary {label}: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("failed to secure temporary {label}: {error}"))?;
+    }
+    temp.as_file_mut()
+        .write_all(bytes)
+        .and_then(|_| temp.as_file_mut().flush())
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|error| format!("failed to persist temporary {label}: {error}"))?;
+    temp.persist(path)
+        .map_err(|error| format!("failed to atomically replace {label}: {}", error.error))?;
+    Ok(())
 }
 
 /// Constant-time string comparison so a local process guessing the IPC token
@@ -25172,6 +25217,72 @@ mod tests {
 
             let _ = fs::remove_dir_all(root);
         });
+    }
+
+    #[test]
+    fn ipc_endpoint_file_is_private_atomic_and_does_not_follow_symlinks() {
+        let root = std::env::temp_dir().join(format!("portmate-ipc-endpoint-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let endpoint_path = root.join("portmate-ipc.json");
+        fs::write(&endpoint_path, b"old endpoint").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&endpoint_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let endpoint = IpcEndpointFile {
+            addr: "127.0.0.1:43123".to_string(),
+            token: Some("fallback-token".to_string()),
+            token_ref: None,
+            store_path: root.join("portmate-store.sqlite3").display().to_string(),
+        };
+
+        write_ipc_endpoint_file(&endpoint_path, &endpoint).unwrap();
+        let persisted: IpcEndpointFile =
+            serde_json::from_slice(&fs::read(&endpoint_path).unwrap()).unwrap();
+        assert_eq!(persisted.addr, endpoint.addr);
+        assert_eq!(persisted.token, endpoint.token);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&endpoint_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+
+            let protected = root.join("protected-data");
+            fs::write(&protected, b"must remain unchanged").unwrap();
+            fs::remove_file(&endpoint_path).unwrap();
+            std::os::unix::fs::symlink(&protected, &endpoint_path).unwrap();
+            write_ipc_endpoint_file(&endpoint_path, &endpoint).unwrap();
+            assert_eq!(fs::read(&protected).unwrap(), b"must remain unchanged");
+            assert!(!fs::symlink_metadata(&endpoint_path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+
+            let locked = root.join("locked");
+            fs::create_dir_all(&locked).unwrap();
+            let locked_endpoint = locked.join("portmate-ipc.json");
+            fs::write(&locked_endpoint, b"previous valid endpoint").unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+            let error = write_ipc_endpoint_file(&locked_endpoint, &endpoint).unwrap_err();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(error.contains("temporary MCP IPC endpoint"));
+            assert_eq!(
+                fs::read(&locked_endpoint).unwrap(),
+                b"previous valid endpoint"
+            );
+        }
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

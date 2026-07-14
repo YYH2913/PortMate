@@ -150,6 +150,11 @@ PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 cargo run -p portmate-mcp
 
 When the desktop app is running, it writes `portmate-ipc.json` next to the store. The live IPC token is stored in the OS keyring and the endpoint file contains a `tokenRef` rather than the token itself when keyring access is available. The MCP bridge uses that endpoint to forward `send_text`, `send_key`, `run_command`, `open_session`, `close_session`, `start_transfer`, `create_tunnel`, `list_tmux_state`, and `attach_tmux` to the live desktop runtime. If the desktop IPC file is unavailable, read tools fall back to the store snapshot.
 
+Endpoint publication uses a synced same-directory temporary file and atomic replacement. Unix files
+are forced to mode `0600`, including the plaintext-token fallback used when native keyring storage
+fails; replacement does not follow a pre-existing symlink, and a failed publish keeps the previous
+endpoint intact.
+
 Write tools are denied by default. For a trusted local development run with an empty grant store:
 
 ```bash

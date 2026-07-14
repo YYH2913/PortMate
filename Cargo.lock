@@ -5189,6 +5189,7 @@ dependencies = [
  "tar",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "uuid",
  "zeroize",
