@@ -130,7 +130,7 @@ export function buildProfileSecretMigrationRequest(
     ? Array.from(new Set(availableProfileIds.map((id) => id.trim()).filter(Boolean)))
     : [scopeProfileId.trim()].filter(Boolean);
   if (!profileIds.length) {
-    throw new Error("凭据迁移必须选择至少一个 SSH/Tmux Profile");
+    throw new Error("凭据迁移必须选择至少一个支持凭据的 Profile");
   }
   return { targetStorage, profileIds, cleanupSource };
 }

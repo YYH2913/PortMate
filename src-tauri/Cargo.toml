@@ -15,6 +15,7 @@ tauri-build = { version = "2.5.3", features = [] }
 [dependencies]
 portmate-core = { path = "../crates/portmate-core" }
 portmate-kdf = { path = "../crates/portmate-kdf" }
+base64.workspace = true
 chrono.workspace = true
 flate2 = "1.1.9"
 getrandom = "0.3"

@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use flate2::{write::GzEncoder, Compression};
 use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
@@ -157,6 +158,7 @@ const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
 const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
 const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_HTTP_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_HTTP_PROXY_CREDENTIAL_BYTES: usize = 8 * 1024;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
@@ -1492,6 +1494,17 @@ pub struct SecretWriteRequest {
     pub storage: Option<SecretStorage>,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum ProxyPasswordUpdate {
+    Set {
+        password: String,
+        #[serde(default)]
+        storage: Option<SecretStorage>,
+    },
+    Clear,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecretStorage {
@@ -2457,10 +2470,11 @@ fn save_session_profile(
     state: State<'_, AppState>,
     profile: SessionProfile,
     expected_profile: Option<SessionProfile>,
+    proxy_password_update: Option<ProxyPasswordUpdate>,
 ) -> Result<SessionSummary, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let profile = normalize_session_profile(profile);
+    let mut profile = normalize_session_profile(profile);
     let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
@@ -2477,17 +2491,36 @@ fn save_session_profile(
         .as_ref()
         .map(profile_secret_refs)
         .unwrap_or_default();
+    let generated_proxy_secret_ref =
+        apply_proxy_password_update_with_io(&mut profile, proxy_password_update, write_new_secret)?;
     let new_secret_refs = profile_secret_refs(&profile);
-    for secret_ref in new_secret_refs.difference(&old_secret_refs) {
-        if is_reserved_mcp_secret_ref(secret_ref) {
-            return Err("MCP token 引用不能用作 SSH/Tmux Profile 凭据".to_string());
+    let save_result = (|| {
+        for secret_ref in new_secret_refs.difference(&old_secret_refs) {
+            if is_reserved_mcp_secret_ref(secret_ref) {
+                return Err("MCP token 引用不能用作 Profile 凭据".to_string());
+            }
+            read_secret_from_store(secret_ref).map_err(|error| {
+                format!("新增 Profile secretRef 无法读取 ({secret_ref}): {error}")
+            })?;
         }
-        read_secret_from_store(secret_ref)
-            .map_err(|error| format!("新增 Profile secretRef 无法读取 ({secret_ref}): {error}"))?;
-    }
-    let mut next_store = store.clone();
-    let summary = next_store.upsert_profile(profile);
-    save_store(&state.store_path, &next_store)?;
+        let mut next_store = store.clone();
+        let summary = next_store.upsert_profile(profile);
+        save_store(&state.store_path, &next_store)?;
+        Ok((summary, next_store))
+    })();
+    let (summary, next_store) = match save_result {
+        Ok(saved) => saved,
+        Err(error) => {
+            if let Some(secret_ref) = generated_proxy_secret_ref.as_deref() {
+                if let Err(cleanup_error) = delete_secret_from_store(secret_ref) {
+                    return Err(format!(
+                        "{error}；新代理密码 secret 回收失败，已保留孤立副本: {cleanup_error}"
+                    ));
+                }
+            }
+            return Err(error);
+        }
+    };
     *store = next_store;
     for secret_ref in old_secret_refs {
         if secret_ref_usage_count(&store, &secret_ref) == 0 {
@@ -2497,6 +2530,71 @@ fn save_session_profile(
         }
     }
     Ok(summary)
+}
+
+fn validate_proxy_credentials(
+    kind: ProxyKind,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    if username.is_empty() {
+        return Err("代理用户名不能为空".to_string());
+    }
+    if password.is_empty() {
+        return Err("代理密码不能为空".to_string());
+    }
+    match kind {
+        ProxyKind::HttpConnect => {
+            if username
+                .bytes()
+                .any(|byte| matches!(byte, b':' | b'\r' | b'\n'))
+            {
+                return Err("HTTP CONNECT 代理用户名不能包含冒号或换行符".to_string());
+            }
+            if username.len().saturating_add(password.len()) > MAX_HTTP_PROXY_CREDENTIAL_BYTES {
+                return Err(format!(
+                    "HTTP CONNECT 代理凭据不能超过 {MAX_HTTP_PROXY_CREDENTIAL_BYTES} bytes"
+                ));
+            }
+        }
+        ProxyKind::Socks5 => {
+            if username.len() > u8::MAX as usize {
+                return Err("SOCKS5 代理用户名长度必须为 1-255 bytes".to_string());
+            }
+            if password.len() > u8::MAX as usize {
+                return Err("SOCKS5 代理密码长度必须为 1-255 bytes".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_proxy_password_update_with_io<WriteSecret>(
+    profile: &mut SessionProfile,
+    update: Option<ProxyPasswordUpdate>,
+    mut write_secret: WriteSecret,
+) -> Result<Option<String>, String>
+where
+    WriteSecret: FnMut(Option<SecretStorage>, &str) -> Result<String, String>,
+{
+    let Some(update) = update else {
+        return Ok(None);
+    };
+    let proxy =
+        profile_proxy_mut(profile).ok_or_else(|| "当前会话协议不支持代理密码".to_string())?;
+    match update {
+        ProxyPasswordUpdate::Set { password, storage } => {
+            let password = Zeroizing::new(password);
+            validate_proxy_credentials(proxy.kind, &proxy.username, password.as_str())?;
+            let secret_ref = write_secret(storage, password.as_str())?;
+            proxy.password_secret_ref = Some(secret_ref.clone());
+            Ok(Some(secret_ref))
+        }
+        ProxyPasswordUpdate::Clear => {
+            proxy.password_secret_ref = None;
+            Ok(None)
+        }
+    }
 }
 
 fn validate_profile_transport_change(
@@ -4564,7 +4662,43 @@ fn normalized_enabled_proxy(proxy: &ProxyConfig) -> Result<Option<ProxyConfig>, 
     if proxy.port == 0 {
         return Err("代理端口必须在 1-65535 之间".to_string());
     }
+    if let Some(secret_ref) = proxy.password_secret_ref.as_deref() {
+        if canonical_secret_ref(secret_ref).is_none() {
+            return Err("代理密码 secretRef 无效".to_string());
+        }
+        if proxy.username.is_empty() {
+            return Err("已保存代理密码时，代理用户名不能为空".to_string());
+        }
+    }
     Ok(Some(proxy))
+}
+
+struct ProxyCredentials {
+    username: String,
+    password: Zeroizing<String>,
+}
+
+fn resolve_proxy_credentials_with<ReadSecret>(
+    proxy: &ProxyConfig,
+    mut read_secret: ReadSecret,
+) -> Result<Option<ProxyCredentials>, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+{
+    let Some(secret_ref) = proxy.password_secret_ref.as_deref() else {
+        return Ok(None);
+    };
+    if proxy.username.is_empty() {
+        return Err("已保存代理密码时，代理用户名不能为空".to_string());
+    }
+    let password = Zeroizing::new(
+        read_secret(secret_ref).map_err(|error| format!("代理密码读取失败: {error}"))?,
+    );
+    validate_proxy_credentials(proxy.kind, &proxy.username, password.as_str())?;
+    Ok(Some(ProxyCredentials {
+        username: proxy.username.clone(),
+        password,
+    }))
 }
 
 async fn connect_target_stream(
@@ -4579,6 +4713,7 @@ async fn connect_target_stream(
             .await
             .map_err(|error| format!("{label} 连接失败 {authority}: {error}"));
     };
+    let credentials = resolve_proxy_credentials_with(&proxy, read_secret_from_store)?;
     let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
         .await
         .map_err(|error| {
@@ -4589,10 +4724,17 @@ async fn connect_target_stream(
         })?;
     match proxy.kind {
         ProxyKind::HttpConnect => {
-            perform_http_connect(&mut stream, &authority, label).await?;
+            perform_http_connect(&mut stream, &authority, credentials.as_ref(), label).await?;
         }
         ProxyKind::Socks5 => {
-            perform_socks5_connect(&mut stream, target_host.trim(), target_port, label).await?;
+            perform_socks5_connect(
+                &mut stream,
+                target_host.trim(),
+                target_port,
+                credentials.as_ref(),
+                label,
+            )
+            .await?;
         }
     }
     Ok(stream)
@@ -4601,11 +4743,33 @@ async fn connect_target_stream(
 async fn perform_http_connect(
     stream: &mut TcpStream,
     authority: &str,
+    credentials: Option<&ProxyCredentials>,
     label: &str,
 ) -> Result<(), String> {
-    let request = format!(
-        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
-    );
+    if let Some(credentials) = credentials {
+        validate_proxy_credentials(
+            ProxyKind::HttpConnect,
+            &credentials.username,
+            credentials.password.as_str(),
+        )?;
+    }
+    let authorization = credentials.map(|credentials| {
+        let mut raw = Zeroizing::new(Vec::with_capacity(
+            credentials.username.len() + credentials.password.len() + 1,
+        ));
+        raw.extend_from_slice(credentials.username.as_bytes());
+        raw.push(b':');
+        raw.extend_from_slice(credentials.password.as_bytes());
+        Zeroizing::new(BASE64_STANDARD.encode(raw.as_slice()))
+    });
+    let request = Zeroizing::new(match authorization.as_deref() {
+        Some(authorization) => format!(
+            "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Authorization: Basic {authorization}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+        ),
+        None => format!(
+            "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+        ),
+    });
     stream
         .write_all(request.as_bytes())
         .await
@@ -4651,10 +4815,19 @@ async fn perform_socks5_connect(
     stream: &mut TcpStream,
     target_host: &str,
     target_port: u16,
+    credentials: Option<&ProxyCredentials>,
     label: &str,
 ) -> Result<(), String> {
+    if let Some(credentials) = credentials {
+        validate_proxy_credentials(
+            ProxyKind::Socks5,
+            &credentials.username,
+            credentials.password.as_str(),
+        )?;
+    }
+    let auth_method = if credentials.is_some() { 0x02 } else { 0x00 };
     stream
-        .write_all(&[0x05, 0x01, 0x00])
+        .write_all(&[0x05, 0x01, auth_method])
         .await
         .map_err(|error| format!("{label} SOCKS5 协商请求失败: {error}"))?;
     let mut greeting = [0_u8; 2];
@@ -4665,11 +4838,38 @@ async fn perform_socks5_connect(
     if greeting[0] != 0x05 {
         return Err(format!("{label} SOCKS5 代理返回未知版本: {}", greeting[0]));
     }
-    if greeting[1] != 0x00 {
+    if greeting[1] == 0xff {
+        return Err(format!("{label} SOCKS5 代理没有可接受的认证方式"));
+    }
+    if greeting[1] != auth_method {
         return Err(format!(
-            "{label} SOCKS5 代理不接受无认证方式: 0x{:02x}",
+            "{label} SOCKS5 代理选择了未提供的认证方式: 0x{:02x}",
             greeting[1]
         ));
+    }
+    if let Some(credentials) = credentials {
+        let username = credentials.username.as_bytes();
+        let password = credentials.password.as_bytes();
+        let mut request = Zeroizing::new(Vec::with_capacity(username.len() + password.len() + 3));
+        request.extend_from_slice(&[0x01, username.len() as u8]);
+        request.extend_from_slice(username);
+        request.push(password.len() as u8);
+        request.extend_from_slice(password);
+        stream
+            .write_all(request.as_slice())
+            .await
+            .map_err(|error| format!("{label} SOCKS5 认证请求失败: {error}"))?;
+        let mut response = [0_u8; 2];
+        stream
+            .read_exact(&mut response)
+            .await
+            .map_err(|error| format!("{label} SOCKS5 认证响应失败: {error}"))?;
+        if response[0] != 0x01 {
+            return Err(format!("{label} SOCKS5 认证返回未知版本: {}", response[0]));
+        }
+        if response[1] != 0x00 {
+            return Err(format!("{label} SOCKS5 用户名/密码认证失败"));
+        }
     }
 
     let host = target_host.as_bytes();
@@ -12724,6 +12924,22 @@ fn ssh_connection_mut(profile: &mut SessionProfile) -> Result<&mut SshConnection
     }
 }
 
+fn profile_proxy(profile: &SessionProfile) -> Option<&ProxyConfig> {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(&ssh.proxy),
+        ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => Some(&tcp.proxy),
+        ConnectionConfig::Serial(_) | ConnectionConfig::Shell(_) => None,
+    }
+}
+
+fn profile_proxy_mut(profile: &mut SessionProfile) -> Option<&mut ProxyConfig> {
+    match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(&mut ssh.proxy),
+        ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => Some(&mut tcp.proxy),
+        ConnectionConfig::Serial(_) | ConnectionConfig::Shell(_) => None,
+    }
+}
+
 fn find_client_identity(
     store: &SessionStore,
     profile_id: &str,
@@ -12910,88 +13126,15 @@ fn secret_ref_usage_count(store: &SessionStore, secret_ref: &str) -> usize {
     store
         .profiles
         .iter()
-        .filter_map(|profile| ssh_connection(profile).ok())
-        .map(|ssh| {
-            usize::from(
-                ssh.password_secret_ref
-                    .as_deref()
-                    .and_then(canonical_secret_ref)
-                    .as_deref()
-                    == Some(expected.as_str()),
-            ) + usize::from(
-                ssh.passphrase_secret_ref
-                    .as_deref()
-                    .and_then(canonical_secret_ref)
-                    .as_deref()
-                    == Some(expected.as_str()),
-            ) + ssh
-                .identity_refs
-                .iter()
-                .filter(|identity| {
-                    identity
-                        .secret_ref
-                        .as_deref()
-                        .and_then(canonical_secret_ref)
-                        .as_deref()
-                        == Some(expected.as_str())
-                })
-                .count()
-                + ssh
-                    .jumps
-                    .iter()
-                    .map(|jump| {
-                        usize::from(
-                            jump.password_secret_ref
-                                .as_deref()
-                                .and_then(canonical_secret_ref)
-                                .as_deref()
-                                == Some(expected.as_str()),
-                        ) + usize::from(
-                            jump.passphrase_secret_ref
-                                .as_deref()
-                                .and_then(canonical_secret_ref)
-                                .as_deref()
-                                == Some(expected.as_str()),
-                        )
-                    })
-                    .sum::<usize>()
-        })
-        .sum()
+        .flat_map(profile_secret_ref_occurrences)
+        .filter(|secret_ref| secret_ref == &expected)
+        .count()
 }
 
 fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
-    let Ok(ssh) = ssh_connection(profile) else {
-        return HashSet::new();
-    };
-    let mut refs = HashSet::new();
-    for secret_ref in [
-        ssh.password_secret_ref.as_deref(),
-        ssh.passphrase_secret_ref.as_deref(),
-    ] {
-        if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
-            refs.insert(secret_ref);
-        }
-    }
-    for identity in &ssh.identity_refs {
-        if let Some(secret_ref) = identity
-            .secret_ref
-            .as_deref()
-            .and_then(canonical_secret_ref)
-        {
-            refs.insert(secret_ref);
-        }
-    }
-    for jump in &ssh.jumps {
-        for secret_ref in [
-            jump.password_secret_ref.as_deref(),
-            jump.passphrase_secret_ref.as_deref(),
-        ] {
-            if let Some(secret_ref) = secret_ref.and_then(canonical_secret_ref) {
-                refs.insert(secret_ref);
-            }
-        }
-    }
-    refs
+    profile_secret_ref_occurrences(profile)
+        .into_iter()
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -13014,6 +13157,8 @@ struct ProfileSecretMigrationJournalProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProfileSecretMigrationJournalProjection {
+    #[serde(default)]
+    proxy_password_secret_ref: Option<String>,
     password_secret_ref: Option<String>,
     passphrase_secret_ref: Option<String>,
     identity_secret_refs: BTreeMap<String, String>,
@@ -13247,10 +13392,16 @@ fn new_secret_ref(storage: SecretStorage) -> String {
 }
 
 fn profile_secret_ref_occurrences(profile: &SessionProfile) -> Vec<String> {
-    let Ok(ssh) = ssh_connection(profile) else {
-        return Vec::new();
-    };
     let mut refs = Vec::new();
+    if let Some(secret_ref) = profile_proxy(profile)
+        .and_then(|proxy| proxy.password_secret_ref.as_deref())
+        .and_then(canonical_secret_ref)
+    {
+        refs.push(secret_ref);
+    }
+    let Ok(ssh) = ssh_connection(profile) else {
+        return refs;
+    };
     for secret_ref in [
         ssh.password_secret_ref.as_deref(),
         ssh.passphrase_secret_ref.as_deref(),
@@ -13289,7 +13440,7 @@ fn build_profile_secret_migration_plan(
     request: &ProfileSecretMigrationRequest,
 ) -> Result<ProfileSecretMigrationPlan, String> {
     if request.profile_ids.is_empty() {
-        return Err("凭据迁移必须显式选择至少一个 SSH/Tmux Profile".to_string());
+        return Err("凭据迁移必须显式选择至少一个支持凭据的 Profile".to_string());
     }
     let mut requested = HashSet::new();
     let mut requested_ids = Vec::new();
@@ -13308,7 +13459,9 @@ fn build_profile_secret_migration_plan(
             .iter()
             .find(|profile| profile.id == *profile_id)
             .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-        ssh_connection(profile)?;
+        if profile_proxy(profile).is_none() {
+            return Err(format!("Profile {} 不支持 Profile 凭据迁移", profile.id));
+        }
     }
 
     let selected_profile_ids = store
@@ -13439,63 +13592,72 @@ fn journal_optional_secret_ref(
 fn profile_secret_migration_projection(
     profile: &SessionProfile,
 ) -> Result<ProfileSecretMigrationJournalProjection, String> {
-    let ssh = ssh_connection(profile)?;
+    let proxy = profile_proxy(profile)
+        .ok_or_else(|| format!("Profile {} 不支持 Profile 凭据迁移", profile.id))?;
+    let proxy_password_secret_ref =
+        journal_optional_secret_ref(proxy.password_secret_ref.as_deref(), "proxy password")?;
     let mut identity_secret_refs = BTreeMap::new();
-    for identity in &ssh.identity_refs {
-        if identity.source != IdentitySource::ProfileVault {
-            continue;
+    let (password_secret_ref, passphrase_secret_ref, jumps) = if let Ok(ssh) =
+        ssh_connection(profile)
+    {
+        for identity in &ssh.identity_refs {
+            if identity.source != IdentitySource::ProfileVault {
+                continue;
+            }
+            let identity_id = identity.id.trim();
+            if identity_id.is_empty() || identity_id != identity.id {
+                return Err(format!(
+                    "Profile {} 包含无效的 Vault identity ID",
+                    profile.id
+                ));
+            }
+            let secret_ref =
+                journal_optional_secret_ref(identity.secret_ref.as_deref(), "Vault identity")?
+                    .ok_or_else(|| {
+                        format!(
+                            "Profile {} 的 Vault identity {} 缺少 secretRef",
+                            profile.id, identity.id
+                        )
+                    })?;
+            if identity_secret_refs
+                .insert(identity.id.clone(), secret_ref)
+                .is_some()
+            {
+                return Err(format!(
+                    "Profile {} 包含重复的 Vault identity ID: {}",
+                    profile.id, identity.id
+                ));
+            }
         }
-        let identity_id = identity.id.trim();
-        if identity_id.is_empty() || identity_id != identity.id {
-            return Err(format!(
-                "Profile {} 包含无效的 Vault identity ID",
-                profile.id
-            ));
-        }
-        let secret_ref =
-            journal_optional_secret_ref(identity.secret_ref.as_deref(), "Vault identity")?
-                .ok_or_else(|| {
-                    format!(
-                        "Profile {} 的 Vault identity {} 缺少 secretRef",
-                        profile.id, identity.id
-                    )
-                })?;
-        if identity_secret_refs
-            .insert(identity.id.clone(), secret_ref)
-            .is_some()
-        {
-            return Err(format!(
-                "Profile {} 包含重复的 Vault identity ID: {}",
-                profile.id, identity.id
-            ));
-        }
-    }
-    let jumps = ssh
-        .jumps
-        .iter()
-        .enumerate()
-        .map(|(index, jump)| {
-            Ok(ProfileSecretMigrationJournalJumpProjection {
-                password_secret_ref: journal_optional_secret_ref(
-                    jump.password_secret_ref.as_deref(),
-                    &format!("Jump Host #{} password", index + 1),
-                )?,
-                passphrase_secret_ref: journal_optional_secret_ref(
-                    jump.passphrase_secret_ref.as_deref(),
-                    &format!("Jump Host #{} passphrase", index + 1),
-                )?,
+        let jumps = ssh
+            .jumps
+            .iter()
+            .enumerate()
+            .map(|(index, jump)| {
+                Ok(ProfileSecretMigrationJournalJumpProjection {
+                    password_secret_ref: journal_optional_secret_ref(
+                        jump.password_secret_ref.as_deref(),
+                        &format!("Jump Host #{} password", index + 1),
+                    )?,
+                    passphrase_secret_ref: journal_optional_secret_ref(
+                        jump.passphrase_secret_ref.as_deref(),
+                        &format!("Jump Host #{} passphrase", index + 1),
+                    )?,
+                })
             })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
+        (
+            journal_optional_secret_ref(ssh.password_secret_ref.as_deref(), "SSH password")?,
+            journal_optional_secret_ref(ssh.passphrase_secret_ref.as_deref(), "SSH passphrase")?,
+            jumps,
+        )
+    } else {
+        (None, None, Vec::new())
+    };
     Ok(ProfileSecretMigrationJournalProjection {
-        password_secret_ref: journal_optional_secret_ref(
-            ssh.password_secret_ref.as_deref(),
-            "SSH password",
-        )?,
-        passphrase_secret_ref: journal_optional_secret_ref(
-            ssh.passphrase_secret_ref.as_deref(),
-            "SSH passphrase",
-        )?,
+        proxy_password_secret_ref,
+        password_secret_ref,
+        passphrase_secret_ref,
         identity_secret_refs,
         jumps,
     })
@@ -13506,6 +13668,7 @@ fn profile_secret_projection_ref_counts(
 ) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     let mut secret_refs = Vec::new();
+    secret_refs.extend(projection.proxy_password_secret_ref.iter());
     secret_refs.extend(projection.password_secret_ref.iter());
     secret_refs.extend(projection.passphrase_secret_ref.iter());
     secret_refs.extend(projection.identity_secret_refs.values());
@@ -13539,7 +13702,8 @@ fn replace_journal_projection_refs(
     replacements: &HashMap<&str, &str>,
 ) -> usize {
     let mut replaced =
-        replace_journal_projection_ref(&mut projection.password_secret_ref, replacements)
+        replace_journal_projection_ref(&mut projection.proxy_password_secret_ref, replacements)
+            + replace_journal_projection_ref(&mut projection.password_secret_ref, replacements)
             + replace_journal_projection_ref(&mut projection.passphrase_secret_ref, replacements);
     for secret_ref in projection.identity_secret_refs.values_mut() {
         if let Some(replacement) = replacements.get(secret_ref.as_str()) {
@@ -13628,12 +13792,16 @@ fn replace_profile_secret_refs(
     profile: &mut SessionProfile,
     replacements: &HashMap<String, String>,
 ) -> usize {
+    let mut replaced = profile_proxy_mut(profile)
+        .map(|proxy| {
+            replace_optional_profile_secret_ref(&mut proxy.password_secret_ref, replacements)
+        })
+        .unwrap_or_default();
     let Ok(ssh) = ssh_connection_mut(profile) else {
-        return 0;
+        return replaced;
     };
-    let mut replaced =
-        replace_optional_profile_secret_ref(&mut ssh.password_secret_ref, replacements)
-            + replace_optional_profile_secret_ref(&mut ssh.passphrase_secret_ref, replacements);
+    replaced += replace_optional_profile_secret_ref(&mut ssh.password_secret_ref, replacements)
+        + replace_optional_profile_secret_ref(&mut ssh.passphrase_secret_ref, replacements);
     for identity in &mut ssh.identity_refs {
         if identity.source == IdentitySource::ProfileVault {
             replaced += replace_optional_profile_secret_ref(&mut identity.secret_ref, replacements);
@@ -22404,6 +22572,73 @@ mod tests {
         (port, connections, task)
     }
 
+    async fn spawn_test_http_auth_endpoint(
+        expected_authorization: String,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let header = read_test_http_header(&mut client).await;
+            let header = std::str::from_utf8(&header).unwrap();
+            let authenticated = header
+                .split("\r\n")
+                .any(|line| line == expected_authorization);
+            let response = if authenticated {
+                b"HTTP/1.1 200 Connection Established\r\n\r\n".as_slice()
+            } else {
+                b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n".as_slice()
+            };
+            client.write_all(response).await.unwrap();
+        });
+        (port, task)
+    }
+
+    async fn spawn_test_socks5_auth_endpoint(
+        expected_username: String,
+        expected_password: String,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut greeting = [0_u8; 3];
+            client.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [0x05, 0x01, 0x02]);
+            client.write_all(&[0x05, 0x02]).await.unwrap();
+
+            let mut auth_header = [0_u8; 2];
+            client.read_exact(&mut auth_header).await.unwrap();
+            assert_eq!(auth_header[0], 0x01);
+            let mut username = vec![0_u8; usize::from(auth_header[1])];
+            client.read_exact(&mut username).await.unwrap();
+            let mut password_len = [0_u8; 1];
+            client.read_exact(&mut password_len).await.unwrap();
+            let mut password = vec![0_u8; usize::from(password_len[0])];
+            client.read_exact(&mut password).await.unwrap();
+            let authenticated = username == expected_username.as_bytes()
+                && password == expected_password.as_bytes();
+            client
+                .write_all(&[0x01, if authenticated { 0x00 } else { 0x01 }])
+                .await
+                .unwrap();
+            if !authenticated {
+                return;
+            }
+
+            let mut request_header = [0_u8; 5];
+            client.read_exact(&mut request_header).await.unwrap();
+            assert_eq!(&request_header[..4], &[0x05, 0x01, 0x00, 0x03]);
+            let mut address_and_port = vec![0_u8; usize::from(request_header[4]) + 2];
+            client.read_exact(&mut address_and_port).await.unwrap();
+            client
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+        });
+        (port, task)
+    }
+
     #[cfg(unix)]
     async fn wait_for_openssh_test_server(server: &mut ChildGuard, port: u16, label: &str) {
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -23130,6 +23365,7 @@ mod tests {
                         kind: ProxyKind::HttpConnect,
                         host: "127.0.0.1".to_string(),
                         port: proxy_port,
+                        ..ProxyConfig::default()
                     },
                     ..Default::default()
                 });
@@ -24261,6 +24497,83 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_proxy_handshakes_accept_valid_credentials_and_reject_invalid_ones() {
+        tauri::async_runtime::block_on(async {
+            let expected_http = format!(
+                "Proxy-Authorization: Basic {}",
+                BASE64_STANDARD.encode("proxy-user:proxy-password")
+            );
+            let (http_port, http_task) = spawn_test_http_auth_endpoint(expected_http.clone()).await;
+            let mut stream = TcpStream::connect(("127.0.0.1", http_port)).await.unwrap();
+            let credentials = ProxyCredentials {
+                username: "proxy-user".to_string(),
+                password: Zeroizing::new("proxy-password".to_string()),
+            };
+            perform_http_connect(&mut stream, "target.example:443", Some(&credentials), "TCP")
+                .await
+                .unwrap();
+            http_task.await.unwrap();
+
+            let (http_port, http_task) = spawn_test_http_auth_endpoint(expected_http).await;
+            let mut stream = TcpStream::connect(("127.0.0.1", http_port)).await.unwrap();
+            let wrong_credentials = ProxyCredentials {
+                username: "proxy-user".to_string(),
+                password: Zeroizing::new("wrong-password".to_string()),
+            };
+            let error = perform_http_connect(
+                &mut stream,
+                "target.example:443",
+                Some(&wrong_credentials),
+                "TCP",
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.contains("407 Proxy Authentication Required"),
+                "{error}"
+            );
+            assert!(!error.contains("wrong-password"));
+            http_task.await.unwrap();
+
+            let (socks_port, socks_task) = spawn_test_socks5_auth_endpoint(
+                "proxy-user".to_string(),
+                "proxy-password".to_string(),
+            )
+            .await;
+            let mut stream = TcpStream::connect(("127.0.0.1", socks_port)).await.unwrap();
+            perform_socks5_connect(
+                &mut stream,
+                "target.example",
+                443,
+                Some(&credentials),
+                "TCP",
+            )
+            .await
+            .unwrap();
+            socks_task.await.unwrap();
+
+            let (socks_port, socks_task) = spawn_test_socks5_auth_endpoint(
+                "proxy-user".to_string(),
+                "proxy-password".to_string(),
+            )
+            .await;
+            let mut stream = TcpStream::connect(("127.0.0.1", socks_port)).await.unwrap();
+            let error = perform_socks5_connect(
+                &mut stream,
+                "target.example",
+                443,
+                Some(&wrong_credentials),
+                "TCP",
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("用户名/密码认证失败"), "{error}");
+            assert!(!error.contains("wrong-password"));
+            socks_task.await.unwrap();
+        });
+    }
+
+    #[test]
     fn tcp_proxy_transports_forward_and_report_rejections() {
         tauri::async_runtime::block_on(async {
             let target = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -24285,6 +24598,7 @@ mod tests {
                     kind: ProxyKind::HttpConnect,
                     host: "127.0.0.1".to_string(),
                     port: http_port,
+                    ..ProxyConfig::default()
                 },
                 ..Default::default()
             };
@@ -24301,6 +24615,7 @@ mod tests {
                     kind: ProxyKind::Socks5,
                     host: "127.0.0.1".to_string(),
                     port: socks_port,
+                    ..ProxyConfig::default()
                 },
                 ..http.clone()
             };
@@ -24347,6 +24662,7 @@ mod tests {
                     kind: ProxyKind::Socks5,
                     host: "127.0.0.1".to_string(),
                     port: rejected_socks_port,
+                    ..ProxyConfig::default()
                 },
                 ..http
             };
@@ -24417,6 +24733,7 @@ mod tests {
                 kind: ProxyKind::HttpConnect,
                 host: "proxy.example".to_string(),
                 port: 3128,
+                ..ProxyConfig::default()
             },
             reconnect_delay_ms: 2_500,
             keepalive_enabled: false,
@@ -24821,6 +25138,7 @@ mod tests {
                 kind: ProxyKind::HttpConnect,
                 host: "proxy.example".to_string(),
                 port: 3128,
+                ..ProxyConfig::default()
             };
             ssh.password_secret_ref = Some("keychain:new-password".to_string());
             ssh.passphrase_secret_ref = Some("keychain:new-passphrase".to_string());
@@ -29576,6 +29894,7 @@ mod tests {
                     kind: ProxyKind::HttpConnect,
                     host: "127.0.0.1".to_string(),
                     port: proxy_port,
+                    ..ProxyConfig::default()
                 };
                 ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
                 ssh.host_key_policy.alias = Some("mixed-auth-target".to_string());
@@ -30622,6 +30941,189 @@ mod tests {
     }
 
     #[test]
+    fn proxy_secret_usage_counts_all_supported_profile_kinds() {
+        fn shared_proxy() -> ProxyConfig {
+            ProxyConfig {
+                enabled: true,
+                username: "proxy-user".to_string(),
+                password_secret_ref: Some(" keychain:shared-proxy ".to_string()),
+                ..ProxyConfig::default()
+            }
+        }
+
+        let mut ssh = test_ssh_profile();
+        if let ConnectionConfig::Ssh(connection) = &mut ssh.connection {
+            connection.proxy = shared_proxy();
+        }
+        let mut tmux = test_ssh_profile();
+        tmux.id = "tmux-session-1".to_string();
+        tmux.kind = SessionKind::Tmux;
+        let ConnectionConfig::Ssh(mut tmux_connection) = tmux.connection else {
+            unreachable!();
+        };
+        tmux_connection.proxy = shared_proxy();
+        tmux.connection = ConnectionConfig::Tmux(tmux_connection);
+        let tcp = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+            proxy: shared_proxy(),
+            ..TcpConnection::default()
+        }));
+        let mut telnet = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+            proxy: shared_proxy(),
+            ..TcpConnection::default()
+        }));
+        telnet.id = "telnet-session-1".to_string();
+
+        let mut store = SessionStore::default();
+        for profile in [ssh, tmux, tcp, telnet] {
+            store.upsert_profile(profile);
+        }
+        assert_eq!(secret_ref_usage_count(&store, "keychain:shared-proxy"), 4);
+        assert!(store
+            .profiles
+            .iter()
+            .all(|profile| { profile_secret_refs(profile).contains("keychain:shared-proxy") }));
+    }
+
+    #[test]
+    fn proxy_password_updates_store_only_a_secret_reference() {
+        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+            proxy: ProxyConfig {
+                enabled: true,
+                kind: ProxyKind::Socks5,
+                username: "proxy-user".to_string(),
+                ..ProxyConfig::default()
+            },
+            ..TcpConnection::default()
+        }));
+        let written = std::cell::RefCell::new(None::<String>);
+        let generated = apply_proxy_password_update_with_io(
+            &mut profile,
+            Some(ProxyPasswordUpdate::Set {
+                password: "private-proxy-password".to_string(),
+                storage: None,
+            }),
+            |storage, password| {
+                assert!(storage.is_none());
+                written.replace(Some(password.to_string()));
+                Ok("keychain:proxy-password".to_string())
+            },
+        )
+        .unwrap();
+        assert_eq!(generated.as_deref(), Some("keychain:proxy-password"));
+        assert_eq!(written.borrow().as_deref(), Some("private-proxy-password"));
+        let proxy = profile_proxy(&profile).unwrap();
+        assert_eq!(
+            proxy.password_secret_ref.as_deref(),
+            Some("keychain:proxy-password")
+        );
+        let serialized = serde_json::to_string(&profile).unwrap();
+        assert!(!serialized.contains("private-proxy-password"));
+
+        let credentials = resolve_proxy_credentials_with(proxy, |secret_ref| {
+            assert_eq!(secret_ref, "keychain:proxy-password");
+            Ok("private-proxy-password".to_string())
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(credentials.username, "proxy-user");
+        assert_eq!(credentials.password.as_str(), "private-proxy-password");
+
+        apply_proxy_password_update_with_io(
+            &mut profile,
+            Some(ProxyPasswordUpdate::Clear),
+            |_, _| panic!("clearing a proxy password must not write a secret"),
+        )
+        .unwrap();
+        assert!(profile_proxy(&profile)
+            .unwrap()
+            .password_secret_ref
+            .is_none());
+
+        assert!(
+            validate_proxy_credentials(ProxyKind::HttpConnect, "bad:user", "password")
+                .unwrap_err()
+                .contains("冒号")
+        );
+        assert!(
+            validate_proxy_credentials(ProxyKind::Socks5, &"u".repeat(256), "password")
+                .unwrap_err()
+                .contains("1-255")
+        );
+        assert!(
+            validate_proxy_credentials(ProxyKind::Socks5, "proxy-user", &"p".repeat(256))
+                .unwrap_err()
+                .contains("1-255")
+        );
+    }
+
+    #[test]
+    fn tcp_proxy_credentials_participate_in_migration_and_legacy_journals() {
+        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+            proxy: ProxyConfig {
+                enabled: true,
+                username: "proxy-user".to_string(),
+                password_secret_ref: Some("keychain:proxy-source".to_string()),
+                ..ProxyConfig::default()
+            },
+            ..TcpConnection::default()
+        }));
+        profile.id = "tcp-proxy-session".to_string();
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        let request = ProfileSecretMigrationRequest {
+            target_storage: SecretStorage::Portable,
+            profile_ids: vec!["tcp-proxy-session".to_string()],
+            cleanup_source: true,
+        };
+        let response = migrate_profile_secrets_with_io(
+            &mut store,
+            &request,
+            |secret_ref| {
+                assert_eq!(secret_ref, "keychain:proxy-source");
+                Ok("private-proxy-password".to_string())
+            },
+            |storage, prepared| {
+                assert_eq!(storage, SecretStorage::Portable);
+                assert_eq!(prepared.len(), 1);
+                Ok(false)
+            },
+            |storage, secret_refs| {
+                assert_eq!(storage, SecretStorage::Native);
+                SecretBatchDeleteOutcome {
+                    results: secret_refs
+                        .iter()
+                        .map(|secret_ref| (secret_ref.clone(), Ok(())))
+                        .collect(),
+                    portable_vault_requires_reunlock: false,
+                }
+            },
+            |_, affected, targets| {
+                assert_eq!(affected, ["tcp-proxy-session"]);
+                assert_eq!(targets.len(), 1);
+                ProfileSecretStoreCommit::Committed { warning: None }
+            },
+        )
+        .unwrap();
+        assert_eq!(response.migrated_reference_count, 1);
+        let projection = profile_secret_migration_projection(&store.profiles[0]).unwrap();
+        assert!(projection
+            .proxy_password_secret_ref
+            .as_deref()
+            .is_some_and(|secret_ref| secret_ref.starts_with("stronghold:")));
+        assert!(projection.password_secret_ref.is_none());
+        assert!(projection.passphrase_secret_ref.is_none());
+
+        let mut legacy = serde_json::to_value(&projection).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("proxyPasswordSecretRef");
+        let legacy: ProfileSecretMigrationJournalProjection =
+            serde_json::from_value(legacy).unwrap();
+        assert!(legacy.proxy_password_secret_ref.is_none());
+    }
+
+    #[test]
     fn migration_projection_classifies_old_new_and_slot_conflicts() {
         let fixture = test_migration_journal_fixture();
         assert_eq!(
@@ -31587,7 +32089,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_secret_migration_is_idempotent_and_requires_explicit_ssh_scope() {
+    fn profile_secret_migration_is_idempotent_and_requires_supported_explicit_scope() {
         let mut profile = test_ssh_profile();
         if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
             ssh.password_secret_ref = Some("stronghold:already-portable".to_string());
@@ -31623,14 +32125,16 @@ mod tests {
         let shell = test_shell_profile();
         let shell_id = shell.id.clone();
         store.upsert_profile(shell);
-        let non_ssh_scope = ProfileSecretMigrationRequest {
+        let unsupported_scope = ProfileSecretMigrationRequest {
             target_storage: SecretStorage::Portable,
             profile_ids: vec![shell_id],
             cleanup_source: true,
         };
-        assert!(build_profile_secret_migration_plan(&store, &non_ssh_scope)
-            .unwrap_err()
-            .contains("不是 SSH/Tmux"));
+        assert!(
+            build_profile_secret_migration_plan(&store, &unsupported_scope)
+                .unwrap_err()
+                .contains("不支持 Profile 凭据迁移")
+        );
         assert!(is_reserved_mcp_secret_ref(MCP_HTTP_TOKEN_REF));
         assert!(is_reserved_mcp_secret_ref("mcp-http-token"));
         assert!(is_reserved_mcp_secret_ref("keychain:ipc-test-token"));

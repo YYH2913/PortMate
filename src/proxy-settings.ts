@@ -1,10 +1,17 @@
 import type { ProxyConfig } from "./types";
 
+export type ProxyPasswordUpdate =
+  | { action: "set"; password: string }
+  | { action: "clear" }
+  | null;
+
 export const proxyDefaults: ProxyConfig = {
   enabled: false,
   kind: "socks5",
   host: "127.0.0.1",
   port: 1080,
+  username: "",
+  passwordSecretRef: null,
 };
 
 export function normalizeProxyConfig(proxy?: Partial<ProxyConfig> | null): ProxyConfig {
@@ -17,5 +24,9 @@ export function normalizeProxyConfig(proxy?: Partial<ProxyConfig> | null): Proxy
     kind,
     host: typeof proxy?.host === "string" ? proxy.host.trim() : proxyDefaults.host,
     port,
+    username: typeof proxy?.username === "string" ? proxy.username.trim() : proxyDefaults.username,
+    passwordSecretRef: typeof proxy?.passwordSecretRef === "string"
+      ? proxy.passwordSecretRef.trim() || null
+      : null,
   };
 }

@@ -1573,6 +1573,21 @@ fieldset label {
   font-size: 14px;
 }
 
+.proxy-password-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 35px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.proxy-password-control .icon-button {
+  width: 35px;
+  height: 35px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+}
+
 .form-row select {
   height: 35px;
 }

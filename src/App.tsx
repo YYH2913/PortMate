@@ -38,6 +38,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
+import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -942,10 +943,10 @@ function handleMenuAction(item: string) {
     setActiveId(nextIds[0]);
   }
 
-  async function saveDraft() {
+  async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
     const profile = prepareSessionProfile(draft);
     try {
-      const saved = await saveProfile(profile);
+      const saved = await saveProfile(profile, proxyPasswordUpdate);
       applySavedSession(saved);
       setDraft(saved.profile);
       setDialog(null);
@@ -954,10 +955,10 @@ function handleMenuAction(item: string) {
     }
   }
 
-  async function saveDraftAndConnect() {
+  async function saveDraftAndConnect(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
     const profile = prepareSessionProfile(draft);
     try {
-      const saved = await saveProfile(profile);
+      const saved = await saveProfile(profile, proxyPasswordUpdate);
       applySavedSession(saved);
       setDraft(saved.profile);
       setDialog(null);
@@ -967,10 +968,10 @@ function handleMenuAction(item: string) {
     }
   }
 
-  async function saveProfile(profile: SessionProfile) {
+  async function saveProfile(profile: SessionProfile, proxyPasswordUpdate: ProxyPasswordUpdate = null) {
     if (isBackendAvailable()) {
       const expectedProfile = sessions.find((session) => session.profile.id === profile.id)?.profile ?? null;
-      return invokeBackend<SessionSummary>("save_session_profile", { profile, expectedProfile });
+      return invokeBackend<SessionSummary>("save_session_profile", { profile, expectedProfile, proxyPasswordUpdate });
     }
     return createSessionSummary(profile);
   }
@@ -3312,6 +3313,12 @@ function KeyManagerDialog({
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
+  const credentialSessions = sessions.filter((session) => (
+    session.profile.connection.kind === "ssh"
+    || session.profile.connection.kind === "tmux"
+    || session.profile.connection.kind === "tcp"
+    || session.profile.connection.kind === "telnet"
+  ));
   const [profileId, setProfileId] = useState(sshSessions[0]?.profile.id ?? "");
   const [knownHostsText, setKnownHostsText] = useState("");
   const [exportText, setExportText] = useState("");
@@ -3409,7 +3416,7 @@ function KeyManagerDialog({
     if (!sshSessions.some((session) => session.profile.id === profileId)) {
       setProfileId(sshSessions[0]?.profile.id ?? "");
     }
-    if (migrationScopeProfileId !== "all" && !sshSessions.some((session) => session.profile.id === migrationScopeProfileId)) {
+    if (migrationScopeProfileId !== "all" && !credentialSessions.some((session) => session.profile.id === migrationScopeProfileId)) {
       setMigrationScopeProfileId("all");
       setMigrationPreviewState(null);
     }
@@ -3462,7 +3469,7 @@ function KeyManagerDialog({
     return buildProfileSecretMigrationRequest(
       migrationTarget,
       migrationScopeProfileId,
-      sshSessions.map((session) => session.profile.id),
+      credentialSessions.map((session) => session.profile.id),
       migrationCleanupSource,
     );
   }
@@ -4402,9 +4409,9 @@ function KeyManagerDialog({
                         <button type="button" aria-pressed={migrationTarget === "portable"} onClick={() => { setMigrationTarget("portable"); invalidateMigrationState(); }} disabled={migrationControlsDisabled}>Native → Stronghold</button>
                         <button type="button" aria-pressed={migrationTarget === "native"} onClick={() => { setMigrationTarget("native"); invalidateMigrationState(); }} disabled={migrationControlsDisabled}>Stronghold → Native</button>
                       </div>
-                      <label><span>Profile 范围</span><select value={migrationScopeProfileId} onChange={(event) => { setMigrationScopeProfileId(event.target.value); invalidateMigrationState(); }} disabled={migrationControlsDisabled}><option value="all">全部 SSH/Tmux Profile</option>{sshSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}</select></label>
+                      <label><span>Profile 范围</span><select value={migrationScopeProfileId} onChange={(event) => { setMigrationScopeProfileId(event.target.value); invalidateMigrationState(); }} disabled={migrationControlsDisabled}><option value="all">全部凭据 Profile</option>{credentialSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}</select></label>
                       <label className="portable-vault-migration-cleanup"><input type="checkbox" checked={migrationCleanupSource} onChange={(event) => { setMigrationCleanupSource(event.target.checked); invalidateMigrationState(); }} disabled={migrationControlsDisabled} /><span>清理未共享的源 Secret</span></label>
-                      <button className="portable-vault-migration-preview-button" type="button" onClick={() => void previewProfileSecretMigration()} disabled={migrationControlsDisabled || !sshSessions.length}><RefreshCw size={14} />{migrationBusy === "preview" ? "预检中" : "预检"}</button>
+                      <button className="portable-vault-migration-preview-button" type="button" onClick={() => void previewProfileSecretMigration()} disabled={migrationControlsDisabled || !credentialSessions.length}><RefreshCw size={14} />{migrationBusy === "preview" ? "预检中" : "预检"}</button>
                     </div>
                     {migrationPreviewState ? (
                       <div className="portable-vault-migration-preview" role="status" aria-live="polite">
@@ -5292,12 +5299,13 @@ function SessionSettingsDialog({
   serialPorts: string[];
   initialSection: string;
   onDraftChange: (draft: SessionProfile) => void;
-  onSave: () => void;
-  onSaveAndConnect: () => void;
+  onSave: (proxyPasswordUpdate: ProxyPasswordUpdate) => void;
+  onSaveAndConnect: (proxyPasswordUpdate: ProxyPasswordUpdate) => void;
   onClose: () => void;
 }) {
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
+  const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
   const [prefs, setPrefs] = useState<SessionPrefs>(() => loadLocalValue(`portmate.sessionPrefs.${draft.id}`, loadLocalValue("portmate.sessionPrefs.default", createSessionPrefs())));
   const updatePref = <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const sessionTree = sessionSettingTrees[activeProtocol];
@@ -5317,6 +5325,7 @@ function SessionSettingsDialog({
   function changeProtocol(tab: ProtocolTab) {
     setActiveProtocol(tab);
     setActiveSection("会话");
+    setProxyPasswordUpdate(null);
     onDraftChange(convertDraftProtocol(draft, tab));
   }
 
@@ -5365,17 +5374,17 @@ function SessionSettingsDialog({
         })}
       </aside>
       <section className="session-form">
-        <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />
+        <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={setProxyPasswordUpdate} />
       </section>
       <button className="default-settings" onClick={saveDefaultSessionPrefs}>保存为默认设置...(E)</button>
       <div className="dialog-actions">
         <button onClick={() => {
           saveSessionPrefs();
-          onSave();
+          onSave(proxyPasswordUpdate);
         }}>保存</button>
         <button onClick={() => {
           saveSessionPrefs();
-          onSaveAndConnect();
+          onSaveAndConnect(proxyPasswordUpdate);
         }}>保存并连接</button>
         <button onClick={onClose}>取消</button>
       </div>
@@ -5391,6 +5400,8 @@ function SessionSettingsContent({
   onDraftChange,
   prefs,
   updatePref,
+  proxyPasswordUpdate,
+  onProxyPasswordUpdateChange,
 }: {
   activeProtocol: ProtocolTab;
   activeSection: string;
@@ -5399,6 +5410,8 @@ function SessionSettingsContent({
   onDraftChange: (draft: SessionProfile) => void;
   prefs: SessionPrefs;
   updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
+  proxyPasswordUpdate: ProxyPasswordUpdate;
+  onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
   if (activeSection === "会话") {
     return <SessionConnectionFields activeProtocol={activeProtocol} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
@@ -5599,23 +5612,23 @@ function SessionSettingsContent({
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["连接", "代理", "验证", "代理人", "密码", "密钥交换", "MAC 哈希", "公钥", "SFTP", "X11"].includes(activeSection)) {
-    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
-    return <TcpLikeAdvancedFields protocol="Telnet" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <TcpLikeAdvancedFields protocol="Telnet" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Tcp" && activeSection === "Tcp") {
-    return <TcpLikeAdvancedFields protocol="Tcp" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <TcpLikeAdvancedFields protocol="Tcp" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if ((activeProtocol === "Telnet" || activeProtocol === "Tcp") && ["连接", "代理"].includes(activeSection)) {
-    return <TcpLikeAdvancedFields protocol={activeProtocol} section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <TcpLikeAdvancedFields protocol={activeProtocol} section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Serial" && activeSection === "串口") {
@@ -5988,12 +6001,16 @@ function SshAdvancedFields({
   onDraftChange,
   prefs,
   updatePref,
+  proxyPasswordUpdate,
+  onProxyPasswordUpdateChange,
 }: {
   section: string;
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
   prefs: SessionPrefs;
   updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
+  proxyPasswordUpdate: ProxyPasswordUpdate;
+  onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
   const kind = draft.connection.kind === "tmux" ? "tmux" : "ssh";
@@ -6183,7 +6200,7 @@ function SshAdvancedFields({
   }
 
   if (section === "代理") {
-    return <ProxyAdvancedFields proxy={ssh.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, proxy } })} />;
+    return <ProxyAdvancedFields proxy={ssh.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, proxy } })} passwordUpdate={proxyPasswordUpdate} onPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (section === "验证") {
@@ -6487,8 +6504,20 @@ function SshAdvancedFields({
   );
 }
 
-function ProxyAdvancedFields({ proxy, onChange }: { proxy: ProxyConfig; onChange: (proxy: ProxyConfig) => void }) {
+function ProxyAdvancedFields({
+  proxy,
+  onChange,
+  passwordUpdate,
+  onPasswordUpdateChange,
+}: {
+  proxy: ProxyConfig;
+  onChange: (proxy: ProxyConfig) => void;
+  passwordUpdate: ProxyPasswordUpdate;
+  onPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
+}) {
   const update = (patch: Partial<ProxyConfig>) => onChange({ ...proxy, ...patch });
+  const password = passwordUpdate?.action === "set" ? passwordUpdate.password : "";
+  const passwordPendingClear = passwordUpdate?.action === "clear";
   return (
     <>
       <DialogToggleField label="启用代理:" checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
@@ -6506,6 +6535,32 @@ function ProxyAdvancedFields({ proxy, onChange }: { proxy: ProxyConfig; onChange
           <DialogField label="代理端口:">
             <input type="number" min={1} max={65535} value={proxy.port} onChange={(event) => update({ port: Number(event.target.value) })} />
           </DialogField>
+          <DialogField label="代理用户:">
+            <input value={proxy.username} autoComplete="username" onChange={(event) => update({ username: event.target.value })} />
+          </DialogField>
+          <DialogField label="代理密码:">
+            <form className="proxy-password-control" onSubmit={(event) => event.preventDefault()}>
+              <input type="text" name="username" autoComplete="username" value={proxy.username} readOnly hidden aria-hidden="true" tabIndex={-1} />
+              <input
+                type="password"
+                name="password"
+                autoComplete="new-password"
+                value={password}
+                placeholder={passwordPendingClear ? "保存后移除" : proxy.passwordSecretRef ? "已安全保存" : "未保存"}
+                onChange={(event) => onPasswordUpdateChange(event.target.value ? { action: "set", password: event.target.value } : null)}
+              />
+              <button
+                type="button"
+                className="icon-button"
+                title="移除已保存的代理密码"
+                aria-label="移除已保存的代理密码"
+                disabled={passwordPendingClear || (!proxy.passwordSecretRef && passwordUpdate?.action !== "set")}
+                onClick={() => onPasswordUpdateChange({ action: "clear" })}
+              >
+                <X size={14} />
+              </button>
+            </form>
+          </DialogField>
         </>
       ) : null}
     </>
@@ -6519,6 +6574,8 @@ function TcpLikeAdvancedFields({
   onDraftChange,
   prefs,
   updatePref,
+  proxyPasswordUpdate,
+  onProxyPasswordUpdateChange,
 }: {
   protocol: "Telnet" | "Tcp";
   section: string;
@@ -6526,6 +6583,8 @@ function TcpLikeAdvancedFields({
   onDraftChange: (draft: SessionProfile) => void;
   prefs: SessionPrefs;
   updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
+  proxyPasswordUpdate: ProxyPasswordUpdate;
+  onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
   const kind = protocol === "Telnet" ? "telnet" : "tcp";
   const tcp = draft.connection.kind === kind ? draft.connection : createTcpConnection(kind);
@@ -6594,7 +6653,7 @@ function TcpLikeAdvancedFields({
     );
   }
 
-  return <ProxyAdvancedFields proxy={tcp.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...tcp, kind, proxy } })} />;
+  return <ProxyAdvancedFields proxy={tcp.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...tcp, kind, proxy } })} passwordUpdate={proxyPasswordUpdate} onPasswordUpdateChange={onProxyPasswordUpdateChange} />;
 }
 
 function SerialAdvancedFields({

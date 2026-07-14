@@ -5168,6 +5168,7 @@ dependencies = [
 name = "portmate"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "flate2",
  "getrandom 0.3.4",

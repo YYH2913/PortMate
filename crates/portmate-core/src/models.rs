@@ -254,6 +254,10 @@ pub struct ProxyConfig {
     pub host: String,
     #[serde(default = "default_proxy_port")]
     pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password_secret_ref: Option<String>,
 }
 
 fn default_proxy_host() -> String {
@@ -267,6 +271,13 @@ const fn default_proxy_port() -> u16 {
 impl ProxyConfig {
     pub fn normalize(&mut self) {
         self.host = self.host.trim().to_string();
+        self.username = self.username.trim().to_string();
+        self.password_secret_ref = self
+            .password_secret_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|secret_ref| !secret_ref.is_empty())
+            .map(ToOwned::to_owned);
     }
 }
 
@@ -277,6 +288,8 @@ impl Default for ProxyConfig {
             kind: ProxyKind::Socks5,
             host: default_proxy_host(),
             port: default_proxy_port(),
+            username: String::new(),
+            password_secret_ref: None,
         }
     }
 }
@@ -947,6 +960,8 @@ mod tests {
         assert_eq!(legacy.proxy.kind, ProxyKind::Socks5);
         assert_eq!(legacy.proxy.host, "127.0.0.1");
         assert_eq!(legacy.proxy.port, 1080);
+        assert!(legacy.proxy.username.is_empty());
+        assert!(legacy.proxy.password_secret_ref.is_none());
         assert!(legacy.keepalive_enabled);
         assert_eq!(
             legacy.keepalive_idle_seconds,
@@ -976,5 +991,28 @@ mod tests {
             MIN_TCP_KEEPALIVE_INTERVAL_SECONDS
         );
         assert_eq!(invalid.keepalive_retries, MAX_TCP_KEEPALIVE_RETRIES);
+    }
+
+    #[test]
+    fn proxy_config_normalizes_authentication_metadata_without_a_password_body() {
+        let mut proxy = ProxyConfig {
+            username: "  proxy-user  ".to_string(),
+            password_secret_ref: Some("  keychain:proxy-password  ".to_string()),
+            ..ProxyConfig::default()
+        };
+        proxy.normalize();
+        assert_eq!(proxy.username, "proxy-user");
+        assert_eq!(
+            proxy.password_secret_ref.as_deref(),
+            Some("keychain:proxy-password")
+        );
+
+        let serialized = serde_json::to_string(&proxy).unwrap();
+        assert!(serialized.contains("keychain:proxy-password"));
+        assert!(!serialized.contains("plaintext-proxy-password"));
+
+        proxy.password_secret_ref = Some("   ".to_string());
+        proxy.normalize();
+        assert!(proxy.password_secret_ref.is_none());
     }
 }

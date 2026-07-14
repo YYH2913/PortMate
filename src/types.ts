@@ -68,6 +68,8 @@ export interface ProxyConfig {
   kind: ProxyKind;
   host: string;
   port: number;
+  username: string;
+  passwordSecretRef?: string | null;
 }
 
 export interface SshConnection {
