@@ -1,16 +1,20 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, WholeWord, X } from "lucide-react";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import type { ISearchOptions } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
+import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
 import type { SessionEvent, SessionSummary } from "./types";
 
@@ -23,6 +27,15 @@ type TerminalCanvasProps = {
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
+
+const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
+  matchBackground: "#284457",
+  matchBorder: "#68a7ff",
+  matchOverviewRuler: "#68a7ff",
+  activeMatchBackground: "#f4b860",
+  activeMatchBorder: "#ffffff",
+  activeMatchColorOverviewRuler: "#f4b860",
+};
 
 const portmateTerminalTheme = {
   background: "#0d1117",
@@ -53,13 +66,33 @@ const portmateTerminalTheme = {
 export default function TerminalCanvas({ active, events, focused = false, onInput }: TerminalCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const pendingInputRef = useRef("");
   const inputFlushTimerRef = useRef<number | null>(null);
   const lastSizeRef = useRef("");
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
+  const openSearchRef = useRef<() => void>(() => {});
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [searchRegex, setSearchRegex] = useState(false);
+  const [searchWholeWord, setSearchWholeWord] = useState(false);
+  const [searchResult, setSearchResult] = useState<TerminalSearchResult | null>(null);
+  const [searchInvalid, setSearchInvalid] = useState(false);
   onInputRef.current = onInput;
+  openSearchRef.current = () => {
+    const selection = terminalSearchSeed(termRef.current?.getSelection() ?? "");
+    if (!searchOpen && selection) setSearchQuery(selection);
+    setSearchInvalid(false);
+    setSearchOpen(true);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  };
 
   function markEventSeen(id: string): boolean {
     if (seenEventsRef.current.size > 4000) {
@@ -68,6 +101,50 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     if (seenEventsRef.current.has(id)) return true;
     seenEventsRef.current.add(id);
     return false;
+  }
+
+  function runTerminalSearch(direction: "next" | "previous", incremental = false) {
+    const search = searchRef.current;
+    if (!search || !searchQuery) {
+      search?.clearDecorations();
+      setSearchResult(null);
+      setSearchInvalid(false);
+      return;
+    }
+    if (searchRegex) {
+      try {
+        new RegExp(searchQuery);
+      } catch {
+        search.clearDecorations();
+        setSearchResult(null);
+        setSearchInvalid(true);
+        return;
+      }
+    }
+    const options: ISearchOptions = {
+      caseSensitive: searchCaseSensitive,
+      decorations: terminalSearchDecorations,
+      incremental,
+      regex: searchRegex,
+      wholeWord: searchWholeWord,
+    };
+    try {
+      if (direction === "previous") search.findPrevious(searchQuery, options);
+      else search.findNext(searchQuery, options);
+      setSearchInvalid(false);
+    } catch {
+      search.clearDecorations();
+      setSearchResult(null);
+      setSearchInvalid(true);
+    }
+  }
+
+  function closeTerminalSearch() {
+    setSearchOpen(false);
+    searchRef.current?.clearDecorations();
+    setSearchResult(null);
+    setSearchInvalid(false);
+    window.requestAnimationFrame(() => termRef.current?.focus());
   }
 
   useEffect(() => {
@@ -96,11 +173,22 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     const serialize = new SerializeAddon();
     term.loadAddon(fit);
     term.loadAddon(search);
+    searchRef.current = search;
+    const searchResultDisposable = search.onDidChangeResults((result) => {
+      setSearchResult({ resultCount: result.resultCount, resultIndex: result.resultIndex });
+      setSearchInvalid(false);
+    });
     term.loadAddon(serialize);
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new ClipboardAddon(undefined, createWriteOnlyClipboardProvider(navigator.clipboard)));
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || !isTerminalFindShortcut(event)) return true;
+      event.preventDefault();
+      openSearchRef.current();
+      return false;
+    });
     host.dataset.terminalUnicodeVersion = term.unicode.activeVersion;
     host.dataset.terminalClipboard = "write-only";
     host.dataset.terminalSerialization = "active";
@@ -194,6 +282,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
 
     return () => {
       terminalDisposed = true;
+      searchResultDisposable.dispose();
       inputDisposable.dispose();
       selectionDisposable.dispose();
       host.removeEventListener("auxclick", pasteOnMiddleClick);
@@ -217,9 +306,34 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
         // Serialization must not prevent terminal disposal.
       }
       term.dispose();
+      if (searchRef.current === search) searchRef.current = null;
       termRef.current = null;
     };
   }, [active?.profile.id]);
+
+  useEffect(() => {
+    const requestSearch = () => {
+      if (active && focused) openSearchRef.current();
+    };
+    window.addEventListener(TERMINAL_SEARCH_REQUEST_EVENT, requestSearch);
+    return () => window.removeEventListener(TERMINAL_SEARCH_REQUEST_EVENT, requestSearch);
+  }, [active?.profile.id, focused]);
+
+  useEffect(() => {
+    if (!searchOpen) {
+      searchRef.current?.clearDecorations();
+      setSearchResult(null);
+      setSearchInvalid(false);
+      return;
+    }
+    runTerminalSearch("next", true);
+  }, [active?.profile.id, searchCaseSensitive, searchOpen, searchQuery, searchRegex, searchWholeWord]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const frame = window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [active?.profile.id, searchOpen]);
 
   useEffect(() => {
     if (focused) termRef.current?.focus();
@@ -263,7 +377,46 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   return (
     <div className="terminal-canvas">
       {active ? (
-        <div ref={hostRef} className="terminal-host" />
+        <>
+          <div ref={hostRef} className="terminal-host" />
+          {searchOpen ? (
+            <form className="terminal-search-bar" onSubmit={(event) => {
+              event.preventDefault();
+              runTerminalSearch("next");
+            }}>
+              <Search size={14} aria-hidden="true" />
+              <input
+                ref={searchInputRef}
+                aria-label="终端查找"
+                value={searchQuery}
+                maxLength={MAX_TERMINAL_SEARCH_QUERY_LENGTH}
+                placeholder="在当前终端中查找"
+                spellCheck={false}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeTerminalSearch();
+                  } else if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
+                    runTerminalSearch("previous");
+                  }
+                }}
+              />
+              <span className={searchInvalid ? "terminal-search-status invalid" : "terminal-search-status"} role="status" aria-live="polite">
+                {terminalSearchResultLabel(searchQuery, searchResult, searchInvalid)}
+              </span>
+              <div className="terminal-search-controls">
+                <button type="button" className={searchCaseSensitive ? "active" : ""} aria-label="区分大小写" aria-pressed={searchCaseSensitive} title="区分大小写" onClick={() => setSearchCaseSensitive((value) => !value)}><CaseSensitive size={15} /></button>
+                <button type="button" className={searchWholeWord ? "active" : ""} aria-label="全词匹配" aria-pressed={searchWholeWord} title="全词匹配" onClick={() => setSearchWholeWord((value) => !value)}><WholeWord size={15} /></button>
+                <button type="button" className={searchRegex ? "active" : ""} aria-label="正则表达式" aria-pressed={searchRegex} title="正则表达式" onClick={() => setSearchRegex((value) => !value)}><Regex size={15} /></button>
+                <button type="button" aria-label="上一个匹配" title="上一个匹配" disabled={!searchQuery} onClick={() => runTerminalSearch("previous")}><ChevronUp size={15} /></button>
+                <button type="button" aria-label="下一个匹配" title="下一个匹配" disabled={!searchQuery} onClick={() => runTerminalSearch("next")}><ChevronDown size={15} /></button>
+                <button type="button" aria-label="关闭查找" title="关闭查找" onClick={closeTerminalSearch}><X size={15} /></button>
+              </div>
+            </form>
+          ) : null}
+        </>
       ) : (
         <div className="terminal-empty">未打开会话</div>
       )}

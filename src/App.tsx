@@ -51,6 +51,7 @@ import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
+import { requestTerminalSearch } from "./terminal-search";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
@@ -707,7 +708,12 @@ function handleMenuAction(item: string) {
       setNotice({ title: "关于 PortMate", message: "PortMate 是面向串口、SSH 和 MCP 会话控制的桌面终端工作台。" });
       return;
     }
-    if (item === "会话搜索" || item === "查找") {
+    if (item === "查找") {
+      if (active) requestTerminalSearch();
+      else setNotice({ title: "查找", message: "请先打开一个终端会话。" });
+      return;
+    }
+    if (item === "会话搜索") {
       setSearchDialog({ mode: "sessions", query: "" });
       setUtilityDialog("search");
       return;
@@ -3343,6 +3349,7 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : document.activeElement;
+  if (element?.closest(".terminal-search-bar")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
 }
 

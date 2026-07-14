@@ -40,7 +40,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 所有主要设置入口使用弹窗，而不是右侧抽屉。
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
-- `xterm.js` 终端渲染已接入 FitAddon、SearchAddon、WebLinksAddon、Unicode11Addon、SerializeAddon、ClipboardAddon 和按需加载的 WebglAddon。WebGL 初始化失败或 context loss 会回退 DOM renderer；OSC 52 只允许写系统剪贴板，远端读取固定返回空内容。
+- `xterm.js` 终端渲染已接入 FitAddon、SearchAddon、WebLinksAddon、Unicode11Addon、SerializeAddon、ClipboardAddon 和按需加载的 WebglAddon。`编辑 -> 查找`、`Ctrl/Cmd+F` 和 WindTerm 终端默认键 `Ctrl+Shift+F` 会在当前焦点 pane 打开增量查找条，支持前后匹配、计数、大小写、整词和正则模式；WebGL 初始化失败或 context loss 会回退 DOM renderer；OSC 52 只允许写系统剪贴板，远端读取固定返回空内容。
 - 分屏布局使用 v3 递归树，每个 pane 是最多 32 个 session view 的有序分组，支持标签切换、单视图跨组移动和整组合并；目标稳定去重并激活来源视图，来源仅在为空时折叠，超限操作会被拒绝。v1 平铺 snapshot、v2 单视图树和更早 localStorage key 会原位迁移。布局支持任意组合的水平/垂直嵌套、关闭叶子后自动折叠父 split，以及最多 16 pane/8 层的明确边界；splitter 可鼠标/触控拖动、方向键调节、Home/End 跳到 15/85% 边界并双击复位，比例会随 group view 列表、active pane/session 和标签颜色一起持久化。WindTerm 2.7 默认键位中的 `Alt+方向键` 几何焦点导航、`Alt+-`/`Alt+\` 向下/向右拆分、Shift 变体向上/向左拆分、`Alt+X` 关闭 active pane 和 `Alt+Z` pane zoom 已接入，并只在 XTerm 工作区持有键盘焦点时拦截；active pane 与真实 XTerm textarea 焦点保持同步。终端设置的快捷键命令表支持录入一段或两段 Ctrl/Alt/Shift/Meta 组合、显式禁用、单项/全部恢复默认和重复/前缀冲突保存阻断；两段 chord 可共享首段，1.2 秒超时、Escape 或错误后缀会清理等待状态并隔离按键，v1 单组合 keymap 自动迁移至 v2，损坏字段回退默认，歧义绑定不会随机执行。pane 标题栏或窗口菜单可把 active view 移至受限 Tauri WebviewWindow；只有创建成功才更新原树，非空来源分组继续保留，独立窗口使用同一后端 session，可刷新、连接/断开且不改变主布局，并能返回原分组；浏览器预览使用同源 popup 与校验后的 postMessage。zoom 会隐藏 sibling branch/splitter 但保持其他 XTerm 挂载，方向焦点会连同 zoom 一起移动。窗口菜单还支持把完整 active pane 与上下左右的几何邻居交换；水平拆分对应右侧视图、垂直拆分对应下方视图。profile 列表变化后会剔除失效 ID、收敛空分支和重复节点 ID。同一 session 的多 group 视图会保留，但启动连接目标只执行一次。
 - WindTerm `Split View To Group` 的上/下/左/右四个方向已接入窗口菜单；只会从至少含两个 view 的来源分组移出活动 view，达到 16 pane/8 层边界时保持原树不变。
 - pane 标签与窗口菜单支持关闭活动/其他/右侧 view，以及当前进程内最近 32 条有界关闭历史的重新打开；关闭 view 不断开后端 session，空 group 自动折叠，最后一个工作区 view 受保护，原 group 消失时恢复到活动非满 group。顶层 session 右键菜单已改为明确的“断开会话”语义。
@@ -187,7 +187,7 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把应用壳、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 473 kB、终端 core JS 约 432 kB、WebGL JS 约 120 kB、主 CSS 约 79 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback 和进程内屏幕恢复，且工作台布局不塌陷。
+`npm run build` 已把应用壳、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 474 kB、终端 core JS 约 437 kB、WebGL JS 约 120 kB、主 CSS 约 81 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复，以及当前 pane 查找的菜单语义、非法正则、WindTerm 快捷键和窄分屏布局，且工作台布局不塌陷。
 
 已有单元测试覆盖：
 
@@ -196,6 +196,7 @@ npm run build
 - Trigger contains/regex、七类动作前端字段往返、多动作后端 dispatch、自定义链接替换和声音/通知/高亮 runtime effect。
 - 同步输入设置归一化、目标协议过滤、换行/显式批量发送前后缀变换、Telnet CRLF、FIFO 批次顺序、交互输入不重复包裹、部分失败和关闭后即时取消剩余目标。
 - 终端序列化缓存的 UTF-8 字节上限、LRU 淘汰、事件 ID 上限、空屏恢复和防御性复制，以及 OSC 52 只写剪贴板、拒绝远端读取、权限 Promise 拒绝/同步异常降级。
+- 当前终端查找的标准/WindTerm 快捷键识别、选中文本单行化和 UTF-16 长度边界、结果/溢出/非法表达式状态，以及菜单到焦点 pane 的事件分发。
 - Secret redaction。
 - JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
@@ -229,7 +230,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 108 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/detached-pane/trigger/sync-input/terminal-state/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 112 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/detached-pane/trigger/sync-input/terminal-state/terminal-search/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -246,7 +247,7 @@ npm run build
 | 目标域 | 当前状态 | 说明 |
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
-| xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`；Unicode 11、write-only OSC 52、进程内有界 Serialize 恢复及 WebGL→DOM fallback 已接入。 |
+| xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`；当前焦点 pane 增量查找、Unicode 11、write-only OSC 52、进程内有界 Serialize 恢复及 WebGL→DOM fallback 已接入。 |
 | WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个 view、v1/v2 迁移、view 跨组移动/整组合并/四方向新分组/关闭与恢复、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom 快捷键、方向 pane 交换、pane 独立 Tauri 窗口/返回、启动会话策略及 xterm/CSS lazy chunk 已有。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、带可选认证的 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；健康故障矩阵和 GSSAPI 未完成。 |

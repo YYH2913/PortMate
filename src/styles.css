@@ -1687,6 +1687,114 @@ button {
   height: 100%;
 }
 
+.terminal-search-bar {
+  position: absolute;
+  z-index: 6;
+  top: 8px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  width: min(590px, calc(100% - 20px));
+  min-height: 34px;
+  padding: 4px 5px 4px 8px;
+  box-sizing: border-box;
+  border: 1px solid #344252;
+  border-radius: 4px;
+  background: #111820;
+  color: var(--muted);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.terminal-search-bar:focus-within {
+  border-color: rgba(94, 234, 212, 0.55);
+}
+
+.terminal-search-bar > input {
+  flex: 1 1 160px;
+  min-width: 72px;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-left: 1px solid var(--line-soft);
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.terminal-search-bar > input::placeholder {
+  color: #6f8194;
+}
+
+.terminal-search-status {
+  flex: 0 0 auto;
+  min-width: 34px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.terminal-search-status.invalid {
+  color: var(--red);
+}
+
+.terminal-search-controls {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.terminal-search-controls button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.terminal-search-controls button:hover:not(:disabled),
+.terminal-search-controls button:focus-visible {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.terminal-search-controls button.active {
+  border-color: rgba(94, 234, 212, 0.45);
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--cyan);
+}
+
+.terminal-search-controls button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+@container (max-width: 420px) {
+  .terminal-search-bar {
+    right: 6px;
+    width: calc(100% - 12px);
+  }
+
+  .terminal-search-bar > input {
+    flex-basis: calc(100% - 24px);
+  }
+
+  .terminal-search-status {
+    margin-left: auto;
+  }
+}
+
 .terminal-empty {
   display: grid;
   place-items: center;

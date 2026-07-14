@@ -116,7 +116,7 @@ frequently appended histories. Queued and running transfers are never evicted. D
 standalone MCP loading trim every oversized event/history scope to its exact limit and rebuild the
 event-count cache before exposing an older snapshot.
 
-The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission. Unicode 11 width data is active for consistent CJK and emoji layout. OSC 52 may write to the system clipboard, but remote applications always receive an empty response when they request clipboard contents. WebGL rendering loads in a separate lazy chunk after the terminal opens and falls back to the DOM renderer if initialization fails or the graphics context is lost. When a mounted view changes, up to 2,000 scrollback rows are serialized into a process-only 32-session LRU cache capped at 2 MiB per session; terminal contents are never written to local storage or disk by this cache.
+The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission. `编辑 -> 查找`, `Ctrl/Cmd+F`, and WindTerm's terminal-scoped `Ctrl+Shift+F` open an incremental search bar only in the focused pane, with previous/next navigation, match counts, case-sensitive, whole-word, and regex modes. Unicode 11 width data is active for consistent CJK and emoji layout. OSC 52 may write to the system clipboard, but remote applications always receive an empty response when they request clipboard contents. WebGL rendering loads in a separate lazy chunk after the terminal opens and falls back to the DOM renderer if initialization fails or the graphics context is lost. When a mounted view changes, up to 2,000 scrollback rows are serialized into a process-only 32-session LRU cache capped at 2 MiB per session; terminal contents are never written to local storage or disk by this cache.
 
 The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding. Remote-forward health probes use Linux `/proc/net/tcp` or `ss`, FreeBSD `sockstat`, macOS `lsof`, and a successful `netstat -ltn` fallback. A present but incompatible probe tool is treated as unsupported instead of an empty listener table, preventing repeated rebind attempts on BSD-style systems.
 
@@ -148,7 +148,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 473 kB of main JS, 432 kB of terminal core JS, and 120 kB of WebGL JS, with
+emits approximately 474 kB of main JS, 437 kB of terminal core JS, and 120 kB of WebGL JS, with
 xterm CSS split alongside them; the previous approximately 805 kB single-chunk warning is
 eliminated without raising the warning threshold.
 
