@@ -159,6 +159,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 桌面 MCP IPC 请求体上限为 1 MiB，完整读取和响应写出各有 5 秒超时；超限、慢速未完成、JSON 无效和 token 无效的请求都在命令分发前拒绝，不进入审计，避免未认证本地进程无限占用任务或内存。
 - `portmate-ipc.json` 通过同目录私有临时文件同步落盘后原子替换；Unix 最终权限强制为 `0600`，包括 keyring 不可用时含明文 token 的 fallback。替换不会跟随既有 symlink，失败会保留上一个完整 endpoint，并回收本次未发布的 keyring token。
 - bridge 仅加载普通、≤64 KiB 且 Unix 无 group/world 权限的 endpoint 文件；`storePath` 必须匹配当前 Store，地址必须是 loopback `SocketAddr`，keyring 引用必须属于 `keychain:ipc-*` 专用命名空间且不能与 inline token 并存。bridge 到桌面的请求/响应分别限制为 1 MiB/64 MiB，并设置 3 秒连接、5 秒写入和 120 秒总响应 deadline，避免篡改 endpoint 触发任意远端连接、读取其他 keyring 记录或无界等待/分配。
+- 长运行 stdio bridge 会在每个 JSON-RPC envelope 前重新加载最新有效 Store 快照和原子发布的 endpoint；桌面重启、IPC token/address 轮换无需重启 bridge，endpoint 删除会立即清空 live forwarding，Store 暂时不可读时则保留最后一次有效只读快照。endpoint 正常缺失不会反复输出错误日志。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。POST 必须使用 `application/json`（允许 charset 参数），显式 `MCP-Protocol-Version` 必须匹配 `2025-06-18`，该版本头已加入 CORS preflight allow-list。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；重复的 framing/认证单值头、不支持的 `Transfer-Encoding`、畸形头和声明 body 后的额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
@@ -254,7 +255,7 @@ npm run build
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；命令关联与毫秒级分片待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
 | 测试体系 | 部分实现 | core 单测可用；集成、UI、终端兼容测试不足。 |
 

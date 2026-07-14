@@ -143,6 +143,16 @@ impl PortMateMcp {
         }
     }
 
+    fn refresh_runtime_sources(&mut self) {
+        let Some(store_path) = self.store_path.clone() else {
+            return;
+        };
+        if let Some(store) = load_store_from_path(&store_path) {
+            self.store = store;
+        }
+        self.ipc = load_ipc_endpoint(&store_path);
+    }
+
     fn handle(&mut self, request: JsonRpcRequest) -> Result<Option<JsonRpcResponse>> {
         let response_id = request.id.clone();
         if request.jsonrpc != "2.0" {
@@ -532,6 +542,13 @@ fn load_ipc_endpoint(store_path: &std::path::Path) -> Option<IpcEndpointFile> {
     let endpoint_path = store_path.with_file_name("portmate-ipc.json");
     let raw = match read_ipc_endpoint_file(&endpoint_path) {
         Ok(raw) => raw,
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            return None;
+        }
         Err(error) => {
             eprintln!("PortMate MCP ignored unreadable desktop IPC endpoint: {error}");
             return None;
@@ -1506,6 +1523,7 @@ fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
 }
 
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
+    server.refresh_runtime_sources();
     if let Value::Array(items) = value {
         if items.is_empty() {
             return Ok(Some(serde_json::to_value(error(
@@ -1878,6 +1896,45 @@ mod tests {
         }
     }
 
+    fn test_snapshot_store(name: &str) -> SessionStore {
+        let mut store = SessionStore::default();
+        store.upsert_profile(portmate_core::SessionProfile {
+            id: "refresh-session".to_string(),
+            name: name.to_string(),
+            kind: portmate_core::SessionKind::Shell,
+            group: "tests".to_string(),
+            tags: Vec::new(),
+            connection: portmate_core::ConnectionConfig::Shell(portmate_core::ShellConnection {
+                program: "/bin/sh".to_string(),
+                args: Vec::new(),
+                cwd: None,
+            }),
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings::default(),
+            triggers: Vec::new(),
+            transfer: portmate_core::TransferSettings::default(),
+        });
+        store
+    }
+
+    fn list_sessions_text(server: &mut PortMateMcp) -> String {
+        let response = handle_json_rpc_value(
+            server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "list_sessions", "arguments": {} }
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     fn test_http_request(mut headers: HashMap<String, String>) -> HttpRequest {
         headers
             .entry("content-type".to_string())
@@ -2069,6 +2126,72 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("byte limit"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mcp_refreshes_store_and_endpoint_between_json_rpc_envelopes() {
+        let root = std::env::temp_dir().join(format!("portmate-mcp-refresh-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.json");
+        let endpoint_path = root.join("portmate-ipc.json");
+        let write_store = |name: &str| {
+            fs::write(
+                &store_path,
+                serde_json::to_vec(&test_snapshot_store(name)).unwrap(),
+            )
+            .unwrap();
+        };
+        let write_endpoint = |addr: &str, token: &str| {
+            fs::write(
+                &endpoint_path,
+                serde_json::to_vec(&IpcEndpointFile {
+                    addr: addr.to_string(),
+                    token: Some(token.to_string()),
+                    token_ref: None,
+                    store_path: store_path.display().to_string(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&endpoint_path, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        };
+
+        write_store("first snapshot");
+        write_endpoint("127.0.0.1:0", "first-token");
+        let mut server = PortMateMcp {
+            store: SessionStore::default(),
+            store_path: Some(store_path.clone()),
+            ipc: None,
+            client_id: "refresh-client".to_string(),
+            allow_write: false,
+        };
+
+        let first = list_sessions_text(&mut server);
+        assert!(first.contains("first snapshot"));
+        assert_eq!(
+            server.ipc.as_ref().map(|endpoint| endpoint.addr.as_str()),
+            Some("127.0.0.1:0")
+        );
+
+        write_store("second snapshot");
+        write_endpoint("[::1]:0", "second-token");
+        let second = list_sessions_text(&mut server);
+        assert!(second.contains("second snapshot"));
+        assert!(!second.contains("first snapshot"));
+        assert_eq!(
+            server.ipc.as_ref().map(|endpoint| endpoint.addr.as_str()),
+            Some("[::1]:0")
+        );
+
+        fs::remove_file(&endpoint_path).unwrap();
+        let _ = list_sessions_text(&mut server);
+        assert!(server.ipc.is_none());
 
         let _ = fs::remove_dir_all(root);
     }
