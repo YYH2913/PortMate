@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-07-13
+审查日期：2026-07-15
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -21,7 +21,7 @@
 PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面终端工作台”。核心链路已经成立：
 
 - Tauri v2 + React/TypeScript + Rust 桌面应用可构建运行。
-- `@xterm/xterm` 已固定为 `6.0.0`。
+- `@xterm/xterm` 已固定为 `6.0.0`，Unicode 11、Serialize、Clipboard 和 WebGL 兼容插件已按验证版本固定。
 - SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux attach/list、SFTP/SCP、X/Y/ZModem、SSH tunnel、Sysmon、触发器、MCP stdio bridge 都已有实际实现。
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
@@ -40,7 +40,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 所有主要设置入口使用弹窗，而不是右侧抽屉。
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
-- `xterm.js` 终端渲染，FitAddon、SearchAddon、WebLinksAddon 已接入。
+- `xterm.js` 终端渲染已接入 FitAddon、SearchAddon、WebLinksAddon、Unicode11Addon、SerializeAddon、ClipboardAddon 和按需加载的 WebglAddon。WebGL 初始化失败或 context loss 会回退 DOM renderer；OSC 52 只允许写系统剪贴板，远端读取固定返回空内容。
 - 分屏布局使用 v3 递归树，每个 pane 是最多 32 个 session view 的有序分组，支持标签切换、单视图跨组移动和整组合并；目标稳定去重并激活来源视图，来源仅在为空时折叠，超限操作会被拒绝。v1 平铺 snapshot、v2 单视图树和更早 localStorage key 会原位迁移。布局支持任意组合的水平/垂直嵌套、关闭叶子后自动折叠父 split，以及最多 16 pane/8 层的明确边界；splitter 可鼠标/触控拖动、方向键调节、Home/End 跳到 15/85% 边界并双击复位，比例会随 group view 列表、active pane/session 和标签颜色一起持久化。WindTerm 2.7 默认键位中的 `Alt+方向键` 几何焦点导航、`Alt+-`/`Alt+\` 向下/向右拆分、Shift 变体向上/向左拆分、`Alt+X` 关闭 active pane 和 `Alt+Z` pane zoom 已接入，并只在 XTerm 工作区持有键盘焦点时拦截；active pane 与真实 XTerm textarea 焦点保持同步。终端设置的快捷键命令表支持录入一段或两段 Ctrl/Alt/Shift/Meta 组合、显式禁用、单项/全部恢复默认和重复/前缀冲突保存阻断；两段 chord 可共享首段，1.2 秒超时、Escape 或错误后缀会清理等待状态并隔离按键，v1 单组合 keymap 自动迁移至 v2，损坏字段回退默认，歧义绑定不会随机执行。pane 标题栏或窗口菜单可把 active view 移至受限 Tauri WebviewWindow；只有创建成功才更新原树，非空来源分组继续保留，独立窗口使用同一后端 session，可刷新、连接/断开且不改变主布局，并能返回原分组；浏览器预览使用同源 popup 与校验后的 postMessage。zoom 会隐藏 sibling branch/splitter 但保持其他 XTerm 挂载，方向焦点会连同 zoom 一起移动。窗口菜单还支持把完整 active pane 与上下左右的几何邻居交换；水平拆分对应右侧视图、垂直拆分对应下方视图。profile 列表变化后会剔除失效 ID、收敛空分支和重复节点 ID。同一 session 的多 group 视图会保留，但启动连接目标只执行一次。
 - WindTerm `Split View To Group` 的上/下/左/右四个方向已接入窗口菜单；只会从至少含两个 view 的来源分组移出活动 view，达到 16 pane/8 层边界时保持原树不变。
 - pane 标签与窗口菜单支持关闭活动/其他/右侧 view，以及当前进程内最近 32 条有界关闭历史的重新打开；关闭 view 不断开后端 session，空 group 自动折叠，最后一个工作区 view 受保护，原 group 消失时恢复到活动非满 group。顶层 session 右键菜单已改为明确的“断开会话”语义。
@@ -54,7 +54,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - WindTerm 的 view 跨 group 移动和完整 group 合并、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。
-- serialize/unicode/webgl/clipboard 等计划项没有完整接入。
+- 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘；仍缺 vttest、鼠标协议和全屏程序兼容基线。
 - 自由输入、锁屏等 WindTerm 细节仍不完整。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
 
@@ -187,7 +187,7 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把 xterm 运行时和 CSS 拆为真实 lazy chunk：主 JS 约 425 kB、终端 JS 约 381 kB、主 CSS 约 62 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器预览已验证动态模块能渲染终端空态且工作台布局不塌陷。
+`npm run build` 已把应用壳、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 473 kB、终端 core JS 约 432 kB、WebGL JS 约 120 kB、主 CSS 约 79 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback 和进程内屏幕恢复，且工作台布局不塌陷。
 
 已有单元测试覆盖：
 
@@ -195,6 +195,7 @@ npm run build
 - Store open/close、profile upsert、MCP write scope、send_text redaction/audit。
 - Trigger contains/regex、七类动作前端字段往返、多动作后端 dispatch、自定义链接替换和声音/通知/高亮 runtime effect。
 - 同步输入设置归一化、目标协议过滤、换行/显式批量发送前后缀变换、Telnet CRLF、FIFO 批次顺序、交互输入不重复包裹、部分失败和关闭后即时取消剩余目标。
+- 终端序列化缓存的 UTF-8 字节上限、LRU 淘汰、事件 ID 上限、空屏恢复和防御性复制，以及 OSC 52 只写剪贴板、拒绝远端读取、权限 Promise 拒绝/同步异常降级。
 - Secret redaction。
 - JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
@@ -228,7 +229,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 102 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/detached-pane/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 108 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/detached-pane/trigger/sync-input/terminal-state/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -237,15 +238,15 @@ npm run build
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
-- 没有 Playwright UI/截图/交互回归。
-- 没有 vttest/xterm 兼容性基线。
+- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归，但尚未整理为仓库内正式 Playwright suite。
+- Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；仍没有 vttest、鼠标协议和全屏程序兼容基线。
 
 ## 对照最终目标的完成度
 
 | 目标域 | 当前状态 | 说明 |
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
-| xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
+| xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`；Unicode 11、write-only OSC 52、进程内有界 Serialize 恢复及 WebGL→DOM fallback 已接入。 |
 | WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个 view、v1/v2 迁移、view 跨组移动/整组合并/四方向新分组/关闭与恢复、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom 快捷键、方向 pane 交换、pane 独立 Tauri 窗口/返回、启动会话策略及 xterm/CSS lazy chunk 已有。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、带可选认证的 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；健康故障矩阵和 GSSAPI 未完成。 |
@@ -287,7 +288,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
-5. Playwright UI 回归、vttest/Unicode/鼠标/全屏程序兼容基线。
+5. 把现有 CDP 截图检查整理为 Playwright UI 回归，并补 vttest、鼠标协议和全屏程序兼容基线；Unicode 11 插件与浏览器验证已完成。
 
 ### P3：架构整理与发布准备
 
@@ -302,6 +303,6 @@ npm run build
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；durable migration journal、异常提交核对、重载 UX、双向迁移、跨进程 CAS 和 conflict 诊断导出已完成。
 3. 更深连接健康探测和跨平台传输故障矩阵。
-4. Playwright UI 回归与 vttest/Unicode/鼠标/全屏程序兼容基线。
+4. 把现有 CDP 检查整理为 Playwright UI 回归，并补 vttest、鼠标协议和全屏程序兼容基线。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。

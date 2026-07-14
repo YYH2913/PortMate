@@ -116,7 +116,7 @@ frequently appended histories. Queued and running transfers are never evicted. D
 standalone MCP loading trim every oversized event/history scope to its exact limit and rebuild the
 event-count cache before exposing an older snapshot.
 
-The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
+The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission. Unicode 11 width data is active for consistent CJK and emoji layout. OSC 52 may write to the system clipboard, but remote applications always receive an empty response when they request clipboard contents. WebGL rendering loads in a separate lazy chunk after the terminal opens and falls back to the DOM renderer if initialization fails or the graphics context is lost. When a mounted view changes, up to 2,000 scrollback rows are serialized into a process-only 32-session LRU cache capped at 2 MiB per session; terminal contents are never written to local storage or disk by this cache.
 
 The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding. Remote-forward health probes use Linux `/proc/net/tcp` or `ss`, FreeBSD `sockstat`, macOS `lsof`, and a successful `netstat -ltn` fallback. A present but incompatible probe tool is treated as unsupported instead of an empty listener table, preventing repeated rebind attempts on BSD-style systems.
 
@@ -144,12 +144,13 @@ Build desktop bundles:
 npm run desktop:build
 ```
 
-The terminal renderer is pinned to `@xterm/xterm@6.0.0` with matching current `@xterm/addon-*` packages.
+The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
 
-The terminal runtime is loaded as a separate Vite chunk. The current production build emits an
-approximately 425 kB main JS chunk and a 381 kB xterm chunk, with xterm CSS split alongside it;
-the previous approximately 805 kB single-chunk warning is eliminated without raising the warning
-threshold.
+The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
+chunk so unsupported systems do not pay its startup or failure cost. The current production build
+emits approximately 473 kB of main JS, 432 kB of terminal core JS, and 120 kB of WebGL JS, with
+xterm CSS split alongside them; the previous approximately 805 kB single-chunk warning is
+eliminated without raising the warning threshold.
 
 To run the MCP bridge:
 

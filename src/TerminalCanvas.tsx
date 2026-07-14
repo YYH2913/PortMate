@@ -1,12 +1,17 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
 import type { SyncInputOrigin } from "./sync-input-state";
+import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import { terminalStateCache } from "./terminal-state-cache";
 import type { SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
@@ -15,6 +20,9 @@ type TerminalCanvasProps = {
   focused?: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
 };
+
+const MAX_SERIALIZED_SCROLLBACK = 2000;
+type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 
 const portmateTerminalTheme = {
   background: "#0d1117",
@@ -65,11 +73,15 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   useEffect(() => {
     if (!active || !hostRef.current) return;
 
-    seenEventsRef.current = new Set();
+    const host = hostRef.current;
+    const cachedState = terminalStateCache.get(active.profile.id);
+    seenEventsRef.current = new Set(cachedState?.seenEventIds ?? []);
     lastSizeRef.current = "";
+    lastCopiedSelectionRef.current = "";
     const term = new XTerm({
-      cols: active.profile.terminal.cols,
-      rows: active.profile.terminal.rows,
+      allowProposedApi: true,
+      cols: cachedState?.cols ?? active.profile.terminal.cols,
+      rows: cachedState?.rows ?? active.profile.terminal.rows,
       cursorBlink: true,
       convertEol: false,
       drawBoldTextInBrightColors: true,
@@ -81,10 +93,44 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
+    const serialize = new SerializeAddon();
     term.loadAddon(fit);
     term.loadAddon(search);
+    term.loadAddon(serialize);
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon());
-    term.open(hostRef.current);
+    term.loadAddon(new ClipboardAddon(undefined, createWriteOnlyClipboardProvider(navigator.clipboard)));
+    host.dataset.terminalUnicodeVersion = term.unicode.activeVersion;
+    host.dataset.terminalClipboard = "write-only";
+    host.dataset.terminalSerialization = "active";
+    host.dataset.terminalRenderer = "dom";
+    host.dataset.terminalWebgl = "loading";
+    host.dataset.terminalRestored = cachedState ? "true" : "false";
+    if (cachedState) term.write(cachedState.serialized);
+    term.open(host);
+    let terminalDisposed = false;
+    let webglAddon: WebglAddonInstance | null = null;
+    let webglContextLossDisposable: { dispose: () => void } | null = null;
+    void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
+      if (terminalDisposed) return;
+      webglAddon = new WebglAddon();
+      term.loadAddon(webglAddon);
+      host.dataset.terminalRenderer = "webgl";
+      host.dataset.terminalWebgl = "active";
+      webglContextLossDisposable = webglAddon.onContextLoss(() => {
+        const lostAddon = webglAddon;
+        webglAddon = null;
+        lostAddon?.dispose();
+        host.dataset.terminalRenderer = "dom";
+        host.dataset.terminalWebgl = "fallback";
+      });
+    }).catch(() => {
+      webglAddon?.dispose();
+      webglAddon = null;
+      host.dataset.terminalRenderer = "dom";
+      host.dataset.terminalWebgl = "fallback";
+    });
     if (focused) term.focus();
     const fitAndReport = () => {
       fit.fit();
@@ -103,7 +149,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     queueMicrotask(fitAndReport);
 
     const resizeObserver = new ResizeObserver(fitAndReport);
-    resizeObserver.observe(hostRef.current);
+    resizeObserver.observe(host);
     const flushInput = () => {
       inputFlushTimerRef.current = null;
       const text = pendingInputRef.current;
@@ -142,12 +188,12 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
         pasteFromClipboard(event);
       }
     };
-    const host = hostRef.current;
     host.addEventListener("auxclick", pasteOnMiddleClick);
 
     termRef.current = term;
 
     return () => {
+      terminalDisposed = true;
       inputDisposable.dispose();
       selectionDisposable.dispose();
       host.removeEventListener("auxclick", pasteOnMiddleClick);
@@ -157,6 +203,19 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       }
       pendingInputRef.current = "";
       resizeObserver.disconnect();
+      webglContextLossDisposable?.dispose();
+      try {
+        terminalStateCache.save(active.profile.id, {
+          serialized: serialize.serialize({
+            scrollback: Math.min(MAX_SERIALIZED_SCROLLBACK, active.profile.terminal.scrollback),
+          }),
+          cols: term.cols,
+          rows: term.rows,
+          seenEventIds: [...seenEventsRef.current],
+        });
+      } catch {
+        // Serialization must not prevent terminal disposal.
+      }
       term.dispose();
       termRef.current = null;
     };
