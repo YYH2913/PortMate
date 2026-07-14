@@ -22,6 +22,7 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;
@@ -1400,7 +1401,7 @@ fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
 }
 
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
-    if let Some(items) = value.as_array() {
+    if let Value::Array(items) = value {
         if items.is_empty() {
             return Ok(Some(serde_json::to_value(error(
                 Value::Null,
@@ -1408,9 +1409,16 @@ fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Optio
                 "an empty JSON-RPC batch is invalid",
             ))?));
         }
-        let mut responses = Vec::new();
+        if items.len() > MAX_JSON_RPC_BATCH_ITEMS {
+            return Ok(Some(serde_json::to_value(error(
+                Value::Null,
+                -32600,
+                format!("JSON-RPC batch exceeds the {MAX_JSON_RPC_BATCH_ITEMS}-item limit"),
+            ))?));
+        }
+        let mut responses = Vec::with_capacity(items.len());
         for item in items {
-            if let Some(response) = handle_one_json_rpc_value(server, item.clone())? {
+            if let Some(response) = handle_one_json_rpc_value(server, item)? {
                 responses.push(serde_json::to_value(response)?);
             }
         }
@@ -1432,10 +1440,26 @@ fn handle_one_json_rpc_value(
 ) -> Result<Option<JsonRpcResponse>> {
     let has_id = value.get("id").is_some();
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    let request = match serde_json::from_value::<JsonRpcRequest>(value) {
+    if has_id && !matches!(id, Value::Null | Value::Number(_) | Value::String(_)) {
+        return Ok(Some(error(
+            Value::Null,
+            -32600,
+            "JSON-RPC id must be a string, number, or null",
+        )));
+    }
+    if value
+        .get("params")
+        .is_some_and(|params| !params.is_array() && !params.is_object())
+    {
+        return Ok(has_id.then(|| error(id, -32602, "JSON-RPC params must be an object or array")));
+    }
+    let mut request = match serde_json::from_value::<JsonRpcRequest>(value) {
         Ok(request) => request,
         Err(error_message) => return Ok(Some(error(id, -32600, error_message.to_string()))),
     };
+    if has_id {
+        request.id = Some(id.clone());
+    }
     match server.handle(request) {
         Ok(response) => Ok(response),
         Err(error_message) if has_id => Ok(Some(error(id, -32603, error_message.to_string()))),
@@ -2141,6 +2165,75 @@ mod tests {
         ]))
         .unwrap();
         assert!(notification_batch.is_none());
+    }
+
+    #[test]
+    fn json_rpc_envelopes_preserve_null_ids_and_reject_invalid_shapes() {
+        let null_id = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "method": "ping"
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(null_id["id"], Value::Null);
+        assert_eq!(null_id["result"], json!({}));
+
+        let invalid_id = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": { "nested": true },
+            "method": "ping"
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(invalid_id["id"], Value::Null);
+        assert_eq!(invalid_id["error"]["code"], -32600);
+
+        let invalid_params = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "ping",
+            "params": null
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(invalid_params["id"], 1);
+        assert_eq!(invalid_params["error"]["code"], -32602);
+
+        let invalid_notification = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "method": "ping",
+            "params": "invalid"
+        }))
+        .unwrap();
+        assert!(invalid_notification.is_none());
+    }
+
+    #[test]
+    fn json_rpc_batch_is_bounded_before_dispatch() {
+        let accepted = (0..MAX_JSON_RPC_BATCH_ITEMS)
+            .map(|id| json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }))
+            .collect::<Vec<_>>();
+        let accepted = handle_http_json_rpc(Value::Array(accepted))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            accepted.as_array().map(Vec::len),
+            Some(MAX_JSON_RPC_BATCH_ITEMS)
+        );
+
+        let oversized = (0..=MAX_JSON_RPC_BATCH_ITEMS)
+            .map(|id| json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }))
+            .collect::<Vec<_>>();
+        let rejected = handle_http_json_rpc(Value::Array(oversized))
+            .unwrap()
+            .unwrap();
+        assert!(!rejected.is_array());
+        assert_eq!(rejected["id"], Value::Null);
+        assert_eq!(rejected["error"]["code"], -32600);
+        assert!(rejected["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("128-item limit")));
     }
 
     #[test]

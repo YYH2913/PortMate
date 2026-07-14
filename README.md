@@ -151,6 +151,10 @@ The stdio transport accepts newline-delimited JSON messages up to 1 MiB, excludi
 delimiter. Oversized input is discarded through its terminating newline, returns a JSON-RPC parse
 error, and does not desynchronize the following request.
 
+Both stdio and HTTP preserve an explicit JSON-RPC `null` ID, reject non-string/number/null IDs and
+non-structured `params`, and cap a batch at 128 items before dispatch. This prevents a small request
+from amplifying into an unbounded sequence of tool calls or responses.
+
 To let the standalone stdio bridge read the desktop store directly, pass the SQLite store path:
 
 ```bash
