@@ -103,6 +103,8 @@ const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "3";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const MODEM_SOH: u8 = 0x01;
 const MODEM_STX: u8 = 0x02;
@@ -4052,9 +4054,9 @@ fn constant_time_str_eq(a: &str, b: &str) -> bool {
 }
 
 async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream) {
-    let mut raw = Vec::new();
-    let response = match stream.read_to_end(&mut raw).await {
-        Ok(_) => match serde_json::from_slice::<IpcRequest>(&raw) {
+    let response = match read_ipc_payload(&mut stream, MAX_IPC_REQUEST_BYTES, IPC_IO_TIMEOUT).await
+    {
+        Ok(raw) => match serde_json::from_slice::<IpcRequest>(&raw) {
             Ok(request) if constant_time_str_eq(&request.token, &token) => {
                 match handle_ipc_request(state.clone(), request).await {
                     Ok(value) => IpcResponse {
@@ -4083,14 +4085,38 @@ async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream
         Err(error) => IpcResponse {
             ok: false,
             value: None,
-            error: Some(format!("IPC read failed: {error}")),
+            error: Some(error),
         },
     };
 
     if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = stream.write_all(&bytes).await;
-        let _ = stream.shutdown().await;
+        let _ = tokio::time::timeout(IPC_IO_TIMEOUT, async {
+            stream.write_all(&bytes).await?;
+            stream.shutdown().await
+        })
+        .await;
     }
+}
+
+async fn read_ipc_payload(
+    stream: &mut TcpStream,
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let mut raw = Vec::new();
+    let read = tokio::time::timeout(timeout, async {
+        (&mut *stream)
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut raw)
+            .await
+    })
+    .await
+    .map_err(|_| format!("IPC request timed out after {} ms", timeout.as_millis()))?
+    .map_err(|error| format!("IPC read failed: {error}"))?;
+    if read > max_bytes {
+        return Err(format!("IPC request exceeds the {max_bytes}-byte limit"));
+    }
+    Ok(raw)
 }
 
 fn mcp_scope_allowed(
@@ -25072,6 +25098,80 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+    }
+
+    async fn exchange_test_ipc(state: AppState, token: &str, raw: Vec<u8>) -> IpcResponse {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let token = token.to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_ipc_client(state, token, stream).await;
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(&raw).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
+
+    #[test]
+    fn ipc_payload_reader_times_out_incomplete_clients() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let _idle_client = TcpStream::connect(address).await.unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+
+            let error = read_ipc_payload(&mut server, 128, Duration::from_millis(25))
+                .await
+                .unwrap_err();
+            assert!(error.contains("timed out after 25 ms"));
+        });
+    }
+
+    #[test]
+    fn ipc_rejects_invalid_tokens_and_oversized_payloads_without_audit() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!("portmate-ipc-bounds-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+            let invalid_token_request = serde_json::to_vec(&IpcRequest {
+                token: "wrong-token".to_string(),
+                client_id: "unauthenticated-client".to_string(),
+                trusted_write: true,
+                command: "run_command".to_string(),
+                args: serde_json::json!({
+                    "sessionId": session_id,
+                    "command": "password=must-not-be-audited"
+                }),
+            })
+            .unwrap();
+
+            let invalid_token =
+                exchange_test_ipc(state.clone(), "expected-token", invalid_token_request).await;
+            assert!(!invalid_token.ok);
+            assert_eq!(invalid_token.error.as_deref(), Some("invalid IPC token"));
+            assert!(state.store.lock().unwrap().audit.is_empty());
+
+            let oversized = exchange_test_ipc(
+                state.clone(),
+                "expected-token",
+                vec![b' '; MAX_IPC_REQUEST_BYTES + 1],
+            )
+            .await;
+            assert!(!oversized.ok);
+            assert!(oversized
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("1048576-byte limit")));
+            assert!(state.store.lock().unwrap().audit.is_empty());
+            assert!(!state.store_path.exists());
+
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
