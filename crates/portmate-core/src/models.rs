@@ -288,6 +288,8 @@ pub struct SshConnection {
     pub username: String,
     #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default = "default_ssh_reconnect_delay_ms")]
+    pub reconnect_delay_ms: u64,
     #[serde(default = "default_true")]
     pub keepalive_enabled: bool,
     #[serde(default = "default_ssh_keepalive_interval_seconds")]
@@ -309,12 +311,19 @@ pub struct SshConnection {
     pub tunnels: Vec<TunnelSpec>,
 }
 
+pub const MIN_SSH_RECONNECT_DELAY_MS: u64 = 100;
+pub const MAX_SSH_RECONNECT_DELAY_MS: u64 = 60_000;
+pub const DEFAULT_SSH_RECONNECT_DELAY_MS: u64 = 1_000;
 pub const MIN_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 1;
 pub const MAX_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 3_600;
 pub const DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 30;
 pub const MIN_SSH_KEEPALIVE_MAX_MISSED: u32 = 1;
 pub const MAX_SSH_KEEPALIVE_MAX_MISSED: u32 = 20;
 pub const DEFAULT_SSH_KEEPALIVE_MAX_MISSED: u32 = 3;
+
+const fn default_ssh_reconnect_delay_ms() -> u64 {
+    DEFAULT_SSH_RECONNECT_DELAY_MS
+}
 
 const fn default_ssh_keepalive_interval_seconds() -> u64 {
     DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS
@@ -326,6 +335,9 @@ const fn default_ssh_keepalive_max_missed() -> u32 {
 
 impl SshConnection {
     pub fn normalize_health_settings(&mut self) {
+        self.reconnect_delay_ms = self
+            .reconnect_delay_ms
+            .clamp(MIN_SSH_RECONNECT_DELAY_MS, MAX_SSH_RECONNECT_DELAY_MS);
         self.keepalive_interval_seconds = self.keepalive_interval_seconds.clamp(
             MIN_SSH_KEEPALIVE_INTERVAL_SECONDS,
             MAX_SSH_KEEPALIVE_INTERVAL_SECONDS,
@@ -865,6 +877,7 @@ mod tests {
         )
         .expect("legacy SSH connection should deserialize");
 
+        assert_eq!(legacy.reconnect_delay_ms, DEFAULT_SSH_RECONNECT_DELAY_MS);
         assert!(legacy.keepalive_enabled);
         assert_eq!(
             legacy.keepalive_interval_seconds,
@@ -874,9 +887,11 @@ mod tests {
             legacy.keepalive_max_missed,
             DEFAULT_SSH_KEEPALIVE_MAX_MISSED
         );
+        legacy.reconnect_delay_ms = 0;
         legacy.keepalive_interval_seconds = 0;
         legacy.keepalive_max_missed = u32::MAX;
         legacy.normalize_health_settings();
+        assert_eq!(legacy.reconnect_delay_ms, MIN_SSH_RECONNECT_DELAY_MS);
         assert_eq!(
             legacy.keepalive_interval_seconds,
             MIN_SSH_KEEPALIVE_INTERVAL_SECONDS

@@ -6217,11 +6217,17 @@ function SshAdvancedFields({
             </DialogField>
           </>
         ) : null}
-        <DialogField label="断线重连:">
-          <select value={ssh.reconnect ? "on" : "off"} onChange={(event) => updateSsh({ reconnect: event.target.value === "on" })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
+        <DialogToggleField label="自动重连:" checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
+        <DialogField label="重连延迟(ms):">
+          <input
+            type="number"
+            min={sshConnectionBounds.reconnectDelayMs.min}
+            max={sshConnectionBounds.reconnectDelayMs.max}
+            step={100}
+            disabled={!ssh.reconnect}
+            value={ssh.reconnectDelayMs}
+            onChange={(event) => updateSsh({ reconnectDelayMs: Number(event.target.value) })}
+          />
         </DialogField>
         <DialogField label="压缩:(C)">
           <select value={prefs.sshCompression ? "on" : "off"} onChange={(event) => updatePref("sshCompression", event.target.value === "on")}>

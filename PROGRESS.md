@@ -64,7 +64,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - SSH PTY shell：`russh` 连接、PTY、resize、password/public-key/keyboard-interactive/ssh-agent、profile-vault 私钥、保存密码/口令。
 - SSH/Tmux/TCP/Telnet 的代理设置已接入真实 transport：每个 Profile 可选择无认证 HTTP CONNECT 或 SOCKS5；SOCKS5 使用 domain target，避免在本机解析目标域名。SSH host-key 扫描和正式连接走同一路径；存在 Jump Host 时代理只承载第一条物理连接，后续跳点继续通过 `direct-tcpip`。代理认证尚未实现。
-- SSH/Tmux 的协议 KeepAlive 已由 Profile 持久化，可独立开关并配置 1-3,600 秒探测间隔和 1-20 次未响应上限，默认 30/3；正式会话和整条 Jump Host 链使用同一组 russh client 参数。后台重连每次尝试都会按 session ID 从 store 重新加载并规范化最新 profile；已保存的 endpoint、username、secretRef、identity、Jump Host、host-key 策略与健康参数会用于下一次尝试。握手期间连接配置变化会废弃旧建立结果和旧失败诊断，关闭 reconnect 或把 profile 改为非 SSH transport 会终止 worker；runtime ID 代际校验覆盖 tunnel 恢复和 `Connected` 状态提交，避免已关闭 runtime 被旧任务重新标记为已连接。
+- SSH/Tmux 的重连延迟和协议 KeepAlive 已由 Profile 持久化；延迟范围 100-60,000 ms、默认 1,000 ms，等待期间每 100 ms 重读最新 Profile，因此修改延迟或关闭 reconnect 会影响下一次尝试。KeepAlive 可独立开关并配置 1-3,600 秒探测间隔和 1-20 次未响应上限，默认 30/3；正式会话和整条 Jump Host 链使用同一组 russh client 参数。后台重连每次尝试都会按 session ID 从 store 重新加载并规范化最新 profile；已保存的 endpoint、username、secretRef、identity、Jump Host、host-key 策略与健康参数会用于下一次尝试。握手期间连接配置变化会废弃旧建立结果和旧失败诊断，关闭 reconnect 或把 profile 改为非 SSH transport 会终止 worker；runtime ID 代际校验覆盖 tunnel 恢复和 `Connected` 状态提交，避免已关闭 runtime 被旧任务重新标记为已连接。
 - Shell：跨平台 PTY 基础能力，支持自定义程序、参数、cwd。
 - Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写，活动串口会话可查看最近收发事件的时间戳、方向、Hex 和文本预览；Profile 可配置 100-60,000 ms 自动重连延迟（默认 1,000 ms），等待期间每 100 ms 重读最新 Profile，因此缩短延迟或关闭 reconnect 会及时生效。可选 1-86,400 秒接收空闲超时默认关闭/60 秒，只观察 RX 且不会向设备注入通用 heartbeat；适合预期持续上报的设备。读错误或空闲超时会保留精确断线原因。每次尝试都会重新加载最新 Profile，端口、线路或健康参数变化会废弃旧尝试并改用新配置，pending/connected 阶段关闭 reconnect 都会收敛到 `Disconnected`；用户关闭或手动重连也会取消旧重连循环。
 - Telnet/Raw TCP：socket 模式读写；Telnet 已有增量 IAC 选项协商、分片终端类型子协商、NVT `CR NUL`/CRLF 编解码、Hex/raw byte IAC 转义，以及 Telnet/Raw TCP loopback mock 回归覆盖；协商回复写失败会结束旧 transport 并进入统一断开/重连流程。
@@ -79,7 +79,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - Jump Host 后端连接链路已支持多跳，逐跳 host key 验证和 direct-tcpip 串接可用；会话设置可增删多跳 Jump Host，并可为每跳保存独立 password/passphrase secretRef、指定 identityRef、切换继承或自定义 host-key mode/alias/trust scope/rotation/IP 检查；目标 host-key 预扫描可经多跳链路执行；连接失败和扫描时可返回首个需要确认的 Jump Host host key，并通过同一确认弹窗逐跳信任后重连；目标会话临时输入的凭据不会覆盖跳板独立 secretRef。
 - GSSAPI 标记为 unsupported。
-- Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH 的协议 KeepAlive、TCP/Telnet 的 OS keepalive/重连延迟，以及 Serial 的重连延迟/接收空闲阈值均可按 Profile 配置，断线后会进入 `Reconnecting` 并后台重试；更广故障矩阵和更深连接健康诊断还不完整。
+- Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH/Tmux 的重连延迟/协议 KeepAlive、TCP/Telnet 的 OS keepalive/重连延迟，以及 Serial 的重连延迟/接收空闲阈值均可按 Profile 配置，断线后会进入 `Reconnecting` 并后台重试；更广故障矩阵和更深连接健康诊断还不完整。
 - Serial 的断线重开、最新 Profile 重载和过期尝试拒绝已接入；Hex/时间戳查看已接入活动会话侧栏，但仍缺更完整过滤、导出和独立串口分析窗口。
 - SFTP 文件管理已是 local/remote 双栏并支持 Ctrl/Command 切换、Shift 连选、全选、批量删除，以及单项 rename/chmod/属性查看；多文件和完整目录可通过按钮或面板拖拽上传/下载，远端目录由 SFTP 递归枚举并保留空目录、跳过 symlink。内部批次和 Tauri 原生外部拖放共享 `fail/overwrite/skip/rename` 冲突策略，在目标修改前完成类型/路径冲突和超限检查，并跟踪整批 task 终态后刷新目标；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口。失败任务会显示远端错误、部分进度和失败时间，可复制完整诊断；受限长度的失败原因同时写入 session event，避免只有 `Failed` 状态而没有上下文。更广 SFTP/SCP 服务故障矩阵仍待补。
 - ZModem 当前限制单文件小于 4 GiB；OpenSSH PTY 上的 lrzsz X/Y/Z 双向传输已有实测，静默 modem 等待可在取消后立即发送 CAN 并快速退出，transport 进入重连态会立即失败旧 worker；物理串口、OpenSSH 活动传输断线、批量和不同工具实现的兼容矩阵仍待补。
@@ -192,7 +192,7 @@ npm run build
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
 - HTTP CONNECT/SOCKS5 对 TCP/Telnet 的真实转发、拒绝响应、无认证限制、目标域名交给代理解析、关闭代理时忽略残留端点、空代理端点和换行注入拒绝；混合认证 Jump Host 矩阵还覆盖经代理执行目标 host-key 扫描及 password/keyboard-interactive 正式连接。
-- SSH KeepAlive 的旧 Profile 默认值、非法阈值夹紧、开关到 russh `keepalive_interval` 的映射，以及健康参数变化触发最新 Profile 重连代次更新。
+- SSH 重连延迟/KeepAlive 的旧 Profile 默认值、非法阈值夹紧、KeepAlive 开关到 russh `keepalive_interval` 的映射、健康参数变化触发最新 Profile 重连代次更新，以及真实 OpenSSH 断线等待期间从 5,000 ms 缩短到 100 ms 后恢复 session 和原 tunnel。
 - 独立真实 `ssh-agent` 与 OpenSSH 服务上的 agent 禁用、未过滤 offer、`IdentitiesOnly` 空白名单、显式指纹白名单，以及错误指纹不能被相同 comment/path 绕过。
 - OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复，以及 XModem block padding 精确截断。
 - OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
@@ -237,7 +237,7 @@ npm run build
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、无认证 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；代理认证、健康故障矩阵和 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护、Argon2id + IOTA Stronghold portable vault/fallback/主密码轮换，以及带预检 token、durable SQLite journal、原子 commit point、跨重启显式恢复、冲突冻结和安全诊断导出的 SSH/Tmux profile 凭据双向迁移已有；跨平台 provider 故障矩阵待补。 |
-| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、SSH/Tmux/TCP/Telnet 的 Profile 级无认证 HTTP CONNECT/SOCKS5、SSH/Tmux 协议 KeepAlive 阈值、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP/Telnet 的 Profile 级重连延迟与 OS keepalive、Serial 的重连延迟与无探测接收空闲阈值、SSH/TCP/Telnet/Serial 重连加载最新 Profile 并拒绝过期尝试、TCP/Telnet/Serial pending/connected 阶段禁用收敛、虚拟串口切换最新端口自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；代理认证、Telnet 高级选项、更深诊断和完整 Hex viewer 待补。 |
+| Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、SSH/Tmux/TCP/Telnet 的 Profile 级无认证 HTTP CONNECT/SOCKS5、SSH/Tmux 的重连延迟与协议 KeepAlive 阈值、Telnet 增量协商/NVT CR 编解码/TTYPE/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP/Telnet 的 Profile 级重连延迟与 OS keepalive、Serial 的重连延迟与无探测接收空闲阈值、SSH/TCP/Telnet/Serial 重连加载最新 Profile 并拒绝过期尝试、TCP/Telnet/Serial pending/connected 阶段禁用收敛、虚拟串口切换最新端口自动重连、runtime 最近断开原因可见、break、DTR/RTS、hex 字节发送、串口最近收发 Hex/时间戳查看可用；代理认证、Telnet 高级选项、更深诊断和完整 Hex viewer 待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
@@ -257,7 +257,7 @@ npm run build
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建、cancel 失败后的本地收敛，以及远端命令型传输失败详情、部分进度、事件摘要和复制诊断均已完成；继续扩展服务端故障矩阵。
 4. 扩展端到端集成测试：SFTP/SCP 更广服务故障矩阵、Raw TCP/Telnet 更完整矩阵和 modem 的物理串口/OpenSSH 活动传输断线；虚拟串口重连、静默 modem 快速取消和 transport 重连态失败已覆盖。
-5. 扩展自动重连、断线恢复和连接健康检测：SSH、TCP/Telnet 与 Serial 会在重试前加载最新 Profile，并在尝试完成时拒绝已过期配置；TCP/Telnet/Serial 在 pending/connected 阶段关闭重连均能立即或下次断线时收敛，SSH 协议 KeepAlive、TCP/Telnet 重连延迟/OS keepalive，以及 Serial 重连延迟/无探测接收空闲阈值已可按 Profile 配置，runtime 最近断开时间/原因已可见；下一步补 SSH/Serial 更广故障矩阵和更深健康诊断。
+5. 扩展自动重连、断线恢复和连接健康检测：SSH、TCP/Telnet 与 Serial 会在重试前加载最新 Profile，并在尝试完成时拒绝已过期配置；三者的重连延迟都可在等待期间按最新 Profile 动态调整，TCP/Telnet/Serial 在 pending/connected 阶段关闭重连均能立即或下次断线时收敛；SSH 协议 KeepAlive、TCP/Telnet OS keepalive，以及 Serial 无探测接收空闲阈值已可按 Profile 配置，runtime 最近断开时间/原因已可见；下一步补 SSH/Serial 更广故障矩阵和更深健康诊断。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
 

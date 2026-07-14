@@ -74,6 +74,7 @@ export interface SshConnection {
   endpoint: { host: string; port: number };
   username: string;
   reconnect: boolean;
+  reconnectDelayMs: number;
   keepaliveEnabled: boolean;
   keepaliveIntervalSeconds: number;
   keepaliveMaxMissed: number;

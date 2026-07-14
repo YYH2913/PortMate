@@ -29,6 +29,7 @@ function baseConnection(): SshConnection {
 describe("SSH connection settings", () => {
   it("fills health defaults for legacy profiles", () => {
     const legacy = baseConnection() as Partial<SshConnection>;
+    delete legacy.reconnectDelayMs;
     delete legacy.keepaliveEnabled;
     delete legacy.keepaliveIntervalSeconds;
     delete legacy.keepaliveMaxMissed;
@@ -39,10 +40,12 @@ describe("SSH connection settings", () => {
   it("clamps and truncates operational settings", () => {
     const normalized = normalizeSshConnectionSettings({
       ...baseConnection(),
+      reconnectDelayMs: -1,
       keepaliveIntervalSeconds: Number.MAX_SAFE_INTEGER,
       keepaliveMaxMissed: 4.9,
     });
 
+    expect(normalized.reconnectDelayMs).toBe(sshConnectionBounds.reconnectDelayMs.min);
     expect(normalized.keepaliveIntervalSeconds).toBe(sshConnectionBounds.keepaliveIntervalSeconds.max);
     expect(normalized.keepaliveMaxMissed).toBe(4);
   });
@@ -51,6 +54,7 @@ describe("SSH connection settings", () => {
     const normalized = normalizeSshConnectionSettings({
       ...baseConnection(),
       reconnect: false,
+      reconnectDelayMs: 2_500,
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 7,
@@ -58,6 +62,7 @@ describe("SSH connection settings", () => {
 
     expect(normalized).toMatchObject({
       reconnect: false,
+      reconnectDelayMs: 2_500,
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 7,

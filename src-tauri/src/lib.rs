@@ -10984,6 +10984,7 @@ fn jump_ssh_connection(
         },
         username: jump.username.trim().to_string(),
         reconnect: ssh.reconnect,
+        reconnect_delay_ms: ssh.reconnect_delay_ms,
         keepalive_enabled: ssh.keepalive_enabled,
         keepalive_interval_seconds: ssh.keepalive_interval_seconds,
         keepalive_max_missed: ssh.keepalive_max_missed,
@@ -15524,12 +15525,11 @@ fn read_ssh_channel(
                     0
                 }
             };
-            let reconnect_enabled = !closed.load(Ordering::SeqCst)
-                && store
-                    .profile(&session_id)
-                    .map(normalize_session_profile)
-                    .is_some_and(|latest| ssh_reconnect_enabled(&latest));
-            if reconnect_enabled {
+            let reconnect_profile = (!closed.load(Ordering::SeqCst))
+                .then(|| store.profile(&session_id).map(normalize_session_profile))
+                .flatten()
+                .filter(ssh_reconnect_enabled);
+            if let Some(reconnect_profile) = reconnect_profile {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Reconnecting,
@@ -15538,7 +15538,8 @@ fn read_ssh_channel(
                 store.record_system_event(
                     &session_id,
                     format!(
-                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s); reconnecting in 1000ms"
+                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s); reconnecting in {}ms",
+                        ssh_reconnect_delay(&reconnect_profile).as_millis()
                     ),
                 );
                 if let Err(error) = save_store(&io.store_path, &store) {
@@ -15579,6 +15580,18 @@ fn ssh_reconnect_enabled(profile: &SessionProfile) -> bool {
     match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.reconnect,
         _ => false,
+    }
+}
+
+fn ssh_reconnect_delay(profile: &SessionProfile) -> Duration {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            Duration::from_millis(ssh.reconnect_delay_ms.clamp(
+                portmate_core::MIN_SSH_RECONNECT_DELAY_MS,
+                portmate_core::MAX_SSH_RECONNECT_DELAY_MS,
+            ))
+        }
+        _ => Duration::from_millis(portmate_core::DEFAULT_SSH_RECONNECT_DELAY_MS),
     }
 }
 
@@ -15723,6 +15736,11 @@ fn record_ssh_reconnect_failure_if_pending(
             }
         }
     }
+    let reconnect_delay = store
+        .profile(session_id)
+        .map(normalize_session_profile)
+        .map(|profile| ssh_reconnect_delay(&profile))
+        .unwrap_or_else(|| Duration::from_millis(portmate_core::DEFAULT_SSH_RECONNECT_DELAY_MS));
     let _ = store.set_runtime_status_with_reason(
         session_id,
         SessionStatus::Reconnecting,
@@ -15730,7 +15748,10 @@ fn record_ssh_reconnect_failure_if_pending(
     );
     store.record_system_event(
         session_id,
-        format!("PortMate: SSH reconnect failed: {error}; retrying in 1000ms"),
+        format!(
+            "PortMate: SSH reconnect failed: {error}; retrying in {}ms",
+            reconnect_delay.as_millis()
+        ),
     );
     if let Err(save_error) = save_store(&state.store_path, &store) {
         eprintln!("PortMate: failed to persist SSH reconnect failure: {save_error}");
@@ -15810,17 +15831,62 @@ enum SshReconnectInstallDecision {
     Failed(String),
 }
 
+async fn wait_for_ssh_reconnect_attempt(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    let started = Instant::now();
+    loop {
+        if !ssh_reconnect_pending(state, session_id, runtime_id, closed) {
+            return false;
+        }
+        let profile = match latest_ssh_reconnect_profile(state, session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_ssh_reconnect_if_disabled(
+                    state,
+                    session_id,
+                    runtime_id,
+                    "automatic reconnect disabled while waiting for the next attempt",
+                ) {
+                    return false;
+                }
+                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "PortMate: failed to load SSH reconnect delay from latest profile: {error}"
+                );
+                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
+                continue;
+            }
+        };
+        let remaining = ssh_reconnect_delay(&profile).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return true;
+        }
+        tokio::time::sleep(remaining.min(RECONNECT_DELAY_POLL_INTERVAL)).await;
+    }
+}
+
 async fn reconnect_ssh_session(
     state: AppState,
     session_id: String,
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
-    let reconnect_delay = Duration::from_millis(1000);
-
     loop {
-        tokio::time::sleep(reconnect_delay).await;
-        if !ssh_reconnect_pending(&state, &session_id, &previous_runtime_id, &closed) {
+        if !wait_for_ssh_reconnect_attempt(
+            &state,
+            &session_id,
+            &previous_runtime_id,
+            closed.as_ref(),
+        )
+        .await
+        {
             return;
         }
 
@@ -23750,11 +23816,20 @@ mod tests {
     fn ssh_reconnect_enabled_reads_ssh_and_tmux_profiles() {
         let mut profile = test_ssh_profile();
         assert!(ssh_reconnect_enabled(&profile));
+        assert_eq!(
+            ssh_reconnect_delay(&profile),
+            Duration::from_millis(portmate_core::DEFAULT_SSH_RECONNECT_DELAY_MS)
+        );
 
         if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
             ssh.reconnect = false;
+            ssh.reconnect_delay_ms = 0;
         }
         assert!(!ssh_reconnect_enabled(&profile));
+        assert_eq!(
+            ssh_reconnect_delay(&profile),
+            Duration::from_millis(portmate_core::MIN_SSH_RECONNECT_DELAY_MS)
+        );
 
         let ssh = match profile.connection {
             ConnectionConfig::Ssh(ssh) => ssh,
@@ -23793,6 +23868,7 @@ mod tests {
         if let ConnectionConfig::Ssh(ssh) = &mut updated.connection {
             ssh.endpoint.host = "new.example".to_string();
             ssh.username = "new-user".to_string();
+            ssh.reconnect_delay_ms = 2_500;
             ssh.keepalive_enabled = true;
             ssh.keepalive_interval_seconds = 75;
             ssh.keepalive_max_missed = 7;
@@ -23822,6 +23898,7 @@ mod tests {
         };
         assert_eq!(latest.endpoint.host, "new.example");
         assert_eq!(latest.username, "new-user");
+        assert_eq!(latest.reconnect_delay_ms, 2_500);
         assert!(latest.keepalive_enabled);
         assert_eq!(latest.keepalive_interval_seconds, 75);
         assert_eq!(latest.keepalive_max_missed, 7);
@@ -27438,10 +27515,14 @@ mod tests {
                 let mut store = state.store.lock().unwrap();
                 let mut saved_profile = store.profile(&profile.id).unwrap();
                 match &mut saved_profile.connection {
-                    ConnectionConfig::Ssh(ssh) => ssh.tunnels.push(conflict_tunnel.clone()),
+                    ConnectionConfig::Ssh(ssh) => {
+                        ssh.tunnels.push(conflict_tunnel.clone());
+                        ssh.reconnect_delay_ms = 5_000;
+                    }
                     _ => panic!("expected SSH profile"),
                 }
                 store.upsert_profile(saved_profile);
+                save_store(&state.store_path, &store).unwrap();
             }
             let (previous_runtime_id, reconnect_handle) = {
                 let connections = state.ssh.lock().unwrap();
@@ -27459,6 +27540,47 @@ mod tests {
                     .await
                     .unwrap();
             }
+
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let reconnecting = state.store.lock().unwrap().runtimes.iter().any(|runtime| {
+                        runtime.session_id == profile.id
+                            && runtime.status == SessionStatus::Reconnecting
+                    });
+                    if reconnecting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("SSH runtime did not enter reconnecting state");
+            {
+                let mut store = state.store.lock().unwrap();
+                let mut updated = store.profile(&profile.id).unwrap();
+                match &mut updated.connection {
+                    ConnectionConfig::Ssh(ssh) => ssh.reconnect_delay_ms = 100,
+                    _ => panic!("expected SSH profile"),
+                }
+                store.upsert_profile(updated);
+                save_store(&state.store_path, &store).unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let runtime_replaced = state
+                        .ssh
+                        .lock()
+                        .unwrap()
+                        .get(&profile.id)
+                        .is_some_and(|runtime| runtime.runtime_id != previous_runtime_id);
+                    if runtime_replaced {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("SSH reconnect did not adopt the shortened profile delay");
 
             let restored = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
@@ -27539,6 +27661,8 @@ mod tests {
                     text.contains("failed to restore SSH tunnel reconnect-conflict")
                         && text.contains("SSH tunnel bind failed")
                 })));
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("reconnecting in 5000ms"), "{screen}");
 
             let mut restored_client = TcpStream::connect(("127.0.0.1", reconnect_tunnel.bind_port))
                 .await
@@ -30638,6 +30762,7 @@ mod tests {
                 },
                 username: "root".to_string(),
                 reconnect: true,
+                reconnect_delay_ms: portmate_core::DEFAULT_SSH_RECONNECT_DELAY_MS,
                 keepalive_enabled: true,
                 keepalive_interval_seconds: portmate_core::DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
                 keepalive_max_missed: portmate_core::DEFAULT_SSH_KEEPALIVE_MAX_MISSED,

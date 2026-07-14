@@ -1,12 +1,14 @@
 import type { SshConnection } from "./types";
 
 export const sshConnectionDefaults = {
+  reconnectDelayMs: 1_000,
   keepaliveEnabled: true,
   keepaliveIntervalSeconds: 30,
   keepaliveMaxMissed: 3,
 } as const;
 
 export const sshConnectionBounds = {
+  reconnectDelayMs: { min: 100, max: 60_000 },
   keepaliveIntervalSeconds: { min: 1, max: 3_600 },
   keepaliveMaxMissed: { min: 1, max: 20 },
 } as const;
@@ -20,6 +22,12 @@ export function normalizeSshConnectionSettings<T extends SshConnection>(connecti
   return {
     ...connection,
     reconnect: typeof connection.reconnect === "boolean" ? connection.reconnect : true,
+    reconnectDelayMs: boundedInteger(
+      connection.reconnectDelayMs,
+      sshConnectionDefaults.reconnectDelayMs,
+      sshConnectionBounds.reconnectDelayMs.min,
+      sshConnectionBounds.reconnectDelayMs.max,
+    ),
     keepaliveEnabled: typeof connection.keepaliveEnabled === "boolean" ? connection.keepaliveEnabled : true,
     keepaliveIntervalSeconds: boundedInteger(
       connection.keepaliveIntervalSeconds,
