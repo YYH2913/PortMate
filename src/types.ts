@@ -350,6 +350,36 @@ export interface SysmonSnapshot {
   memoryPercent: number;
   rxKbps: number;
   txKbps: number;
+  loadAverage: [number, number, number];
+  memoryTotalBytes: number;
+  memoryAvailableBytes: number;
+  processes: SysmonProcess[];
+  disks: SysmonDisk[];
+  networkInterfaces: SysmonNetworkInterface[];
+}
+
+export interface SysmonProcess {
+  pid: number;
+  name: string;
+  cpuPercent: number;
+  memoryPercent: number;
+  rssBytes: number;
+}
+
+export interface SysmonDisk {
+  filesystem: string;
+  mountPoint: string;
+  totalBytes: number;
+  availableBytes: number;
+  usedPercent: number;
+}
+
+export interface SysmonNetworkInterface {
+  name: string;
+  rxBytes: number;
+  txBytes: number;
+  rxKbps: number;
+  txKbps: number;
 }
 
 export interface AuditRecord {

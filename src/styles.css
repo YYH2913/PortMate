@@ -2210,6 +2210,265 @@ fieldset label {
   width: min(760px, calc(100vw - 40px));
 }
 
+.sysmon-dialog {
+  grid-template-rows: 46px minmax(0, 1fr) 54px;
+  width: min(900px, calc(100vw - 40px));
+  height: min(650px, calc(100vh - 56px));
+}
+
+.sysmon-title {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.sysmon-title strong,
+.sysmon-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-title small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.sysmon-content {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto 36px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 16px 18px 0;
+}
+
+.sysmon-summary {
+  display: grid;
+  grid-template-columns: 0.75fr 1.15fr 1.45fr 1fr 1fr 0.9fr;
+  margin: 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sysmon-summary > div {
+  display: grid;
+  min-width: 0;
+  min-height: 70px;
+  align-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-right: 1px solid var(--line-soft);
+}
+
+.sysmon-summary > div:last-child {
+  border-right: 0;
+}
+
+.sysmon-summary dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sysmon-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #e2edf6;
+  font-family: var(--mono);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-summary small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-tabs {
+  display: flex;
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+}
+
+.sysmon-tabs button {
+  min-width: 112px;
+  height: 36px;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.sysmon-tabs button:hover,
+.sysmon-tabs button.active {
+  color: var(--text);
+}
+
+.sysmon-tabs button.active {
+  border-bottom-color: var(--cyan);
+}
+
+.sysmon-tabs button span {
+  margin-left: 5px;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.sysmon-table-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 220px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sysmon-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.sysmon-table th,
+.sysmon-table td {
+  height: 34px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.sysmon-table th:nth-child(2),
+.sysmon-table td:nth-child(2),
+.sysmon-disk-table th:first-child,
+.sysmon-disk-table td:first-child,
+.sysmon-network-table th:first-child,
+.sysmon-network-table td:first-child {
+  text-align: left;
+}
+
+.sysmon-process-table th:first-child,
+.sysmon-process-table td:first-child {
+  width: 72px;
+}
+
+.sysmon-process-table th:nth-child(2),
+.sysmon-process-table td:nth-child(2) {
+  width: 36%;
+}
+
+.sysmon-disk-table th:first-child,
+.sysmon-disk-table td:first-child,
+.sysmon-disk-table th:nth-child(2),
+.sysmon-disk-table td:nth-child(2) {
+  width: 24%;
+}
+
+.sysmon-network-table th:first-child,
+.sysmon-network-table td:first-child {
+  width: 24%;
+}
+
+.sysmon-usage {
+  position: relative;
+  height: 18px;
+  background: #0d141b;
+}
+
+.sysmon-usage span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(94, 234, 212, 0.2);
+}
+
+.sysmon-usage b {
+  position: relative;
+  display: block;
+  padding: 2px 5px 0;
+  color: #dce9f3;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+  text-align: right;
+}
+
+.sysmon-empty {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sysmon-empty.loading svg,
+.sysmon-refresh-icon.loading {
+  animation: transfer-spin 1.2s linear infinite;
+}
+
+.sysmon-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 18px 14px;
+}
+
+.sysmon-actions > span {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-actions button {
+  display: inline-flex;
+  min-width: 88px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sysmon-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.sysmon-actions button:first-of-type {
+  border-color: rgba(94, 234, 212, 0.45);
+  color: var(--cyan);
+}
+
 .log-manager-dialog {
   grid-template-rows: 46px minmax(0, 1fr) 52px;
   width: min(960px, calc(100vw - 40px));
@@ -2692,6 +2951,28 @@ fieldset label {
     grid-column: 1 / -1;
   }
 
+  .sysmon-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .sysmon-content {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .sysmon-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sysmon-summary > div:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .sysmon-summary > div:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line-soft);
+  }
+
   .log-manager-dialog {
     height: calc(100vh - 24px);
   }
@@ -2750,6 +3031,81 @@ fieldset label {
 }
 
 @media (max-width: 480px) {
+  .sysmon-content {
+    gap: 8px;
+    padding-top: 10px;
+  }
+
+  .sysmon-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sysmon-summary > div {
+    min-height: 58px;
+    padding: 6px 9px;
+  }
+
+  .sysmon-summary dd {
+    font-size: 13px;
+  }
+
+  .sysmon-summary > div:nth-child(3n) {
+    border-right: 1px solid var(--line-soft);
+  }
+
+  .sysmon-summary > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .sysmon-summary > div:nth-child(-n + 4) {
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .sysmon-tabs button {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .sysmon-table {
+    min-width: 0;
+  }
+
+  .sysmon-process-table th:nth-child(4),
+  .sysmon-process-table td:nth-child(4),
+  .sysmon-disk-table th:nth-child(2),
+  .sysmon-disk-table td:nth-child(2),
+  .sysmon-disk-table th:nth-child(5),
+  .sysmon-disk-table td:nth-child(5),
+  .sysmon-network-table th:nth-child(4),
+  .sysmon-network-table td:nth-child(4),
+  .sysmon-network-table th:nth-child(5),
+  .sysmon-network-table td:nth-child(5) {
+    display: none;
+  }
+
+  .sysmon-process-table th:nth-child(2),
+  .sysmon-process-table td:nth-child(2),
+  .sysmon-disk-table th:first-child,
+  .sysmon-disk-table td:first-child,
+  .sysmon-network-table th:first-child,
+  .sysmon-network-table td:first-child {
+    width: 38%;
+  }
+
+  .sysmon-actions {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .sysmon-actions > span {
+    display: none;
+  }
+
+  .sysmon-actions button {
+    flex: 1;
+    min-width: 0;
+  }
+
   .log-manager-content {
     padding-right: 12px;
     padding-left: 12px;

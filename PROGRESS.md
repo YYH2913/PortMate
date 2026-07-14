@@ -44,7 +44,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 分屏布局有水平/垂直/关闭 pane 的基础实现；版本化 workspace snapshot 会统一保存 pane session binding、active session 和标签颜色，兼容迁移旧 localStorage key，并在 profile 列表变化后剔除失效 ID、收敛无效 split；同一 session 的多 pane 视图会保留，但启动连接目标只执行一次。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
-- MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Sysmon/Trigger 相关入口已存在。
+- MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络三页工作窗口。
 - 同步输入会把输入按 FIFO 顺序发送到源 pane 和经过协议过滤的已连接 pane；支持按协议换行、0..5000 ms 目标间延迟、显式批量发送各应用一次的受限前后缀、失败/即时取消反馈和明显目标计数。普通 XTerm 键击及原生 bracketed 键盘粘贴保持无前后缀的流式输入，顶部菜单、上下文和中键粘贴走批量路径。源会话始终保留，重复 pane binding 只发送一次；设置持久化但开关每次启动默认关闭。
 - 底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
 - 终端交互支持选择即复制、右键/中键粘贴。
@@ -122,7 +122,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出。
 - SessionStore 保存使用跨进程 sidecar 文件锁和绑定 `storeRevision + kv` 内容的 CAS；stale 实例、旧 writer 直接修改 kv、提交后无法验证以及损坏 SQLite 均拒绝继续覆盖。首次创建/旧 JSON 迁移在同一锁内完成，单纯启动第二实例不会旋转 revision。
-- SQLite v3 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、sysmon_snapshots，以及独立的 profile credential migration journal。
+- SQLite v4 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、带结构化 `details_json` 的 sysmon_snapshots，以及独立的 profile credential migration journal；v3 Sysmon 表会原位增加默认空 details 列。
 - SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
 - 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。events 每会话保留目标 5,000 条并使用 512 条实时批量裁剪余量；审计按 session/global scope 保留目标 5,000 条、timeline 每会话 2,000 条、Sysmon 每会话 1,024 条，并使用 128 条余量；终态 transfer 每会话精确保留 1,000 条，queued/running 永不淘汰。桌面和独立 MCP 加载旧快照时会把每个 event/history scope 收敛到精确上限并重建 event count cache，防止未继续产生日志的旧会话绕过边界，也避免 KV JSON、内存和 mirror 同步成本无限增长。
 - terminal stream 可按 profile 设置追加写入 raw/text/jsonl 分片；入站 Raw 保存 SSH channel、PTY、Raw TCP/Telnet socket 和 Serial 解码前精确字节，出站 Raw 保存成功用户 text/bytes 经协议编码后的 wire、Telnet 协商回复和 modem 帧。每会话 lane 保证出站 transport/write/event 顺序；每个 `bytesRef` 精确绑定对应字节，但双向并发时不承诺共享分片的跨方向因果排序。写成功后的 SQLite/Raw/Text/JSONL 降级会通过事件 `loggingError` 报告，不会伪装成发送失败；二进制结构化事件只保存长度，不复制可逆 Hex。最终分片路径上的追加、读取和删除互斥；新 `bytesRef` 带 segment SHA-256，可拒绝删除重建/修改后的错误内容，同时兼容旧 path/offset/length 引用。新 profile 默认关闭日志和 Raw，UI 明示 Raw 不脱敏。
@@ -223,8 +223,9 @@ npm run build
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
+- Sysmon 旧摘要快照兼容、CPU/内存/负载解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、每接口采样速率/计数器重置与 32 条边界、完整远端 marker 输出、真实本机 Linux `/proc`/`ps`/`df` 采样，以及 SQLite v3→v4 details 迁移。
 
-当前 Rust workspace 自动化测试总数为 205：`portmate` 145、`portmate-kdf` 1、`portmate-core` 32、`portmate-mcp` 27；`npm test` 另有 65 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 210：`portmate` 149、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 65 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 
@@ -252,7 +253,7 @@ npm run build
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
-| Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
+| Sysmon | 大部分实现 | 本机/SSH Linux 的 CPU、内存、load average、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新三页工作窗口；远端非 Linux 平台与常驻侧栏待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；命令关联与毫秒级分片待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
@@ -282,7 +283,7 @@ npm run build
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序和 system Text/JSONL sink 已完成；继续补命令关联与毫秒级分片。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
-4. Sysmon 扩展：进程、磁盘、网络接口、远端平台兼容。
+4. Sysmon 的进程、磁盘、网络接口、工作窗口和结构化持久化已完成；继续补远端 BSD/macOS 采样与常驻侧栏。
 5. Playwright UI 回归、vttest/Unicode/鼠标/全屏程序兼容基线。
 
 ### P3：架构整理与发布准备

@@ -110,7 +110,7 @@ const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoveryS
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "search" | "logs" | "keys" | "mcp" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | null;
 type ProtocolTab = (typeof protocolTabs)[number];
 type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
@@ -679,7 +679,11 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "Sysmon") {
-      void refreshSysmon();
+      if (!active) {
+        setNotice({ title: "Sysmon", message: "请先选择一个会话。" });
+        return;
+      }
+      setUtilityDialog("sysmon");
       return;
     }
     if (item === "Tmux") {
@@ -1270,23 +1274,6 @@ function handleMenuAction(item: string) {
     setCredentialPrompt(null);
   }
 
-  async function refreshSysmon() {
-    if (!active) {
-      setNotice({ title: "Sysmon", message: "请先选择一个会话。" });
-      return;
-    }
-    try {
-      const snapshot = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: active.profile.id });
-      setNotice({
-        title: "Sysmon",
-        message: `CPU ${snapshot.cpuPercent.toFixed(1)}% · Memory ${snapshot.memoryPercent.toFixed(1)}% · RX ${snapshot.rxKbps.toFixed(1)} KiB/s · TX ${snapshot.txKbps.toFixed(1)} KiB/s · Uptime ${snapshot.uptimeSeconds}s`,
-      });
-      await refreshActiveLog(active.profile.id);
-    } catch (error) {
-      setNotice({ title: "Sysmon 失败", message: formatError(error) });
-    }
-  }
-
   async function setSerialLine(line: "dtr" | "rts", value: boolean) {
     if (!active || active.profile.connection.kind !== "serial") return;
     try {
@@ -1561,6 +1548,7 @@ function handleMenuAction(item: string) {
         setNotice({ title: "Tmux", message });
         void refreshActiveLog(active.profile.id);
       }} />}
+      {utilityDialog === "sysmon" && active && <SysmonDialog session={active} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "search" && <SearchDialog state={searchDialog} sessions={sessions} logs={logs} onChange={setSearchDialog} onSelect={(sessionId) => {
         activateSession(sessionId);
         setUtilityDialog(null);
@@ -2968,6 +2956,126 @@ function TmuxDialog({ session, onClose, onDone }: { session: SessionSummary; onC
             </div>
           </section>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: () => void }) {
+  const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
+  const [tab, setTab] = useState<"processes" | "disks" | "network">("processes");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setSnapshot(null);
+    void refreshSysmon();
+  }, [session.profile.id]);
+
+  async function refreshSysmon() {
+    setBusy(true);
+    setError("");
+    try {
+      setSnapshot(await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id }));
+    } catch (error) {
+      setError(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const processes = snapshot?.processes ?? [];
+  const disks = snapshot?.disks ?? [];
+  const interfaces = snapshot?.networkInterfaces ?? [];
+  const loadAverage = snapshot?.loadAverage ?? [0, 0, 0];
+  const memoryUsed = snapshot ? Math.max(0, snapshot.memoryTotalBytes - snapshot.memoryAvailableBytes) : 0;
+  const scope = isSshLikeProfile(session.profile) ? "远端 Linux" : "本机 Linux";
+
+  return (
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="wind-dialog sysmon-dialog">
+        <header className="dialog-title">
+          <span className="app-icon" />
+          <div className="sysmon-title">
+            <strong>Sysmon</strong>
+            <small>{session.profile.name} · {scope}</small>
+          </div>
+          <button title="关闭 Sysmon" aria-label="关闭 Sysmon" onClick={onClose}><X size={20} /></button>
+        </header>
+        <div className="sysmon-content">
+          <dl className="sysmon-summary">
+            <div><dt>CPU</dt><dd>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : "-"}</dd></div>
+            <div>
+              <dt>内存</dt>
+              <dd>{snapshot ? `${snapshot.memoryPercent.toFixed(1)}%` : "-"}</dd>
+              <small>{snapshot?.memoryTotalBytes ? `${formatBytes(memoryUsed)} / ${formatBytes(snapshot.memoryTotalBytes)}` : "-"}</small>
+            </div>
+            <div><dt>负载</dt><dd>{snapshot ? loadAverage.map((value) => value.toFixed(2)).join(" · ") : "-"}</dd></div>
+            <div><dt>接收</dt><dd>{snapshot ? `${snapshot.rxKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>发送</dt><dd>{snapshot ? `${snapshot.txKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>运行时间</dt><dd>{snapshot ? formatSysmonUptime(snapshot.uptimeSeconds) : "-"}</dd></div>
+          </dl>
+
+          <nav className="sysmon-tabs" aria-label="Sysmon 详情">
+            <button className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>进程 <span>{processes.length}</span></button>
+            <button className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>磁盘 <span>{disks.length}</span></button>
+            <button className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>网络 <span>{interfaces.length}</span></button>
+          </nav>
+
+          <div className="sysmon-table-wrap">
+            {tab === "processes" ? (
+              <table className="sysmon-table sysmon-process-table">
+                <thead><tr><th>PID</th><th>进程</th><th>CPU</th><th>内存</th><th>RSS</th></tr></thead>
+                <tbody>
+                  {processes.map((process) => (
+                    <tr key={process.pid}>
+                      <td>{process.pid}</td><td title={process.name}>{process.name}</td><td>{process.cpuPercent.toFixed(1)}%</td><td>{process.memoryPercent.toFixed(1)}%</td><td>{formatBytes(process.rssBytes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            {tab === "disks" ? (
+              <table className="sysmon-table sysmon-disk-table">
+                <thead><tr><th>挂载点</th><th>文件系统</th><th>使用率</th><th>可用</th><th>总计</th></tr></thead>
+                <tbody>
+                  {disks.map((disk) => (
+                    <tr key={`${disk.filesystem}-${disk.mountPoint}`}>
+                      <td title={disk.mountPoint}>{disk.mountPoint}</td>
+                      <td title={disk.filesystem}>{disk.filesystem}</td>
+                      <td><div className="sysmon-usage"><span style={{ width: `${Math.min(100, Math.max(0, disk.usedPercent))}%` }} /><b>{disk.usedPercent.toFixed(1)}%</b></div></td>
+                      <td>{formatBytes(disk.availableBytes)}</td><td>{formatBytes(disk.totalBytes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            {tab === "network" ? (
+              <table className="sysmon-table sysmon-network-table">
+                <thead><tr><th>接口</th><th>接收速率</th><th>发送速率</th><th>已接收</th><th>已发送</th></tr></thead>
+                <tbody>
+                  {interfaces.map((item) => (
+                    <tr key={item.name}>
+                      <td title={item.name}>{item.name}</td><td>{item.rxKbps.toFixed(1)} KiB/s</td><td>{item.txKbps.toFixed(1)} KiB/s</td><td>{formatBytes(item.rxBytes)}</td><td>{formatBytes(item.txBytes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
+              <div className="sysmon-empty">当前采样没有可显示的{tab === "processes" ? "进程" : tab === "disks" ? "磁盘" : "网络接口"}明细</div>
+            ) : null}
+            {!snapshot && !error ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
+          </div>
+          {error ? <div className="utility-error">{error}</div> : null}
+        </div>
+        <footer className="sysmon-actions">
+          <span>{snapshot ? `采样时间 ${formatDateTime(snapshot.ts)}` : scope}</span>
+          <button type="button" onClick={() => void refreshSysmon()} disabled={busy}>
+            <RefreshCw size={14} className={busy ? "sysmon-refresh-icon loading" : "sysmon-refresh-icon"} />刷新
+          </button>
+          <button type="button" onClick={onClose}>关闭</button>
+        </footer>
       </section>
     </div>
   );
@@ -7608,6 +7716,17 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+}
+
+function formatSysmonUptime(seconds: number) {
+  const wholeSeconds = Math.max(0, Math.trunc(seconds));
+  const days = Math.floor(wholeSeconds / 86_400);
+  const hours = Math.floor((wholeSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((wholeSeconds % 3_600) / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${wholeSeconds % 60}s`;
+  return `${wholeSeconds}s`;
 }
 
 function formatFileMode(mode?: number | null) {

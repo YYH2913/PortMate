@@ -1320,6 +1320,12 @@ mod tests {
                 memory_percent: 2.0,
                 rx_kbps: 3.0,
                 tx_kbps: 4.0,
+                load_average: [0.0; 3],
+                memory_total_bytes: 0,
+                memory_available_bytes: 0,
+                processes: Vec::new(),
+                disks: Vec::new(),
+                network_interfaces: Vec::new(),
             });
         }
         assert!(store.sysmon.len() <= MAX_SYSMON_SNAPSHOTS_PER_SESSION + AUX_HISTORY_TRIM_BATCH);

@@ -10,8 +10,9 @@ use portmate_core::{
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
     HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, ProxyConfig, ProxyKind,
     SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary,
-    SshConnection, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
-    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
+    SshConnection, SysmonDisk, SysmonNetworkInterface, SysmonProcess, SysmonSnapshot,
+    TcpConnection, TimelineMark, TransferProtocol, TransferStatus, TransferTask, TriggerAction,
+    TrustedHostKey, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -102,7 +103,7 @@ impl russh::Signer for PortMateAgentSigner {
 const STORE_FILE_NAME: &str = "portmate-store.sqlite3";
 const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
 const STORE_KEY: &str = "session-store";
-const SQLITE_SCHEMA_VERSION: &str = "3";
+const SQLITE_SCHEMA_VERSION: &str = "4";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -159,6 +160,11 @@ const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
 const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_HTTP_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_HTTP_PROXY_CREDENTIAL_BYTES: usize = 8 * 1024;
+const MAX_SYSMON_PROCESSES: usize = 8;
+const MAX_SYSMON_DISKS: usize = 16;
+const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
+const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
+const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
@@ -20394,8 +20400,21 @@ fn serial_flow_control(value: &str) -> serialport::FlowControl {
 
 fn collect_local_sysmon(session_id: &str) -> SysmonSnapshot {
     let uptime_seconds = read_uptime_seconds().unwrap_or_default();
-    let (cpu_percent, rx_kbps, tx_kbps) = sample_cpu_and_network();
-    let memory_percent = read_memory_percent().unwrap_or_default();
+    let (memory_total_bytes, memory_available_bytes, memory_percent) =
+        read_memory_usage().unwrap_or_default();
+    let load_average = read_load_average().unwrap_or_default();
+    let cpu_a = read_cpu_times();
+    let net_a = read_network_interfaces();
+    std::thread::sleep(Duration::from_millis(120));
+    let cpu_b = read_cpu_times();
+    let net_b = read_network_interfaces();
+    let cpu_percent = cpu_percent_between(cpu_a, cpu_b);
+    let network_interfaces = network_interface_rates(
+        net_a.unwrap_or_default(),
+        net_b.unwrap_or_default(),
+        LOCAL_SYSMON_SAMPLE_SECONDS,
+    );
+    let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
     SysmonSnapshot {
         session_id: session_id.to_string(),
         ts: Utc::now(),
@@ -20404,6 +20423,12 @@ fn collect_local_sysmon(session_id: &str) -> SysmonSnapshot {
         memory_percent,
         rx_kbps,
         tx_kbps,
+        load_average,
+        memory_total_bytes,
+        memory_available_bytes,
+        processes: read_local_sysmon_processes(),
+        disks: read_local_sysmon_disks(),
+        network_interfaces,
     }
 }
 
@@ -20411,7 +20436,7 @@ async fn collect_remote_sysmon(
     session_id: &str,
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
 ) -> Result<SysmonSnapshot, String> {
-    let command = r#"sh -lc 'cat /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; cat /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; cat /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; cat /proc/net/dev 2>/dev/null'"#;
+    let command = r#"sh -lc 'export LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
     let output = exec_ssh_command_capture(handle, command, Duration::from_secs(8)).await?;
     parse_remote_sysmon_output(session_id, &output)
 }
@@ -20470,32 +20495,24 @@ fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSn
     let stat1 = section_between(output, "__PORTMATE_STAT1__", "__PORTMATE_NET1__");
     let net1 = section_between(output, "__PORTMATE_NET1__", "__PORTMATE_STAT2__");
     let stat2 = section_between(output, "__PORTMATE_STAT2__", "__PORTMATE_NET2__");
-    let net2 = output.split("__PORTMATE_NET2__").nth(1).unwrap_or_default();
+    let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_LOADAVG__");
+    let loadavg = section_between(output, "__PORTMATE_LOADAVG__", "__PORTMATE_PROCESSES__");
+    let processes = section_between(output, "__PORTMATE_PROCESSES__", "__PORTMATE_DISKS__");
+    let disks = output
+        .split("__PORTMATE_DISKS__")
+        .nth(1)
+        .unwrap_or_default();
 
     let uptime_seconds = parse_uptime_seconds(uptime_raw).unwrap_or_default();
-    let memory_percent = parse_memory_percent(meminfo).unwrap_or_default();
-    let cpu_percent = match (parse_cpu_times(stat1), parse_cpu_times(stat2)) {
-        (Some((idle_a, total_a)), Some((idle_b, total_b))) if total_b > total_a => {
-            let idle_delta = idle_b.saturating_sub(idle_a) as f32;
-            let total_delta = total_b.saturating_sub(total_a) as f32;
-            if total_delta > 0.0 {
-                ((1.0 - idle_delta / total_delta) * 100.0).clamp(0.0, 100.0)
-            } else {
-                0.0
-            }
-        }
-        _ => 0.0,
-    };
-    let (rx_kbps, tx_kbps) = match (parse_network_bytes(net1), parse_network_bytes(net2)) {
-        (Some((rx_a, tx_a)), Some((rx_b, tx_b))) => {
-            let seconds = 0.2_f32;
-            (
-                rx_b.saturating_sub(rx_a) as f32 / 1024.0 / seconds,
-                tx_b.saturating_sub(tx_a) as f32 / 1024.0 / seconds,
-            )
-        }
-        _ => (0.0, 0.0),
-    };
+    let (memory_total_bytes, memory_available_bytes, memory_percent) =
+        parse_memory_usage(meminfo).unwrap_or_default();
+    let cpu_percent = cpu_percent_between(parse_cpu_times(stat1), parse_cpu_times(stat2));
+    let network_interfaces = network_interface_rates(
+        parse_network_interfaces(net1),
+        parse_network_interfaces(net2),
+        REMOTE_SYSMON_SAMPLE_SECONDS,
+    );
+    let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
 
     if uptime_seconds == 0 && memory_percent == 0.0 && cpu_percent == 0.0 {
         return Err("远端未提供 Linux /proc Sysmon 数据".to_string());
@@ -20509,6 +20526,12 @@ fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSn
         memory_percent,
         rx_kbps,
         tx_kbps,
+        load_average: parse_load_average(loadavg).unwrap_or_default(),
+        memory_total_bytes,
+        memory_available_bytes,
+        processes: parse_sysmon_processes(processes),
+        disks: parse_sysmon_disks(disks),
+        network_interfaces,
     })
 }
 
@@ -20520,14 +20543,8 @@ fn section_between<'a>(value: &'a str, start: &str, end: &str) -> &'a str {
         .unwrap_or_default()
 }
 
-fn sample_cpu_and_network() -> (f32, f32, f32) {
-    let cpu_a = read_cpu_times();
-    let net_a = read_network_bytes();
-    std::thread::sleep(Duration::from_millis(120));
-    let cpu_b = read_cpu_times();
-    let net_b = read_network_bytes();
-
-    let cpu_percent = match (cpu_a, cpu_b) {
+fn cpu_percent_between(before: Option<(u64, u64)>, after: Option<(u64, u64)>) -> f32 {
+    match (before, after) {
         (Some((idle_a, total_a)), Some((idle_b, total_b))) if total_b > total_a => {
             let idle_delta = idle_b.saturating_sub(idle_a) as f32;
             let total_delta = total_b.saturating_sub(total_a) as f32;
@@ -20538,20 +20555,7 @@ fn sample_cpu_and_network() -> (f32, f32, f32) {
             }
         }
         _ => 0.0,
-    };
-
-    let (rx_kbps, tx_kbps) = match (net_a, net_b) {
-        (Some((rx_a, tx_a)), Some((rx_b, tx_b))) => {
-            let seconds = 0.12_f32;
-            (
-                rx_b.saturating_sub(rx_a) as f32 / 1024.0 / seconds,
-                tx_b.saturating_sub(tx_a) as f32 / 1024.0 / seconds,
-            )
-        }
-        _ => (0.0, 0.0),
-    };
-
-    (cpu_percent, rx_kbps, tx_kbps)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -20566,30 +20570,60 @@ fn read_uptime_seconds() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_memory_percent() -> Option<f32> {
+fn read_memory_usage() -> Option<(u64, u64, f32)> {
     let raw = fs::read_to_string("/proc/meminfo").ok()?;
-    parse_memory_percent(&raw)
+    parse_memory_usage(&raw)
 }
 
-fn parse_memory_percent(raw: &str) -> Option<f32> {
+fn parse_memory_usage(raw: &str) -> Option<(u64, u64, f32)> {
     let mut total = None;
     let mut available = None;
     for line in raw.lines() {
         let mut parts = line.split_whitespace();
-        match parts.next()? {
-            "MemTotal:" => total = parts.next()?.parse::<f32>().ok(),
-            "MemAvailable:" => available = parts.next()?.parse::<f32>().ok(),
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        match key {
+            "MemTotal:" => total = parts.next().and_then(|value| value.parse::<u64>().ok()),
+            "MemAvailable:" => available = parts.next().and_then(|value| value.parse::<u64>().ok()),
             _ => {}
         }
     }
     let total = total?;
-    let available = available?;
-    (total > 0.0).then_some(((total - available) / total * 100.0).clamp(0.0, 100.0))
+    let available = available?.min(total);
+    if total == 0 {
+        return None;
+    }
+    let percent = ((total - available) as f32 / total as f32 * 100.0).clamp(0.0, 100.0);
+    Some((
+        total.saturating_mul(1024),
+        available.saturating_mul(1024),
+        percent,
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_memory_percent() -> Option<f32> {
+fn read_memory_usage() -> Option<(u64, u64, f32)> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn read_load_average() -> Option<[f32; 3]> {
+    let raw = fs::read_to_string("/proc/loadavg").ok()?;
+    parse_load_average(&raw)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_load_average() -> Option<[f32; 3]> {
+    None
+}
+
+fn parse_load_average(raw: &str) -> Option<[f32; 3]> {
+    let mut values = raw
+        .split_whitespace()
+        .take(3)
+        .map(|value| value.parse::<f32>().ok().filter(|value| value.is_finite()));
+    Some([values.next()??, values.next()??, values.next()??])
 }
 
 #[cfg(target_os = "linux")]
@@ -20610,7 +20644,9 @@ fn parse_cpu_times(raw: &str) -> Option<(u64, u64)> {
     }
     let idle =
         values.get(3).copied().unwrap_or_default() + values.get(4).copied().unwrap_or_default();
-    let total = values.iter().sum();
+    let total = values
+        .iter()
+        .fold(0_u64, |total, value| total.saturating_add(*value));
     Some((idle, total))
 }
 
@@ -20620,25 +20656,196 @@ fn read_cpu_times() -> Option<(u64, u64)> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_network_bytes() -> Option<(u64, u64)> {
+fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
     let raw = fs::read_to_string("/proc/net/dev").ok()?;
-    parse_network_bytes(&raw)
+    Some(parse_network_interfaces(&raw))
 }
 
-fn parse_network_bytes(raw: &str) -> Option<(u64, u64)> {
-    let mut rx = 0_u64;
-    let mut tx = 0_u64;
+fn parse_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
+    let mut interfaces = BTreeMap::new();
     for line in raw.lines().skip(2) {
-        let Some((_, values)) = line.split_once(':') else {
+        let Some((name, values)) = line.split_once(':') else {
             continue;
         };
         let parts = values.split_whitespace().collect::<Vec<_>>();
         if parts.len() >= 16 {
-            rx = rx.saturating_add(parts[0].parse::<u64>().unwrap_or_default());
-            tx = tx.saturating_add(parts[8].parse::<u64>().unwrap_or_default());
+            let name = bounded_sysmon_label(name.trim(), 64);
+            if name.is_empty() {
+                continue;
+            }
+            let rx = parts[0].parse::<u64>().unwrap_or_default();
+            let tx = parts[8].parse::<u64>().unwrap_or_default();
+            interfaces.insert(name, (rx, tx));
         }
     }
-    Some((rx, tx))
+    interfaces
+}
+
+fn network_interface_rates(
+    before: BTreeMap<String, (u64, u64)>,
+    after: BTreeMap<String, (u64, u64)>,
+    seconds: f32,
+) -> Vec<SysmonNetworkInterface> {
+    let seconds = if seconds.is_finite() && seconds > 0.0 {
+        seconds
+    } else {
+        1.0
+    };
+    let mut interfaces = after
+        .into_iter()
+        .map(|(name, (rx_bytes, tx_bytes))| {
+            let (rx_before, tx_before) = before.get(&name).copied().unwrap_or((rx_bytes, tx_bytes));
+            SysmonNetworkInterface {
+                name,
+                rx_bytes,
+                tx_bytes,
+                rx_kbps: rx_bytes.saturating_sub(rx_before) as f32 / 1024.0 / seconds,
+                tx_kbps: tx_bytes.saturating_sub(tx_before) as f32 / 1024.0 / seconds,
+            }
+        })
+        .collect::<Vec<_>>();
+    interfaces.sort_by(|left, right| {
+        let left_rate = left.rx_kbps + left.tx_kbps;
+        let right_rate = right.rx_kbps + right.tx_kbps;
+        right_rate
+            .total_cmp(&left_rate)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
+    interfaces
+}
+
+fn aggregate_network_rates(interfaces: &[SysmonNetworkInterface]) -> (f32, f32) {
+    interfaces.iter().fold((0.0, 0.0), |(rx, tx), interface| {
+        (rx + interface.rx_kbps, tx + interface.tx_kbps)
+    })
+}
+
+fn parse_sysmon_processes(raw: &str) -> Vec<SysmonProcess> {
+    let mut processes = raw
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 5 {
+                return None;
+            }
+            let pid = fields[0].parse::<u32>().ok()?;
+            let cpu_percent = parse_nonnegative_f32(fields[1])?;
+            let memory_percent = parse_nonnegative_f32(fields[2])?;
+            let rss_bytes = fields[3].parse::<u64>().ok()?.saturating_mul(1024);
+            let name = bounded_sysmon_label(&fields[4..].join(" "), 128);
+            if name.is_empty() {
+                return None;
+            }
+            Some(SysmonProcess {
+                pid,
+                name,
+                cpu_percent,
+                memory_percent,
+                rss_bytes,
+            })
+        })
+        .collect::<Vec<_>>();
+    processes.sort_by(|left, right| {
+        right
+            .cpu_percent
+            .total_cmp(&left.cpu_percent)
+            .then_with(|| right.rss_bytes.cmp(&left.rss_bytes))
+            .then_with(|| left.pid.cmp(&right.pid))
+    });
+    processes.truncate(MAX_SYSMON_PROCESSES);
+    processes
+}
+
+fn parse_sysmon_disks(raw: &str) -> Vec<SysmonDisk> {
+    let mut mount_points = HashSet::new();
+    let mut disks = raw
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 6 || fields[0].eq_ignore_ascii_case("filesystem") {
+                return None;
+            }
+            let total_blocks = fields[1].parse::<u64>().ok()?;
+            let available_blocks = fields[3].parse::<u64>().ok()?.min(total_blocks);
+            if total_blocks == 0 {
+                return None;
+            }
+            let mount_point =
+                bounded_sysmon_label(&fields[5..].join(" ").replace("\\040", " "), 256);
+            if mount_point.is_empty() || !mount_points.insert(mount_point.clone()) {
+                return None;
+            }
+            let computed_percent =
+                (total_blocks - available_blocks) as f32 / total_blocks as f32 * 100.0;
+            let used_percent = fields[4]
+                .trim_end_matches('%')
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .unwrap_or(computed_percent)
+                .clamp(0.0, 100.0);
+            Some(SysmonDisk {
+                filesystem: bounded_sysmon_label(fields[0], 256),
+                mount_point,
+                total_bytes: total_blocks.saturating_mul(1024),
+                available_bytes: available_blocks.saturating_mul(1024),
+                used_percent,
+            })
+        })
+        .collect::<Vec<_>>();
+    disks.sort_by(|left, right| {
+        (left.mount_point != "/")
+            .cmp(&(right.mount_point != "/"))
+            .then_with(|| left.mount_point.cmp(&right.mount_point))
+    });
+    disks.truncate(MAX_SYSMON_DISKS);
+    disks
+}
+
+fn parse_nonnegative_f32(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn bounded_sysmon_label(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn local_sysmon_command(program: &str, args: &[&str]) -> String {
+    Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn read_local_sysmon_processes() -> Vec<SysmonProcess> {
+    parse_sysmon_processes(&local_sysmon_command(
+        "ps",
+        &["-eo", "pid=,pcpu=,pmem=,rss=,comm=", "--sort=-pcpu,-rss"],
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_local_sysmon_processes() -> Vec<SysmonProcess> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn read_local_sysmon_disks() -> Vec<SysmonDisk> {
+    parse_sysmon_disks(&local_sysmon_command("df", &["-Pk"]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_local_sysmon_disks() -> Vec<SysmonDisk> {
+    Vec::new()
 }
 
 fn parse_uptime_seconds(raw: &str) -> Option<u64> {
@@ -20650,7 +20857,7 @@ fn parse_uptime_seconds(raw: &str) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_network_bytes() -> Option<(u64, u64)> {
+fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
     None
 }
 
@@ -21652,6 +21859,7 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
                 memory_percent real not null,
                 rx_kbps real not null,
                 tx_kbps real not null,
+                details_json text not null,
                 raw_json text not null,
                 primary key (session_id, ts)
             );
@@ -21671,17 +21879,71 @@ fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
             create index if not exists idx_timeline_session_ts on timeline_marks(session_id, ts);
             create index if not exists idx_sysmon_session_ts on sysmon_snapshots(session_id, ts);
             create unique index if not exists idx_profile_secret_migrations_active
-                on profile_secret_migrations(active) where active = 1;
-            insert into metadata (key, value) values ('schemaVersion', '3')
-                on conflict(key) do update set value = excluded.value;",
+                on profile_secret_migrations(active) where active = 1;",
         )
         .map_err(|error| format!("failed to initialize PortMate SQLite schema: {error}"))?;
-    let _ = connection.execute("alter table runtimes add column last_disconnect text", []);
-    let _ = connection.execute(
+    ensure_sqlite_column(
+        connection,
+        "runtimes",
+        "last_disconnect",
+        "alter table runtimes add column last_disconnect text",
+    )?;
+    ensure_sqlite_column(
+        connection,
+        "runtimes",
+        "last_disconnect_reason",
         "alter table runtimes add column last_disconnect_reason text",
-        [],
-    );
+    )?;
+    ensure_sqlite_column(
+        connection,
+        "sysmon_snapshots",
+        "details_json",
+        "alter table sysmon_snapshots add column details_json text not null default '{}'",
+    )?;
+    connection
+        .execute(
+            "insert into metadata (key, value) values ('schemaVersion', ?1)
+             on conflict(key) do update set value = excluded.value",
+            params![SQLITE_SCHEMA_VERSION],
+        )
+        .map_err(|error| format!("failed to update SQLite schema version: {error}"))?;
     Ok(())
+}
+
+fn ensure_sqlite_column(
+    connection: &SqliteConnection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("pragma table_info({table})"))
+        .map_err(|error| format!("failed to inspect SQLite table {table}: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed to inspect SQLite columns for {table}: {error}"))?;
+    for existing in columns {
+        let existing = existing
+            .map_err(|error| format!("failed to read SQLite columns for {table}: {error}"))?;
+        if existing == column {
+            return Ok(());
+        }
+    }
+    connection
+        .execute_batch(alter_sql)
+        .map_err(|error| format!("failed to add SQLite column {table}.{column}: {error}"))?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SysmonSnapshotDetails<'a> {
+    load_average: [f32; 3],
+    memory_total_bytes: u64,
+    memory_available_bytes: u64,
+    processes: &'a [SysmonProcess],
+    disks: &'a [SysmonDisk],
+    network_interfaces: &'a [SysmonNetworkInterface],
 }
 
 fn save_store_sqlite_tables(
@@ -21991,8 +22253,9 @@ fn save_store_sqlite_tables(
         connection
             .execute(
                 "insert into sysmon_snapshots (
-                    session_id, ts, uptime_seconds, cpu_percent, memory_percent, rx_kbps, tx_kbps, raw_json
-                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    session_id, ts, uptime_seconds, cpu_percent, memory_percent, rx_kbps, tx_kbps,
+                    details_json, raw_json
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     snapshot.session_id,
                     snapshot.ts.to_rfc3339(),
@@ -22001,6 +22264,14 @@ fn save_store_sqlite_tables(
                     snapshot.memory_percent,
                     snapshot.rx_kbps,
                     snapshot.tx_kbps,
+                    json_text(&SysmonSnapshotDetails {
+                        load_average: snapshot.load_average,
+                        memory_total_bytes: snapshot.memory_total_bytes,
+                        memory_available_bytes: snapshot.memory_available_bytes,
+                        processes: &snapshot.processes,
+                        disks: &snapshot.disks,
+                        network_interfaces: &snapshot.network_interfaces,
+                    })?,
                     json_text(snapshot)?,
                 ],
             )
@@ -24168,6 +24439,113 @@ mod tests {
     }
 
     #[test]
+    fn sysmon_detail_parsers_bound_sort_and_measure_samples() {
+        let processes = parse_sysmon_processes(
+            "1 0.1 0.2 100 init\n\
+             2 12.5 1.5 2048 worker\n\
+             3 8.0 4.0 4096 database worker\n\
+             4 7.0 1.0 100 p4\n\
+             5 6.0 1.0 100 p5\n\
+             6 5.0 1.0 100 p6\n\
+             7 4.0 1.0 100 p7\n\
+             8 3.0 1.0 100 p8\n\
+             9 2.0 1.0 100 p9\n\
+             10 NaN 1.0 100 invalid\n",
+        );
+        assert_eq!(processes.len(), MAX_SYSMON_PROCESSES);
+        assert_eq!(
+            (processes[0].pid, processes[0].name.as_str()),
+            (2, "worker")
+        );
+        assert_eq!(processes[0].rss_bytes, 2 * 1024 * 1024);
+        assert_eq!(processes[1].name, "database worker");
+        assert!(!processes.iter().any(|process| process.pid == 10));
+
+        assert_eq!(
+            parse_cpu_times("cpu 18446744073709551615 1 1 1\n"),
+            Some((1, u64::MAX))
+        );
+
+        let disks = parse_sysmon_disks(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
+             /dev/root 1000 750 250 75% /\n\
+             /dev/data 2000 500 1500 25% /srv/data\n\
+             /dev/duplicate 2000 1000 1000 50% /srv/data\n",
+        );
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0].mount_point, "/");
+        assert_eq!(disks[0].total_bytes, 1_024_000);
+        assert_eq!(disks[0].available_bytes, 256_000);
+        assert_eq!(disks[0].used_percent, 75.0);
+
+        let before = parse_network_interfaces(
+            "Inter-| Receive | Transmit\n face | bytes | bytes\n\
+             eth0: 1024 1 0 0 0 0 0 0 2048 1 0 0 0 0 0 0\n",
+        );
+        let after = parse_network_interfaces(
+            "Inter-| Receive | Transmit\n face | bytes | bytes\n\
+             eth0: 3072 1 0 0 0 0 0 0 4096 1 0 0 0 0 0 0\n\
+             lo: 500 1 0 0 0 0 0 0 500 1 0 0 0 0 0 0\n",
+        );
+        let interfaces = network_interface_rates(before, after, 2.0);
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(interfaces[0].name, "eth0");
+        assert_eq!((interfaces[0].rx_kbps, interfaces[0].tx_kbps), (1.0, 1.0));
+        assert_eq!((interfaces[1].rx_kbps, interfaces[1].tx_kbps), (0.0, 0.0));
+        assert_eq!(aggregate_network_rates(&interfaces), (1.0, 1.0));
+
+        assert_eq!(
+            parse_load_average("1.25 0.50 0.25 1/10 1"),
+            Some([1.25, 0.5, 0.25])
+        );
+        assert_eq!(
+            parse_memory_usage("MemTotal: 1000 kB\n\nMemAvailable: 250 kB\n"),
+            Some((1_024_000, 256_000, 75.0))
+        );
+    }
+
+    #[test]
+    fn remote_sysmon_output_parses_summary_and_structured_details() {
+        let output = "123.4 1.0\n\
+            __PORTMATE_MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 250 kB\n\
+            __PORTMATE_STAT1__\ncpu 100 0 100 800 0 0 0 0 0 0\n\
+            __PORTMATE_NET1__\nInter-| Receive | Transmit\n face | bytes | bytes\neth0: 1024 1 0 0 0 0 0 0 2048 1 0 0 0 0 0 0\n\
+            __PORTMATE_STAT2__\ncpu 150 0 150 900 0 0 0 0 0 0\n\
+            __PORTMATE_NET2__\nInter-| Receive | Transmit\n face | bytes | bytes\neth0: 3072 1 0 0 0 0 0 0 4096 1 0 0 0 0 0 0\n\
+            __PORTMATE_LOADAVG__\n1.25 0.50 0.25 1/10 1\n\
+            __PORTMATE_PROCESSES__\n2 12.5 1.5 2048 worker\n3 8.0 4.0 4096 database worker\n\
+            __PORTMATE_DISKS__\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 1000 750 250 75% /\n";
+        let snapshot = parse_remote_sysmon_output("remote-session", output).unwrap();
+
+        assert_eq!(snapshot.session_id, "remote-session");
+        assert_eq!(snapshot.uptime_seconds, 123);
+        assert_eq!(snapshot.cpu_percent, 50.0);
+        assert_eq!(snapshot.memory_percent, 75.0);
+        assert_eq!((snapshot.rx_kbps, snapshot.tx_kbps), (10.0, 10.0));
+        assert_eq!(snapshot.load_average, [1.25, 0.5, 0.25]);
+        assert_eq!(snapshot.processes.len(), 2);
+        assert_eq!(snapshot.processes[1].name, "database worker");
+        assert_eq!(snapshot.disks.len(), 1);
+        assert_eq!(snapshot.network_interfaces.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_sysmon_collects_live_linux_resource_details() {
+        let snapshot = collect_local_sysmon("local-session");
+
+        assert_eq!(snapshot.session_id, "local-session");
+        assert!(snapshot.uptime_seconds > 0);
+        assert!((0.0..=100.0).contains(&snapshot.cpu_percent));
+        assert!(snapshot.memory_total_bytes > 0);
+        assert!(snapshot.memory_available_bytes <= snapshot.memory_total_bytes);
+        assert!(snapshot.load_average.iter().all(|value| value.is_finite()));
+        assert!(!snapshot.processes.is_empty());
+        assert!(!snapshot.disks.is_empty());
+        assert!(!snapshot.network_interfaces.is_empty());
+    }
+
+    #[test]
     fn normalize_loaded_store_preserves_runtime_diagnostics() {
         let mut store = SessionStore::default();
         let profile = test_shell_profile();
@@ -24289,10 +24667,34 @@ mod tests {
             memory_percent: 2.0,
             rx_kbps: 3.0,
             tx_kbps: 4.0,
+            load_average: [0.1, 0.2, 0.3],
+            memory_total_bytes: 1_024,
+            memory_available_bytes: 512,
+            processes: Vec::new(),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
         });
         save_store(&store_path, &store).unwrap();
 
         let connection = SqliteConnection::open(&store_path).unwrap();
+        let schema_version: String = connection
+            .query_row(
+                "select value from metadata where key = 'schemaVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, SQLITE_SCHEMA_VERSION);
+        let details_json: String = connection
+            .query_row(
+                "select details_json from sysmon_snapshots where session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let details: serde_json::Value = serde_json::from_str(&details_json).unwrap();
+        assert_eq!(details["loadAverage"], serde_json::json!([0.1, 0.2, 0.3]));
+        assert_eq!(details["memoryTotalBytes"], 1_024);
         connection
             .execute_batch(
                 "create table mirror_test_counts (
@@ -24446,6 +24848,51 @@ mod tests {
         assert!(loaded.audit.is_empty());
         assert!(loaded.timeline.is_empty());
         assert!(loaded.sysmon.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sysmon_schema_migrates_existing_summary_rows_to_details_json() {
+        let root = std::env::temp_dir().join(format!("portmate-sysmon-schema-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        connection
+            .execute_batch(
+                "create table sysmon_snapshots (
+                    session_id text not null,
+                    ts text not null,
+                    uptime_seconds integer not null,
+                    cpu_percent real not null,
+                    memory_percent real not null,
+                    rx_kbps real not null,
+                    tx_kbps real not null,
+                    raw_json text not null,
+                    primary key (session_id, ts)
+                );
+                insert into sysmon_snapshots values
+                    ('legacy', '2026-07-14T10:00:00Z', 1, 2.0, 3.0, 4.0, 5.0, '{}');",
+            )
+            .unwrap();
+
+        ensure_store_schema(&connection).unwrap();
+        let details: String = connection
+            .query_row(
+                "select details_json from sysmon_snapshots where session_id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(details, "{}");
+        let schema_version: String = connection
+            .query_row(
+                "select value from metadata where key = 'schemaVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, SQLITE_SCHEMA_VERSION);
+        drop(connection);
         let _ = fs::remove_dir_all(root);
     }
 
