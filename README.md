@@ -197,6 +197,10 @@ requests are rejected before command dispatch and do not create audit records.
 The same bridge can expose JSON-RPC over local HTTP for clients that cannot spawn stdio servers. It only accepts loopback bind addresses, validates `Origin` when present, and requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring.
 The desktop `工具 -> MCP Bridge` dialog shows the default HTTP endpoint, Origin, startup command, tokenRef, and can generate or rotate the keyring token.
 Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.
+POST requests require `Content-Type: application/json` (parameters such as `charset=utf-8` are
+accepted). An explicit `MCP-Protocol-Version` must match the server's negotiated `2025-06-18`
+version; the header remains optional for initialization and older clients, and is allowed by CORS
+preflight responses.
 
 The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
 complete request must arrive within five seconds, each response/SSE write has a five-second socket

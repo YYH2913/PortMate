@@ -1386,10 +1386,6 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
         );
     }
 
-    if request.method == "OPTIONS" {
-        return http_response(204, "No Content", "", origin.as_deref());
-    }
-
     if request.path != "/mcp" {
         return http_response(
             404,
@@ -1397,6 +1393,9 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
             &json!({ "error": "unknown endpoint" }).to_string(),
             origin.as_deref(),
         );
+    }
+    if request.method == "OPTIONS" {
+        return http_response(204, "No Content", "", origin.as_deref());
     }
     if request.method == "GET" && accepts_sse_http_response(&request) {
         return http_sse_stream_start_response(&request, config);
@@ -1407,6 +1406,25 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
             "Method Not Allowed",
             &json!({ "error": "use POST /mcp or GET /mcp with Accept: text/event-stream" })
                 .to_string(),
+            origin.as_deref(),
+        );
+    }
+    if let Err(error) = validate_mcp_protocol_version(&request) {
+        return http_response(
+            400,
+            "Bad Request",
+            &json!({ "error": error.to_string() }).to_string(),
+            origin.as_deref(),
+        );
+    }
+    if !has_json_http_content_type(&request) {
+        return http_response(
+            415,
+            "Unsupported Media Type",
+            &json!({
+                "error": "MCP HTTP POST requests require Content-Type: application/json"
+            })
+            .to_string(),
             origin.as_deref(),
         );
     }
@@ -1587,6 +1605,30 @@ fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
         .is_some_and(|candidate| constant_time_str_eq(candidate.trim(), token))
 }
 
+fn validate_mcp_protocol_version(request: &HttpRequest) -> Result<()> {
+    let Some(version) = request.headers.get("mcp-protocol-version") else {
+        return Ok(());
+    };
+    if version == MCP_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "unsupported MCP-Protocol-Version `{version}`; expected `{MCP_PROTOCOL_VERSION}`"
+        ))
+    }
+}
+
+fn has_json_http_content_type(request: &HttpRequest) -> bool {
+    request.headers.get("content-type").is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    })
+}
+
 fn accepts_json_http_response(request: &HttpRequest) -> bool {
     accepts_http_media_type(request, true, |media_type| {
         matches!(media_type, "*/*" | "application/*" | "application/json")
@@ -1652,7 +1694,7 @@ fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) ->
     }
     response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
     response.push_str(
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
     );
     response.push_str(body);
     response
@@ -1664,6 +1706,14 @@ fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) ->
         return http_response(
             403,
             "Forbidden",
+            &json!({ "error": error.to_string() }).to_string(),
+            origin.as_deref(),
+        );
+    }
+    if let Err(error) = validate_mcp_protocol_version(request) {
+        return http_response(
+            400,
+            "Bad Request",
             &json!({ "error": error.to_string() }).to_string(),
             origin.as_deref(),
         );
@@ -1739,7 +1789,7 @@ fn http_sse_headers(origin: Option<&str>, content_length: Option<usize>) -> Stri
     }
     response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
     response.push_str(
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, X-PortMate-MCP-Token\r\n\r\n",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
     );
     response
 }
@@ -1828,7 +1878,10 @@ mod tests {
         }
     }
 
-    fn test_http_request(headers: HashMap<String, String>) -> HttpRequest {
+    fn test_http_request(mut headers: HashMap<String, String>) -> HttpRequest {
+        headers
+            .entry("content-type".to_string())
+            .or_insert_with(|| "application/json".to_string());
         HttpRequest {
             method: "POST".to_string(),
             path: "/mcp".to_string(),
@@ -2153,6 +2206,9 @@ mod tests {
             .read_to_string(&mut accepted_response)
             .unwrap();
         assert!(accepted_response.starts_with("HTTP/1.1 204 No Content"));
+        assert!(accepted_response.contains(
+            "Access-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token"
+        ));
         for _ in 0..100 {
             if active.load(Ordering::Acquire) == 0 {
                 break;
@@ -2209,6 +2265,79 @@ mod tests {
         };
         assert!(authorized_http_request(&request, "secret-token"));
         assert!(!authorized_http_request(&request, "different-token"));
+    }
+
+    #[test]
+    fn http_post_validates_content_type_and_protocol_version() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("accept".to_string(), "application/json".to_string());
+
+        let mut missing_content_type = test_http_request(headers.clone());
+        missing_content_type.headers.remove("content-type");
+        let response = handle_http_request(missing_content_type, &config);
+        assert!(response.starts_with("HTTP/1.1 415 Unsupported Media Type"));
+
+        let mut wrong_content_type = test_http_request(headers.clone());
+        wrong_content_type
+            .headers
+            .insert("content-type".to_string(), "text/plain".to_string());
+        let response = handle_http_request(wrong_content_type, &config);
+        assert!(response.starts_with("HTTP/1.1 415 Unsupported Media Type"));
+
+        let mut unsupported_version = test_http_request(headers.clone());
+        unsupported_version
+            .headers
+            .insert("mcp-protocol-version".to_string(), "2025-03-26".to_string());
+        let response = handle_http_request(unsupported_version, &config);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("expected `2025-06-18`"));
+
+        let mut compatible = test_http_request(headers);
+        compatible.headers.insert(
+            "content-type".to_string(),
+            "Application/JSON; charset=utf-8".to_string(),
+        );
+        compatible.headers.insert(
+            "mcp-protocol-version".to_string(),
+            MCP_PROTOCOL_VERSION.to_string(),
+        );
+        let response = handle_http_request(compatible, &config);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[test]
+    fn http_sse_rejects_unsupported_protocol_versions() {
+        let config = test_http_config();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        headers.insert("accept".to_string(), "text/event-stream".to_string());
+        headers.insert("mcp-protocol-version".to_string(), "2025-03-26".to_string());
+
+        let response = handle_http_request(test_http_get_request(headers), &config);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn http_options_rejects_unknown_paths() {
+        let response = handle_http_request(
+            HttpRequest {
+                method: "OPTIONS".to_string(),
+                path: "/unknown".to_string(),
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+            &test_http_config(),
+        );
+
+        assert!(response.starts_with("HTTP/1.1 404 Not Found"));
     }
 
     #[test]
@@ -2389,6 +2518,7 @@ mod tests {
             "Bearer secret-token".to_string(),
         );
         headers.insert("accept".to_string(), "application/json".to_string());
+        headers.insert("content-type".to_string(), "application/json".to_string());
         let request = HttpRequest {
             method: "POST".to_string(),
             path: "/mcp".to_string(),
