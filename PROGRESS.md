@@ -64,11 +64,12 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - SSH PTY shell：`russh` 连接、PTY、resize、password/public-key/keyboard-interactive/ssh-agent、profile-vault 私钥、保存密码/口令。
 - SSH/Tmux/TCP/Telnet 的代理设置已接入真实 transport：每个 Profile 可选择无认证 HTTP CONNECT 或 SOCKS5；SOCKS5 使用 domain target，避免在本机解析目标域名。SSH host-key 扫描和正式连接走同一路径；存在 Jump Host 时代理只承载第一条物理连接，后续跳点继续通过 `direct-tcpip`。代理认证尚未实现。
-- SSH/Tmux 的重连延迟和协议 KeepAlive 已由 Profile 持久化；延迟范围 100-60,000 ms、默认 1,000 ms，等待期间每 100 ms 重读最新 Profile，因此修改延迟或关闭 reconnect 会影响下一次尝试。KeepAlive 可独立开关并配置 1-3,600 秒探测间隔和 1-20 次未响应上限，默认 30/3；正式会话和整条 Jump Host 链使用同一组 russh client 参数。后台重连每次尝试都会按 session ID 从 store 重新加载并规范化最新 profile；已保存的 endpoint、username、secretRef、identity、Jump Host、host-key 策略与健康参数会用于下一次尝试。握手期间连接配置变化会废弃旧建立结果和旧失败诊断，关闭 reconnect 或把 profile 改为非 SSH transport 会终止 worker；runtime ID 代际校验覆盖 tunnel 恢复和 `Connected` 状态提交，避免已关闭 runtime 被旧任务重新标记为已连接。
+- SSH/Tmux 的重连延迟和协议 KeepAlive 已由 Profile 持久化；延迟范围 100-60,000 ms、默认 1,000 ms，等待期间每 100 ms 重读最新 Profile，因此修改延迟或关闭 reconnect 会影响下一次尝试。KeepAlive 可独立开关并配置 1-3,600 秒探测间隔和 1-20 次未响应上限，默认 30/3；正式会话和整条 Jump Host 链使用同一组 russh client 参数。后台重连每次尝试都会按 session ID 从 store 重新加载并规范化最新 profile；已保存的 endpoint、username、secretRef、identity、Jump Host、host-key 策略与健康参数会用于下一次尝试。握手期间连接配置变化会废弃旧建立结果和旧失败诊断，关闭 reconnect 会终止 worker；runtime ID 代际校验覆盖 tunnel 恢复和 `Connected` 状态提交，避免已关闭 runtime 被旧任务重新标记为已连接。
 - Shell：跨平台 PTY 基础能力，支持自定义程序、参数、cwd。
+- Profile 在 `Connecting`/`Connected`/`Reconnecting` 状态下禁止直接切换协议类型，必须先关闭会话；同协议内的设置仍可保存。Core runtime 会保留真实 `activeTransport` 直到断开或新 transport 确实启动，避免新协议编码、状态和旧 registry 连接交叉。
 - Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写；每 Profile 保留最多 512 帧/1 MiB 的进程内精确 RX/TX 原始字节捕获，侧栏支持方向、Hex、ASCII 筛选、显式清空，以及把当前可见帧原子导出为未脱敏 JSONL + SHA-256 sidecar。捕获跨自动重连并在断线后保留，但默认不持久化；单帧超过 64 KiB 时明确显示 captured/original 长度。Profile 可配置 100-60,000 ms 自动重连延迟（默认 1,000 ms），等待期间每 100 ms 重读最新 Profile，因此缩短延迟或关闭 reconnect 会及时生效。可选 1-86,400 秒接收空闲超时默认关闭/60 秒，只观察 RX 且不会向设备注入通用 heartbeat；适合预期持续上报的设备。读错误或空闲超时会保留精确断线原因。每次尝试都会重新加载最新 Profile，端口、线路或健康参数变化会废弃旧尝试并改用新配置，pending/connected 阶段关闭 reconnect 都会收敛到 `Disconnected`；用户关闭或手动重连也会取消旧重连循环。
 - Telnet/Raw TCP：socket 模式读写；Telnet 已有增量 IAC 选项协商、分片终端类型子协商、NVT `CR NUL`/CRLF 编解码、Hex/raw byte IAC 转义，以及 Telnet/Raw TCP loopback mock 回归覆盖；协商回复写失败会结束旧 transport 并进入统一断开/重连流程。
-- TCP/Telnet：profile 开启 reconnect 后，远端断开会进入 `Reconnecting`，保留可取消的 runtime 占位并按 Profile 延迟（100-60,000 ms，默认 1,000 ms）后台重连；等待期间每 100 ms 检查最新配置，因此修改延迟或关闭 reconnect 会影响下一次尝试。每次连接前重新加载最新 Profile，host/port/协议/代理/健康参数变化会废弃旧连接并改用新配置，关闭 reconnect 或改成其他 transport 会移除占位并收敛到 `Disconnected`。socket 的 OS keepalive 开关、idle、probe interval 和 retry 均由 Profile 持久化，默认 30/10/3；平台支持相应参数时无需注入协议字节即可检测半开连接。loopback 回归覆盖自定义/关闭内核 keepalive、远端立即断开、runtime id 轮换、`Connected -> Reconnecting -> Connected`、断线后切换端口与缩短延迟、代理端点切换，以及 pending/connected 两种阶段关闭重连。
+- TCP/Telnet：profile 开启 reconnect 后，远端断开会进入 `Reconnecting`，保留可取消的 runtime 占位并按 Profile 延迟（100-60,000 ms，默认 1,000 ms）后台重连；等待期间每 100 ms 检查最新配置，因此修改延迟或关闭 reconnect 会影响下一次尝试。每次连接前重新加载最新 Profile，host/port/协议/代理/健康参数变化会废弃旧连接并改用新配置，关闭 reconnect 会移除占位并收敛到 `Disconnected`。socket 的 OS keepalive 开关、idle、probe interval 和 retry 均由 Profile 持久化，默认 30/10/3；平台支持相应参数时无需注入协议字节即可检测半开连接。loopback 回归覆盖自定义/关闭内核 keepalive、远端立即断开、runtime id 轮换、`Connected -> Reconnecting -> Connected`、断线后切换端口与缩短延迟、代理端点切换，以及 pending/connected 两种阶段关闭重连。
 - Tmux：远端 `list-sessions`、`list-panes`、attach/new-session。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
@@ -214,7 +215,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 170：`portmate` 130、`portmate-kdf` 1、`portmate-core` 28、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 172：`portmate` 131、`portmate-kdf` 1、`portmate-core` 29、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 

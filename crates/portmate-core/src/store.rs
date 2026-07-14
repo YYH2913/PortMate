@@ -157,7 +157,12 @@ impl SessionStore {
             .find(|runtime| runtime.session_id == session_id)
         {
             runtime.title = title;
-            runtime.active_transport = kind;
+            if matches!(
+                runtime.status,
+                SessionStatus::Disconnected | SessionStatus::Blocked | SessionStatus::Error
+            ) {
+                runtime.active_transport = kind;
+            }
             runtime.last_activity = now;
         } else {
             self.runtimes.push(SessionRuntime {
@@ -857,6 +862,37 @@ mod tests {
         assert_eq!(summary.profile.id, "new-session");
         assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
         assert_eq!(store.summaries().len(), 1);
+    }
+
+    #[test]
+    fn upsert_profile_preserves_active_transport_until_disconnect() {
+        let mut store = test_store();
+        let mut profile = store.profile("test-session").unwrap();
+        profile.kind = SessionKind::Serial;
+        profile.connection = ConnectionConfig::Serial(SerialConnection {
+            port: "COM7".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+            reconnect_delay_ms: DEFAULT_SERIAL_RECONNECT_DELAY_MS,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: DEFAULT_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS,
+        });
+
+        let active = store.upsert_profile(profile);
+        assert_eq!(active.profile.kind, SessionKind::Serial);
+        assert_eq!(active.runtime.status, SessionStatus::Connected);
+        assert_eq!(active.runtime.active_transport, SessionKind::Shell);
+
+        let disconnected = store
+            .set_runtime_status("test-session", SessionStatus::Disconnected)
+            .unwrap();
+        assert_eq!(disconnected.runtime.active_transport, SessionKind::Serial);
     }
 
     #[test]

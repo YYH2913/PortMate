@@ -2445,6 +2445,12 @@ fn save_session_profile(
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let current_profile = store.profile(&profile.id);
     validate_expected_profile_credentials(current_profile.as_ref(), expected_profile.as_ref())?;
+    let runtime_status = store
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.session_id == profile.id)
+        .map(|runtime| runtime.status);
+    validate_profile_transport_change(current_profile.as_ref(), &profile, runtime_status)?;
     let old_secret_refs = current_profile
         .as_ref()
         .map(profile_secret_refs)
@@ -2469,6 +2475,31 @@ fn save_session_profile(
         }
     }
     Ok(summary)
+}
+
+fn validate_profile_transport_change(
+    current_profile: Option<&SessionProfile>,
+    next_profile: &SessionProfile,
+    runtime_status: Option<SessionStatus>,
+) -> Result<(), String> {
+    let Some(current_profile) = current_profile else {
+        return Ok(());
+    };
+    let current_kind = current_profile.connection.kind();
+    let next_kind = next_profile.connection.kind();
+    if current_kind == next_kind {
+        return Ok(());
+    }
+    if matches!(
+        runtime_status,
+        Some(SessionStatus::Connecting | SessionStatus::Connected | SessionStatus::Reconnecting)
+    ) {
+        let status = runtime_status.expect("active runtime status was matched above");
+        return Err(format!(
+            "会话仍在运行（{status:?}，当前协议 {current_kind:?}）；切换到 {next_kind:?} 前请先关闭会话"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_expected_profile_credentials(
@@ -23171,6 +23202,57 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn active_session_rejects_cross_transport_profile_changes() {
+        let current = test_shell_profile();
+        let mut next = current.clone();
+        next.kind = SessionKind::Serial;
+        next.connection = ConnectionConfig::Serial(portmate_core::SerialConnection {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+            reconnect_delay_ms: portmate_core::DEFAULT_SERIAL_RECONNECT_DELAY_MS,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds:
+                portmate_core::DEFAULT_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS,
+        });
+
+        for status in [
+            SessionStatus::Connecting,
+            SessionStatus::Connected,
+            SessionStatus::Reconnecting,
+        ] {
+            let error =
+                validate_profile_transport_change(Some(&current), &next, Some(status)).unwrap_err();
+            assert!(error.contains("切换到 Serial 前请先关闭会话"));
+        }
+        for status in [
+            SessionStatus::Disconnected,
+            SessionStatus::Blocked,
+            SessionStatus::Error,
+        ] {
+            validate_profile_transport_change(Some(&current), &next, Some(status)).unwrap();
+        }
+
+        let mut same_transport = current.clone();
+        if let ConnectionConfig::Shell(shell) = &mut same_transport.connection {
+            shell.program = "/bin/bash".to_string();
+        }
+        validate_profile_transport_change(
+            Some(&current),
+            &same_transport,
+            Some(SessionStatus::Connected),
+        )
+        .unwrap();
+        validate_profile_transport_change(None, &next, None).unwrap();
     }
 
     #[test]

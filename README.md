@@ -102,6 +102,8 @@ The bottom sender supports text and real byte-array Hex sending. Hex mode uses a
 
 Serial sessions keep a bounded in-memory capture of the latest 512 RX/TX frames and at most 1 MiB of exact wire bytes. The history pane can filter by direction, Hex, or ASCII without reconstructing binary data from lossy terminal text. The capture survives automatic reconnect and remains available after disconnect, but is not persisted unless the user explicitly exports the visible frames. Export writes an atomic, unredacted JSONL file plus a SHA-256 sidecar under the app data `exports/` directory; oversized individual frames are visibly marked with captured and original lengths. Clearing the capture invalidates in-flight polling responses so removed frames cannot reappear.
 
+Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
+
 The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
 
 The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding. Remote-forward health probes use Linux `/proc/net/tcp` or `ss`, FreeBSD `sockstat`, macOS `lsof`, and a successful `netstat -ltn` fallback. A present but incompatible probe tool is treated as unsupported instead of an empty listener table, preventing repeated rebind attempts on BSD-style systems.
