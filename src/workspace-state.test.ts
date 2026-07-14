@@ -15,6 +15,7 @@ import {
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
   splitWorkspacePane,
+  splitWorkspacePaneSessionToGroup,
   swapWorkspacePanes,
   updateWorkspaceSplitRatio,
   workspacePaneLeaves,
@@ -165,6 +166,32 @@ describe("workspace snapshots", () => {
 
     expect(findWorkspacePane(moved, "group-a")).toMatchObject({ sessionId: "a", sessionIds: ["a"] });
     expect(findWorkspacePane(moved, "group-b")).toMatchObject({ sessionId: "b", sessionIds: ["c", "b"] });
+  });
+
+  it("splits one view from a group into a directional sibling group", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "group-a", sessionId: "b", sessionIds: ["a", "b"] },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+    const split = splitWorkspacePaneSessionToGroup(
+      snapshot.root,
+      "group-a",
+      "b",
+      "vertical",
+      "group-b",
+      "split-root",
+      "first",
+    )!;
+
+    expect(split).toMatchObject({
+      kind: "split",
+      id: "split-root",
+      direction: "vertical",
+      first: { kind: "pane", id: "group-b", sessionId: "b", sessionIds: ["b"] },
+      second: { kind: "pane", id: "group-a", sessionId: "a", sessionIds: ["a"] },
+    });
   });
 
   it("collapses an empty source group and deduplicates the target view", () => {

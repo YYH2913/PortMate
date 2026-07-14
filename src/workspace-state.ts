@@ -267,6 +267,32 @@ export function removeWorkspacePaneSession(
   return first === root.first && second === root.second ? root : { ...root, first, second };
 }
 
+export function splitWorkspacePaneSessionToGroup(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  sessionId: string,
+  direction: WorkspaceSplitDirection,
+  newPaneId = createWorkspaceNodeId("pane"),
+  splitId = createWorkspaceNodeId("split"),
+  placement: WorkspaceSplitPlacement = "second",
+): WorkspaceNode | null {
+  if (!root || workspacePaneLeaves(root).length >= MAX_WORKSPACE_PANES) return root;
+  const source = findWorkspacePane(root, sourcePaneId);
+  if (!source?.sessionIds.includes(sessionId) || source.sessionIds.length <= 1) return root;
+  const withoutSession = removeWorkspacePaneSession(root, sourcePaneId, sessionId);
+  if (!withoutSession) return root;
+  const splitRoot = splitWorkspacePane(
+    withoutSession,
+    sourcePaneId,
+    direction,
+    sessionId,
+    newPaneId,
+    splitId,
+    placement,
+  );
+  return splitRoot === withoutSession ? root : splitRoot;
+}
+
 export function mergeWorkspacePaneGroups(
   root: WorkspaceNode | null,
   sourcePaneId: string,

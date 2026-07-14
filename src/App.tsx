@@ -58,7 +58,7 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
-import { activateWorkspacePaneSession, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneSession, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneSession, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
+import { activateWorkspacePaneSession, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneSession, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneSession, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, splitWorkspacePaneSessionToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -78,9 +78,16 @@ const menuGroups = [
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
+  { label: "窗口", items: ["水平拆分", "垂直拆分", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
+
+const workspaceViewGroupSplitActions: Record<string, { direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }> = {
+  视图移到左侧新分组: { direction: "vertical", placement: "first" },
+  视图移到右侧新分组: { direction: "vertical", placement: "second" },
+  视图移到上方新分组: { direction: "horizontal", placement: "first" },
+  视图移到下方新分组: { direction: "horizontal", placement: "second" },
+};
 
 const terminalSettingTree = [
   { label: "应用" },
@@ -749,6 +756,11 @@ function handleMenuAction(item: string) {
       splitWorkspace(item === "水平拆分" ? "vertical" : "horizontal");
       return;
     }
+    const viewGroupSplit = workspaceViewGroupSplitActions[item];
+    if (viewGroupSplit) {
+      splitWorkspaceViewToGroup(viewGroupSplit.direction, viewGroupSplit.placement);
+      return;
+    }
     if (item === "关闭窗格") {
       closeWorkspacePane();
       return;
@@ -1147,6 +1159,42 @@ function handleMenuAction(item: string) {
     setActivePaneId(nextActive?.id ?? "");
     setActiveId(nextActive?.sessionId ?? activeId);
     setZoomedPaneId((current) => current ? nextActive?.id ?? "" : "");
+  }
+
+  function splitWorkspaceViewToGroup(
+    direction: WorkspaceSplitDirection,
+    placement: WorkspaceSplitPlacement,
+  ) {
+    const panes = workspacePaneLeaves(workspaceRoot);
+    const source = findWorkspacePane(workspaceRoot, activePaneId);
+    if (!workspaceRoot || !source) return;
+    if (source.sessionIds.length <= 1) {
+      setNotice({ title: "视图拆分到新分组", message: "当前分组至少需要保留一个其他视图。" });
+      return;
+    }
+    if (panes.length >= MAX_WORKSPACE_PANES) {
+      setNotice({ title: "视图拆分到新分组", message: `工作区最多支持 ${MAX_WORKSPACE_PANES} 个分组。` });
+      return;
+    }
+    const newPaneId = createWorkspaceNodeId("pane");
+    const nextRoot = splitWorkspacePaneSessionToGroup(
+      workspaceRoot,
+      source.id,
+      source.sessionId,
+      direction,
+      newPaneId,
+      createWorkspaceNodeId("split"),
+      placement,
+    );
+    if (nextRoot === workspaceRoot) {
+      setNotice({ title: "视图拆分到新分组", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      return;
+    }
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(newPaneId);
+    setActiveId(source.sessionId);
+    setZoomedPaneId("");
+    focusWorkspacePaneInput(newPaneId);
   }
 
   function moveWorkspaceView(sourcePaneId: string, targetPaneId: string) {
