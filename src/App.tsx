@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
@@ -51,8 +51,8 @@ import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
 import type { SysmonTrendMode } from "./sysmon-history";
-import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspaceSnapshot } from "./workspace-state";
-import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
+import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
+import type { StartupMode, WorkspaceNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
@@ -236,8 +236,8 @@ export default function App() {
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
-  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayout>(initialWorkspace.layout);
-  const [paneIds, setPaneIds] = useState<string[]>(initialWorkspace.paneIds);
+  const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode | null>(initialWorkspace.root);
+  const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
@@ -273,9 +273,9 @@ export default function App() {
     startupAppliedRef.current = true;
     const prefs = loadLocalValue<TerminalPrefs>("portmate.terminalPrefs", createTerminalPrefs());
     const workspace = reconcileWorkspaceSnapshot({
-      version: 1,
-      layout: workspaceLayout,
-      paneIds,
+      version: 2,
+      root: workspaceRoot,
+      activePaneId,
       activeId,
       tabColors,
     }, sessions.map((session) => session.profile.id));
@@ -295,13 +295,13 @@ export default function App() {
 
   useEffect(() => {
     saveLocalValue<WorkspaceSnapshot>(WORKSPACE_STORAGE_KEY, {
-      version: 1,
-      layout: workspaceLayout,
-      paneIds,
+      version: 2,
+      root: workspaceRoot,
+      activePaneId,
       activeId,
       tabColors,
     });
-  }, [workspaceLayout, paneIds, activeId, tabColors]);
+  }, [workspaceRoot, activePaneId, activeId, tabColors]);
 
   useEffect(() => {
     saveLocalValue("portmate.syncInputSettings", syncInputSettings);
@@ -422,14 +422,14 @@ export default function App() {
     setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
     setSerialPorts(await callBackend("list_serial_ports", {}, []));
     const restored = reconcileWorkspaceSnapshot({
-      version: 1,
-      layout: workspaceLayout,
-      paneIds,
+      version: 2,
+      root: workspaceRoot,
+      activePaneId,
       activeId,
       tabColors,
     }, nextSessions.map((session) => session.profile.id));
-    setWorkspaceLayout(restored.layout);
-    setPaneIds(restored.paneIds);
+    setWorkspaceRoot(restored.root);
+    setActivePaneId(restored.activePaneId);
     setActiveId(restored.activeId);
     setTabColors(restored.tabColors);
 
@@ -545,11 +545,12 @@ export default function App() {
   );
 
   const paneSessions = useMemo(() => {
-    const ids = workspaceLayout === "single" ? [activeId] : paneIds.length ? paneIds : [activeId];
-    return ids
+    const ids = workspacePaneLeaves(workspaceRoot).map((pane) => pane.sessionId);
+    const resolvedIds = ids.length ? ids : [activeId];
+    return resolvedIds
       .map((id) => sessions.find((session) => session.profile.id === id))
       .filter((session): session is SessionSummary => Boolean(session));
-  }, [activeId, paneIds, sessions, workspaceLayout]);
+  }, [activeId, sessions, workspaceRoot]);
 
   const syncInputTargetCount = useMemo(() => resolveSyncInputTargets(
     activeId,
@@ -610,7 +611,7 @@ function handleMenuAction(item: string) {
       const current = Math.max(0, sessions.findIndex((session) => session.profile.id === activeId));
       const offset = item === "上一个标签" ? -1 : 1;
       const next = (current + offset + sessions.length) % sessions.length;
-      setActiveId(sessions[next].profile.id);
+      activateSession(sessions[next].profile.id);
       return;
     }
     if (item === "跳转到行") {
@@ -722,7 +723,7 @@ function handleMenuAction(item: string) {
     event.stopPropagation();
     const nextSessionId = sessionId ?? (activeId || sessions[0]?.profile.id || null);
     if (sessionId) {
-      setActiveId(sessionId);
+      activateSession(sessionId);
     }
     setOpenMenu(null);
     setContextMenu({ x: event.clientX, y: event.clientY, sessionId: nextSessionId });
@@ -896,13 +897,32 @@ function handleMenuAction(item: string) {
   }
 
   function activateSession(sessionId: string) {
-    setActiveId(sessionId);
-    if (workspaceLayout !== "single") {
-      setPaneIds((current) => {
-        if (!current.length || current.includes(sessionId)) return current;
-        return [sessionId, ...current.slice(1)];
-      });
+    const currentPane = findWorkspacePane(workspaceRoot, activePaneId);
+    const existingPane = currentPane?.sessionId === sessionId
+      ? currentPane
+      : findWorkspacePaneBySession(workspaceRoot, sessionId);
+    if (existingPane) {
+      setActivePaneId(existingPane.id);
+      setActiveId(existingPane.sessionId);
+      return;
     }
+    if (!workspaceRoot) {
+      const pane = createWorkspacePane(sessionId);
+      setWorkspaceRoot(pane);
+      setActivePaneId(pane.id);
+    } else {
+      const targetPane = currentPane ?? workspacePaneLeaves(workspaceRoot)[0];
+      if (targetPane) {
+        setWorkspaceRoot(replaceWorkspacePaneSession(workspaceRoot, targetPane.id, sessionId));
+        setActivePaneId(targetPane.id);
+      }
+    }
+    setActiveId(sessionId);
+  }
+
+  function activateWorkspacePane(paneId: string, sessionId: string) {
+    setActivePaneId(paneId);
+    setActiveId(sessionId);
   }
 
   function restoreWorkspaceLayout() {
@@ -910,44 +930,58 @@ function handleMenuAction(item: string) {
       loadWorkspaceSnapshot(),
       sessions.map((session) => session.profile.id),
     );
-    setWorkspaceLayout(restored.layout);
-    setPaneIds(restored.paneIds);
+    setWorkspaceRoot(restored.root);
+    setActivePaneId(restored.activePaneId);
     setActiveId(restored.activeId);
     setTabColors(restored.tabColors);
     setNotice({
       title: "还原布局",
-      message: restored.layout === "single"
+      message: workspacePaneLeaves(restored.root).length <= 1
         ? "已还原单窗格工作区。"
-        : `已还原 ${restored.paneIds.length} 个窗格。`,
+        : `已还原 ${workspacePaneLeaves(restored.root).length} 个窗格。`,
     });
   }
 
-  function splitWorkspace(layout: Exclude<WorkspaceLayout, "single">) {
+  function splitWorkspace(direction: WorkspaceSplitDirection) {
     const primaryId = activeId || sessions[0]?.profile.id;
     if (!primaryId) {
       openNewSessionDialog();
       return;
     }
-    const currentIds = workspaceLayout === "single" || !paneIds.length ? [primaryId] : paneIds;
-    const nextId = sessions.find((session) => !currentIds.includes(session.profile.id))?.profile.id ?? primaryId;
-    const nextIds = currentIds.length >= 4 ? currentIds : [...currentIds, nextId];
-    setWorkspaceLayout(layout);
-    setPaneIds(nextIds);
-    setActiveId(primaryId);
-  }
-
-  function closeWorkspacePane(paneIndex?: number) {
-    const currentIds = paneIds.length ? paneIds : activeId ? [activeId] : [];
-    if (!currentIds.length) return;
-    const nextIds = typeof paneIndex === "number" ? currentIds.filter((_, index) => index !== paneIndex) : currentIds.slice(0, -1);
-    if (nextIds.length <= 1) {
-      setWorkspaceLayout("single");
-      setPaneIds([]);
-      if (nextIds[0]) setActiveId(nextIds[0]);
+    const root = workspaceRoot ?? createWorkspacePane(primaryId, activePaneId || createWorkspaceNodeId("pane"));
+    const panes = workspacePaneLeaves(root);
+    if (panes.length >= MAX_WORKSPACE_PANES) {
+      setNotice({ title: "分屏", message: `最多同时打开 ${MAX_WORKSPACE_PANES} 个窗格。` });
       return;
     }
-    setPaneIds(nextIds);
-    setActiveId(nextIds[0]);
+    const targetPane = findWorkspacePane(root, activePaneId)
+      ?? findWorkspacePaneBySession(root, primaryId)
+      ?? panes[0];
+    if (!targetPane) return;
+    const openSessionIds = new Set(panes.map((pane) => pane.sessionId));
+    const nextId = sessions.find((session) => !openSessionIds.has(session.profile.id))?.profile.id ?? primaryId;
+    const nextRoot = splitWorkspacePane(root, targetPane.id, direction, nextId);
+    if (nextRoot === root) {
+      setNotice({ title: "分屏", message: `嵌套分屏最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      return;
+    }
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(targetPane.id);
+    setActiveId(targetPane.sessionId);
+  }
+
+  function closeWorkspacePane(paneId = activePaneId) {
+    const panes = workspacePaneLeaves(workspaceRoot);
+    if (panes.length <= 1 || !paneId) return;
+    const removedIndex = panes.findIndex((pane) => pane.id === paneId);
+    if (removedIndex < 0) return;
+    const nextRoot = removeWorkspacePane(workspaceRoot, paneId);
+    const nextPanes = workspacePaneLeaves(nextRoot);
+    const currentActive = nextPanes.find((pane) => pane.id === activePaneId);
+    const nextActive = currentActive ?? nextPanes[Math.min(removedIndex, nextPanes.length - 1)];
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(nextActive?.id ?? "");
+    setActiveId(nextActive?.sessionId ?? activeId);
   }
 
   async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
@@ -984,7 +1018,7 @@ function handleMenuAction(item: string) {
   }
 
   function applySavedSession(saved: SessionSummary) {
-    setActiveId(saved.profile.id);
+    activateSession(saved.profile.id);
     setSessions((current) => {
       const nextSessions = mergeSessionSummaries(current, saved);
       saveLocalSessionSummaries(nextSessions);
@@ -1017,7 +1051,7 @@ function handleMenuAction(item: string) {
 
     const connecting = setSessionStatus({ ...session, profile: profileForConnect }, "connecting");
     setSessions((current) => mergeSessionSummaries(current, connecting));
-    setActiveId(profileForConnect.id);
+    activateSession(profileForConnect.id);
 
     try {
       const persisted = await saveProfile(profileForConnect);
@@ -1106,7 +1140,7 @@ function handleMenuAction(item: string) {
     const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
 
     setLogs((current) => ({ ...current, [sessionId]: nextLog }));
-    setActiveId(sessionId);
+    activateSession(sessionId);
     setSessions((current) => {
       const nextSessions = mergeSessionSummaries(current, saved);
       saveLocalSessionSummaries(nextSessions);
@@ -1411,14 +1445,18 @@ function handleMenuAction(item: string) {
             ) : null}
           </div>
           <TerminalPaneGrid
-            layout={workspaceLayout}
-            panes={paneSessions}
+            root={workspaceRoot}
+            sessions={sessions}
+            activePaneId={activePaneId}
             activeId={activeId}
             eventsBySession={logs}
             blockSelection={blockSelection}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
-            onActivate={activateSession}
+            onActivate={activateWorkspacePane}
             onClosePane={closeWorkspacePane}
+            onSplitRatioChange={(splitId, ratio) => {
+              setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
+            }}
           />
         </section>
 
@@ -2441,47 +2479,158 @@ function FilePropertiesDialog({ state, onClose }: { state: NonNullable<FilePrope
 }
 
 function TerminalPaneGrid({
-  layout,
-  panes,
+  root,
+  sessions,
+  activePaneId,
   activeId,
   eventsBySession,
   blockSelection,
   onInput,
   onActivate,
   onClosePane,
+  onSplitRatioChange,
 }: {
-  layout: WorkspaceLayout;
-  panes: SessionSummary[];
+  root: WorkspaceNode | null;
+  sessions: SessionSummary[];
+  activePaneId: string;
   activeId: string;
   eventsBySession: Record<string, SessionEvent[]>;
   blockSelection: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
-  onActivate: (sessionId: string) => void;
-  onClosePane: (paneIndex: number) => void;
+  onActivate: (paneId: string, sessionId: string) => void;
+  onClosePane: (paneId: string) => void;
+  onSplitRatioChange: (splitId: string, ratio: number) => void;
 }) {
-  if (layout === "single") {
-    const active = panes[0];
+  if (!root || root.kind === "pane") {
+    const sessionId = root?.sessionId ?? activeId;
+    const active = sessions.find((session) => session.profile.id === sessionId);
     return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} onInput={onInput} />;
   }
 
   return (
-    <div className={`terminal-pane-grid ${layout} ${blockSelection ? "block-selection" : ""}`}>
-      {panes.map((pane, index) => (
-        <section key={`${pane.profile.id}-${index}`} className={pane.profile.id === activeId ? "terminal-pane active" : "terminal-pane"} onMouseDown={() => onActivate(pane.profile.id)}>
-          <header>
-            <strong>{pane.profile.name}</strong>
-            <span>{pane.runtime.status}</span>
-            <button onClick={(event) => {
-              event.stopPropagation();
-              onClosePane(index);
-            }}>
-              <X size={13} />
-            </button>
-          </header>
-          <TerminalCanvas active={pane} events={eventsBySession[pane.profile.id] ?? []} onInput={onInput} />
-        </section>
-      ))}
-      {!panes.length ? <TerminalCanvas events={[]} onInput={onInput} /> : null}
+    <div className={`terminal-pane-grid recursive ${blockSelection ? "block-selection" : ""}`}>
+      <TerminalWorkspaceNode
+        node={root}
+        sessions={sessions}
+        activePaneId={activePaneId}
+        eventsBySession={eventsBySession}
+        onInput={onInput}
+        onActivate={onActivate}
+        onClosePane={onClosePane}
+        onSplitRatioChange={onSplitRatioChange}
+      />
+    </div>
+  );
+}
+
+type TerminalWorkspaceNodeProps = {
+  node: WorkspaceNode;
+  sessions: SessionSummary[];
+  activePaneId: string;
+  eventsBySession: Record<string, SessionEvent[]>;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onActivate: (paneId: string, sessionId: string) => void;
+  onClosePane: (paneId: string) => void;
+  onSplitRatioChange: (splitId: string, ratio: number) => void;
+};
+
+function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
+  const { node } = props;
+  if (node.kind === "split") return <TerminalSplitNode {...props} node={node} />;
+  const session = props.sessions.find((item) => item.profile.id === node.sessionId);
+  return (
+    <section
+      className={node.id === props.activePaneId ? "terminal-pane active" : "terminal-pane"}
+      data-pane-id={node.id}
+      onMouseDown={() => props.onActivate(node.id, node.sessionId)}
+    >
+      <header>
+        <strong>{session?.profile.name ?? "会话不可用"}</strong>
+        <span>{session?.runtime.status ?? "missing"}</span>
+        <button
+          type="button"
+          title="关闭窗格"
+          aria-label="关闭窗格"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onClosePane(node.id);
+          }}
+        >
+          <X size={13} />
+        </button>
+      </header>
+      <TerminalCanvas active={session} events={session ? props.eventsBySession[node.sessionId] ?? [] : []} onInput={props.onInput} />
+    </section>
+  );
+}
+
+function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { node: WorkspaceSplitNode }) {
+  const { node } = props;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const firstTrack = `${node.ratio}fr`;
+  const secondTrack = `${1 - node.ratio}fr`;
+  const style: CSSProperties = node.direction === "horizontal"
+    ? { gridTemplateRows: `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` }
+    : { gridTemplateColumns: `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` };
+
+  function updateFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const ratio = node.direction === "horizontal"
+      ? (event.clientY - rect.top) / Math.max(1, rect.height)
+      : (event.clientX - rect.left) / Math.max(1, rect.width);
+    props.onSplitRatioChange(node.id, ratio);
+  }
+
+  function handleSplitterKey(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const decrease = node.direction === "horizontal" ? event.key === "ArrowUp" : event.key === "ArrowLeft";
+    const increase = node.direction === "horizontal" ? event.key === "ArrowDown" : event.key === "ArrowRight";
+    let ratio: number | null = decrease ? node.ratio - 0.05 : increase ? node.ratio + 0.05 : null;
+    if (event.key === "Home") ratio = MIN_WORKSPACE_SPLIT_RATIO;
+    if (event.key === "End") ratio = MAX_WORKSPACE_SPLIT_RATIO;
+    if (ratio === null) return;
+    event.preventDefault();
+    props.onSplitRatioChange(node.id, ratio);
+  }
+
+  return (
+    <div ref={containerRef} className={`terminal-split ${node.direction}`} data-split-id={node.id} style={style}>
+      <div className="terminal-split-child">
+        <TerminalWorkspaceNode {...props} node={node.first} />
+      </div>
+      <button
+        type="button"
+        className="terminal-splitter"
+        role="separator"
+        aria-label={node.direction === "horizontal" ? "调整上下窗格" : "调整左右窗格"}
+        aria-orientation={node.direction === "horizontal" ? "horizontal" : "vertical"}
+        aria-valuemin={Math.round(MIN_WORKSPACE_SPLIT_RATIO * 100)}
+        aria-valuemax={Math.round(MAX_WORKSPACE_SPLIT_RATIO * 100)}
+        aria-valuenow={Math.round(node.ratio * 100)}
+        title={node.direction === "horizontal" ? "拖动调整上下窗格，双击复位" : "拖动调整左右窗格，双击复位"}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          updateFromPointer(event);
+        }}
+        onPointerMove={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) updateFromPointer(event);
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onDoubleClick={() => props.onSplitRatioChange(node.id, 0.5)}
+        onKeyDown={handleSplitterKey}
+      />
+      <div className="terminal-split-child">
+        <TerminalWorkspaceNode {...props} node={node.second} />
+      </div>
     </div>
   );
 }

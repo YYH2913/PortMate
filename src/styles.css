@@ -963,6 +963,7 @@ button {
 .tab-line {
   display: flex;
   align-items: stretch;
+  min-width: 0;
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
   overflow-x: auto;
@@ -1050,6 +1051,7 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   padding: 0 10px;
   border-bottom: 1px solid var(--line);
   background: #16202a;
@@ -1202,6 +1204,7 @@ button {
 
 @media (max-width: 1180px) {
   .runtime-disconnect,
+  .runtime-pill,
   .sysmon-applet-summary span:last-child {
     display: none;
   }
@@ -1215,12 +1218,91 @@ button {
   background: #0d1117;
 }
 
-.terminal-pane-grid.horizontal {
-  grid-template-rows: repeat(auto-fit, minmax(160px, 1fr));
+.terminal-pane-grid.recursive {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
-.terminal-pane-grid.vertical {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+.terminal-split {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-split.horizontal {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.terminal-split.vertical {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.terminal-split-child {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-split-child > .terminal-pane {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-splitter {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: #17212b;
+  touch-action: none;
+  transition: background-color 120ms ease-out;
+}
+
+.terminal-splitter::after {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: #344252;
+  content: "";
+  transition: background-color 120ms ease-out;
+}
+
+.terminal-split.horizontal > .terminal-splitter {
+  width: 100%;
+  height: 5px;
+  cursor: row-resize;
+}
+
+.terminal-split.horizontal > .terminal-splitter::after {
+  width: 100%;
+  height: 1px;
+}
+
+.terminal-split.vertical > .terminal-splitter {
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.terminal-split.vertical > .terminal-splitter::after {
+  width: 1px;
+  height: 100%;
+}
+
+.terminal-splitter:hover,
+.terminal-splitter:focus-visible {
+  outline: 0;
+  background: rgba(94, 234, 212, 0.22);
+}
+
+.terminal-splitter:hover::after,
+.terminal-splitter:focus-visible::after {
+  background: var(--cyan);
 }
 
 .terminal-pane {
@@ -1228,9 +1310,9 @@ button {
   grid-template-rows: 28px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  container-type: inline-size;
   background: #0d1117;
+  transition: box-shadow 120ms ease-out;
 }
 
 .terminal-pane.active {
@@ -1242,6 +1324,7 @@ button {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
   padding: 0 8px;
   border-bottom: 1px solid var(--line-soft);
   background: #111820;
@@ -1257,10 +1340,15 @@ button {
 }
 
 .terminal-pane header span {
+  overflow: hidden;
+  min-width: 0;
   color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .terminal-pane header button {
+  flex: 0 0 22px;
   margin-left: auto;
   display: grid;
   place-items: center;
@@ -1269,6 +1357,17 @@ button {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+}
+
+@container (max-width: 240px) {
+  .terminal-pane header {
+    gap: 4px;
+    padding-inline: 4px;
+  }
+
+  .terminal-pane header span {
+    display: none;
+  }
 }
 
 .terminal-pane header button:hover {
@@ -3069,6 +3168,38 @@ fieldset label {
   }
 
   .menu-tools {
+    display: none;
+  }
+
+  .wind-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .left-stack,
+  .right-stack,
+  .send-panel {
+    display: none;
+  }
+
+  .center-workspace {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .status-bar {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+    padding-inline: 8px;
+  }
+
+  .status-bar > span:nth-child(2) {
+    flex: 1 1 auto;
+  }
+
+  .status-bar > :nth-child(n + 4) {
     display: none;
   }
 
