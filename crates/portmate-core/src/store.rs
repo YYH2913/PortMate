@@ -572,6 +572,23 @@ impl SessionStore {
         text: &str,
         bytes_ref: Option<String>,
     ) -> Result<SessionEvent, String> {
+        self.send_text_with_bytes_ref_and_audit_action(
+            actor,
+            session_id,
+            text,
+            bytes_ref,
+            Some("send_text"),
+        )
+    }
+
+    pub fn send_text_with_bytes_ref_and_audit_action(
+        &mut self,
+        actor: &str,
+        session_id: &str,
+        text: &str,
+        bytes_ref: Option<String>,
+        audit_action: Option<&str>,
+    ) -> Result<SessionEvent, String> {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
         }
@@ -597,15 +614,17 @@ impl SessionStore {
         };
         self.events.push(event.clone());
         self.trim_events_if_needed(session_id);
-        self.record_audit(AuditRecord {
-            id: Uuid::new_v4().to_string(),
-            ts: now,
-            actor: actor.to_string(),
-            action: "send_text".to_string(),
-            session_id: Some(session_id.to_string()),
-            decision: "recorded".to_string(),
-            details: BTreeMap::from([("bytes".to_string(), text.len().to_string())]),
-        });
+        if let Some(action) = audit_action {
+            self.record_audit(AuditRecord {
+                id: Uuid::new_v4().to_string(),
+                ts: now,
+                actor: actor.to_string(),
+                action: action.to_string(),
+                session_id: Some(session_id.to_string()),
+                decision: "recorded".to_string(),
+                details: BTreeMap::from([("bytes".to_string(), text.len().to_string())]),
+            });
+        }
         Ok(event)
     }
 

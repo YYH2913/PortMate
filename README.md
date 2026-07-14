@@ -156,6 +156,13 @@ Write tools are denied by default. For a trusted local development run with an e
 PORTMATE_MCP_TRUSTED=1 PORTMATE_MCP_CLIENT_ID=portmate-local cargo run -p portmate-mcp
 ```
 
+When live desktop IPC is available, the desktop store is the authoritative grant source. Every
+authenticated write attempt is audited with the MCP client ID, exact tool, session, scope, and
+`invalid`/`denied`/`authorized`/`succeeded`/`failed` outcome. Tool arguments, command text,
+passwords, passphrases, and file-path bodies are not copied into audit details. An explicit grant
+enables its configured scopes; `PORTMATE_MCP_TRUSTED=1` additionally enables the documented local
+bootstrap only while the grant store is empty.
+
 The same bridge can expose JSON-RPC over local HTTP for clients that cannot spawn stdio servers. It only accepts loopback bind addresses, validates `Origin` when present, and requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring.
 The desktop `工具 -> MCP Bridge` dialog shows the default HTTP endpoint, Origin, startup command, tokenRef, and can generate or rotate the keyring token.
 Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.

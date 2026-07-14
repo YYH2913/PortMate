@@ -5,12 +5,12 @@ use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
     compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, resource_templates,
-    tool_definitions, AuthMethod, ConnectionConfig, EventDirection, EventStream, HostKeyDecision,
-    HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef,
-    IdentitySource, McpGrant, McpScope, ProxyConfig, ProxyKind, SessionEvent, SessionKind,
-    SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonSnapshot,
-    TcpConnection, TimelineMark, TransferProtocol, TransferStatus, TransferTask, TriggerAction,
-    TrustedHostKey, TunnelMode, TunnelSpec,
+    tool_definitions, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
+    HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
+    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, ProxyConfig, ProxyKind,
+    SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary,
+    SshConnection, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
+    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -1920,7 +1920,7 @@ async fn send_key(
     let io = state.inner().session_io();
     let text =
         terminal_key_sequence_for_protocol(&key, is_telnet_session(&io.store, &session_id)?)?;
-    send_text_inner(io, session_id, text).await
+    send_text_inner_with_context(io, session_id, text, "desktop-user", Some("send_key")).await
 }
 
 #[tauri::command]
@@ -1931,13 +1931,23 @@ async fn run_command(
 ) -> Result<SessionEvent, String> {
     let io = state.inner().session_io();
     let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
-    send_text_inner(io, session_id, text).await
+    send_text_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
 }
 
 async fn send_text_inner(
     io: SessionIo,
     session_id: String,
     text: String,
+) -> Result<SessionEvent, String> {
+    send_text_inner_with_context(io, session_id, text, "desktop-user", Some("send_text")).await
+}
+
+async fn send_text_inner_with_context(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    actor: &str,
+    audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
@@ -1952,11 +1962,13 @@ async fn send_text_inner(
         wire_text.as_bytes(),
     )
     .await?;
-    Ok(record_outbound_user_event(
+    Ok(record_outbound_user_event_with_context(
         &io,
         &session_id,
         &text,
         wire_text.as_bytes(),
+        actor,
+        audit_action,
     ))
 }
 
@@ -1979,28 +1991,33 @@ async fn send_bytes_inner(
     )
     .await?;
     let text = format_outbound_byte_summary(&bytes);
-    Ok(record_outbound_user_event(
+    Ok(record_outbound_user_event_with_context(
         &io,
         &session_id,
         &text,
         &wire_bytes,
+        "desktop-user",
+        Some("send_bytes"),
     ))
 }
 
-fn record_outbound_user_event(
+fn record_outbound_user_event_with_context(
     io: &SessionIo,
     session_id: &str,
     text: &str,
     wire_bytes: &[u8],
+    actor: &str,
+    audit_action: Option<&str>,
 ) -> SessionEvent {
     let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, text);
     let mut event = match io.store.lock() {
         Ok(mut store) => {
-            let event = store.send_text_with_bytes_ref(
-                "desktop-user",
+            let event = store.send_text_with_bytes_ref_and_audit_action(
+                actor,
                 session_id,
                 text,
                 shard_append.bytes_ref.clone(),
+                audit_action,
             );
             match event {
                 Ok(mut event) => {
@@ -2019,6 +2036,7 @@ fn record_outbound_user_event(
                     session_id,
                     text,
                     shard_append.bytes_ref.clone(),
+                    actor,
                     merge_logging_error_messages(&shard_append.errors, error),
                 ),
             }
@@ -2027,6 +2045,7 @@ fn record_outbound_user_event(
             session_id,
             text,
             shard_append.bytes_ref,
+            actor,
             merge_logging_error_messages(
                 &shard_append.errors,
                 format!("session store lock poisoned: {error}"),
@@ -2150,6 +2169,7 @@ fn fallback_outbound_event(
     session_id: &str,
     text: &str,
     bytes_ref: Option<String>,
+    actor: &str,
     error: String,
 ) -> SessionEvent {
     eprintln!("PortMate: outbound transport succeeded but event persistence degraded: {error}");
@@ -2163,7 +2183,7 @@ fn fallback_outbound_event(
         bytes_ref,
         text: Some(redact_secrets(text)),
         annotations: BTreeMap::from([
-            ("actor".to_string(), "desktop-user".to_string()),
+            ("actor".to_string(), actor.to_string()),
             ("loggingError".to_string(), error),
         ]),
     }
@@ -3500,7 +3520,14 @@ async fn attach_tmux(
         shell_quote(&target),
         shell_quote(&target)
     );
-    send_text_inner(state.inner().session_io(), session_id, command).await
+    send_text_inner_with_context(
+        state.inner().session_io(),
+        session_id,
+        command,
+        "desktop-user",
+        Some("attach_tmux"),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -4066,33 +4093,6 @@ async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream
     }
 }
 
-/// Independently enforces the MCP grant model against the desktop's live store.
-/// The empty-store bootstrap is accepted only when the bridge explicitly declares
-/// its trusted-write mode, preserving the documented local development flow while
-/// preventing ordinary read-only bridge requests from inheriting write access.
-fn guard_mcp_scope(
-    state: &AppState,
-    request: &IpcRequest,
-    scope: McpScope,
-    session_id: &str,
-) -> Result<(), String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    if mcp_scope_allowed(
-        &store,
-        &request.client_id,
-        request.trusted_write,
-        scope,
-        session_id,
-    ) {
-        Ok(())
-    } else {
-        Err(format!(
-            "MCP grant does not permit {scope:?} for client `{}` on session `{session_id}`",
-            request.client_id
-        ))
-    }
-}
-
 fn mcp_scope_allowed(
     store: &SessionStore,
     client_id: &str,
@@ -4100,12 +4100,220 @@ fn mcp_scope_allowed(
     scope: McpScope,
     session_id: &str,
 ) -> bool {
-    !client_id.trim().is_empty()
+    let client_id = client_id.trim();
+    !client_id.is_empty()
         && (store.mcp_can(client_id, scope, Some(session_id))
             || (trusted_write && store.grants.is_empty()))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum McpWriteAuditStart {
+    Authorized(String),
+    Denied(String),
+}
+
+fn ipc_write_scope(command: &str) -> Option<McpScope> {
+    match command {
+        "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),
+        "open_session" | "close_session" => Some(McpScope::ManageSessions),
+        "start_transfer" => Some(McpScope::Transfer),
+        "create_tunnel" => Some(McpScope::Tunnel),
+        _ => None,
+    }
+}
+
+fn mcp_scope_label(scope: McpScope) -> &'static str {
+    match scope {
+        McpScope::ReadSessions => "read-sessions",
+        McpScope::ReadLogs => "read-logs",
+        McpScope::WriteInput => "write-input",
+        McpScope::Transfer => "transfer",
+        McpScope::Tunnel => "tunnel",
+        McpScope::ManageSessions => "manage-sessions",
+    }
+}
+
+fn mcp_audit_actor(client_id: &str) -> String {
+    let client_id = client_id.trim();
+    if client_id.is_empty() {
+        "<missing-client-id>".to_string()
+    } else {
+        client_id.to_string()
+    }
+}
+
+fn mcp_audit_details(scope: McpScope, trusted_bootstrap: bool) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("scope".to_string(), mcp_scope_label(scope).to_string()),
+        (
+            "trustedBootstrap".to_string(),
+            trusted_bootstrap.to_string(),
+        ),
+    ])
+}
+
+fn validate_ipc_write_args(request: &IpcRequest) -> Result<(), String> {
+    match request.command.as_str() {
+        "send_text" => {
+            ipc_string_arg(&request.args, "text")?;
+        }
+        "send_key" => {
+            ipc_string_arg(&request.args, "key")?;
+        }
+        "run_command" => {
+            ipc_string_arg(&request.args, "command")?;
+        }
+        "start_transfer" => {
+            serde_json::from_value::<StartTransferRequest>(request.args.clone())
+                .map_err(|error| format!("invalid transfer request: {error}"))?;
+        }
+        "create_tunnel" => {
+            serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+                .map_err(|error| format!("invalid tunnel request: {error}"))?;
+        }
+        "attach_tmux" => {
+            ipc_string_arg(&request.args, "target")?;
+        }
+        "open_session" | "close_session" => {}
+        _ => {
+            return Err(format!(
+                "unsupported IPC write command: {}",
+                request.command
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn append_and_save_mcp_audit(
+    store_path: &Path,
+    store: &mut SessionStore,
+    record: AuditRecord,
+) -> Result<(), String> {
+    let previous = store.audit.clone();
+    store.record_audit(record);
+    if let Err(error) = save_store(store_path, store) {
+        store.audit = previous;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn record_invalid_mcp_write(
+    state: &AppState,
+    request: &IpcRequest,
+    scope: McpScope,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let trusted_bootstrap = request.trusted_write && store.grants.is_empty();
+    let record = AuditRecord {
+        id: Uuid::new_v4().to_string(),
+        ts: Utc::now(),
+        actor: mcp_audit_actor(&request.client_id),
+        action: request.command.clone(),
+        session_id: session_id.map(str::to_string),
+        decision: "invalid".to_string(),
+        details: mcp_audit_details(scope, trusted_bootstrap),
+    };
+    append_and_save_mcp_audit(&state.store_path, &mut store, record)
+}
+
+fn begin_mcp_write_audit(
+    state: &AppState,
+    request: &IpcRequest,
+    scope: McpScope,
+    session_id: &str,
+) -> Result<McpWriteAuditStart, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let trusted_bootstrap = request.trusted_write && store.grants.is_empty();
+    let allowed = mcp_scope_allowed(
+        &store,
+        &request.client_id,
+        request.trusted_write,
+        scope,
+        session_id,
+    );
+    let id = Uuid::new_v4().to_string();
+    let record = AuditRecord {
+        id: id.clone(),
+        ts: Utc::now(),
+        actor: mcp_audit_actor(&request.client_id),
+        action: request.command.clone(),
+        session_id: Some(session_id.to_string()),
+        decision: if allowed { "authorized" } else { "denied" }.to_string(),
+        details: mcp_audit_details(scope, trusted_bootstrap),
+    };
+    append_and_save_mcp_audit(&state.store_path, &mut store, record).map_err(|error| {
+        format!("MCP write was not executed because its audit record could not be saved: {error}")
+    })?;
+    if allowed {
+        Ok(McpWriteAuditStart::Authorized(id))
+    } else {
+        Ok(McpWriteAuditStart::Denied(format!(
+            "MCP grant does not permit {scope:?} for client `{}` on session `{session_id}`",
+            request.client_id
+        )))
+    }
+}
+
+fn finish_mcp_write_audit(state: &AppState, audit_id: &str, decision: &str) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let index = store
+        .audit
+        .iter()
+        .position(|record| record.id == audit_id)
+        .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
+    let previous = store.audit[index].clone();
+    store.audit[index].decision = decision.to_string();
+    if let Err(error) = save_store(&state.store_path, &store) {
+        store.audit[index] = previous;
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn handle_ipc_request(
+    state: AppState,
+    request: IpcRequest,
+) -> Result<serde_json::Value, String> {
+    let Some(scope) = ipc_write_scope(&request.command) else {
+        return execute_ipc_request(state, request).await;
+    };
+    let session_id = match ipc_string_arg(&request.args, "sessionId") {
+        Ok(session_id) => session_id.to_string(),
+        Err(error) => {
+            record_invalid_mcp_write(&state, &request, scope, None).map_err(|audit_error| {
+                format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
+            })?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = validate_ipc_write_args(&request) {
+        record_invalid_mcp_write(&state, &request, scope, Some(&session_id)).map_err(
+            |audit_error| {
+                format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
+            },
+        )?;
+        return Err(error);
+    }
+    let audit_id = match begin_mcp_write_audit(&state, &request, scope, &session_id)? {
+        McpWriteAuditStart::Authorized(id) => id,
+        McpWriteAuditStart::Denied(error) => return Err(error),
+    };
+    let result = execute_ipc_request(state.clone(), request).await;
+    let decision = if result.is_ok() {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    if let Err(error) = finish_mcp_write_audit(&state, &audit_id, decision) {
+        eprintln!("PortMate: failed to finalize MCP audit {audit_id} as {decision}: {error}");
+    }
+    result
+}
+
+async fn execute_ipc_request(
     state: AppState,
     request: IpcRequest,
 ) -> Result<serde_json::Value, String> {
@@ -4151,35 +4359,40 @@ async fn handle_ipc_request(
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
-            let event = send_text_inner(state.session_io(), session_id, text).await?;
+            let actor = mcp_audit_actor(&request.client_id);
+            let event =
+                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
+                    .await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "send_key" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let key = ipc_string_arg(&request.args, "key")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             let text = terminal_key_sequence_for_protocol(
                 &key,
                 is_telnet_session(&state.store, &session_id)?,
             )?;
-            let event = send_text_inner(state.session_io(), session_id, text).await?;
+            let actor = mcp_audit_actor(&request.client_id);
+            let event =
+                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
+                    .await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "run_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let command = ipc_string_arg(&request.args, "command")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             let text = terminate_command_for_protocol(
                 command,
                 is_telnet_session(&state.store, &session_id)?,
             );
-            let event = send_text_inner(state.session_io(), session_id, text).await?;
+            let actor = mcp_audit_actor(&request.client_id);
+            let event =
+                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
+                    .await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "open_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::ManageSessions, &session_id)?;
             let password = request
                 .args
                 .get("password")
@@ -4196,21 +4409,18 @@ async fn handle_ipc_request(
         }
         "close_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::ManageSessions, &session_id)?;
             let summary = close_session_inner(&state, session_id).await?;
             serde_json::to_value(summary).map_err(|error| error.to_string())
         }
         "start_transfer" => {
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
-            guard_mcp_scope(&state, &request, McpScope::Transfer, &transfer.session_id)?;
             let task = start_transfer_inner(&state, transfer).await?;
             serde_json::to_value(task).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
-            guard_mcp_scope(&state, &request, McpScope::Tunnel, &tunnel.session_id)?;
             let spec = create_tunnel_inner(&state, tunnel).await?;
             serde_json::to_value(spec).map_err(|error| error.to_string())
         }
@@ -4228,14 +4438,16 @@ async fn handle_ipc_request(
         "attach_tmux" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let target = ipc_string_arg(&request.args, "target")?.to_string();
-            guard_mcp_scope(&state, &request, McpScope::WriteInput, &session_id)?;
             let command = format!(
                 "tmux switch-client -t {} || tmux attach -t {} || tmux new-session -A -s {}\r",
                 shell_quote(&target),
                 shell_quote(&target),
                 shell_quote(&target)
             );
-            let event = send_text_inner(state.session_io(), session_id, command).await?;
+            let actor = mcp_audit_actor(&request.client_id);
+            let event =
+                send_text_inner_with_context(state.session_io(), session_id, command, &actor, None)
+                    .await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
         "export_session_bundle" => {
@@ -21088,8 +21300,12 @@ fn save_store_sqlite_tables(
         .iter()
         .map(|event| event.id.clone())
         .collect::<HashSet<_>>();
-    let mirrored_audit_ids =
-        sqlite_string_keys(connection, "select id from mcp_audit", "MCP audit")?;
+    let mirrored_audit = sqlite_string_map(
+        connection,
+        "select id, raw_json from mcp_audit",
+        "MCP audit",
+    )?;
+    let mirrored_audit_ids = mirrored_audit.keys().cloned().collect::<HashSet<_>>();
     let current_audit_ids = store
         .audit
         .iter()
@@ -21282,26 +21498,50 @@ fn save_store_sqlite_tables(
     }
 
     for record in &store.audit {
-        if mirrored_audit_ids.contains(&record.id) {
+        let raw_json = json_text(record)?;
+        if mirrored_audit.get(&record.id) == Some(&raw_json) {
             continue;
         }
-        connection
-            .execute(
-                "insert into mcp_audit (
-                    id, ts, actor, action, session_id, decision, details_json, raw_json
-                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    record.id,
-                    record.ts.to_rfc3339(),
-                    record.actor,
-                    record.action,
-                    record.session_id,
-                    record.decision,
-                    json_text(&record.details)?,
-                    json_text(record)?,
-                ],
-            )
-            .map_err(|error| format!("failed to mirror MCP audit {}: {error}", record.id))?;
+        if mirrored_audit.contains_key(&record.id) {
+            connection
+                .execute(
+                    "update mcp_audit set
+                        ts = ?2, actor = ?3, action = ?4, session_id = ?5, decision = ?6,
+                        details_json = ?7, raw_json = ?8
+                     where id = ?1",
+                    params![
+                        record.id,
+                        record.ts.to_rfc3339(),
+                        record.actor,
+                        record.action,
+                        record.session_id,
+                        record.decision,
+                        json_text(&record.details)?,
+                        raw_json,
+                    ],
+                )
+                .map_err(|error| {
+                    format!("failed to update mirrored MCP audit {}: {error}", record.id)
+                })?;
+        } else {
+            connection
+                .execute(
+                    "insert into mcp_audit (
+                        id, ts, actor, action, session_id, decision, details_json, raw_json
+                    ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        record.id,
+                        record.ts.to_rfc3339(),
+                        record.actor,
+                        record.action,
+                        record.session_id,
+                        record.decision,
+                        json_text(&record.details)?,
+                        raw_json,
+                    ],
+                )
+                .map_err(|error| format!("failed to mirror MCP audit {}: {error}", record.id))?;
+        }
     }
     for id in mirrored_audit_ids.difference(&current_audit_ids) {
         connection
@@ -22447,6 +22687,15 @@ mod tests {
                     .2,
                 [0x01, TELNET_IAC, TELNET_IAC]
             );
+            let audit_actions = state
+                .store
+                .lock()
+                .unwrap()
+                .audit
+                .iter()
+                .map(|record| record.action.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(audit_actions, ["send_text", "send_bytes"]);
             let modem_event = state
                 .store
                 .lock()
@@ -23259,7 +23508,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_mirror_incrementally_syncs_append_only_tables() {
+    fn sqlite_mirror_incrementally_syncs_history_tables() {
         let root = std::env::temp_dir().join(format!("portmate-sqlite-mirror-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let store_path = root.join("portmate-store.sqlite3");
@@ -23300,7 +23549,8 @@ mod tests {
                 );
                 insert into mirror_test_counts values
                     ('events', 'insert', 0), ('events', 'delete', 0),
-                    ('mcp_audit', 'insert', 0), ('mcp_audit', 'delete', 0),
+                    ('mcp_audit', 'insert', 0), ('mcp_audit', 'update', 0),
+                    ('mcp_audit', 'delete', 0),
                     ('timeline_marks', 'insert', 0), ('timeline_marks', 'delete', 0),
                     ('sysmon_snapshots', 'insert', 0), ('sysmon_snapshots', 'delete', 0);
                 create trigger mirror_test_events_insert after insert on events begin
@@ -23314,6 +23564,10 @@ mod tests {
                 create trigger mirror_test_audit_insert after insert on mcp_audit begin
                     update mirror_test_counts set count = count + 1
                     where table_name = 'mcp_audit' and action = 'insert';
+                end;
+                create trigger mirror_test_audit_update after update on mcp_audit begin
+                    update mirror_test_counts set count = count + 1
+                    where table_name = 'mcp_audit' and action = 'update';
                 end;
                 create trigger mirror_test_audit_delete after delete on mcp_audit begin
                     update mirror_test_counts set count = count + 1
@@ -23343,6 +23597,8 @@ mod tests {
         store.events[0]
             .annotations
             .insert("loggingError".to_string(), "text shard failed".to_string());
+        let updated_audit_id = store.audit[0].id.clone();
+        store.audit[0].decision = "succeeded".to_string();
         store.record_system_event(&session_id, "third event");
         save_store(&store_path, &store).unwrap();
         let connection = SqliteConnection::open(&store_path).unwrap();
@@ -23357,7 +23613,10 @@ mod tests {
         };
         assert_eq!(mirror_count("events", "insert"), 1);
         assert_eq!(mirror_count("events", "delete"), 0);
-        for table in ["mcp_audit", "timeline_marks", "sysmon_snapshots"] {
+        assert_eq!(mirror_count("mcp_audit", "insert"), 0);
+        assert_eq!(mirror_count("mcp_audit", "update"), 1);
+        assert_eq!(mirror_count("mcp_audit", "delete"), 0);
+        for table in ["timeline_marks", "sysmon_snapshots"] {
             assert_eq!(mirror_count(table, "insert"), 0, "{table}");
             assert_eq!(mirror_count(table, "delete"), 0, "{table}");
         }
@@ -23382,6 +23641,16 @@ mod tests {
             updated_annotations.get("loggingError").map(String::as_str),
             Some("text shard failed")
         );
+        let (updated_decision, updated_audit_json): (String, String) = connection
+            .query_row(
+                "select decision, raw_json from mcp_audit where id = ?1",
+                params![updated_audit_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(updated_decision, "succeeded");
+        let updated_audit: AuditRecord = serde_json::from_str(&updated_audit_json).unwrap();
+        assert_eq!(updated_audit.decision, "succeeded");
         connection
             .execute("update mirror_test_counts set count = 0", [])
             .unwrap();
@@ -24758,7 +25027,7 @@ mod tests {
 
     #[test]
     fn empty_mcp_grant_store_requires_trusted_bootstrap() {
-        let store = SessionStore::default();
+        let mut store = SessionStore::default();
         assert!(!mcp_scope_allowed(
             &store,
             "portmate-local",
@@ -24780,6 +25049,242 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+
+        store.grants.push(McpGrant {
+            client_id: "granted-client".to_string(),
+            name: "Granted client".to_string(),
+            scopes: vec![McpScope::WriteInput],
+            allowed_sessions: vec!["session-1".to_string()],
+            expires_at: None,
+            revoked_at: None,
+        });
+        assert!(mcp_scope_allowed(
+            &store,
+            " granted-client ",
+            false,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        assert!(!mcp_scope_allowed(
+            &store,
+            "ungranted-client",
+            true,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+    }
+
+    #[test]
+    fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
+        tauri::async_runtime::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("portmate-mcp-audit-denied-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+
+            let denied = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "readonly-client".to_string(),
+                    trusted_write: false,
+                    command: "open_session".to_string(),
+                    args: serde_json::json!({
+                        "sessionId": session_id,
+                        "password": "denied-password-secret"
+                    }),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(denied.contains("does not permit"));
+
+            let invalid = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "trusted-client".to_string(),
+                    trusted_write: true,
+                    command: "run_command".to_string(),
+                    args: serde_json::json!({
+                        "sessionId": session_id,
+                        "command": 42,
+                        "password": "invalid-password-secret"
+                    }),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(invalid.contains("missing string argument `command`"));
+
+            let audit = state.store.lock().unwrap().audit.clone();
+            assert_eq!(audit.len(), 2);
+            assert_eq!(audit[0].actor, "readonly-client");
+            assert_eq!(audit[0].action, "open_session");
+            assert_eq!(audit[0].decision, "denied");
+            assert_eq!(audit[0].session_id.as_deref(), Some(session_id.as_str()));
+            assert_eq!(
+                audit[0].details.get("scope").map(String::as_str),
+                Some("manage-sessions")
+            );
+            assert_eq!(audit[1].actor, "trusted-client");
+            assert_eq!(audit[1].action, "run_command");
+            assert_eq!(audit[1].decision, "invalid");
+            assert_eq!(
+                audit[1].details.get("scope").map(String::as_str),
+                Some("write-input")
+            );
+            let encoded = serde_json::to_string(&audit).unwrap();
+            assert!(!encoded.contains("denied-password-secret"));
+            assert!(!encoded.contains("invalid-password-secret"));
+            assert!(!encoded.contains("\"command\":42"));
+
+            let persisted = load_store_sqlite(&state.store_path).unwrap();
+            assert_eq!(persisted.audit, audit);
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = [0_u8; 8];
+                socket.read_exact(&mut received).await.unwrap();
+                received
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-mcp-audit-input-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: Uuid::new_v4().to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                },
+            );
+
+            let key_event: SessionEvent = serde_json::from_value(
+                handle_ipc_request(
+                    state.clone(),
+                    IpcRequest {
+                        token: "authenticated-token".to_string(),
+                        client_id: "mcp-e2e-client".to_string(),
+                        trusted_write: true,
+                        command: "send_key".to_string(),
+                        args: serde_json::json!({
+                            "sessionId": profile.id,
+                            "key": "Enter"
+                        }),
+                    },
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            let command_event: SessionEvent = serde_json::from_value(
+                handle_ipc_request(
+                    state.clone(),
+                    IpcRequest {
+                        token: "authenticated-token".to_string(),
+                        client_id: "mcp-e2e-client".to_string(),
+                        trusted_write: true,
+                        command: "run_command".to_string(),
+                        args: serde_json::json!({
+                            "sessionId": profile.id,
+                            "command": "status"
+                        }),
+                    },
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+
+            let received = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("TCP server timed out")
+                .expect("TCP server failed");
+            assert_eq!(&received, b"\rstatus\n");
+            for event in [key_event, command_event] {
+                assert_eq!(
+                    event.annotations.get("actor").map(String::as_str),
+                    Some("mcp-e2e-client")
+                );
+            }
+
+            let audit = state.store.lock().unwrap().audit.clone();
+            assert_eq!(
+                audit.len(),
+                2,
+                "MCP input must not add implicit send_text audits"
+            );
+            assert_eq!(audit[0].action, "send_key");
+            assert_eq!(audit[1].action, "run_command");
+            assert!(audit.iter().all(|record| record.actor == "mcp-e2e-client"));
+            assert!(audit.iter().all(|record| record.decision == "succeeded"));
+            assert!(audit.iter().all(|record| {
+                record.details.get("trustedBootstrap").map(String::as_str) == Some("true")
+            }));
+            let persisted = load_store_sqlite(&state.store_path).unwrap();
+            assert_eq!(persisted.audit, audit);
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn failed_mcp_write_finalizes_audit_without_secret_arguments() {
+        tauri::async_runtime::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("portmate-mcp-audit-failed-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+            let error = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "failed-client".to_string(),
+                    trusted_write: true,
+                    command: "run_command".to_string(),
+                    args: serde_json::json!({
+                        "sessionId": session_id,
+                        "command": "password=failed-command-secret"
+                    }),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(!error.is_empty());
+            assert!(!error.contains("failed-command-secret"));
+
+            let audit = state.store.lock().unwrap().audit.clone();
+            assert_eq!(audit.len(), 1);
+            assert_eq!(audit[0].actor, "failed-client");
+            assert_eq!(audit[0].action, "run_command");
+            assert_eq!(audit[0].decision, "failed");
+            assert!(!serde_json::to_string(&audit)
+                .unwrap()
+                .contains("failed-command-secret"));
+            let persisted = load_store_sqlite(&state.store_path).unwrap();
+            assert_eq!(persisted.audit, audit);
+
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
@@ -25364,7 +25869,14 @@ mod tests {
         let payload = b"password=hunter2";
         let summary = format_outbound_byte_summary(payload);
 
-        let event = record_outbound_user_event(&state.session_io(), &profile.id, &summary, payload);
+        let event = record_outbound_user_event_with_context(
+            &state.session_io(),
+            &profile.id,
+            &summary,
+            payload,
+            "desktop-user",
+            Some("send_bytes"),
+        );
 
         assert_eq!(event.text.as_deref(), Some("Binary payload: 16 bytes"));
         assert!(!event.text.as_deref().unwrap().contains("hunter2"));

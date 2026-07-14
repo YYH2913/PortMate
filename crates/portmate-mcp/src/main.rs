@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use keyring_core::Entry;
 use portmate_core::{
-    prompt_templates, redact_secrets, resource_templates, tool_definitions, McpScope, SessionEvent,
+    prompt_templates, redact_secrets, resource_templates, tool_definitions, SessionEvent,
     SessionStore,
 };
 use rusqlite::{params, Connection as SqliteConnection};
@@ -383,8 +383,6 @@ impl PortMateMcp {
                 }
             }
             "open_session" | "close_session" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_scope(McpScope::ManageSessions, session_id)?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -393,8 +391,6 @@ impl PortMateMcp {
                 }
             }
             "start_transfer" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_scope(McpScope::Transfer, session_id)?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -404,8 +400,6 @@ impl PortMateMcp {
                 }
             }
             "create_tunnel" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_scope(McpScope::Tunnel, session_id)?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -427,9 +421,6 @@ impl PortMateMcp {
                 }
             }
             "attach_tmux" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                let _ = required_string(&arguments, "target")?;
-                self.guard_scope(McpScope::WriteInput, session_id)?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -448,8 +439,6 @@ impl PortMateMcp {
     }
 
     fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
-        let session_id = required_string(arguments, "sessionId")?;
-        self.guard_scope(McpScope::WriteInput, session_id)?;
         if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
             return ipc_value_to_text(value).map(Some);
         }
@@ -485,21 +474,6 @@ impl PortMateMcp {
                 response
                     .error
                     .unwrap_or_else(|| "unknown error".to_string())
-            ))
-        }
-    }
-
-    fn guard_scope(&self, scope: McpScope, session_id: &str) -> Result<()> {
-        if self.allow_write
-            && (self.store.mcp_can(&self.client_id, scope, Some(session_id))
-                || self.store.grants.is_empty())
-        {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "write denied: set PORTMATE_MCP_TRUSTED=1 and grant {:?} for client `{}`",
-                scope,
-                self.client_id
             ))
         }
     }

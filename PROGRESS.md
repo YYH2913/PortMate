@@ -152,6 +152,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Resources：sessions、state、screen、log、timeline、sysmon、tmux、transfer。
 - Prompts：diagnose、serial/SSH compare、repro report。
 - 默认只读，写操作通过 MCP grant scope 控制。
+- live desktop Store 是写授权的最终来源；bridge 不再用可能陈旧的本地快照提前拒绝。通过 IPC token 认证的写尝试会按 client ID、真实 tool、session、scope 和 `invalid`/`denied`/`authorized`/`succeeded`/`failed` 结果持久化审计，授权记录在副作用发生前先提交；审计不复制原始参数、命令文本、密码、passphrase 或路径正文。MCP 出站事件的 actor 也使用真实 client ID，不再误记为 `desktop-user` 或额外生成 `send_text` 审计。显式 grant 按配置 scope 生效，`PORTMATE_MCP_TRUSTED=1` 仅额外允许空 grant Store 的本地开发 bootstrap。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。
 - MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
@@ -162,7 +163,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - MCP 已区分 `resources/list` 实际资源与 `resources/templates/list` URI 模板，支持 `ping`、JSON-RPC batch/notification 语义；HTTP notification 返回无响应体的 `202 Accepted`。
 - MCP 与桌面 IPC 都执行日志查询 `limit` 的 1..=1000 边界，日志搜索返回最近命中并按时间正序排列。
 - 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
-- MCP 授权 UI 已有基础 grant 管理，但还缺更细的 per-tool/per-session 审计可视化和授权确认体验。
+- MCP 授权 UI 已有基础 grant 管理并展示逐 tool/client 的最近审计，记录本身包含 session/scope；还缺授权确认体验以及按 session/scope 的筛选、详情和导出。
 
 ### 测试与验证
 
@@ -215,7 +216,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 173：`portmate` 131、`portmate-kdf` 1、`portmate-core` 30、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 176：`portmate` 134、`portmate-kdf` 1、`portmate-core` 30、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 
