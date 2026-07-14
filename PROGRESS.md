@@ -155,6 +155,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - live desktop Store 是写授权的最终来源；bridge 不再用可能陈旧的本地快照提前拒绝。通过 IPC token 认证的写尝试会按 client ID、真实 tool、session、scope 和 `invalid`/`denied`/`authorized`/`succeeded`/`failed` 结果持久化审计，授权记录在副作用发生前先提交；审计不复制原始参数、命令文本、密码、passphrase 或路径正文。MCP 出站事件的 actor 也使用真实 client ID，不再误记为 `desktop-user` 或额外生成 `send_text` 审计。显式 grant 按配置 scope 生效，`PORTMATE_MCP_TRUSTED=1` 仅额外允许空 grant Store 的本地开发 bootstrap。
 - 桌面 MCP IPC 请求体上限为 1 MiB，完整读取和响应写出各有 5 秒超时；超限、慢速未完成、JSON 无效和 token 无效的请求都在命令分发前拒绝，不进入审计，避免未认证本地进程无限占用任务或内存。
 - `portmate-ipc.json` 通过同目录私有临时文件同步落盘后原子替换；Unix 最终权限强制为 `0600`，包括 keyring 不可用时含明文 token 的 fallback。替换不会跟随既有 symlink，失败会保留上一个完整 endpoint，并回收本次未发布的 keyring token。
+- bridge 仅加载普通、≤64 KiB 且 Unix 无 group/world 权限的 endpoint 文件；`storePath` 必须匹配当前 Store，地址必须是 loopback `SocketAddr`，keyring 引用必须属于 `keychain:ipc-*` 专用命名空间且不能与 inline token 并存。bridge 到桌面的请求/响应分别限制为 1 MiB/64 MiB，并设置 3 秒连接、5 秒写入和 120 秒总响应 deadline，避免篡改 endpoint 触发任意远端连接、读取其他 keyring 记录或无界等待/分配。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。
@@ -192,7 +193,7 @@ npm run build
 - JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
-- MCP resource/template、ping、batch、notification、HTTP `202`、日志 limit、慢请求总 deadline、连接限额拒绝和 permit 释放协议边界。
+- MCP resource/template、ping、batch、notification、HTTP `202`、日志 limit、慢请求总 deadline、连接限额拒绝/permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限。
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、外部目录树递归上传（含空目录）、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
@@ -219,7 +220,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 181：`portmate` 137、`portmate-kdf` 1、`portmate-core` 30、`portmate-mcp` 13；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 183：`portmate` 137、`portmate-kdf` 1、`portmate-core` 30、`portmate-mcp` 15；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 
@@ -250,7 +251,7 @@ npm run build
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；命令关联与毫秒级分片待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、live IPC 已有。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
 | 测试体系 | 部分实现 | core 单测可用；集成、UI、终端兼容测试不足。 |
 

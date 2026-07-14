@@ -155,6 +155,11 @@ are forced to mode `0600`, including the plaintext-token fallback used when nati
 fails; replacement does not follow a pre-existing symlink, and a failed publish keeps the previous
 endpoint intact.
 
+The bridge only loads a regular endpoint file up to 64 KiB (private owner-only mode on Unix), and
+requires its `storePath` to match `PORTMATE_STORE_PATH`, its address to be loopback, and its keyring
+reference to use the dedicated `keychain:ipc-*` namespace. Desktop IPC requests and responses are
+bounded to 1 MiB and 64 MiB, with bounded connect, write, and total response waits.
+
 Write tools are denied by default. For a trusted local development run with an empty grant store:
 
 ```bash
