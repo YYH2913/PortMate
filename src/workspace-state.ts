@@ -1,5 +1,7 @@
 export type WorkspaceLayout = "single" | "horizontal" | "vertical";
 export type WorkspaceSplitDirection = Exclude<WorkspaceLayout, "single">;
+export type WorkspacePaneDirection = "up" | "down" | "left" | "right";
+export type WorkspaceSplitPlacement = "first" | "second";
 
 export interface WorkspacePaneNode {
   kind: "pane";
@@ -136,6 +138,25 @@ export function findWorkspacePaneBySession(root: WorkspaceNode | null, sessionId
   return workspacePaneLeaves(root).find((pane) => pane.sessionId === sessionId);
 }
 
+export function findWorkspacePaneInDirection(
+  root: WorkspaceNode | null,
+  paneId: string,
+  direction: WorkspacePaneDirection,
+): WorkspacePaneNode | undefined {
+  const rectangles = workspacePaneRectangles(root);
+  const active = rectangles.find((item) => item.pane.id === paneId);
+  if (!active) return undefined;
+  return rectangles
+    .map((candidate, index) => ({ candidate, index, metrics: directionalPaneMetrics(active, candidate, direction) }))
+    .filter((item): item is { candidate: WorkspacePaneRectangle; index: number; metrics: [number, number, number] } => Boolean(item.metrics))
+    .sort((left, right) => (
+      left.metrics[0] - right.metrics[0]
+      || left.metrics[1] - right.metrics[1]
+      || left.metrics[2] - right.metrics[2]
+      || left.index - right.index
+    ))[0]?.candidate.pane;
+}
+
 export function replaceWorkspacePaneSession(
   root: WorkspaceNode | null,
   paneId: string,
@@ -157,8 +178,9 @@ export function splitWorkspacePane(
   newSessionId: string,
   newPaneId = createWorkspaceNodeId("pane"),
   splitId = createWorkspaceNodeId("split"),
+  placement: WorkspaceSplitPlacement = "second",
 ): WorkspaceNode {
-  return splitWorkspacePaneAtDepth(root, paneId, direction, newSessionId, newPaneId, splitId, 0);
+  return splitWorkspacePaneAtDepth(root, paneId, direction, newSessionId, newPaneId, splitId, placement, 0);
 }
 
 function splitWorkspacePaneAtDepth(
@@ -168,22 +190,24 @@ function splitWorkspacePaneAtDepth(
   newSessionId: string,
   newPaneId: string,
   splitId: string,
+  placement: WorkspaceSplitPlacement,
   depth: number,
 ): WorkspaceNode {
   if (root.kind === "pane") {
     if (root.id !== paneId || depth >= MAX_WORKSPACE_DEPTH) return root;
+    const nextPane = createWorkspacePane(newSessionId, newPaneId);
     return {
       kind: "split",
       id: splitId,
       direction,
       ratio: 0.5,
-      first: root,
-      second: createWorkspacePane(newSessionId, newPaneId),
+      first: placement === "first" ? nextPane : root,
+      second: placement === "first" ? root : nextPane,
     };
   }
-  const first = splitWorkspacePaneAtDepth(root.first, paneId, direction, newSessionId, newPaneId, splitId, depth + 1);
+  const first = splitWorkspacePaneAtDepth(root.first, paneId, direction, newSessionId, newPaneId, splitId, placement, depth + 1);
   if (first !== root.first) return { ...root, first };
-  const second = splitWorkspacePaneAtDepth(root.second, paneId, direction, newSessionId, newPaneId, splitId, depth + 1);
+  const second = splitWorkspacePaneAtDepth(root.second, paneId, direction, newSessionId, newPaneId, splitId, placement, depth + 1);
   return second === root.second ? root : { ...root, second };
 }
 
@@ -213,6 +237,81 @@ type SanitizeState = {
   ids: Set<string>;
   paneCount: number;
 };
+
+type WorkspacePaneRectangle = {
+  pane: WorkspacePaneNode;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+function workspacePaneRectangles(root: WorkspaceNode | null): WorkspacePaneRectangle[] {
+  const rectangles: WorkspacePaneRectangle[] = [];
+  collectWorkspacePaneRectangles(root, 0, 0, 1, 1, rectangles);
+  return rectangles;
+}
+
+function collectWorkspacePaneRectangles(
+  root: WorkspaceNode | null,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  rectangles: WorkspacePaneRectangle[],
+) {
+  if (!root) return;
+  if (root.kind === "pane") {
+    rectangles.push({ pane: root, left, top, width, height });
+    return;
+  }
+  const ratio = normalizeSplitRatio(root.ratio);
+  if (root.direction === "vertical") {
+    const firstWidth = width * ratio;
+    collectWorkspacePaneRectangles(root.first, left, top, firstWidth, height, rectangles);
+    collectWorkspacePaneRectangles(root.second, left + firstWidth, top, width - firstWidth, height, rectangles);
+    return;
+  }
+  const firstHeight = height * ratio;
+  collectWorkspacePaneRectangles(root.first, left, top, width, firstHeight, rectangles);
+  collectWorkspacePaneRectangles(root.second, left, top + firstHeight, width, height - firstHeight, rectangles);
+}
+
+function directionalPaneMetrics(
+  active: WorkspacePaneRectangle,
+  candidate: WorkspacePaneRectangle,
+  direction: WorkspacePaneDirection,
+): [number, number, number] | null {
+  if (candidate.pane.id === active.pane.id) return null;
+  const epsilon = 1e-9;
+  const activeRight = active.left + active.width;
+  const activeBottom = active.top + active.height;
+  const candidateRight = candidate.left + candidate.width;
+  const candidateBottom = candidate.top + candidate.height;
+  const horizontal = direction === "left" || direction === "right";
+  const overlap = horizontal
+    ? Math.min(activeBottom, candidateBottom) - Math.max(active.top, candidate.top)
+    : Math.min(activeRight, candidateRight) - Math.max(active.left, candidate.left);
+  if (overlap <= epsilon) return null;
+
+  let primaryGap: number;
+  if (direction === "left") {
+    if (candidateRight > active.left + epsilon) return null;
+    primaryGap = active.left - candidateRight;
+  } else if (direction === "right") {
+    if (candidate.left < activeRight - epsilon) return null;
+    primaryGap = candidate.left - activeRight;
+  } else if (direction === "up") {
+    if (candidateBottom > active.top + epsilon) return null;
+    primaryGap = active.top - candidateBottom;
+  } else {
+    if (candidate.top < activeBottom - epsilon) return null;
+    primaryGap = candidate.top - activeBottom;
+  }
+  const activeCrossCenter = horizontal ? active.top + active.height / 2 : active.left + active.width / 2;
+  const candidateCrossCenter = horizontal ? candidate.top + candidate.height / 2 : candidate.left + candidate.width / 2;
+  return [primaryGap, Math.abs(activeCrossCenter - candidateCrossCenter), -overlap];
+}
 
 function sanitizeWorkspaceNode(
   value: unknown,

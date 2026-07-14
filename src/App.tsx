@@ -51,8 +51,9 @@ import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
 import type { SysmonTrendMode } from "./sysmon-history";
-import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
-import type { StartupMode, WorkspaceNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode } from "./workspace-state";
+import { resolveWorkspaceHotkey } from "./workspace-hotkeys";
+import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
+import type { StartupMode, WorkspaceNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
@@ -302,6 +303,26 @@ export default function App() {
       tabColors,
     });
   }, [workspaceRoot, activePaneId, activeId, tabColors]);
+
+  useEffect(() => {
+    const handleWorkspaceHotkey = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || !isWorkspaceHotkeyTarget(event.target)) return;
+      const panes = workspacePaneLeaves(workspaceRoot);
+      const hotkey = resolveWorkspaceHotkey(event, panes.length);
+      if (!hotkey) return;
+      consumeWorkspaceHotkey(event);
+      if (hotkey.kind === "focus") {
+        const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, hotkey.direction);
+        if (nextPane) activateWorkspacePane(nextPane.id, nextPane.sessionId);
+      } else if (!event.repeat && hotkey.kind === "split") {
+        splitWorkspace(hotkey.direction, hotkey.placement);
+      } else if (!event.repeat && hotkey.kind === "close") {
+        closeWorkspacePane();
+      }
+    };
+    window.addEventListener("keydown", handleWorkspaceHotkey, true);
+    return () => window.removeEventListener("keydown", handleWorkspaceHotkey, true);
+  }, [activeId, activePaneId, sessions, workspaceRoot]);
 
   useEffect(() => {
     saveLocalValue("portmate.syncInputSettings", syncInputSettings);
@@ -628,7 +649,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "水平拆分" || item === "垂直拆分") {
-      splitWorkspace(item === "水平拆分" ? "horizontal" : "vertical");
+      splitWorkspace(item === "水平拆分" ? "vertical" : "horizontal");
       return;
     }
     if (item === "关闭窗格") {
@@ -942,7 +963,7 @@ function handleMenuAction(item: string) {
     });
   }
 
-  function splitWorkspace(direction: WorkspaceSplitDirection) {
+  function splitWorkspace(direction: WorkspaceSplitDirection, placement: WorkspaceSplitPlacement = "second") {
     const primaryId = activeId || sessions[0]?.profile.id;
     if (!primaryId) {
       openNewSessionDialog();
@@ -960,7 +981,15 @@ function handleMenuAction(item: string) {
     if (!targetPane) return;
     const openSessionIds = new Set(panes.map((pane) => pane.sessionId));
     const nextId = sessions.find((session) => !openSessionIds.has(session.profile.id))?.profile.id ?? primaryId;
-    const nextRoot = splitWorkspacePane(root, targetPane.id, direction, nextId);
+    const nextRoot = splitWorkspacePane(
+      root,
+      targetPane.id,
+      direction,
+      nextId,
+      createWorkspaceNodeId("pane"),
+      createWorkspaceNodeId("split"),
+      placement,
+    );
     if (nextRoot === root) {
       setNotice({ title: "分屏", message: `嵌套分屏最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
       return;
@@ -2504,7 +2533,7 @@ function TerminalPaneGrid({
   if (!root || root.kind === "pane") {
     const sessionId = root?.sessionId ?? activeId;
     const active = sessions.find((session) => session.profile.id === sessionId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} onInput={onInput} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused onInput={onInput} />;
   }
 
   return (
@@ -2559,7 +2588,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           <X size={13} />
         </button>
       </header>
-      <TerminalCanvas active={session} events={session ? props.eventsBySession[node.sessionId] ?? [] : []} onInput={props.onInput} />
+      <TerminalCanvas active={session} events={session ? props.eventsBySession[node.sessionId] ?? [] : []} focused={node.id === props.activePaneId} onInput={props.onInput} />
     </section>
   );
 }
@@ -2638,6 +2667,7 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
 type TerminalCanvasProps = {
   active?: SessionSummary;
   events: SessionEvent[];
+  focused?: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
 };
 
@@ -2647,6 +2677,16 @@ function TerminalCanvas(props: TerminalCanvasProps) {
       <LazyTerminalCanvas {...props} />
     </Suspense>
   );
+}
+
+function isWorkspaceHotkeyTarget(target: EventTarget | null) {
+  const element = target instanceof Element ? target : document.activeElement;
+  return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
+}
+
+function consumeWorkspaceHotkey(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopPropagation();
 }
 
 function PortMateContextMenu({

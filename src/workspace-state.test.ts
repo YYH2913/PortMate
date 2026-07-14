@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_WORKSPACE_DEPTH,
+  findWorkspacePaneInDirection,
   findWorkspacePane,
   reconcileWorkspaceSnapshot,
   removeWorkspacePane,
@@ -124,6 +125,43 @@ describe("workspace snapshots", () => {
 
     expect(workspacePaneLeaves(root)).toHaveLength(MAX_WORKSPACE_DEPTH + 1);
     expect(splitWorkspacePane(root, activePaneId, "vertical", "too-deep", "pane-too-deep", "split-too-deep")).toBe(root);
+  });
+
+  it("finds directional neighbors across nested split geometry", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 2,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { kind: "pane", id: "pane-a", sessionId: "a" },
+        second: {
+          kind: "split",
+          id: "right",
+          direction: "horizontal",
+          ratio: 0.4,
+          first: { kind: "pane", id: "pane-b", sessionId: "b" },
+          second: { kind: "pane", id: "pane-c", sessionId: "c" },
+        },
+      },
+      activePaneId: "pane-a",
+      activeId: "a",
+    });
+
+    expect(findWorkspacePaneInDirection(snapshot.root, "pane-a", "right")?.id).toBe("pane-c");
+    expect(findWorkspacePaneInDirection(snapshot.root, "pane-b", "down")?.id).toBe("pane-c");
+    expect(findWorkspacePaneInDirection(snapshot.root, "pane-c", "up")?.id).toBe("pane-b");
+    expect(findWorkspacePaneInDirection(snapshot.root, "pane-b", "left")?.id).toBe("pane-a");
+    expect(findWorkspacePaneInDirection(snapshot.root, "pane-b", "right")).toBeUndefined();
+  });
+
+  it("can place a new pane before the active pane", () => {
+    const initial = sanitizeWorkspaceSnapshot({ version: 1, layout: "single", activeId: "a" }).root!;
+    const activePaneId = workspacePaneLeaves(initial)[0].id;
+    const split = splitWorkspacePane(initial, activePaneId, "vertical", "b", "pane-b", "split-left", "first");
+
+    expect(workspacePaneLeaves(split).map((pane) => pane.sessionId)).toEqual(["b", "a"]);
   });
 
   it("sanitizes active identifiers when a v2 root is unavailable", () => {

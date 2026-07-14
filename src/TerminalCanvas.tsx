@@ -12,6 +12,7 @@ import type { SessionEvent, SessionSummary } from "./types";
 type TerminalCanvasProps = {
   active?: SessionSummary;
   events: SessionEvent[];
+  focused?: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
 };
 
@@ -41,7 +42,7 @@ const portmateTerminalTheme = {
   extendedAnsi: createXterm256Palette(),
 };
 
-export default function TerminalCanvas({ active, events, onInput }: TerminalCanvasProps) {
+export default function TerminalCanvas({ active, events, focused = false, onInput }: TerminalCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
@@ -84,7 +85,7 @@ export default function TerminalCanvas({ active, events, onInput }: TerminalCanv
     term.loadAddon(search);
     term.loadAddon(new WebLinksAddon());
     term.open(hostRef.current);
-    term.focus();
+    if (focused) term.focus();
     const fitAndReport = () => {
       fit.fit();
       const size = `${term.cols}x${term.rows}`;
@@ -160,6 +161,10 @@ export default function TerminalCanvas({ active, events, onInput }: TerminalCanv
       termRef.current = null;
     };
   }, [active?.profile.id]);
+
+  useEffect(() => {
+    if (focused) termRef.current?.focus();
+  }, [active?.profile.id, focused]);
 
   useEffect(() => {
     if (!active || !isBackendAvailable()) return;
