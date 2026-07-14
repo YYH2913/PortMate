@@ -26,6 +26,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   Square,
@@ -51,7 +52,8 @@ import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
 import type { SysmonTrendMode } from "./sysmon-history";
-import { resolveWorkspaceHotkey } from "./workspace-hotkeys";
+import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, normalizeWorkspaceKeymap, resolveWorkspaceHotkey, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
+import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
@@ -82,7 +84,7 @@ const terminalSettingTree = [
   { label: "代理" },
   { label: "安全" },
   { label: "标签" },
-  { label: "终端", children: ["同步输入", "Auto Completion", "命令历史", "鼠标追踪"] },
+  { label: "终端", children: ["快捷键", "同步输入", "Auto Completion", "命令历史", "鼠标追踪"] },
   { label: "文本", children: ["二进制", "插入符", "字体", "高亮", "换行"] },
   { label: "小部件", children: ["文件管理器", "快捷栏"] },
   { label: "X Server", children: ["扩展"] },
@@ -240,6 +242,9 @@ export default function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode | null>(initialWorkspace.root);
   const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
   const [zoomedPaneId, setZoomedPaneId] = useState("");
+  const [workspaceKeymap, setWorkspaceKeymap] = useState<WorkspaceKeymap>(() => (
+    normalizeWorkspaceKeymap(loadLocalValue<unknown>(WORKSPACE_KEYMAP_STORAGE_KEY, defaultWorkspaceKeymap))
+  ));
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
@@ -311,9 +316,9 @@ export default function App() {
 
   useEffect(() => {
     const handleWorkspaceHotkey = (event: KeyboardEvent) => {
-      if (!event.altKey || event.ctrlKey || event.metaKey || !isWorkspaceHotkeyTarget(event.target)) return;
+      if (!isWorkspaceHotkeyTarget(event.target)) return;
       const panes = workspacePaneLeaves(workspaceRoot);
-      const hotkey = resolveWorkspaceHotkey(event, panes.length);
+      const hotkey = resolveWorkspaceHotkey(event, panes.length, workspaceKeymap);
       if (!hotkey) return;
       consumeWorkspaceHotkey(event);
       if (hotkey.kind === "focus") {
@@ -329,7 +334,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handleWorkspaceHotkey, true);
     return () => window.removeEventListener("keydown", handleWorkspaceHotkey, true);
-  }, [activeId, activePaneId, sessions, workspaceRoot]);
+  }, [activeId, activePaneId, sessions, workspaceKeymap, workspaceRoot]);
 
   useEffect(() => {
     saveLocalValue("portmate.syncInputSettings", syncInputSettings);
@@ -1637,7 +1642,15 @@ function handleMenuAction(item: string) {
         />
       )}
 
-      {dialog === "terminal" && <TerminalSettingsDialog syncSettings={syncInputSettings} onSyncSettingsChange={setSyncInputSettings} onClose={() => setDialog(null)} />}
+      {dialog === "terminal" && (
+        <TerminalSettingsDialog
+          syncSettings={syncInputSettings}
+          workspaceKeymap={workspaceKeymap}
+          onSyncSettingsChange={setSyncInputSettings}
+          onWorkspaceKeymapChange={setWorkspaceKeymap}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "session" && (
         <SessionSettingsDialog
           draft={draft}
@@ -5541,22 +5554,32 @@ function NoticeDialog({ title, message, onClose }: { title: string; message: str
 
 function TerminalSettingsDialog({
   syncSettings,
+  workspaceKeymap,
   onSyncSettingsChange,
+  onWorkspaceKeymapChange,
   onClose,
 }: {
   syncSettings: SyncInputSettings;
+  workspaceKeymap: WorkspaceKeymap;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
+  onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
 }) {
   const [activeItem, setActiveItem] = useState("应用");
   const [prefs, setPrefs] = useState<TerminalPrefs>(() => loadLocalValue("portmate.terminalPrefs", createTerminalPrefs()));
   const [syncDraft, setSyncDraft] = useState(syncSettings);
+  const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const showRestartNote = ["应用", "外观", "字体", "扩展"].includes(activeItem);
+  const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
 
   function savePrefs() {
+    if (keymapConflictCount) return;
+    const normalizedKeymap = normalizeWorkspaceKeymap(workspaceKeymapDraft);
     saveLocalValue("portmate.terminalPrefs", prefs);
+    saveLocalValue(WORKSPACE_KEYMAP_STORAGE_KEY, normalizedKeymap);
     onSyncSettingsChange(normalizeSyncInputSettings(syncDraft));
+    onWorkspaceKeymapChange(normalizedKeymap);
     onClose();
   }
 
@@ -5588,12 +5611,22 @@ function TerminalSettingsDialog({
         })}
       </aside>
       <section className="settings-content">
-        <TerminalSettingsContent activeItem={activeItem} prefs={prefs} updatePref={updatePref} syncSettings={syncDraft} onSyncSettingsChange={setSyncDraft} />
+        <TerminalSettingsContent
+          activeItem={activeItem}
+          prefs={prefs}
+          workspaceKeymap={workspaceKeymapDraft}
+          updatePref={updatePref}
+          onWorkspaceKeymapChange={setWorkspaceKeymapDraft}
+          syncSettings={syncDraft}
+          onSyncSettingsChange={setSyncDraft}
+        />
       </section>
       <div className="dialog-footer">
-        <div className="dialog-note">{showRestartNote ? "* 需要重启才能生效" : ""}</div>
+        <div className={keymapConflictCount ? "dialog-note error" : "dialog-note"}>
+          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : showRestartNote ? "* 需要重启才能生效" : ""}
+        </div>
         <div className="dialog-actions inline">
-          <button onClick={savePrefs}>保存</button>
+          <button onClick={savePrefs} disabled={keymapConflictCount > 0}>保存</button>
           <button onClick={onClose}>取消</button>
         </div>
       </div>
@@ -5604,13 +5637,17 @@ function TerminalSettingsDialog({
 function TerminalSettingsContent({
   activeItem,
   prefs,
+  workspaceKeymap,
   updatePref,
+  onWorkspaceKeymapChange,
   syncSettings,
   onSyncSettingsChange,
 }: {
   activeItem: string;
   prefs: TerminalPrefs;
+  workspaceKeymap: WorkspaceKeymap;
   updatePref: <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => void;
+  onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   syncSettings: SyncInputSettings;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
 }) {
@@ -5706,6 +5743,8 @@ function TerminalSettingsContent({
           </SettingsSection>
         </>
       );
+    case "快捷键":
+      return <WorkspaceKeymapSettings keymap={workspaceKeymap} onChange={onWorkspaceKeymapChange} />;
     case "同步输入":
       return (
         <>
@@ -5898,6 +5937,128 @@ function TerminalSettingsContent({
         </SettingsSection>
       );
   }
+}
+
+function WorkspaceKeymapSettings({
+  keymap,
+  onChange,
+}: {
+  keymap: WorkspaceKeymap;
+  onChange: (keymap: WorkspaceKeymap) => void;
+}) {
+  const [capturing, setCapturing] = useState<WorkspaceHotkeyCommandId | null>(null);
+  const [captureError, setCaptureError] = useState<WorkspaceHotkeyCommandId | null>(null);
+  const conflicts = workspaceKeymapConflicts(keymap);
+  const labels = Object.fromEntries(workspaceHotkeyCommands.map((command) => [command.id, command.label])) as Record<WorkspaceHotkeyCommandId, string>;
+
+  function updateBinding(commandId: WorkspaceHotkeyCommandId, binding: string) {
+    onChange({ ...keymap, [commandId]: binding });
+  }
+
+  function captureBinding(event: React.KeyboardEvent<HTMLButtonElement>, commandId: WorkspaceHotkeyCommandId) {
+    if (capturing !== commandId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.code === "Escape") {
+      setCapturing(null);
+      setCaptureError(null);
+      return;
+    }
+    if ((event.code === "Backspace" || event.code === "Delete") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      updateBinding(commandId, "");
+      setCapturing(null);
+      setCaptureError(null);
+      return;
+    }
+    const binding = workspaceKeyBindingFromEvent(event);
+    if (!binding) {
+      setCaptureError(commandId);
+      return;
+    }
+    updateBinding(commandId, binding);
+    setCapturing(null);
+    setCaptureError(null);
+  }
+
+  return (
+    <SettingsSection title="快捷键">
+      <div className="workspace-keymap">
+        <header className="workspace-keymap-header">
+          <span>命令</span>
+          <span>按键</span>
+          <button
+            type="button"
+            title="恢复全部默认快捷键"
+            aria-label="恢复全部默认快捷键"
+            onClick={() => {
+              onChange({ ...defaultWorkspaceKeymap });
+              setCapturing(null);
+              setCaptureError(null);
+            }}
+          >
+            <RotateCcw size={14} />
+          </button>
+        </header>
+        {workspaceHotkeyCommands.map((command) => {
+          const conflict = conflicts.find((item) => item.commandIds.includes(command.id));
+          const conflictLabels = conflict?.commandIds.filter((id) => id !== command.id).map((id) => labels[id]).join("、");
+          const invalid = captureError === command.id;
+          return (
+            <div key={command.id} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
+              <span className="workspace-keymap-command">
+                <strong>{command.label}</strong>
+                {conflictLabels ? <small>与 {conflictLabels} 冲突</small> : invalid ? <small>需要修饰键</small> : null}
+              </span>
+              <button
+                type="button"
+                className={capturing === command.id ? "workspace-key-capture capturing" : "workspace-key-capture"}
+                aria-pressed={capturing === command.id}
+                onClick={() => {
+                  setCapturing(command.id);
+                  setCaptureError(null);
+                }}
+                onBlur={() => {
+                  setCapturing((current) => current === command.id ? null : current);
+                  setCaptureError((current) => current === command.id ? null : current);
+                }}
+                onKeyDown={(event) => captureBinding(event, command.id)}
+              >
+                {capturing === command.id ? "等待输入" : formatWorkspaceKeyBinding(keymap[command.id])}
+              </button>
+              <button
+                type="button"
+                className="workspace-key-disable"
+                title={`禁用 ${command.label} 快捷键`}
+                aria-label={`禁用 ${command.label} 快捷键`}
+                disabled={!keymap[command.id]}
+                onClick={() => {
+                  updateBinding(command.id, "");
+                  setCapturing((current) => current === command.id ? null : current);
+                  setCaptureError((current) => current === command.id ? null : current);
+                }}
+              >
+                <Ban size={13} />
+              </button>
+              <button
+                type="button"
+                className="workspace-key-reset"
+                title={`恢复 ${command.label} 默认快捷键`}
+                aria-label={`恢复 ${command.label} 默认快捷键`}
+                disabled={keymap[command.id] === command.defaultBinding}
+                onClick={() => {
+                  updateBinding(command.id, command.defaultBinding);
+                  setCapturing((current) => current === command.id ? null : current);
+                  setCaptureError((current) => current === command.id ? null : current);
+                }}
+              >
+                <RotateCcw size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </SettingsSection>
+  );
 }
 
 function SessionSettingsDialog({

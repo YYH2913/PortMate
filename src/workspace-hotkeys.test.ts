@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { resolveWorkspaceHotkey } from "./workspace-hotkeys";
+import {
+  defaultWorkspaceKeymap,
+  formatWorkspaceKeyBinding,
+  normalizeWorkspaceKeymap,
+  resolveWorkspaceHotkey,
+  workspaceKeyBindingFromEvent,
+  workspaceKeymapConflicts,
+} from "./workspace-hotkeys";
 
 const baseInput = { altKey: true, ctrlKey: false, metaKey: false, shiftKey: false };
 
@@ -31,5 +38,44 @@ describe("workspace hotkeys", () => {
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowRight", shiftKey: true }, 2)).toBeNull();
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "Backslash", ctrlKey: true }, 2)).toBeNull();
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "Backslash", altKey: false }, 2)).toBeNull();
+  });
+
+  it("normalizes stored bindings, preserves explicit disables, and ignores unknown commands", () => {
+    const keymap = normalizeWorkspaceKeymap({
+      "focus-up": "Shift+Alt+KeyK",
+      "focus-down": "",
+      "split-left": "invalid",
+      unknown: "Alt+KeyU",
+    });
+
+    expect(keymap["focus-up"]).toBe("Alt+Shift+KeyK");
+    expect(keymap["focus-down"]).toBe("");
+    expect(keymap["split-left"]).toBe(defaultWorkspaceKeymap["split-left"]);
+    expect(Object.keys(keymap)).toHaveLength(10);
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowDown" }, 3, keymap)).toBeNull();
+  });
+
+  it("detects conflicts and refuses to resolve ambiguous bindings", () => {
+    const keymap = {
+      ...defaultWorkspaceKeymap,
+      "focus-up": "Alt+KeyK",
+      "focus-down": "Alt+KeyK",
+    };
+
+    expect(workspaceKeymapConflicts(keymap)).toEqual([{
+      binding: "Alt+KeyK",
+      commandIds: ["focus-up", "focus-down"],
+    }]);
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyK" }, 3, keymap)).toBeNull();
+  });
+
+  it("resolves a custom binding and formats canonical key labels", () => {
+    const keymap = { ...defaultWorkspaceKeymap, "zoom-pane": "Ctrl+Shift+KeyP" };
+
+    expect(resolveWorkspaceHotkey({ ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyP" }, 2, keymap)).toEqual({ kind: "zoom" });
+    expect(workspaceKeyBindingFromEvent({ ...baseInput, ctrlKey: true, shiftKey: true, code: "ArrowLeft" })).toBe("Ctrl+Alt+Shift+ArrowLeft");
+    expect(workspaceKeyBindingFromEvent({ ...baseInput, altKey: false, code: "KeyP" })).toBeNull();
+    expect(formatWorkspaceKeyBinding("Ctrl+Alt+Shift+ArrowLeft")).toBe("Ctrl + Alt + Shift + ←");
+    expect(formatWorkspaceKeyBinding("")).toBe("未绑定");
   });
 });

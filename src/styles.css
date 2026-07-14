@@ -1670,6 +1670,130 @@ button {
   font-weight: 500;
 }
 
+.workspace-keymap {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(15, 23, 32, 0.48);
+}
+
+.workspace-keymap-header,
+.workspace-keymap-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px) 30px 30px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.workspace-keymap-header {
+  min-height: 34px;
+  background: #151f29;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workspace-keymap-header > button,
+.workspace-key-disable,
+.workspace-key-reset {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-keymap-header > button:hover,
+.workspace-key-disable:hover:not(:disabled),
+.workspace-key-reset:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.workspace-key-disable:disabled,
+.workspace-key-reset:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.workspace-keymap-header > button {
+  grid-column: 4;
+}
+
+.workspace-keymap-row {
+  min-height: 44px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.workspace-keymap-row.conflict {
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.workspace-keymap-command {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-keymap-command strong,
+.workspace-keymap-command small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-keymap-command strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workspace-keymap-command small {
+  color: var(--red);
+  font-size: 10px;
+}
+
+.workspace-key-capture {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: #d8e4ef;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-key-capture:hover,
+.workspace-key-capture:focus-visible,
+.workspace-key-capture.capturing {
+  outline: 0;
+  border-color: rgba(94, 234, 212, 0.7);
+  background: rgba(94, 234, 212, 0.08);
+  color: var(--cyan);
+}
+
+.workspace-keymap-row.conflict .workspace-key-capture {
+  border-color: rgba(248, 113, 113, 0.65);
+}
+
+.dialog-note.error {
+  color: var(--red);
+}
+
+.dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .settings-section {
   margin: 0 14px 16px 0;
 }
@@ -3239,6 +3363,23 @@ fieldset label {
   .terminal-settings-dialog .dialog-actions.inline button {
     flex: 1;
     min-width: 0;
+  }
+
+  .workspace-keymap-header,
+  .workspace-keymap-row {
+    grid-template-columns: minmax(0, 1fr) 30px 30px;
+  }
+
+  .workspace-keymap-header > span:first-child {
+    display: none;
+  }
+
+  .workspace-keymap-command {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-keymap-header > button {
+    grid-column: 3;
   }
 
   .session-settings-dialog {
