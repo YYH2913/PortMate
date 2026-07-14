@@ -3884,7 +3884,7 @@ async fn refresh_sysmon(
     };
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.sysmon.push(snapshot.clone());
+    store.record_sysmon_snapshot(snapshot.clone());
     store.record_system_event(&session_id, "PortMate: sysmon snapshot refreshed");
     save_store(&state.store_path, &store)?;
     Ok(snapshot)
@@ -4929,7 +4929,7 @@ async fn start_transfer_inner(
 
     {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        store.transfers.push(task.clone());
+        store.record_transfer(task.clone());
         store.record_system_event(
             &request.session_id,
             format!(
@@ -5116,6 +5116,7 @@ fn finish_transfer_task(
             };
             cancellations.remove(&task.id);
         }
+        store.trim_transfer_history(&task.session_id);
         store.record_system_event(
             session_id,
             format!(
@@ -5201,6 +5202,7 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
         task.average_bytes_per_second = transfer_average_bps(task);
     }
     let task = task.clone();
+    store.trim_transfer_history(&task.session_id);
     save_store(&state.store_path, &store)?;
     drop(store);
     if let Some(session_id) = abort_modem_session {
@@ -19601,7 +19603,7 @@ fn apply_trigger_actions_locked(
                     });
                 }
                 TriggerAction::TimelineMark { label } => {
-                    store.timeline.push(TimelineMark {
+                    store.record_timeline_mark(TimelineMark {
                         id: Uuid::new_v4().to_string(),
                         session_id: session_id.to_string(),
                         ts: Utc::now(),
@@ -20365,6 +20367,7 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
         runtime.status = SessionStatus::Disconnected;
         runtime.connected_since = None;
     }
+    store.normalize_bounded_histories();
     store
 }
 
@@ -23268,14 +23271,14 @@ mod tests {
         store
             .send_text("test-user", &session_id, "second event")
             .unwrap();
-        store.timeline.push(TimelineMark {
+        store.record_timeline_mark(TimelineMark {
             id: "timeline-1".to_string(),
             session_id: session_id.clone(),
             ts: Utc::now(),
             label: "checkpoint".to_string(),
             details: None,
         });
-        store.sysmon.push(SysmonSnapshot {
+        store.record_sysmon_snapshot(SysmonSnapshot {
             session_id: session_id.clone(),
             ts: Utc::now(),
             uptime_seconds: 10,

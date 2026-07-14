@@ -124,7 +124,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SessionStore 保存使用跨进程 sidecar 文件锁和绑定 `storeRevision + kv` 内容的 CAS；stale 实例、旧 writer 直接修改 kv、提交后无法验证以及损坏 SQLite 均拒绝继续覆盖。首次创建/旧 JSON 迁移在同一锁内完成，单纯启动第二实例不会旋转 revision。
 - SQLite v3 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、sysmon_snapshots，以及独立的 profile credential migration journal。
 - SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
-- 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。
+- 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。除每会话事件上限外，审计按 session/global scope 保留目标 5,000 条、timeline 每会话 2,000 条、Sysmon 每会话 1,024 条，并使用 128 条批量裁剪余量；终态 transfer 每会话精确保留 1,000 条，queued/running 永不淘汰。桌面和独立 MCP 加载旧快照时会收敛到精确上限，防止长期运行使 KV JSON、内存和 mirror 同步成本无限增长。
 - terminal stream 可按 profile 设置追加写入 raw/text/jsonl 分片；入站 Raw 保存 SSH channel、PTY、Raw TCP/Telnet socket 和 Serial 解码前精确字节，出站 Raw 保存成功用户 text/bytes 经协议编码后的 wire、Telnet 协商回复和 modem 帧。每会话 lane 保证出站 transport/write/event 顺序；每个 `bytesRef` 精确绑定对应字节，但双向并发时不承诺共享分片的跨方向因果排序。写成功后的 SQLite/Raw/Text/JSONL 降级会通过事件 `loggingError` 报告，不会伪装成发送失败；二进制结构化事件只保存长度，不复制可逆 Hex。最终分片路径上的追加、读取和删除互斥；新 `bytesRef` 带 segment SHA-256，可拒绝删除重建/修改后的错误内容，同时兼容旧 path/offset/length 引用。新 profile 默认关闭日志和 Raw，UI 明示 Raw 不脱敏。
 - direct、连接生命周期、trigger、重连、transfer、tunnel 等 system/control 事件通过 Core 的单槽 wake + 4,096 条有界 outbox 统一写入脱敏 Text/JSONL 并实时 emit；system sink 不创建或追加 Raw，正常运行中每个入队事件只发布一次，退出时会停用共享 notifier、drain 并 join worker。积压超限或 worker 断开会在 store event 写入 `loggingError`，不会无限增长或静默丢弃后续诊断。事件后补 annotations 会按内容变化更新 SQLite `events` mirror，不退化为重复插入全部历史。
 - `工具 -> 日志管理` 可安全枚举 raw/txt/jsonl 分片，按路径和格式筛选、查看受限尾部预览（raw/非 UTF-8 使用 Hex）并批量清理；扫描、预览和删除均有数量/大小上限，symlink、路径穿越和非分片扩展不会进入操作范围。
@@ -215,7 +215,7 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 
-当前 Rust workspace 自动化测试总数为 172：`portmate` 131、`portmate-kdf` 1、`portmate-core` 29、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 173：`portmate` 131、`portmate-kdf` 1、`portmate-core` 30、`portmate-mcp` 11；`npm test` 另有 64 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 

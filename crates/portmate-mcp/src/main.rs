@@ -506,7 +506,7 @@ impl PortMateMcp {
 }
 
 fn load_store_from_path(path: &std::path::Path) -> Option<SessionStore> {
-    if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+    let mut store = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
         let connection = SqliteConnection::open(path).ok()?;
         ensure_store_schema(&connection).ok()?;
         let raw = connection
@@ -516,12 +516,14 @@ fn load_store_from_path(path: &std::path::Path) -> Option<SessionStore> {
                 |row| row.get::<_, String>(0),
             )
             .ok()?;
-        serde_json::from_str::<SessionStore>(&raw).ok()
+        serde_json::from_str::<SessionStore>(&raw).ok()?
     } else {
         fs::read_to_string(path)
             .ok()
-            .and_then(|raw| serde_json::from_str::<SessionStore>(&raw).ok())
-    }
+            .and_then(|raw| serde_json::from_str::<SessionStore>(&raw).ok())?
+    };
+    store.normalize_bounded_histories();
+    Some(store)
 }
 
 fn load_ipc_endpoint(store_path: &std::path::Path) -> Option<IpcEndpointFile> {

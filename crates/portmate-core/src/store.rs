@@ -3,7 +3,7 @@ use crate::models::*;
 use crate::redaction::redact_secrets;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -11,6 +11,11 @@ use uuid::Uuid;
 const MAX_EVENTS_PER_SESSION: usize = 5000;
 const EVENT_TRIM_BATCH: usize = 512;
 const MAX_SYSTEM_EVENT_OUTBOX: usize = 4096;
+const MAX_AUDIT_RECORDS_PER_SCOPE: usize = 5000;
+const MAX_TIMELINE_MARKS_PER_SESSION: usize = 2000;
+const MAX_SYSMON_SNAPSHOTS_PER_SESSION: usize = 1024;
+const MAX_TERMINAL_TRANSFERS_PER_SESSION: usize = 1000;
+const AUX_HISTORY_TRIM_BATCH: usize = 128;
 
 type SystemEventEnvelope = (SessionEvent, Option<SessionProfile>);
 
@@ -592,7 +597,7 @@ impl SessionStore {
         };
         self.events.push(event.clone());
         self.trim_events_if_needed(session_id);
-        self.audit.push(AuditRecord {
+        self.record_audit(AuditRecord {
             id: Uuid::new_v4().to_string(),
             ts: now,
             actor: actor.to_string(),
@@ -638,6 +643,129 @@ impl SessionStore {
             .iter()
             .find(|transfer| transfer.id == id)
             .cloned()
+    }
+
+    pub fn record_transfer(&mut self, transfer: TransferTask) {
+        let session_id = transfer.session_id.clone();
+        self.transfers.push(transfer);
+        self.trim_transfer_history(&session_id);
+    }
+
+    pub fn trim_transfer_history(&mut self, session_id: &str) {
+        let mut terminal = self
+            .transfers
+            .iter()
+            .enumerate()
+            .filter(|(_, transfer)| {
+                transfer.session_id == session_id
+                    && matches!(
+                        transfer.status,
+                        TransferStatus::Completed
+                            | TransferStatus::Failed
+                            | TransferStatus::Cancelled
+                    )
+            })
+            .map(|(index, transfer)| (index, transfer.finished_at))
+            .collect::<Vec<_>>();
+        if terminal.len() <= MAX_TERMINAL_TRANSFERS_PER_SESSION {
+            return;
+        }
+        let to_drop = terminal.len() - MAX_TERMINAL_TRANSFERS_PER_SESSION;
+        terminal.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+        let remove = terminal
+            .into_iter()
+            .take(to_drop)
+            .map(|(index, _)| index)
+            .collect::<HashSet<_>>();
+        let mut index = 0_usize;
+        self.transfers.retain(|_| {
+            let keep = !remove.contains(&index);
+            index += 1;
+            keep
+        });
+    }
+
+    pub fn record_audit(&mut self, record: AuditRecord) {
+        let scope = record.session_id.clone();
+        self.audit.push(record);
+        trim_oldest_matching(
+            &mut self.audit,
+            MAX_AUDIT_RECORDS_PER_SCOPE,
+            AUX_HISTORY_TRIM_BATCH,
+            |record| record.session_id == scope,
+        );
+    }
+
+    pub fn record_timeline_mark(&mut self, mark: TimelineMark) {
+        let session_id = mark.session_id.clone();
+        self.timeline.push(mark);
+        trim_oldest_matching(
+            &mut self.timeline,
+            MAX_TIMELINE_MARKS_PER_SESSION,
+            AUX_HISTORY_TRIM_BATCH,
+            |mark| mark.session_id == session_id,
+        );
+    }
+
+    pub fn record_sysmon_snapshot(&mut self, snapshot: SysmonSnapshot) {
+        let session_id = snapshot.session_id.clone();
+        self.sysmon.push(snapshot);
+        trim_oldest_matching(
+            &mut self.sysmon,
+            MAX_SYSMON_SNAPSHOTS_PER_SESSION,
+            AUX_HISTORY_TRIM_BATCH,
+            |snapshot| snapshot.session_id == session_id,
+        );
+    }
+
+    pub fn normalize_bounded_histories(&mut self) {
+        let audit_scopes = self
+            .audit
+            .iter()
+            .map(|record| record.session_id.clone())
+            .collect::<HashSet<_>>();
+        for scope in audit_scopes {
+            trim_oldest_matching(&mut self.audit, MAX_AUDIT_RECORDS_PER_SCOPE, 0, |record| {
+                record.session_id == scope
+            });
+        }
+
+        let timeline_sessions = self
+            .timeline
+            .iter()
+            .map(|mark| mark.session_id.clone())
+            .collect::<HashSet<_>>();
+        for session_id in timeline_sessions {
+            trim_oldest_matching(
+                &mut self.timeline,
+                MAX_TIMELINE_MARKS_PER_SESSION,
+                0,
+                |mark| mark.session_id == session_id,
+            );
+        }
+
+        let sysmon_sessions = self
+            .sysmon
+            .iter()
+            .map(|snapshot| snapshot.session_id.clone())
+            .collect::<HashSet<_>>();
+        for session_id in sysmon_sessions {
+            trim_oldest_matching(
+                &mut self.sysmon,
+                MAX_SYSMON_SNAPSHOTS_PER_SESSION,
+                0,
+                |snapshot| snapshot.session_id == session_id,
+            );
+        }
+
+        let transfer_sessions = self
+            .transfers
+            .iter()
+            .map(|transfer| transfer.session_id.clone())
+            .collect::<HashSet<_>>();
+        for session_id in transfer_sessions {
+            self.trim_transfer_history(&session_id);
+        }
     }
 
     pub fn sysmon_for(&self, session_id: &str) -> Option<SysmonSnapshot> {
@@ -728,6 +856,27 @@ impl SessionStore {
                 _ => None,
             })
     }
+}
+
+fn trim_oldest_matching<T>(
+    items: &mut Vec<T>,
+    max: usize,
+    slack: usize,
+    mut matches: impl FnMut(&T) -> bool,
+) {
+    let count = items.iter().filter(|item| matches(item)).count();
+    if count <= max.saturating_add(slack) {
+        return;
+    }
+    let mut to_drop = count - max;
+    items.retain(|item| {
+        if to_drop > 0 && matches(item) {
+            to_drop -= 1;
+            false
+        } else {
+            true
+        }
+    });
 }
 
 fn apply_runtime_health(
@@ -1033,6 +1182,115 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_histories_are_bounded_per_scope_and_keep_active_transfers() {
+        let mut store = test_store();
+        let now = Utc::now();
+
+        for index in 0..(MAX_AUDIT_RECORDS_PER_SCOPE + AUX_HISTORY_TRIM_BATCH + 2) {
+            store.record_audit(AuditRecord {
+                id: format!("audit-{index}"),
+                ts: now + chrono::Duration::milliseconds(index as i64),
+                actor: "test".to_string(),
+                action: "send_text".to_string(),
+                session_id: Some("test-session".to_string()),
+                decision: "recorded".to_string(),
+                details: BTreeMap::new(),
+            });
+        }
+        store.record_audit(AuditRecord {
+            id: "audit-global".to_string(),
+            ts: now,
+            actor: "test".to_string(),
+            action: "global".to_string(),
+            session_id: None,
+            decision: "recorded".to_string(),
+            details: BTreeMap::new(),
+        });
+        assert!(store.audit.len() <= MAX_AUDIT_RECORDS_PER_SCOPE + AUX_HISTORY_TRIM_BATCH + 1);
+        assert!(!store.audit.iter().any(|record| record.id == "audit-0"));
+        assert!(store.audit.iter().any(|record| record.id == "audit-global"));
+
+        for index in 0..(MAX_TIMELINE_MARKS_PER_SESSION + AUX_HISTORY_TRIM_BATCH + 2) {
+            store.record_timeline_mark(TimelineMark {
+                id: format!("timeline-{index}"),
+                session_id: "test-session".to_string(),
+                ts: now + chrono::Duration::milliseconds(index as i64),
+                label: "checkpoint".to_string(),
+                details: None,
+            });
+        }
+        assert!(store.timeline.len() <= MAX_TIMELINE_MARKS_PER_SESSION + AUX_HISTORY_TRIM_BATCH);
+        assert!(!store.timeline.iter().any(|mark| mark.id == "timeline-0"));
+
+        for index in 0..(MAX_SYSMON_SNAPSHOTS_PER_SESSION + AUX_HISTORY_TRIM_BATCH + 2) {
+            store.record_sysmon_snapshot(SysmonSnapshot {
+                session_id: "test-session".to_string(),
+                ts: now + chrono::Duration::milliseconds(index as i64),
+                uptime_seconds: index as u64,
+                cpu_percent: 1.0,
+                memory_percent: 2.0,
+                rx_kbps: 3.0,
+                tx_kbps: 4.0,
+            });
+        }
+        assert!(store.sysmon.len() <= MAX_SYSMON_SNAPSHOTS_PER_SESSION + AUX_HISTORY_TRIM_BATCH);
+        assert_ne!(store.sysmon[0].uptime_seconds, 0);
+
+        for index in 0..(MAX_TERMINAL_TRANSFERS_PER_SESSION + 2) {
+            store.record_transfer(test_transfer(
+                format!("completed-{index}"),
+                TransferStatus::Completed,
+            ));
+        }
+        store.record_transfer(test_transfer("queued".to_string(), TransferStatus::Queued));
+        store.record_transfer(test_transfer(
+            "running".to_string(),
+            TransferStatus::Running,
+        ));
+        assert_eq!(
+            store
+                .transfers
+                .iter()
+                .filter(|transfer| transfer.status == TransferStatus::Completed)
+                .count(),
+            MAX_TERMINAL_TRANSFERS_PER_SESSION
+        );
+        assert!(store.transfer_by_id("queued").is_some());
+        assert!(store.transfer_by_id("running").is_some());
+        assert!(store.transfer_by_id("completed-0").is_none());
+
+        let queued = store
+            .transfers
+            .iter_mut()
+            .find(|transfer| transfer.id == "queued")
+            .unwrap();
+        queued.status = TransferStatus::Completed;
+        queued.finished_at = Some(now + chrono::Duration::days(1));
+        store.trim_transfer_history("test-session");
+        assert!(store.transfer_by_id("queued").is_some());
+        assert_eq!(
+            store
+                .transfers
+                .iter()
+                .filter(|transfer| transfer.status == TransferStatus::Completed)
+                .count(),
+            MAX_TERMINAL_TRANSFERS_PER_SESSION
+        );
+
+        store.normalize_bounded_histories();
+        assert_eq!(
+            store
+                .audit
+                .iter()
+                .filter(|record| record.session_id.as_deref() == Some("test-session"))
+                .count(),
+            MAX_AUDIT_RECORDS_PER_SCOPE
+        );
+        assert_eq!(store.timeline.len(), MAX_TIMELINE_MARKS_PER_SESSION);
+        assert_eq!(store.sysmon.len(), MAX_SYSMON_SNAPSHOTS_PER_SESSION);
+    }
+
+    #[test]
     fn search_logs_limits_to_recent_matches_in_chronological_order() {
         let mut store = test_store();
         for text in ["match old", "unrelated", "match middle", "match newest"] {
@@ -1075,7 +1333,7 @@ mod tests {
                 Some("test.raw:0:16".to_string()),
             )
             .unwrap();
-        store.transfers.push(TransferTask {
+        store.record_transfer(TransferTask {
             id: "transfer-1".to_string(),
             session_id: "test-session".to_string(),
             protocol: TransferProtocol::Sftp,
@@ -1153,6 +1411,23 @@ mod tests {
                 },
             ],
             ..SessionStore::default()
+        }
+    }
+
+    fn test_transfer(id: String, status: TransferStatus) -> TransferTask {
+        TransferTask {
+            id,
+            session_id: "test-session".to_string(),
+            protocol: TransferProtocol::Sftp,
+            source: "source.bin".to_string(),
+            destination: "destination.bin".to_string(),
+            bytes_total: 1,
+            bytes_done: usize::from(matches!(status, TransferStatus::Completed)) as u64,
+            status,
+            message: None,
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: None,
         }
     }
 }

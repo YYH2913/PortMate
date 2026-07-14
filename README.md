@@ -104,6 +104,8 @@ Serial sessions keep a bounded in-memory capture of the latest 512 RX/TX frames 
 
 Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
 
+Long-running stores bound non-terminal history as well as session events. Per session or audit scope, PortMate retains 5,000 audit records, 2,000 timeline marks, 1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for frequently appended histories. Queued and running transfers are never evicted. Desktop and standalone MCP loading also normalize older oversized snapshots before exposing them.
+
 The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
 
 The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding. Remote-forward health probes use Linux `/proc/net/tcp` or `ss`, FreeBSD `sockstat`, macOS `lsof`, and a successful `netstat -ltn` fallback. A present but incompatible probe tool is treated as unsupported instead of an empty listener table, preventing repeated rebind attempts on BSD-style systems.
