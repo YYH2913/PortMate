@@ -7,6 +7,7 @@ export interface WorkspacePaneNode {
   kind: "pane";
   id: string;
   sessionId: string;
+  sessionIds: string[];
 }
 
 export interface WorkspaceSplitNode {
@@ -21,7 +22,7 @@ export interface WorkspaceSplitNode {
 export type WorkspaceNode = WorkspacePaneNode | WorkspaceSplitNode;
 
 export interface WorkspaceSnapshot {
-  version: 2;
+  version: 3;
   root: WorkspaceNode | null;
   activePaneId: string;
   activeId: string;
@@ -32,11 +33,12 @@ export type StartupMode = "none" | "last" | "specific";
 
 export const MAX_WORKSPACE_PANES = 16;
 export const MAX_WORKSPACE_DEPTH = 8;
+export const MAX_WORKSPACE_GROUP_TABS = 32;
 export const MIN_WORKSPACE_SPLIT_RATIO = 0.15;
 export const MAX_WORKSPACE_SPLIT_RATIO = 0.85;
 
 export const emptyWorkspaceSnapshot: WorkspaceSnapshot = {
-  version: 2,
+  version: 3,
   root: null,
   activePaneId: "",
   activeId: "",
@@ -53,8 +55,15 @@ export function createWorkspaceNodeId(kind: "pane" | "split") {
     : `${kind}-${Date.now().toString(36)}-${workspaceIdCounter.toString(36)}`;
 }
 
-export function createWorkspacePane(sessionId: string, id = createWorkspaceNodeId("pane")): WorkspacePaneNode {
-  return { kind: "pane", id, sessionId };
+export function createWorkspacePane(
+  sessionId: string,
+  id = createWorkspaceNodeId("pane"),
+  sessionIds: string[] = [sessionId],
+): WorkspacePaneNode {
+  const requestedIds = uniqueStrings(sessionIds.includes(sessionId) ? sessionIds : [sessionId, ...sessionIds]);
+  const normalizedIds = requestedIds.slice(0, MAX_WORKSPACE_GROUP_TABS);
+  if (!normalizedIds.includes(sessionId)) normalizedIds[normalizedIds.length - 1] = sessionId;
+  return { kind: "pane", id, sessionId, sessionIds: normalizedIds };
 }
 
 export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
@@ -65,7 +74,7 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   const tabColors = sanitizeTabColors(source.tabColors);
   const requestedActiveId = cleanString(source.activeId, 256);
   const state: SanitizeState = { ids: new Set(), paneCount: 0 };
-  const root = source.version === 2 || "root" in source
+  const root = source.version === 2 || source.version === 3 || "root" in source
     ? sanitizeWorkspaceNode(source.root, "root", 0, state)
     : migrateLegacyWorkspace(source, state);
   const withSinglePane = root ?? (
@@ -74,13 +83,19 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   const panes = workspacePaneLeaves(withSinglePane);
   const requestedActivePaneId = cleanString(source.activePaneId, 128);
   const activePane = panes.find((pane) => pane.id === requestedActivePaneId)
-    ?? panes.find((pane) => pane.sessionId === requestedActiveId)
+    ?? panes.find((pane) => pane.sessionIds.includes(requestedActiveId))
     ?? panes[0];
+  const activeSessionId = activePane?.sessionIds.includes(requestedActiveId)
+    ? requestedActiveId
+    : activePane?.sessionId ?? requestedActiveId;
+  const activatedRoot = activePane && activeSessionId
+    ? activateWorkspacePaneSession(withSinglePane, activePane.id, activeSessionId)
+    : withSinglePane;
   return {
-    version: 2,
-    root: withSinglePane,
+    version: 3,
+    root: activatedRoot,
     activePaneId: activePane?.id ?? "",
-    activeId: activePane?.sessionId ?? requestedActiveId,
+    activeId: activeSessionId,
     tabColors,
   };
 }
@@ -101,7 +116,7 @@ export function reconcileWorkspaceSnapshot(snapshot: WorkspaceSnapshot, sessionI
     Object.entries(sanitized.tabColors).filter(([id]) => available.has(id)),
   );
   return {
-    version: 2,
+    version: 3,
     root,
     activePaneId: activePane?.id ?? "",
     activeId: activePane?.sessionId ?? "",
@@ -119,7 +134,7 @@ export function resolveStartupSessionIds(
   const available = new Set(sessionIds);
   const requested = mode === "specific"
     ? configuredIds
-    : workspacePaneLeaves(workspace.root).map((pane) => pane.sessionId);
+    : workspacePaneLeaves(workspace.root).flatMap((pane) => pane.sessionIds);
   const fallback = requested.length ? requested : [workspace.activeId];
   return fallback.filter((id, index) => id && available.has(id) && fallback.indexOf(id) === index);
 }
@@ -135,7 +150,7 @@ export function findWorkspacePane(root: WorkspaceNode | null, paneId: string): W
 }
 
 export function findWorkspacePaneBySession(root: WorkspaceNode | null, sessionId: string): WorkspacePaneNode | undefined {
-  return workspacePaneLeaves(root).find((pane) => pane.sessionId === sessionId);
+  return workspacePaneLeaves(root).find((pane) => pane.sessionIds.includes(sessionId));
 }
 
 export function findWorkspacePaneInDirection(
@@ -164,11 +179,152 @@ export function replaceWorkspacePaneSession(
 ): WorkspaceNode | null {
   if (!root) return root;
   if (root.kind === "pane") {
-    return root.id === paneId ? { ...root, sessionId } : root;
+    if (root.id !== paneId) return root;
+    if (root.sessionIds.includes(sessionId)) {
+      return root.sessionId === sessionId ? root : { ...root, sessionId };
+    }
+    const activeIndex = root.sessionIds.indexOf(root.sessionId);
+    const sessionIds = [...root.sessionIds];
+    if (activeIndex >= 0) sessionIds.splice(activeIndex, 1, sessionId);
+    else sessionIds.push(sessionId);
+    return { ...root, sessionId, sessionIds: uniqueStrings(sessionIds).slice(0, MAX_WORKSPACE_GROUP_TABS) };
   }
   const first = replaceWorkspacePaneSession(root.first, paneId, sessionId);
   const second = replaceWorkspacePaneSession(root.second, paneId, sessionId);
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function addWorkspacePaneSession(
+  root: WorkspaceNode | null,
+  paneId: string,
+  sessionId: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const sessionIds = root.sessionIds.includes(sessionId)
+      ? root.sessionIds
+      : [...root.sessionIds, sessionId].slice(0, MAX_WORKSPACE_GROUP_TABS);
+    if (!sessionIds.includes(sessionId)) return root;
+    return root.sessionId === sessionId && sessionIds === root.sessionIds
+      ? root
+      : { ...root, sessionId, sessionIds };
+  }
+  const first = addWorkspacePaneSession(root.first, paneId, sessionId);
+  const second = addWorkspacePaneSession(root.second, paneId, sessionId);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function activateWorkspacePaneSession(
+  root: WorkspaceNode | null,
+  paneId: string,
+  sessionId: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId || root.sessionId === sessionId || !root.sessionIds.includes(sessionId)) return root;
+    return { ...root, sessionId };
+  }
+  const first = activateWorkspacePaneSession(root.first, paneId, sessionId);
+  const second = activateWorkspacePaneSession(root.second, paneId, sessionId);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function moveWorkspacePaneSession(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  targetPaneId: string,
+  sessionId: string,
+): WorkspaceNode | null {
+  if (!root || sourcePaneId === targetPaneId) return root;
+  const source = findWorkspacePane(root, sourcePaneId);
+  const target = findWorkspacePane(root, targetPaneId);
+  if (!source?.sessionIds.includes(sessionId) || !target) return root;
+  if (!target.sessionIds.includes(sessionId) && target.sessionIds.length >= MAX_WORKSPACE_GROUP_TABS) return root;
+  return moveWorkspacePaneSessionInNode(root, sourcePaneId, targetPaneId, sessionId);
+}
+
+export function removeWorkspacePaneSession(
+  root: WorkspaceNode | null,
+  paneId: string,
+  sessionId: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId || !root.sessionIds.includes(sessionId)) return root;
+    const removedIndex = root.sessionIds.indexOf(sessionId);
+    const sessionIds = root.sessionIds.filter((id) => id !== sessionId);
+    if (!sessionIds.length) return null;
+    const activeSessionId = root.sessionId === sessionId
+      ? sessionIds[Math.min(removedIndex, sessionIds.length - 1)]
+      : root.sessionId;
+    return { ...root, sessionId: activeSessionId, sessionIds };
+  }
+  const first = removeWorkspacePaneSession(root.first, paneId, sessionId);
+  const second = removeWorkspacePaneSession(root.second, paneId, sessionId);
+  if (!first) return second;
+  if (!second) return first;
+  return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
+export function mergeWorkspacePaneGroups(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  targetPaneId: string,
+): WorkspaceNode | null {
+  if (!root || sourcePaneId === targetPaneId) return root;
+  const source = findWorkspacePane(root, sourcePaneId);
+  const target = findWorkspacePane(root, targetPaneId);
+  if (!source || !target) return root;
+  const mergedSessionIds = uniqueStrings([...target.sessionIds, ...source.sessionIds]);
+  if (mergedSessionIds.length > MAX_WORKSPACE_GROUP_TABS) return root;
+  return mergeWorkspacePaneGroupsInNode(root, sourcePaneId, targetPaneId, source.sessionId, mergedSessionIds);
+}
+
+function mergeWorkspacePaneGroupsInNode(
+  root: WorkspaceNode,
+  sourcePaneId: string,
+  targetPaneId: string,
+  activeSessionId: string,
+  mergedSessionIds: string[],
+): WorkspaceNode | null {
+  if (root.kind === "pane") {
+    if (root.id === sourcePaneId) return null;
+    if (root.id === targetPaneId) return { ...root, sessionId: activeSessionId, sessionIds: mergedSessionIds };
+    return root;
+  }
+  const first = mergeWorkspacePaneGroupsInNode(root.first, sourcePaneId, targetPaneId, activeSessionId, mergedSessionIds);
+  const second = mergeWorkspacePaneGroupsInNode(root.second, sourcePaneId, targetPaneId, activeSessionId, mergedSessionIds);
+  if (!first) return second;
+  if (!second) return first;
+  return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
+function moveWorkspacePaneSessionInNode(
+  root: WorkspaceNode,
+  sourcePaneId: string,
+  targetPaneId: string,
+  sessionId: string,
+): WorkspaceNode | null {
+  if (root.kind === "pane") {
+    if (root.id === targetPaneId) {
+      const sessionIds = root.sessionIds.includes(sessionId) ? root.sessionIds : [...root.sessionIds, sessionId];
+      return { ...root, sessionId, sessionIds };
+    }
+    if (root.id !== sourcePaneId) return root;
+    const removedIndex = root.sessionIds.indexOf(sessionId);
+    const sessionIds = root.sessionIds.filter((id) => id !== sessionId);
+    if (!sessionIds.length) return null;
+    const activeSessionId = root.sessionId === sessionId
+      ? sessionIds[Math.min(removedIndex, sessionIds.length - 1)]
+      : root.sessionId;
+    return { ...root, sessionId: activeSessionId, sessionIds };
+  }
+  const first = moveWorkspacePaneSessionInNode(root.first, sourcePaneId, targetPaneId, sessionId);
+  const second = moveWorkspacePaneSessionInNode(root.second, sourcePaneId, targetPaneId, sessionId);
+  if (!first) return second;
+  if (!second) return first;
+  return first === root.first && second === root.second ? root : { ...root, first, second };
 }
 
 export function swapWorkspacePanes(
@@ -351,9 +507,14 @@ function sanitizeWorkspaceNode(
   }
   const source = value as Record<string, unknown>;
   if (source.kind === "pane") {
-    const sessionId = cleanString(source.sessionId, 256);
-    if (!sessionId || state.paneCount >= MAX_WORKSPACE_PANES) return null;
-    return createSanitizedPane(sessionId, cleanString(source.id, 128) || `pane-${path}`, state);
+    const requestedActiveId = cleanString(source.sessionId, 256);
+    const storedIds = uniqueStrings(validStrings(source.sessionIds)).slice(0, MAX_WORKSPACE_GROUP_TABS);
+    const sessionIds = requestedActiveId && !storedIds.includes(requestedActiveId)
+      ? [requestedActiveId, ...storedIds].slice(0, MAX_WORKSPACE_GROUP_TABS)
+      : storedIds;
+    const activeId = sessionIds.includes(requestedActiveId) ? requestedActiveId : sessionIds[0] ?? "";
+    if (!activeId || state.paneCount >= MAX_WORKSPACE_PANES) return null;
+    return createSanitizedPane(activeId, cleanString(source.id, 128) || `pane-${path}`, state, sessionIds);
   }
   if (source.kind !== "split") return null;
   const first = sanitizeWorkspaceNode(source.first, `${path}-first`, depth + 1, state);
@@ -398,15 +559,27 @@ function buildLegacySplit(
   };
 }
 
-function createSanitizedPane(sessionId: string, id: string, state: SanitizeState): WorkspacePaneNode | null {
+function createSanitizedPane(
+  sessionId: string,
+  id: string,
+  state: SanitizeState,
+  sessionIds: string[] = [sessionId],
+): WorkspacePaneNode | null {
   if (state.paneCount >= MAX_WORKSPACE_PANES) return null;
   state.paneCount += 1;
-  return createWorkspacePane(sessionId, uniqueNodeId(id, state));
+  return createWorkspacePane(sessionId, uniqueNodeId(id, state), sessionIds);
 }
 
 function reconcileWorkspaceNode(root: WorkspaceNode | null, available: Set<string>): WorkspaceNode | null {
   if (!root) return null;
-  if (root.kind === "pane") return available.has(root.sessionId) ? root : null;
+  if (root.kind === "pane") {
+    const sessionIds = root.sessionIds.filter((sessionId) => available.has(sessionId));
+    if (!sessionIds.length) return null;
+    const sessionId = sessionIds.includes(root.sessionId) ? root.sessionId : sessionIds[0];
+    return sessionId === root.sessionId && sessionIds.length === root.sessionIds.length
+      ? root
+      : { ...root, sessionId, sessionIds };
+  }
   const first = reconcileWorkspaceNode(root.first, available);
   const second = reconcileWorkspaceNode(root.second, available);
   if (!first) return second;
@@ -441,6 +614,10 @@ function isSplitDirection(value: unknown): value is WorkspaceSplitDirection {
 function validStrings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => cleanString(item, 256)).filter(Boolean);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return values.filter((value, index) => value && values.indexOf(value) === index);
 }
 
 function cleanString(value: unknown, maxLength: number): string {

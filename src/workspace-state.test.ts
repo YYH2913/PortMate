@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  activateWorkspacePaneSession,
+  addWorkspacePaneSession,
   MAX_WORKSPACE_DEPTH,
+  MAX_WORKSPACE_GROUP_TABS,
+  mergeWorkspacePaneGroups,
   findWorkspacePaneInDirection,
   findWorkspacePane,
   reconcileWorkspaceSnapshot,
   removeWorkspacePane,
+  removeWorkspacePaneSession,
   replaceWorkspacePaneSession,
+  moveWorkspacePaneSession,
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
   splitWorkspacePane,
@@ -25,7 +31,7 @@ describe("workspace snapshots", () => {
       tabColors: { a: "#AABBCC", b: "bad", "": "#112233" },
     });
 
-    expect(snapshot.version).toBe(2);
+    expect(snapshot.version).toBe(3);
     expect(workspacePaneLeaves(snapshot.root).map((pane) => pane.sessionId)).toEqual(["a", "a", "b", "c"]);
     expect(snapshot.activeId).toBe("b");
     expect(findWorkspacePane(snapshot.root, snapshot.activePaneId)?.sessionId).toBe("b");
@@ -53,6 +59,35 @@ describe("workspace snapshots", () => {
     expect(panes.map((pane) => pane.sessionId)).toEqual(["a", "b"]);
     expect(new Set([snapshot.root?.id, ...panes.map((pane) => pane.id)]).size).toBe(3);
     expect(findWorkspacePane(snapshot.root, snapshot.activePaneId)?.sessionId).toBe("b");
+    expect(panes.every((pane) => pane.sessionIds.length === 1 && pane.sessionIds[0] === pane.sessionId)).toBe(true);
+  });
+
+  it("sanitizes bounded v3 tab groups", () => {
+    const sessionIds = Array.from({ length: MAX_WORKSPACE_GROUP_TABS + 5 }, (_, index) => `session-${index}`);
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "group-a", sessionId: "session-2", sessionIds: ["session-0", "session-1", "session-2", "session-1", ...sessionIds.slice(3)] },
+      activePaneId: "group-a",
+      activeId: "session-2",
+    });
+    const pane = workspacePaneLeaves(snapshot.root)[0];
+
+    expect(snapshot.version).toBe(3);
+    expect(pane.sessionId).toBe("session-2");
+    expect(pane.sessionIds).toHaveLength(MAX_WORKSPACE_GROUP_TABS);
+    expect(new Set(pane.sessionIds).size).toBe(MAX_WORKSPACE_GROUP_TABS);
+  });
+
+  it("activates a persisted view inside the requested group", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "group-a", sessionId: "a", sessionIds: ["a", "b"] },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+
+    expect(snapshot.activeId).toBe("b");
+    expect(findWorkspacePane(snapshot.root, "group-a")?.sessionId).toBe("b");
   });
 
   it("reconciles stale panes and collapses split branches", () => {
@@ -85,6 +120,109 @@ describe("workspace snapshots", () => {
       id: "split-v",
       second: { kind: "pane", id: "pane-c", sessionId: "d" },
     });
+  });
+
+  it("adds and activates views inside one workspace group", () => {
+    const initial = sanitizeWorkspaceSnapshot({ version: 1, layout: "single", activeId: "a" }).root!;
+    const paneId = workspacePaneLeaves(initial)[0].id;
+    const withTabs = addWorkspacePaneSession(addWorkspacePaneSession(initial, paneId, "b"), paneId, "c")!;
+    const activated = activateWorkspacePaneSession(withTabs, paneId, "b")!;
+    const pane = findWorkspacePane(activated, paneId)!;
+
+    expect(pane.sessionIds).toEqual(["a", "b", "c"]);
+    expect(pane.sessionId).toBe("b");
+    expect(activateWorkspacePaneSession(activated, paneId, "missing")).toBe(activated);
+  });
+
+  it("removes one view without closing a non-empty group", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "group-a", sessionId: "b", sessionIds: ["a", "b", "c"] },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+    const removed = removeWorkspacePaneSession(snapshot.root, "group-a", "b")!;
+
+    expect(removed).toMatchObject({ kind: "pane", id: "group-a", sessionId: "c", sessionIds: ["a", "c"] });
+    expect(removeWorkspacePaneSession(removed, "group-a", "missing")).toBe(removed);
+  });
+
+  it("moves the active view across groups and keeps a non-empty source", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { kind: "pane", id: "group-a", sessionId: "b", sessionIds: ["a", "b"] },
+        second: { kind: "pane", id: "group-b", sessionId: "c", sessionIds: ["c"] },
+      },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+    const moved = moveWorkspacePaneSession(snapshot.root, "group-a", "group-b", "b")!;
+
+    expect(findWorkspacePane(moved, "group-a")).toMatchObject({ sessionId: "a", sessionIds: ["a"] });
+    expect(findWorkspacePane(moved, "group-b")).toMatchObject({ sessionId: "b", sessionIds: ["c", "b"] });
+  });
+
+  it("collapses an empty source group and deduplicates the target view", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { kind: "pane", id: "group-a", sessionId: "a", sessionIds: ["a"] },
+        second: { kind: "pane", id: "group-b", sessionId: "b", sessionIds: ["b", "a"] },
+      },
+      activePaneId: "group-a",
+      activeId: "a",
+    });
+    const moved = moveWorkspacePaneSession(snapshot.root, "group-a", "group-b", "a")!;
+
+    expect(moved).toMatchObject({ kind: "pane", id: "group-b", sessionId: "a", sessionIds: ["b", "a"] });
+  });
+
+  it("merges a complete group into another group with stable deduplication", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { kind: "pane", id: "group-a", sessionId: "b", sessionIds: ["a", "b"] },
+        second: { kind: "pane", id: "group-b", sessionId: "c", sessionIds: ["c", "a"] },
+      },
+      activePaneId: "group-a",
+      activeId: "b",
+    });
+    const merged = mergeWorkspacePaneGroups(snapshot.root, "group-a", "group-b")!;
+
+    expect(merged).toMatchObject({ kind: "pane", id: "group-b", sessionId: "b", sessionIds: ["c", "a", "b"] });
+  });
+
+  it("refuses to overflow a target group", () => {
+    const fullTabs = Array.from({ length: MAX_WORKSPACE_GROUP_TABS }, (_, index) => `target-${index}`);
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: { kind: "pane", id: "group-a", sessionId: "source", sessionIds: ["source"] },
+        second: { kind: "pane", id: "group-b", sessionId: fullTabs[0], sessionIds: fullTabs },
+      },
+      activePaneId: "group-a",
+      activeId: "source",
+    });
+
+    expect(moveWorkspacePaneSession(snapshot.root, "group-a", "group-b", "source")).toBe(snapshot.root);
+    expect(mergeWorkspacePaneGroups(snapshot.root, "group-a", "group-b")).toBe(snapshot.root);
   });
 
   it("resolves unique startup sessions from recursive leaves", () => {

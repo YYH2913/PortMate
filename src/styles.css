@@ -1445,31 +1445,93 @@ button {
   font-size: 12px;
 }
 
-.terminal-pane header strong {
+.workspace-pane-tabs {
+  display: flex;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.workspace-pane-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.workspace-pane-tabs > strong {
+  align-self: center;
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.terminal-pane header span {
-  overflow: hidden;
-  min-width: 0;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.terminal-pane header button {
-  flex: 0 0 22px;
-  margin-left: auto;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
+.workspace-pane-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 1 140px;
+  gap: 5px;
+  width: auto;
+  min-width: 54px;
+  height: 27px;
+  margin: 0;
+  padding: 0 7px;
+  border-right: 1px solid var(--line-soft);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  font-size: 10px;
+}
+
+.workspace-pane-tab > span:last-child {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-pane-tab .tab-mark {
+  flex: 0 0 5px;
+  width: 5px;
+  height: 5px;
+  background: var(--muted);
+}
+
+.workspace-pane-tab:hover,
+.workspace-pane-tab.active {
+  background: #17212b;
+  color: var(--text);
+}
+
+.workspace-pane-tab.active .tab-mark {
+  background: var(--cyan);
+}
+
+.terminal-pane header > span {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-pane header > button {
+  display: grid;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  margin: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.terminal-pane header > button:disabled {
+  cursor: default;
+  opacity: 0.25;
 }
 
 @container (max-width: 240px) {
@@ -1478,19 +1540,78 @@ button {
     padding-inline: 4px;
   }
 
-  .terminal-pane header span {
+  .terminal-pane header > span {
     display: none;
   }
 }
 
-.terminal-pane header button:hover {
+.terminal-pane header > button:hover:not(:disabled) {
   color: var(--red);
   background: rgba(248, 113, 113, 0.1);
 }
 
-.terminal-pane header .detach-pane-button:hover {
+.terminal-pane header > .detach-pane-button:hover:not(:disabled),
+.terminal-pane header > .move-view-button:hover:not(:disabled) {
   color: var(--cyan);
   background: rgba(94, 234, 212, 0.1);
+}
+
+.workspace-group-move-dialog {
+  width: min(460px, calc(100vw - 24px));
+  max-height: min(620px, calc(100vh - 24px));
+}
+
+.workspace-group-targets {
+  min-height: 120px;
+  overflow: auto;
+  padding: 8px 12px 12px;
+}
+
+.workspace-group-targets > button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto 20px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-group-targets > button:hover:not(:disabled),
+.workspace-group-targets > button:focus-visible {
+  outline: 0;
+  background: var(--control-hover);
+}
+
+.workspace-group-targets > button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.workspace-group-targets strong,
+.workspace-group-targets small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-group-targets small,
+.workspace-group-index {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.workspace-group-index {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--line);
 }
 
 .terminal-pane-grid.block-selection .terminal-pane.active {
