@@ -738,6 +738,28 @@ impl SessionStore {
     }
 
     pub fn normalize_bounded_histories(&mut self) {
+        let mut remaining_event_counts = HashMap::<String, usize>::new();
+        for event in &self.events {
+            *remaining_event_counts
+                .entry(event.session_id.clone())
+                .or_default() += 1;
+        }
+        self.events.retain(|event| {
+            let remaining = remaining_event_counts
+                .get_mut(&event.session_id)
+                .expect("event session count was seeded");
+            let keep = *remaining <= MAX_EVENTS_PER_SESSION;
+            *remaining -= 1;
+            keep
+        });
+        self.event_counts.clear();
+        for event in &self.events {
+            *self
+                .event_counts
+                .entry(event.session_id.clone())
+                .or_default() += 1;
+        }
+
         let audit_scopes = self
             .audit
             .iter()
@@ -1197,6 +1219,54 @@ mod tests {
         assert_ne!(
             events.first().and_then(|event| event.text.as_deref()),
             Some("line 0")
+        );
+    }
+
+    #[test]
+    fn loaded_event_histories_are_normalized_and_rebuild_the_count_cache() {
+        let mut store = test_store();
+        let overflow = 37;
+        store.events = (0..(MAX_EVENTS_PER_SESSION + overflow))
+            .map(|index| SessionEvent {
+                id: format!("loaded-{index}"),
+                session_id: "test-session".to_string(),
+                pane_id: "test-session:main".to_string(),
+                ts: Utc::now(),
+                direction: EventDirection::Inbound,
+                stream: EventStream::Stdout,
+                bytes_ref: None,
+                text: Some(format!("loaded line {index}")),
+                annotations: BTreeMap::new(),
+            })
+            .collect();
+        store
+            .event_counts
+            .insert("test-session".to_string(), usize::MAX);
+
+        store.normalize_bounded_histories();
+
+        assert_eq!(store.events.len(), MAX_EVENTS_PER_SESSION);
+        assert_eq!(
+            store.events.first().and_then(|event| event.text.as_deref()),
+            Some("loaded line 37")
+        );
+        assert_eq!(
+            store.event_counts.get("test-session"),
+            Some(&MAX_EVENTS_PER_SESSION)
+        );
+
+        store
+            .record_stream_event(
+                "test-session",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "next line",
+            )
+            .unwrap();
+        assert_eq!(store.events.len(), MAX_EVENTS_PER_SESSION + 1);
+        assert_eq!(
+            store.event_counts.get("test-session"),
+            Some(&(MAX_EVENTS_PER_SESSION + 1))
         );
     }
 

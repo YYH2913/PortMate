@@ -104,7 +104,12 @@ Serial sessions keep a bounded in-memory capture of the latest 512 RX/TX frames 
 
 Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
 
-Long-running stores bound non-terminal history as well as session events. Per session or audit scope, PortMate retains 5,000 audit records, 2,000 timeline marks, 1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for frequently appended histories. Queued and running transfers are never evicted. Desktop and standalone MCP loading also normalize older oversized snapshots before exposing them.
+Long-running stores bound non-terminal history as well as session events. PortMate retains 5,000
+session events per session, 5,000 audit records per session/global scope, 2,000 timeline marks,
+1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for
+frequently appended histories. Queued and running transfers are never evicted. Desktop and
+standalone MCP loading trim every oversized event/history scope to its exact limit and rebuild the
+event-count cache before exposing an older snapshot.
 
 The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission.
 
