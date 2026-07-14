@@ -4,7 +4,9 @@ export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
 export type DetachedPaneRequest = {
   windowId: string;
   paneId: string;
+  viewId: string;
   sessionId: string;
+  title: string;
 };
 
 export type DetachedPaneCommand = DetachedPaneRequest & {
@@ -23,7 +25,9 @@ export function buildDetachedPanePath(request: DetachedPaneRequest): string {
     detachedPane: "1",
     windowId: request.windowId,
     paneId: request.paneId,
+    viewId: request.viewId,
     sessionId: request.sessionId,
+    title: request.title,
   });
   return `/?${params.toString()}`;
 }
@@ -33,9 +37,11 @@ export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | 
   if (params.get("detachedPane") !== "1") return null;
   const windowId = params.get("windowId") ?? "";
   const paneId = cleanRouteId(params.get("paneId"));
+  const viewId = cleanRouteId(params.get("viewId"));
   const sessionId = cleanRouteId(params.get("sessionId"));
-  if (!windowIdPattern.test(windowId) || !paneId || !sessionId) return null;
-  return { windowId, paneId, sessionId };
+  const title = cleanRouteTitle(params.get("title"));
+  if (!windowIdPattern.test(windowId) || !paneId || !viewId || !sessionId || title === null) return null;
+  return { windowId, paneId, viewId, sessionId, title };
 }
 
 export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
@@ -46,7 +52,9 @@ export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneComman
     detachedPane: "1",
     windowId: typeof source.windowId === "string" ? source.windowId : "",
     paneId: typeof source.paneId === "string" ? source.paneId : "",
+    viewId: typeof source.viewId === "string" ? source.viewId : "",
     sessionId: typeof source.sessionId === "string" ? source.sessionId : "",
+    title: typeof source.title === "string" ? source.title : "",
   })}`);
   return request ? { ...request, action: source.action } : null;
 }
@@ -64,4 +72,11 @@ function cleanRouteId(value: string | null): string {
   if (/[\u0000-\u001f\u007f]/.test(raw)) return "";
   const clean = raw.trim();
   return clean && clean.length <= 128 ? clean : "";
+}
+
+function cleanRouteTitle(value: string | null): string | null {
+  const raw = value ?? "";
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const clean = raw.trim();
+  return [...clean].length <= 128 ? clean : null;
 }

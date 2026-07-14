@@ -3,9 +3,18 @@ export type WorkspaceSplitDirection = Exclude<WorkspaceLayout, "single">;
 export type WorkspacePaneDirection = "up" | "down" | "left" | "right";
 export type WorkspaceSplitPlacement = "first" | "second";
 
+export interface WorkspaceView {
+  id: string;
+  sessionId: string;
+  title: string;
+}
+
 export interface WorkspacePaneNode {
   kind: "pane";
   id: string;
+  activeViewId: string;
+  views: WorkspaceView[];
+  // Compatibility projections for session-oriented callers.
   sessionId: string;
   sessionIds: string[];
 }
@@ -22,7 +31,7 @@ export interface WorkspaceSplitNode {
 export type WorkspaceNode = WorkspacePaneNode | WorkspaceSplitNode;
 
 export interface WorkspaceSnapshot {
-  version: 3;
+  version: 4;
   root: WorkspaceNode | null;
   activePaneId: string;
   activeId: string;
@@ -38,7 +47,7 @@ export const MIN_WORKSPACE_SPLIT_RATIO = 0.15;
 export const MAX_WORKSPACE_SPLIT_RATIO = 0.85;
 
 export const emptyWorkspaceSnapshot: WorkspaceSnapshot = {
-  version: 3,
+  version: 4,
   root: null,
   activePaneId: "",
   activeId: "",
@@ -47,12 +56,20 @@ export const emptyWorkspaceSnapshot: WorkspaceSnapshot = {
 
 let workspaceIdCounter = 0;
 
-export function createWorkspaceNodeId(kind: "pane" | "split") {
+export function createWorkspaceNodeId(kind: "pane" | "split" | "view") {
   workspaceIdCounter += 1;
   const uuid = globalThis.crypto?.randomUUID?.();
   return uuid
     ? `${kind}-${uuid}`
     : `${kind}-${Date.now().toString(36)}-${workspaceIdCounter.toString(36)}`;
+}
+
+export function createWorkspaceView(
+  sessionId: string,
+  id = createWorkspaceNodeId("view"),
+  title = "",
+): WorkspaceView {
+  return { id, sessionId, title };
 }
 
 export function createWorkspacePane(
@@ -63,7 +80,27 @@ export function createWorkspacePane(
   const requestedIds = uniqueStrings(sessionIds.includes(sessionId) ? sessionIds : [sessionId, ...sessionIds]);
   const normalizedIds = requestedIds.slice(0, MAX_WORKSPACE_GROUP_TABS);
   if (!normalizedIds.includes(sessionId)) normalizedIds[normalizedIds.length - 1] = sessionId;
-  return { kind: "pane", id, sessionId, sessionIds: normalizedIds };
+  const views = normalizedIds.map((id) => createWorkspaceView(id));
+  const activeViewId = views.find((view) => view.sessionId === sessionId)?.id ?? views[0]?.id ?? "";
+  return createWorkspacePaneFromViews(id, views, activeViewId)!;
+}
+
+export function createWorkspacePaneFromViews(
+  id: string,
+  views: WorkspaceView[],
+  activeViewId: string,
+): WorkspacePaneNode | null {
+  const normalizedViews = views.slice(0, MAX_WORKSPACE_GROUP_TABS).map((view) => ({ ...view }));
+  if (!normalizedViews.length) return null;
+  const activeView = normalizedViews.find((view) => view.id === activeViewId) ?? normalizedViews[0];
+  return {
+    kind: "pane",
+    id,
+    activeViewId: activeView.id,
+    views: normalizedViews,
+    sessionId: activeView.sessionId,
+    sessionIds: normalizedViews.map((view) => view.sessionId),
+  };
 }
 
 export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
@@ -73,8 +110,8 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   const source = value as Record<string, unknown>;
   const tabColors = sanitizeTabColors(source.tabColors);
   const requestedActiveId = cleanString(source.activeId, 256);
-  const state: SanitizeState = { ids: new Set(), paneCount: 0 };
-  const root = source.version === 2 || source.version === 3 || "root" in source
+  const state: SanitizeState = { ids: new Set(), viewIds: new Set(), paneCount: 0 };
+  const root = source.version === 2 || source.version === 3 || source.version === 4 || "root" in source
     ? sanitizeWorkspaceNode(source.root, "root", 0, state)
     : migrateLegacyWorkspace(source, state);
   const withSinglePane = root ?? (
@@ -83,7 +120,7 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   const panes = workspacePaneLeaves(withSinglePane);
   const requestedActivePaneId = cleanString(source.activePaneId, 128);
   const activePane = panes.find((pane) => pane.id === requestedActivePaneId)
-    ?? panes.find((pane) => pane.sessionIds.includes(requestedActiveId))
+    ?? panes.find((pane) => pane.views.some((view) => view.sessionId === requestedActiveId))
     ?? panes[0];
   const activeSessionId = activePane?.sessionIds.includes(requestedActiveId)
     ? requestedActiveId
@@ -92,7 +129,7 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
     ? activateWorkspacePaneSession(withSinglePane, activePane.id, activeSessionId)
     : withSinglePane;
   return {
-    version: 3,
+    version: 4,
     root: activatedRoot,
     activePaneId: activePane?.id ?? "",
     activeId: activeSessionId,
@@ -112,11 +149,12 @@ export function reconcileWorkspaceSnapshot(snapshot: WorkspaceSnapshot, sessionI
   const activePane = panes.find((pane) => pane.id === sanitized.activePaneId)
     ?? panes.find((pane) => pane.sessionId === sanitized.activeId)
     ?? panes[0];
-  const tabColors = Object.fromEntries(
-    Object.entries(sanitized.tabColors).filter(([id]) => available.has(id)),
-  );
+  const viewIds = new Set(panes.flatMap((pane) => pane.views.map((view) => view.id)));
+  const tabColors = Object.fromEntries(Object.entries(sanitized.tabColors).filter(([id]) => (
+    available.has(id) || viewIds.has(id)
+  )));
   return {
-    version: 3,
+    version: 4,
     root,
     activePaneId: activePane?.id ?? "",
     activeId: activePane?.sessionId ?? "",
@@ -134,7 +172,7 @@ export function resolveStartupSessionIds(
   const available = new Set(sessionIds);
   const requested = mode === "specific"
     ? configuredIds
-    : workspacePaneLeaves(workspace.root).flatMap((pane) => pane.sessionIds);
+    : workspacePaneLeaves(workspace.root).flatMap((pane) => pane.views.map((view) => view.sessionId));
   const fallback = requested.length ? requested : [workspace.activeId];
   return fallback.filter((id, index) => id && available.has(id) && fallback.indexOf(id) === index);
 }
@@ -150,7 +188,19 @@ export function findWorkspacePane(root: WorkspaceNode | null, paneId: string): W
 }
 
 export function findWorkspacePaneBySession(root: WorkspaceNode | null, sessionId: string): WorkspacePaneNode | undefined {
-  return workspacePaneLeaves(root).find((pane) => pane.sessionIds.includes(sessionId));
+  return workspacePaneLeaves(root).find((pane) => pane.views.some((view) => view.sessionId === sessionId));
+}
+
+export function workspacePaneActiveView(pane: WorkspacePaneNode): WorkspaceView {
+  return pane.views.find((view) => view.id === pane.activeViewId) ?? pane.views[0];
+}
+
+export function findWorkspaceView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+): WorkspaceView | undefined {
+  return findWorkspacePane(root, paneId)?.views.find((view) => view.id === viewId);
 }
 
 export function findWorkspacePaneInDirection(
@@ -180,14 +230,16 @@ export function replaceWorkspacePaneSession(
   if (!root) return root;
   if (root.kind === "pane") {
     if (root.id !== paneId) return root;
-    if (root.sessionIds.includes(sessionId)) {
-      return root.sessionId === sessionId ? root : { ...root, sessionId };
+    const existing = root.views.find((view) => view.sessionId === sessionId);
+    if (existing) {
+      return root.activeViewId === existing.id ? root : createWorkspacePaneFromViews(root.id, root.views, existing.id)!;
     }
-    const activeIndex = root.sessionIds.indexOf(root.sessionId);
-    const sessionIds = [...root.sessionIds];
-    if (activeIndex >= 0) sessionIds.splice(activeIndex, 1, sessionId);
-    else sessionIds.push(sessionId);
-    return { ...root, sessionId, sessionIds: uniqueStrings(sessionIds).slice(0, MAX_WORKSPACE_GROUP_TABS) };
+    const activeIndex = root.views.findIndex((view) => view.id === root.activeViewId);
+    const views = [...root.views];
+    const replacement = createWorkspaceView(sessionId, activeIndex >= 0 ? views[activeIndex].id : undefined);
+    if (activeIndex >= 0) views.splice(activeIndex, 1, replacement);
+    else views.push(replacement);
+    return createWorkspacePaneFromViews(root.id, views, replacement.id)!;
   }
   const first = replaceWorkspacePaneSession(root.first, paneId, sessionId);
   const second = replaceWorkspacePaneSession(root.second, paneId, sessionId);
@@ -211,15 +263,11 @@ export function insertWorkspacePaneSession(
   if (!root) return root;
   if (root.kind === "pane") {
     if (root.id !== paneId) return root;
-    if (root.sessionIds.includes(sessionId)) {
-      return root.sessionId === sessionId ? root : { ...root, sessionId };
+    const existing = root.views.find((view) => view.sessionId === sessionId);
+    if (existing) {
+      return root.activeViewId === existing.id ? root : createWorkspacePaneFromViews(root.id, root.views, existing.id)!;
     }
-    if (root.sessionIds.length >= MAX_WORKSPACE_GROUP_TABS) return root;
-    const requestedIndex = Number.isFinite(index) ? Math.trunc(index) : root.sessionIds.length;
-    const insertionIndex = Math.min(root.sessionIds.length, Math.max(0, requestedIndex));
-    const sessionIds = [...root.sessionIds];
-    sessionIds.splice(insertionIndex, 0, sessionId);
-    return { ...root, sessionId, sessionIds };
+    return insertWorkspacePaneView(root, paneId, createWorkspaceView(sessionId), index);
   }
   const first = insertWorkspacePaneSession(root.first, paneId, sessionId, index);
   const second = insertWorkspacePaneSession(root.second, paneId, sessionId, index);
@@ -233,11 +281,108 @@ export function activateWorkspacePaneSession(
 ): WorkspaceNode | null {
   if (!root) return root;
   if (root.kind === "pane") {
-    if (root.id !== paneId || root.sessionId === sessionId || !root.sessionIds.includes(sessionId)) return root;
-    return { ...root, sessionId };
+    if (root.id !== paneId || root.sessionId === sessionId) return root;
+    const view = root.views.find((candidate) => candidate.sessionId === sessionId);
+    return view ? createWorkspacePaneFromViews(root.id, root.views, view.id)! : root;
   }
   const first = activateWorkspacePaneSession(root.first, paneId, sessionId);
   const second = activateWorkspacePaneSession(root.second, paneId, sessionId);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function activateWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId || root.activeViewId === viewId || !root.views.some((view) => view.id === viewId)) return root;
+    return createWorkspacePaneFromViews(root.id, root.views, viewId)!;
+  }
+  const first = activateWorkspacePaneView(root.first, paneId, viewId);
+  const second = activateWorkspacePaneView(root.second, paneId, viewId);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function insertWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  view: WorkspaceView,
+  index: number,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId || root.views.length >= MAX_WORKSPACE_GROUP_TABS) return root;
+    if (workspacePaneLeaves(root).some((pane) => pane.views.some((item) => item.id === view.id))) return root;
+    const requestedIndex = Number.isFinite(index) ? Math.trunc(index) : root.views.length;
+    const insertionIndex = Math.min(root.views.length, Math.max(0, requestedIndex));
+    const views = [...root.views];
+    views.splice(insertionIndex, 0, { ...view });
+    return createWorkspacePaneFromViews(root.id, views, view.id)!;
+  }
+  if (workspacePaneLeaves(root).some((pane) => pane.views.some((item) => item.id === view.id))) return root;
+  const first = insertWorkspacePaneView(root.first, paneId, view, index);
+  const second = first === root.first ? insertWorkspacePaneView(root.second, paneId, view, index) : root.second;
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function duplicateWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+  duplicateId = createWorkspaceNodeId("view"),
+  title?: string,
+): WorkspaceNode | null {
+  const pane = findWorkspacePane(root, paneId);
+  const source = pane?.views.find((view) => view.id === viewId);
+  if (!pane || !source || pane.views.length >= MAX_WORKSPACE_GROUP_TABS) return root;
+  const index = pane.views.findIndex((view) => view.id === viewId);
+  return insertWorkspacePaneView(root, paneId, {
+    id: duplicateId,
+    sessionId: source.sessionId,
+    title: title ?? source.title,
+  }, index + 1);
+}
+
+export function renameWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+  title: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const index = root.views.findIndex((view) => view.id === viewId);
+    const cleanTitle = cleanString(title, 128);
+    if (index < 0 || root.views[index].title === cleanTitle) return root;
+    const views = [...root.views];
+    views[index] = { ...views[index], title: cleanTitle };
+    return createWorkspacePaneFromViews(root.id, views, root.activeViewId)!;
+  }
+  const first = renameWorkspacePaneView(root.first, paneId, viewId, title);
+  const second = renameWorkspacePaneView(root.second, paneId, viewId, title);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function replaceWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  view: WorkspaceView,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const activeIndex = root.views.findIndex((candidate) => candidate.id === root.activeViewId);
+    if (activeIndex < 0 || root.views.some((candidate, index) => candidate.id === view.id && index !== activeIndex)) return root;
+    const views = [...root.views];
+    views[activeIndex] = { ...view };
+    return createWorkspacePaneFromViews(root.id, views, view.id);
+  }
+  if (workspacePaneLeaves(root).some((pane) => pane.id !== paneId && pane.views.some((candidate) => candidate.id === view.id))) return root;
+  const first = replaceWorkspacePaneView(root.first, paneId, view);
+  const second = replaceWorkspacePaneView(root.second, paneId, view);
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
 }
 
@@ -250,9 +395,29 @@ export function moveWorkspacePaneSession(
   if (!root || sourcePaneId === targetPaneId) return root;
   const source = findWorkspacePane(root, sourcePaneId);
   const target = findWorkspacePane(root, targetPaneId);
-  if (!source?.sessionIds.includes(sessionId) || !target) return root;
-  if (!target.sessionIds.includes(sessionId) && target.sessionIds.length >= MAX_WORKSPACE_GROUP_TABS) return root;
-  return moveWorkspacePaneSessionInNode(root, sourcePaneId, targetPaneId, sessionId);
+  const sourceView = source?.views.find((view) => view.sessionId === sessionId);
+  if (!source || !sourceView || !target) return root;
+  const existingTarget = target.views.find((view) => view.sessionId === sessionId);
+  if (existingTarget) {
+    const removed = removeWorkspacePaneView(root, sourcePaneId, sourceView.id);
+    return activateWorkspacePaneView(removed, targetPaneId, existingTarget.id);
+  }
+  return moveWorkspacePaneView(root, sourcePaneId, targetPaneId, sourceView.id);
+}
+
+export function moveWorkspacePaneView(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  targetPaneId: string,
+  viewId: string,
+): WorkspaceNode | null {
+  if (!root || sourcePaneId === targetPaneId) return root;
+  const source = findWorkspacePane(root, sourcePaneId);
+  const target = findWorkspacePane(root, targetPaneId);
+  const view = source?.views.find((candidate) => candidate.id === viewId);
+  if (!source || !target || !view || target.views.some((candidate) => candidate.id === viewId)) return root;
+  if (target.views.length >= MAX_WORKSPACE_GROUP_TABS) return root;
+  return moveWorkspacePaneViewInNode(root, sourcePaneId, targetPaneId, view);
 }
 
 export function removeWorkspacePaneSession(
@@ -262,17 +427,39 @@ export function removeWorkspacePaneSession(
 ): WorkspaceNode | null {
   if (!root) return root;
   if (root.kind === "pane") {
-    if (root.id !== paneId || !root.sessionIds.includes(sessionId)) return root;
-    const removedIndex = root.sessionIds.indexOf(sessionId);
-    const sessionIds = root.sessionIds.filter((id) => id !== sessionId);
-    if (!sessionIds.length) return null;
-    const activeSessionId = root.sessionId === sessionId
-      ? sessionIds[Math.min(removedIndex, sessionIds.length - 1)]
-      : root.sessionId;
-    return { ...root, sessionId: activeSessionId, sessionIds };
+    if (root.id !== paneId) return root;
+    const viewIds = root.views.filter((view) => view.sessionId === sessionId).map((view) => view.id);
+    if (!viewIds.length) return root;
+    let next: WorkspaceNode | null = root;
+    for (const viewId of viewIds) next = removeWorkspacePaneView(next, paneId, viewId);
+    return next;
   }
   const first = removeWorkspacePaneSession(root.first, paneId, sessionId);
   const second = removeWorkspacePaneSession(root.second, paneId, sessionId);
+  if (!first) return second;
+  if (!second) return first;
+  return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
+export function removeWorkspacePaneView(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const removedIndex = root.views.findIndex((view) => view.id === viewId);
+    if (removedIndex < 0) return root;
+    const views = root.views.filter((view) => view.id !== viewId);
+    if (!views.length) return null;
+    const activeViewId = root.activeViewId === viewId
+      ? views[Math.min(removedIndex, views.length - 1)].id
+      : root.activeViewId;
+    return createWorkspacePaneFromViews(root.id, views, activeViewId)!;
+  }
+  const first = removeWorkspacePaneView(root.first, paneId, viewId);
+  const second = removeWorkspacePaneView(root.second, paneId, viewId);
   if (!first) return second;
   if (!second) return first;
   return first === root.first && second === root.second ? root : { ...root, first, second };
@@ -287,21 +474,44 @@ export function splitWorkspacePaneSessionToGroup(
   splitId = createWorkspaceNodeId("split"),
   placement: WorkspaceSplitPlacement = "second",
 ): WorkspaceNode | null {
+  const source = findWorkspacePane(root, sourcePaneId);
+  const view = source?.views.find((candidate) => candidate.sessionId === sessionId);
+  return view ? splitWorkspacePaneViewToGroup(
+    root,
+    sourcePaneId,
+    view.id,
+    direction,
+    newPaneId,
+    splitId,
+    placement,
+  ) : root;
+}
+
+export function splitWorkspacePaneViewToGroup(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  viewId: string,
+  direction: WorkspaceSplitDirection,
+  newPaneId = createWorkspaceNodeId("pane"),
+  splitId = createWorkspaceNodeId("split"),
+  placement: WorkspaceSplitPlacement = "second",
+): WorkspaceNode | null {
   if (!root || workspacePaneLeaves(root).length >= MAX_WORKSPACE_PANES) return root;
   const source = findWorkspacePane(root, sourcePaneId);
-  if (!source?.sessionIds.includes(sessionId) || source.sessionIds.length <= 1) return root;
-  const withoutSession = removeWorkspacePaneSession(root, sourcePaneId, sessionId);
-  if (!withoutSession) return root;
-  const splitRoot = splitWorkspacePane(
-    withoutSession,
+  const view = source?.views.find((candidate) => candidate.id === viewId);
+  if (!source || !view || source.views.length <= 1) return root;
+  const withoutView = removeWorkspacePaneView(root, sourcePaneId, viewId);
+  if (!withoutView) return root;
+  const splitRoot = splitWorkspacePaneWithView(
+    withoutView,
     sourcePaneId,
     direction,
-    sessionId,
+    view,
     newPaneId,
     splitId,
     placement,
   );
-  return splitRoot === withoutSession ? root : splitRoot;
+  return splitRoot === withoutView ? root : splitRoot;
 }
 
 export function mergeWorkspacePaneGroups(
@@ -313,52 +523,51 @@ export function mergeWorkspacePaneGroups(
   const source = findWorkspacePane(root, sourcePaneId);
   const target = findWorkspacePane(root, targetPaneId);
   if (!source || !target) return root;
-  const mergedSessionIds = uniqueStrings([...target.sessionIds, ...source.sessionIds]);
-  if (mergedSessionIds.length > MAX_WORKSPACE_GROUP_TABS) return root;
-  return mergeWorkspacePaneGroupsInNode(root, sourcePaneId, targetPaneId, source.sessionId, mergedSessionIds);
+  const mergedViews = [...target.views, ...source.views].map((view) => ({ ...view }));
+  if (mergedViews.length > MAX_WORKSPACE_GROUP_TABS) return root;
+  return mergeWorkspacePaneGroupsInNode(root, sourcePaneId, targetPaneId, source.activeViewId, mergedViews);
 }
 
 function mergeWorkspacePaneGroupsInNode(
   root: WorkspaceNode,
   sourcePaneId: string,
   targetPaneId: string,
-  activeSessionId: string,
-  mergedSessionIds: string[],
+  activeViewId: string,
+  mergedViews: WorkspaceView[],
 ): WorkspaceNode | null {
   if (root.kind === "pane") {
     if (root.id === sourcePaneId) return null;
-    if (root.id === targetPaneId) return { ...root, sessionId: activeSessionId, sessionIds: mergedSessionIds };
+    if (root.id === targetPaneId) return createWorkspacePaneFromViews(root.id, mergedViews, activeViewId);
     return root;
   }
-  const first = mergeWorkspacePaneGroupsInNode(root.first, sourcePaneId, targetPaneId, activeSessionId, mergedSessionIds);
-  const second = mergeWorkspacePaneGroupsInNode(root.second, sourcePaneId, targetPaneId, activeSessionId, mergedSessionIds);
+  const first = mergeWorkspacePaneGroupsInNode(root.first, sourcePaneId, targetPaneId, activeViewId, mergedViews);
+  const second = mergeWorkspacePaneGroupsInNode(root.second, sourcePaneId, targetPaneId, activeViewId, mergedViews);
   if (!first) return second;
   if (!second) return first;
   return first === root.first && second === root.second ? root : { ...root, first, second };
 }
 
-function moveWorkspacePaneSessionInNode(
+function moveWorkspacePaneViewInNode(
   root: WorkspaceNode,
   sourcePaneId: string,
   targetPaneId: string,
-  sessionId: string,
+  view: WorkspaceView,
 ): WorkspaceNode | null {
   if (root.kind === "pane") {
     if (root.id === targetPaneId) {
-      const sessionIds = root.sessionIds.includes(sessionId) ? root.sessionIds : [...root.sessionIds, sessionId];
-      return { ...root, sessionId, sessionIds };
+      return createWorkspacePaneFromViews(root.id, [...root.views, { ...view }], view.id);
     }
     if (root.id !== sourcePaneId) return root;
-    const removedIndex = root.sessionIds.indexOf(sessionId);
-    const sessionIds = root.sessionIds.filter((id) => id !== sessionId);
-    if (!sessionIds.length) return null;
-    const activeSessionId = root.sessionId === sessionId
-      ? sessionIds[Math.min(removedIndex, sessionIds.length - 1)]
-      : root.sessionId;
-    return { ...root, sessionId: activeSessionId, sessionIds };
+    const removedIndex = root.views.findIndex((candidate) => candidate.id === view.id);
+    const views = root.views.filter((candidate) => candidate.id !== view.id);
+    if (!views.length) return null;
+    const activeViewId = root.activeViewId === view.id
+      ? views[Math.min(removedIndex, views.length - 1)].id
+      : root.activeViewId;
+    return createWorkspacePaneFromViews(root.id, views, activeViewId);
   }
-  const first = moveWorkspacePaneSessionInNode(root.first, sourcePaneId, targetPaneId, sessionId);
-  const second = moveWorkspacePaneSessionInNode(root.second, sourcePaneId, targetPaneId, sessionId);
+  const first = moveWorkspacePaneViewInNode(root.first, sourcePaneId, targetPaneId, view);
+  const second = moveWorkspacePaneViewInNode(root.second, sourcePaneId, targetPaneId, view);
   if (!first) return second;
   if (!second) return first;
   return first === root.first && second === root.second ? root : { ...root, first, second };
@@ -401,6 +610,46 @@ export function splitWorkspacePane(
   placement: WorkspaceSplitPlacement = "second",
 ): WorkspaceNode {
   return splitWorkspacePaneAtDepth(root, paneId, direction, newSessionId, newPaneId, splitId, placement, 0);
+}
+
+export function splitWorkspacePaneWithView(
+  root: WorkspaceNode,
+  paneId: string,
+  direction: WorkspaceSplitDirection,
+  view: WorkspaceView,
+  newPaneId: string,
+  splitId: string,
+  placement: WorkspaceSplitPlacement,
+): WorkspaceNode {
+  return splitWorkspacePaneWithViewAtDepth(root, paneId, direction, view, newPaneId, splitId, placement, 0);
+}
+
+function splitWorkspacePaneWithViewAtDepth(
+  root: WorkspaceNode,
+  paneId: string,
+  direction: WorkspaceSplitDirection,
+  view: WorkspaceView,
+  newPaneId: string,
+  splitId: string,
+  placement: WorkspaceSplitPlacement,
+  depth: number,
+): WorkspaceNode {
+  if (root.kind === "pane") {
+    if (root.id !== paneId || depth >= MAX_WORKSPACE_DEPTH) return root;
+    const nextPane = createWorkspacePaneFromViews(newPaneId, [view], view.id)!;
+    return {
+      kind: "split",
+      id: splitId,
+      direction,
+      ratio: 0.5,
+      first: placement === "first" ? nextPane : root,
+      second: placement === "first" ? root : nextPane,
+    };
+  }
+  const first = splitWorkspacePaneWithViewAtDepth(root.first, paneId, direction, view, newPaneId, splitId, placement, depth + 1);
+  if (first !== root.first) return { ...root, first };
+  const second = splitWorkspacePaneWithViewAtDepth(root.second, paneId, direction, view, newPaneId, splitId, placement, depth + 1);
+  return second === root.second ? root : { ...root, second };
 }
 
 function splitWorkspacePaneAtDepth(
@@ -455,6 +704,7 @@ export function updateWorkspaceSplitRatio(
 
 type SanitizeState = {
   ids: Set<string>;
+  viewIds: Set<string>;
   paneCount: number;
 };
 
@@ -544,14 +794,27 @@ function sanitizeWorkspaceNode(
   }
   const source = value as Record<string, unknown>;
   if (source.kind === "pane") {
-    const requestedActiveId = cleanString(source.sessionId, 256);
-    const storedIds = uniqueStrings(validStrings(source.sessionIds)).slice(0, MAX_WORKSPACE_GROUP_TABS);
-    const sessionIds = requestedActiveId && !storedIds.includes(requestedActiveId)
-      ? [requestedActiveId, ...storedIds].slice(0, MAX_WORKSPACE_GROUP_TABS)
-      : storedIds;
-    const activeId = sessionIds.includes(requestedActiveId) ? requestedActiveId : sessionIds[0] ?? "";
-    if (!activeId || state.paneCount >= MAX_WORKSPACE_PANES) return null;
-    return createSanitizedPane(activeId, cleanString(source.id, 128) || `pane-${path}`, state, sessionIds);
+    const paneId = uniqueNodeId(cleanString(source.id, 128) || `pane-${path}`, state);
+    const requestedActiveSessionId = cleanString(source.sessionId, 256);
+    const storedViews = sanitizeWorkspaceViews(source.views, paneId, state);
+    const legacySessionIds = uniqueStrings(validStrings(source.sessionIds));
+    const requestedLegacyIds = requestedActiveSessionId && !legacySessionIds.includes(requestedActiveSessionId)
+      ? [requestedActiveSessionId, ...legacySessionIds]
+      : legacySessionIds;
+    const views = storedViews.length
+      ? storedViews
+      : requestedLegacyIds.slice(0, MAX_WORKSPACE_GROUP_TABS).map((sessionId, index) => ({
+        id: uniqueViewId(`view-${paneId}-${index + 1}`, state),
+        sessionId,
+        title: "",
+      }));
+    if (!views.length || state.paneCount >= MAX_WORKSPACE_PANES) return null;
+    const requestedActiveViewId = cleanString(source.activeViewId, 128);
+    const activeView = views.find((view) => view.id === requestedActiveViewId)
+      ?? views.find((view) => view.sessionId === requestedActiveSessionId)
+      ?? views[0];
+    state.paneCount += 1;
+    return createWorkspacePaneFromViews(paneId, views, activeView.id);
   }
   if (source.kind !== "split") return null;
   const first = sanitizeWorkspaceNode(source.first, `${path}-first`, depth + 1, state);
@@ -603,19 +866,27 @@ function createSanitizedPane(
   sessionIds: string[] = [sessionId],
 ): WorkspacePaneNode | null {
   if (state.paneCount >= MAX_WORKSPACE_PANES) return null;
+  const paneId = uniqueNodeId(id, state);
+  const views = uniqueStrings(sessionIds).slice(0, MAX_WORKSPACE_GROUP_TABS).map((candidate, index) => ({
+    id: uniqueViewId(`view-${paneId}-${index + 1}`, state),
+    sessionId: candidate,
+    title: "",
+  }));
+  const activeView = views.find((view) => view.sessionId === sessionId) ?? views[0];
+  if (!activeView) return null;
   state.paneCount += 1;
-  return createWorkspacePane(sessionId, uniqueNodeId(id, state), sessionIds);
+  return createWorkspacePaneFromViews(paneId, views, activeView.id);
 }
 
 function reconcileWorkspaceNode(root: WorkspaceNode | null, available: Set<string>): WorkspaceNode | null {
   if (!root) return null;
   if (root.kind === "pane") {
-    const sessionIds = root.sessionIds.filter((sessionId) => available.has(sessionId));
-    if (!sessionIds.length) return null;
-    const sessionId = sessionIds.includes(root.sessionId) ? root.sessionId : sessionIds[0];
-    return sessionId === root.sessionId && sessionIds.length === root.sessionIds.length
+    const views = root.views.filter((view) => available.has(view.sessionId));
+    if (!views.length) return null;
+    const activeViewId = views.some((view) => view.id === root.activeViewId) ? root.activeViewId : views[0].id;
+    return activeViewId === root.activeViewId && views.length === root.views.length
       ? root
-      : { ...root, sessionId, sessionIds };
+      : createWorkspacePaneFromViews(root.id, views, activeViewId);
   }
   const first = reconcileWorkspaceNode(root.first, available);
   const second = reconcileWorkspaceNode(root.second, available);
@@ -633,6 +904,36 @@ function uniqueNodeId(requested: string, state: SanitizeState) {
   }
   state.ids.add(id);
   return id;
+}
+
+function uniqueViewId(requested: string, state: SanitizeState) {
+  let id = requested;
+  let suffix = 2;
+  while (state.viewIds.has(id) || state.ids.has(id)) {
+    id = `${requested}-${suffix}`;
+    suffix += 1;
+  }
+  state.viewIds.add(id);
+  return id;
+}
+
+function sanitizeWorkspaceViews(value: unknown, paneId: string, state: SanitizeState): WorkspaceView[] {
+  if (!Array.isArray(value)) return [];
+  const views: WorkspaceView[] = [];
+  for (const [index, item] of value.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = item as Record<string, unknown>;
+    const sessionId = cleanString(source.sessionId, 256);
+    if (!sessionId) continue;
+    const requestedId = cleanString(source.id, 128) || `view-${paneId}-${index + 1}`;
+    views.push({
+      id: uniqueViewId(requestedId, state),
+      sessionId,
+      title: cleanString(source.title, 128),
+    });
+    if (views.length >= MAX_WORKSPACE_GROUP_TABS) break;
+  }
+  return views;
 }
 
 function normalizeSplitRatio(value: unknown) {

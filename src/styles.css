@@ -1589,6 +1589,12 @@ button {
   }
 }
 
+@container (max-width: 420px) {
+  .terminal-pane header > .duplicate-view-button {
+    display: none;
+  }
+}
+
 .terminal-pane header > button:hover:not(:disabled) {
   color: var(--red);
   background: rgba(248, 113, 113, 0.1);
@@ -1656,6 +1662,94 @@ button {
   height: 22px;
   place-items: center;
   border: 1px solid var(--line);
+}
+
+.workspace-view-rename-dialog {
+  width: min(430px, calc(100vw - 24px));
+  grid-template-rows: 42px auto 52px;
+}
+
+.workspace-view-rename-content {
+  padding: 16px;
+}
+
+.workspace-view-rename-content label {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-view-rename-content input {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 9px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--control);
+  color: var(--text);
+}
+
+.workspace-view-rename-content input:focus {
+  border-color: rgba(94, 234, 212, 0.55);
+}
+
+.workspace-view-rename-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.workspace-view-rename-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 72px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.workspace-view-rename-actions button.reset {
+  color: var(--muted);
+}
+
+.workspace-view-rename-actions button.primary {
+  border-color: rgba(94, 234, 212, 0.5);
+  color: var(--cyan);
+}
+
+.workspace-view-rename-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+@media (max-width: 460px) {
+  .workspace-view-rename-content label {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .workspace-view-rename-actions {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .workspace-view-rename-actions > span {
+    display: none;
+  }
 }
 
 .terminal-pane-grid.block-selection .terminal-pane.active {

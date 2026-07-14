@@ -18,8 +18,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const session = sessions.find((item) => item.profile.id === request.sessionId);
 
   useEffect(() => {
-    document.title = session ? `${session.profile.name} - PortMate` : "PortMate Detached Pane";
-  }, [session?.profile.name]);
+    document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
+  }, [request.title, session?.profile.name]);
 
   useEffect(() => {
     let disposed = false;
@@ -74,7 +74,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     <main className="detached-pane-root" data-window-id={request.windowId} data-pane-id={request.paneId}>
       <header className="detached-pane-toolbar">
         <span className="detached-brand">PortMate</span>
-        <strong>{session?.profile.name ?? "会话不可用"}</strong>
+        <strong>{request.title || session?.profile.name || "会话不可用"}</strong>
         <span className={`tab-status ${session?.runtime.status ?? "disconnected"}`} />
         <span className="detached-endpoint">{session ? describeDetachedEndpoint(session) : request.sessionId}</span>
         <button type="button" title="刷新会话" aria-label="刷新会话" onClick={() => window.location.reload()}>
