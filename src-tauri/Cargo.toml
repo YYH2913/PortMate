@@ -37,7 +37,7 @@ socket2 = { version = "0.6.3", features = ["all"] }
 tar = "0.4.46"
 tauri = { version = "2.10.3", features = [] }
 tempfile = "3.27"
-tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }
 uuid.workspace = true
 zeroize = "1"
 zmodem2 = "0.5.0"

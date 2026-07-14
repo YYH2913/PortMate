@@ -3236,7 +3236,7 @@ function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: 
   const interfaces = snapshot?.networkInterfaces ?? [];
   const loadAverage = snapshot?.loadAverage ?? [0, 0, 0];
   const memoryUsed = snapshot ? Math.max(0, snapshot.memoryTotalBytes - snapshot.memoryAvailableBytes) : 0;
-  const scope = isSshLikeProfile(session.profile) ? "远端主机" : "本机 Linux";
+  const scope = isSshLikeProfile(session.profile) ? "远端主机" : "本机";
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>

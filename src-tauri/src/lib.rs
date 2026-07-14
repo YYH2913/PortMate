@@ -33,7 +33,7 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
@@ -169,6 +169,8 @@ const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
+const MAX_LOCAL_SYSMON_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LOCAL_SYSMON_STDERR_BYTES: usize = 64 * 1024;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
@@ -4155,7 +4157,7 @@ async fn refresh_sysmon(
             return Err("需要先连接 SSH/Tmux 会话才能读取远端 Sysmon".to_string());
         }
     } else {
-        collect_local_sysmon(&session_id)
+        collect_local_sysmon(&session_id).await?
     };
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -20516,7 +20518,49 @@ fn serial_flow_control(value: &str) -> serialport::FlowControl {
     }
 }
 
-fn collect_local_sysmon(session_id: &str) -> SysmonSnapshot {
+async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnapshot, String> {
+    match std::env::consts::OS {
+        "linux" => {
+            let session_id = session_id.to_string();
+            tauri::async_runtime::spawn_blocking(move || collect_local_linux_sysmon(&session_id))
+                .await
+                .map_err(|error| format!("本机 Linux Sysmon 任务失败: {error}"))
+        }
+        "macos" => {
+            let output = exec_local_sysmon_command(
+                "sh",
+                &["-c", REMOTE_MACOS_SYSMON_COMMAND],
+                Duration::from_secs(12),
+            )
+            .await?;
+            parse_remote_macos_sysmon_output(session_id, &output)
+                .map_err(|error| error.replacen("远端", "本机", 1))
+        }
+        "windows" => {
+            let encoded = windows_powershell_encoded_script(REMOTE_WINDOWS_SYSMON_SCRIPT);
+            let output = exec_local_sysmon_command(
+                "powershell.exe",
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    &encoded,
+                ],
+                Duration::from_secs(12),
+            )
+            .await?;
+            parse_remote_windows_sysmon_output(session_id, &output)
+                .map_err(|error| error.replacen("远端", "本机", 1))
+        }
+        platform => Err(format!(
+            "本机 Sysmon 暂不支持 {}",
+            bounded_sysmon_label(platform, 64)
+        )),
+    }
+}
+
+fn collect_local_linux_sysmon(session_id: &str) -> SysmonSnapshot {
     let uptime_seconds = read_uptime_seconds().unwrap_or_default();
     let (memory_total_bytes, memory_available_bytes, memory_percent) =
         read_memory_usage().unwrap_or_default();
@@ -20547,6 +20591,102 @@ fn collect_local_sysmon(session_id: &str) -> SysmonSnapshot {
         processes: read_local_sysmon_processes(),
         disks: read_local_sysmon_disks(),
         network_interfaces,
+    }
+}
+
+async fn exec_local_sysmon_command(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("无法启动本机 Sysmon 命令 {program}: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法捕获本机 Sysmon stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法捕获本机 Sysmon stderr".to_string())?;
+    let stdout_task = tokio::spawn(read_bounded_local_sysmon_output(
+        stdout,
+        MAX_LOCAL_SYSMON_STDOUT_BYTES,
+        "stdout",
+    ));
+    let stderr_task = tokio::spawn(read_bounded_local_sysmon_output(
+        stderr,
+        MAX_LOCAL_SYSMON_STDERR_BYTES,
+        "stderr",
+    ));
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => status.map_err(|error| format!("等待本机 Sysmon 命令失败: {error}"))?,
+        Err(_) => {
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("本机 Sysmon 命令在 {} 秒后超时", timeout.as_secs()));
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| format!("读取本机 Sysmon stdout 任务失败: {error}"))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| format!("读取本机 Sysmon stderr 任务失败: {error}"))??;
+    if !status.success() {
+        return Err(format!(
+            "本机 Sysmon 命令返回状态 {:?}: {}",
+            status.code(),
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+async fn read_bounded_local_sysmon_output<R>(
+    mut reader: R,
+    max_bytes: usize,
+    stream: &'static str,
+) -> Result<Vec<u8>, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = Vec::new();
+    let mut overflow = false;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|error| format!("读取本机 Sysmon {stream} 失败: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        if overflow {
+            continue;
+        }
+        let next_len = output
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| format!("本机 Sysmon {stream} 长度溢出"))?;
+        if next_len > max_bytes {
+            overflow = true;
+        } else {
+            output.extend_from_slice(&chunk[..count]);
+        }
+    }
+    if overflow {
+        Err(format!("本机 Sysmon {stream} 超过 {max_bytes} 字节上限"))
+    } else {
+        Ok(output)
     }
 }
 
@@ -20645,14 +20785,18 @@ fn remote_sysmon_platform_label(output: &str) -> Option<String> {
 }
 
 fn windows_powershell_command(script: &str) -> String {
+    format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        windows_powershell_encoded_script(script)
+    )
+}
+
+fn windows_powershell_encoded_script(script: &str) -> String {
     let mut utf16le = Vec::with_capacity(script.len().saturating_mul(2));
     for unit in script.encode_utf16() {
         utf16le.extend_from_slice(&unit.to_le_bytes());
     }
-    format!(
-        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
-        BASE64_STANDARD.encode(utf16le)
-    )
+    BASE64_STANDARD.encode(utf16le)
 }
 
 async fn exec_ssh_command_capture(
@@ -25477,10 +25621,42 @@ mod tests {
         assert!(parse_remote_windows_sysmon_output("windows-session", "{}").is_err());
     }
 
+    #[tokio::test]
+    async fn local_sysmon_command_capture_enforces_exit_timeout_and_stream_bounds() {
+        assert_eq!(
+            exec_local_sysmon_command("sh", &["-c", "printf portmate"], Duration::from_secs(1))
+                .await
+                .unwrap(),
+            "portmate"
+        );
+
+        let exit_error = exec_local_sysmon_command(
+            "sh",
+            &["-c", "printf partial; printf denied >&2; exit 7"],
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(exit_error.contains("7"));
+        assert!(exit_error.contains("denied"));
+
+        let timeout_error =
+            exec_local_sysmon_command("sh", &["-c", "sleep 1"], Duration::from_millis(20))
+                .await
+                .unwrap_err();
+        assert!(timeout_error.contains("超时"));
+
+        let overflow_error = read_bounded_local_sysmon_output(&b"12345"[..], 4, "stdout")
+            .await
+            .unwrap_err();
+        assert!(overflow_error.contains("4"));
+        assert!(overflow_error.contains("stdout"));
+    }
+
     #[cfg(target_os = "linux")]
-    #[test]
-    fn local_sysmon_collects_live_linux_resource_details() {
-        let snapshot = collect_local_sysmon("local-session");
+    #[tokio::test]
+    async fn local_sysmon_collects_live_linux_resource_details() {
+        let snapshot = collect_local_sysmon("local-session").await.unwrap();
 
         assert_eq!(snapshot.session_id, "local-session");
         assert!(snapshot.uptime_seconds > 0);
