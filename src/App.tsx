@@ -3,6 +3,7 @@ import type { DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEv
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  Activity,
   AlertCircle,
   Archive,
   ArrowRightLeft,
@@ -1390,7 +1391,7 @@ function handleMenuAction(item: string) {
                 <Square size={13} />
               </button>
             ) : null}
-            <span>{active ? `${active.profile.kind} > ${describeEndpoint(active)}` : "未打开会话"}</span>
+            <span className="crumb-path">{active ? `${active.profile.kind} > ${describeEndpoint(active)}` : "未打开会话"}</span>
             {activeSerial && active?.runtime.status === "connected" ? (
               <div className="serial-line-tools">
                 <button className={activeSerial.dtr ? "active" : ""} onClick={() => void setSerialLine("dtr", !activeSerial.dtr)}>DTR</button>
@@ -1399,8 +1400,9 @@ function handleMenuAction(item: string) {
               </div>
             ) : null}
             {active ? <span className={`runtime-pill ${active.runtime.status}`}>{active.runtime.status}</span> : null}
+            {active ? <SysmonApplet key={active.profile.id} session={active} onOpen={() => setUtilityDialog("sysmon")} /> : null}
             {active?.runtime.lastDisconnect ? (
-              <span title={active.runtime.lastDisconnectReason ?? undefined}>
+              <span className="runtime-disconnect" title={active.runtime.lastDisconnectReason ?? undefined}>
                 最近断开 {formatEventClock(active.runtime.lastDisconnect)}
                 {active.runtime.lastDisconnectReason ? ` · ${active.runtime.lastDisconnectReason}` : ""}
               </span>
@@ -2957,6 +2959,95 @@ function TmuxDialog({ session, onClose, onDone }: { session: SessionSummary; onC
           </section>
         </div>
       </section>
+    </div>
+  );
+}
+
+function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: () => void }) {
+  const [watching, setWatching] = useState(false);
+  const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const remote = isSshLikeProfile(session.profile);
+  const canWatch = !remote || session.runtime.status === "connected";
+
+  useEffect(() => {
+    if (!canWatch) {
+      setWatching(false);
+      setSnapshot(null);
+      setError("");
+    }
+  }, [canWatch]);
+
+  useEffect(() => {
+    if (!watching || !canWatch) return;
+    let disposed = false;
+    let running = false;
+
+    async function sample() {
+      if (running) return;
+      running = true;
+      if (!disposed) setBusy(true);
+      try {
+        const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id });
+        if (!disposed) {
+          setSnapshot(next);
+          setError("");
+        }
+      } catch (error) {
+        if (!disposed) setError(formatError(error));
+      } finally {
+        running = false;
+        if (!disposed) setBusy(false);
+      }
+    }
+
+    void sample();
+    const timer = window.setInterval(() => void sample(), 10_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [watching, canWatch, session.profile.id]);
+
+  function toggleWatching() {
+    if (watching) {
+      setWatching(false);
+      setSnapshot(null);
+      setError("");
+      return;
+    }
+    setWatching(true);
+  }
+
+  const title = error
+    ? `Sysmon: ${error}`
+    : snapshot
+      ? `CPU ${snapshot.cpuPercent.toFixed(1)}% · 内存 ${snapshot.memoryPercent.toFixed(1)}% · 负载 ${snapshot.loadAverage.map((value) => value.toFixed(2)).join(" / ")} · RX ${snapshot.rxKbps.toFixed(1)} KiB/s · TX ${snapshot.txKbps.toFixed(1)} KiB/s · 运行 ${formatSysmonUptime(snapshot.uptimeSeconds)} · ${formatDateTime(snapshot.ts)}`
+      : remote && !canWatch
+        ? "Sysmon: 远端会话未连接"
+        : "Sysmon";
+
+  return (
+    <div className={`sysmon-applet${watching ? " active" : ""}${error ? " error" : ""}`} title={title}>
+      <button
+        type="button"
+        className="sysmon-applet-toggle"
+        aria-label={watching ? "停止 Sysmon 监控" : "启动 Sysmon 监控"}
+        aria-pressed={watching}
+        disabled={!canWatch}
+        onClick={toggleWatching}
+      >
+        <Activity size={14} className={busy ? "loading" : ""} />
+      </button>
+      <button type="button" className="sysmon-applet-summary" aria-label="打开 Sysmon 详情" onClick={onOpen}>
+        {snapshot ? (
+          <>
+            <span>CPU <b className={sysmonPercentLevel(snapshot.cpuPercent)}>{snapshot.cpuPercent.toFixed(1)}%</b></span>
+            <span>MEM <b className={sysmonPercentLevel(snapshot.memoryPercent)}>{snapshot.memoryPercent.toFixed(1)}%</b></span>
+          </>
+        ) : <span>Sysmon</span>}
+      </button>
     </div>
   );
 }
@@ -7727,6 +7818,12 @@ function formatSysmonUptime(seconds: number) {
   if (hours) return `${hours}h ${minutes}m`;
   if (minutes) return `${minutes}m ${wholeSeconds % 60}s`;
   return `${wholeSeconds}s`;
+}
+
+function sysmonPercentLevel(percent: number) {
+  if (percent >= 80) return "critical";
+  if (percent >= 60) return "warning";
+  return "normal";
 }
 
 function formatFileMode(mode?: number | null) {

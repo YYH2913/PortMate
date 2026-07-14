@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
-  font-family: "JetBrains Mono", "Consolas", "Microsoft YaHei UI", monospace;
+  --mono: "JetBrains Mono", "Consolas", "Microsoft YaHei UI", monospace;
+  font-family: var(--mono);
   --bg: #0f1419;
   --panel: #131a22;
   --panel-2: #18212b;
@@ -1071,6 +1072,14 @@ button {
   background: rgba(94, 234, 212, 0.1);
 }
 
+.crumb-path {
+  min-width: 60px;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .serial-line-tools {
   display: inline-flex;
   align-items: center;
@@ -1092,7 +1101,7 @@ button {
 }
 
 .runtime-pill {
-  margin-left: auto;
+  flex: 0 0 auto;
   padding: 2px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1109,6 +1118,93 @@ button {
 .runtime-pill.blocked {
   border-color: rgba(248, 113, 113, 0.55);
   color: var(--red);
+}
+
+.runtime-disconnect {
+  max-width: 180px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysmon-applet {
+  display: inline-flex;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  background: #111820;
+}
+
+.crumb-line .sysmon-applet button {
+  height: 22px;
+  border: 0;
+}
+
+.crumb-line .sysmon-applet-toggle {
+  width: 26px;
+  color: var(--muted);
+}
+
+.crumb-line .sysmon-applet-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.crumb-line .sysmon-applet-toggle svg.loading {
+  animation: transfer-spin 1.2s linear infinite;
+}
+
+.crumb-line .sysmon-applet-summary {
+  display: inline-flex;
+  width: auto;
+  min-width: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 7px;
+  border-left: 1px solid var(--line);
+  color: #cbd8e3;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.sysmon-applet.active {
+  border-color: rgba(94, 234, 212, 0.42);
+}
+
+.sysmon-applet.active .sysmon-applet-toggle {
+  color: var(--cyan);
+}
+
+.sysmon-applet.error {
+  border-color: rgba(248, 113, 113, 0.55);
+}
+
+.sysmon-applet b {
+  font-weight: 500;
+}
+
+.sysmon-applet b.normal {
+  color: #7dd3a8;
+}
+
+.sysmon-applet b.warning {
+  color: var(--amber);
+}
+
+.sysmon-applet b.critical {
+  color: var(--red);
+}
+
+@media (max-width: 1180px) {
+  .runtime-disconnect,
+  .sysmon-applet-summary span:last-child {
+    display: none;
+  }
 }
 
 .terminal-pane-grid {
