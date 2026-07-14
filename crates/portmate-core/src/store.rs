@@ -565,12 +565,20 @@ impl SessionStore {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
         }
+        let now = Utc::now();
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.last_activity = now;
+        }
         let redacted = redact_secrets(text);
         let event = SessionEvent {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
             pane_id: format!("{session_id}:main"),
-            ts: Utc::now(),
+            ts: now,
             direction: EventDirection::Outbound,
             stream: EventStream::Stdout,
             bytes_ref,
@@ -581,7 +589,7 @@ impl SessionStore {
         self.trim_events_if_needed(session_id);
         self.audit.push(AuditRecord {
             id: Uuid::new_v4().to_string(),
-            ts: Utc::now(),
+            ts: now,
             actor: actor.to_string(),
             action: "send_text".to_string(),
             session_id: Some(session_id.to_string()),
@@ -774,6 +782,26 @@ mod tests {
             Some("v2:session.raw:0:3:digest")
         );
         assert!(!event.text.unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn send_text_updates_runtime_activity_with_event_timestamp() {
+        let mut store = test_store();
+        let previous = Utc::now() - chrono::Duration::minutes(5);
+        store.runtimes[0].last_activity = previous;
+
+        let event = store
+            .send_text("test", "test-session", "show version\n")
+            .unwrap();
+        let runtime = store
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == "test-session")
+            .unwrap();
+
+        assert!(runtime.last_activity > previous);
+        assert_eq!(runtime.last_activity, event.ts);
+        assert_eq!(store.audit.last().unwrap().ts, event.ts);
     }
 
     #[test]
