@@ -149,6 +149,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - `portmate-mcp` stdio bridge，JSON-RPC lifecycle/tools/resources/prompts。
 - stdio 每条 newline-delimited JSON payload 上限为 1 MiB（不含 `LF/CRLF`）；超限行仅保留 `limit + 2` 字节并有界丢弃到换行，返回 JSON-RPC parse error 后可继续处理下一条消息，不会无界分配或协议失步。
 - stdio/HTTP 共用的 JSON-RPC envelope 会保留显式 null ID，拒绝对象/数组/布尔 ID 和非结构化 `params`；batch 在任何 tool dispatch 前限制为 128 项，避免小请求放大为无界调用与响应。
+- stdio/HTTP JSON-RPC 响应与 SSE JSON 数据共用 64 MiB 有界 writer，写入将在追加越界前停止。单响应超限会返回保留原 ID 的 `-32603`；batch 或 SSE 状态超限会以不含原大 payload 的受限错误替换，避免日志、screen 或状态数据造成无界二次序列化和输出。
 - MCP protocol version 使用 `2025-06-18`。
 - Tools：`list_sessions`、`read_screen`、`tail_log`、`search_logs`、`send_text`、`send_key`、`run_command`、`open_session`、`close_session`、`start_transfer`、`create_tunnel`、`list_tmux_state`、`attach_tmux`、`export_session_bundle`。
 - Resources：sessions、state、screen、log、timeline、sysmon、tmux、transfer。
@@ -253,8 +254,8 @@ npm run build
 | Sysmon | 部分实现 | 本机/远端 Linux 采样已有；进程、磁盘、网络细节待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；命令关联与毫秒级分片待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、严格 ID/params envelope、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
-| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、严格 HTTP framing、64 KiB/128 项请求头边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
+| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
 | 测试体系 | 部分实现 | core 单测可用；集成、UI、终端兼容测试不足。 |
 
 ## 下一阶段目标

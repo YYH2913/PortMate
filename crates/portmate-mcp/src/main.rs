@@ -23,6 +23,7 @@ const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
+const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;
@@ -30,7 +31,7 @@ const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
-const MAX_IPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_IPC_RESPONSE_BYTES: usize = MAX_JSON_RPC_RESPONSE_BYTES;
 const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_TOKEN_BYTES: usize = 4096;
 const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -896,15 +897,14 @@ fn run_stdio_server() -> Result<()> {
         let line = match read_stdio_message(&mut stdin, MAX_STDIO_MESSAGE_BYTES)? {
             StdioMessage::Eof => break,
             StdioMessage::TooLarge => {
-                let response = error(
+                let response = serde_json::to_value(error(
                     Value::Null,
                     -32700,
                     format!(
                         "parse error: stdio message exceeds the {MAX_STDIO_MESSAGE_BYTES}-byte limit"
                     ),
-                );
-                writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-                stdout.flush()?;
+                ))?;
+                write_stdio_json_response(&mut stdout, &response)?;
                 continue;
             }
             StdioMessage::Message(line) => line,
@@ -916,9 +916,12 @@ fn run_stdio_server() -> Result<()> {
         let value = match serde_json::from_slice::<Value>(&line) {
             Ok(value) => value,
             Err(error_message) => {
-                let response = error(Value::Null, -32700, format!("parse error: {error_message}"));
-                writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-                stdout.flush()?;
+                let response = serde_json::to_value(error(
+                    Value::Null,
+                    -32700,
+                    format!("parse error: {error_message}"),
+                ))?;
+                write_stdio_json_response(&mut stdout, &response)?;
                 continue;
             }
         };
@@ -931,12 +934,77 @@ fn run_stdio_server() -> Result<()> {
                 error_message.to_string(),
             ))?),
         } {
-            writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-            stdout.flush()?;
+            write_stdio_json_response(&mut stdout, &response)?;
         }
     }
 
     Ok(())
+}
+
+fn write_stdio_json_response<W: Write>(writer: &mut W, response: &Value) -> Result<()> {
+    let encoded = encode_json_rpc_response(response, MAX_JSON_RPC_RESPONSE_BYTES)?;
+    writer.write_all(&encoded)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    exceeded: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(max_bytes.min(8192)),
+            max_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() > self.max_bytes.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(io::Error::other("JSON response exceeds its byte limit"));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn try_encode_json_with_limit(value: &Value, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+    let mut writer = BoundedJsonWriter::new(max_bytes);
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(Some(writer.bytes)),
+        Err(_) if writer.exceeded => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn encode_json_rpc_response(response: &Value, max_bytes: usize) -> Result<Vec<u8>> {
+    if let Some(encoded) = try_encode_json_with_limit(response, max_bytes)? {
+        return Ok(encoded);
+    }
+    let response_id = response
+        .as_object()
+        .and_then(|object| object.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let fallback = serde_json::to_value(error(
+        response_id,
+        -32603,
+        format!("JSON-RPC response exceeds the {max_bytes}-byte limit"),
+    ))?;
+    try_encode_json_with_limit(&fallback, max_bytes)?
+        .ok_or_else(|| anyhow!("JSON-RPC response limit is too small to encode its overflow error"))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1367,32 +1435,51 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
     let value = match serde_json::from_slice::<Value>(&request.body) {
         Ok(value) => value,
         Err(parse_error) => {
-            let response = error(Value::Null, -32700, format!("parse error: {parse_error}"));
-            return http_response(
-                200,
-                "OK",
-                &serde_json::to_string(&response).unwrap_or_default(),
-                origin.as_deref(),
-            );
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {
+                    "code": -32700,
+                    "message": format!("parse error: {parse_error}")
+                }
+            });
+            return http_response(200, "OK", &json_rpc_http_body(&response), origin.as_deref());
         }
     };
     let body = match handle_http_json_rpc(value) {
-        Ok(Some(value)) => value.to_string(),
+        Ok(Some(value)) => json_rpc_http_body(&value),
         Ok(None) => {
             return http_response(202, "Accepted", "", origin.as_deref());
         }
-        Err(error) => json!({
+        Err(error) => json_rpc_http_body(&json!({
             "jsonrpc": "2.0",
             "id": null,
             "error": { "code": -32603, "message": error.to_string() }
-        })
-        .to_string(),
+        })),
     };
     if accepts_sse && !accepts_json {
         http_sse_message_response(&body, origin.as_deref())
     } else {
         http_response(200, "OK", &body, origin.as_deref())
     }
+}
+
+fn json_rpc_http_body(response: &Value) -> String {
+    match encode_json_rpc_response(response, MAX_JSON_RPC_RESPONSE_BYTES) {
+        Ok(encoded) => String::from_utf8(encoded).unwrap_or_else(|error| {
+            internal_json_rpc_error_body(format!("failed to encode JSON-RPC response: {error}"))
+        }),
+        Err(error) => internal_json_rpc_error_body(error.to_string()),
+    }
+}
+
+fn internal_json_rpc_error_body(message: impl Into<String>) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": { "code": -32603, "message": message.into() }
+    })
+    .to_string()
 }
 
 fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
@@ -1658,7 +1745,20 @@ fn http_sse_headers(origin: Option<&str>, content_length: Option<usize>) -> Stri
 }
 
 fn sse_event(event: &str, data: &Value) -> String {
-    let data = data.to_string();
+    sse_event_with_limit(event, data, MAX_JSON_RPC_RESPONSE_BYTES)
+}
+
+fn sse_event_with_limit(event: &str, data: &Value, max_data_bytes: usize) -> String {
+    let data = match try_encode_json_with_limit(data, max_data_bytes) {
+        Ok(Some(encoded)) => String::from_utf8(encoded).unwrap_or_else(|error| {
+            json!({ "error": format!("failed to encode SSE data: {error}") }).to_string()
+        }),
+        Ok(None) => json!({
+            "error": format!("SSE data exceeds the {max_data_bytes}-byte limit")
+        })
+        .to_string(),
+        Err(error) => json!({ "error": format!("failed to encode SSE data: {error}") }).to_string(),
+    };
     let mut output = format!("event: {event}\n");
     for line in data.lines() {
         output.push_str("data: ");
@@ -1793,6 +1893,50 @@ mod tests {
             read_stdio_message(&mut reader, 8).unwrap(),
             StdioMessage::Eof
         );
+    }
+
+    #[test]
+    fn json_rpc_response_serialization_is_bounded_and_preserves_id_on_overflow() {
+        let compact = json!({ "ok": true });
+        let compact_bytes = serde_json::to_vec(&compact).unwrap();
+        assert_eq!(
+            try_encode_json_with_limit(&compact, compact_bytes.len()).unwrap(),
+            Some(compact_bytes.clone())
+        );
+        assert!(
+            try_encode_json_with_limit(&compact, compact_bytes.len() - 1)
+                .unwrap()
+                .is_none()
+        );
+
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "request-7",
+            "result": { "content": "x".repeat(1024) }
+        });
+        let encoded = encode_json_rpc_response(&response, 256).unwrap();
+        assert!(encoded.len() <= 256);
+        let overflow: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(overflow["id"], "request-7");
+        assert_eq!(overflow["error"]["code"], -32603);
+        assert!(overflow["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("256-byte limit")));
+        assert!(overflow.get("result").is_none());
+    }
+
+    #[test]
+    fn sse_event_replaces_oversized_state_data() {
+        let event = sse_event_with_limit(
+            "portmate.state",
+            &json!({ "content": "sensitive-marker".repeat(128) }),
+            128,
+        );
+
+        assert!(event.starts_with("event: portmate.state\n"));
+        assert!(event.contains("SSE data exceeds the 128-byte limit"));
+        assert!(!event.contains("sensitive-marker"));
+        assert!(event.len() < 256);
     }
 
     #[test]

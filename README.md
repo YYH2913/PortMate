@@ -155,6 +155,10 @@ Both stdio and HTTP preserve an explicit JSON-RPC `null` ID, reject non-string/n
 non-structured `params`, and cap a batch at 128 items before dispatch. This prevents a small request
 from amplifying into an unbounded sequence of tool calls or responses.
 
+JSON-RPC responses and SSE JSON data are serialized through a 64 MiB bounded writer shared with the
+desktop IPC response contract. An oversized single response becomes a `-32603` error with the same
+request ID; an oversized batch or SSE state update is replaced without emitting the original data.
+
 To let the standalone stdio bridge read the desktop store directly, pass the SQLite store path:
 
 ```bash
