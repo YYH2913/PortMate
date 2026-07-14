@@ -22,9 +22,11 @@ describe("workspace hotkeys", () => {
     expect(resolveWorkspaceHotkey({ ...baseInput, code, shiftKey }, 1)).toEqual({ kind: "split", direction, placement });
   });
 
-  it("closes only a multi-pane workspace and rejects conflicting modifiers", () => {
+  it("closes or zooms only a multi-pane workspace and rejects conflicting modifiers", () => {
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyX" }, 2)).toEqual({ kind: "close" });
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyZ" }, 2)).toEqual({ kind: "zoom" });
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyX" }, 1)).toBeNull();
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyZ" }, 1)).toBeNull();
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowRight" }, 1)).toBeNull();
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowRight", shiftKey: true }, 2)).toBeNull();
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "Backslash", ctrlKey: true }, 2)).toBeNull();

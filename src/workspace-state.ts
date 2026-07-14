@@ -171,6 +171,33 @@ export function replaceWorkspacePaneSession(
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
 }
 
+export function swapWorkspacePanes(
+  root: WorkspaceNode | null,
+  firstPaneId: string,
+  secondPaneId: string,
+): WorkspaceNode | null {
+  if (!root || firstPaneId === secondPaneId) return root;
+  const firstPane = findWorkspacePane(root, firstPaneId);
+  const secondPane = findWorkspacePane(root, secondPaneId);
+  if (!firstPane || !secondPane) return root;
+  return replaceWorkspacePaneNodes(root, firstPane, secondPane);
+}
+
+function replaceWorkspacePaneNodes(
+  root: WorkspaceNode,
+  firstPane: WorkspacePaneNode,
+  secondPane: WorkspacePaneNode,
+): WorkspaceNode {
+  if (root.kind === "pane") {
+    if (root.id === firstPane.id) return secondPane;
+    if (root.id === secondPane.id) return firstPane;
+    return root;
+  }
+  const first = replaceWorkspacePaneNodes(root.first, firstPane, secondPane);
+  const second = replaceWorkspacePaneNodes(root.second, firstPane, secondPane);
+  return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
 export function splitWorkspacePane(
   root: WorkspaceNode,
   paneId: string,

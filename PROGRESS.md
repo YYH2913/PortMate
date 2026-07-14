@@ -41,7 +41,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
 - `xterm.js` 终端渲染，FitAddon、SearchAddon、WebLinksAddon 已接入。
-- 分屏布局使用 v2 递归树，支持任意组合的水平/垂直嵌套、关闭叶子后自动折叠父 split，以及最多 16 pane/8 层的明确边界；splitter 可鼠标/触控拖动、方向键调节、Home/End 跳到 15/85% 边界并双击复位，比例会随 pane session binding、active pane/session 和标签颜色一起持久化。WindTerm 2.7 默认键位中的 `Alt+方向键` 几何焦点导航、`Alt+-`/`Alt+\` 向下/向右拆分、Shift 变体向上/向左拆分和 `Alt+X` 关闭 active pane 已接入，并只在 XTerm 工作区持有键盘焦点时拦截；active pane 与真实 XTerm textarea 焦点保持同步。菜单的水平拆分对应右侧视图、垂直拆分对应下方视图。旧 v1 平铺 snapshot 和更早的 localStorage key 会原位迁移；profile 列表变化后会剔除失效 ID、收敛空分支和重复节点 ID。同一 session 的多 pane 视图会保留，但启动连接目标只执行一次。
+- 分屏布局使用 v2 递归树，支持任意组合的水平/垂直嵌套、关闭叶子后自动折叠父 split，以及最多 16 pane/8 层的明确边界；splitter 可鼠标/触控拖动、方向键调节、Home/End 跳到 15/85% 边界并双击复位，比例会随 pane session binding、active pane/session 和标签颜色一起持久化。WindTerm 2.7 默认键位中的 `Alt+方向键` 几何焦点导航、`Alt+-`/`Alt+\` 向下/向右拆分、Shift 变体向上/向左拆分、`Alt+X` 关闭 active pane 和 `Alt+Z` pane zoom 已接入，并只在 XTerm 工作区持有键盘焦点时拦截；active pane 与真实 XTerm textarea 焦点保持同步。zoom 会隐藏 sibling branch/splitter 但保持其他 XTerm 挂载，方向焦点会连同 zoom 一起移动。窗口菜单还支持把完整 active pane 与上下左右的几何邻居交换；水平拆分对应右侧视图、垂直拆分对应下方视图。旧 v1 平铺 snapshot 和更早的 localStorage key 会原位迁移；profile 列表变化后会剔除失效 ID、收敛空分支和重复节点 ID。同一 session 的多 pane 视图会保留，但启动连接目标只执行一次。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络/趋势四标签工作窗口，趋势可切换 CPU/内存利用率与 RX/TX 速率，并提供当前会话可启停、立即采样后每 10 秒刷新的紧凑工具栏 applet。
@@ -51,7 +51,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 主要缺口：
 
-- WindTerm 级别的 pane 交换、pane zoom 和可配置 keymap 仍不完整；默认分屏创建、方向焦点移动、关闭、比例调整和恢复已可用。
+- WindTerm 级别的可配置 keymap、pane 移出独立窗口和跨 group 移动仍不完整；默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。
 - serialize/unicode/webgl/clipboard 等计划项没有完整接入。
 - 自由输入、锁屏等 WindTerm 细节仍不完整。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
@@ -226,7 +226,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 81 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 82 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -244,7 +244,7 @@ npm run build
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`。 |
-| WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、可调且持久化的比例、v1 snapshot/旧 key 迁移、pane/active/tab color 恢复、WindTerm 默认分屏/方向焦点/关闭快捷键、启动会话策略及 xterm/CSS lazy chunk 已有；pane 交换、zoom 和可配置 keymap 仍待补。 |
+| WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、可调且持久化的比例、v1 snapshot/旧 key 迁移、pane/active/tab color 恢复、WindTerm 默认分屏/方向焦点/关闭/zoom 快捷键、方向 pane 交换、启动会话策略及 xterm/CSS lazy chunk 已有；可配置 keymap、pane 独立窗口和跨 group 移动仍待补。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、带可选认证的 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；健康故障矩阵和 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
@@ -274,7 +274,7 @@ npm run build
 ### P1：补齐 WindTerm/Bitvise 级工作流
 
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
-2. pane session binding、启动自动连接、标签颜色、workspace restore、v1 自动迁移、任意递归嵌套分屏，以及 WindTerm 默认分屏创建/方向焦点/关闭快捷键已完成；继续补 pane 交换、zoom 和可配置 keymap。
+2. pane session binding、启动自动连接、标签颜色、workspace restore、v1 自动迁移、任意递归嵌套分屏，以及 WindTerm 默认分屏创建/方向焦点/关闭/zoom 快捷键和方向 pane 交换已完成；继续补可配置 keymap、pane 独立窗口和跨 group 移动。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
 4. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤与 JSONL + SHA-256 导出已完成；下一步补独立分析窗口、协议帧解析、书签和重连状态可视化。
 5. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。

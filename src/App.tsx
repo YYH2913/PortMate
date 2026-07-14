@@ -52,8 +52,8 @@ import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefau
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
 import type { SysmonTrendMode } from "./sysmon-history";
 import { resolveWorkspaceHotkey } from "./workspace-hotkeys";
-import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
-import type { StartupMode, WorkspaceNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
+import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
+import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
@@ -72,7 +72,7 @@ const menuGroups = [
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格"] },
+  { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
 
@@ -239,6 +239,7 @@ export default function App() {
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode | null>(initialWorkspace.root);
   const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
+  const [zoomedPaneId, setZoomedPaneId] = useState("");
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
@@ -305,6 +306,10 @@ export default function App() {
   }, [workspaceRoot, activePaneId, activeId, tabColors]);
 
   useEffect(() => {
+    if (zoomedPaneId && !findWorkspacePane(workspaceRoot, zoomedPaneId)) setZoomedPaneId("");
+  }, [workspaceRoot, zoomedPaneId]);
+
+  useEffect(() => {
     const handleWorkspaceHotkey = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey || !isWorkspaceHotkeyTarget(event.target)) return;
       const panes = workspacePaneLeaves(workspaceRoot);
@@ -318,6 +323,8 @@ export default function App() {
         splitWorkspace(hotkey.direction, hotkey.placement);
       } else if (!event.repeat && hotkey.kind === "close") {
         closeWorkspacePane();
+      } else if (!event.repeat && hotkey.kind === "zoom") {
+        toggleWorkspaceZoom();
       }
     };
     window.addEventListener("keydown", handleWorkspaceHotkey, true);
@@ -656,6 +663,21 @@ function handleMenuAction(item: string) {
       closeWorkspacePane();
       return;
     }
+    const swapDirectionByItem: Partial<Record<string, WorkspacePaneDirection>> = {
+      向上交换: "up",
+      向下交换: "down",
+      向左交换: "left",
+      向右交换: "right",
+    };
+    const swapDirection = swapDirectionByItem[item];
+    if (swapDirection) {
+      swapWorkspacePane(swapDirection);
+      return;
+    }
+    if (item === "切换窗格缩放") {
+      toggleWorkspaceZoom();
+      return;
+    }
     if (item === "块选择") {
       setBlockSelection((current) => !current);
       return;
@@ -925,6 +947,7 @@ function handleMenuAction(item: string) {
     if (existingPane) {
       setActivePaneId(existingPane.id);
       setActiveId(existingPane.sessionId);
+      setZoomedPaneId((current) => current ? existingPane.id : "");
       return;
     }
     if (!workspaceRoot) {
@@ -944,6 +967,7 @@ function handleMenuAction(item: string) {
   function activateWorkspacePane(paneId: string, sessionId: string) {
     setActivePaneId(paneId);
     setActiveId(sessionId);
+    setZoomedPaneId((current) => current ? paneId : "");
   }
 
   function restoreWorkspaceLayout() {
@@ -955,6 +979,7 @@ function handleMenuAction(item: string) {
     setActivePaneId(restored.activePaneId);
     setActiveId(restored.activeId);
     setTabColors(restored.tabColors);
+    setZoomedPaneId("");
     setNotice({
       title: "还原布局",
       message: workspacePaneLeaves(restored.root).length <= 1
@@ -997,6 +1022,7 @@ function handleMenuAction(item: string) {
     setWorkspaceRoot(nextRoot);
     setActivePaneId(targetPane.id);
     setActiveId(targetPane.sessionId);
+    setZoomedPaneId("");
   }
 
   function closeWorkspacePane(paneId = activePaneId) {
@@ -1011,6 +1037,23 @@ function handleMenuAction(item: string) {
     setWorkspaceRoot(nextRoot);
     setActivePaneId(nextActive?.id ?? "");
     setActiveId(nextActive?.sessionId ?? activeId);
+    setZoomedPaneId((current) => current ? nextActive?.id ?? "" : "");
+  }
+
+  function swapWorkspacePane(direction: WorkspacePaneDirection) {
+    const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, direction);
+    if (!nextPane) {
+      setNotice({ title: "交换窗格", message: "该方向没有可交换的窗格。" });
+      return;
+    }
+    setWorkspaceRoot(swapWorkspacePanes(workspaceRoot, activePaneId, nextPane.id));
+    focusWorkspacePaneInput(activePaneId);
+  }
+
+  function toggleWorkspaceZoom() {
+    if (workspacePaneLeaves(workspaceRoot).length <= 1 || !activePaneId) return;
+    setZoomedPaneId((current) => current === activePaneId ? "" : activePaneId);
+    focusWorkspacePaneInput(activePaneId);
   }
 
   async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
@@ -1477,6 +1520,7 @@ function handleMenuAction(item: string) {
             root={workspaceRoot}
             sessions={sessions}
             activePaneId={activePaneId}
+            zoomedPaneId={zoomedPaneId}
             activeId={activeId}
             eventsBySession={logs}
             blockSelection={blockSelection}
@@ -2511,6 +2555,7 @@ function TerminalPaneGrid({
   root,
   sessions,
   activePaneId,
+  zoomedPaneId,
   activeId,
   eventsBySession,
   blockSelection,
@@ -2522,6 +2567,7 @@ function TerminalPaneGrid({
   root: WorkspaceNode | null;
   sessions: SessionSummary[];
   activePaneId: string;
+  zoomedPaneId: string;
   activeId: string;
   eventsBySession: Record<string, SessionEvent[]>;
   blockSelection: boolean;
@@ -2542,6 +2588,7 @@ function TerminalPaneGrid({
         node={root}
         sessions={sessions}
         activePaneId={activePaneId}
+        zoomedPaneId={zoomedPaneId}
         eventsBySession={eventsBySession}
         onInput={onInput}
         onActivate={onActivate}
@@ -2556,6 +2603,7 @@ type TerminalWorkspaceNodeProps = {
   node: WorkspaceNode;
   sessions: SessionSummary[];
   activePaneId: string;
+  zoomedPaneId: string;
   eventsBySession: Record<string, SessionEvent[]>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (paneId: string, sessionId: string) => void;
@@ -2598,9 +2646,12 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
   const containerRef = useRef<HTMLDivElement | null>(null);
   const firstTrack = `${node.ratio}fr`;
   const secondTrack = `${1 - node.ratio}fr`;
+  const zoomFirst = Boolean(props.zoomedPaneId && findWorkspacePane(node.first, props.zoomedPaneId));
+  const zoomSecond = Boolean(props.zoomedPaneId && findWorkspacePane(node.second, props.zoomedPaneId));
+  const zoomed = zoomFirst || zoomSecond;
   const style: CSSProperties = node.direction === "horizontal"
-    ? { gridTemplateRows: `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` }
-    : { gridTemplateColumns: `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` };
+    ? { gridTemplateRows: zoomed ? "minmax(0, 1fr)" : `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` }
+    : { gridTemplateColumns: zoomed ? "minmax(0, 1fr)" : `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` };
 
   function updateFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -2623,13 +2674,20 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
   }
 
   return (
-    <div ref={containerRef} className={`terminal-split ${node.direction}`} data-split-id={node.id} style={style}>
-      <div className="terminal-split-child">
+    <div
+      ref={containerRef}
+      className={`terminal-split ${node.direction}`}
+      data-split-id={node.id}
+      data-zoom-branch={zoomFirst ? "first" : zoomSecond ? "second" : undefined}
+      style={style}
+    >
+      <div className="terminal-split-child" hidden={zoomSecond}>
         <TerminalWorkspaceNode {...props} node={node.first} />
       </div>
       <button
         type="button"
         className="terminal-splitter"
+        hidden={zoomed}
         role="separator"
         aria-label={node.direction === "horizontal" ? "调整上下窗格" : "调整左右窗格"}
         aria-orientation={node.direction === "horizontal" ? "horizontal" : "vertical"}
@@ -2657,7 +2715,7 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
         onDoubleClick={() => props.onSplitRatioChange(node.id, 0.5)}
         onKeyDown={handleSplitterKey}
       />
-      <div className="terminal-split-child">
+      <div className="terminal-split-child" hidden={zoomFirst}>
         <TerminalWorkspaceNode {...props} node={node.second} />
       </div>
     </div>
@@ -2687,6 +2745,14 @@ function isWorkspaceHotkeyTarget(target: EventTarget | null) {
 function consumeWorkspaceHotkey(event: KeyboardEvent) {
   event.preventDefault();
   event.stopPropagation();
+}
+
+function focusWorkspacePaneInput(paneId: string) {
+  window.requestAnimationFrame(() => {
+    const pane = [...document.querySelectorAll<HTMLElement>(".terminal-pane")]
+      .find((item) => item.dataset.paneId === paneId);
+    pane?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus({ preventScroll: true });
+  });
 }
 
 function PortMateContextMenu({

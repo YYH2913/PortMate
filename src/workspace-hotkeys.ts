@@ -3,7 +3,8 @@ import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPla
 export type WorkspaceHotkeyAction =
   | { kind: "focus"; direction: WorkspacePaneDirection }
   | { kind: "split"; direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }
-  | { kind: "close" };
+  | { kind: "close" }
+  | { kind: "zoom" };
 
 type WorkspaceHotkeyInput = {
   altKey: boolean;
@@ -32,5 +33,7 @@ export function resolveWorkspaceHotkey(input: WorkspaceHotkeyInput, paneCount: n
       placement: input.shiftKey ? "first" : "second",
     };
   }
-  return input.code === "KeyX" && !input.shiftKey && paneCount > 1 ? { kind: "close" } : null;
+  if (input.shiftKey || paneCount <= 1) return null;
+  if (input.code === "KeyX") return { kind: "close" };
+  return input.code === "KeyZ" ? { kind: "zoom" } : null;
 }

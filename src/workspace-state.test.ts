@@ -9,6 +9,7 @@ import {
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
   splitWorkspacePane,
+  swapWorkspacePanes,
   updateWorkspaceSplitRatio,
   workspacePaneLeaves,
 } from "./workspace-state";
@@ -162,6 +163,21 @@ describe("workspace snapshots", () => {
     const split = splitWorkspacePane(initial, activePaneId, "vertical", "b", "pane-b", "split-left", "first");
 
     expect(workspacePaneLeaves(split).map((pane) => pane.sessionId)).toEqual(["b", "a"]);
+  });
+
+  it("swaps complete pane nodes while preserving the active pane identity", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 1,
+      layout: "horizontal",
+      paneIds: ["a", "b", "c"],
+      activeId: "b",
+    });
+    const panes = workspacePaneLeaves(snapshot.root);
+    const swapped = swapWorkspacePanes(snapshot.root, panes[0].id, panes[1].id);
+
+    expect(workspacePaneLeaves(swapped).map((pane) => pane.sessionId)).toEqual(["b", "a", "c"]);
+    expect(findWorkspacePane(swapped, snapshot.activePaneId)?.sessionId).toBe("b");
+    expect(swapWorkspacePanes(swapped, "missing", panes[2].id)).toBe(swapped);
   });
 
   it("sanitizes active identifiers when a v2 root is unavailable", () => {
