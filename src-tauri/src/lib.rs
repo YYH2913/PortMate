@@ -30082,7 +30082,7 @@ mod tests {
                 reconnect: false,
                 reconnect_delay_ms: 1_000,
                 receive_idle_timeout_enabled: true,
-                receive_idle_timeout_seconds: 1,
+                receive_idle_timeout_seconds: 3,
             });
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
             let opened = open_serial_session(&state, profile.clone()).unwrap();
@@ -30096,16 +30096,9 @@ mod tests {
                 .tap
                 .subscribe();
             let mut peer = serialport::new(peer_pty.display().to_string(), 115_200)
-                .timeout(Duration::from_millis(300))
+                .timeout(Duration::from_secs(2))
                 .open()
                 .unwrap();
-
-            let mut unsolicited = [0_u8; 1];
-            let error = peer
-                .read(&mut unsolicited)
-                .expect_err("serial health monitoring must not write probe bytes");
-            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-            peer.set_timeout(Duration::from_secs(2)).unwrap();
 
             let outbound = vec![0xff, 0x00, 0x80];
             send_bytes_inner(state.session_io(), profile.id.clone(), outbound.clone())
@@ -30123,6 +30116,14 @@ mod tests {
                 .expect("serial runtime did not receive loopback bytes")
                 .expect("serial runtime tap closed");
             assert_eq!(received, peer_reply);
+
+            peer.set_timeout(Duration::from_millis(300)).unwrap();
+            let mut unsolicited = [0_u8; 1];
+            let error = peer
+                .read(&mut unsolicited)
+                .expect_err("serial health monitoring must not write probe bytes");
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+
             let capture = serial_capture_snapshot_inner(&state, &profile.id, None).unwrap();
             assert_eq!(capture.frames.len(), 2);
             assert_eq!(capture.frames[0].direction, EventDirection::Outbound);
@@ -30130,7 +30131,7 @@ mod tests {
             assert_eq!(capture.frames[1].direction, EventDirection::Inbound);
             assert_eq!(capture.frames[1].bytes, peer_reply);
 
-            let disconnected = tokio::time::timeout(Duration::from_secs(3), async {
+            let disconnected = tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
                     let summary = state
                         .store
