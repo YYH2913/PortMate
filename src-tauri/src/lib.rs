@@ -165,6 +165,9 @@ const MAX_SYSMON_DISKS: usize = 16;
 const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
+const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
@@ -20436,9 +20439,41 @@ async fn collect_remote_sysmon(
     session_id: &str,
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
 ) -> Result<SysmonSnapshot, String> {
-    let command = r#"sh -lc 'export LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
-    let output = exec_ssh_command_capture(handle, command, Duration::from_secs(8)).await?;
-    parse_remote_sysmon_output(session_id, &output)
+    let platform = exec_ssh_command_capture(
+        handle.clone(),
+        REMOTE_SYSMON_PLATFORM_COMMAND,
+        Duration::from_secs(3),
+    )
+    .await?;
+    match platform
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+    {
+        Some("Linux") => {
+            let output = exec_ssh_command_capture(
+                handle,
+                REMOTE_LINUX_SYSMON_COMMAND,
+                Duration::from_secs(8),
+            )
+            .await?;
+            parse_remote_sysmon_output(session_id, &output)
+        }
+        Some("Darwin") => {
+            let output = exec_ssh_command_capture(
+                handle,
+                REMOTE_MACOS_SYSMON_COMMAND,
+                Duration::from_secs(8),
+            )
+            .await?;
+            parse_remote_macos_sysmon_output(session_id, &output)
+        }
+        Some(platform) => Err(format!(
+            "远端 Sysmon 暂不支持 {}",
+            bounded_sysmon_label(platform, 64)
+        )),
+        None => Err("远端 Sysmon 无法识别操作系统".to_string()),
+    }
 }
 
 async fn exec_ssh_command_capture(
@@ -20527,6 +20562,65 @@ fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSn
         rx_kbps,
         tx_kbps,
         load_average: parse_load_average(loadavg).unwrap_or_default(),
+        memory_total_bytes,
+        memory_available_bytes,
+        processes: parse_sysmon_processes(processes),
+        disks: parse_sysmon_disks(disks),
+        network_interfaces,
+    })
+}
+
+fn parse_remote_macos_sysmon_output(
+    session_id: &str,
+    output: &str,
+) -> Result<SysmonSnapshot, String> {
+    parse_remote_macos_sysmon_output_at(session_id, output, Utc::now())
+}
+
+fn parse_remote_macos_sysmon_output_at(
+    session_id: &str,
+    output: &str,
+    sampled_at: DateTime<Utc>,
+) -> Result<SysmonSnapshot, String> {
+    let boot = section_between(output, "__PORTMATE_BOOT__", "__PORTMATE_CPU__");
+    let cpu = section_between(output, "__PORTMATE_CPU__", "__PORTMATE_MEMORY__");
+    let memory = section_between(output, "__PORTMATE_MEMORY__", "__PORTMATE_NET1__");
+    let net1 = section_between(output, "__PORTMATE_NET1__", "__PORTMATE_NET2__");
+    let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_LOADAVG__");
+    let loadavg = section_between(output, "__PORTMATE_LOADAVG__", "__PORTMATE_PROCESSES__");
+    let processes = section_between(output, "__PORTMATE_PROCESSES__", "__PORTMATE_DISKS__");
+    let disks = output
+        .split("__PORTMATE_DISKS__")
+        .nth(1)
+        .unwrap_or_default();
+
+    let sampled_epoch = u64::try_from(sampled_at.timestamp()).unwrap_or_default();
+    let uptime_seconds = parse_bsd_boot_time_seconds(boot)
+        .map(|boot_epoch| sampled_epoch.saturating_sub(boot_epoch))
+        .unwrap_or_default();
+    let cpu_percent = parse_macos_cpu_percent(cpu).unwrap_or_default();
+    let (memory_total_bytes, memory_available_bytes, memory_percent) =
+        parse_macos_memory_usage(memory).unwrap_or_default();
+    let network_interfaces = network_interface_rates(
+        parse_bsd_network_interfaces(net1),
+        parse_bsd_network_interfaces(net2),
+        REMOTE_SYSMON_SAMPLE_SECONDS,
+    );
+    let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
+
+    if uptime_seconds == 0 && memory_total_bytes == 0 && cpu_percent == 0.0 {
+        return Err("远端未提供 macOS Sysmon 数据".to_string());
+    }
+
+    Ok(SysmonSnapshot {
+        session_id: session_id.to_string(),
+        ts: sampled_at,
+        uptime_seconds,
+        cpu_percent,
+        memory_percent,
+        rx_kbps,
+        tx_kbps,
+        load_average: parse_bsd_load_average(loadavg).unwrap_or_default(),
         memory_total_bytes,
         memory_available_bytes,
         processes: parse_sysmon_processes(processes),
@@ -20626,6 +20720,82 @@ fn parse_load_average(raw: &str) -> Option<[f32; 3]> {
     Some([values.next()??, values.next()??, values.next()??])
 }
 
+fn parse_bsd_load_average(raw: &str) -> Option<[f32; 3]> {
+    let values = raw
+        .split_whitespace()
+        .filter_map(|value| {
+            value
+                .trim_matches(|character: char| character == '{' || character == '}')
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+    (values.len() == 3).then_some([values[0], values[1], values[2]])
+}
+
+fn parse_bsd_boot_time_seconds(raw: &str) -> Option<u64> {
+    let seconds = raw.split("sec =").nth(1)?.trim_start();
+    seconds
+        .split(|character: char| !character.is_ascii_digit())
+        .next()?
+        .parse::<u64>()
+        .ok()
+}
+
+fn parse_macos_cpu_percent(raw: &str) -> Option<f32> {
+    let line = raw.lines().find(|line| line.contains("CPU usage:"))?;
+    let idle = line
+        .split(',')
+        .find(|field| field.contains(" idle"))?
+        .split('%')
+        .next()?
+        .split_whitespace()
+        .last()
+        .and_then(parse_nonnegative_f32)?
+        .clamp(0.0, 100.0);
+    Some(100.0 - idle)
+}
+
+fn parse_macos_memory_usage(raw: &str) -> Option<(u64, u64, f32)> {
+    let total = raw
+        .lines()
+        .find_map(|line| line.trim().parse::<u64>().ok())?;
+    if total == 0 {
+        return None;
+    }
+    let page_size = raw
+        .lines()
+        .find(|line| line.contains("page size of"))
+        .and_then(|line| line.split("page size of").nth(1))
+        .and_then(first_ascii_u64)?;
+    let mut available_pages = 0_u64;
+    for line in raw.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if matches!(
+            name.trim(),
+            "Pages free" | "Pages inactive" | "Pages speculative"
+        ) {
+            available_pages =
+                available_pages.saturating_add(first_ascii_u64(value).unwrap_or_default());
+        }
+    }
+    let available = available_pages.saturating_mul(page_size).min(total);
+    let percent = ((total - available) as f32 / total as f32 * 100.0).clamp(0.0, 100.0);
+    Some((total, available, percent))
+}
+
+fn first_ascii_u64(value: &str) -> Option<u64> {
+    value
+        .split(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse::<u64>()
+        .ok()
+}
+
 #[cfg(target_os = "linux")]
 fn read_cpu_times() -> Option<(u64, u64)> {
     let raw = fs::read_to_string("/proc/stat").ok()?;
@@ -20677,6 +20847,52 @@ fn parse_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
             let tx = parts[8].parse::<u64>().unwrap_or_default();
             interfaces.insert(name, (rx, tx));
         }
+    }
+    interfaces
+}
+
+fn parse_bsd_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
+    let lines = raw.lines().collect::<Vec<_>>();
+    let Some((header_index, header)) = lines.iter().enumerate().find_map(|(index, line)| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        (fields.contains(&"Name") && fields.contains(&"Ibytes") && fields.contains(&"Obytes"))
+            .then_some((index, fields))
+    }) else {
+        return BTreeMap::new();
+    };
+    let Some(name_index) = header.iter().position(|field| *field == "Name") else {
+        return BTreeMap::new();
+    };
+    let Some(rx_index) = header.iter().position(|field| *field == "Ibytes") else {
+        return BTreeMap::new();
+    };
+    let Some(tx_index) = header.iter().position(|field| *field == "Obytes") else {
+        return BTreeMap::new();
+    };
+    let minimum_fields = name_index.max(rx_index).max(tx_index) + 1;
+    let mut interfaces = BTreeMap::new();
+    for line in lines.into_iter().skip(header_index + 1) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < minimum_fields {
+            continue;
+        }
+        let name = bounded_sysmon_label(fields[name_index].trim_end_matches('*'), 64);
+        let Some(rx_bytes) = fields[rx_index].parse::<u64>().ok() else {
+            continue;
+        };
+        let Some(tx_bytes) = fields[tx_index].parse::<u64>().ok() else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        interfaces
+            .entry(name)
+            .and_modify(|(rx, tx): &mut (u64, u64)| {
+                *rx = (*rx).max(rx_bytes);
+                *tx = (*tx).max(tx_bytes);
+            })
+            .or_insert((rx_bytes, tx_bytes));
     }
     interfaces
 }
@@ -24527,6 +24743,36 @@ mod tests {
         assert_eq!(snapshot.processes[1].name, "database worker");
         assert_eq!(snapshot.disks.len(), 1);
         assert_eq!(snapshot.network_interfaces.len(), 1);
+    }
+
+    #[test]
+    fn remote_macos_sysmon_output_parses_bounded_system_details() {
+        let output = "__PORTMATE_BOOT__\n{ sec = 1700000000, usec = 0 } Tue Nov 14 22:13:20 2023\n\
+            __PORTMATE_CPU__\nCPU usage: 12.50% user, 7.50% sys, 80.00% idle\n\
+            __PORTMATE_MEMORY__\n4096000000\nMach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 100000.\nPages active: 500000.\nPages inactive: 140000.\nPages speculative: 10000.\n\
+            __PORTMATE_NET1__\nName Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\nen0 1500 <Link#4> aa:bb:cc:dd:ee:ff 10 0 1024 20 0 2048 0\nen0 1500 192.0.2 192.0.2.10 10 0 1024 20 0 2048 0\nlo0 16384 <Link#1> 00:00:00:00:00:00 5 0 500 5 0 500 0\n\
+            __PORTMATE_NET2__\nName Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\nen0 1500 <Link#4> aa:bb:cc:dd:ee:ff 12 0 3072 22 0 4096 0\nen0 1500 192.0.2 192.0.2.10 12 0 3072 22 0 4096 0\nlo0 16384 <Link#1> 00:00:00:00:00:00 5 0 500 5 0 500 0\n\
+            __PORTMATE_LOADAVG__\n{ 1.25 0.50 0.25 }\n\
+            __PORTMATE_PROCESSES__\n42 25.0 2.5 2048 WindowServer\n84 10.0 1.0 1024 helper process\n\
+            __PORTMATE_DISKS__\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s1s1 1000 750 250 75% /\n";
+        let sampled_at = "2023-11-14T22:15:23Z".parse::<DateTime<Utc>>().unwrap();
+        let snapshot =
+            parse_remote_macos_sysmon_output_at("mac-session", output, sampled_at).unwrap();
+
+        assert_eq!(snapshot.session_id, "mac-session");
+        assert_eq!(snapshot.uptime_seconds, 123);
+        assert_eq!(snapshot.cpu_percent, 20.0);
+        assert_eq!(snapshot.memory_total_bytes, 4_096_000_000);
+        assert_eq!(snapshot.memory_available_bytes, 1_024_000_000);
+        assert_eq!(snapshot.memory_percent, 75.0);
+        assert_eq!(snapshot.load_average, [1.25, 0.5, 0.25]);
+        assert_eq!((snapshot.rx_kbps, snapshot.tx_kbps), (10.0, 10.0));
+        assert_eq!(snapshot.network_interfaces.len(), 2);
+        assert_eq!(snapshot.network_interfaces[0].name, "en0");
+        assert_eq!(snapshot.processes.len(), 2);
+        assert_eq!(snapshot.processes[1].name, "helper process");
+        assert_eq!(snapshot.disks.len(), 1);
+        assert_eq!(snapshot.disks[0].mount_point, "/");
     }
 
     #[cfg(target_os = "linux")]
