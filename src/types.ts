@@ -142,6 +142,8 @@ export interface TcpConnection {
   keepaliveIdleSeconds: number;
   keepaliveIntervalSeconds: number;
   keepaliveRetries: number;
+  telnetBinary: boolean;
+  telnetNaws: boolean;
 }
 
 export interface TrustedHostKey {

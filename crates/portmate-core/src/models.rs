@@ -440,6 +440,10 @@ pub struct TcpConnection {
     pub keepalive_interval_seconds: u64,
     #[serde(default = "default_tcp_keepalive_retries")]
     pub keepalive_retries: u32,
+    #[serde(default = "default_true")]
+    pub telnet_binary: bool,
+    #[serde(default = "default_true")]
+    pub telnet_naws: bool,
 }
 
 pub const MIN_TCP_RECONNECT_DELAY_MS: u64 = 100;
@@ -502,6 +506,8 @@ impl Default for TcpConnection {
             keepalive_idle_seconds: DEFAULT_TCP_KEEPALIVE_IDLE_SECONDS,
             keepalive_interval_seconds: DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS,
             keepalive_retries: DEFAULT_TCP_KEEPALIVE_RETRIES,
+            telnet_binary: true,
+            telnet_naws: true,
         }
     }
 }
@@ -972,6 +978,21 @@ mod tests {
             DEFAULT_TCP_KEEPALIVE_INTERVAL_SECONDS
         );
         assert_eq!(legacy.keepalive_retries, DEFAULT_TCP_KEEPALIVE_RETRIES);
+        assert!(legacy.telnet_binary);
+        assert!(legacy.telnet_naws);
+
+        let disabled: TcpConnection = serde_json::from_str(
+            r#"{
+                "host": "console.example",
+                "port": 23,
+                "reconnect": true,
+                "telnetBinary": false,
+                "telnetNaws": false
+            }"#,
+        )
+        .expect("explicit Telnet feature switches should deserialize");
+        assert!(!disabled.telnet_binary);
+        assert!(!disabled.telnet_naws);
 
         let mut invalid = TcpConnection {
             reconnect_delay_ms: 0,

@@ -33,6 +33,8 @@ describe("TCP connection settings", () => {
       keepaliveIdleSeconds: Number.MAX_SAFE_INTEGER,
       keepaliveIntervalSeconds: 4.9,
       keepaliveRetries: 999,
+      telnetBinary: true,
+      telnetNaws: true,
     });
 
     expect(normalized.reconnectDelayMs).toBe(tcpConnectionBounds.reconnectDelayMs.min);
@@ -52,6 +54,8 @@ describe("TCP connection settings", () => {
       keepaliveIdleSeconds: 90,
       keepaliveIntervalSeconds: 15,
       keepaliveRetries: 6,
+      telnetBinary: false,
+      telnetNaws: false,
     });
 
     expect(normalized).toMatchObject({
@@ -61,6 +65,8 @@ describe("TCP connection settings", () => {
       keepaliveIdleSeconds: 90,
       keepaliveIntervalSeconds: 15,
       keepaliveRetries: 6,
+      telnetBinary: false,
+      telnetNaws: false,
     });
   });
 });

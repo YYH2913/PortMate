@@ -6,6 +6,8 @@ export const tcpConnectionDefaults = {
   keepaliveIdleSeconds: 30,
   keepaliveIntervalSeconds: 10,
   keepaliveRetries: 3,
+  telnetBinary: true,
+  telnetNaws: true,
 } as const;
 
 export const tcpConnectionBounds = {
@@ -24,6 +26,8 @@ export function normalizeTcpConnectionSettings<T extends TcpConnection>(connecti
   return {
     ...connection,
     reconnect: typeof connection.reconnect === "boolean" ? connection.reconnect : true,
+    telnetBinary: typeof connection.telnetBinary === "boolean" ? connection.telnetBinary : true,
+    telnetNaws: typeof connection.telnetNaws === "boolean" ? connection.telnetNaws : true,
     reconnectDelayMs: boundedInteger(
       connection.reconnectDelayMs,
       tcpConnectionDefaults.reconnectDelayMs,

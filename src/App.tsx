@@ -6642,12 +6642,16 @@ function TcpLikeAdvancedFields({
           </>
         ) : null}
         {protocol === "Telnet" ? (
-          <DialogField label="回显:(E)">
-            <select value={prefs.telnetLocalEcho ? "on" : "off"} onChange={(event) => updatePref("telnetLocalEcho", event.target.value === "on")}>
-              <option value="off">远端控制</option>
-              <option value="on">本地回显</option>
-            </select>
-          </DialogField>
+          <>
+            <DialogToggleField label="BINARY:" checked={tcp.telnetBinary} onChange={(telnetBinary) => updateTcp({ telnetBinary })} />
+            <DialogToggleField label="NAWS:" checked={tcp.telnetNaws} onChange={(telnetNaws) => updateTcp({ telnetNaws })} />
+            <DialogField label="回显:(E)">
+              <select value={prefs.telnetLocalEcho ? "on" : "off"} onChange={(event) => updatePref("telnetLocalEcho", event.target.value === "on")}>
+                <option value="off">远端控制</option>
+                <option value="on">本地回显</option>
+              </select>
+            </DialogField>
+          </>
         ) : null}
       </>
     );

@@ -33,7 +33,7 @@ use std::ops::Deref;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
@@ -558,6 +558,7 @@ struct TcpRuntime {
     writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
+    telnet: Option<Arc<TelnetRuntimeState>>,
 }
 
 struct SerialRuntime {
@@ -1966,7 +1967,7 @@ async fn send_text_inner_with_context(
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
-    let wire_text = outbound_text_for_session(&io.store, &session_id, &text)?;
+    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
     write_session_bytes(
         &io.store,
         &io.runtimes.ssh,
@@ -2344,11 +2345,19 @@ async fn write_session_bytes(
 
 fn outbound_text_for_session(
     store: &Arc<Mutex<SessionStore>>,
+    tcp_runtimes: &Arc<Mutex<HashMap<String, TcpRuntime>>>,
     session_id: &str,
     text: &str,
 ) -> Result<String, String> {
     if is_telnet_session(store, session_id)? {
-        Ok(encode_telnet_outbound_text(text))
+        let local_binary = {
+            let runtimes = tcp_runtimes.lock().map_err(|error| error.to_string())?;
+            runtimes
+                .get(session_id)
+                .and_then(|runtime| runtime.telnet.as_ref())
+                .is_some_and(|telnet| telnet.local_binary.load(Ordering::SeqCst))
+        };
+        Ok(encode_telnet_outbound_text(text, local_binary))
     } else {
         Ok(text.to_string())
     }
@@ -2373,7 +2382,10 @@ fn is_telnet_session(store: &Arc<Mutex<SessionStore>>, session_id: &str) -> Resu
         .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_))))
 }
 
-fn encode_telnet_outbound_text(text: &str) -> String {
+fn encode_telnet_outbound_text(text: &str, local_binary: bool) -> String {
+    if local_binary {
+        return text.to_string();
+    }
     let mut output = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -2412,6 +2424,15 @@ async fn resize_session(
     cols: u16,
     rows: u16,
 ) -> Result<SessionSummary, String> {
+    resize_session_inner(state.inner(), session_id, cols, rows).await
+}
+
+async fn resize_session_inner(
+    state: &AppState,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<SessionSummary, String> {
     if cols == 0 || rows == 0 {
         return Err("terminal size must be non-zero".to_string());
     }
@@ -2446,6 +2467,33 @@ async fn resize_session(
                 pixel_height: 0,
             })
             .map_err(|error| format!("Shell PTY resize failed: {error}"))?;
+    }
+
+    let telnet_target = {
+        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections.get(&session_id).and_then(|runtime| {
+            runtime
+                .telnet
+                .as_ref()
+                .map(|telnet| (Arc::clone(&runtime.writer), Arc::clone(telnet)))
+        })
+    };
+    if let Some((writer, telnet)) = telnet_target {
+        let io = state.session_io();
+        let lane = outbound_lane(&io.store_path, &session_id)?;
+        let _lane_guard = lane.lock().await;
+        telnet.cols.store(cols, Ordering::SeqCst);
+        telnet.rows.store(rows, Ordering::SeqCst);
+        if telnet.naws_negotiated.load(Ordering::SeqCst) {
+            let message = telnet_naws_message(cols, rows);
+            writer
+                .lock()
+                .await
+                .write_all(&message)
+                .await
+                .map_err(|error| format!("Telnet NAWS resize failed: {error}"))?;
+            record_outbound_control_event(&io, &session_id, &message, "telnet-naws", true);
+        }
     }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -12069,7 +12117,9 @@ fn tcp_reconnect_attempt_matches_profile(
 ) -> bool {
     let attempt = normalize_session_profile(attempt.clone());
     let latest = normalize_session_profile(latest.clone());
-    tcp_reconnect_enabled(&latest) && attempt.connection == latest.connection
+    tcp_reconnect_enabled(&latest)
+        && attempt.connection == latest.connection
+        && attempt.terminal == latest.terminal
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12209,6 +12259,7 @@ async fn open_tcp_session(
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
+    let telnet = TelnetRuntimeState::from_profile(&profile);
     {
         let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
         connections.insert(
@@ -12218,6 +12269,7 @@ async fn open_tcp_session(
                 writer: Arc::clone(&writer),
                 tap: tap.clone(),
                 closed: Arc::clone(&closed),
+                telnet: telnet.as_ref().map(Arc::clone),
             },
         );
     }
@@ -12237,6 +12289,7 @@ async fn open_tcp_session(
         writer,
         read_half,
         closed,
+        telnet,
     }));
     Ok(summary)
 }
@@ -16990,11 +17043,42 @@ const TELNET_WILL: u8 = 251;
 const TELNET_WONT: u8 = 252;
 const TELNET_DO: u8 = 253;
 const TELNET_DONT: u8 = 254;
+const TELNET_OPT_BINARY: u8 = 0;
 const TELNET_OPT_ECHO: u8 = 1;
 const TELNET_OPT_SUPPRESS_GO_AHEAD: u8 = 3;
 const TELNET_OPT_TERMINAL_TYPE: u8 = 24;
+const TELNET_OPT_NAWS: u8 = 31;
 const TELNET_TTYPE_IS: u8 = 0;
 const TELNET_TTYPE_SEND: u8 = 1;
+
+struct TelnetRuntimeState {
+    binary_enabled: bool,
+    naws_enabled: bool,
+    local_binary: AtomicBool,
+    remote_binary: AtomicBool,
+    naws_negotiated: AtomicBool,
+    cols: AtomicU16,
+    rows: AtomicU16,
+    terminal_type: String,
+}
+
+impl TelnetRuntimeState {
+    fn from_profile(profile: &SessionProfile) -> Option<Arc<Self>> {
+        let ConnectionConfig::Telnet(tcp) = &profile.connection else {
+            return None;
+        };
+        Some(Arc::new(Self {
+            binary_enabled: tcp.telnet_binary,
+            naws_enabled: tcp.telnet_naws,
+            local_binary: AtomicBool::new(false),
+            remote_binary: AtomicBool::new(false),
+            naws_negotiated: AtomicBool::new(false),
+            cols: AtomicU16::new(profile.terminal.cols),
+            rows: AtomicU16::new(profile.terminal.rows),
+            terminal_type: profile.terminal.term.clone(),
+        }))
+    }
+}
 
 enum TelnetState {
     Data,
@@ -17008,18 +17092,25 @@ struct TelnetNegotiator {
     state: TelnetState,
     subnegotiation: Vec<u8>,
     pending_cr: bool,
+    runtime: Arc<TelnetRuntimeState>,
 }
 
 impl TelnetNegotiator {
-    fn new() -> Self {
+    fn new(runtime: Arc<TelnetRuntimeState>) -> Self {
         Self {
             state: TelnetState::Data,
             subnegotiation: Vec::new(),
             pending_cr: false,
+            runtime,
         }
     }
 
-    fn push_data_byte(&mut self, byte: u8, output: &mut Vec<u8>) {
+    fn push_data_byte(&mut self, byte: u8, output: &mut Vec<u8>, remote_binary: bool) {
+        if remote_binary {
+            self.flush_pending_cr(output);
+            output.push(byte);
+            return;
+        }
         if self.pending_cr {
             output.push(b'\r');
             self.pending_cr = false;
@@ -17050,6 +17141,7 @@ impl TelnetNegotiator {
     fn filter(&mut self, input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
         let mut output = Vec::with_capacity(input.len());
         let mut replies = Vec::new();
+        let mut remote_binary = self.runtime.remote_binary.load(Ordering::SeqCst);
         for byte in input {
             match self.state {
                 TelnetState::Data => {
@@ -17057,12 +17149,12 @@ impl TelnetNegotiator {
                         self.flush_pending_cr(&mut output);
                         self.state = TelnetState::Iac;
                     } else {
-                        self.push_data_byte(*byte, &mut output);
+                        self.push_data_byte(*byte, &mut output, remote_binary);
                     }
                 }
                 TelnetState::Iac => match *byte {
                     TELNET_IAC => {
-                        self.push_data_byte(TELNET_IAC, &mut output);
+                        self.push_data_byte(TELNET_IAC, &mut output, remote_binary);
                         self.state = TelnetState::Data;
                     }
                     TELNET_DO | TELNET_DONT | TELNET_WILL | TELNET_WONT => {
@@ -17077,9 +17169,8 @@ impl TelnetNegotiator {
                     }
                 },
                 TelnetState::Command(command) => {
-                    if let Some(reply) = telnet_option_reply(command, *byte) {
-                        replies.push(reply);
-                    }
+                    replies.extend(telnet_option_replies(command, *byte, &self.runtime));
+                    remote_binary = self.runtime.remote_binary.load(Ordering::SeqCst);
                     self.state = TelnetState::Data;
                 }
                 TelnetState::Subnegotiation => {
@@ -17091,7 +17182,10 @@ impl TelnetNegotiator {
                 }
                 TelnetState::SubnegotiationIac => {
                     if *byte == TELNET_SE {
-                        if let Some(reply) = telnet_subnegotiation_reply(&self.subnegotiation) {
+                        if let Some(reply) = telnet_subnegotiation_reply(
+                            &self.subnegotiation,
+                            &self.runtime.terminal_type,
+                        ) {
                             replies.push(reply);
                         }
                         self.subnegotiation.clear();
@@ -17111,24 +17205,67 @@ impl TelnetNegotiator {
     }
 }
 
-fn telnet_option_reply(command: u8, option: u8) -> Option<Vec<u8>> {
+fn telnet_option_replies(command: u8, option: u8, runtime: &TelnetRuntimeState) -> Vec<Vec<u8>> {
     let response = match command {
         TELNET_DO => match option {
+            TELNET_OPT_BINARY if runtime.binary_enabled => {
+                runtime.local_binary.store(true, Ordering::SeqCst);
+                TELNET_WILL
+            }
+            TELNET_OPT_BINARY => {
+                runtime.local_binary.store(false, Ordering::SeqCst);
+                TELNET_WONT
+            }
+            TELNET_OPT_NAWS if runtime.naws_enabled => {
+                runtime.naws_negotiated.store(true, Ordering::SeqCst);
+                TELNET_WILL
+            }
+            TELNET_OPT_NAWS => {
+                runtime.naws_negotiated.store(false, Ordering::SeqCst);
+                TELNET_WONT
+            }
             TELNET_OPT_SUPPRESS_GO_AHEAD | TELNET_OPT_TERMINAL_TYPE => TELNET_WILL,
             _ => TELNET_WONT,
         },
-        TELNET_DONT => TELNET_WONT,
+        TELNET_DONT => {
+            if option == TELNET_OPT_BINARY {
+                runtime.local_binary.store(false, Ordering::SeqCst);
+            } else if option == TELNET_OPT_NAWS {
+                runtime.naws_negotiated.store(false, Ordering::SeqCst);
+            }
+            TELNET_WONT
+        }
         TELNET_WILL => match option {
+            TELNET_OPT_BINARY if runtime.binary_enabled => {
+                runtime.remote_binary.store(true, Ordering::SeqCst);
+                TELNET_DO
+            }
+            TELNET_OPT_BINARY => {
+                runtime.remote_binary.store(false, Ordering::SeqCst);
+                TELNET_DONT
+            }
             TELNET_OPT_ECHO | TELNET_OPT_SUPPRESS_GO_AHEAD => TELNET_DO,
             _ => TELNET_DONT,
         },
-        TELNET_WONT => TELNET_DONT,
-        _ => return None,
+        TELNET_WONT => {
+            if option == TELNET_OPT_BINARY {
+                runtime.remote_binary.store(false, Ordering::SeqCst);
+            }
+            TELNET_DONT
+        }
+        _ => return Vec::new(),
     };
-    Some(vec![TELNET_IAC, response, option])
+    let mut replies = vec![vec![TELNET_IAC, response, option]];
+    if command == TELNET_DO && option == TELNET_OPT_NAWS && response == TELNET_WILL {
+        replies.push(telnet_naws_message(
+            runtime.cols.load(Ordering::SeqCst),
+            runtime.rows.load(Ordering::SeqCst),
+        ));
+    }
+    replies
 }
 
-fn telnet_subnegotiation_reply(payload: &[u8]) -> Option<Vec<u8>> {
+fn telnet_subnegotiation_reply(payload: &[u8], terminal_type: &str) -> Option<Vec<u8>> {
     if payload.first().copied() == Some(TELNET_OPT_TERMINAL_TYPE)
         && payload.get(1).copied() == Some(TELNET_TTYPE_SEND)
     {
@@ -17138,11 +17275,28 @@ fn telnet_subnegotiation_reply(payload: &[u8]) -> Option<Vec<u8>> {
             TELNET_OPT_TERMINAL_TYPE,
             TELNET_TTYPE_IS,
         ];
-        reply.extend_from_slice(b"xterm-256color");
+        append_telnet_subnegotiation_payload(&mut reply, terminal_type.as_bytes());
         reply.extend_from_slice(&[TELNET_IAC, TELNET_SE]);
         return Some(reply);
     }
     None
+}
+
+fn append_telnet_subnegotiation_payload(output: &mut Vec<u8>, payload: &[u8]) {
+    for byte in payload {
+        output.push(*byte);
+        if *byte == TELNET_IAC {
+            output.push(*byte);
+        }
+    }
+}
+
+fn telnet_naws_message(cols: u16, rows: u16) -> Vec<u8> {
+    let mut message = vec![TELNET_IAC, TELNET_SB, TELNET_OPT_NAWS];
+    append_telnet_subnegotiation_payload(&mut message, &cols.to_be_bytes());
+    append_telnet_subnegotiation_payload(&mut message, &rows.to_be_bytes());
+    message.extend_from_slice(&[TELNET_IAC, TELNET_SE]);
+    message
 }
 
 struct TcpReadTask {
@@ -17154,6 +17308,7 @@ struct TcpReadTask {
     writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     read_half: OwnedReadHalf,
     closed: Arc<AtomicBool>,
+    telnet: Option<Arc<TelnetRuntimeState>>,
 }
 
 fn read_tcp_stream(
@@ -17169,18 +17324,37 @@ fn read_tcp_stream(
             writer,
             mut read_half,
             closed,
+            telnet,
         } = task;
         let io = state.session_io();
         let session_id = profile.id.clone();
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
-        let mut telnet = (label == "Telnet").then(TelnetNegotiator::new);
+        let mut telnet = telnet.map(TelnetNegotiator::new);
 
         'read_loop: loop {
             match read_half.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(size) => {
+                    let telnet_lane = if telnet.is_some() {
+                        match outbound_lane(&io.store_path, &session_id) {
+                            Ok(lane) => Some(lane),
+                            Err(error) => {
+                                eprintln!(
+                                    "PortMate: Telnet negotiation outbound lane failed: {error}"
+                                );
+                                break 'read_loop;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let _telnet_lane_guard = if let Some(lane) = telnet_lane.as_ref() {
+                        Some(lane.lock().await)
+                    } else {
+                        None
+                    };
                     let (bytes, replies) = if let Some(negotiator) = telnet.as_mut() {
                         negotiator.filter(&buffer[..size])
                     } else {
@@ -17198,16 +17372,6 @@ fn read_tcp_stream(
                         has_unpersisted_stream = true;
                     }
                     for reply in replies {
-                        let lane = match outbound_lane(&io.store_path, &session_id) {
-                            Ok(lane) => lane,
-                            Err(error) => {
-                                eprintln!(
-                                    "PortMate: Telnet negotiation outbound lane failed: {error}"
-                                );
-                                break 'read_loop;
-                            }
-                        };
-                        let _lane_guard = lane.lock().await;
                         let write_result = {
                             let mut writer = writer.lock().await;
                             writer.write_all(&reply).await
@@ -17646,6 +17810,7 @@ async fn reconnect_tcp_session(
         let writer = Arc::new(tokio::sync::Mutex::new(write_half));
         let (tap, _) = broadcast::channel(1024);
         let next_closed = Arc::new(AtomicBool::new(false));
+        let telnet = TelnetRuntimeState::from_profile(&profile);
         let install = match state.tcp.lock() {
             Err(error) => TcpReconnectInstallDecision::Failed(error.to_string()),
             Ok(mut connections) => {
@@ -17692,6 +17857,7 @@ async fn reconnect_tcp_session(
                                             writer: Arc::clone(&writer),
                                             tap: tap.clone(),
                                             closed: Arc::clone(&next_closed),
+                                            telnet: telnet.as_ref().map(Arc::clone),
                                         },
                                     );
                                     store.record_system_event(
@@ -17746,6 +17912,7 @@ async fn reconnect_tcp_session(
             writer,
             read_half,
             closed: next_closed,
+            telnet,
         }));
         return;
     }
@@ -22694,7 +22861,9 @@ mod tests {
 
     #[test]
     fn telnet_negotiator_filters_iac_and_replies() {
-        let mut negotiator = TelnetNegotiator::new();
+        let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+        let mut negotiator =
+            TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
         let (output, replies) = negotiator.filter(&[
             b'h',
             b'i',
@@ -22716,14 +22885,104 @@ mod tests {
     }
 
     #[test]
-    fn telnet_outbound_text_uses_crlf() {
-        assert_eq!(encode_telnet_outbound_text("show\n"), "show\r\n");
-        assert_eq!(encode_telnet_outbound_text("show\r\n"), "show\r\n");
+    fn telnet_binary_negotiation_controls_directional_nvt_decoding() {
+        let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+        let runtime = TelnetRuntimeState::from_profile(&profile).unwrap();
+        let mut negotiator = TelnetNegotiator::new(Arc::clone(&runtime));
+
+        let (binary, replies) =
+            negotiator.filter(&[TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY, b'\r', 0]);
+        assert_eq!(binary, [b'\r', 0]);
+        assert_eq!(replies, [vec![TELNET_IAC, TELNET_DO, TELNET_OPT_BINARY]]);
+        assert!(runtime.remote_binary.load(Ordering::SeqCst));
+
+        let (nvt, replies) =
+            negotiator.filter(&[TELNET_IAC, TELNET_WONT, TELNET_OPT_BINARY, b'\r', 0]);
+        assert_eq!(nvt, b"\r");
+        assert_eq!(replies, [vec![TELNET_IAC, TELNET_DONT, TELNET_OPT_BINARY]]);
+        assert!(!runtime.remote_binary.load(Ordering::SeqCst));
+
+        let (_, replies) = negotiator.filter(&[
+            TELNET_IAC,
+            TELNET_DO,
+            TELNET_OPT_BINARY,
+            TELNET_IAC,
+            TELNET_DONT,
+            TELNET_OPT_BINARY,
+        ]);
         assert_eq!(
-            encode_telnet_outbound_text("a\rb\r\nc\n"),
+            replies,
+            [
+                vec![TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY],
+                vec![TELNET_IAC, TELNET_WONT, TELNET_OPT_BINARY],
+            ]
+        );
+        assert!(!runtime.local_binary.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn telnet_disabled_binary_and_naws_options_are_rejected() {
+        let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+            telnet_binary: false,
+            telnet_naws: false,
+            ..Default::default()
+        }));
+        let runtime = TelnetRuntimeState::from_profile(&profile).unwrap();
+        let mut negotiator = TelnetNegotiator::new(Arc::clone(&runtime));
+        let (_, replies) = negotiator.filter(&[
+            TELNET_IAC,
+            TELNET_DO,
+            TELNET_OPT_BINARY,
+            TELNET_IAC,
+            TELNET_WILL,
+            TELNET_OPT_BINARY,
+            TELNET_IAC,
+            TELNET_DO,
+            TELNET_OPT_NAWS,
+        ]);
+        assert_eq!(
+            replies,
+            [
+                vec![TELNET_IAC, TELNET_WONT, TELNET_OPT_BINARY],
+                vec![TELNET_IAC, TELNET_DONT, TELNET_OPT_BINARY],
+                vec![TELNET_IAC, TELNET_WONT, TELNET_OPT_NAWS],
+            ]
+        );
+        assert!(!runtime.local_binary.load(Ordering::SeqCst));
+        assert!(!runtime.remote_binary.load(Ordering::SeqCst));
+        assert!(!runtime.naws_negotiated.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn telnet_naws_escapes_iac_dimension_bytes() {
+        assert_eq!(
+            telnet_naws_message(255, 511),
+            [
+                TELNET_IAC,
+                TELNET_SB,
+                TELNET_OPT_NAWS,
+                0,
+                TELNET_IAC,
+                TELNET_IAC,
+                1,
+                TELNET_IAC,
+                TELNET_IAC,
+                TELNET_IAC,
+                TELNET_SE,
+            ]
+        );
+    }
+
+    #[test]
+    fn telnet_outbound_text_uses_crlf() {
+        assert_eq!(encode_telnet_outbound_text("show\n", false), "show\r\n");
+        assert_eq!(encode_telnet_outbound_text("show\r\n", false), "show\r\n");
+        assert_eq!(
+            encode_telnet_outbound_text("a\rb\r\nc\n", false),
             "a\r\0b\r\nc\r\n"
         );
-        assert_eq!(encode_telnet_outbound_text("ÿ\n"), "ÿ\r\n");
+        assert_eq!(encode_telnet_outbound_text("ÿ\n", false), "ÿ\r\n");
+        assert_eq!(encode_telnet_outbound_text("show\n", true), "show\n");
         assert_eq!(
             terminal_key_sequence_for_protocol("Enter", true).unwrap(),
             "\r\n"
@@ -22748,7 +23007,9 @@ mod tests {
 
     #[test]
     fn telnet_negotiator_handles_fragmented_nvt_and_subnegotiation() {
-        let mut negotiator = TelnetNegotiator::new();
+        let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+        let mut negotiator =
+            TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
         let (first, replies) = negotiator.filter(b"left\r");
         assert_eq!(first, b"left");
         assert!(replies.is_empty());
@@ -22926,6 +23187,189 @@ mod tests {
     }
 
     #[test]
+    fn telnet_loopback_applies_binary_naws_resize_and_profile_terminal_type() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let (negotiated_tx, negotiated_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                accepted_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                socket
+                    .write_all(&[
+                        TELNET_IAC,
+                        TELNET_DO,
+                        TELNET_OPT_BINARY,
+                        TELNET_IAC,
+                        TELNET_WILL,
+                        TELNET_OPT_BINARY,
+                        TELNET_IAC,
+                        TELNET_DO,
+                        TELNET_OPT_NAWS,
+                        TELNET_IAC,
+                        TELNET_DO,
+                        TELNET_OPT_TERMINAL_TYPE,
+                    ])
+                    .await
+                    .unwrap();
+
+                let initial_naws = telnet_naws_message(255, 511);
+                let expected_negotiation = [
+                    [TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY].as_slice(),
+                    [TELNET_IAC, TELNET_DO, TELNET_OPT_BINARY].as_slice(),
+                    [TELNET_IAC, TELNET_WILL, TELNET_OPT_NAWS].as_slice(),
+                    initial_naws.as_slice(),
+                    [TELNET_IAC, TELNET_WILL, TELNET_OPT_TERMINAL_TYPE].as_slice(),
+                ]
+                .concat();
+                let mut negotiation = vec![0_u8; expected_negotiation.len()];
+                socket.read_exact(&mut negotiation).await.unwrap();
+                assert_eq!(negotiation, expected_negotiation);
+
+                socket
+                    .write_all(&[
+                        TELNET_IAC,
+                        TELNET_SB,
+                        TELNET_OPT_TERMINAL_TYPE,
+                        TELNET_TTYPE_SEND,
+                        TELNET_IAC,
+                        TELNET_SE,
+                    ])
+                    .await
+                    .unwrap();
+                let expected_terminal = [
+                    [
+                        TELNET_IAC,
+                        TELNET_SB,
+                        TELNET_OPT_TERMINAL_TYPE,
+                        TELNET_TTYPE_IS,
+                    ]
+                    .as_slice(),
+                    b"vt100".as_slice(),
+                    [TELNET_IAC, TELNET_SE].as_slice(),
+                ]
+                .concat();
+                let mut terminal = vec![0_u8; expected_terminal.len()];
+                socket.read_exact(&mut terminal).await.unwrap();
+                assert_eq!(terminal, expected_terminal);
+                socket.write_all(&[b'\r', 0]).await.unwrap();
+                negotiated_tx.send(()).unwrap();
+
+                let mut text = [0_u8; 5];
+                socket.read_exact(&mut text).await.unwrap();
+                assert_eq!(&text, b"show\n");
+                for expected in [telnet_naws_message(80, 24), telnet_naws_message(100, 40)] {
+                    let mut resize = vec![0_u8; expected.len()];
+                    socket.read_exact(&mut resize).await.unwrap();
+                    assert_eq!(resize, expected);
+                }
+            });
+
+            let mut profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            profile.terminal.term = "vt100".to_string();
+            profile.logging.enabled = true;
+            profile.logging.raw = true;
+            profile.logging.text = false;
+            profile.logging.jsonl = false;
+            let root = std::env::temp_dir()
+                .join(format!("portmate-telnet-binary-naws-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            accepted_rx.await.unwrap();
+
+            resize_session_inner(&state, profile.id.clone(), 255, 511)
+                .await
+                .unwrap();
+            release_tx.send(()).unwrap();
+            negotiated_rx.await.unwrap();
+
+            let text_event =
+                send_text_inner(state.session_io(), profile.id.clone(), "show\n".to_string())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                read_log_bytes_ref(&state.store_path, text_event.bytes_ref.as_deref().unwrap())
+                    .unwrap()
+                    .2,
+                b"show\n"
+            );
+            resize_session_inner(&state, profile.id.clone(), 80, 24)
+                .await
+                .unwrap();
+            let summary = resize_session_inner(&state, profile.id.clone(), 100, 40)
+                .await
+                .unwrap();
+            assert_eq!(
+                (summary.profile.terminal.cols, summary.profile.terminal.rows),
+                (100, 40)
+            );
+
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("Telnet BINARY/NAWS server timed out")
+                .expect("Telnet BINARY/NAWS server failed");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let disconnected = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .is_some_and(|summary| {
+                            summary.runtime.status == SessionStatus::Disconnected
+                        });
+                    if disconnected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Telnet BINARY/NAWS runtime did not close after EOF");
+
+            let store = state.store.lock().unwrap();
+            let stdout = store
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == profile.id && event.stream == EventStream::Stdout
+                })
+                .filter_map(|event| event.text.as_deref())
+                .collect::<String>();
+            assert!(stdout.contains("\r\0"));
+            let control_bytes = store
+                .events
+                .iter()
+                .filter(|event| {
+                    event.session_id == profile.id
+                        && event.direction == EventDirection::Outbound
+                        && event.stream == EventStream::Control
+                })
+                .map(|event| {
+                    read_log_bytes_ref(&state.store_path, event.bytes_ref.as_deref().unwrap())
+                        .unwrap()
+                        .2
+                })
+                .collect::<Vec<_>>();
+            assert!(control_bytes.contains(&telnet_naws_message(255, 511)));
+            assert!(control_bytes.contains(&telnet_naws_message(80, 24)));
+            assert!(control_bytes.contains(&telnet_naws_message(100, 40)));
+            drop(store);
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
     fn telnet_user_sends_bind_exact_wire_bytes_to_outbound_events() {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -23063,6 +23507,7 @@ mod tests {
                     writer: Arc::new(tokio::sync::Mutex::new(writer)),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
                 },
             );
 
@@ -23179,13 +23624,15 @@ mod tests {
             let mut client = connect_tcp_socket(&tcp, "Telnet").await.unwrap();
             let mut incoming = [0_u8; 10];
             client.read_exact(&mut incoming).await.unwrap();
-            let mut negotiator = TelnetNegotiator::new();
+            let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+            let mut negotiator =
+                TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
             let (text, replies) = negotiator.filter(&incoming);
             assert_eq!(text, b"login: ");
             assert_eq!(replies.len(), 1);
             client.write_all(&replies[0]).await.unwrap();
             client
-                .write_all(encode_telnet_outbound_text("show\n").as_bytes())
+                .write_all(encode_telnet_outbound_text("show\n", false).as_bytes())
                 .await
                 .unwrap();
             client
@@ -24723,6 +25170,13 @@ mod tests {
         renamed.name = "Renamed TCP".to_string();
         assert!(tcp_reconnect_attempt_matches_profile(&profile, &renamed));
 
+        let mut terminal_updated = profile.clone();
+        terminal_updated.terminal.term = "vt100".to_string();
+        assert!(!tcp_reconnect_attempt_matches_profile(
+            &profile,
+            &terminal_updated
+        ));
+
         let mut updated = profile.clone();
         updated.connection = ConnectionConfig::Tcp(portmate_core::TcpConnection {
             host: "new.example".to_string(),
@@ -24740,6 +25194,8 @@ mod tests {
             keepalive_idle_seconds: 90,
             keepalive_interval_seconds: 15,
             keepalive_retries: 6,
+            telnet_binary: false,
+            telnet_naws: false,
         });
         state.store.lock().unwrap().upsert_profile(updated);
         assert_eq!(
@@ -24763,6 +25219,8 @@ mod tests {
         assert_eq!(tcp.keepalive_idle_seconds, 90);
         assert_eq!(tcp.keepalive_interval_seconds, 15);
         assert_eq!(tcp.keepalive_retries, 6);
+        assert!(!tcp.telnet_binary);
+        assert!(!tcp.telnet_naws);
 
         let mut disabled = latest;
         if let ConnectionConfig::Tcp(tcp) = &mut disabled.connection {
@@ -25704,6 +26162,7 @@ mod tests {
                     writer: Arc::new(tokio::sync::Mutex::new(writer)),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
                 },
             );
 
@@ -26351,6 +26810,7 @@ mod tests {
                     writer: Arc::new(tokio::sync::Mutex::new(writer)),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
                 },
             );
 
