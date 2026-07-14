@@ -43,4 +43,14 @@ describe("detached pane state", () => {
     });
     expect(normalizeDetachedPaneMessage({ type: "other", payload })).toBeNull();
   });
+
+  it("accepts a global lock request from a detached window", () => {
+    const payload = { action: "lock-screen", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1" };
+
+    expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
+    expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
+      type: DETACHED_PANE_MESSAGE_TYPE,
+      payload,
+    });
+  });
 });

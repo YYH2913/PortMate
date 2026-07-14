@@ -48,6 +48,8 @@ import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
+import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
+import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
@@ -141,6 +143,14 @@ type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | nu
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
 type ClosedWorkspaceView = { view: WorkspaceView; paneId: string; index: number };
+type ScreenLockState = {
+  reason: ScreenLockReason;
+  lockedAt: number;
+  mode: "preparing" | "vault" | "confirm" | "error";
+  restoreVaultLocked: boolean | null;
+  repairMarker: boolean;
+  message: string;
+} | null;
 type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
 type HostKeyEditDraft = {
   keyId: string;
@@ -233,6 +243,8 @@ const tabColorChoices = [
 
 export default function App() {
   const [initialWorkspace] = useState(loadWorkspaceSnapshot);
+  const [terminalPrefs, setTerminalPrefs] = useState(loadTerminalPrefs);
+  const [screenLock, setScreenLock] = useState<ScreenLockState>(() => loadInitialScreenLockState(terminalPrefs.requireMasterPassword));
   const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
@@ -288,6 +300,8 @@ export default function App() {
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
+  const screenLockRef = useRef<ScreenLockState>(screenLock);
+  const restoredScreenLockPreparedRef = useRef(false);
 
   const active = sessions.find((session) => session.profile.id === activeId);
   const workspaceContextPane = workspaceViewContextMenu
@@ -297,8 +311,11 @@ export default function App() {
   const activeStatus = active?.runtime.status;
   const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
   syncInputRef.current = syncInput;
+  screenLockRef.current = screenLock;
   detachedCommandHandlerRef.current = (command) => {
-    if (command.action === "connect") {
+    if (command.action === "lock-screen") {
+      lockScreen("manual");
+    } else if (command.action === "connect") {
       void connectSession(command.sessionId, undefined, false);
     } else if (command.action === "disconnect") {
       void disconnectSession(command.sessionId, false);
@@ -315,14 +332,207 @@ export default function App() {
     setSyncInput(enabled);
   }
 
+  function commitScreenLock(next: ScreenLockState) {
+    screenLockRef.current = next;
+    setScreenLock(next);
+  }
+
+  function clearScreenLock() {
+    try {
+      window.localStorage.removeItem(SCREEN_LOCK_STORAGE_KEY);
+    } catch {
+      // The in-memory lock still clears when local storage is unavailable.
+    }
+    clearScreenLockVaultRestoreState();
+    commitScreenLock(null);
+  }
+
+  async function prepareScreenLock(state: NonNullable<ScreenLockState>) {
+    const preparing = { ...state, mode: "preparing" as const, message: "" };
+    let restoreVaultLocked = state.restoreVaultLocked;
+    commitScreenLock(preparing);
+    if (!isBackendAvailable()) {
+      if (screenLockRef.current?.lockedAt === state.lockedAt) {
+        commitScreenLock({
+          ...preparing,
+          mode: "confirm",
+          message: "浏览器预览未连接桌面凭据库",
+        });
+      }
+      return;
+    }
+    try {
+      const vault = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
+      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
+      if (!vault.exists) {
+        clearScreenLockVaultRestoreState();
+        commitScreenLock({
+          ...preparing,
+          mode: "confirm",
+          message: "尚未配置 Portable Vault 主密码",
+        });
+        return;
+      }
+      if (restoreVaultLocked === null) restoreVaultLocked = !vault.unlocked;
+      saveScreenLockVaultRestoreState(restoreVaultLocked);
+      if (vault.unlocked) {
+        await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+      }
+      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
+      commitScreenLock({
+        ...preparing,
+        mode: "vault",
+        restoreVaultLocked,
+        message: "Portable Vault 已锁定",
+      });
+    } catch {
+      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
+      commitScreenLock({
+        ...preparing,
+        mode: "error",
+        restoreVaultLocked,
+        message: "无法确认 Portable Vault 状态",
+      });
+    }
+  }
+
+  function lockScreen(reason: Exclude<ScreenLockReason, "restored"> = "manual") {
+    if (screenLockRef.current) return;
+    clearScreenLockVaultRestoreState();
+    const marker = createScreenLockMarker(reason);
+    try {
+      window.localStorage.setItem(SCREEN_LOCK_STORAGE_KEY, JSON.stringify(marker));
+    } catch {
+      // The current render remains locked even if reload persistence is unavailable.
+    }
+    const next: NonNullable<ScreenLockState> = {
+      reason,
+      lockedAt: marker.lockedAt,
+      mode: "preparing",
+      restoreVaultLocked: null,
+      repairMarker: false,
+      message: "",
+    };
+    setOpenMenu(null);
+    setContextMenu(null);
+    setWorkspaceViewContextMenu(null);
+    window.getSelection()?.removeAllRanges();
+    commitScreenLock(next);
+    void prepareScreenLock(next);
+  }
+
+  async function unlockScreen(password = "") {
+    const current = screenLockRef.current;
+    if (!current) return;
+    if (current.mode === "confirm") {
+      clearScreenLock();
+      return;
+    }
+    if (current.mode !== "vault" || !password) {
+      throw new Error("请输入 Portable Vault 主密码");
+    }
+    let unlocked: PortableVaultStatus;
+    try {
+      unlocked = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
+        request: { password },
+      });
+    } catch {
+      throw new Error("主密码验证失败");
+    }
+    if (!unlocked.unlocked) throw new Error("Portable Vault 未解锁");
+    if (current.restoreVaultLocked) {
+      try {
+        await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+      } catch {
+        throw new Error("凭据锁定状态恢复失败，请重试");
+      }
+    }
+    if (screenLockRef.current?.lockedAt === current.lockedAt) clearScreenLock();
+  }
+
+  function retryPrepareScreenLock() {
+    const current = screenLockRef.current;
+    if (current) void prepareScreenLock(current);
+  }
+
   useEffect(() => {
     void refresh();
   }, []);
 
   useEffect(() => {
+    if (restoredScreenLockPreparedRef.current) return;
+    restoredScreenLockPreparedRef.current = true;
+    const current = screenLockRef.current;
+    if (current?.mode === "preparing") {
+      try {
+        if (current.reason !== "restored" || current.repairMarker) {
+          const reason = current.reason === "restored" ? "manual" : current.reason;
+          const marker = createScreenLockMarker(reason, current.lockedAt);
+          window.localStorage.setItem(SCREEN_LOCK_STORAGE_KEY, JSON.stringify(marker));
+        }
+      } catch {
+        // The opaque first render remains locked even if persistence is unavailable.
+      }
+      void prepareScreenLock(current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleScreenLockShortcut = (event: KeyboardEvent) => {
+      if (!isScreenLockShortcut(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!screenLockRef.current) lockScreen("manual");
+    };
+    window.addEventListener("keydown", handleScreenLockShortcut, true);
+    return () => window.removeEventListener("keydown", handleScreenLockShortcut, true);
+  }, []);
+
+  useEffect(() => {
+    if (!terminalPrefs.lockOnIdle || screenLock) return;
+    const timeoutMinutes = normalizeScreenLockTimeoutMinutes(terminalPrefs.lockScreenTimeoutMinutes);
+    let lastActivityAt = Date.now();
+    let lastPointerActivityAt = 0;
+    let timer: number | undefined;
+
+    const checkDeadline = () => {
+      if (shouldAutoLockScreen(true, lastActivityAt, Date.now(), timeoutMinutes)) {
+        lockScreen("idle");
+        return;
+      }
+      armTimer();
+    };
+    const armTimer = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      const elapsed = Math.max(0, Date.now() - lastActivityAt);
+      timer = window.setTimeout(checkDeadline, Math.max(0, timeoutMinutes * 60_000 - elapsed));
+    };
+    const recordActivity = (event: Event) => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (event.type === "pointermove" && now - lastPointerActivityAt < 250) return;
+      if (event.type === "pointermove") lastPointerActivityAt = now;
+      lastActivityAt = now;
+      armTimer();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") checkDeadline();
+    };
+    const activityEvents = ["keydown", "pointerdown", "pointermove", "touchstart", "wheel"] as const;
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { capture: true, passive: true }));
+    document.addEventListener("visibilitychange", handleVisibility);
+    armTimer();
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, recordActivity, true));
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [screenLock, terminalPrefs.lockOnIdle, terminalPrefs.lockScreenTimeoutMinutes]);
+
+  useEffect(() => {
     if (startupAppliedRef.current || !sessions.length) return;
     startupAppliedRef.current = true;
-    const prefs = loadLocalValue<TerminalPrefs>("portmate.terminalPrefs", createTerminalPrefs());
+    const prefs = terminalPrefs;
     const workspace = reconcileWorkspaceSnapshot({
       version: 4,
       root: workspaceRoot,
@@ -767,8 +977,12 @@ function handleMenuAction(item: string) {
       setUtilityDialog("search");
       return;
     }
-    if (["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏", "远程模式", "本地模式", "自由输入", "锁屏"].includes(item)) {
+    if (["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏", "远程模式", "本地模式", "自由输入"].includes(item)) {
       setNotice({ title: item, message: "该工作区视图已经显示在当前桌面布局中。" });
+      return;
+    }
+    if (item === "锁屏") {
+      lockScreen("manual");
       return;
     }
     if (item === "同步输入") {
@@ -2221,8 +2435,10 @@ function handleMenuAction(item: string) {
         <span>{blockSelection ? "块选择" : "Plain Text"}</span>
         <span>{new Date().toLocaleString()}</span>
         <span>PortMate Issues</span>
-        <Lock size={12} />
-        <span>锁屏</span>
+        <button type="button" className="status-lock-button" title="锁屏 (Ctrl+Alt+L)" aria-label="锁屏" onClick={() => lockScreen("manual")}>
+          <Lock size={12} />
+          <span>锁屏</span>
+        </button>
       </footer>
 
       {contextMenu && (
@@ -2284,8 +2500,10 @@ function handleMenuAction(item: string) {
 
       {dialog === "terminal" && (
         <TerminalSettingsDialog
+          initialPrefs={terminalPrefs}
           syncSettings={syncInputSettings}
           workspaceKeymap={workspaceKeymap}
+          onPrefsChange={setTerminalPrefs}
           onSyncSettingsChange={setSyncInputSettings}
           onWorkspaceKeymapChange={setWorkspaceKeymap}
           onClose={() => setDialog(null)}
@@ -2334,7 +2552,172 @@ function handleMenuAction(item: string) {
         />
       )}
       {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
+      {screenLock && (
+        <ScreenLockOverlay
+          state={screenLock}
+          onUnlock={unlockScreen}
+          onRetry={retryPrepareScreenLock}
+        />
+      )}
     </main>
+  );
+}
+
+function ScreenLockOverlay({
+  state,
+  onUnlock,
+  onRetry,
+}: {
+  state: NonNullable<ScreenLockState>;
+  onUnlock: (password?: string) => Promise<void>;
+  onRetry: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const primaryRef = useRef<HTMLInputElement | HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const siblings = overlay?.parentElement
+      ? [...overlay.parentElement.children].filter((element): element is HTMLElement => element instanceof HTMLElement && element !== overlay)
+      : [];
+    const previousInert = siblings.map((element) => element.inert);
+    siblings.forEach((element) => {
+      element.inert = true;
+    });
+    return () => {
+      siblings.forEach((element, index) => {
+        element.inert = previousInert[index];
+      });
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, []);
+
+  useEffect(() => {
+    setPassword("");
+    setError("");
+    window.requestAnimationFrame(() => primaryRef.current?.focus({ preventScroll: true }));
+  }, [state.mode]);
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (busy || state.mode === "preparing" || state.mode === "error") return;
+    setBusy(true);
+    setError("");
+    try {
+      await onUnlock(password);
+    } catch (unlockError) {
+      setPassword("");
+      setError(formatError(unlockError));
+      window.requestAnimationFrame(() => primaryRef.current?.focus({ preventScroll: true }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function trapFocus(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const controls = [...(overlayRef.current?.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled)") ?? [])];
+    if (!controls.length) {
+      event.preventDefault();
+      return;
+    }
+    const currentIndex = controls.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? (currentIndex <= 0 ? controls.length - 1 : currentIndex - 1)
+      : (currentIndex < 0 || currentIndex === controls.length - 1 ? 0 : currentIndex + 1);
+    event.preventDefault();
+    controls[nextIndex].focus();
+  }
+
+  const reasonLabel = state.reason === "idle"
+    ? "空闲超时"
+    : state.reason === "startup" ? "启动保护" : state.reason === "restored" ? "刷新后恢复" : "手动锁定";
+
+  return (
+    <div
+      ref={overlayRef}
+      className="screen-lock-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="screen-lock-title"
+      onKeyDown={trapFocus}
+    >
+      <form className="screen-lock-panel" onSubmit={(event) => void submit(event)}>
+        <div className="screen-lock-brand">
+          <span className="screen-lock-icon"><Lock size={20} /></span>
+          <span>PortMate</span>
+        </div>
+        <div className="screen-lock-heading">
+          <h1 id="screen-lock-title">屏幕已锁定</h1>
+          <span>{reasonLabel} · {new Date(state.lockedAt).toLocaleTimeString()}</span>
+        </div>
+        <div className="screen-lock-rule" />
+        {state.mode === "preparing" ? (
+          <div className="screen-lock-progress" role="status">
+            <LoaderCircle size={17} />
+            <span>正在保护凭据</span>
+          </div>
+        ) : null}
+        {state.mode === "vault" ? (
+          <>
+            <label className="screen-lock-field">
+              <span>Portable Vault 主密码</span>
+              <input
+                ref={(element) => { primaryRef.current = element; }}
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                disabled={busy}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            <button className={busy ? "screen-lock-primary busy" : "screen-lock-primary"} type="submit" disabled={busy || !password}>
+              {busy ? <LoaderCircle size={15} /> : <Unlock size={15} />}
+              <span>{busy ? "验证中" : "解锁"}</span>
+            </button>
+          </>
+        ) : null}
+        {state.mode === "confirm" ? (
+          <>
+            <p className="screen-lock-message">{state.message}</p>
+            <button
+              ref={(element) => { primaryRef.current = element; }}
+              className="screen-lock-primary"
+              type="button"
+              disabled={busy}
+              onClick={() => void submit()}
+            >
+              <Unlock size={15} />
+              <span>返回工作台</span>
+            </button>
+          </>
+        ) : null}
+        {state.mode === "error" ? (
+          <>
+            <p className="screen-lock-error" role="alert">{state.message}</p>
+            <button
+              ref={(element) => { primaryRef.current = element; }}
+              className="screen-lock-retry"
+              type="button"
+              onClick={onRetry}
+            >
+              <RefreshCw size={15} />
+              <span>重试凭据检查</span>
+            </button>
+          </>
+        ) : null}
+        {error ? <p className="screen-lock-error" role="alert">{error}</p> : null}
+      </form>
+    </div>
   );
 }
 
@@ -6601,20 +6984,24 @@ function NoticeDialog({ title, message, onClose }: { title: string; message: str
 }
 
 function TerminalSettingsDialog({
+  initialPrefs,
   syncSettings,
   workspaceKeymap,
+  onPrefsChange,
   onSyncSettingsChange,
   onWorkspaceKeymapChange,
   onClose,
 }: {
+  initialPrefs: TerminalPrefs;
   syncSettings: SyncInputSettings;
   workspaceKeymap: WorkspaceKeymap;
+  onPrefsChange: (prefs: TerminalPrefs) => void;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
 }) {
   const [activeItem, setActiveItem] = useState("应用");
-  const [prefs, setPrefs] = useState<TerminalPrefs>(() => loadLocalValue("portmate.terminalPrefs", createTerminalPrefs()));
+  const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
@@ -6624,8 +7011,10 @@ function TerminalSettingsDialog({
   function savePrefs() {
     if (keymapConflictCount) return;
     const normalizedKeymap = normalizeWorkspaceKeymap(workspaceKeymapDraft);
-    saveLocalValue("portmate.terminalPrefs", prefs);
+    const normalizedPrefs = normalizeTerminalPrefs(prefs);
+    saveLocalValue("portmate.terminalPrefs", normalizedPrefs);
     saveLocalValue(WORKSPACE_KEYMAP_STORAGE_KEY, normalizedKeymap);
+    onPrefsChange(normalizedPrefs);
     onSyncSettingsChange(normalizeSyncInputSettings(syncDraft));
     onWorkspaceKeymapChange(normalizedKeymap);
     onClose();
@@ -6762,9 +7151,18 @@ function TerminalSettingsContent({
       return (
         <SettingsSection title="安全">
           <SettingCheck label="空闲后锁屏" checked={prefs.lockOnIdle} onChange={(value) => updatePref("lockOnIdle", value)} />
+          <SettingInput
+            label="锁屏超时（分钟）"
+            type="number"
+            value={prefs.lockScreenTimeoutMinutes}
+            min={MIN_SCREEN_LOCK_TIMEOUT_MINUTES}
+            max={MAX_SCREEN_LOCK_TIMEOUT_MINUTES}
+            step={1}
+            onChange={(value) => updatePref("lockScreenTimeoutMinutes", normalizeScreenLockTimeoutMinutes(value))}
+          />
           <SettingCheck label="粘贴前确认" checked={prefs.confirmPaste} onChange={(value) => updatePref("confirmPaste", value)} />
           <SettingCheck label="日志和 MCP 输出中隐藏敏感字段" checked={prefs.maskSecrets} onChange={(value) => updatePref("maskSecrets", value)} />
-          <SettingCheck label="启动时要求主密码" checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
+          <SettingCheck label="启动时锁屏" checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
         </SettingsSection>
       );
     case "标签":
@@ -8657,11 +9055,11 @@ function SettingCheck({ label, checked, onChange }: { label: string; checked: bo
   );
 }
 
-function SettingInput({ label, value, type = "text", placeholder, onChange }: { label: string; value: string | number; type?: string; placeholder?: string; onChange: (value: string) => void }) {
+function SettingInput({ label, value, type = "text", placeholder, min, max, step, onChange }: { label: string; value: string | number; type?: string; placeholder?: string; min?: number; max?: number; step?: number; onChange: (value: string) => void }) {
   return (
     <label className="setting-row">
       <span>{label}</span>
-      <input type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+      <input type={type} value={value} placeholder={placeholder} min={min} max={max} step={step} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -8710,6 +9108,7 @@ function createTerminalPrefs() {
     proxyPort: "1080",
     proxyDns: true,
     lockOnIdle: false,
+    lockScreenTimeoutMinutes: 30,
     confirmPaste: true,
     maskSecrets: true,
     requireMasterPassword: false,
@@ -9246,6 +9645,89 @@ function loadWorkspaceSnapshot(): WorkspaceSnapshot {
     activeId: loadLocalValue<unknown>("portmate.activeId", ""),
     tabColors: loadLocalValue<unknown>("portmate.tabColors", {}),
   });
+}
+
+function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
+  const defaults = createTerminalPrefs();
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Partial<TerminalPrefs>
+    : {};
+  return {
+    ...defaults,
+    ...source,
+    lockOnIdle: typeof source.lockOnIdle === "boolean" ? source.lockOnIdle : defaults.lockOnIdle,
+    lockScreenTimeoutMinutes: normalizeScreenLockTimeoutMinutes(source.lockScreenTimeoutMinutes),
+    requireMasterPassword: typeof source.requireMasterPassword === "boolean"
+      ? source.requireMasterPassword
+      : defaults.requireMasterPassword,
+    startupSessions: Array.isArray(source.startupSessions)
+      ? source.startupSessions.slice(0, 4).map((item) => typeof item === "string" ? item : "")
+      : defaults.startupSessions,
+  };
+}
+
+function loadTerminalPrefs(): TerminalPrefs {
+  return normalizeTerminalPrefs(loadLocalValue<unknown>("portmate.terminalPrefs", null));
+}
+
+function loadInitialScreenLockState(lockOnStartup = false): ScreenLockState {
+  try {
+    const raw = window.localStorage.getItem(SCREEN_LOCK_STORAGE_KEY);
+    const decoded = decodeStoredScreenLockMarker(raw);
+    if (!decoded) {
+      return lockOnStartup ? createStartupScreenLockState() : null;
+    }
+    return {
+      reason: "restored",
+      lockedAt: decoded.marker.lockedAt,
+      mode: "preparing",
+      restoreVaultLocked: loadScreenLockVaultRestoreState(),
+      repairMarker: decoded.recovered,
+      message: "",
+    };
+  } catch {
+    return lockOnStartup ? createStartupScreenLockState() : null;
+  }
+}
+
+function createStartupScreenLockState(): NonNullable<ScreenLockState> {
+  return {
+    reason: "startup",
+    lockedAt: Date.now(),
+    mode: "preparing",
+    restoreVaultLocked: null,
+    repairMarker: false,
+    message: "",
+  };
+}
+
+const SCREEN_LOCK_VAULT_RESTORE_STORAGE_KEY = "portmate.screenLock.vaultRestore.v1";
+
+function loadScreenLockVaultRestoreState(): boolean | null {
+  try {
+    const value = window.sessionStorage.getItem(SCREEN_LOCK_VAULT_RESTORE_STORAGE_KEY);
+    if (value === "locked") return true;
+    if (value === "unlocked") return false;
+  } catch {
+    // The current lock can still use its in-memory restore state.
+  }
+  return null;
+}
+
+function saveScreenLockVaultRestoreState(restoreLocked: boolean) {
+  try {
+    window.sessionStorage.setItem(SCREEN_LOCK_VAULT_RESTORE_STORAGE_KEY, restoreLocked ? "locked" : "unlocked");
+  } catch {
+    // Reload restoration is unavailable, but the current lock remains protected.
+  }
+}
+
+function clearScreenLockVaultRestoreState() {
+  try {
+    window.sessionStorage.removeItem(SCREEN_LOCK_VAULT_RESTORE_STORAGE_KEY);
+  } catch {
+    // A stale session-only hint cannot unlock the workspace or the vault.
+  }
 }
 
 function loadLocalValue<T>(key: string, fallback: T): T {

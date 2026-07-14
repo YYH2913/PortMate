@@ -11,7 +11,7 @@ export type DetachedPaneRequest = {
 };
 
 export type DetachedPaneCommand = DetachedPaneRequest & {
-  action: "connect" | "disconnect" | "reattach";
+  action: "connect" | "disconnect" | "reattach" | "lock-screen";
 };
 
 export type DetachedPaneMessage = {
@@ -50,7 +50,7 @@ export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | 
 export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
-  if (source.action !== "connect" && source.action !== "disconnect" && source.action !== "reattach") return null;
+  if (source.action !== "connect" && source.action !== "disconnect" && source.action !== "reattach" && source.action !== "lock-screen") return null;
   const request = parseDetachedPaneRequest(`?${new URLSearchParams({
     detachedPane: "1",
     windowId: typeof source.windowId === "string" ? source.windowId : "",

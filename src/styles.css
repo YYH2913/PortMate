@@ -2134,7 +2134,7 @@ button {
 
 .status-bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) repeat(9, auto);
+  grid-template-columns: auto minmax(0, 1fr) repeat(8, auto);
   align-items: center;
   gap: 20px;
   padding: 0 16px;
@@ -2142,6 +2142,182 @@ button {
   background: #111820;
   color: #bfd0df;
   font-size: 12px;
+}
+
+.status-lock-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.status-lock-button:hover,
+.status-lock-button:focus-visible {
+  outline: 0;
+  color: var(--cyan);
+}
+
+.screen-lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px;
+  place-items: center;
+  overflow: auto;
+  background: #0d1117;
+  color: var(--text);
+}
+
+.screen-lock-panel {
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  width: min(360px, 100%);
+  min-height: 280px;
+  animation: screen-lock-enter 180ms ease-out both;
+}
+
+.screen-lock-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.screen-lock-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #344252;
+  place-items: center;
+  color: var(--cyan);
+}
+
+.screen-lock-heading {
+  display: grid;
+  gap: 5px;
+}
+
+.screen-lock-heading h1 {
+  margin: 0;
+  color: #edf5fb;
+  font-size: 24px;
+  font-weight: 620;
+  letter-spacing: 0;
+}
+
+.screen-lock-heading > span,
+.screen-lock-message,
+.screen-lock-progress {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.screen-lock-rule {
+  height: 1px;
+  background: #263442;
+}
+
+.screen-lock-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.screen-lock-progress svg,
+.screen-lock-primary.busy svg {
+  animation: transfer-spin 1.2s linear infinite;
+}
+
+.screen-lock-field {
+  display: grid;
+  gap: 7px;
+  color: #c9d6e1;
+  font-size: 12px;
+}
+
+.screen-lock-field input {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #344252;
+  border-radius: 3px;
+  outline: 0;
+  background: #111820;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.screen-lock-field input:focus {
+  border-color: rgba(94, 234, 212, 0.72);
+}
+
+.screen-lock-primary,
+.screen-lock-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 36px;
+  border: 1px solid #3e5568;
+  border-radius: 3px;
+  background: #182735;
+  color: #e6f0f7;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.screen-lock-primary:hover:not(:disabled),
+.screen-lock-primary:focus-visible,
+.screen-lock-retry:hover,
+.screen-lock-retry:focus-visible {
+  outline: 0;
+  border-color: rgba(94, 234, 212, 0.72);
+  background: #203442;
+}
+
+.screen-lock-primary:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.screen-lock-message,
+.screen-lock-error {
+  min-height: 18px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.screen-lock-error {
+  color: var(--red);
+  font-size: 12px;
+}
+
+@keyframes screen-lock-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screen-lock-panel {
+    animation: none;
+  }
 }
 
 .dialog-backdrop {

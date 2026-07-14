@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { emitTo } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
+import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
 import {
   DETACHED_PANE_EVENT,
   DETACHED_PANE_MESSAGE_TYPE,
 } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
+import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
+import type { ScreenLockMarker } from "./screen-lock-state";
 import TerminalCanvas from "./TerminalCanvas";
 import type { SessionEvent, SessionSummary } from "./types";
 
@@ -15,6 +17,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [error, setError] = useState("");
+  const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
 
   useEffect(() => {
@@ -39,6 +42,33 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       if (!disposed) setEvents(nextEvents);
     }
   }, [request.sessionId]);
+
+  useEffect(() => {
+    const refreshLock = () => setScreenLock((current) => {
+      const next = readScreenLockMarker(current?.lockedAt);
+      return screenLockMarkersEqual(current, next) ? current : next;
+    });
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === SCREEN_LOCK_STORAGE_KEY || event.key === null) refreshLock();
+    };
+    const timer = window.setInterval(refreshLock, 500);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleScreenLockShortcut = (event: KeyboardEvent) => {
+      if (!isScreenLockShortcut(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void sendMainCommand("lock-screen");
+    };
+    window.addEventListener("keydown", handleScreenLockShortcut, true);
+    return () => window.removeEventListener("keydown", handleScreenLockShortcut, true);
+  }, []);
 
   async function sendInput(sessionId: string, text: string) {
     if (!text || !isBackendAvailable()) return;
@@ -100,7 +130,80 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         <span>{error || session?.runtime.status || "missing"}</span>
         <span>{request.paneId}</span>
       </footer>
+      {screenLock ? <DetachedScreenLockOverlay marker={screenLock} /> : null}
     </main>
+  );
+}
+
+function DetachedScreenLockOverlay({ marker }: { marker: ScreenLockMarker }) {
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const siblings = overlay?.parentElement
+      ? [...overlay.parentElement.children].filter((element): element is HTMLElement => element instanceof HTMLElement && element !== overlay)
+      : [];
+    const previousInert = siblings.map((element) => element.inert);
+    siblings.forEach((element) => {
+      element.inert = true;
+    });
+    buttonRef.current?.focus({ preventScroll: true });
+    return () => {
+      siblings.forEach((element, index) => {
+        element.inert = previousInert[index];
+      });
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, []);
+
+  async function focusMainWindow() {
+    try {
+      if (isBackendAvailable()) {
+        const main = await WebviewWindow.getByLabel("main");
+        await main?.setFocus();
+        return;
+      }
+      window.opener?.focus();
+    } catch {
+      window.opener?.focus();
+    }
+  }
+
+  const reason = marker.reason === "idle" ? "空闲超时" : marker.reason === "startup" ? "启动保护" : "手动锁定";
+  return (
+    <div
+      ref={overlayRef}
+      className="screen-lock-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detached-screen-lock-title"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "Tab") {
+          event.preventDefault();
+          event.stopPropagation();
+          buttonRef.current?.focus();
+        }
+      }}
+    >
+      <section className="screen-lock-panel">
+        <div className="screen-lock-brand">
+          <span className="screen-lock-icon"><Lock size={20} /></span>
+          <span>PortMate</span>
+        </div>
+        <div className="screen-lock-heading">
+          <h1 id="detached-screen-lock-title">屏幕已锁定</h1>
+          <span>{reason} · {new Date(marker.lockedAt).toLocaleTimeString()}</span>
+        </div>
+        <div className="screen-lock-rule" />
+        <p className="screen-lock-message">请在主窗口完成解锁</p>
+        <button ref={buttonRef} className="screen-lock-primary" type="button" onClick={() => void focusMainWindow()}>
+          <PanelLeftOpen size={15} />
+          <span>切换到主窗口</span>
+        </button>
+      </section>
+    </div>
   );
 }
 
@@ -111,6 +214,21 @@ function loadLocalSessions(): SessionSummary[] {
   } catch {
     return [];
   }
+}
+
+function readScreenLockMarker(fallbackLockedAt = Date.now()): ScreenLockMarker | null {
+  try {
+    const raw = window.localStorage.getItem(SCREEN_LOCK_STORAGE_KEY);
+    return decodeStoredScreenLockMarker(raw, fallbackLockedAt)?.marker ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function screenLockMarkersEqual(left: ScreenLockMarker | null, right: ScreenLockMarker | null) {
+  return left?.version === right?.version
+    && left?.reason === right?.reason
+    && left?.lockedAt === right?.lockedAt;
 }
 
 function describeDetachedEndpoint(session: SessionSummary) {
