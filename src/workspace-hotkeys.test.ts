@@ -4,6 +4,7 @@ import {
   formatWorkspaceKeyBinding,
   normalizeWorkspaceKeymap,
   resolveWorkspaceHotkey,
+  resolveWorkspaceHotkeySequence,
   workspaceKeyBindingFromEvent,
   workspaceKeymapConflicts,
 } from "./workspace-hotkeys";
@@ -65,6 +66,7 @@ describe("workspace hotkeys", () => {
     expect(workspaceKeymapConflicts(keymap)).toEqual([{
       binding: "Alt+KeyK",
       commandIds: ["focus-up", "focus-down"],
+      kind: "duplicate",
     }]);
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "KeyK" }, 3, keymap)).toBeNull();
   });
@@ -77,5 +79,71 @@ describe("workspace hotkeys", () => {
     expect(workspaceKeyBindingFromEvent({ ...baseInput, altKey: false, code: "KeyP" })).toBeNull();
     expect(formatWorkspaceKeyBinding("Ctrl+Alt+Shift+ArrowLeft")).toBe("Ctrl + Alt + Shift + ←");
     expect(formatWorkspaceKeyBinding("")).toBe("未绑定");
+  });
+
+  it("normalizes and resolves a two-stroke WindTerm-style chord", () => {
+    const keymap = normalizeWorkspaceKeymap({
+      ...defaultWorkspaceKeymap,
+      "split-down": "Alt+KeyW   Shift+Ctrl+KeyH",
+    });
+
+    expect(keymap["split-down"]).toBe("Alt+KeyW Ctrl+Shift+KeyH");
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyW" }, 1, keymap)).toEqual({
+      kind: "pending",
+      prefix: "Alt+KeyW",
+    });
+    expect(resolveWorkspaceHotkeySequence(
+      { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyH" },
+      1,
+      keymap,
+      "Alt+KeyW",
+    )).toEqual({ kind: "action", action: { kind: "split", direction: "horizontal", placement: "second" } });
+    expect(formatWorkspaceKeyBinding(keymap["split-down"])).toBe("Alt + W  →  Ctrl + Shift + H");
+  });
+
+  it("rejects bindings longer than two strokes and detects prefix ambiguity", () => {
+    const normalized = normalizeWorkspaceKeymap({
+      ...defaultWorkspaceKeymap,
+      "focus-up": "Alt+KeyW Alt+KeyH Alt+KeyK",
+    });
+    const keymap = {
+      ...defaultWorkspaceKeymap,
+      "focus-up": "Alt+KeyW",
+      "focus-down": "Alt+KeyW Alt+KeyJ",
+    };
+
+    expect(normalized["focus-up"]).toBe(defaultWorkspaceKeymap["focus-up"]);
+    expect(workspaceKeymapConflicts(keymap)).toContainEqual({
+      binding: "Alt+KeyW",
+      commandIds: ["focus-up", "focus-down"],
+      kind: "prefix",
+    });
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyW" }, 3, keymap)).toEqual({ kind: "none" });
+  });
+
+  it("does not start an unavailable multi-pane chord in a single pane", () => {
+    const keymap = { ...defaultWorkspaceKeymap, "close-pane": "Alt+KeyW Alt+KeyX" };
+
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyW" }, 1, keymap)).toEqual({ kind: "none" });
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyW" }, 2, keymap)).toEqual({
+      kind: "pending",
+      prefix: "Alt+KeyW",
+    });
+  });
+
+  it("allows different chords to share their first stroke", () => {
+    const keymap = {
+      ...defaultWorkspaceKeymap,
+      "focus-up": "Alt+KeyW Alt+KeyK",
+      "focus-down": "Alt+KeyW Alt+KeyJ",
+    };
+
+    expect(workspaceKeymapConflicts(keymap)).toEqual([]);
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyW" }, 3, keymap)).toEqual({
+      kind: "pending",
+      prefix: "Alt+KeyW",
+    });
+    expect(resolveWorkspaceHotkeySequence({ ...baseInput, code: "KeyJ" }, 3, keymap, "Alt+KeyW"))
+      .toEqual({ kind: "action", action: { kind: "focus", direction: "down" } });
   });
 });

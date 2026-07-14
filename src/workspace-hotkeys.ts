@@ -1,6 +1,8 @@
 import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPlacement } from "./workspace-state";
 
-export const WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v1";
+export const WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v2";
+export const LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v1";
+export const WORKSPACE_KEY_CHORD_TIMEOUT_MS = 1_200;
 
 export type WorkspaceHotkeyAction =
   | { kind: "focus"; direction: WorkspacePaneDirection }
@@ -25,7 +27,13 @@ export type WorkspaceKeymap = Record<WorkspaceHotkeyCommandId, string>;
 export type WorkspaceKeymapConflict = {
   binding: string;
   commandIds: WorkspaceHotkeyCommandId[];
+  kind: "duplicate" | "prefix";
 };
+
+export type WorkspaceHotkeyResolution =
+  | { kind: "action"; action: WorkspaceHotkeyAction }
+  | { kind: "pending"; prefix: string }
+  | { kind: "none" };
 
 type WorkspaceHotkeyInput = {
   altKey: boolean;
@@ -83,9 +91,25 @@ export function workspaceKeymapConflicts(keymap: WorkspaceKeymap): WorkspaceKeym
     commandIds.push(command.id);
     commandIdsByBinding.set(binding, commandIds);
   }
-  return [...commandIdsByBinding.entries()]
+  const conflicts = [...commandIdsByBinding.entries()]
     .filter(([, commandIds]) => commandIds.length > 1)
-    .map(([binding, commandIds]) => ({ binding, commandIds }));
+    .map(([binding, commandIds]): WorkspaceKeymapConflict => ({ binding, commandIds, kind: "duplicate" }));
+  for (let index = 0; index < workspaceHotkeyCommands.length; index += 1) {
+    const first = workspaceHotkeyCommands[index];
+    const firstBinding = keymap[first.id];
+    if (!firstBinding) continue;
+    for (let otherIndex = index + 1; otherIndex < workspaceHotkeyCommands.length; otherIndex += 1) {
+      const second = workspaceHotkeyCommands[otherIndex];
+      const secondBinding = keymap[second.id];
+      if (!secondBinding || firstBinding === secondBinding) continue;
+      const prefix = firstBinding.length < secondBinding.length ? firstBinding : secondBinding;
+      const longer = prefix === firstBinding ? secondBinding : firstBinding;
+      if (longer.startsWith(`${prefix} `)) {
+        conflicts.push({ binding: prefix, commandIds: [first.id, second.id], kind: "prefix" });
+      }
+    }
+  }
+  return conflicts;
 }
 
 export function workspaceKeyBindingFromEvent(input: WorkspaceHotkeyInput): string | null {
@@ -111,7 +135,9 @@ export function formatWorkspaceKeyBinding(binding: string): string {
     Equal: "=",
     Space: "Space",
   };
-  return binding.split("+").map((part) => labels[part] ?? part.replace(/^Key/, "").replace(/^Digit/, "")).join(" + ");
+  return binding.split(" ").map((stroke) => (
+    stroke.split("+").map((part) => labels[part] ?? part.replace(/^Key/, "").replace(/^Digit/, "")).join(" + ")
+  )).join("  →  ");
 }
 
 export function resolveWorkspaceHotkey(
@@ -119,15 +145,38 @@ export function resolveWorkspaceHotkey(
   paneCount: number,
   keymap: WorkspaceKeymap = defaultWorkspaceKeymap,
 ): WorkspaceHotkeyAction | null {
-  const binding = workspaceKeyBindingFromEvent(input);
-  if (!binding) return null;
-  const matches = workspaceHotkeyCommands.filter((command) => keymap[command.id] === binding);
-  if (matches.length !== 1 || (matches[0].requiresMultiplePanes && paneCount <= 1)) return null;
-  return matches[0].action;
+  const resolution = resolveWorkspaceHotkeySequence(input, paneCount, keymap);
+  return resolution.kind === "action" ? resolution.action : null;
+}
+
+export function resolveWorkspaceHotkeySequence(
+  input: WorkspaceHotkeyInput,
+  paneCount: number,
+  keymap: WorkspaceKeymap = defaultWorkspaceKeymap,
+  prefix = "",
+): WorkspaceHotkeyResolution {
+  const stroke = workspaceKeyBindingFromEvent(input);
+  if (!stroke) return { kind: "none" };
+  const binding = prefix ? `${prefix} ${stroke}` : stroke;
+  const eligibleCommands = workspaceHotkeyCommands.filter((command) => !command.requiresMultiplePanes || paneCount > 1);
+  const exactMatches = eligibleCommands.filter((command) => keymap[command.id] === binding);
+  const longerMatches = eligibleCommands.filter((command) => keymap[command.id].startsWith(`${binding} `));
+  if (exactMatches.length === 1 && !longerMatches.length) {
+    return { kind: "action", action: exactMatches[0].action };
+  }
+  if (!exactMatches.length && longerMatches.length) return { kind: "pending", prefix: binding };
+  return { kind: "none" };
 }
 
 function normalizeWorkspaceKeyBinding(value: unknown): string | null {
   if (typeof value !== "string") return null;
+  const strokes = value.trim().split(/\s+/);
+  if (!strokes.length || strokes.length > 2) return null;
+  const normalized = strokes.map(normalizeWorkspaceKeyStroke);
+  return normalized.every((stroke): stroke is string => Boolean(stroke)) ? normalized.join(" ") : null;
+}
+
+function normalizeWorkspaceKeyStroke(value: string): string | null {
   const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
   const code = parts.at(-1) ?? "";
   if (!supportedCodes.test(code)) return null;

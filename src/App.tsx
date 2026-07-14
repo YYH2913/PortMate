@@ -52,7 +52,7 @@ import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
 import type { SysmonTrendMode } from "./sysmon-history";
-import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, normalizeWorkspaceKeymap, resolveWorkspaceHotkey, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
+import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import { createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, MIN_WORKSPACE_SPLIT_RATIO, reconcileWorkspaceSnapshot, removeWorkspacePane, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
@@ -243,7 +243,10 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
   const [zoomedPaneId, setZoomedPaneId] = useState("");
   const [workspaceKeymap, setWorkspaceKeymap] = useState<WorkspaceKeymap>(() => (
-    normalizeWorkspaceKeymap(loadLocalValue<unknown>(WORKSPACE_KEYMAP_STORAGE_KEY, defaultWorkspaceKeymap))
+    normalizeWorkspaceKeymap(loadLocalValue<unknown>(
+      WORKSPACE_KEYMAP_STORAGE_KEY,
+      loadLocalValue<unknown>(LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, defaultWorkspaceKeymap),
+    ))
   ));
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -315,12 +318,43 @@ export default function App() {
   }, [workspaceRoot, zoomedPaneId]);
 
   useEffect(() => {
+    saveLocalValue(WORKSPACE_KEYMAP_STORAGE_KEY, workspaceKeymap);
+  }, [workspaceKeymap]);
+
+  useEffect(() => {
     const handleWorkspaceHotkey = (event: KeyboardEvent) => {
-      if (!isWorkspaceHotkeyTarget(event.target)) return;
+      if (!isWorkspaceHotkeyTarget(event.target)) {
+        clearWorkspaceChord();
+        return;
+      }
       const panes = workspacePaneLeaves(workspaceRoot);
-      const hotkey = resolveWorkspaceHotkey(event, panes.length, workspaceKeymap);
-      if (!hotkey) return;
-      consumeWorkspaceHotkey(event);
+      const hadPendingChord = Boolean(chordPrefix);
+      if (hadPendingChord && event.repeat) {
+        consumeWorkspaceHotkey(event);
+        return;
+      }
+      if (hadPendingChord && isPlainEscape(event)) {
+        consumeWorkspaceHotkey(event);
+        clearWorkspaceChord();
+        return;
+      }
+      const resolution = resolveWorkspaceHotkeySequence(event, panes.length, workspaceKeymap, chordPrefix);
+      if (hadPendingChord && isModifierKeyEvent(event)) return;
+      if (hadPendingChord) {
+        consumeWorkspaceHotkey(event);
+        clearWorkspaceChord();
+      } else if (resolution.kind === "none") {
+        return;
+      } else {
+        consumeWorkspaceHotkey(event);
+      }
+      if (resolution.kind === "pending") {
+        chordPrefix = resolution.prefix;
+        chordTimer = window.setTimeout(clearWorkspaceChord, WORKSPACE_KEY_CHORD_TIMEOUT_MS);
+        return;
+      }
+      if (resolution.kind !== "action") return;
+      const hotkey = resolution.action;
       if (hotkey.kind === "focus") {
         const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, hotkey.direction);
         if (nextPane) activateWorkspacePane(nextPane.id, nextPane.sessionId);
@@ -332,8 +366,18 @@ export default function App() {
         toggleWorkspaceZoom();
       }
     };
+    let chordPrefix = "";
+    let chordTimer: number | undefined;
+    const clearWorkspaceChord = () => {
+      chordPrefix = "";
+      if (chordTimer !== undefined) window.clearTimeout(chordTimer);
+      chordTimer = undefined;
+    };
     window.addEventListener("keydown", handleWorkspaceHotkey, true);
-    return () => window.removeEventListener("keydown", handleWorkspaceHotkey, true);
+    return () => {
+      clearWorkspaceChord();
+      window.removeEventListener("keydown", handleWorkspaceHotkey, true);
+    };
   }, [activeId, activePaneId, sessions, workspaceKeymap, workspaceRoot]);
 
   useEffect(() => {
@@ -2758,6 +2802,14 @@ function isWorkspaceHotkeyTarget(target: EventTarget | null) {
 function consumeWorkspaceHotkey(event: KeyboardEvent) {
   event.preventDefault();
   event.stopPropagation();
+}
+
+function isModifierKeyEvent(event: KeyboardEvent) {
+  return ["Alt", "Control", "Meta", "Shift"].includes(event.key);
+}
+
+function isPlainEscape(event: KeyboardEvent) {
+  return event.code === "Escape" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
 }
 
 function focusWorkspacePaneInput(paneId: string) {
@@ -5947,37 +5999,61 @@ function WorkspaceKeymapSettings({
   onChange: (keymap: WorkspaceKeymap) => void;
 }) {
   const [capturing, setCapturing] = useState<WorkspaceHotkeyCommandId | null>(null);
+  const [capturePrefix, setCapturePrefix] = useState<{ commandId: WorkspaceHotkeyCommandId; binding: string } | null>(null);
   const [captureError, setCaptureError] = useState<WorkspaceHotkeyCommandId | null>(null);
+  const captureTimerRef = useRef<number | null>(null);
   const conflicts = workspaceKeymapConflicts(keymap);
   const labels = Object.fromEntries(workspaceHotkeyCommands.map((command) => [command.id, command.label])) as Record<WorkspaceHotkeyCommandId, string>;
 
+  useEffect(() => () => {
+    if (captureTimerRef.current !== null) window.clearTimeout(captureTimerRef.current);
+  }, []);
+
   function updateBinding(commandId: WorkspaceHotkeyCommandId, binding: string) {
     onChange({ ...keymap, [commandId]: binding });
+  }
+
+  function stopCapture(commandId?: WorkspaceHotkeyCommandId) {
+    if (captureTimerRef.current !== null) window.clearTimeout(captureTimerRef.current);
+    captureTimerRef.current = null;
+    setCapturing((current) => !commandId || current === commandId ? null : current);
+    setCapturePrefix((current) => !commandId || current?.commandId === commandId ? null : current);
+    setCaptureError((current) => !commandId || current === commandId ? null : current);
+  }
+
+  function beginCapture(commandId: WorkspaceHotkeyCommandId) {
+    stopCapture();
+    setCapturing(commandId);
   }
 
   function captureBinding(event: React.KeyboardEvent<HTMLButtonElement>, commandId: WorkspaceHotkeyCommandId) {
     if (capturing !== commandId) return;
     event.preventDefault();
     event.stopPropagation();
-    if (event.code === "Escape") {
-      setCapturing(null);
-      setCaptureError(null);
+    if (isPlainEscape(event.nativeEvent)) {
+      stopCapture(commandId);
       return;
     }
     if ((event.code === "Backspace" || event.code === "Delete") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
       updateBinding(commandId, "");
-      setCapturing(null);
-      setCaptureError(null);
+      stopCapture(commandId);
       return;
     }
+    if (event.repeat || isModifierKeyEvent(event.nativeEvent)) return;
     const binding = workspaceKeyBindingFromEvent(event);
     if (!binding) {
       setCaptureError(commandId);
       return;
     }
+    if (capturePrefix?.commandId === commandId) {
+      updateBinding(commandId, `${capturePrefix.binding} ${binding}`);
+      stopCapture(commandId);
+      return;
+    }
     updateBinding(commandId, binding);
-    setCapturing(null);
+    setCapturePrefix({ commandId, binding });
     setCaptureError(null);
+    captureTimerRef.current = window.setTimeout(() => stopCapture(commandId), WORKSPACE_KEY_CHORD_TIMEOUT_MS);
   }
 
   return (
@@ -5992,8 +6068,7 @@ function WorkspaceKeymapSettings({
             aria-label="恢复全部默认快捷键"
             onClick={() => {
               onChange({ ...defaultWorkspaceKeymap });
-              setCapturing(null);
-              setCaptureError(null);
+              stopCapture();
             }}
           >
             <RotateCcw size={14} />
@@ -6003,27 +6078,24 @@ function WorkspaceKeymapSettings({
           const conflict = conflicts.find((item) => item.commandIds.includes(command.id));
           const conflictLabels = conflict?.commandIds.filter((id) => id !== command.id).map((id) => labels[id]).join("、");
           const invalid = captureError === command.id;
+          const pendingBinding = capturePrefix?.commandId === command.id ? capturePrefix.binding : "";
+          const formattedBinding = formatWorkspaceKeyBinding(keymap[command.id]);
           return (
             <div key={command.id} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
               <span className="workspace-keymap-command">
                 <strong>{command.label}</strong>
-                {conflictLabels ? <small>与 {conflictLabels} 冲突</small> : invalid ? <small>需要修饰键</small> : null}
+                {conflictLabels ? <small>与 {conflictLabels}{conflict?.kind === "prefix" ? " 前缀冲突" : " 冲突"}</small> : invalid ? <small>每段需要修饰键</small> : null}
               </span>
               <button
                 type="button"
                 className={capturing === command.id ? "workspace-key-capture capturing" : "workspace-key-capture"}
                 aria-pressed={capturing === command.id}
-                onClick={() => {
-                  setCapturing(command.id);
-                  setCaptureError(null);
-                }}
-                onBlur={() => {
-                  setCapturing((current) => current === command.id ? null : current);
-                  setCaptureError((current) => current === command.id ? null : current);
-                }}
+                title={capturing === command.id ? "录入快捷键" : formattedBinding}
+                onClick={() => beginCapture(command.id)}
+                onBlur={() => stopCapture(command.id)}
                 onKeyDown={(event) => captureBinding(event, command.id)}
               >
-                {capturing === command.id ? "等待输入" : formatWorkspaceKeyBinding(keymap[command.id])}
+                {pendingBinding ? `${formatWorkspaceKeyBinding(pendingBinding)}  →  …` : capturing === command.id ? "等待第 1 键" : formattedBinding}
               </button>
               <button
                 type="button"
@@ -6033,8 +6105,7 @@ function WorkspaceKeymapSettings({
                 disabled={!keymap[command.id]}
                 onClick={() => {
                   updateBinding(command.id, "");
-                  setCapturing((current) => current === command.id ? null : current);
-                  setCaptureError((current) => current === command.id ? null : current);
+                  stopCapture(command.id);
                 }}
               >
                 <Ban size={13} />
@@ -6047,8 +6118,7 @@ function WorkspaceKeymapSettings({
                 disabled={keymap[command.id] === command.defaultBinding}
                 onClick={() => {
                   updateBinding(command.id, command.defaultBinding);
-                  setCapturing((current) => current === command.id ? null : current);
-                  setCaptureError((current) => current === command.id ? null : current);
+                  stopCapture(command.id);
                 }}
               >
                 <RotateCcw size={13} />
