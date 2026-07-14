@@ -21,6 +21,7 @@ use uuid::Uuid;
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
+const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -886,14 +887,30 @@ fn run_stdio_server() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut server = PortMateMcp::new();
+    let mut stdin = stdin.lock();
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    loop {
+        let line = match read_stdio_message(&mut stdin, MAX_STDIO_MESSAGE_BYTES)? {
+            StdioMessage::Eof => break,
+            StdioMessage::TooLarge => {
+                let response = error(
+                    Value::Null,
+                    -32700,
+                    format!(
+                        "parse error: stdio message exceeds the {MAX_STDIO_MESSAGE_BYTES}-byte limit"
+                    ),
+                );
+                writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
+                stdout.flush()?;
+                continue;
+            }
+            StdioMessage::Message(line) => line,
+        };
+        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
             continue;
         }
 
-        let value = match serde_json::from_str::<Value>(&line) {
+        let value = match serde_json::from_slice::<Value>(&line) {
             Ok(value) => value,
             Err(error_message) => {
                 let response = error(Value::Null, -32700, format!("parse error: {error_message}"));
@@ -917,6 +934,55 @@ fn run_stdio_server() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StdioMessage {
+    Eof,
+    Message(Vec<u8>),
+    TooLarge,
+}
+
+fn read_stdio_message<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<StdioMessage> {
+    let buffered_limit = max_bytes.saturating_add(2);
+    let mut line = Vec::with_capacity(buffered_limit.min(8192));
+    let read = {
+        let mut limited = Read::take(&mut *reader, buffered_limit as u64);
+        limited.read_until(b'\n', &mut line)?
+    };
+    if read == 0 {
+        return Ok(StdioMessage::Eof);
+    }
+    let terminated = line.last() == Some(&b'\n');
+    if !terminated && line.len() == buffered_limit {
+        discard_stdio_line(reader)?;
+    }
+    if terminated {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+    if line.len() > max_bytes {
+        Ok(StdioMessage::TooLarge)
+    } else {
+        Ok(StdioMessage::Message(line))
+    }
+}
+
+fn discard_stdio_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
+            reader.consume(newline + 1);
+            return Ok(());
+        }
+        let length = available.len();
+        reader.consume(length);
+    }
 }
 
 fn run_http_server() -> Result<()> {
@@ -1607,6 +1673,29 @@ mod tests {
         let client = TcpStream::connect(address).unwrap();
         let (server, _) = listener.accept().unwrap();
         (client, server)
+    }
+
+    #[test]
+    fn stdio_reader_bounds_messages_and_recovers_at_the_next_line() {
+        let input = b"abcdefghijkl\n12345678\r\n{\"x\":1}\n";
+        let mut reader = io::Cursor::new(input);
+
+        assert_eq!(
+            read_stdio_message(&mut reader, 8).unwrap(),
+            StdioMessage::TooLarge
+        );
+        assert_eq!(
+            read_stdio_message(&mut reader, 8).unwrap(),
+            StdioMessage::Message(b"12345678".to_vec())
+        );
+        assert_eq!(
+            read_stdio_message(&mut reader, 8).unwrap(),
+            StdioMessage::Message(b"{\"x\":1}".to_vec())
+        );
+        assert_eq!(
+            read_stdio_message(&mut reader, 8).unwrap(),
+            StdioMessage::Eof
+        );
     }
 
     #[test]

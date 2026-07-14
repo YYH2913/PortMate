@@ -142,6 +142,10 @@ To run the MCP bridge:
 cargo run -p portmate-mcp
 ```
 
+The stdio transport accepts newline-delimited JSON messages up to 1 MiB, excluding the line
+delimiter. Oversized input is discarded through its terminating newline, returns a JSON-RPC parse
+error, and does not desynchronize the following request.
+
 To let the standalone stdio bridge read the desktop store directly, pass the SQLite store path:
 
 ```bash
