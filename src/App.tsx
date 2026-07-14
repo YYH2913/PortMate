@@ -58,7 +58,7 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
-import { activateWorkspacePaneSession, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneSession, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneSession, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, splitWorkspacePaneSessionToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
+import { activateWorkspacePaneSession, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneSession, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneSession, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneSession, replaceWorkspacePaneSession, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, splitWorkspacePane, splitWorkspacePaneSessionToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -67,6 +67,7 @@ import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig,
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
+const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制标签", "还原布局"] },
@@ -78,7 +79,7 @@ const menuGroups = [
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
+  { label: "窗口", items: ["水平拆分", "垂直拆分", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
 
@@ -136,6 +137,7 @@ type ConnectionCredentials = { username: string | null; password: string | null;
 type NoticeState = { title: string; message: string } | null;
 type SearchDialogState = { mode: "sessions" | "logs"; query: string };
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
+type ClosedWorkspaceView = { sessionId: string; paneId: string; index: number };
 type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
 type HostKeyEditDraft = {
   keyId: string;
@@ -255,6 +257,7 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
   const [zoomedPaneId, setZoomedPaneId] = useState("");
   const [workspaceGroupMove, setWorkspaceGroupMove] = useState<WorkspaceGroupMoveRequest>(null);
+  const [closedWorkspaceViews, setClosedWorkspaceViews] = useState<ClosedWorkspaceView[]>([]);
   const [workspaceKeymap, setWorkspaceKeymap] = useState<WorkspaceKeymap>(() => (
     normalizeWorkspaceKeymap(loadLocalValue<unknown>(
       WORKSPACE_KEYMAP_STORAGE_KEY,
@@ -761,6 +764,22 @@ function handleMenuAction(item: string) {
       splitWorkspaceViewToGroup(viewGroupSplit.direction, viewGroupSplit.placement);
       return;
     }
+    if (item === "关闭视图") {
+      closeActiveWorkspaceView();
+      return;
+    }
+    if (item === "关闭其他视图") {
+      closeOtherWorkspaceViews();
+      return;
+    }
+    if (item === "关闭右侧视图") {
+      closeRightWorkspaceViews();
+      return;
+    }
+    if (item === "重新打开已关闭视图") {
+      reopenClosedWorkspaceView();
+      return;
+    }
     if (item === "关闭窗格") {
       closeWorkspacePane();
       return;
@@ -974,7 +993,7 @@ function handleMenuAction(item: string) {
       }
     }
     if (failed.length) {
-      setNotice({ title: "关闭视图", message: `${failed.length} 个会话关闭失败，其余已关闭。` });
+      setNotice({ title: "断开会话", message: `${failed.length} 个会话断开失败，其余已断开。` });
     }
   }
 
@@ -1146,11 +1165,125 @@ function handleMenuAction(item: string) {
     setZoomedPaneId("");
   }
 
-  function closeWorkspacePane(paneId = activePaneId) {
+  function pushClosedWorkspaceViews(views: ClosedWorkspaceView[]) {
+    if (!views.length) return;
+    setClosedWorkspaceViews((current) => (
+      [...current, ...views].slice(-MAX_CLOSED_WORKSPACE_VIEWS)
+    ));
+  }
+
+  function closeWorkspaceViews(paneId: string, sessionIds: string[]) {
+    const panes = workspacePaneLeaves(workspaceRoot);
+    const source = panes.find((pane) => pane.id === paneId);
+    if (!source) return;
+    const requested = new Set(sessionIds);
+    const closedViews = source.sessionIds
+      .map((sessionId, index) => ({ sessionId, paneId, index }))
+      .filter((view) => requested.has(view.sessionId));
+    if (!closedViews.length) return;
+    const totalViewCount = panes.reduce((count, pane) => count + pane.sessionIds.length, 0);
+    if (closedViews.length >= totalViewCount) {
+      setNotice({ title: "关闭视图", message: "工作区中至少需要保留一个视图。" });
+      return;
+    }
+
+    let nextRoot = workspaceRoot;
+    for (const view of closedViews) {
+      nextRoot = removeWorkspacePaneSession(nextRoot, paneId, view.sessionId);
+    }
+    if (nextRoot === workspaceRoot) return;
+    const nextPanes = workspacePaneLeaves(nextRoot);
+    const sourceIndex = panes.findIndex((pane) => pane.id === paneId);
+    const nextActive = nextPanes.find((pane) => pane.id === activePaneId)
+      ?? nextPanes[Math.min(Math.max(0, sourceIndex), nextPanes.length - 1)];
+    if (!nextActive) return;
+    const shouldRefocus = nextActive.id !== activePaneId
+      || (paneId === activePaneId && closedViews.some((view) => view.sessionId === source.sessionId));
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(nextActive.id);
+    setActiveId(nextActive.sessionId);
+    setZoomedPaneId((current) => current && !findWorkspacePane(nextRoot, current) ? nextActive.id : current);
+    pushClosedWorkspaceViews(closedViews);
+    if (shouldRefocus) focusWorkspacePaneInput(nextActive.id);
+  }
+
+  function closeActiveWorkspaceView() {
+    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    if (pane) closeWorkspaceViews(pane.id, [pane.sessionId]);
+  }
+
+  function closeOtherWorkspaceViews() {
+    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    if (!pane) return;
+    const sessionIds = pane.sessionIds.filter((sessionId) => sessionId !== pane.sessionId);
+    if (!sessionIds.length) {
+      setNotice({ title: "关闭其他视图", message: "当前分组没有其他视图。" });
+      return;
+    }
+    closeWorkspaceViews(pane.id, sessionIds);
+  }
+
+  function closeRightWorkspaceViews() {
+    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    if (!pane) return;
+    const activeIndex = pane.sessionIds.indexOf(pane.sessionId);
+    const sessionIds = pane.sessionIds.slice(activeIndex + 1);
+    if (!sessionIds.length) {
+      setNotice({ title: "关闭右侧视图", message: "活动视图右侧没有其他视图。" });
+      return;
+    }
+    closeWorkspaceViews(pane.id, sessionIds);
+  }
+
+  function reopenClosedWorkspaceView() {
+    let historyIndex = closedWorkspaceViews.length - 1;
+    while (historyIndex >= 0 && !sessions.some((session) => session.profile.id === closedWorkspaceViews[historyIndex].sessionId)) {
+      historyIndex -= 1;
+    }
+    if (historyIndex < 0) {
+      setClosedWorkspaceViews([]);
+      setNotice({ title: "重新打开已关闭视图", message: "没有可重新打开的视图。" });
+      return;
+    }
+    const closedView = closedWorkspaceViews[historyIndex];
+    const panes = workspacePaneLeaves(workspaceRoot);
+    const candidateIds = [closedView.paneId, activePaneId, ...panes.map((pane) => pane.id)];
+    const target = candidateIds
+      .filter((paneId, index) => paneId && candidateIds.indexOf(paneId) === index)
+      .map((paneId) => panes.find((pane) => pane.id === paneId))
+      .find((pane) => pane && (
+        pane.sessionIds.includes(closedView.sessionId)
+        || pane.sessionIds.length < MAX_WORKSPACE_GROUP_TABS
+      ));
+    if (!target || !workspaceRoot) {
+      setNotice({ title: "重新打开已关闭视图", message: `所有分组均已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+      return;
+    }
+    const insertionIndex = target.id === closedView.paneId
+      ? closedView.index
+      : target.sessionIds.length;
+    const nextRoot = insertWorkspacePaneSession(
+      workspaceRoot,
+      target.id,
+      closedView.sessionId,
+      insertionIndex,
+    );
+    const alreadyPresent = target.sessionIds.includes(closedView.sessionId);
+    if (nextRoot === workspaceRoot && !alreadyPresent) return;
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(target.id);
+    setActiveId(closedView.sessionId);
+    setZoomedPaneId((current) => current ? target.id : "");
+    setClosedWorkspaceViews((current) => current.slice(0, historyIndex));
+    focusWorkspacePaneInput(target.id);
+  }
+
+  function closeWorkspacePane(paneId = activePaneId, recordHistory = true) {
     const panes = workspacePaneLeaves(workspaceRoot);
     if (panes.length <= 1 || !paneId) return;
     const removedIndex = panes.findIndex((pane) => pane.id === paneId);
     if (removedIndex < 0) return;
+    const removedPane = panes[removedIndex];
     const nextRoot = removeWorkspacePane(workspaceRoot, paneId);
     const nextPanes = workspacePaneLeaves(nextRoot);
     const currentActive = nextPanes.find((pane) => pane.id === activePaneId);
@@ -1159,6 +1292,9 @@ function handleMenuAction(item: string) {
     setActivePaneId(nextActive?.id ?? "");
     setActiveId(nextActive?.sessionId ?? activeId);
     setZoomedPaneId((current) => current ? nextActive?.id ?? "" : "");
+    if (recordHistory) {
+      pushClosedWorkspaceViews(removedPane.sessionIds.map((sessionId, index) => ({ sessionId, paneId, index })));
+    }
   }
 
   function splitWorkspaceViewToGroup(
@@ -1258,7 +1394,7 @@ function handleMenuAction(item: string) {
         setActiveId(nextPane?.sessionId ?? activeId);
         setZoomedPaneId((current) => current ? nextPane?.id ?? "" : "");
       } else {
-        closeWorkspacePane(pane.id);
+        closeWorkspacePane(pane.id, false);
       }
     } catch (error) {
       setNotice({ title: "移到新窗口失败", message: formatError(error) });
@@ -1830,6 +1966,7 @@ function handleMenuAction(item: string) {
             blockSelection={blockSelection}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onActivate={activateWorkspacePane}
+            onCloseView={closeWorkspaceViews}
             onClosePane={closeWorkspacePane}
             onDetachPane={(paneId) => void detachWorkspacePane(paneId)}
             onMoveView={(paneId) => setWorkspaceGroupMove({ paneId, mode: "view" })}
@@ -2945,6 +3082,7 @@ function TerminalPaneGrid({
   blockSelection,
   onInput,
   onActivate,
+  onCloseView,
   onClosePane,
   onDetachPane,
   onMoveView,
@@ -2959,6 +3097,7 @@ function TerminalPaneGrid({
   blockSelection: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (paneId: string, sessionId: string) => void;
+  onCloseView: (paneId: string, sessionIds: string[]) => void;
   onClosePane: (paneId: string) => void;
   onDetachPane: (paneId: string) => void;
   onMoveView: (paneId: string) => void;
@@ -2977,9 +3116,11 @@ function TerminalPaneGrid({
         activePaneId={activePaneId}
         zoomedPaneId={zoomedPaneId}
         canMoveView={workspacePaneLeaves(root).length > 1}
+        canCloseView={workspacePaneLeaves(root).reduce((count, pane) => count + pane.sessionIds.length, 0) > 1}
         eventsBySession={eventsBySession}
         onInput={onInput}
         onActivate={onActivate}
+        onCloseView={onCloseView}
         onClosePane={onClosePane}
         onDetachPane={onDetachPane}
         onMoveView={onMoveView}
@@ -2995,9 +3136,11 @@ type TerminalWorkspaceNodeProps = {
   activePaneId: string;
   zoomedPaneId: string;
   canMoveView: boolean;
+  canCloseView: boolean;
   eventsBySession: Record<string, SessionEvent[]>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (paneId: string, sessionId: string) => void;
+  onCloseView: (paneId: string, sessionIds: string[]) => void;
   onClosePane: (paneId: string) => void;
   onDetachPane: (paneId: string) => void;
   onMoveView: (paneId: string) => void;
@@ -3019,24 +3162,42 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
     >
       <header>
         <div className="workspace-pane-tabs" role="tablist" aria-label="分组视图">
-          {groupSessions.map((item) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={item.profile.id === node.sessionId}
-              className={item.profile.id === node.sessionId ? "workspace-pane-tab active" : "workspace-pane-tab"}
-              title={item.profile.name}
-              key={item.profile.id}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                props.onActivate(node.id, item.profile.id);
-              }}
-            >
-              <span className="tab-mark" />
-              <span>{item.profile.name}</span>
-            </button>
-          ))}
+          {groupSessions.map((item) => {
+            const activeView = item.profile.id === node.sessionId;
+            return (
+              <div className={activeView ? "workspace-pane-tab active" : "workspace-pane-tab"} role="presentation" key={item.profile.id}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeView}
+                  className="workspace-pane-tab-label"
+                  title={item.profile.name}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onActivate(node.id, item.profile.id);
+                  }}
+                >
+                  <span className="tab-mark" />
+                  <span>{item.profile.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-pane-tab-close"
+                  title={`关闭视图 ${item.profile.name}`}
+                  aria-label={`关闭视图 ${item.profile.name}`}
+                  disabled={!props.canCloseView}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseView(node.id, [item.profile.id]);
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
           {!groupSessions.length ? <strong>会话不可用</strong> : null}
         </div>
         <span>{session?.runtime.status ?? "missing"}</span>
@@ -3260,10 +3421,10 @@ function PortMateContextMenu({
         <ContextMenuButton label="选择分组..." onClick={() => onAction("move-group", sessionId)} />
       </ContextSubmenu>
       <ContextDivider />
-      <ContextMenuButton label="关闭视图(C)" shortcut="Ctrl+Shift+W" disabled={disabled} onClick={() => onAction("close", sessionId)} />
-      <ContextMenuButton label="关闭所有视图(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
-      <ContextMenuButton label="关闭所有非活动视图(A)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
-      <ContextMenuButton label="关闭在侧所有视图(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
+      <ContextMenuButton label="断开会话(C)" disabled={disabled} onClick={() => onAction("close", sessionId)} />
+      <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
+      <ContextMenuButton label="断开所有非活动会话(I)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
+      <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
     </div>

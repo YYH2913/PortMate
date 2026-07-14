@@ -199,19 +199,30 @@ export function addWorkspacePaneSession(
   paneId: string,
   sessionId: string,
 ): WorkspaceNode | null {
+  return insertWorkspacePaneSession(root, paneId, sessionId, Number.POSITIVE_INFINITY);
+}
+
+export function insertWorkspacePaneSession(
+  root: WorkspaceNode | null,
+  paneId: string,
+  sessionId: string,
+  index: number,
+): WorkspaceNode | null {
   if (!root) return root;
   if (root.kind === "pane") {
     if (root.id !== paneId) return root;
-    const sessionIds = root.sessionIds.includes(sessionId)
-      ? root.sessionIds
-      : [...root.sessionIds, sessionId].slice(0, MAX_WORKSPACE_GROUP_TABS);
-    if (!sessionIds.includes(sessionId)) return root;
-    return root.sessionId === sessionId && sessionIds === root.sessionIds
-      ? root
-      : { ...root, sessionId, sessionIds };
+    if (root.sessionIds.includes(sessionId)) {
+      return root.sessionId === sessionId ? root : { ...root, sessionId };
+    }
+    if (root.sessionIds.length >= MAX_WORKSPACE_GROUP_TABS) return root;
+    const requestedIndex = Number.isFinite(index) ? Math.trunc(index) : root.sessionIds.length;
+    const insertionIndex = Math.min(root.sessionIds.length, Math.max(0, requestedIndex));
+    const sessionIds = [...root.sessionIds];
+    sessionIds.splice(insertionIndex, 0, sessionId);
+    return { ...root, sessionId, sessionIds };
   }
-  const first = addWorkspacePaneSession(root.first, paneId, sessionId);
-  const second = addWorkspacePaneSession(root.second, paneId, sessionId);
+  const first = insertWorkspacePaneSession(root.first, paneId, sessionId, index);
+  const second = insertWorkspacePaneSession(root.second, paneId, sessionId, index);
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
 }
 

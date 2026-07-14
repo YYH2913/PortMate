@@ -7,6 +7,7 @@ import {
   mergeWorkspacePaneGroups,
   findWorkspacePaneInDirection,
   findWorkspacePane,
+  insertWorkspacePaneSession,
   reconcileWorkspaceSnapshot,
   removeWorkspacePane,
   removeWorkspacePaneSession,
@@ -133,6 +134,20 @@ describe("workspace snapshots", () => {
     expect(pane.sessionIds).toEqual(["a", "b", "c"]);
     expect(pane.sessionId).toBe("b");
     expect(activateWorkspacePaneSession(activated, paneId, "missing")).toBe(activated);
+  });
+
+  it("restores a view at its bounded group index and activates duplicates", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "group-a", sessionId: "c", sessionIds: ["a", "c"] },
+      activePaneId: "group-a",
+      activeId: "c",
+    });
+    const restored = insertWorkspacePaneSession(snapshot.root, "group-a", "b", 1)!;
+    const duplicate = insertWorkspacePaneSession(restored, "group-a", "a", 99)!;
+
+    expect(findWorkspacePane(restored, "group-a")).toMatchObject({ sessionId: "b", sessionIds: ["a", "b", "c"] });
+    expect(findWorkspacePane(duplicate, "group-a")).toMatchObject({ sessionId: "a", sessionIds: ["a", "b", "c"] });
   });
 
   it("removes one view without closing a non-empty group", () => {

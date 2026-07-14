@@ -216,6 +216,8 @@ button {
   left: 0;
   display: grid;
   min-width: 188px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line);
   background: var(--panel-2);
@@ -1471,24 +1473,66 @@ button {
   display: flex;
   align-items: center;
   flex: 0 1 140px;
-  gap: 5px;
   width: auto;
   min-width: 54px;
   height: 27px;
   margin: 0;
-  padding: 0 7px;
   border-right: 1px solid var(--line-soft);
   background: transparent;
   color: var(--muted);
-  cursor: pointer;
   font-size: 10px;
 }
 
-.workspace-pane-tab > span:last-child {
+.workspace-pane-tab-label {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.workspace-pane-tab-label > span:last-child {
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-pane-tab-close {
+  display: grid;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  padding: 0;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: color 100ms ease-out, background-color 100ms ease-out, opacity 100ms ease-out;
+}
+
+.workspace-pane-tab:hover .workspace-pane-tab-close,
+.workspace-pane-tab.active .workspace-pane-tab-close,
+.workspace-pane-tab:focus-within .workspace-pane-tab-close {
+  opacity: 1;
+}
+
+.workspace-pane-tab-close:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--red);
+}
+
+.workspace-pane-tab-close:disabled {
+  cursor: default;
+  opacity: 0;
 }
 
 .workspace-pane-tab .tab-mark {
