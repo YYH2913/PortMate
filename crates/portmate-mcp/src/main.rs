@@ -12,15 +12,19 @@ use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_HTTP_CONNECTIONS: usize = 64;
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
@@ -756,6 +760,7 @@ fn run_stdio_server() -> Result<()> {
 fn run_http_server() -> Result<()> {
     let config = http_config()?;
     let listener = TcpListener::bind(config.addr)?;
+    let active_connections = Arc::new(AtomicUsize::new(0));
     eprintln!("PortMate MCP HTTP listening on http://{}/mcp", config.addr);
     eprintln!("PortMate MCP HTTP token source: {HTTP_TOKEN_REF} or PORTMATE_MCP_HTTP_TOKEN");
 
@@ -763,7 +768,12 @@ fn run_http_server() -> Result<()> {
         match stream {
             Ok(stream) => {
                 let config = config.clone();
-                thread::spawn(move || handle_http_connection(stream, config));
+                spawn_http_connection(
+                    stream,
+                    config,
+                    Arc::clone(&active_connections),
+                    MAX_HTTP_CONNECTIONS,
+                );
             }
             Err(error) => eprintln!("PortMate MCP HTTP accept failed: {error}"),
         }
@@ -771,7 +781,60 @@ fn run_http_server() -> Result<()> {
     Ok(())
 }
 
+struct HttpConnectionPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for HttpConnectionPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_http_connection(
+    active: &Arc<AtomicUsize>,
+    max_connections: usize,
+) -> Option<HttpConnectionPermit> {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < max_connections).then_some(current + 1)
+        })
+        .ok()?;
+    Some(HttpConnectionPermit {
+        active: Arc::clone(active),
+    })
+}
+
+fn spawn_http_connection(
+    mut stream: TcpStream,
+    config: HttpConfig,
+    active: Arc<AtomicUsize>,
+    max_connections: usize,
+) -> bool {
+    let Some(permit) = try_acquire_http_connection(&active, max_connections) else {
+        let _ = stream.set_write_timeout(Some(HTTP_WRITE_TIMEOUT));
+        let response = http_response(
+            503,
+            "Service Unavailable",
+            &json!({ "error": "MCP HTTP connection limit reached" }).to_string(),
+            None,
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.shutdown(Shutdown::Both);
+        return false;
+    };
+    thread::spawn(move || {
+        let _permit = permit;
+        handle_http_connection(stream, config);
+    });
+    true
+}
+
 fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
+    if let Err(error) = stream.set_write_timeout(Some(HTTP_WRITE_TIMEOUT)) {
+        eprintln!("PortMate MCP HTTP failed to set write timeout: {error}");
+        return;
+    }
     let response = match read_http_request(&mut stream) {
         Ok(request) if is_sse_stream_request(&request) => {
             if let Err(error) = write_http_sse_stream(&mut stream, request, &config) {
@@ -780,12 +843,24 @@ fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
             return;
         }
         Ok(request) => handle_http_request(request, &config),
-        Err(error) => http_response(
-            400,
-            "Bad Request",
-            &json!({ "error": error.to_string() }).to_string(),
-            None,
-        ),
+        Err(error) => {
+            let timed_out = error.downcast_ref::<io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                )
+            });
+            http_response(
+                if timed_out { 408 } else { 400 },
+                if timed_out {
+                    "Request Timeout"
+                } else {
+                    "Bad Request"
+                },
+                &json!({ "error": error.to_string() }).to_string(),
+                None,
+            )
+        }
     };
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
@@ -838,10 +913,18 @@ fn read_or_create_http_token() -> Result<String> {
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    read_http_request_with_timeout(stream, HTTP_REQUEST_TIMEOUT)
+}
+
+fn read_http_request_with_timeout(
+    stream: &mut TcpStream,
+    timeout: Duration,
+) -> Result<HttpRequest> {
+    let deadline = Instant::now() + timeout;
     let mut raw = Vec::new();
     let mut buffer = [0_u8; 4096];
     let header_end = loop {
-        let read = stream.read(&mut buffer)?;
+        let read = read_http_chunk_before(stream, &mut buffer, deadline)?;
         if read == 0 {
             return Err(anyhow!("connection closed before HTTP headers"));
         }
@@ -891,7 +974,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let body_start = header_end + 4;
     let mut body = raw.get(body_start..).unwrap_or_default().to_vec();
     while body.len() < content_length {
-        let read = stream.read(&mut buffer)?;
+        let read = read_http_chunk_before(stream, &mut buffer, deadline)?;
         if read == 0 {
             return Err(anyhow!("connection closed before HTTP body"));
         }
@@ -906,6 +989,28 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
         path,
         headers,
         body,
+    })
+}
+
+fn read_http_chunk_before(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<usize> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "HTTP request deadline exceeded",
+        ));
+    }
+    stream.set_read_timeout(Some(remaining))?;
+    stream.read(buffer).map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            io::Error::new(io::ErrorKind::TimedOut, "HTTP request deadline exceeded")
+        } else {
+            error
+        }
     })
 }
 
@@ -1129,7 +1234,7 @@ fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) ->
         "application/json"
     };
     let mut response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n",
         body.len()
     );
     if let Some(origin) = origin {
@@ -1324,6 +1429,87 @@ mod tests {
             headers,
             body: Vec::new(),
         }
+    }
+
+    fn test_tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn http_request_deadline_cannot_be_extended_by_trickle_bytes() {
+        let (mut client, mut server) = test_tcp_pair();
+        let writer = thread::spawn(move || {
+            for byte in b"GET /mcp HTTP/1.1\r\nHost: localhost\r\n" {
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(15));
+            }
+        });
+        let started = Instant::now();
+        let error =
+            read_http_request_with_timeout(&mut server, Duration::from_millis(60)).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::TimedOut)
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(server);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
+        let config = test_http_config();
+        let active = Arc::new(AtomicUsize::new(0));
+        let permit = try_acquire_http_connection(&active, 1).unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        let (mut rejected_client, rejected_server) = test_tcp_pair();
+        assert!(!spawn_http_connection(
+            rejected_server,
+            config.clone(),
+            Arc::clone(&active),
+            1,
+        ));
+        let mut rejected_response = String::new();
+        rejected_client
+            .read_to_string(&mut rejected_response)
+            .unwrap();
+        assert!(rejected_response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(rejected_response.contains("Connection: close"));
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        drop(permit);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        let (mut accepted_client, accepted_server) = test_tcp_pair();
+        accepted_client
+            .write_all(b"OPTIONS /mcp HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        accepted_client.shutdown(Shutdown::Write).unwrap();
+        assert!(spawn_http_connection(
+            accepted_server,
+            config,
+            Arc::clone(&active),
+            1,
+        ));
+        let mut accepted_response = String::new();
+        accepted_client
+            .read_to_string(&mut accepted_response)
+            .unwrap();
+        assert!(accepted_response.starts_with("HTTP/1.1 204 No Content"));
+        for _ in 0..100 {
+            if active.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(try_acquire_http_connection(&active, 1).is_some());
     }
 
     #[test]

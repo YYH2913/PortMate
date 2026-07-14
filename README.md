@@ -176,6 +176,11 @@ The same bridge can expose JSON-RPC over local HTTP for clients that cannot spaw
 The desktop `工具 -> MCP Bridge` dialog shows the default HTTP endpoint, Origin, startup command, tokenRef, and can generate or rotate the keyring token.
 Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.
 
+The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
+complete request must arrive within five seconds, each response/SSE write has a five-second socket
+timeout, and excess connections receive `503 Service Unavailable`. Non-SSE responses explicitly
+close the HTTP/1.1 connection.
+
 ```bash
 PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
 PORTMATE_MCP_HTTP=1 \
