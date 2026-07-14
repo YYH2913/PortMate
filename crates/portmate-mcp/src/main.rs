@@ -23,6 +23,8 @@ const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HTTP_HEADERS: usize = 128;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1108,6 +1110,7 @@ fn http_config() -> Result<HttpConfig> {
     let token = std::env::var("PORTMATE_MCP_HTTP_TOKEN")
         .ok()
         .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
         .or_else(|| read_or_create_http_token().ok())
         .ok_or_else(|| anyhow!("failed to load or create MCP HTTP token"))?;
     let mut allowed_origins = std::env::var("PORTMATE_MCP_HTTP_ORIGINS")
@@ -1162,37 +1165,51 @@ fn read_http_request_with_timeout(
             return Err(anyhow!("connection closed before HTTP headers"));
         }
         raw.extend_from_slice(&buffer[..read]);
-        if raw.len() > MAX_HTTP_BODY_BYTES {
-            return Err(anyhow!("HTTP request is too large"));
-        }
         if let Some(index) = find_header_end(&raw) {
+            if index + 4 > MAX_HTTP_HEADER_BYTES {
+                return Err(anyhow!("HTTP headers exceed the 64 KiB limit"));
+            }
             break index;
+        }
+        if raw.len() > MAX_HTTP_HEADER_BYTES {
+            return Err(anyhow!("HTTP headers exceed the 64 KiB limit"));
         }
     };
 
-    let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
-    let mut lines = header_text.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| anyhow!("missing HTTP request line"))?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
+    let body_start = header_end + 4;
+    let mut parsed_headers = [httparse::EMPTY_HEADER; MAX_HTTP_HEADERS];
+    let mut parsed_request = httparse::Request::new(&mut parsed_headers);
+    let parsed_bytes = match parsed_request
+        .parse(&raw[..body_start])
+        .map_err(|error| anyhow!("invalid HTTP headers: {error}"))?
+    {
+        httparse::Status::Complete(parsed_bytes) => parsed_bytes,
+        httparse::Status::Partial => return Err(anyhow!("incomplete HTTP headers")),
+    };
+    if parsed_bytes != body_start {
+        return Err(anyhow!("invalid bytes after HTTP headers"));
+    }
+    let method = parsed_request
+        .method
         .ok_or_else(|| anyhow!("missing HTTP method"))?
         .to_string();
-    let path = request_parts
-        .next()
+    let path = parsed_request
+        .path
         .ok_or_else(|| anyhow!("missing HTTP path"))?
         .to_string();
+    if parsed_request.version.is_none() {
+        return Err(anyhow!("missing HTTP version"));
+    }
     let mut headers = HashMap::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+    for header in parsed_request.headers.iter() {
+        let value = std::str::from_utf8(header.value)
+            .map_err(|_| anyhow!("HTTP header `{}` is not valid UTF-8", header.name))?;
+        insert_http_header(&mut headers, header.name, value)?;
+    }
+    if headers.contains_key("transfer-encoding") {
+        return Err(anyhow!(
+            "Transfer-Encoding is not supported; send a Content-Length body"
+        ));
     }
 
     let content_length = headers
@@ -1204,12 +1221,18 @@ fn read_http_request_with_timeout(
     if content_length > MAX_HTTP_BODY_BYTES {
         return Err(anyhow!("HTTP body is too large"));
     }
-    let body_start = header_end + 4;
     let mut body = raw.get(body_start..).unwrap_or_default().to_vec();
+    if body.len() > content_length {
+        return Err(anyhow!(
+            "HTTP request contains bytes after its declared body"
+        ));
+    }
     while body.len() < content_length {
+        let remaining = content_length - body.len();
+        let read_buffer_length = remaining.min(buffer.len());
         let read = read_stream_chunk_before(
             stream,
-            &mut buffer,
+            &mut buffer[..read_buffer_length],
             deadline,
             "HTTP request deadline exceeded",
         )?;
@@ -1217,17 +1240,46 @@ fn read_http_request_with_timeout(
             return Err(anyhow!("connection closed before HTTP body"));
         }
         body.extend_from_slice(&buffer[..read]);
-        if body.len() > MAX_HTTP_BODY_BYTES {
-            return Err(anyhow!("HTTP body is too large"));
-        }
     }
-    body.truncate(content_length);
     Ok(HttpRequest {
         method,
         path,
         headers,
         body,
     })
+}
+
+fn insert_http_header(
+    headers: &mut HashMap<String, String>,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    let name = name.to_ascii_lowercase();
+    let value = value.trim();
+    if let Some(existing) = headers.get_mut(&name) {
+        if is_single_value_http_header(&name) {
+            return Err(anyhow!("duplicate HTTP header `{name}`"));
+        }
+        existing.push_str(", ");
+        existing.push_str(value);
+    } else {
+        headers.insert(name, value.to_string());
+    }
+    Ok(())
+}
+
+fn is_single_value_http_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "mcp-protocol-version"
+            | "origin"
+            | "transfer-encoding"
+            | "x-portmate-mcp-token"
+    )
 }
 
 fn read_stream_chunk_before(
@@ -1408,8 +1460,14 @@ fn validate_origin(origin: Option<&str>, config: &HttpConfig) -> Result<()> {
 
 fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
     if let Some(value) = request.headers.get("authorization") {
-        if let Some(candidate) = value.trim().strip_prefix("Bearer ") {
-            return constant_time_str_eq(candidate.trim(), token);
+        let mut parts = value.split_whitespace();
+        if parts
+            .next()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
+        {
+            if let (Some(candidate), None) = (parts.next(), parts.next()) {
+                return constant_time_str_eq(candidate, token);
+            }
         }
     }
     request
@@ -1419,35 +1477,38 @@ fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
 }
 
 fn accepts_json_http_response(request: &HttpRequest) -> bool {
-    let Some(accept) = request.headers.get("accept") else {
-        return true;
-    };
-    accept.split(',').any(|item| {
-        let media_type = item
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        matches!(
-            media_type.as_str(),
-            "*/*" | "application/*" | "application/json"
-        )
+    accepts_http_media_type(request, true, |media_type| {
+        matches!(media_type, "*/*" | "application/*" | "application/json")
     })
 }
 
 fn accepts_sse_http_response(request: &HttpRequest) -> bool {
+    accepts_http_media_type(request, false, |media_type| {
+        media_type == "text/event-stream"
+    })
+}
+
+fn accepts_http_media_type(
+    request: &HttpRequest,
+    default_when_missing: bool,
+    matches_media_type: impl Fn(&str) -> bool,
+) -> bool {
     let Some(accept) = request.headers.get("accept") else {
-        return false;
+        return default_when_missing;
     };
     accept.split(',').any(|item| {
-        let media_type = item
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        media_type == "text/event-stream"
+        let mut parts = item.split(';');
+        let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let mut quality = 1.0_f32;
+        for parameter in parts {
+            let Some((name, value)) = parameter.trim().split_once('=') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("q") {
+                quality = value.trim().parse::<f32>().unwrap_or(0.0);
+            }
+        }
+        (0.0..=1.0).contains(&quality) && quality > 0.0 && matches_media_type(&media_type)
     })
 }
 
@@ -1675,6 +1736,18 @@ mod tests {
         (client, server)
     }
 
+    fn parse_http_request_bytes(bytes: &[u8]) -> Result<HttpRequest> {
+        let (mut client, mut server) = test_tcp_pair();
+        let bytes = bytes.to_vec();
+        let writer = thread::spawn(move || {
+            client.write_all(&bytes).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+        });
+        let result = read_http_request_with_timeout(&mut server, Duration::from_secs(1));
+        writer.join().unwrap();
+        result
+    }
+
     #[test]
     fn stdio_reader_bounds_messages_and_recovers_at_the_next_line() {
         let input = b"abcdefghijkl\n12345678\r\n{\"x\":1}\n";
@@ -1826,6 +1899,53 @@ mod tests {
     }
 
     #[test]
+    fn http_parser_rejects_ambiguous_or_unsupported_framing() {
+        for request in [
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer one\r\nAuthorization: Bearer two\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+        ] {
+            assert!(parse_http_request_bytes(request)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate HTTP header"));
+        }
+
+        let chunked = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";
+        assert!(parse_http_request_bytes(chunked)
+            .unwrap_err()
+            .to_string()
+            .contains("Transfer-Encoding is not supported"));
+
+        let extra = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}extra";
+        assert!(parse_http_request_bytes(extra)
+            .unwrap_err()
+            .to_string()
+            .contains("bytes after its declared body"));
+
+        let malformed = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nnot-a-header\r\n\r\n";
+        assert!(parse_http_request_bytes(malformed)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid HTTP headers"));
+    }
+
+    #[test]
+    fn http_parser_combines_repeatable_headers_and_reads_exact_body() {
+        let request = parse_http_request_bytes(
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nAccept: text/event-stream\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .unwrap();
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/mcp");
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/json, text/event-stream")
+        );
+        assert_eq!(request.body, b"{}");
+    }
+
+    #[test]
     fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
         let config = test_http_config();
         let active = Arc::new(AtomicUsize::new(0));
@@ -1888,7 +2008,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert(
             "authorization".to_string(),
-            "Bearer secret-token".to_string(),
+            "bearer secret-token".to_string(),
         );
         let request = HttpRequest {
             method: "POST".to_string(),
@@ -1897,6 +2017,16 @@ mod tests {
             body: Vec::new(),
         };
         assert!(authorized_http_request(&request, "secret-token"));
+
+        let mut invalid_headers = HashMap::new();
+        invalid_headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token trailing".to_string(),
+        );
+        assert!(!authorized_http_request(
+            &test_http_request(invalid_headers),
+            "secret-token"
+        ));
 
         let mut headers = HashMap::new();
         headers.insert(
@@ -1911,6 +2041,19 @@ mod tests {
         };
         assert!(authorized_http_request(&request, "secret-token"));
         assert!(!authorized_http_request(&request, "different-token"));
+    }
+
+    #[test]
+    fn http_accept_respects_zero_quality_values() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "accept".to_string(),
+            "application/json; q=0.0, text/event-stream; q=1".to_string(),
+        );
+        let request = test_http_request(headers);
+
+        assert!(!accepts_json_http_response(&request));
+        assert!(accepts_sse_http_response(&request));
     }
 
     #[test]

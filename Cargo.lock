@@ -5222,6 +5222,7 @@ name = "portmate-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "httparse",
  "keyring",
  "keyring-core",
  "portmate-core",
