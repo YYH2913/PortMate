@@ -165,6 +165,8 @@ const MAX_SYSMON_DISKS: usize = 16;
 const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
+const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
@@ -20509,16 +20511,27 @@ async fn exec_ssh_command_capture(
     tokio::time::timeout(timeout, async {
         while let Some(message) = channel.wait().await {
             match message {
-                ChannelMsg::Data { data } => output.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
+                    &mut output,
+                    &data,
+                    MAX_SSH_EXEC_STDOUT_BYTES,
+                    "stdout",
+                )?,
+                ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
+                    &mut stderr,
+                    &data,
+                    MAX_SSH_EXEC_STDERR_BYTES,
+                    "stderr",
+                )?,
                 ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
                 ChannelMsg::Eof | ChannelMsg::Close => break,
                 _ => {}
             }
         }
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|_| "SSH exec 超时".to_string())?;
+    .map_err(|_| "SSH exec 超时".to_string())??;
 
     if exit_status.is_some_and(|code| code != 0) && output.is_empty() {
         return Err(format!(
@@ -20529,6 +20542,23 @@ async fn exec_ssh_command_capture(
     }
 
     Ok(String::from_utf8_lossy(&output).to_string())
+}
+
+fn append_bounded_ssh_exec_data(
+    buffer: &mut Vec<u8>,
+    data: &[u8],
+    max_bytes: usize,
+    stream: &str,
+) -> Result<(), String> {
+    let next_len = buffer
+        .len()
+        .checked_add(data.len())
+        .ok_or_else(|| format!("SSH exec {stream} 长度溢出"))?;
+    if next_len > max_bytes {
+        return Err(format!("SSH exec {stream} 超过 {} 字节上限", max_bytes));
+    }
+    buffer.extend_from_slice(data);
+    Ok(())
 }
 
 fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSnapshot, String> {
@@ -24770,6 +24800,19 @@ mod tests {
                 .expect("TCP loopback server timed out")
                 .expect("TCP loopback server task failed");
         });
+    }
+
+    #[test]
+    fn ssh_exec_capture_buffer_accepts_exact_limit_and_rejects_whole_overflow_chunk() {
+        let mut buffer = vec![1_u8, 2];
+        append_bounded_ssh_exec_data(&mut buffer, &[3, 4], 4, "stdout").unwrap();
+        assert_eq!(buffer, [1, 2, 3, 4]);
+
+        let before_overflow = buffer.clone();
+        let error = append_bounded_ssh_exec_data(&mut buffer, &[5], 4, "stdout").unwrap_err();
+        assert!(error.contains("stdout"));
+        assert!(error.contains("4"));
+        assert_eq!(buffer, before_overflow);
     }
 
     #[test]

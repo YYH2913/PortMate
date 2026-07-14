@@ -224,8 +224,9 @@ npm run build
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev` 与 macOS/FreeBSD `netstat -ibn` 每接口采样速率/重复行去重/动态列定位/计数器重置及 32 条边界、完整远端 marker 输出、真实本机 Linux `/proc`/`ps`/`df` 采样，以及 SQLite v3→v4 details 迁移。
+- Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 212：`portmate` 151、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 65 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
+当前 Rust workspace 自动化测试总数为 213：`portmate` 152、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 65 个前端 transfer/selection/presentation/log-shard/workspace/trigger/sync-input/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy 单元测试。
 
 主要缺口：
 
