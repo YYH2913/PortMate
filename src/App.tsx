@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   Activity,
   AlertCircle,
@@ -15,6 +16,7 @@ import {
   Clock3,
   Copy,
   Download,
+  ExternalLink,
   File,
   FileText,
   Folder,
@@ -39,6 +41,8 @@ import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySe
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
+import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
+import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
@@ -74,7 +78,7 @@ const menuGroups = [
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
+  { label: "窗口", items: ["水平拆分", "垂直拆分", "关闭窗格", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
 
@@ -260,11 +264,21 @@ export default function App() {
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
+  const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
 
   const active = sessions.find((session) => session.profile.id === activeId);
   const activeStatus = active?.runtime.status;
   const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
   syncInputRef.current = syncInput;
+  detachedCommandHandlerRef.current = (command) => {
+    if (command.action === "connect") {
+      void connectSession(command.sessionId, undefined, false);
+    } else if (command.action === "disconnect") {
+      void disconnectSession(command.sessionId, false);
+    } else {
+      reattachDetachedPane(command);
+    }
+  };
 
   function updateSyncInput(enabled: boolean) {
     if (!enabled && syncInputRef.current) {
@@ -490,6 +504,31 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    const handleBrowserMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const message = normalizeDetachedPaneMessage(event.data);
+      if (message) detachedCommandHandlerRef.current(message.payload);
+    };
+    window.addEventListener("message", handleBrowserMessage);
+    if (isBackendAvailable()) {
+      void listen<unknown>(DETACHED_PANE_EVENT, (event) => {
+        const command = normalizeDetachedPaneCommand(event.payload);
+        if (command) detachedCommandHandlerRef.current(command);
+      }).then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      }).catch(() => {});
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("message", handleBrowserMessage);
+    };
+  }, []);
+
   async function refresh() {
     const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
     setSessions(nextSessions);
@@ -710,6 +749,10 @@ function handleMenuAction(item: string) {
     }
     if (item === "关闭窗格") {
       closeWorkspacePane();
+      return;
+    }
+    if (item === "移到新窗口") {
+      void detachWorkspacePane();
       return;
     }
     const swapDirectionByItem: Partial<Record<string, WorkspacePaneDirection>> = {
@@ -1089,6 +1132,92 @@ function handleMenuAction(item: string) {
     setZoomedPaneId((current) => current ? nextActive?.id ?? "" : "");
   }
 
+  async function detachWorkspacePane(paneId = activePaneId) {
+    const panes = workspacePaneLeaves(workspaceRoot);
+    const pane = panes.find((item) => item.id === paneId);
+    const session = pane ? sessions.find((item) => item.profile.id === pane.sessionId) : undefined;
+    if (!pane || !session) return;
+    if (panes.length <= 1) {
+      setNotice({ title: "移到新窗口", message: "至少需要两个窗格才能移出当前窗格。" });
+      return;
+    }
+    const request: DetachedPaneRequest = {
+      windowId: createWorkspaceNodeId("pane").replace(/[^A-Za-z0-9_-]/g, "-"),
+      paneId: pane.id,
+      sessionId: pane.sessionId,
+    };
+    try {
+      await openDetachedPaneWindow(request, session.profile.name);
+      closeWorkspacePane(pane.id);
+    } catch (error) {
+      setNotice({ title: "移到新窗口失败", message: formatError(error) });
+    }
+  }
+
+  function reattachDetachedPane(command: DetachedPaneCommand) {
+    const session = sessions.find((item) => item.profile.id === command.sessionId);
+    if (!session) {
+      setNotice({ title: "返回主窗口失败", message: "原会话已不存在。" });
+      return;
+    }
+    const existingPane = findWorkspacePane(workspaceRoot, command.paneId);
+    if (existingPane) {
+      activateWorkspacePane(existingPane.id, existingPane.sessionId);
+      focusWorkspacePaneInput(existingPane.id);
+      return;
+    }
+    const panes = workspacePaneLeaves(workspaceRoot);
+    if (!workspaceRoot) {
+      const pane = createWorkspacePane(command.sessionId, command.paneId);
+      setWorkspaceRoot(pane);
+      setActivePaneId(pane.id);
+      setActiveId(pane.sessionId);
+      focusWorkspacePaneInput(pane.id);
+      return;
+    }
+    const target = findWorkspacePane(workspaceRoot, activePaneId) ?? panes[0];
+    if (!target) return;
+    if (panes.length >= MAX_WORKSPACE_PANES) {
+      setWorkspaceRoot(replaceWorkspacePaneSession(workspaceRoot, target.id, command.sessionId));
+      setActivePaneId(target.id);
+      setActiveId(command.sessionId);
+      setZoomedPaneId("");
+      focusWorkspacePaneInput(target.id);
+      setNotice({ title: "窗格已返回", message: `工作区已达到 ${MAX_WORKSPACE_PANES} 个窗格，已在当前窗格打开返回的会话。` });
+      return;
+    }
+    let nextRoot = workspaceRoot;
+    for (const candidate of [target, ...panes.filter((pane) => pane.id !== target.id)]) {
+      const candidateRoot = splitWorkspacePane(
+        workspaceRoot,
+        candidate.id,
+        "vertical",
+        command.sessionId,
+        command.paneId,
+        createWorkspaceNodeId("split"),
+        "second",
+      );
+      if (candidateRoot !== workspaceRoot) {
+        nextRoot = candidateRoot;
+        break;
+      }
+    }
+    if (nextRoot === workspaceRoot) {
+      setWorkspaceRoot(replaceWorkspacePaneSession(workspaceRoot, target.id, command.sessionId));
+      setActivePaneId(target.id);
+      setActiveId(command.sessionId);
+      setZoomedPaneId("");
+      focusWorkspacePaneInput(target.id);
+      setNotice({ title: "窗格已返回", message: `所有窗格均已达到 ${MAX_WORKSPACE_DEPTH} 层深度，已在当前窗格打开返回的会话。` });
+      return;
+    }
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(command.paneId);
+    setActiveId(command.sessionId);
+    setZoomedPaneId("");
+    focusWorkspacePaneInput(command.paneId);
+  }
+
   function swapWorkspacePane(direction: WorkspacePaneDirection) {
     const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, direction);
     if (!nextPane) {
@@ -1138,8 +1267,8 @@ function handleMenuAction(item: string) {
     return createSessionSummary(profile);
   }
 
-  function applySavedSession(saved: SessionSummary) {
-    activateSession(saved.profile.id);
+  function applySavedSession(saved: SessionSummary, activateWorkspace = true) {
+    if (activateWorkspace) activateSession(saved.profile.id);
     setSessions((current) => {
       const nextSessions = mergeSessionSummaries(current, saved);
       saveLocalSessionSummaries(nextSessions);
@@ -1156,7 +1285,7 @@ function handleMenuAction(item: string) {
     });
   }
 
-  async function connectSession(sessionId = activeId, sessionOverride?: SessionSummary) {
+  async function connectSession(sessionId = activeId, sessionOverride?: SessionSummary, activateWorkspace = true) {
     const session = sessionOverride ?? sessions.find((item) => item.profile.id === sessionId);
     if (!session) return;
 
@@ -1172,11 +1301,11 @@ function handleMenuAction(item: string) {
 
     const connecting = setSessionStatus({ ...session, profile: profileForConnect }, "connecting");
     setSessions((current) => mergeSessionSummaries(current, connecting));
-    activateSession(profileForConnect.id);
+    if (activateWorkspace) activateSession(profileForConnect.id);
 
     try {
       const persisted = await saveProfile(profileForConnect);
-      applySavedSession(persisted);
+      applySavedSession(persisted, activateWorkspace);
       const saved = isBackendAvailable()
         ? await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
         : setSessionStatus(persisted, "connected");
@@ -1248,7 +1377,7 @@ function handleMenuAction(item: string) {
     setHostKeyPrompt(null);
   }
 
-  async function disconnectSession(sessionId = activeId) {
+  async function disconnectSession(sessionId = activeId, activateWorkspace = true) {
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) return;
     if (isBackendAvailable() && isSshLikeProfile(session.profile) && session.runtime.status !== "connected") {
@@ -1261,7 +1390,7 @@ function handleMenuAction(item: string) {
     const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
 
     setLogs((current) => ({ ...current, [sessionId]: nextLog }));
-    activateSession(sessionId);
+    if (activateWorkspace) activateSession(sessionId);
     setSessions((current) => {
       const nextSessions = mergeSessionSummaries(current, saved);
       saveLocalSessionSummaries(nextSessions);
@@ -1576,6 +1705,7 @@ function handleMenuAction(item: string) {
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onActivate={activateWorkspacePane}
             onClosePane={closeWorkspacePane}
+            onDetachPane={(paneId) => void detachWorkspacePane(paneId)}
             onSplitRatioChange={(splitId, ratio) => {
               setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
             }}
@@ -2619,6 +2749,7 @@ function TerminalPaneGrid({
   onInput,
   onActivate,
   onClosePane,
+  onDetachPane,
   onSplitRatioChange,
 }: {
   root: WorkspaceNode | null;
@@ -2631,6 +2762,7 @@ function TerminalPaneGrid({
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (paneId: string, sessionId: string) => void;
   onClosePane: (paneId: string) => void;
+  onDetachPane: (paneId: string) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 }) {
   if (!root || root.kind === "pane") {
@@ -2650,6 +2782,7 @@ function TerminalPaneGrid({
         onInput={onInput}
         onActivate={onActivate}
         onClosePane={onClosePane}
+        onDetachPane={onDetachPane}
         onSplitRatioChange={onSplitRatioChange}
       />
     </div>
@@ -2665,6 +2798,7 @@ type TerminalWorkspaceNodeProps = {
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onActivate: (paneId: string, sessionId: string) => void;
   onClosePane: (paneId: string) => void;
+  onDetachPane: (paneId: string) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 };
 
@@ -2681,6 +2815,18 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
       <header>
         <strong>{session?.profile.name ?? "会话不可用"}</strong>
         <span>{session?.runtime.status ?? "missing"}</span>
+        <button
+          type="button"
+          className="detach-pane-button"
+          title="移到新窗口"
+          aria-label="移到新窗口"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onDetachPane(node.id);
+          }}
+        >
+          <ExternalLink size={12} />
+        </button>
         <button
           type="button"
           title="关闭窗格"
@@ -8206,6 +8352,38 @@ function loadLocalSessionSummaries() {
 
 function saveLocalSessionSummaries(sessions: SessionSummary[]) {
   window.localStorage.setItem("portmate.sessions", JSON.stringify(sessions));
+}
+
+async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName: string): Promise<void> {
+  const path = buildDetachedPanePath(request);
+  if (!isBackendAvailable()) {
+    const popup = window.open(path, request.windowId, "popup,width=960,height=680,resizable=yes");
+    if (!popup) throw new Error("浏览器阻止了独立窗口，请允许 PortMate 打开弹出窗口。");
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = window.setTimeout(() => finish(new Error("创建独立窗口超时")), 8_000);
+    const child = new WebviewWindow(request.windowId, {
+      url: path,
+      title: `${sessionName} - PortMate`,
+      center: true,
+      width: 960,
+      height: 680,
+      minWidth: 640,
+      minHeight: 400,
+      preventOverflow: true,
+    });
+    void child.once("tauri://created", () => finish());
+    void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));
+  });
 }
 
 function loadWorkspaceSnapshot(): WorkspaceSnapshot {

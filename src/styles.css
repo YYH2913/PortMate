@@ -33,6 +33,119 @@ body {
   color: var(--text);
 }
 
+body.detached-window {
+  min-width: 0;
+}
+
+.detached-pane-loading,
+.detached-pane-root {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #0d1117;
+}
+
+.detached-pane-loading {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detached-pane-root {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr) 24px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.detached-pane-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+  background: #111820;
+  font-size: 12px;
+}
+
+.detached-pane-toolbar .detached-brand {
+  color: var(--cyan);
+  font-weight: 700;
+}
+
+.detached-pane-toolbar strong,
+.detached-endpoint {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detached-endpoint {
+  flex: 1;
+  color: var(--muted);
+}
+
+.detached-pane-toolbar button {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.detached-pane-toolbar button:hover:not(:disabled),
+.detached-pane-toolbar button:focus-visible {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.detached-pane-toolbar button:disabled {
+  opacity: 0.35;
+}
+
+.detached-pane-terminal {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.detached-pane-terminal > .terminal-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.detached-pane-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 8px;
+  border-top: 1px solid var(--line);
+  background: #111820;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.detached-pane-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detached-pane-status.error {
+  color: var(--red);
+}
+
 button,
 input,
 select,
@@ -1373,6 +1486,11 @@ button {
 .terminal-pane header button:hover {
   color: var(--red);
   background: rgba(248, 113, 113, 0.1);
+}
+
+.terminal-pane header .detach-pane-button:hover {
+  color: var(--cyan);
+  background: rgba(94, 234, 212, 0.1);
 }
 
 .terminal-pane-grid.block-selection .terminal-pane.active {

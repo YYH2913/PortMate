@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "detached-pane",
+  "description": "Restricted permissions for detached terminal panes",
+  "windows": ["pane-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close"
+  ]
+}

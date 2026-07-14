@@ -1,0 +1,67 @@
+export const DETACHED_PANE_EVENT = "portmate-detached-pane-command";
+export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
+
+export type DetachedPaneRequest = {
+  windowId: string;
+  paneId: string;
+  sessionId: string;
+};
+
+export type DetachedPaneCommand = DetachedPaneRequest & {
+  action: "connect" | "disconnect" | "reattach";
+};
+
+export type DetachedPaneMessage = {
+  type: typeof DETACHED_PANE_MESSAGE_TYPE;
+  payload: DetachedPaneCommand;
+};
+
+const windowIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function buildDetachedPanePath(request: DetachedPaneRequest): string {
+  const params = new URLSearchParams({
+    detachedPane: "1",
+    windowId: request.windowId,
+    paneId: request.paneId,
+    sessionId: request.sessionId,
+  });
+  return `/?${params.toString()}`;
+}
+
+export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | null {
+  const params = new URLSearchParams(search);
+  if (params.get("detachedPane") !== "1") return null;
+  const windowId = params.get("windowId") ?? "";
+  const paneId = cleanRouteId(params.get("paneId"));
+  const sessionId = cleanRouteId(params.get("sessionId"));
+  if (!windowIdPattern.test(windowId) || !paneId || !sessionId) return null;
+  return { windowId, paneId, sessionId };
+}
+
+export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.action !== "connect" && source.action !== "disconnect" && source.action !== "reattach") return null;
+  const request = parseDetachedPaneRequest(`?${new URLSearchParams({
+    detachedPane: "1",
+    windowId: typeof source.windowId === "string" ? source.windowId : "",
+    paneId: typeof source.paneId === "string" ? source.paneId : "",
+    sessionId: typeof source.sessionId === "string" ? source.sessionId : "",
+  })}`);
+  return request ? { ...request, action: source.action } : null;
+}
+
+export function normalizeDetachedPaneMessage(value: unknown): DetachedPaneMessage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.type !== DETACHED_PANE_MESSAGE_TYPE) return null;
+  const payload = normalizeDetachedPaneCommand(source.payload);
+  return payload ? { type: DETACHED_PANE_MESSAGE_TYPE, payload } : null;
+}
+
+function cleanRouteId(value: string | null): string {
+  const raw = value ?? "";
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return "";
+  const clean = raw.trim();
+  return clean && clean.length <= 128 ? clean : "";
+}
