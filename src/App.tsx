@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Clock3,
   Copy,
+  Download,
   File,
   FileText,
   Folder,
@@ -42,6 +43,8 @@ import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
+import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
+import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
@@ -52,7 +55,7 @@ import { reconcileWorkspaceSnapshot, resolveStartupSessionIds, sanitizeWorkspace
 import type { StartupMode, WorkspaceLayout, WorkspaceSnapshot } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 
@@ -254,6 +257,7 @@ export default function App() {
   const [grants, setGrants] = useState<McpGrant[]>(emptyGrants);
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
+  const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
@@ -286,6 +290,9 @@ export default function App() {
   const syncInputRef = useRef(false);
   const logSignatureRef = useRef<Record<string, string>>({});
   const sessionsSignatureRef = useRef("");
+  const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
+  const serialCaptureRefreshesRef = useRef(new Set<string>());
+  const serialCaptureEpochRef = useRef<Record<string, number>>({});
 
   const active = sessions.find((session) => session.profile.id === activeId);
   const activeStatus = active?.runtime.status;
@@ -375,6 +382,14 @@ export default function App() {
     }, activeStatus === "connected" ? 2000 : 1200);
     return () => window.clearInterval(timer);
   }, [activeId, activeStatus]);
+
+  useEffect(() => {
+    if (!activeId || !activeSerial || !isBackendAvailable()) return;
+    void refreshSerialCapture(activeId);
+    if (activeStatus === "disconnected") return;
+    const timer = window.setInterval(() => void refreshSerialCapture(activeId), 750);
+    return () => window.clearInterval(timer);
+  }, [activeId, activeStatus, active?.profile.kind]);
 
   useEffect(() => {
     if (!activeId || !isBackendAvailable()) return;
@@ -476,6 +491,78 @@ export default function App() {
     }
     logSignatureRef.current[sessionId] = signature;
     setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+  }
+
+  function storeSerialCapture(sessionId: string, frames: SerialCaptureFrame[]) {
+    serialCapturesRef.current = { ...serialCapturesRef.current, [sessionId]: frames };
+    setSerialCaptures((current) => ({ ...current, [sessionId]: frames }));
+  }
+
+  async function refreshSerialCapture(sessionId: string) {
+    if (serialCaptureRefreshesRef.current.has(sessionId)) return;
+    serialCaptureRefreshesRef.current.add(sessionId);
+    const epoch = serialCaptureEpochRef.current[sessionId] ?? 0;
+    try {
+      const current = serialCapturesRef.current[sessionId] ?? [];
+      const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
+        sessionId,
+        afterId: current.at(-1)?.id ?? null,
+      });
+      if ((serialCaptureEpochRef.current[sessionId] ?? 0) !== epoch) return;
+      storeSerialCapture(sessionId, mergeSerialCaptureSnapshot(current, snapshot));
+    } catch {
+      // Capture polling is best-effort; transport status and terminal output remain authoritative.
+    } finally {
+      serialCaptureRefreshesRef.current.delete(sessionId);
+    }
+  }
+
+  function appendLocalSerialCapture(sessionId: string, bytes: number[]) {
+    const captured = bytes.slice(0, 64 * 1024);
+    const frame: SerialCaptureFrame = {
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      ts: new Date().toISOString(),
+      direction: "outbound",
+      bytes: captured,
+      originalLength: bytes.length,
+      truncated: captured.length !== bytes.length,
+    };
+    const next = [...(serialCapturesRef.current[sessionId] ?? []), frame].slice(-512);
+    while (next.reduce((total, item) => total + item.bytes.length, 0) > 1024 * 1024) {
+      next.shift();
+    }
+    storeSerialCapture(sessionId, next);
+  }
+
+  async function clearSerialCapture(sessionId: string) {
+    serialCaptureEpochRef.current = {
+      ...serialCaptureEpochRef.current,
+      [sessionId]: (serialCaptureEpochRef.current[sessionId] ?? 0) + 1,
+    };
+    if (!isBackendAvailable()) {
+      storeSerialCapture(sessionId, []);
+      return;
+    }
+    try {
+      const snapshot = await invokeBackend<SerialCaptureSnapshot>("clear_serial_capture", { sessionId });
+      storeSerialCapture(sessionId, mergeSerialCaptureSnapshot([], snapshot));
+    } catch (error) {
+      setNotice({ title: "清空串口捕获失败", message: formatError(error) });
+    }
+  }
+
+  async function exportSerialCapture(sessionId: string, frameIds: string[]) {
+    try {
+      const result = await invokeBackend<ExportSerialCaptureResult>("export_serial_capture", {
+        request: { sessionId, frameIds },
+      });
+      setNotice({
+        title: "串口捕获已导出",
+        message: `${result.frames} 帧 · ${formatBytes(result.capturedBytes)} · ${result.path}\nSHA-256 ${result.sha256}`,
+      });
+    } catch (error) {
+      setNotice({ title: "导出串口捕获失败", message: formatError(error) });
+    }
   }
 
   async function refreshSessionSummaries() {
@@ -1115,11 +1202,17 @@ function handleMenuAction(item: string) {
     try {
       if (isBackendAvailable()) {
         await invokeBackend<SessionEvent>("send_text", { sessionId, text });
+        if (session.profile.connection.kind === "serial") {
+          void refreshSerialCapture(sessionId);
+        }
       } else {
         const event = createLocalSystemEvent(session.profile, text);
         event.direction = "outbound";
         event.stream = "stdout";
         setLogs((current) => ({ ...current, [sessionId]: [...(current[sessionId] ?? []), event] }));
+        if (session.profile.connection.kind === "serial") {
+          appendLocalSerialCapture(sessionId, Array.from(new TextEncoder().encode(text)));
+        }
       }
     } catch (error) {
       setLogs((current) => ({
@@ -1138,11 +1231,17 @@ function handleMenuAction(item: string) {
     try {
       if (isBackendAvailable()) {
         await invokeBackend<SessionEvent>("send_bytes", { sessionId, bytes });
+        if (session.profile.connection.kind === "serial") {
+          void refreshSerialCapture(sessionId);
+        }
       } else {
         const event = createLocalSystemEvent(session.profile, formatHexBytes(bytes));
         event.direction = "outbound";
         event.stream = "stdout";
         setLogs((current) => ({ ...current, [sessionId]: [...(current[sessionId] ?? []), event] }));
+        if (session.profile.connection.kind === "serial") {
+          appendLocalSerialCapture(sessionId, bytes);
+        }
       }
     } catch (error) {
       setLogs((current) => ({
@@ -1386,7 +1485,15 @@ function handleMenuAction(item: string) {
           <DockPanel title="历史命令" accent="#f4b860" actions>
             <FilterLine compact />
             <div className="right-tools-list">
-              {activeSerial && active ? <SerialMonitorPanel events={logs[active.profile.id] ?? []} /> : null}
+              {activeSerial && active ? (
+                <SerialMonitorPanel
+                  key={active.profile.id}
+                  frames={serialCaptures[active.profile.id] ?? []}
+                  onClear={() => void clearSerialCapture(active.profile.id)}
+                  onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
+                  canExport={isBackendAvailable()}
+                />
+              ) : null}
               <CommandHistoryPanel history={commandHistory} onPick={setSendText} />
             </div>
           </DockPanel>
@@ -1608,25 +1715,71 @@ function CommandHistoryPanel({ history, onPick }: { history: string[]; onPick: (
   );
 }
 
-function SerialMonitorPanel({ events }: { events: SessionEvent[] }) {
-  const serialEvents = events
-    .filter((event) => event.stream !== "audit" && event.text)
-    .slice(-24)
-    .reverse();
-  if (!serialEvents.length) return <div className="empty-pane top">没有串口收发记录</div>;
+function SerialMonitorPanel({
+  frames,
+  onClear,
+  onExport,
+  canExport,
+}: {
+  frames: SerialCaptureFrame[];
+  onClear: () => void;
+  onExport: (frameIds: string[]) => void;
+  canExport: boolean;
+}) {
+  const [direction, setDirection] = useState<SerialCaptureDirectionFilter>("all");
+  const [query, setQuery] = useState("");
+  const visible = useMemo(
+    () => filterSerialCaptureFrames(frames, direction, query),
+    [frames, direction, query],
+  );
 
   return (
     <div className="serial-monitor">
-      {serialEvents.map((event) => (
-        <div key={event.id} className={`serial-monitor-row ${event.direction}`}>
-          <div className="serial-monitor-meta">
-            <span>{formatEventClock(event.ts)}</span>
-            <strong>{event.direction === "inbound" ? "RX" : event.direction === "outbound" ? "TX" : "SYS"}</strong>
-          </div>
-          <code>{textToHex(event.text ?? "") || "--"}</code>
-          <small>{formatSerialPreview(event.text ?? "")}</small>
+      <div className="serial-monitor-controls">
+        <div className="serial-monitor-filters" aria-label="串口捕获方向">
+          {(["all", "inbound", "outbound"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={direction === value}
+              onClick={() => setDirection(value)}
+            >
+              {value === "all" ? "全部" : value === "inbound" ? "RX" : "TX"}
+            </button>
+          ))}
+          <span>{visible.length}/{frames.length}</span>
         </div>
-      ))}
+        <div className="serial-monitor-search">
+          <Search size={13} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hex / ASCII" aria-label="筛选串口捕获" />
+          <button
+            type="button"
+            title="导出可见帧（原始字节，不脱敏）"
+            aria-label="导出可见串口帧"
+            disabled={!canExport || !visible.length}
+            onClick={() => onExport(visible.map((frame) => frame.id))}
+          >
+            <Download size={13} />
+          </button>
+          <button type="button" title="清空串口捕获" aria-label="清空串口捕获" disabled={!frames.length} onClick={onClear}>
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+      <div className="serial-monitor-list">
+        {!visible.length ? <div className="empty-pane top">没有匹配的串口帧</div> : null}
+        {visible.slice().reverse().map((frame) => (
+          <div key={frame.id} className={`serial-monitor-row ${frame.direction}`}>
+            <div className="serial-monitor-meta">
+              <span>{formatEventClock(frame.ts)}</span>
+              <span>{frame.truncated ? `${frame.bytes.length}/${frame.originalLength} B` : `${frame.originalLength} B`}</span>
+              <strong>{frame.direction === "inbound" ? "RX" : "TX"}</strong>
+            </div>
+            <code>{serialCaptureHex(frame.bytes) || "--"}</code>
+            <small>{serialCaptureAscii(frame.bytes)}</small>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -7637,22 +7790,6 @@ function formatEventClock(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--:--";
   return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function textToHex(value: string) {
-  return Array.from(new TextEncoder().encode(value))
-    .slice(0, 96)
-    .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
-    .join(" ");
-}
-
-function formatSerialPreview(value: string) {
-  const preview = value
-    .replace(/\r/g, "\\r")
-    .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t")
-    .replace(/[^\x20-\x7e]/g, ".");
-  return preview.length > 120 ? `${preview.slice(0, 120)}...` : preview;
 }
 
 function parseHexBytes(value: string) {

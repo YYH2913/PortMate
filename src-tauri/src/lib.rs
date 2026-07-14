@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use flate2::{write::GzEncoder, Compression};
 use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
@@ -139,6 +139,9 @@ const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
 const LOG_RETENTION_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
+const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
+const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
@@ -154,6 +157,7 @@ const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_HTTP_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
+type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
@@ -172,6 +176,7 @@ pub struct AppState {
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
+    serial_captures: SerialCaptureMap,
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
@@ -556,6 +561,109 @@ struct SerialRuntime {
     writer: Option<Arc<Mutex<SerialPortHandle>>>,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
+    capture: Arc<Mutex<SerialCaptureBuffer>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialCaptureFrame {
+    pub id: String,
+    pub ts: DateTime<Utc>,
+    pub direction: EventDirection,
+    pub bytes: Vec<u8>,
+    pub original_length: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Default)]
+struct SerialCaptureBuffer {
+    frames: VecDeque<SerialCaptureFrame>,
+    captured_bytes: usize,
+}
+
+impl SerialCaptureBuffer {
+    fn push(&mut self, direction: EventDirection, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let captured_length = bytes.len().min(MAX_SERIAL_CAPTURE_FRAME_BYTES);
+        let frame = SerialCaptureFrame {
+            id: Uuid::new_v4().to_string(),
+            ts: Utc::now(),
+            direction,
+            bytes: bytes[..captured_length].to_vec(),
+            original_length: bytes.len(),
+            truncated: captured_length != bytes.len(),
+        };
+        while self.frames.len() >= MAX_SERIAL_CAPTURE_FRAMES
+            || self.captured_bytes.saturating_add(captured_length) > MAX_SERIAL_CAPTURE_BYTES
+        {
+            let Some(removed) = self.frames.pop_front() else {
+                break;
+            };
+            self.captured_bytes = self.captured_bytes.saturating_sub(removed.bytes.len());
+        }
+        self.captured_bytes = self.captured_bytes.saturating_add(captured_length);
+        self.frames.push_back(frame);
+    }
+
+    fn clear(&mut self) {
+        self.frames.clear();
+        self.captured_bytes = 0;
+    }
+
+    fn snapshot_since(&self, after_id: Option<&str>) -> SerialCaptureSnapshot {
+        let start = after_id
+            .and_then(|id| self.frames.iter().position(|frame| frame.id == id))
+            .map(|index| index + 1);
+        let reset = after_id.is_none() || start.is_none();
+        let frames = if reset {
+            self.frames.iter().cloned().collect()
+        } else {
+            self.frames
+                .iter()
+                .skip(start.unwrap_or_default())
+                .cloned()
+                .collect()
+        };
+        SerialCaptureSnapshot {
+            frames,
+            reset,
+            total_frames: self.frames.len(),
+            captured_bytes: self.captured_bytes,
+        }
+    }
+}
+
+fn serial_capture_for_session(
+    captures: &SerialCaptureMap,
+    session_id: &str,
+) -> Result<Arc<Mutex<SerialCaptureBuffer>>, String> {
+    let mut captures = captures.lock().map_err(|error| error.to_string())?;
+    Ok(Arc::clone(
+        captures
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(SerialCaptureBuffer::default()))),
+    ))
+}
+
+fn record_serial_capture(
+    capture: &Arc<Mutex<SerialCaptureBuffer>>,
+    direction: EventDirection,
+    bytes: &[u8],
+) {
+    if let Ok(mut capture) = capture.lock() {
+        capture.push(direction, bytes);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialCaptureSnapshot {
+    pub frames: Vec<SerialCaptureFrame>,
+    pub reset: bool,
+    pub total_frames: usize,
+    pub captured_bytes: usize,
 }
 
 type SerialPortHandle = Box<dyn serialport::SerialPort>;
@@ -715,6 +823,7 @@ struct SessionIo {
     app_handle: Option<AppHandle>,
     store: Arc<Mutex<SessionStore>>,
     runtimes: RuntimeRegistry,
+    serial_captures: SerialCaptureMap,
     store_path: PathBuf,
 }
 
@@ -807,6 +916,7 @@ impl AppState {
             app_handle: self.app_handle.clone(),
             store: Arc::clone(&self.store),
             runtimes: self.runtimes(),
+            serial_captures: Arc::clone(&self.serial_captures),
             store_path: self.store_path.clone(),
         }
     }
@@ -1223,6 +1333,25 @@ pub struct ArchiveLogShardsResult {
     pub size: u64,
     pub shards: usize,
     pub source_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSerialCaptureRequest {
+    pub session_id: String,
+    pub frame_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSerialCaptureResult {
+    pub path: String,
+    pub checksum_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub frames: usize,
+    pub captured_bytes: usize,
+    pub truncated_frames: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2148,12 +2277,15 @@ async fn write_session_bytes(
             } else {
                 let serial_writer = {
                     let connections = serial.lock().map_err(|error| error.to_string())?;
-                    connections
-                        .get(session_id)
-                        .map(|runtime| runtime.writer.as_ref().map(Arc::clone))
+                    connections.get(session_id).map(|runtime| {
+                        (
+                            runtime.writer.as_ref().map(Arc::clone),
+                            Arc::clone(&runtime.capture),
+                        )
+                    })
                 };
                 match serial_writer {
-                    Some(Some(writer)) => {
+                    Some((Some(writer), capture)) => {
                         let mut writer = writer.lock().map_err(|error| error.to_string())?;
                         writer
                             .write_all(bytes)
@@ -2161,8 +2293,9 @@ async fn write_session_bytes(
                         writer
                             .flush()
                             .map_err(|error| format!("串口刷新失败: {error}"))?;
+                        record_serial_capture(&capture, EventDirection::Outbound, bytes);
                     }
-                    Some(None) => return Err("串口正在重连，无法发送输入".to_string()),
+                    Some((None, _)) => return Err("串口正在重连，无法发送输入".to_string()),
                     None if profile_requires_runtime(store, session_id)? => {
                         return Err("会话尚未连接，无法发送输入".to_string());
                     }
@@ -3287,6 +3420,36 @@ fn list_serial_ports() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn list_serial_capture(
+    state: State<'_, AppState>,
+    session_id: String,
+    after_id: Option<String>,
+) -> Result<SerialCaptureSnapshot, String> {
+    serial_capture_snapshot_inner(state.inner(), &session_id, after_id.as_deref())
+}
+
+#[tauri::command]
+fn clear_serial_capture(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SerialCaptureSnapshot, String> {
+    ensure_serial_profile(&state.store, &session_id)?;
+    let capture = serial_capture_for_session(&state.serial_captures, &session_id)?;
+    let mut capture = capture.lock().map_err(|error| error.to_string())?;
+    capture.clear();
+    Ok(capture.snapshot_since(None))
+}
+
+#[tauri::command]
+fn export_serial_capture(
+    state: State<'_, AppState>,
+    request: ExportSerialCaptureRequest,
+) -> Result<ExportSerialCaptureResult, String> {
+    ensure_serial_profile(&state.store, &request.session_id)?;
+    export_serial_capture_inner(&state.store_path, &state.serial_captures, request)
+}
+
+#[tauri::command]
 async fn list_tmux_state(
     state: State<'_, AppState>,
     session_id: String,
@@ -3431,6 +3594,231 @@ fn serial_send_break(state: State<'_, AppState>, session_id: String) -> Result<(
     store.record_system_event(&session_id, "PortMate: serial Break sent");
     save_store(&state.store_path, &store)?;
     Ok(())
+}
+
+fn ensure_serial_profile(store: &Arc<Mutex<SessionStore>>, session_id: &str) -> Result<(), String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    match store.profile(session_id).map(|profile| profile.connection) {
+        Some(ConnectionConfig::Serial(_)) => Ok(()),
+        Some(_) => Err(format!("session is not serial-backed: {session_id}")),
+        None => Err(format!("unknown session: {session_id}")),
+    }
+}
+
+fn serial_capture_snapshot_inner(
+    state: &AppState,
+    session_id: &str,
+    after_id: Option<&str>,
+) -> Result<SerialCaptureSnapshot, String> {
+    ensure_serial_profile(&state.store, session_id)?;
+    let capture = serial_capture_for_session(&state.serial_captures, session_id)?;
+    let capture = capture.lock().map_err(|error| error.to_string())?;
+    Ok(capture.snapshot_since(after_id))
+}
+
+fn serial_capture_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn serial_capture_ascii(bytes: &[u8]) -> String {
+    let mut preview = String::new();
+    for byte in bytes {
+        match byte {
+            b'\r' => preview.push_str("\\r"),
+            b'\n' => preview.push_str("\\n"),
+            b'\t' => preview.push_str("\\t"),
+            0x20..=0x7e => preview.push(char::from(*byte)),
+            _ => preview.push('.'),
+        }
+    }
+    preview
+}
+
+fn export_serial_capture_inner(
+    store_path: &Path,
+    captures: &SerialCaptureMap,
+    request: ExportSerialCaptureRequest,
+) -> Result<ExportSerialCaptureResult, String> {
+    if request.frame_ids.is_empty() {
+        return Err("select at least one serial capture frame to export".to_string());
+    }
+    if request.frame_ids.len() > MAX_SERIAL_CAPTURE_FRAMES {
+        return Err(format!(
+            "serial capture export frame limit exceeded ({MAX_SERIAL_CAPTURE_FRAMES})"
+        ));
+    }
+    let requested = request.frame_ids.iter().collect::<HashSet<_>>();
+    if requested.len() != request.frame_ids.len() {
+        return Err("serial capture export contains duplicate frame IDs".to_string());
+    }
+    let capture = {
+        let captures = captures.lock().map_err(|error| error.to_string())?;
+        captures
+            .get(&request.session_id)
+            .map(Arc::clone)
+            .ok_or_else(|| "serial capture is empty".to_string())?
+    };
+    let selected = {
+        let capture = capture.lock().map_err(|error| error.to_string())?;
+        capture
+            .frames
+            .iter()
+            .filter(|frame| requested.contains(&frame.id))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if selected.len() != requested.len() {
+        return Err("serial capture changed; refresh before exporting".to_string());
+    }
+
+    let created_at = Utc::now();
+    let mut output = Vec::new();
+    serde_json::to_writer(
+        &mut output,
+        &serde_json::json!({
+            "type": "metadata",
+            "format": "portmate-serial-capture",
+            "version": 1,
+            "createdAt": created_at.to_rfc3339(),
+            "sessionId": request.session_id,
+            "rawUnredacted": true,
+            "frameCount": selected.len(),
+        }),
+    )
+    .map_err(|error| format!("failed to encode serial capture metadata: {error}"))?;
+    output.push(b'\n');
+    let mut captured_bytes = 0_usize;
+    let mut truncated_frames = 0_usize;
+    for frame in &selected {
+        captured_bytes = captured_bytes.saturating_add(frame.bytes.len());
+        truncated_frames += usize::from(frame.truncated);
+        serde_json::to_writer(
+            &mut output,
+            &serde_json::json!({
+                "type": "frame",
+                "id": frame.id,
+                "ts": frame.ts,
+                "direction": frame.direction,
+                "capturedLength": frame.bytes.len(),
+                "originalLength": frame.original_length,
+                "truncated": frame.truncated,
+                "hex": serial_capture_hex(&frame.bytes),
+                "ascii": serial_capture_ascii(&frame.bytes),
+            }),
+        )
+        .map_err(|error| format!("failed to encode serial capture frame: {error}"))?;
+        output.push(b'\n');
+    }
+
+    let export_dir = store_path
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .unwrap_or_else(|| PathBuf::from("exports"));
+    fs::create_dir_all(&export_dir).map_err(|error| {
+        format!(
+            "failed to create serial capture export directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "{}-{timestamp}-serial-{}.jsonl",
+        sanitize_log_path_segment(&request.session_id),
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let finalized =
+        write_atomic_export_with_checksum(&final_path, &output, "serial capture export")?;
+    Ok(ExportSerialCaptureResult {
+        path: final_path.display().to_string(),
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
+        frames: selected.len(),
+        captured_bytes,
+        truncated_frames,
+    })
+}
+
+fn write_atomic_export_with_checksum(
+    final_path: &Path,
+    bytes: &[u8],
+    label: &str,
+) -> Result<FinalizedArchive, String> {
+    let file_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid {label} path"))?;
+    let temp_path = final_path.with_file_name(format!(".{file_name}.part"));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&temp_path)
+        .map_err(|error| format!("failed to create {label} {}: {error}", temp_path.display()))?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("failed to write {label}: {error}"));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temp_path, final_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "failed to finalize {label} {}: {error}",
+            final_path.display()
+        ));
+    }
+    let sha256 = match sha256_file(final_path) {
+        Ok(sha256) => sha256,
+        Err(error) => {
+            let _ = fs::remove_file(final_path);
+            return Err(error);
+        }
+    };
+    let size = match fs::metadata(final_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            let _ = fs::remove_file(final_path);
+            return Err(format!("failed to read {label} metadata: {error}"));
+        }
+    };
+    let checksum_path = final_path.with_file_name(format!("{file_name}.sha256"));
+    let checksum_temp_path = final_path.with_file_name(format!(".{file_name}.sha256.part"));
+    let mut checksum_options = OpenOptions::new();
+    checksum_options.create_new(true).write(true);
+    #[cfg(unix)]
+    checksum_options.mode(0o600);
+    let mut checksum = match checksum_options.open(&checksum_temp_path) {
+        Ok(checksum) => checksum,
+        Err(error) => {
+            let _ = fs::remove_file(final_path);
+            return Err(format!("failed to create {label} checksum: {error}"));
+        }
+    };
+    if let Err(error) = checksum
+        .write_all(format!("{sha256}  {file_name}\n").as_bytes())
+        .and_then(|_| checksum.sync_all())
+    {
+        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!("failed to write {label} checksum: {error}"));
+    }
+    drop(checksum);
+    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!("failed to finalize {label} checksum: {error}"));
+    }
+    Ok(FinalizedArchive {
+        checksum_path,
+        sha256,
+        size,
+    })
 }
 
 #[tauri::command]
@@ -5622,12 +6010,15 @@ async fn write_runtime_bytes(
 
     let serial_writer = {
         let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.writer.as_ref().map(Arc::clone))
+        connections.get(session_id).map(|runtime| {
+            (
+                runtime.writer.as_ref().map(Arc::clone),
+                Arc::clone(&runtime.capture),
+            )
+        })
     };
     match serial_writer {
-        Some(Some(writer)) => {
+        Some((Some(writer), capture)) => {
             let mut writer = writer.lock().map_err(|error| error.to_string())?;
             writer
                 .write_all(&wire_bytes)
@@ -5635,10 +6026,11 @@ async fn write_runtime_bytes(
             writer
                 .flush()
                 .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
+            record_serial_capture(&capture, EventDirection::Outbound, &wire_bytes);
             record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
             return Ok(());
         }
-        Some(None) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
+        Some((None, _)) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
         None => {}
     }
 
@@ -11459,6 +11851,7 @@ fn open_serial_session(
     let closed = Arc::new(AtomicBool::new(false));
     let (tap, _) = broadcast::channel(1024);
     let writer = Arc::new(Mutex::new(port));
+    let capture = serial_capture_for_session(&state.serial_captures, &profile.id)?;
     {
         let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
         connections.insert(
@@ -11468,6 +11861,7 @@ fn open_serial_session(
                 writer: Some(writer),
                 tap: tap.clone(),
                 closed: Arc::clone(&closed),
+                capture: Arc::clone(&capture),
             },
         );
     }
@@ -11480,6 +11874,7 @@ fn open_serial_session(
         tap,
         closed,
         reader,
+        capture,
         receive_idle_timeout: serial
             .receive_idle_timeout_enabled
             .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
@@ -16994,6 +17389,7 @@ struct SerialReadTask {
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
     reader: SerialPortHandle,
+    capture: Arc<Mutex<SerialCaptureBuffer>>,
     receive_idle_timeout: Option<Duration>,
 }
 
@@ -17014,6 +17410,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             tap,
             closed,
             mut reader,
+            capture,
             receive_idle_timeout,
         } = task;
         let session_id = profile.id.clone();
@@ -17029,6 +17426,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 Ok(size) => {
                     last_received_at = Instant::now();
                     let bytes = buffer[..size].to_vec();
+                    record_serial_capture(&capture, EventDirection::Inbound, &bytes);
                     let _ = tap.send(bytes.clone());
                     record_channel_bytes(
                         &io,
@@ -17456,6 +17854,13 @@ fn reconnect_serial_session(
         let writer = Arc::new(Mutex::new(port));
         let (tap, _) = broadcast::channel(1024);
         let next_closed = Arc::new(AtomicBool::new(false));
+        let capture = match serial_capture_for_session(&io.serial_captures, &session_id) {
+            Ok(capture) => capture,
+            Err(error) => {
+                eprintln!("PortMate: failed to load serial capture buffer: {error}");
+                return;
+            }
+        };
         let install = match io.runtimes.serial.lock() {
             Err(error) => SerialReconnectInstallDecision::Failed(error.to_string()),
             Ok(mut connections) => {
@@ -17502,6 +17907,7 @@ fn reconnect_serial_session(
                                             writer: Some(Arc::clone(&writer)),
                                             tap: tap.clone(),
                                             closed: Arc::clone(&next_closed),
+                                            capture: Arc::clone(&capture),
                                         },
                                     );
                                     SerialReconnectInstallDecision::Installed
@@ -17533,6 +17939,7 @@ fn reconnect_serial_session(
             tap,
             closed: next_closed,
             reader,
+            capture,
             receive_idle_timeout: serial
                 .receive_idle_timeout_enabled
                 .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
@@ -21155,6 +21562,7 @@ pub fn run() {
                 shell: Arc::new(Mutex::new(HashMap::new())),
                 tcp: Arc::new(Mutex::new(HashMap::new())),
                 serial: Arc::new(Mutex::new(HashMap::new())),
+                serial_captures: Arc::new(Mutex::new(HashMap::new())),
                 tunnels: Arc::new(Mutex::new(HashMap::new())),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
@@ -21225,6 +21633,9 @@ pub fn run() {
             rotate_client_identity,
             delete_client_identity,
             list_serial_ports,
+            list_serial_capture,
+            clear_serial_capture,
+            export_serial_capture,
             list_tmux_state,
             attach_tmux,
             list_files,
@@ -23738,6 +24149,113 @@ mod tests {
     }
 
     #[test]
+    fn serial_capture_buffer_bounds_and_incremental_snapshots() {
+        let mut capture = SerialCaptureBuffer::default();
+        capture.push(EventDirection::Inbound, &[0xff, 0x00, 0x80]);
+        let first = capture.snapshot_since(None);
+        assert!(first.reset);
+        assert_eq!(first.total_frames, 1);
+        assert_eq!(first.captured_bytes, 3);
+        assert_eq!(first.frames[0].bytes, [0xff, 0x00, 0x80]);
+        let first_id = first.frames[0].id.clone();
+
+        capture.push(EventDirection::Outbound, b"hello");
+        let incremental = capture.snapshot_since(Some(&first_id));
+        assert!(!incremental.reset);
+        assert_eq!(incremental.total_frames, 2);
+        assert_eq!(incremental.frames.len(), 1);
+        assert_eq!(incremental.frames[0].bytes, b"hello");
+        let reset = capture.snapshot_since(Some("evicted-frame"));
+        assert!(reset.reset);
+        assert_eq!(reset.frames.len(), 2);
+
+        capture.clear();
+        let oversized = vec![0x5a; MAX_SERIAL_CAPTURE_FRAME_BYTES + 3];
+        capture.push(EventDirection::Inbound, &oversized);
+        let frame = capture.frames.front().unwrap();
+        assert!(frame.truncated);
+        assert_eq!(frame.original_length, oversized.len());
+        assert_eq!(frame.bytes.len(), MAX_SERIAL_CAPTURE_FRAME_BYTES);
+
+        capture.clear();
+        for value in 0..=MAX_SERIAL_CAPTURE_FRAMES {
+            capture.push(EventDirection::Inbound, &[value as u8]);
+        }
+        assert_eq!(capture.frames.len(), MAX_SERIAL_CAPTURE_FRAMES);
+        assert_eq!(capture.captured_bytes, MAX_SERIAL_CAPTURE_FRAMES);
+    }
+
+    #[test]
+    fn serial_capture_export_is_atomic_filtered_and_checksummed() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-serial-capture-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let captures = Arc::new(Mutex::new(HashMap::new()));
+        let capture = serial_capture_for_session(&captures, "serial-export").unwrap();
+        {
+            let mut capture = capture.lock().unwrap();
+            capture.push(EventDirection::Inbound, &[0xff, 0x00, 0x80]);
+            capture.push(EventDirection::Outbound, b"OK\r\n");
+        }
+        let outbound_id = capture.lock().unwrap().frames[1].id.clone();
+        let result = export_serial_capture_inner(
+            &root.join("portmate-store.sqlite3"),
+            &captures,
+            ExportSerialCaptureRequest {
+                session_id: "serial-export".to_string(),
+                frame_ids: vec![outbound_id],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.frames, 1);
+        assert_eq!(result.captured_bytes, 4);
+        assert_eq!(result.truncated_frames, 0);
+        assert_eq!(result.sha256, sha256_file(Path::new(&result.path)).unwrap());
+        let checksum = fs::read_to_string(&result.checksum_path).unwrap();
+        assert!(checksum.starts_with(&result.sha256));
+
+        let lines = fs::read_to_string(&result.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["format"], "portmate-serial-capture");
+        assert_eq!(lines[0]["rawUnredacted"], true);
+        assert_eq!(lines[1]["direction"], "outbound");
+        assert_eq!(lines[1]["hex"], "4F 4B 0D 0A");
+        assert_eq!(lines[1]["ascii"], "OK\\r\\n");
+        assert!(!fs::read_to_string(&result.path)
+            .unwrap()
+            .contains("FF 00 80"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&result.path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&result.checksum_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        assert!(fs::read_dir(root.join("exports"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".part")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn disabling_serial_reconnect_removes_pending_runtime() {
         let profile = test_serial_profile(portmate_core::SerialConnection {
             port: "/dev/ttyUSB0".to_string(),
@@ -23769,6 +24287,7 @@ mod tests {
                 writer: None,
                 tap,
                 closed: Arc::clone(&closed),
+                capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
             },
         );
         {
@@ -28796,6 +29315,12 @@ mod tests {
                 .expect("serial runtime did not receive loopback bytes")
                 .expect("serial runtime tap closed");
             assert_eq!(received, peer_reply);
+            let capture = serial_capture_snapshot_inner(&state, &profile.id, None).unwrap();
+            assert_eq!(capture.frames.len(), 2);
+            assert_eq!(capture.frames[0].direction, EventDirection::Outbound);
+            assert_eq!(capture.frames[0].bytes, outbound);
+            assert_eq!(capture.frames[1].direction, EventDirection::Inbound);
+            assert_eq!(capture.frames[1].bytes, peer_reply);
 
             let disconnected = tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
@@ -30693,6 +31218,7 @@ mod tests {
             shell: Arc::new(Mutex::new(HashMap::new())),
             tcp: Arc::new(Mutex::new(HashMap::new())),
             serial: Arc::new(Mutex::new(HashMap::new())),
+            serial_captures: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),

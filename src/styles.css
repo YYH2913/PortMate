@@ -582,12 +582,94 @@ button {
 
 .serial-monitor {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 320px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+
+.serial-monitor-controls {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.serial-monitor-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.serial-monitor-filters button,
+.serial-monitor-search button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 0;
+  height: 25px;
+  padding: 0 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  background: rgba(15, 23, 32, 0.5);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.serial-monitor-filters button[aria-pressed="true"] {
+  border-color: rgba(94, 234, 212, 0.48);
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--cyan);
+}
+
+.serial-monitor-filters > span {
+  padding-left: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.serial-monitor-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 25px 25px;
+  align-items: center;
+  gap: 4px;
+}
+
+.serial-monitor-search > svg {
+  color: var(--muted);
+}
+
+.serial-monitor-search input {
+  width: 100%;
+  min-width: 0;
+  height: 25px;
+  padding: 0 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  background: rgba(15, 23, 32, 0.52);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.serial-monitor-search button {
+  width: 25px;
+  padding: 0;
+}
+
+.serial-monitor-search button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.serial-monitor-list {
+  display: grid;
   align-content: start;
   gap: 6px;
-  max-height: 210px;
+  min-height: 0;
   padding: 8px;
   overflow: auto;
-  border-bottom: 1px solid var(--line);
 }
 
 .serial-monitor-row {
@@ -613,10 +695,6 @@ button {
 
 .serial-monitor-meta strong {
   color: var(--cyan);
-}
-
-.serial-monitor-row.system .serial-monitor-meta strong {
-  color: var(--amber);
 }
 
 .serial-monitor-row code {

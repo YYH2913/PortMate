@@ -241,6 +241,32 @@ export interface SessionEvent {
   annotations: Record<string, string>;
 }
 
+export interface SerialCaptureFrame {
+  id: string;
+  ts: string;
+  direction: "inbound" | "outbound";
+  bytes: number[];
+  originalLength: number;
+  truncated: boolean;
+}
+
+export interface SerialCaptureSnapshot {
+  frames: SerialCaptureFrame[];
+  reset: boolean;
+  totalFrames: number;
+  capturedBytes: number;
+}
+
+export interface ExportSerialCaptureResult {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  frames: number;
+  capturedBytes: number;
+  truncatedFrames: number;
+}
+
 export interface LogShardInfo {
   path: string;
   format: "raw" | "txt" | "jsonl";
