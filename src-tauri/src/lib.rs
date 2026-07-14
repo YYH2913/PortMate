@@ -11335,15 +11335,26 @@ async fn open_tcp_session(
 fn serial_connection_details(
     profile: &SessionProfile,
 ) -> Result<(portmate_core::SerialConnection, String), String> {
-    let serial = match &profile.connection {
+    let mut serial = match &profile.connection {
         ConnectionConfig::Serial(serial) => serial.clone(),
         _ => return Err("profile is not serial-backed".to_string()),
     };
+    serial.normalize_health_settings();
     let port_name = serial.port.trim().to_string();
     if port_name.is_empty() {
         return Err("串口不能为空".to_string());
     }
     Ok((serial, port_name))
+}
+
+fn serial_reconnect_delay(profile: &SessionProfile) -> Duration {
+    match &profile.connection {
+        ConnectionConfig::Serial(serial) => Duration::from_millis(serial.reconnect_delay_ms.clamp(
+            portmate_core::MIN_SERIAL_RECONNECT_DELAY_MS,
+            portmate_core::MAX_SERIAL_RECONNECT_DELAY_MS,
+        )),
+        _ => Duration::from_millis(portmate_core::DEFAULT_SERIAL_RECONNECT_DELAY_MS),
+    }
 }
 
 fn serial_reconnect_enabled(profile: &SessionProfile) -> bool {
@@ -11468,6 +11479,9 @@ fn open_serial_session(
         tap,
         closed,
         reader,
+        receive_idle_timeout: serial
+            .receive_idle_timeout_enabled
+            .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
     }) {
         let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id);
@@ -16914,6 +16928,7 @@ struct SerialReadTask {
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
     reader: SerialPortHandle,
+    receive_idle_timeout: Option<Duration>,
 }
 
 fn spawn_serial_reader(task: SerialReadTask) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -16933,16 +16948,20 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             tap,
             closed,
             mut reader,
+            receive_idle_timeout,
         } = task;
         let session_id = profile.id.clone();
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
+        let mut last_received_at = Instant::now();
+        let mut disconnect_reason = None;
 
         while !closed.load(Ordering::SeqCst) {
             match reader.read(&mut buffer) {
                 Ok(0) => {}
                 Ok(size) => {
+                    last_received_at = Instant::now();
                     let bytes = buffer[..size].to_vec();
                     let _ = tap.send(bytes.clone());
                     record_channel_bytes(
@@ -16954,17 +16973,21 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                     );
                     has_unpersisted_stream = true;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(error) => {
-                    if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!("PortMate: serial read failed on {port_name}: {error}"),
-                        );
-                        if let Err(error) = save_store(&io.store_path, &store) {
-                            eprintln!("PortMate: failed to persist serial read error: {error}");
-                        }
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                    if receive_idle_timeout
+                        .is_some_and(|timeout| last_received_at.elapsed() >= timeout)
+                    {
+                        let seconds = receive_idle_timeout
+                            .expect("checked receive idle timeout")
+                            .as_secs();
+                        disconnect_reason = Some(format!(
+                            "serial receive idle timeout on {port_name} after {seconds}s"
+                        ));
+                        break;
                     }
+                }
+                Err(error) => {
+                    disconnect_reason = Some(format!("serial read failed on {port_name}: {error}"));
                     break;
                 }
             }
@@ -16984,14 +17007,20 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
-        let reconnect_enabled = !closed.load(Ordering::SeqCst)
-            && io
-                .store
-                .lock()
-                .ok()
-                .and_then(|store| store.profile(&session_id))
-                .map(normalize_session_profile)
-                .is_some_and(|latest| serial_reconnect_enabled(&latest));
+        let reconnect_profile = (!closed.load(Ordering::SeqCst))
+            .then(|| {
+                io.store
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.profile(&session_id))
+                    .map(normalize_session_profile)
+                    .filter(serial_reconnect_enabled)
+            })
+            .flatten();
+        let reconnect_delay = reconnect_profile.as_ref().map(serial_reconnect_delay);
+        let reconnect_enabled = reconnect_profile.is_some();
+        let disconnect_reason =
+            disconnect_reason.unwrap_or_else(|| format!("serial port closed ({port_name})"));
         let mut should_reconnect = false;
         let removed_current = {
             let mut connections = match io.runtimes.serial.lock() {
@@ -17022,11 +17051,18 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Reconnecting,
-                    Some(format!("serial port closed ({port_name})")),
+                    Some(disconnect_reason.clone()),
                 );
                 store.record_system_event(
                     &session_id,
-                    format!("PortMate: serial port closed ({port_name}); reconnecting in 1000ms"),
+                    format!(
+                        "PortMate: {disconnect_reason}; reconnecting in {}ms",
+                        reconnect_delay
+                            .unwrap_or_else(|| Duration::from_millis(
+                                portmate_core::DEFAULT_SERIAL_RECONNECT_DELAY_MS
+                            ))
+                            .as_millis()
+                    ),
                 );
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist serial reconnect event: {error}");
@@ -17041,12 +17077,9 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
-                    Some(format!("serial port closed ({port_name})")),
+                    Some(disconnect_reason.clone()),
                 );
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: serial port closed ({port_name})"),
-                );
+                store.record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
                 if let Err(error) = save_store(&io.store_path, &store) {
                     eprintln!("PortMate: failed to persist serial close event: {error}");
                 }
@@ -17136,7 +17169,10 @@ fn record_serial_reconnect_failure_if_pending(
     );
     store.record_system_event(
         session_id,
-        format!("PortMate: serial reconnect failed on {port_name}: {error}; retrying in 1000ms"),
+        format!(
+            "PortMate: serial reconnect failed on {port_name}: {error}; retrying in {}ms",
+            serial_reconnect_delay(attempt).as_millis()
+        ),
     );
     if let Err(save_error) = save_store(&io.store_path, &store) {
         eprintln!("PortMate: failed to persist serial reconnect failure: {save_error}");
@@ -17212,17 +17248,60 @@ enum SerialReconnectInstallDecision {
     Failed(String),
 }
 
+fn wait_for_serial_reconnect_attempt(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+) -> bool {
+    let started = Instant::now();
+    loop {
+        if !serial_reconnect_pending(io, session_id, runtime_id, closed) {
+            return false;
+        }
+        let profile = match latest_serial_reconnect_profile(io, session_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                if stop_pending_serial_reconnect_if_disabled(
+                    io,
+                    session_id,
+                    runtime_id,
+                    "automatic reconnect disabled while waiting for the next attempt",
+                ) {
+                    return false;
+                }
+                std::thread::sleep(RECONNECT_DELAY_POLL_INTERVAL);
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "PortMate: failed to load serial reconnect delay from latest profile: {error}"
+                );
+                std::thread::sleep(RECONNECT_DELAY_POLL_INTERVAL);
+                continue;
+            }
+        };
+        let remaining = serial_reconnect_delay(&profile).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return true;
+        }
+        std::thread::sleep(remaining.min(RECONNECT_DELAY_POLL_INTERVAL));
+    }
+}
+
 fn reconnect_serial_session(
     io: SessionIo,
     session_id: String,
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
-    let reconnect_delay = Duration::from_millis(1000);
-
     loop {
-        std::thread::sleep(reconnect_delay);
-        if !serial_reconnect_pending(&io, &session_id, &previous_runtime_id, &closed) {
+        if !wait_for_serial_reconnect_attempt(
+            &io,
+            &session_id,
+            &previous_runtime_id,
+            closed.as_ref(),
+        ) {
             return;
         }
 
@@ -17388,6 +17467,9 @@ fn reconnect_serial_session(
             tap,
             closed: next_closed,
             reader,
+            receive_idle_timeout: serial
+                .receive_idle_timeout_enabled
+                .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
         }) {
             if let Ok(mut connections) = io.runtimes.serial.lock() {
                 if connections
@@ -19734,6 +19816,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         }
         ConnectionConfig::Serial(serial) => {
             serial.port = serial.port.trim().to_string();
+            serial.normalize_health_settings();
         }
         ConnectionConfig::Shell(shell) => {
             shell.program = shell.program.trim().to_string();
@@ -23488,10 +23571,25 @@ mod tests {
             dtr: true,
             rts: false,
             reconnect: true,
+            reconnect_delay_ms: 0,
+            receive_idle_timeout_enabled: true,
+            receive_idle_timeout_seconds: u64::MAX,
         });
         let (serial, port_name) = serial_connection_details(&profile).unwrap();
         assert_eq!(serial.baud_rate, 115200);
         assert_eq!(port_name, "/dev/ttyUSB0");
+        assert_eq!(
+            serial.reconnect_delay_ms,
+            portmate_core::MIN_SERIAL_RECONNECT_DELAY_MS
+        );
+        assert_eq!(
+            serial.receive_idle_timeout_seconds,
+            portmate_core::MAX_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            serial_reconnect_delay(&profile),
+            Duration::from_millis(portmate_core::MIN_SERIAL_RECONNECT_DELAY_MS)
+        );
         assert!(serial_reconnect_enabled(&profile));
 
         if let ConnectionConfig::Serial(serial) = &mut profile.connection {
@@ -23516,6 +23614,9 @@ mod tests {
             dtr: false,
             rts: false,
             reconnect: true,
+            reconnect_delay_ms: 1_000,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: 60,
         });
         let state = test_app_state(
             profile.clone(),
@@ -23535,6 +23636,9 @@ mod tests {
         if let ConnectionConfig::Serial(serial) = &mut updated.connection {
             serial.port = " /dev/ttyUSB1 ".to_string();
             serial.baud_rate = 57_600;
+            serial.reconnect_delay_ms = 250;
+            serial.receive_idle_timeout_enabled = true;
+            serial.receive_idle_timeout_seconds = 15;
         }
         state.store.lock().unwrap().upsert_profile(updated);
         assert_eq!(
@@ -23547,6 +23651,9 @@ mod tests {
         let (serial, port_name) = serial_connection_details(&latest).unwrap();
         assert_eq!(port_name, "/dev/ttyUSB1");
         assert_eq!(serial.baud_rate, 57_600);
+        assert_eq!(serial.reconnect_delay_ms, 250);
+        assert!(serial.receive_idle_timeout_enabled);
+        assert_eq!(serial.receive_idle_timeout_seconds, 15);
 
         let mut disabled = latest;
         if let ConnectionConfig::Serial(serial) = &mut disabled.connection {
@@ -23576,6 +23683,9 @@ mod tests {
             dtr: false,
             rts: false,
             reconnect: true,
+            reconnect_delay_ms: 1_000,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: 60,
         });
         let root = std::env::temp_dir().join(format!(
             "portmate-serial-disable-pending-test-{}",
@@ -28519,6 +28629,9 @@ mod tests {
                 dtr: false,
                 rts: false,
                 reconnect: false,
+                reconnect_delay_ms: 1_000,
+                receive_idle_timeout_enabled: true,
+                receive_idle_timeout_seconds: 1,
             });
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
             let opened = open_serial_session(&state, profile.clone()).unwrap();
@@ -28532,9 +28645,16 @@ mod tests {
                 .tap
                 .subscribe();
             let mut peer = serialport::new(peer_pty.display().to_string(), 115_200)
-                .timeout(Duration::from_secs(2))
+                .timeout(Duration::from_millis(300))
                 .open()
                 .unwrap();
+
+            let mut unsolicited = [0_u8; 1];
+            let error = peer
+                .read(&mut unsolicited)
+                .expect_err("serial health monitoring must not write probe bytes");
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            peer.set_timeout(Duration::from_secs(2)).unwrap();
 
             let outbound = vec![0xff, 0x00, 0x80];
             send_bytes_inner(state.session_io(), profile.id.clone(), outbound.clone())
@@ -28553,11 +28673,29 @@ mod tests {
                 .expect("serial runtime tap closed");
             assert_eq!(received, peer_reply);
 
-            let closed = close_session_inner(&state, profile.id.clone())
-                .await
-                .unwrap();
-            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            let disconnected = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let summary = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap();
+                    if summary.runtime.status == SessionStatus::Disconnected {
+                        break summary;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("serial receive idle timeout did not disconnect the runtime");
+            let reason = disconnected.runtime.last_disconnect_reason.unwrap();
+            assert!(reason.contains("serial receive idle timeout"), "{reason}");
+            assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+            let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+            assert!(screen.contains("serial receive idle timeout"), "{screen}");
         });
 
         socat.stop();
@@ -28605,6 +28743,9 @@ mod tests {
                 dtr: false,
                 rts: false,
                 reconnect: true,
+                reconnect_delay_ms: 2_500,
+                receive_idle_timeout_enabled: false,
+                receive_idle_timeout_seconds: 60,
             });
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
             let opened = open_serial_session(&state, profile.clone()).unwrap();
@@ -28665,16 +28806,18 @@ mod tests {
                 let mut updated = store.profile(&profile.id).unwrap();
                 if let ConnectionConfig::Serial(serial) = &mut updated.connection {
                     serial.port = replacement_portmate_pty.display().to_string();
+                    serial.reconnect_delay_ms = 200;
                 }
                 store.upsert_profile(updated);
                 save_store(&state.store_path, &store).unwrap();
             }
+            let reconnect_profile_updated_at = Instant::now();
             let mut peer = serialport::new(replacement_peer_pty.display().to_string(), 115_200)
                 .timeout(Duration::from_secs(2))
                 .open()
                 .unwrap();
 
-            tokio::time::timeout(Duration::from_secs(4), async {
+            tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
                     let runtime_replaced = state
                         .serial
@@ -28700,6 +28843,10 @@ mod tests {
             })
             .await
             .expect("serial runtime did not reconnect to the replacement PTY");
+            assert!(
+                reconnect_profile_updated_at.elapsed() < Duration::from_millis(2_000),
+                "serial reconnect did not adopt the shortened delay"
+            );
             let mut inbound = state
                 .serial
                 .lock()
@@ -28767,10 +28914,10 @@ mod tests {
             assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
 
             let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
-            assert!(screen.contains("serial port closed"));
+            assert!(screen.contains("serial read failed"), "{screen}");
             assert!(screen.contains("serial port reconnected"));
             assert!(screen.contains(&replacement_portmate_pty.display().to_string()));
-            assert_eq!(screen.matches("reconnecting in 1000ms").count(), 1);
+            assert_eq!(screen.matches("reconnecting in 2500ms").count(), 1);
         });
 
         socat.stop();

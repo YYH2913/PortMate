@@ -118,6 +118,9 @@ export interface SerialConnection {
   dtr: boolean;
   rts: boolean;
   reconnect: boolean;
+  reconnectDelayMs: number;
+  receiveIdleTimeoutEnabled: boolean;
+  receiveIdleTimeoutSeconds: number;
 }
 
 export interface ShellConnection {

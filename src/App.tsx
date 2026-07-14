@@ -41,6 +41,7 @@ import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
+import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
@@ -6706,12 +6707,30 @@ function SerialAdvancedFields({
           <option value="on">开启</option>
         </select>
       </DialogField>
-      <DialogField label="重连:(R)">
-        <select value={serial.reconnect ? "on" : "off"} onChange={(event) => update({ reconnect: event.target.value === "on" })}>
-          <option value="on">开启</option>
-          <option value="off">关闭</option>
-        </select>
+      <DialogToggleField label="自动重连:" checked={serial.reconnect} onChange={(reconnect) => update({ reconnect })} />
+      <DialogField label="重连延迟(ms):">
+        <input
+          type="number"
+          min={serialConnectionBounds.reconnectDelayMs.min}
+          max={serialConnectionBounds.reconnectDelayMs.max}
+          step={100}
+          disabled={!serial.reconnect}
+          value={serial.reconnectDelayMs}
+          onChange={(event) => update({ reconnectDelayMs: Number(event.target.value) })}
+        />
       </DialogField>
+      <DialogToggleField label="接收空闲超时:" checked={serial.receiveIdleTimeoutEnabled} onChange={(receiveIdleTimeoutEnabled) => update({ receiveIdleTimeoutEnabled })} />
+      {serial.receiveIdleTimeoutEnabled ? (
+        <DialogField label="空闲上限(s):">
+          <input
+            type="number"
+            min={serialConnectionBounds.receiveIdleTimeoutSeconds.min}
+            max={serialConnectionBounds.receiveIdleTimeoutSeconds.max}
+            value={serial.receiveIdleTimeoutSeconds}
+            onChange={(event) => update({ receiveIdleTimeoutSeconds: Number(event.target.value) })}
+          />
+        </DialogField>
+      ) : null}
       <DialogField label="换行:(N)">
         <select value={prefs.serialNewline} onChange={(event) => updatePref("serialNewline", event.target.value)}>
           <option>CRLF</option>
@@ -6997,6 +7016,12 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
       host: connection.host.trim(),
       port: Number.isFinite(connection.port) ? Math.min(65535, Math.max(0, Math.trunc(connection.port))) : 0,
       proxy: normalizeProxyConfig(connection.proxy),
+    });
+  }
+  if (connection.kind === "serial") {
+    return normalizeSerialConnectionSettings({
+      ...connection,
+      port: connection.port.trim(),
     });
   }
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {
@@ -7367,6 +7392,7 @@ function createSerialConnection(): Extract<ConnectionConfig, { kind: "serial" }>
     dtr: false,
     rts: false,
     reconnect: true,
+    ...serialConnectionDefaults,
   };
 }
 

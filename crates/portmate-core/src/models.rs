@@ -351,7 +351,41 @@ pub struct SerialConnection {
     pub flow_control: String,
     pub dtr: bool,
     pub rts: bool,
+    #[serde(default = "default_true")]
     pub reconnect: bool,
+    #[serde(default = "default_serial_reconnect_delay_ms")]
+    pub reconnect_delay_ms: u64,
+    #[serde(default)]
+    pub receive_idle_timeout_enabled: bool,
+    #[serde(default = "default_serial_receive_idle_timeout_seconds")]
+    pub receive_idle_timeout_seconds: u64,
+}
+
+pub const MIN_SERIAL_RECONNECT_DELAY_MS: u64 = 100;
+pub const MAX_SERIAL_RECONNECT_DELAY_MS: u64 = 60_000;
+pub const DEFAULT_SERIAL_RECONNECT_DELAY_MS: u64 = 1_000;
+pub const MIN_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS: u64 = 1;
+pub const MAX_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS: u64 = 86_400;
+pub const DEFAULT_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS: u64 = 60;
+
+const fn default_serial_reconnect_delay_ms() -> u64 {
+    DEFAULT_SERIAL_RECONNECT_DELAY_MS
+}
+
+const fn default_serial_receive_idle_timeout_seconds() -> u64 {
+    DEFAULT_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS
+}
+
+impl SerialConnection {
+    pub fn normalize_health_settings(&mut self) {
+        self.reconnect_delay_ms = self
+            .reconnect_delay_ms
+            .clamp(MIN_SERIAL_RECONNECT_DELAY_MS, MAX_SERIAL_RECONNECT_DELAY_MS);
+        self.receive_idle_timeout_seconds = self.receive_idle_timeout_seconds.clamp(
+            MIN_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS,
+            MAX_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS,
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -848,6 +882,39 @@ mod tests {
             MIN_SSH_KEEPALIVE_INTERVAL_SECONDS
         );
         assert_eq!(legacy.keepalive_max_missed, MAX_SSH_KEEPALIVE_MAX_MISSED);
+    }
+
+    #[test]
+    fn serial_connection_deserializes_legacy_health_defaults_and_clamps_values() {
+        let mut legacy: SerialConnection = serde_json::from_str(
+            r#"{
+                "port": "/dev/ttyUSB0",
+                "baudRate": 115200,
+                "dataBits": 8,
+                "stopBits": 1,
+                "parity": "none",
+                "flowControl": "none",
+                "dtr": false,
+                "rts": false
+            }"#,
+        )
+        .expect("legacy serial connection should deserialize");
+
+        assert!(legacy.reconnect);
+        assert_eq!(legacy.reconnect_delay_ms, DEFAULT_SERIAL_RECONNECT_DELAY_MS);
+        assert!(!legacy.receive_idle_timeout_enabled);
+        assert_eq!(
+            legacy.receive_idle_timeout_seconds,
+            DEFAULT_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS
+        );
+        legacy.reconnect_delay_ms = 0;
+        legacy.receive_idle_timeout_seconds = u64::MAX;
+        legacy.normalize_health_settings();
+        assert_eq!(legacy.reconnect_delay_ms, MIN_SERIAL_RECONNECT_DELAY_MS);
+        assert_eq!(
+            legacy.receive_idle_timeout_seconds,
+            MAX_SERIAL_RECEIVE_IDLE_TIMEOUT_SECONDS
+        );
     }
 
     #[test]
