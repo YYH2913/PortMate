@@ -80,7 +80,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Tmux：远端 `list-sessions`、`list-panes`、attach/new-session。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
-- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。
+- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。X/YModem sender 会在收到 NAK 或等待 ACK 超时后重发数据块和 EOT，重试次数有界。
 - SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置；remote forward 每 15 秒通过远端 Linux `/proc/net/tcp`/`ss`、FreeBSD `sockstat`、macOS `lsof` 或成功执行的 `netstat -ltn` 被动核对监听端口，服务端撤销后会重发原 bind request 并记录恢复事件；存在但参数不兼容的探测工具会回退为 unsupported，不会把空输出误判为监听丢失；Stop 在服务端 cancel 拒绝/超时后仍会清理本地路由/runtime 并把 profile 置为 disabled；SSH channel 断开会移除该会话全部旧 tunnel runtime，自动重连成功后从最新 profile 按原 ID、标签和端口逐条恢复 enabled tunnel，单条恢复失败会保留期望状态、记录事件且不阻断会话和其他 tunnel。
 
 主要缺口：
@@ -89,7 +89,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - GSSAPI 标记为 unsupported。
 - Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存，桌面会话工具栏会显示最近断开时间和原因；SSH/Tmux 的重连延迟/协议 KeepAlive、TCP/Telnet 的 OS keepalive/重连延迟，以及 Serial 的重连延迟/接收空闲阈值均可按 Profile 配置，断线后会进入 `Reconnecting` 并后台重试；更广故障矩阵和更深连接健康诊断还不完整。
 - Serial 的断线重开、最新 Profile 重载和过期尝试拒绝已接入；精确 Hex/ASCII、时间戳、方向过滤、增量查询、清空与 JSONL 导出已接入会话侧栏，但仍缺独立串口分析窗口、帧协议解析和更大数据集工作流。
-- SFTP 文件管理已是 local/remote 双栏并支持 Ctrl/Command 切换、Shift 连选、全选、批量删除，以及单项 rename/chmod/属性查看；多文件和完整目录可通过按钮或面板拖拽上传/下载，远端目录由 SFTP 递归枚举并保留空目录、跳过 symlink。内部批次和 Tauri 原生外部拖放共享 `fail/overwrite/skip/rename` 冲突策略，在目标修改前完成类型/路径冲突和超限检查，并跟踪整批 task 终态后刷新目标；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download）；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口。失败任务会显示远端错误、部分进度和失败时间，可复制完整诊断；受限长度的失败原因同时写入 session event，避免只有 `Failed` 状态而没有上下文。更广 SFTP/SCP 服务故障矩阵仍待补。
+- SFTP 文件管理已是 local/remote 双栏并支持 Ctrl/Command 切换、Shift 连选、全选、批量删除，以及单项 rename/chmod/属性查看；多文件和完整目录可通过按钮或面板拖拽上传/下载，远端目录由 SFTP 递归枚举并保留空目录、跳过 symlink。内部批次和 Tauri 原生外部拖放共享 `fail/overwrite/skip/rename` 冲突策略，在目标修改前完成类型/路径冲突和超限检查，并跟踪整批 task 终态后刷新目标；local/SFTP/SCP 分块传输已有进度、速度、取消、失败重试、profile 级 B/s 限速和 `.portmate-part` 断点续传（local copy、SFTP upload/download/remote copy、SCP upload/download），限速等待会让出 async runtime 并每 100 ms 检查取消；远端命令型复制已有源/目标大小标记、`.portmate-part` 续传、目标大小轮询进度和 channel 级取消；传输任务已改为后台执行并按 session 串行排队，弹窗已有当前会话全量队列视图和批量取消/重试入口。失败任务会显示远端错误、部分进度和失败时间，可复制完整诊断；受限长度的失败原因同时写入 session event，避免只有 `Failed` 状态而没有上下文。更广 SFTP/SCP 服务故障矩阵仍待补。
 - ZModem 当前限制单文件小于 4 GiB；OpenSSH PTY 上的 lrzsz X/Y/Z 双向传输已有实测，静默 modem 等待可在取消后立即发送 CAN 并快速退出，transport 进入重连态会立即失败旧 worker；物理串口、OpenSSH 活动传输断线、批量和不同工具实现的兼容矩阵仍待补。
 
 ### SSH 身份与 Host Key 隔离
@@ -218,7 +218,8 @@ npm run build
 - HTTP CONNECT/SOCKS5 对 TCP/Telnet 的真实转发、拒绝响应、无认证限制、目标域名交给代理解析、关闭代理时忽略残留端点、空代理端点和换行注入拒绝；混合认证 Jump Host 矩阵还覆盖经代理执行目标 host-key 扫描及 password/keyboard-interactive 正式连接。
 - SSH 重连延迟/KeepAlive 的旧 Profile 默认值、非法阈值夹紧、KeepAlive 开关到 russh `keepalive_interval` 的映射、健康参数变化触发最新 Profile 重连代次更新，以及真实 OpenSSH 断线等待期间从 5,000 ms 缩短到 100 ms 后恢复 session 和原 tunnel。
 - 独立真实 `ssh-agent` 与 OpenSSH 服务上的 agent 禁用、未过滤 offer、`IdentitiesOnly` 空白名单、显式指纹白名单，以及错误指纹不能被相同 comment/path 绕过。
-- OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复，以及 XModem block padding 精确截断。
+- OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复、XModem block padding 精确截断，以及 TCP loopback 下数据块/EOT 首个 ACK 丢失后的精确重传。
+- 传输限速等待不阻塞 async runtime，并能在 100 ms 轮询周期内响应取消。
 - OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
 - `socat` 虚拟 PTY 上的串口二进制收发、非 UTF-8 RX/TX 精确内存捕获、无探测字节的接收空闲超时、断线后切换到最新端口并动态缩短重连延迟、pending/connected 阶段关闭重连，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。串口捕获单测覆盖 512 帧/1 MiB 环形边界、大帧截断标记、增量 reset、选中帧 JSONL 原子导出和 SHA-256 sidecar。
 - SOCKS5 no-auth 协商、domain target 解析、非法认证方式和命令错误回复。
@@ -240,14 +241,14 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 23 个文件、138 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/quick-command/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 219：`portmate` 158、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 23 个文件、138 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/quick-command/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
 - 已有隔离 OpenSSH server、host key mismatch/`allowRotation`、MaxAuthTries/identity 顺序、真实 ssh-agent 策略/过滤和两跳 Jump Host 集成测试；第一/二跳连接拒绝、三段静默握手超时、逐跳独立 identity 拒绝、目标 identity 耗尽，以及 password/keyboard-interactive 到公钥端点的混合认证链均已覆盖。
 - 已有 `socat` 虚拟串口 loopback 二进制收发、非 UTF-8 精确 RX/TX 捕获、无探测字节的接收空闲超时和 PTY 消失后的自动重连测试，覆盖切换到最新端口路径、等待期间从 2,500 ms 缩短到 200 ms、runtime ID 轮换、精确读错误诊断、重连期间拒绝写入、恢复后的双向 I/O，以及 connected 阶段关闭 reconnect 后直接断开；真实硬件和 modem 测试矩阵仍待补。
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
-- 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
+- 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
 - 已有基于浏览器 CDP 的工作区、独立窗口和截图回归，但尚未整理为仓库内正式 Playwright suite。
 - Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；仍没有 vttest、鼠标协议和全屏程序兼容基线。
@@ -265,7 +266,7 @@ npm run build
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护、Argon2id + IOTA Stronghold portable vault/fallback/主密码轮换，以及带预检 token、durable SQLite journal、原子 commit point、跨重启显式恢复、冲突冻结和安全诊断导出的 SSH/Tmux/TCP/Telnet profile 凭据双向迁移已有；跨平台 provider 故障矩阵待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、SSH/Tmux/TCP/Telnet 的 Profile 级 HTTP CONNECT/SOCKS5 与可选认证、SSH/Tmux 的重连延迟与协议 KeepAlive 阈值、Telnet 增量协商/NVT CR 编解码/Profile TTYPE/方向性 BINARY/NAWS/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP/Telnet 的 Profile 级重连延迟与 OS keepalive、Serial 的重连延迟/无探测接收空闲阈值/精确有界 RX-TX 捕获/方向与内容过滤/原子 JSONL 导出、SSH/TCP/Telnet/Serial 重连加载最新 Profile 并拒绝过期尝试、TCP/Telnet/Serial pending/connected 阶段禁用收敛、虚拟串口切换最新端口自动重连、runtime 最近断开原因可见、break、DTR/RTS 和 hex 字节发送可用；更深诊断和独立串口分析窗口待补。 |
 | Tmux | 部分实现 | list/attach 可用；pane sync 和更完整 tmux workflow 待补。 |
-| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
+| SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级异步可取消限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；本机 macOS/Windows 使用带超时和输出边界的异步平台命令，Windows 远端在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |

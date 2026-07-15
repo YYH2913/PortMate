@@ -117,6 +117,9 @@ const MODEM_CAN: u8 = 0x18;
 const MODEM_CRC_REQUEST: u8 = b'C';
 const MODEM_EOF: u8 = 0x1a;
 const MODEM_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MODEM_ACK_TIMEOUT: Duration = Duration::from_secs(12);
+const MODEM_MAX_RETRIES: usize = 10;
+const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
@@ -5892,7 +5895,7 @@ impl TransferProgressContext {
         self.rate_baseline_bytes.store(bytes_done, Ordering::SeqCst);
     }
 
-    fn throttle(&self, bytes_done: u64) -> Result<(), String> {
+    async fn throttle(&self, bytes_done: u64) -> Result<(), String> {
         let transferred_this_run =
             bytes_done.saturating_sub(self.rate_baseline_bytes.load(Ordering::SeqCst));
         if let Some(delay) = transfer_throttle_delay(
@@ -5900,15 +5903,22 @@ impl TransferProgressContext {
             transferred_this_run,
             self.started.elapsed(),
         ) {
-            std::thread::sleep(delay);
-            self.check_cancelled()?;
+            let started = Instant::now();
+            loop {
+                self.check_cancelled()?;
+                let remaining = delay.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                tokio::time::sleep(remaining.min(TRANSFER_CANCEL_POLL_INTERVAL)).await;
+            }
         }
         Ok(())
     }
 
-    fn update(&self, bytes_done: u64, bytes_total: u64) -> Result<(), String> {
+    async fn update(&self, bytes_done: u64, bytes_total: u64) -> Result<(), String> {
         self.check_cancelled()?;
-        self.throttle(bytes_done)?;
+        self.throttle(bytes_done).await?;
         let should_emit = {
             let mut last_emit = self.last_emit.lock().map_err(|error| error.to_string())?;
             if last_emit.elapsed() < Duration::from_millis(300) && bytes_done < bytes_total {
@@ -5952,7 +5962,7 @@ async fn transfer_file_via_sftp(
 
     match (source_remote, destination_remote) {
         (None, None) => {
-            copy_local_file_for_transfer(&request.source, &request.destination, progress)
+            copy_local_file_for_transfer(&request.source, &request.destination, progress).await
         }
         (None, Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
@@ -5989,7 +5999,7 @@ async fn transfer_file_via_local_or_scp(
 
     match (source_remote, destination_remote) {
         (None, None) => {
-            copy_local_file_for_transfer(&request.source, &request.destination, progress)
+            copy_local_file_for_transfer(&request.source, &request.destination, progress).await
         }
         (None, Some(remote_destination)) => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
@@ -6998,7 +7008,9 @@ async fn zmodem_send_file(
                 .feed_file(&file_buf[..read])
                 .map_err(|error| format!("ZModem 发送文件块失败: {error}"))?;
             bytes_done = bytes_done.max(u64::from(request.offset) + read as u64);
-            progress.update(bytes_done.min(u64::from(size)), u64::from(size))?;
+            progress
+                .update(bytes_done.min(u64::from(size)), u64::from(size))
+                .await?;
             progressed = true;
         }
 
@@ -7124,7 +7136,7 @@ async fn zmodem_receive_files(
                 .advance_file(file_data.len())
                 .map_err(|error| format!("ZModem 文件写入确认失败: {error}"))?;
             bytes_done += file_data.len() as u64;
-            progress.update(bytes_done, 0)?;
+            progress.update(bytes_done, 0).await?;
             progressed = true;
         }
 
@@ -7234,7 +7246,7 @@ async fn xmodem_send_file(
         .await
         .map_err(|error| format!("XModem data block {block_no} failed: {error}"))?;
         bytes_done += chunk.len() as u64;
-        progress.update(bytes_done, total)?;
+        progress.update(bytes_done, total).await?;
         block_no = block_no.wrapping_add(1);
     }
     if auto_remote_receiver {
@@ -7298,7 +7310,7 @@ async fn xmodem_receive_file(
         };
         if packet.block_no == expected {
             output.extend_from_slice(&packet.data);
-            progress.update(output.len() as u64, 0)?;
+            progress.update(output.len() as u64, 0).await?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
@@ -7369,7 +7381,7 @@ async fn ymodem_send_file(
         .await
         .map_err(|error| format!("YModem data block {block_no} failed: {error}"))?;
         bytes_done += chunk.len() as u64;
-        progress.update(bytes_done, total)?;
+        progress.update(bytes_done, total).await?;
         block_no = block_no.wrapping_add(1);
     }
     modem_finish_eot(state, session_id, &mut reader)
@@ -7453,7 +7465,7 @@ async fn ymodem_receive_file(
         let packet = modem_read_packet(&mut reader, marker).await?;
         if packet.block_no == expected {
             output.extend_from_slice(&packet.data);
-            progress.update(output.len() as u64, total)?;
+            progress.update(output.len() as u64, total).await?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
@@ -7547,15 +7559,36 @@ async fn modem_send_packet_with_retries(
         XMODEM_BLOCK_SIZE
     };
     let packet = modem_packet_bytes(marker, block_no, payload, size, crc);
-    for _ in 0..10 {
-        write_runtime_bytes(state, session_id, &packet).await?;
-        match modem_wait_for_ack(reader, Duration::from_secs(12)).await? {
-            ModemAck::Ack => return Ok(()),
-            ModemAck::Nak => {}
+    modem_send_packet_bytes_with_retries(
+        state,
+        session_id,
+        reader,
+        block_no,
+        &packet,
+        MODEM_ACK_TIMEOUT,
+    )
+    .await
+}
+
+async fn modem_send_packet_bytes_with_retries(
+    state: &AppState,
+    session_id: &str,
+    reader: &mut ModemByteReader,
+    block_no: u8,
+    packet: &[u8],
+    ack_timeout: Duration,
+) -> Result<(), String> {
+    for _ in 0..MODEM_MAX_RETRIES {
+        write_runtime_bytes(state, session_id, packet).await?;
+        match modem_wait_for_ack(reader, ack_timeout).await {
+            Ok(ModemAck::Ack) => return Ok(()),
+            Ok(ModemAck::Nak) => {}
+            Err(error) if is_modem_timeout(&error) => {}
+            Err(error) => return Err(error),
         }
     }
     Err(format!(
-        "modem block {block_no} was rejected too many times"
+        "modem block {block_no} was not acknowledged after {MODEM_MAX_RETRIES} attempts"
     ))
 }
 
@@ -7610,14 +7643,27 @@ async fn modem_finish_eot(
     session_id: &str,
     reader: &mut ModemByteReader,
 ) -> Result<(), String> {
-    for _ in 0..10 {
+    modem_finish_eot_with_timeout(state, session_id, reader, MODEM_ACK_TIMEOUT).await
+}
+
+async fn modem_finish_eot_with_timeout(
+    state: &AppState,
+    session_id: &str,
+    reader: &mut ModemByteReader,
+    ack_timeout: Duration,
+) -> Result<(), String> {
+    for _ in 0..MODEM_MAX_RETRIES {
         write_runtime_bytes(state, session_id, &[MODEM_EOT]).await?;
-        match modem_wait_for_ack(reader, Duration::from_secs(12)).await? {
-            ModemAck::Ack => return Ok(()),
-            ModemAck::Nak => {}
+        match modem_wait_for_ack(reader, ack_timeout).await {
+            Ok(ModemAck::Ack) => return Ok(()),
+            Ok(ModemAck::Nak) => {}
+            Err(error) if is_modem_timeout(&error) => {}
+            Err(error) => return Err(error),
         }
     }
-    Err("remote did not ACK modem EOT".to_string())
+    Err(format!(
+        "remote did not ACK modem EOT after {MODEM_MAX_RETRIES} attempts"
+    ))
 }
 
 async fn modem_wait_for_packet_marker(
@@ -7764,7 +7810,7 @@ fn ssh_handle_for_transfer(
         .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行 remote: 传输".to_string())
 }
 
-fn copy_local_file_for_transfer(
+async fn copy_local_file_for_transfer(
     source: &str,
     destination: &str,
     progress: &TransferProgressContext,
@@ -7792,7 +7838,7 @@ fn copy_local_file_for_transfer(
         input
             .seek(std::io::SeekFrom::Start(copied))
             .map_err(|error| format!("local transfer seek failed: {error}"))?;
-        progress.update(copied, total)?;
+        progress.update(copied, total).await?;
     }
     if copied == total {
         finalize_local_resume_file(&temp_destination, &destination)?;
@@ -7813,7 +7859,7 @@ fn copy_local_file_for_transfer(
             .write_all(&buffer[..read])
             .map_err(|error| format!("local transfer write failed: {error}"))?;
         copied += read as u64;
-        progress.update(copied, total)?;
+        progress.update(copied, total).await?;
     }
     output
         .flush()
@@ -7981,7 +8027,7 @@ async fn sftp_upload(
         local_file
             .seek(std::io::SeekFrom::Start(copied))
             .map_err(|error| format!("SFTP 本地文件 seek 失败 {local_source}: {error}"))?;
-        progress.update(copied, metadata.len())?;
+        progress.update(copied, metadata.len()).await?;
     }
     if copied == metadata.len() {
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
@@ -8004,7 +8050,7 @@ async fn sftp_upload(
                 .await
                 .map_err(|error| format!("SFTP 写入远端文件失败 {temp_target}: {error}"))?;
             copied += read as u64;
-            progress.update(copied, metadata.len())?;
+            progress.update(copied, metadata.len()).await?;
         }
         remote_file
             .flush()
@@ -8056,7 +8102,7 @@ async fn sftp_download(
             .seek(std::io::SeekFrom::Start(copied))
             .await
             .map_err(|error| format!("SFTP 远端文件 seek 失败 {remote_source}: {error}"))?;
-        progress.update(copied, total)?;
+        progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
         finalize_local_resume_file(&temp_target, &target)?;
@@ -8079,7 +8125,7 @@ async fn sftp_download(
             .write_all(&buffer[..read])
             .map_err(|error| format!("写入本地目标文件失败 {}: {error}", temp_target.display()))?;
         copied += read as u64;
-        progress.update(copied, total)?;
+        progress.update(copied, total).await?;
     }
     local_file
         .flush()
@@ -8116,7 +8162,7 @@ async fn sftp_remote_copy(
             .seek(std::io::SeekFrom::Start(copied))
             .await
             .map_err(|error| format!("SFTP 远端源文件 seek 失败 {remote_source}: {error}"))?;
-        progress.update(copied, total)?;
+        progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
@@ -8141,7 +8187,7 @@ async fn sftp_remote_copy(
                 .await
                 .map_err(|error| format!("SFTP 写入远端目标文件失败 {temp_target}: {error}"))?;
             copied += read as u64;
-            progress.update(copied, total)?;
+            progress.update(copied, total).await?;
         }
         target_file
             .flush()
@@ -8314,7 +8360,7 @@ async fn remote_copy(
                 let markers = remote_copy_markers(&output);
                 if markers.total.is_some() && markers.total != reported_total {
                     let total = markers.total.unwrap_or_default();
-                    progress.update(0, total)?;
+                    progress.update(0, total).await?;
                     reported_total = Some(total);
                 }
                 if markers.resume.is_some() && markers.resume != reported_resume {
@@ -8323,7 +8369,9 @@ async fn remote_copy(
                         resume_bytes = resume_bytes.min(total);
                     }
                     progress.set_rate_baseline(resume_bytes);
-                    progress.update(resume_bytes, markers.total.or(reported_total).unwrap_or(0))?;
+                    progress
+                        .update(resume_bytes, markers.total.or(reported_total).unwrap_or(0))
+                        .await?;
                     reported_resume = Some(markers.resume.unwrap_or_default());
                 }
                 if markers.progress.is_some() && markers.progress != reported_progress {
@@ -8331,15 +8379,19 @@ async fn remote_copy(
                     if let Some(total) = markers.total.or(reported_total) {
                         progress_bytes = progress_bytes.min(total);
                     }
-                    progress.update(
-                        progress_bytes,
-                        markers.total.or(reported_total).unwrap_or(0),
-                    )?;
+                    progress
+                        .update(
+                            progress_bytes,
+                            markers.total.or(reported_total).unwrap_or(0),
+                        )
+                        .await?;
                     reported_progress = Some(markers.progress.unwrap_or_default());
                 }
                 if markers.done.is_some() && markers.done != reported_done {
                     let done = markers.done.unwrap_or_default();
-                    progress.update(done, reported_total.unwrap_or(done))?;
+                    progress
+                        .update(done, reported_total.unwrap_or(done))
+                        .await?;
                     reported_done = Some(done);
                 }
             }
@@ -8366,7 +8418,9 @@ async fn remote_copy(
             String::from_utf8_lossy(&output)
         )
     })?;
-    progress.update(bytes, reported_total.unwrap_or(bytes))?;
+    progress
+        .update(bytes, reported_total.unwrap_or(bytes))
+        .await?;
     Ok(bytes)
 }
 
@@ -9918,14 +9972,14 @@ async fn scp_upload(
                 let markers = remote_copy_markers(&output);
                 if markers.total.is_some() && markers.total != reported_total {
                     let total = markers.total.unwrap_or_default();
-                    progress.update(0, total)?;
+                    progress.update(0, total).await?;
                     reported_total = Some(total);
                 }
                 if let Some(resume) = markers.resume {
                     let resume = resume.min(size);
                     progress.set_rate_baseline(resume);
                     if resume > 0 {
-                        progress.update(resume, size)?;
+                        progress.update(resume, size).await?;
                     }
                     break resume;
                 }
@@ -9973,7 +10027,7 @@ async fn scp_upload(
             .await
             .map_err(|error| format!("SCP 写入文件内容失败: {error}"))?;
         copied += read as u64;
-        progress.update(copied, size)?;
+        progress.update(copied, size).await?;
     }
     let _ = channel.eof().await;
 
@@ -10017,7 +10071,7 @@ async fn scp_upload(
             "SCP upload size mismatch: remote done {done}, expected {size}"
         ));
     }
-    progress.update(done, size)?;
+    progress.update(done, size).await?;
     Ok(done)
 }
 
@@ -10109,7 +10163,7 @@ async fn scp_download(
     let copied = local_resume_offset(&temp_target, size)?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
-        progress.update(copied, size)?;
+        progress.update(copied, size).await?;
     }
     if copied == size {
         finalize_local_resume_file(&temp_target, target)?;
@@ -10148,7 +10202,7 @@ async fn scp_download(
         let write_from = copied.saturating_sub(chunk_start) as usize;
         file.write_all(&chunk[write_from..])
             .map_err(|error| format!("写入本地目标文件失败: {error}"))?;
-        progress.update(received, size)?;
+        progress.update(received, size).await?;
     }
     file.flush()
         .map_err(|error| format!("刷新本地目标文件失败: {error}"))?;
@@ -27900,6 +27954,35 @@ mod tests {
     }
 
     #[test]
+    fn transfer_throttle_wait_is_async_and_cancellable() {
+        tauri::async_runtime::block_on(async {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let progress = TransferProgressContext {
+                state: test_app_state(
+                    test_shell_profile(),
+                    PathBuf::from("transfer-throttle-test.sqlite3"),
+                ),
+                task_id: "unused-transfer".to_string(),
+                cancel: Arc::clone(&cancel),
+                last_emit: Arc::new(Mutex::new(Instant::now())),
+                started: Instant::now(),
+                rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+                rate_limit_bytes_per_second: Some(1024),
+            };
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel.store(true, Ordering::SeqCst);
+            });
+
+            let started = Instant::now();
+            let error = progress.throttle(1024).await.unwrap_err();
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            cancel_task.await.unwrap();
+        });
+    }
+
+    #[test]
     fn local_resume_part_helpers_keep_stable_offsets() {
         let root = std::env::temp_dir().join(format!("portmate-resume-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -29668,6 +29751,90 @@ mod tests {
         assert!(!finalize.contains(" status="));
         assert!(is_modem_timeout("modem byte timeout"));
         assert!(is_modem_timeout("timed out waiting for modem ACK"));
+    }
+
+    #[test]
+    fn modem_sender_retries_packet_and_eot_after_ack_timeout() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let payload = b"retry after a lost ACK";
+            let expected_packet =
+                modem_packet_bytes(MODEM_SOH, 1, payload, XMODEM_BLOCK_SIZE, true);
+            let packet_len = expected_packet.len();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut first_packet = vec![0_u8; packet_len];
+                socket.read_exact(&mut first_packet).await.unwrap();
+                let mut retry_packet = vec![0_u8; packet_len];
+                socket.read_exact(&mut retry_packet).await.unwrap();
+                socket.write_all(&[MODEM_ACK]).await.unwrap();
+
+                let mut first_eot = [0_u8; 1];
+                socket.read_exact(&mut first_eot).await.unwrap();
+                let mut retry_eot = [0_u8; 1];
+                socket.read_exact(&mut retry_eot).await.unwrap();
+                socket.write_all(&[MODEM_ACK]).await.unwrap();
+                let _ = release_rx.await;
+
+                assert_eq!(first_eot, [MODEM_EOT]);
+                assert_eq!(retry_eot, first_eot);
+                (first_packet, retry_packet)
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-modem-retry-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            let receiver = runtime_tap_receiver(&state, &profile.id).unwrap();
+            let mut reader = ModemByteReader::new(receiver, Arc::new(AtomicBool::new(false)))
+                .watch_connection(Arc::clone(&state.store), profile.id.clone());
+
+            modem_send_packet_bytes_with_retries(
+                &state,
+                &profile.id,
+                &mut reader,
+                1,
+                &expected_packet,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap();
+            modem_finish_eot_with_timeout(
+                &state,
+                &profile.id,
+                &mut reader,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap();
+
+            let _ = release_tx.send(());
+            let (first_packet, retry_packet) = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("modem retry server timed out")
+                .expect("modem retry server failed");
+            assert_eq!(first_packet, expected_packet);
+            assert_eq!(retry_packet, first_packet);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if !state.tcp.lock().unwrap().contains_key(&profile.id) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("modem retry session did not close");
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
@@ -34572,7 +34739,7 @@ mod tests {
     }
 
     async fn wait_for_transfer_terminal_state(state: &AppState, task_id: &str) -> TransferTask {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
                 if matches!(
@@ -34584,8 +34751,14 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("transfer did not reach a terminal state")
+        .await;
+        match result {
+            Ok(task) => task,
+            Err(_) => {
+                let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
+                panic!("transfer did not reach a terminal state: {task:?}");
+            }
+        }
     }
 
     fn test_tcp_profile(connection: ConnectionConfig) -> SessionProfile {
