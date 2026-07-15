@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { groupTmuxPanes } from "./tmux-state";
+import type { TmuxWindowGroup } from "./tmux-state";
 import type {
   SessionEvent,
   SessionSummary,
@@ -24,6 +25,7 @@ type TmuxDeleteConfirmation = {
 };
 
 type TmuxPaneMutationAction =
+  | "select-pane"
   | "split-pane-horizontal"
   | "split-pane-vertical"
   | "swap-pane-previous"
@@ -32,6 +34,13 @@ type TmuxPaneMutationAction =
   | "resize-pane-right"
   | "resize-pane-up"
   | "resize-pane-down";
+
+type TmuxPaneMoveOption = {
+  key: string;
+  label: string;
+  action: "break-pane" | "move-pane-horizontal" | "move-pane-vertical";
+  destination?: string;
+};
 
 export default function TmuxDialog({
   session,
@@ -118,7 +127,7 @@ export default function TmuxDialog({
     mutationTarget: string,
     name: string | null,
     successMessage: string,
-    options: Pick<TmuxMutationRequest, "layout" | "amount"> = {},
+    options: Pick<TmuxMutationRequest, "destination" | "layout" | "amount"> = {},
   ) {
     setMutatingTarget(mutationTarget);
     setError("");
@@ -203,6 +212,21 @@ export default function TmuxDialog({
       null,
       `${windowTarget} 已应用 ${layout} 布局`,
       { layout },
+    );
+  }
+
+  function applyPaneMove(option: TmuxPaneMoveOption, paneTarget: string, paneLabel: string) {
+    setEditor(null);
+    setDeleteConfirmation(null);
+    const feedback = option.action === "break-pane"
+      ? `${paneLabel} 已拆为新 window`
+      : `${paneLabel} 已移到 ${option.destination}`;
+    void mutate(
+      option.action,
+      paneTarget,
+      null,
+      feedback,
+      option.destination ? { destination: option.destination } : {},
     );
   }
 
@@ -341,27 +365,37 @@ export default function TmuxDialog({
                     />
                   ) : null}
                   <div className="tmux-window-panes">
-                    {window.panes.map((pane) => (
-                      <div
-                        key={pane.paneId || `${pane.session}-${pane.windowIndex}-${pane.paneIndex}`}
-                        className={pane.active ? "active" : ""}
-                        data-tmux-pane={pane.paneId}
-                      >
-                        <div className="tmux-pane-summary">
-                          <strong>{window.target}.{pane.paneIndex}</strong>
-                          <span>{pane.command || "shell"}</span>
-                          <small>{pane.title || pane.paneId}</small>
-                        </div>
-                        <div className="tmux-pane-actions">
+                    {window.panes.map((pane) => {
+                      const paneLabel = `${window.target}.${pane.paneIndex}`;
+                      const moveOptions = buildPaneMoveOptions(windows, window.target, window.panes.length > 1);
+                      return (
+                        <div
+                          key={pane.paneId || `${pane.session}-${pane.windowIndex}-${pane.paneIndex}`}
+                          className={pane.active ? "active" : ""}
+                          data-tmux-pane={pane.paneId}
+                        >
+                          <button
+                            type="button"
+                            className="tmux-pane-summary"
+                            title={`激活 pane ${paneLabel}`}
+                            aria-label={`激活 pane ${paneLabel}`}
+                            disabled={operationBusy || !pane.paneId}
+                            onClick={() => applyPaneMutation("select-pane", pane.paneId, paneLabel)}
+                          >
+                            <strong>{paneLabel}</strong>
+                            <span>{pane.command || "shell"}</span>
+                            <small>{pane.title || pane.paneId}</small>
+                          </button>
+                          <div className="tmux-pane-actions">
                           <select
-                            aria-label={`${window.target}.${pane.paneIndex} pane 分割`}
-                            title={`分割 ${window.target}.${pane.paneIndex}`}
+                            aria-label={`${paneLabel} pane 分割`}
+                            title={`分割 ${paneLabel}`}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId}
                             onChange={(event) => {
                               const action = event.currentTarget.value as TmuxPaneMutationAction;
                               event.currentTarget.value = "";
-                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                              if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
                             <option value="" disabled>分割</option>
@@ -369,14 +403,14 @@ export default function TmuxDialog({
                             <option value="split-pane-vertical">上下</option>
                           </select>
                           <select
-                            aria-label={`${window.target}.${pane.paneIndex} pane 交换`}
-                            title={`交换 ${window.target}.${pane.paneIndex}`}
+                            aria-label={`${paneLabel} pane 交换`}
+                            title={`交换 ${paneLabel}`}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId || window.panes.length < 2}
                             onChange={(event) => {
                               const action = event.currentTarget.value as TmuxPaneMutationAction;
                               event.currentTarget.value = "";
-                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                              if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
                             <option value="" disabled>交换</option>
@@ -384,14 +418,14 @@ export default function TmuxDialog({
                             <option value="swap-pane-next">向后</option>
                           </select>
                           <select
-                            aria-label={`${window.target}.${pane.paneIndex} pane 调整尺寸`}
-                            title={`调整 ${window.target}.${pane.paneIndex} 尺寸`}
+                            aria-label={`${paneLabel} pane 调整尺寸`}
+                            title={`调整 ${paneLabel} 尺寸`}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId}
                             onChange={(event) => {
                               const action = event.currentTarget.value as TmuxPaneMutationAction;
                               event.currentTarget.value = "";
-                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                              if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
                             <option value="" disabled>尺寸</option>
@@ -400,11 +434,28 @@ export default function TmuxDialog({
                             <option value="resize-pane-up">向上 5</option>
                             <option value="resize-pane-down">向下 5</option>
                           </select>
+                          <select
+                            className="tmux-pane-move-select"
+                            aria-label={`${paneLabel} pane 移动`}
+                            title={`移动 ${paneLabel}`}
+                            defaultValue=""
+                            disabled={operationBusy || !pane.paneId || !moveOptions.length}
+                            onChange={(event) => {
+                              const option = moveOptions.find((item) => item.key === event.currentTarget.value);
+                              event.currentTarget.value = "";
+                              if (option) applyPaneMove(option, pane.paneId, paneLabel);
+                            }}
+                          >
+                            <option value="" disabled>移动</option>
+                            {moveOptions.map((option) => (
+                              <option value={option.key} key={option.key}>{option.label}</option>
+                            ))}
+                          </select>
                           <button
                             type="button"
                             className="danger"
-                            title={`关闭 pane ${window.target}.${pane.paneIndex}`}
-                            aria-label={`关闭 pane ${window.target}.${pane.paneIndex}`}
+                            title={`关闭 pane ${paneLabel}`}
+                            aria-label={`关闭 pane ${paneLabel}`}
                             disabled={operationBusy || !pane.paneId}
                             onClick={() => {
                               setError("");
@@ -413,13 +464,14 @@ export default function TmuxDialog({
                               setDeleteConfirmation({
                                 action: "kill-pane",
                                 target: pane.paneId,
-                                label: `${window.target}.${pane.paneIndex}`,
+                                label: paneLabel,
                               });
                             }}
                           ><Trash2 size={13} /></button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </article>
               ))}
@@ -434,6 +486,7 @@ export default function TmuxDialog({
 
 function paneMutationFeedback(action: TmuxPaneMutationAction, paneLabel: string): string {
   switch (action) {
+    case "select-pane": return `${paneLabel} 已激活`;
     case "split-pane-horizontal": return `${paneLabel} 已左右分割`;
     case "split-pane-vertical": return `${paneLabel} 已上下分割`;
     case "swap-pane-previous": return `${paneLabel} 已与前一 pane 交换`;
@@ -443,6 +496,34 @@ function paneMutationFeedback(action: TmuxPaneMutationAction, paneLabel: string)
     case "resize-pane-up": return `${paneLabel} 已向上调整 5 cells`;
     case "resize-pane-down": return `${paneLabel} 已向下调整 5 cells`;
   }
+}
+
+function buildPaneMoveOptions(
+  windows: readonly TmuxWindowGroup[],
+  currentWindowTarget: string,
+  allowBreak: boolean,
+): TmuxPaneMoveOption[] {
+  const options: TmuxPaneMoveOption[] = allowBreak
+    ? [{ key: "break", label: "拆为新 window", action: "break-pane" }]
+    : [];
+  for (const destination of windows) {
+    if (destination.target === currentWindowTarget) continue;
+    options.push(
+      {
+        key: `horizontal:${destination.target}`,
+        label: `${destination.target} · 左右`,
+        action: "move-pane-horizontal",
+        destination: destination.target,
+      },
+      {
+        key: `vertical:${destination.target}`,
+        label: `${destination.target} · 上下`,
+        action: "move-pane-vertical",
+        destination: destination.target,
+      },
+    );
+  }
+  return options;
 }
 
 function TmuxInlineEditor({

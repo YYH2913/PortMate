@@ -171,6 +171,9 @@ try {
         }
         if (command === "mutate_tmux") {
           const request = args.request;
+          if (request.action === "move-pane-vertical" && request.destination === "build:0") {
+            throw new Error("tmux move denied");
+          }
           if (request.action === "rename-session") {
             window.__tmuxState = {
               sessions: window.__tmuxState.sessions.map((item) => item.name === request.target ? { ...item, name: request.name } : item),
@@ -224,6 +227,85 @@ try {
                     : item
                 )),
                 panes: window.__tmuxState.panes.filter((item) => item.paneId !== request.target),
+              };
+            }
+          } else if (request.action === "select-pane") {
+            const source = window.__tmuxState.panes.find((item) => item.paneId === request.target);
+            if (source) {
+              window.__tmuxState = {
+                ...window.__tmuxState,
+                panes: window.__tmuxState.panes.map((item) => (
+                  item.session === source.session && item.windowIndex === source.windowIndex
+                    ? { ...item, active: item.paneId === source.paneId }
+                    : item
+                )),
+              };
+            }
+          } else if (request.action === "break-pane") {
+            const source = window.__tmuxState.panes.find((item) => item.paneId === request.target);
+            const sourceWindow = source && window.__tmuxState.windows.find((item) => (
+              item.session === source.session && item.windowIndex === source.windowIndex
+            ));
+            if (source && sourceWindow && sourceWindow.panes > 1) {
+              const indexes = window.__tmuxState.windows
+                .filter((item) => item.session === source.session)
+                .map((item) => item.windowIndex);
+              const windowIndex = indexes.length ? Math.max(...indexes) + 1 : 0;
+              const windowId = `@${window.__tmuxState.windows.length + 1}`;
+              window.__tmuxState = {
+                sessions: window.__tmuxState.sessions.map((item) => (
+                  item.name === source.session ? { ...item, windows: item.windows + 1 } : item
+                )),
+                windows: [
+                  ...window.__tmuxState.windows.map((item) => item.windowId === sourceWindow.windowId
+                    ? { ...item, panes: item.panes - 1 }
+                    : item),
+                  {
+                    session: source.session, windowIndex, windowId, name: `window-${windowIndex}`,
+                    panes: 1, active: false, synchronized: source.synchronized,
+                  },
+                ],
+                panes: window.__tmuxState.panes.map((item) => item.paneId === source.paneId
+                  ? { ...item, windowIndex, paneIndex: 0, active: true }
+                  : item),
+              };
+            }
+          } else if (request.action === "move-pane-horizontal" || request.action === "move-pane-vertical") {
+            const source = window.__tmuxState.panes.find((item) => item.paneId === request.target);
+            const sourceWindow = source && window.__tmuxState.windows.find((item) => (
+              item.session === source.session && item.windowIndex === source.windowIndex
+            ));
+            const destinationWindow = window.__tmuxState.windows.find((item) => (
+              `${item.session}:${item.windowIndex}` === request.destination
+            ));
+            if (source && sourceWindow && destinationWindow && sourceWindow.windowId !== destinationWindow.windowId) {
+              const destinationIndexes = window.__tmuxState.panes
+                .filter((item) => item.session === destinationWindow.session && item.windowIndex === destinationWindow.windowIndex)
+                .map((item) => item.paneIndex);
+              const paneIndex = destinationIndexes.length ? Math.max(...destinationIndexes) + 1 : 0;
+              const removesSourceWindow = sourceWindow.panes === 1;
+              window.__tmuxState = {
+                sessions: window.__tmuxState.sessions.map((item) => (
+                  removesSourceWindow && item.name === sourceWindow.session
+                    ? { ...item, windows: Math.max(0, item.windows - 1) }
+                    : item
+                )),
+                windows: window.__tmuxState.windows
+                  .filter((item) => !removesSourceWindow || item.windowId !== sourceWindow.windowId)
+                  .map((item) => {
+                    if (item.windowId === destinationWindow.windowId) return { ...item, panes: item.panes + 1 };
+                    if (item.windowId === sourceWindow.windowId) return { ...item, panes: item.panes - 1 };
+                    return item;
+                  }),
+                panes: window.__tmuxState.panes.map((item) => item.paneId === source.paneId
+                  ? {
+                    ...item,
+                    session: destinationWindow.session,
+                    windowIndex: destinationWindow.windowIndex,
+                    paneIndex,
+                    active: false,
+                  }
+                  : item),
               };
             }
           } else if (request.action === "split-pane-horizontal" || request.action === "split-pane-vertical") {
@@ -322,6 +404,13 @@ try {
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length >= 2);
 
+  const paneTwo = page.locator('[data-tmux-pane="%2"]');
+  await paneTwo.getByRole("button", { name: "激活 pane lab:0.1", exact: true }).click();
+  await page.getByText("lab:0.1 已激活", { exact: true }).waitFor();
+  assert(await paneTwo.evaluate((element) => element.classList.contains("active")), "selected pane did not become active");
+  assert(await page.locator('[data-tmux-pane="%1"]').evaluate((element) => !element.classList.contains("active")),
+    "previous pane remained active after selection");
+
   await page.getByRole("combobox", { name: "lab:0 window 布局", exact: true }).selectOption("tiled");
   await page.getByText("lab:0 已应用 tiled 布局", { exact: true }).waitFor();
 
@@ -337,11 +426,28 @@ try {
   await paneOne.getByRole("combobox", { name: /pane 调整尺寸$/ }).selectOption("resize-pane-right");
   await page.getByText("lab:0.1 已向右调整 5 cells", { exact: true }).waitFor();
 
-  await page.getByRole("button", { name: "关闭 pane lab:0.2", exact: true }).click();
-  await page.getByText("关闭 pane lab:0.2？", { exact: true }).waitFor();
+  const splitPane = page.locator('[data-tmux-pane="%5"]');
+  await splitPane.getByRole("combobox", { name: "lab:0.2 pane 移动", exact: true }).selectOption("break");
+  await page.getByText("lab:0.2 已拆为新 window", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-target="lab:2"] [data-tmux-pane="%5"]').count() === 1,
+    "broken pane did not move to a new window");
+
+  await splitPane.getByRole("combobox", { name: "lab:2.0 pane 移动", exact: true }).selectOption("vertical:build:0");
+  await page.getByText("tmux move denied", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-target="lab:2"] [data-tmux-pane="%5"]').count() === 1,
+    "failed pane move changed the confirmed remote snapshot");
+
+  await splitPane.getByRole("combobox", { name: "lab:2.0 pane 移动", exact: true }).selectOption("horizontal:lab:1");
+  await page.getByText("lab:2.0 已移到 lab:1", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-target="lab:2"]').count() === 0, "empty source window remains after pane move");
+  assert(await page.locator('[data-tmux-target="lab:1"] [data-tmux-pane="%5"]').count() === 1,
+    "moved pane is missing from destination window");
+
+  await page.getByRole("button", { name: "关闭 pane lab:1.1", exact: true }).click();
+  await page.getByText("关闭 pane lab:1.1？", { exact: true }).waitFor();
   await page.getByRole("button", { name: "确认关闭", exact: true }).click();
-  await page.getByText("lab:0.2 已关闭", { exact: true }).waitFor();
-  assert(await labZero.locator(".tmux-window-panes > div").count() === 2, "closed pane remains visible");
+  await page.getByText("lab:1.1 已关闭", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-pane="%5"]').count() === 0, "closed pane remains visible");
 
   await page.getByRole("button", { name: "重命名 session build", exact: true }).click();
   const sessionNameInput = page.getByRole("textbox", { name: "新名称 build" });
@@ -380,15 +486,21 @@ try {
   assert(await page.locator('[data-tmux-session="build-renamed"]').count() === 0, "closed session remains visible");
 
   const mutationCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "mutate_tmux"));
-  assert(mutationCalls.map((call) => call.args.request.action).join(",") === "select-layout,split-pane-horizontal,swap-pane-next,resize-pane-right,kill-pane,rename-session,new-window,rename-window,kill-window,kill-session",
+  assert(mutationCalls.map((call) => call.args.request.action).join(",") === "select-pane,select-layout,split-pane-horizontal,swap-pane-next,resize-pane-right,break-pane,move-pane-vertical,move-pane-horizontal,kill-pane,rename-session,new-window,rename-window,kill-window,kill-session",
     `unexpected Tmux mutation sequence: ${JSON.stringify(mutationCalls)}`);
-  assert(mutationCalls[0].args.request.target === "lab:0" && mutationCalls[0].args.request.layout === "tiled",
-    `invalid layout request: ${JSON.stringify(mutationCalls[0])}`);
-  assert(mutationCalls[1].args.request.target === "%1", `invalid split request: ${JSON.stringify(mutationCalls[1])}`);
-  assert(mutationCalls[2].args.request.target === "%1", `invalid swap request: ${JSON.stringify(mutationCalls[2])}`);
-  assert(mutationCalls[3].args.request.target === "%1" && mutationCalls[3].args.request.amount === 5,
-    `invalid resize request: ${JSON.stringify(mutationCalls[3])}`);
-  assert(mutationCalls[4].args.request.target === "%5", `invalid pane close request: ${JSON.stringify(mutationCalls[4])}`);
+  assert(mutationCalls[0].args.request.target === "%2", `invalid select request: ${JSON.stringify(mutationCalls[0])}`);
+  assert(mutationCalls[1].args.request.target === "lab:0" && mutationCalls[1].args.request.layout === "tiled",
+    `invalid layout request: ${JSON.stringify(mutationCalls[1])}`);
+  assert(mutationCalls[2].args.request.target === "%1", `invalid split request: ${JSON.stringify(mutationCalls[2])}`);
+  assert(mutationCalls[3].args.request.target === "%1", `invalid swap request: ${JSON.stringify(mutationCalls[3])}`);
+  assert(mutationCalls[4].args.request.target === "%1" && mutationCalls[4].args.request.amount === 5,
+    `invalid resize request: ${JSON.stringify(mutationCalls[4])}`);
+  assert(mutationCalls[5].args.request.target === "%5", `invalid break request: ${JSON.stringify(mutationCalls[5])}`);
+  assert(mutationCalls[6].args.request.target === "%5" && mutationCalls[6].args.request.destination === "build:0",
+    `invalid failed move request: ${JSON.stringify(mutationCalls[6])}`);
+  assert(mutationCalls[7].args.request.target === "%5" && mutationCalls[7].args.request.destination === "lab:1",
+    `invalid move request: ${JSON.stringify(mutationCalls[7])}`);
+  assert(mutationCalls[8].args.request.target === "%5", `invalid pane close request: ${JSON.stringify(mutationCalls[8])}`);
   await page.evaluate(() => {
     document.querySelectorAll(".tmux-list, .tmux-window-list").forEach((element) => { element.scrollTop = 0; });
   });

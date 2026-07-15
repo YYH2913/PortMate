@@ -1988,6 +1988,10 @@ pub enum TmuxMutationAction {
     RenameWindow,
     KillWindow,
     KillPane,
+    SelectPane,
+    BreakPane,
+    MovePaneHorizontal,
+    MovePaneVertical,
     SplitPaneHorizontal,
     SplitPaneVertical,
     SwapPanePrevious,
@@ -2017,6 +2021,8 @@ pub struct TmuxMutationRequest {
     pub target: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub destination: Option<String>,
     #[serde(default)]
     pub layout: Option<TmuxWindowLayout>,
     #[serde(default)]
@@ -10732,7 +10738,7 @@ async fn mutate_tmux_inner(
             format!(
                 "PortMate: tmux {} ({})",
                 tmux_mutation_label(request.action),
-                normalize_tmux_target(&request.target)?
+                tmux_mutation_event_scope(&request)?
             ),
         );
     }
@@ -10807,6 +10813,24 @@ fn tmux_mutation_command(request: &TmuxMutationRequest) -> Result<String, String
         )),
         TmuxMutationAction::KillWindow => Ok(format!("tmux kill-window -t {target}")),
         TmuxMutationAction::KillPane => Ok(format!("tmux kill-pane -t {target}")),
+        TmuxMutationAction::SelectPane => Ok(format!("tmux select-pane -t {target}")),
+        TmuxMutationAction::BreakPane => Ok(format!("tmux break-pane -d -s {target}")),
+        TmuxMutationAction::MovePaneHorizontal | TmuxMutationAction::MovePaneVertical => {
+            let destination = shell_quote(normalize_tmux_target(
+                request
+                    .destination
+                    .as_deref()
+                    .ok_or_else(|| "跨 window 移动 pane 需要目标 window".to_string())?,
+            )?);
+            Ok(format!(
+                "tmux move-pane -d {} -s {target} -t {destination}",
+                if request.action == TmuxMutationAction::MovePaneHorizontal {
+                    "-h"
+                } else {
+                    "-v"
+                }
+            ))
+        }
         TmuxMutationAction::SplitPaneHorizontal => Ok(format!("tmux split-window -h -t {target}")),
         TmuxMutationAction::SplitPaneVertical => Ok(format!("tmux split-window -v -t {target}")),
         TmuxMutationAction::SwapPanePrevious => Ok(format!("tmux swap-pane -t {target} -U")),
@@ -10838,6 +10862,24 @@ fn tmux_mutation_command(request: &TmuxMutationRequest) -> Result<String, String
     }
 }
 
+fn tmux_mutation_event_scope(request: &TmuxMutationRequest) -> Result<String, String> {
+    let target = normalize_tmux_target(&request.target)?;
+    match request.action {
+        TmuxMutationAction::MovePaneHorizontal | TmuxMutationAction::MovePaneVertical => {
+            Ok(format!(
+                "{target} -> {}",
+                normalize_tmux_target(
+                    request
+                        .destination
+                        .as_deref()
+                        .ok_or_else(|| "跨 window 移动 pane 需要目标 window".to_string())?
+                )?
+            ))
+        }
+        _ => Ok(target.to_string()),
+    }
+}
+
 fn normalize_tmux_resize_amount(amount: Option<u16>) -> Result<u16, String> {
     let amount = amount.unwrap_or(5);
     if !(1..=100).contains(&amount) {
@@ -10864,6 +10906,10 @@ fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
         TmuxMutationAction::RenameWindow => "window renamed",
         TmuxMutationAction::KillWindow => "window closed",
         TmuxMutationAction::KillPane => "pane closed",
+        TmuxMutationAction::SelectPane => "pane selected",
+        TmuxMutationAction::BreakPane => "pane broken into window",
+        TmuxMutationAction::MovePaneHorizontal => "pane moved horizontally",
+        TmuxMutationAction::MovePaneVertical => "pane moved vertically",
         TmuxMutationAction::SplitPaneHorizontal => "pane split horizontally",
         TmuxMutationAction::SplitPaneVertical => "pane split vertically",
         TmuxMutationAction::SwapPanePrevious => "pane swapped with previous",
@@ -36651,6 +36697,7 @@ mod tests {
             action,
             target: target.to_string(),
             name: name.map(str::to_string),
+            destination: None,
             layout: None,
             amount: None,
         };
@@ -36693,6 +36740,37 @@ mod tests {
             tmux_mutation_command(&request(TmuxMutationAction::KillPane, "%7", None)).unwrap(),
             "tmux kill-pane -t '%7'"
         );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::SelectPane, "%7", None)).unwrap(),
+            "tmux select-pane -t '%7'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::BreakPane, "%7", None)).unwrap(),
+            "tmux break-pane -d -s '%7'"
+        );
+        let mut move_pane = request(TmuxMutationAction::MovePaneHorizontal, "%7", None);
+        assert!(tmux_mutation_command(&move_pane).is_err());
+        move_pane.destination = Some("lab:2'; touch /tmp/nope #".to_string());
+        assert_eq!(
+            tmux_mutation_command(&move_pane).unwrap(),
+            "tmux move-pane -d -h -s '%7' -t 'lab:2'\\''; touch /tmp/nope #'"
+        );
+        assert_eq!(
+            tmux_mutation_event_scope(&move_pane).unwrap(),
+            "%7 -> lab:2'; touch /tmp/nope #"
+        );
+        move_pane.action = TmuxMutationAction::MovePaneVertical;
+        move_pane.destination = Some("  lab:2  ".to_string());
+        assert_eq!(
+            tmux_mutation_command(&move_pane).unwrap(),
+            "tmux move-pane -d -v -s '%7' -t 'lab:2'"
+        );
+        assert_eq!(
+            tmux_mutation_event_scope(&move_pane).unwrap(),
+            "%7 -> lab:2"
+        );
+        move_pane.destination = Some("bad\nwindow".to_string());
+        assert!(tmux_mutation_command(&move_pane).is_err());
         assert_eq!(
             tmux_mutation_command(&request(
                 TmuxMutationAction::SplitPaneHorizontal,

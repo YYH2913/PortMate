@@ -559,6 +559,10 @@ export type TmuxMutationAction =
   | "rename-window"
   | "kill-window"
   | "kill-pane"
+  | "select-pane"
+  | "break-pane"
+  | "move-pane-horizontal"
+  | "move-pane-vertical"
   | "split-pane-horizontal"
   | "split-pane-vertical"
   | "swap-pane-previous"
@@ -576,6 +580,7 @@ export interface TmuxMutationRequest {
   action: TmuxMutationAction;
   target: string;
   name?: string | null;
+  destination?: string | null;
   layout?: TmuxWindowLayout | null;
   amount?: number | null;
 }

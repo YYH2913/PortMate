@@ -6806,7 +6806,30 @@ fieldset label {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 3px 10px;
+  width: 100%;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.tmux-pane-summary:hover:not(:disabled) strong,
+.tmux-pane-summary:focus-visible strong {
+  color: var(--cyan);
+}
+
+.tmux-pane-summary:focus-visible {
+  outline: 1px solid rgba(94, 234, 212, 0.45);
+  outline-offset: 2px;
+}
+
+.tmux-pane-summary:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .tmux-pane-summary strong,
@@ -6829,8 +6852,12 @@ fieldset label {
   padding: 0 3px;
 }
 
-.tmux-pane-actions select:last-child {
+.tmux-pane-actions select:nth-of-type(3) {
   width: 68px;
+}
+
+.tmux-pane-actions .tmux-pane-move-select {
+  width: 72px;
 }
 
 .tmux-pane-actions button {
@@ -6909,11 +6936,12 @@ fieldset label {
 
   .tmux-pane-actions {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 28px;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) 28px;
   }
 
   .tmux-pane-actions select,
-  .tmux-pane-actions select:last-child {
+  .tmux-pane-actions select:nth-of-type(3),
+  .tmux-pane-actions .tmux-pane-move-select {
     width: 100%;
   }
 
