@@ -157,6 +157,8 @@ const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
 const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
+const MAX_SERIAL_CAPTURE_HISTORY_FRAMES: usize = 4_096;
+const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
@@ -825,6 +827,17 @@ pub struct SerialCaptureSnapshot {
     pub reset: bool,
     pub total_frames: usize,
     pub captured_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialCaptureHistorySnapshot {
+    pub frames: Vec<SerialCaptureFrame>,
+    pub enabled: bool,
+    pub total_frames: usize,
+    pub captured_bytes: usize,
+    pub dropped_frames: usize,
+    pub unavailable_frames: usize,
 }
 
 type SerialPortHandle = Box<dyn serialport::SerialPort>;
@@ -4856,6 +4869,14 @@ fn list_serial_capture(
 }
 
 #[tauri::command]
+fn list_serial_capture_history(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SerialCaptureHistorySnapshot, String> {
+    serial_capture_history_inner(&state.store_path, &state.store, &session_id)
+}
+
+#[tauri::command]
 fn clear_serial_capture(
     state: State<'_, AppState>,
     session_id: String,
@@ -4874,6 +4895,15 @@ fn export_serial_capture(
 ) -> Result<ExportSerialCaptureResult, String> {
     ensure_serial_profile(&state.store, &request.session_id)?;
     export_serial_capture_inner(&state.store_path, &state.serial_captures, request)
+}
+
+#[tauri::command]
+fn export_serial_capture_history(
+    state: State<'_, AppState>,
+    request: ExportSerialCaptureRequest,
+) -> Result<ExportSerialCaptureResult, String> {
+    ensure_serial_profile(&state.store, &request.session_id)?;
+    export_serial_capture_history_inner(&state.store_path, &state.store, request)
 }
 
 #[tauri::command]
@@ -5080,6 +5110,104 @@ fn serial_capture_snapshot_inner(
     Ok(capture.snapshot_since(after_id))
 }
 
+fn serial_capture_history_inner(
+    store_path: &Path,
+    store: &Arc<Mutex<SessionStore>>,
+    session_id: &str,
+) -> Result<SerialCaptureHistorySnapshot, String> {
+    ensure_serial_profile(store, session_id)?;
+    let (enabled, candidates) = {
+        let store = store.lock().map_err(|error| error.to_string())?;
+        let profile = store
+            .profile(session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        let enabled = profile.logging.enabled && profile.logging.raw;
+        let candidates = if enabled {
+            store
+                .events
+                .iter()
+                .filter_map(|event| {
+                    let reference = event.bytes_ref.as_ref()?;
+                    (event.session_id == session_id
+                        && matches!(
+                            event.direction,
+                            EventDirection::Inbound | EventDirection::Outbound
+                        ))
+                    .then(|| {
+                        (
+                            event.id.clone(),
+                            event.ts,
+                            event.direction,
+                            reference.clone(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        (enabled, candidates)
+    };
+    if !enabled {
+        return Ok(SerialCaptureHistorySnapshot {
+            frames: Vec::new(),
+            enabled: false,
+            total_frames: 0,
+            captured_bytes: 0,
+            dropped_frames: 0,
+            unavailable_frames: 0,
+        });
+    }
+
+    let total_frames = candidates.len();
+    let mut frames = Vec::new();
+    let mut captured_bytes = 0_usize;
+    let mut unavailable_frames = 0_usize;
+    for (id, ts, direction, reference) in candidates.into_iter().rev() {
+        if frames.len() >= MAX_SERIAL_CAPTURE_HISTORY_FRAMES {
+            break;
+        }
+        let Ok((relative, _, bytes)) = read_verified_log_bytes_ref(store_path, &reference) else {
+            unavailable_frames = unavailable_frames.saturating_add(1);
+            continue;
+        };
+        if Path::new(&relative)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some("raw")
+            || bytes.is_empty()
+        {
+            unavailable_frames = unavailable_frames.saturating_add(1);
+            continue;
+        }
+        let original_length = bytes.len();
+        let captured_length = original_length.min(MAX_SERIAL_CAPTURE_FRAME_BYTES);
+        if captured_bytes.saturating_add(captured_length) > MAX_SERIAL_CAPTURE_HISTORY_BYTES {
+            break;
+        }
+        captured_bytes = captured_bytes.saturating_add(captured_length);
+        frames.push(SerialCaptureFrame {
+            id,
+            ts,
+            direction,
+            bytes: bytes[..captured_length].to_vec(),
+            original_length,
+            truncated: captured_length != original_length,
+        });
+    }
+    frames.reverse();
+    Ok(SerialCaptureHistorySnapshot {
+        dropped_frames: total_frames
+            .saturating_sub(frames.len())
+            .saturating_sub(unavailable_frames),
+        frames,
+        enabled: true,
+        total_frames,
+        captured_bytes,
+        unavailable_frames,
+    })
+}
+
 fn serial_capture_hex(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -5107,18 +5235,7 @@ fn export_serial_capture_inner(
     captures: &SerialCaptureMap,
     request: ExportSerialCaptureRequest,
 ) -> Result<ExportSerialCaptureResult, String> {
-    if request.frame_ids.is_empty() {
-        return Err("select at least one serial capture frame to export".to_string());
-    }
-    if request.frame_ids.len() > MAX_SERIAL_CAPTURE_FRAMES {
-        return Err(format!(
-            "serial capture export frame limit exceeded ({MAX_SERIAL_CAPTURE_FRAMES})"
-        ));
-    }
-    let requested = request.frame_ids.iter().collect::<HashSet<_>>();
-    if requested.len() != request.frame_ids.len() {
-        return Err("serial capture export contains duplicate frame IDs".to_string());
-    }
+    let requested = serial_capture_export_ids(&request, MAX_SERIAL_CAPTURE_FRAMES)?;
     let capture = {
         let captures = captures.lock().map_err(|error| error.to_string())?;
         captures
@@ -5139,6 +5256,55 @@ fn export_serial_capture_inner(
         return Err("serial capture changed; refresh before exporting".to_string());
     }
 
+    export_serial_capture_frames(store_path, &request.session_id, "live", &selected)
+}
+
+fn export_serial_capture_history_inner(
+    store_path: &Path,
+    store: &Arc<Mutex<SessionStore>>,
+    request: ExportSerialCaptureRequest,
+) -> Result<ExportSerialCaptureResult, String> {
+    let requested = serial_capture_export_ids(&request, MAX_SERIAL_CAPTURE_HISTORY_FRAMES)?;
+    let history = serial_capture_history_inner(store_path, store, &request.session_id)?;
+    if !history.enabled {
+        return Err("Raw logging is not enabled for this serial profile".to_string());
+    }
+    let selected = history
+        .frames
+        .into_iter()
+        .filter(|frame| requested.contains(&frame.id))
+        .collect::<Vec<_>>();
+    if selected.len() != requested.len() {
+        return Err("serial capture history changed; refresh before exporting".to_string());
+    }
+    export_serial_capture_frames(store_path, &request.session_id, "raw-log", &selected)
+}
+
+fn serial_capture_export_ids(
+    request: &ExportSerialCaptureRequest,
+    maximum: usize,
+) -> Result<HashSet<String>, String> {
+    if request.frame_ids.is_empty() {
+        return Err("select at least one serial capture frame to export".to_string());
+    }
+    if request.frame_ids.len() > maximum {
+        return Err(format!(
+            "serial capture export frame limit exceeded ({maximum})"
+        ));
+    }
+    let requested = request.frame_ids.iter().cloned().collect::<HashSet<_>>();
+    if requested.len() != request.frame_ids.len() {
+        return Err("serial capture export contains duplicate frame IDs".to_string());
+    }
+    Ok(requested)
+}
+
+fn export_serial_capture_frames(
+    store_path: &Path,
+    session_id: &str,
+    source: &str,
+    selected: &[SerialCaptureFrame],
+) -> Result<ExportSerialCaptureResult, String> {
     let created_at = Utc::now();
     let mut output = Vec::new();
     serde_json::to_writer(
@@ -5148,7 +5314,8 @@ fn export_serial_capture_inner(
             "format": "portmate-serial-capture",
             "version": 1,
             "createdAt": created_at.to_rfc3339(),
-            "sessionId": request.session_id,
+            "sessionId": session_id,
+            "source": source,
             "rawUnredacted": true,
             "frameCount": selected.len(),
         }),
@@ -5157,7 +5324,7 @@ fn export_serial_capture_inner(
     output.push(b'\n');
     let mut captured_bytes = 0_usize;
     let mut truncated_frames = 0_usize;
-    for frame in &selected {
+    for frame in selected {
         captured_bytes = captured_bytes.saturating_add(frame.bytes.len());
         truncated_frames += usize::from(frame.truncated);
         serde_json::to_writer(
@@ -5191,7 +5358,7 @@ fn export_serial_capture_inner(
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
         "{}-{timestamp}-serial-{}.jsonl",
-        sanitize_log_path_segment(&request.session_id),
+        sanitize_log_path_segment(session_id),
         &Uuid::new_v4().simple().to_string()[..8]
     );
     let final_path = export_dir.join(name);
@@ -21739,6 +21906,24 @@ fn read_log_bytes_ref(
     reference: &str,
 ) -> Result<(String, u64, Vec<u8>), String> {
     let parsed = parse_log_bytes_ref(reference)?;
+    read_parsed_log_bytes_ref(store_path, parsed)
+}
+
+fn read_verified_log_bytes_ref(
+    store_path: &Path,
+    reference: &str,
+) -> Result<(String, u64, Vec<u8>), String> {
+    let parsed = parse_log_bytes_ref(reference)?;
+    if parsed.sha256.is_none() {
+        return Err("bytesRef does not include a SHA-256 digest".to_string());
+    }
+    read_parsed_log_bytes_ref(store_path, parsed)
+}
+
+fn read_parsed_log_bytes_ref(
+    store_path: &Path,
+    parsed: ParsedLogBytesRef,
+) -> Result<(String, u64, Vec<u8>), String> {
     if parsed.length > MAX_BUNDLE_LOG_SEGMENT_BYTES {
         return Err(format!(
             "log segment exceeds {MAX_BUNDLE_LOG_SEGMENT_BYTES} byte limit"
@@ -25362,8 +25547,10 @@ pub fn run() {
             delete_client_identity,
             list_serial_ports,
             list_serial_capture,
+            list_serial_capture_history,
             clear_serial_capture,
             export_serial_capture,
+            export_serial_capture_history,
             list_tmux_state,
             attach_tmux,
             set_tmux_pane_sync,
@@ -29023,6 +29210,142 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .ends_with(".part")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn serial_capture_history_reuses_verified_raw_logs_and_exports_exact_frames() {
+        let root = std::env::temp_dir().join(format!("portmate-serial-history-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut profile = test_serial_profile(portmate_core::SerialConnection {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+            reconnect_delay_ms: 1_000,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: 60,
+        });
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+        let first_bytes = vec![0xff, 0x00, 0x80];
+        let oversized_bytes = vec![0x5a; MAX_SERIAL_CAPTURE_FRAME_BYTES + 3];
+        let first_ref = append_log_bytes(&state.store_path, &profile, "raw", &first_bytes).unwrap();
+        let parsed_first_ref = parse_log_bytes_ref(&first_ref).unwrap();
+        let legacy_first_ref = format!(
+            "{}:{}:{}",
+            parsed_first_ref.relative, parsed_first_ref.offset, parsed_first_ref.length
+        );
+        let text_ref = append_log_bytes(&state.store_path, &profile, "txt", b"not raw").unwrap();
+        let oversized_ref =
+            append_log_bytes(&state.store_path, &profile, "raw", &oversized_bytes).unwrap();
+        let (first_id, oversized_id) = {
+            let mut store = state.store.lock().unwrap();
+            let first = store
+                .record_stream_event_with_bytes_ref(
+                    &profile.id,
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    "first",
+                    Some(first_ref),
+                )
+                .unwrap();
+            store
+                .record_stream_event_with_bytes_ref(
+                    &profile.id,
+                    EventDirection::Outbound,
+                    EventStream::Stdout,
+                    "missing",
+                    Some("missing.raw:0:1".to_string()),
+                )
+                .unwrap();
+            store
+                .record_stream_event_with_bytes_ref(
+                    &profile.id,
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    "wrong shard type",
+                    Some(text_ref),
+                )
+                .unwrap();
+            store
+                .record_stream_event_with_bytes_ref(
+                    &profile.id,
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    "unverified legacy reference",
+                    Some(legacy_first_ref),
+                )
+                .unwrap();
+            let oversized = store
+                .record_stream_event_with_bytes_ref(
+                    &profile.id,
+                    EventDirection::Outbound,
+                    EventStream::Stdout,
+                    "oversized",
+                    Some(oversized_ref),
+                )
+                .unwrap();
+            (first.id, oversized.id)
+        };
+
+        let history =
+            serial_capture_history_inner(&state.store_path, &state.store, &profile.id).unwrap();
+        assert!(history.enabled);
+        assert_eq!(history.total_frames, 5);
+        assert_eq!(history.frames.len(), 2);
+        assert_eq!(history.dropped_frames, 0);
+        assert_eq!(history.unavailable_frames, 3);
+        assert_eq!(
+            history.captured_bytes,
+            first_bytes.len() + MAX_SERIAL_CAPTURE_FRAME_BYTES
+        );
+        assert_eq!(history.frames[0].id, first_id);
+        assert_eq!(history.frames[0].bytes, first_bytes);
+        assert_eq!(history.frames[0].direction, EventDirection::Inbound);
+        assert_eq!(history.frames[1].id, oversized_id);
+        assert_eq!(history.frames[1].original_length, oversized_bytes.len());
+        assert!(history.frames[1].truncated);
+
+        let result = export_serial_capture_history_inner(
+            &state.store_path,
+            &state.store,
+            ExportSerialCaptureRequest {
+                session_id: profile.id.clone(),
+                frame_ids: vec![first_id, oversized_id],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.frames, 2);
+        assert_eq!(result.captured_bytes, history.captured_bytes);
+        assert_eq!(result.truncated_frames, 1);
+        assert_eq!(result.sha256, sha256_file(Path::new(&result.path)).unwrap());
+        let lines = fs::read_to_string(&result.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["source"], "raw-log");
+        assert_eq!(lines[1]["hex"], "FF 00 80");
+
+        {
+            let mut store = state.store.lock().unwrap();
+            let mut disabled = store.profile(&profile.id).unwrap();
+            disabled.logging.raw = false;
+            store.upsert_profile(disabled);
+        }
+        let disabled =
+            serial_capture_history_inner(&state.store_path, &state.store, &profile.id).unwrap();
+        assert!(!disabled.enabled);
+        assert!(disabled.frames.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

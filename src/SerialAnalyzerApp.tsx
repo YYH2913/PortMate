@@ -36,7 +36,15 @@ import type {
 } from "./serial-analyzer-state";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import { mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
-import type { ExportSerialCaptureResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionSummary } from "./types";
+import type {
+  ExportSerialCaptureResult,
+  SerialCaptureFrame,
+  SerialCaptureHistorySnapshot,
+  SerialCaptureSnapshot,
+  SessionSummary,
+} from "./types";
+
+type SerialCaptureSource = "live" | "history";
 
 const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
   { value: "capture", label: "捕获" },
@@ -51,10 +59,12 @@ const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
 export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [frames, setFrames] = useState<SerialCaptureFrame[]>([]);
+  const [source, setSource] = useState<SerialCaptureSource>("live");
+  const [history, setHistory] = useState<SerialCaptureHistorySnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
   const framesRef = useRef<SerialCaptureFrame[]>([]);
-  const captureRefreshRef = useRef(false);
+  const captureRefreshRef = useRef<number | null>(null);
   const captureEpochRef = useRef(0);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const isSerial = session?.profile.connection.kind === "serial";
@@ -65,13 +75,16 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
 
   useEffect(() => {
     let disposed = false;
+    const epoch = captureEpochRef.current + 1;
+    captureEpochRef.current = epoch;
     void refreshSession();
-    void refreshCapture();
-    const captureTimer = window.setInterval(() => void refreshCapture(), 750);
+    if (source === "live") void refreshCapture();
+    else void refreshHistory();
+    const captureTimer = source === "live" ? window.setInterval(() => void refreshCapture(), 750) : null;
     const sessionTimer = window.setInterval(() => void refreshSession(), 1500);
     return () => {
       disposed = true;
-      window.clearInterval(captureTimer);
+      if (captureTimer !== null) window.clearInterval(captureTimer);
       window.clearInterval(sessionTimer);
     };
 
@@ -81,9 +94,8 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
     }
 
     async function refreshCapture(force = false) {
-      if (!isBackendAvailable() || captureRefreshRef.current) return;
-      captureRefreshRef.current = true;
-      const epoch = captureEpochRef.current;
+      if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
+      captureRefreshRef.current = epoch;
       setRefreshing(true);
       try {
         const current = force ? [] : framesRef.current;
@@ -93,15 +105,36 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         });
         if (disposed || captureEpochRef.current !== epoch) return;
         storeFrames(mergeSerialCaptureSnapshot(current, snapshot));
+        setHistory(null);
         setMessage("");
       } catch (error) {
-        if (!disposed) setMessage(formatAnalyzerError(error));
+        if (!disposed && captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
       } finally {
-        captureRefreshRef.current = false;
-        if (!disposed) setRefreshing(false);
+        if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
+        if (!disposed && captureEpochRef.current === epoch) setRefreshing(false);
       }
     }
-  }, [request.sessionId]);
+
+    async function refreshHistory() {
+      if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
+      captureRefreshRef.current = epoch;
+      setRefreshing(true);
+      try {
+        const snapshot = await invokeBackend<SerialCaptureHistorySnapshot>("list_serial_capture_history", {
+          sessionId: request.sessionId,
+        });
+        if (disposed || captureEpochRef.current !== epoch) return;
+        storeFrames(snapshot.frames);
+        setHistory(snapshot);
+        setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
+      } catch (error) {
+        if (!disposed && captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
+      } finally {
+        if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
+        if (!disposed && captureEpochRef.current === epoch) setRefreshing(false);
+      }
+    }
+  }, [request.sessionId, source]);
 
   function storeFrames(next: SerialCaptureFrame[]) {
     framesRef.current = next;
@@ -109,28 +142,41 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   }
 
   async function refreshNow() {
-    if (!isBackendAvailable() || captureRefreshRef.current) return;
-    captureRefreshRef.current = true;
-    setRefreshing(true);
     const epoch = captureEpochRef.current;
+    if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
+    captureRefreshRef.current = epoch;
+    setRefreshing(true);
     try {
-      const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
-        sessionId: request.sessionId,
-        afterId: null,
-      });
-      if (captureEpochRef.current !== epoch) return;
-      storeFrames(mergeSerialCaptureSnapshot([], snapshot));
-      setSessions(await callBackend("list_sessions", {}, sessions));
-      setMessage("");
+      if (source === "live") {
+        const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
+          sessionId: request.sessionId,
+          afterId: null,
+        });
+        if (captureEpochRef.current !== epoch) return;
+        storeFrames(mergeSerialCaptureSnapshot([], snapshot));
+        setHistory(null);
+        setMessage("");
+      } else {
+        const snapshot = await invokeBackend<SerialCaptureHistorySnapshot>("list_serial_capture_history", {
+          sessionId: request.sessionId,
+        });
+        if (captureEpochRef.current !== epoch) return;
+        storeFrames(snapshot.frames);
+        setHistory(snapshot);
+        setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
+      }
+      const nextSessions = await callBackend("list_sessions", {}, sessions);
+      if (captureEpochRef.current === epoch) setSessions(nextSessions);
     } catch (error) {
-      setMessage(formatAnalyzerError(error));
+      if (captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
     } finally {
-      captureRefreshRef.current = false;
-      setRefreshing(false);
+      if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
+      if (captureEpochRef.current === epoch) setRefreshing(false);
     }
   }
 
   async function clearCapture() {
+    if (source !== "live") return;
     if (!frames.length || !window.confirm("清空当前串口会话的全部内存捕获帧？")) return;
     captureEpochRef.current += 1;
     try {
@@ -149,13 +195,23 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   async function exportFrames(frameIds: string[]) {
     if (!frameIds.length) return;
     try {
-      const result = await invokeBackend<ExportSerialCaptureResult>("export_serial_capture", {
+      const command = source === "live" ? "export_serial_capture" : "export_serial_capture_history";
+      const result = await invokeBackend<ExportSerialCaptureResult>(command, {
         request: { sessionId: request.sessionId, frameIds },
       });
       setMessage(`${result.frames} 帧 · ${formatAnalyzerBytes(result.capturedBytes)} · ${result.path}`);
     } catch (error) {
       setMessage(formatAnalyzerError(error));
     }
+  }
+
+  function changeSource(next: SerialCaptureSource) {
+    if (next === source || refreshing) return;
+    captureEpochRef.current += 1;
+    storeFrames([]);
+    setHistory(null);
+    setMessage("");
+    setSource(next);
   }
 
   async function closeWindow() {
@@ -173,12 +229,15 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         <SerialAnalyzerWorkspace
           session={session}
           frames={frames}
+          source={source}
+          history={history}
           refreshing={refreshing}
           message={message}
           canExport={isBackendAvailable()}
           onRefresh={() => void refreshNow()}
           onClear={() => void clearCapture()}
           onExport={(frameIds) => void exportFrames(frameIds)}
+          onSourceChange={changeSource}
           onClose={() => void closeWindow()}
         />
       ) : (
@@ -195,22 +254,28 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
 function SerialAnalyzerWorkspace({
   session,
   frames,
+  source,
+  history,
   refreshing,
   message,
   canExport,
   onRefresh,
   onClear,
   onExport,
+  onSourceChange,
   onClose,
 }: {
   session: SessionSummary;
   frames: SerialCaptureFrame[];
+  source: SerialCaptureSource;
+  history: SerialCaptureHistorySnapshot | null;
   refreshing: boolean;
   message: string;
   canExport: boolean;
   onRefresh: () => void;
   onClear: () => void;
   onExport: (frameIds: string[]) => void;
+  onSourceChange: (source: SerialCaptureSource) => void;
   onClose: () => void;
 }) {
   const [stored, setStored] = useState<SerialAnalyzerStoredState>(loadStoredAnalyzerState);
@@ -334,6 +399,11 @@ function SerialAnalyzerWorkspace({
             stored.parser.mode === "slip" ? "RFC 1055" : stored.parser.mode === "cobs" ? "0x00 帧界" : "读取分片"
           }</span>}
         </div>
+        <div className="serial-analyzer-segmented source" aria-label="捕获数据源">
+          {(["live", "history"] as const).map((value) => (
+            <button key={value} type="button" disabled={refreshing} aria-pressed={source === value} onClick={() => onSourceChange(value)}>{value === "live" ? "实时" : "日志"}</button>
+          ))}
+        </div>
         <div className="serial-analyzer-segmented direction" aria-label="帧方向">
           {(["all", "inbound", "outbound"] as const).map((direction) => (
             <button key={direction} type="button" aria-pressed={stored.direction === direction} onClick={() => setStored((current) => ({ ...current, direction }))}>{direction === "all" ? "全部" : direction === "inbound" ? "RX" : "TX"}</button>
@@ -343,12 +413,13 @@ function SerialAnalyzerWorkspace({
         <button type="button" className={stored.bookmarksOnly ? "active" : ""} aria-pressed={stored.bookmarksOnly} title="只显示书签" aria-label="只显示书签" onClick={() => setStored((current) => ({ ...current, bookmarksOnly: !current.bookmarksOnly }))}><Bookmark size={14} fill={stored.bookmarksOnly ? "currentColor" : "none"} /></button>
         <button type="button" className={stored.follow ? "active" : ""} aria-pressed={stored.follow} title="跟随最新帧" aria-label="跟随最新帧" onClick={() => setStored((current) => ({ ...current, follow: !current.follow }))}><ArrowDownToLine size={14} /></button>
         <button type="button" title="刷新捕获" aria-label="刷新串口捕获" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
-        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={!canExport || !filtered.length} onClick={exportVisible}><Download size={14} /></button>
-        <button type="button" title="清空捕获" aria-label="清空串口捕获" disabled={!frames.length} onClick={onClear}><Trash2 size={14} /></button>
+        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={!canExport || !filtered.length || (source === "history" && !history?.enabled)} onClick={exportVisible}><Download size={14} /></button>
+        <button type="button" title={source === "live" ? "清空捕获" : "日志历史只可在日志管理器中清理"} aria-label="清空串口捕获" disabled={refreshing || source !== "live" || !frames.length} onClick={onClear}><Trash2 size={14} /></button>
       </section>
 
       <section className="serial-analyzer-status-strip">
         <span title={connectionLabel}>{connectionLabel}</span>
+        <span>{source === "live" ? "实时" : "日志"}</span>
         <span>捕获 {frames.length}</span>
         <span>解析 {analysis.totalFrames}</span>
         <span>RX {rxCount}</span>
@@ -356,6 +427,8 @@ function SerialAnalyzerWorkspace({
         <span>{formatAnalyzerBytes(analysis.capturedBytes)}</span>
         {errorCount ? <span className="error">错误 {errorCount}</span> : null}
         {analysis.droppedFrames ? <span className="warning">窗口外 {analysis.droppedFrames}</span> : null}
+        {history?.droppedFrames ? <span className="warning">日志外 {history.droppedFrames}</span> : null}
+        {history?.unavailableFrames ? <span className="error">不可用 {history.unavailableFrames}</span> : null}
         <span className="serial-analyzer-last-disconnect" title={lastDisconnect}>上次断开 {lastDisconnect}</span>
       </section>
 

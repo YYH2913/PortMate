@@ -310,6 +310,15 @@ export interface SerialCaptureSnapshot {
   capturedBytes: number;
 }
 
+export interface SerialCaptureHistorySnapshot {
+  frames: SerialCaptureFrame[];
+  enabled: boolean;
+  totalFrames: number;
+  capturedBytes: number;
+  droppedFrames: number;
+  unavailableFrames: number;
+}
+
 export interface ExportSerialCaptureResult {
   path: string;
   checksumPath: string;

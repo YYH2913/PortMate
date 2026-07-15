@@ -277,7 +277,7 @@ body.serial-analyzer-window {
 
 .serial-analyzer-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(112px, auto) auto minmax(160px, 1fr) repeat(5, 28px);
+  grid-template-columns: auto minmax(112px, auto) auto auto minmax(160px, 1fr) repeat(5, 28px);
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -298,6 +298,10 @@ body.serial-analyzer-window {
   grid-template-columns: repeat(3, minmax(38px, 1fr));
 }
 
+.serial-analyzer-segmented.source {
+  grid-template-columns: repeat(2, minmax(38px, 1fr));
+}
+
 .serial-analyzer-segmented button {
   height: 25px;
   min-width: 0;
@@ -316,6 +320,11 @@ body.serial-analyzer-window {
 .serial-analyzer-segmented button[aria-pressed="true"] {
   background: rgba(94, 234, 212, 0.12);
   color: var(--cyan);
+}
+
+.serial-analyzer-segmented button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .serial-analyzer-parser-option {
@@ -8357,6 +8366,7 @@ fieldset label {
   }
 
   .serial-analyzer-parser-option,
+  .serial-analyzer-segmented.source,
   .serial-analyzer-segmented.direction {
     flex: 1 1 120px;
   }
