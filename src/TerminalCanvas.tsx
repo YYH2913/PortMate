@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, WholeWord, X } from "lucide-react";
+import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
@@ -68,6 +69,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   const termRef = useRef<XTerm | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const freeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const pendingInputRef = useRef("");
   const inputFlushTimerRef = useRef<number | null>(null);
@@ -75,6 +77,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
   const openSearchRef = useRef<() => void>(() => {});
+  const openFreeInputRef = useRef<() => void>(() => {});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
@@ -82,8 +85,12 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   const [searchWholeWord, setSearchWholeWord] = useState(false);
   const [searchResult, setSearchResult] = useState<TerminalSearchResult | null>(null);
   const [searchInvalid, setSearchInvalid] = useState(false);
+  const [freeInputOpen, setFreeInputOpen] = useState(false);
+  const [freeInputValue, setFreeInputValue] = useState("");
   onInputRef.current = onInput;
   openSearchRef.current = () => {
+    setFreeInputOpen(false);
+    setFreeInputValue("");
     const selection = terminalSearchSeed(termRef.current?.getSelection() ?? "");
     if (!searchOpen && selection) setSearchQuery(selection);
     setSearchInvalid(false);
@@ -92,6 +99,15 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     });
+  };
+  openFreeInputRef.current = () => {
+    searchRef.current?.clearDecorations();
+    setSearchOpen(false);
+    setSearchResult(null);
+    setSearchInvalid(false);
+    if (!freeInputOpen) setFreeInputValue("");
+    setFreeInputOpen(true);
+    window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
   };
 
   function markEventSeen(id: string): boolean {
@@ -145,6 +161,20 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     setSearchResult(null);
     setSearchInvalid(false);
     window.requestAnimationFrame(() => termRef.current?.focus());
+  }
+
+  function closeTerminalFreeInput() {
+    setFreeInputOpen(false);
+    setFreeInputValue("");
+    window.requestAnimationFrame(() => termRef.current?.focus());
+  }
+
+  function submitTerminalFreeInput() {
+    if (!active) return;
+    const payload = createTerminalFreeInputPayload(freeInputValue);
+    if (!payload) return;
+    onInputRef.current(active.profile.id, payload, "atomic");
+    closeTerminalFreeInput();
   }
 
   useEffect(() => {
@@ -320,6 +350,19 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
+    const requestFreeInput = () => {
+      if (active && focused) openFreeInputRef.current();
+    };
+    window.addEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
+    return () => window.removeEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
+  }, [active?.profile.id, focused]);
+
+  useEffect(() => {
+    setFreeInputOpen(false);
+    setFreeInputValue("");
+  }, [active?.profile.id]);
+
+  useEffect(() => {
     if (!searchOpen) {
       searchRef.current?.clearDecorations();
       setSearchResult(null);
@@ -378,7 +421,59 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     <div className="terminal-canvas">
       {active ? (
         <>
-          <div ref={hostRef} className="terminal-host" />
+          <div ref={hostRef} className="terminal-host" inert={freeInputOpen} />
+          {freeInputOpen ? (
+            <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
+              event.preventDefault();
+              submitTerminalFreeInput();
+            }}>
+              <header>
+                <strong>自由输入</strong>
+                <span className="terminal-free-input-session" title={active.profile.name}>{active.profile.name}</span>
+                <span className="terminal-free-input-counter">
+                  {terminalFreeInputCharacterCount(freeInputValue)}/{MAX_TERMINAL_FREE_INPUT_CHARACTERS}
+                </span>
+                <button type="submit" title="发送自由输入" aria-label="发送自由输入" disabled={!freeInputValue}><SendHorizontal size={15} /></button>
+                <button type="button" title="取消自由输入" aria-label="取消自由输入" onClick={closeTerminalFreeInput}><X size={15} /></button>
+              </header>
+              <textarea
+                ref={freeInputRef}
+                aria-label="自由输入内容"
+                value={freeInputValue}
+                wrap="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                onChange={(event) => setFreeInputValue(normalizeTerminalFreeInput(event.target.value))}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeTerminalFreeInput();
+                    return;
+                  }
+                  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "x") {
+                    const textarea = event.currentTarget;
+                    const cut = cutTerminalFreeInputRange(freeInputValue, textarea.selectionStart, textarea.selectionEnd);
+                    if (!cut.cutText) return;
+                    event.preventDefault();
+                    void navigator.clipboard?.writeText(cut.cutText).catch(() => {});
+                    setFreeInputValue(cut.value);
+                    window.requestAnimationFrame(() => {
+                      textarea.focus({ preventScroll: true });
+                      textarea.setSelectionRange(cut.caret, cut.caret);
+                    });
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    submitTerminalFreeInput();
+                  }
+                }}
+              />
+            </form>
+          ) : null}
           {searchOpen ? (
             <form className="terminal-search-bar" onSubmit={(event) => {
               event.preventDefault();

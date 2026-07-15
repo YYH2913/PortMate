@@ -1990,6 +1990,112 @@ button {
   opacity: 0.3;
 }
 
+.terminal-free-input {
+  position: absolute;
+  z-index: 6;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  display: grid;
+  grid-template-rows: 32px minmax(64px, 1fr);
+  max-height: min(220px, calc(100% - 16px));
+  min-height: 104px;
+  overflow: hidden;
+  border: 1px solid #344252;
+  border-radius: 4px;
+  background: #111820;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  animation: terminal-free-input-enter 120ms ease-out both;
+}
+
+.terminal-free-input:focus-within {
+  border-color: rgba(94, 234, 212, 0.6);
+}
+
+.terminal-free-input > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 5px 0 9px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.terminal-free-input > header strong {
+  flex: 0 0 auto;
+  color: var(--cyan);
+  font-size: 11px;
+}
+
+.terminal-free-input > header > .terminal-free-input-session {
+  min-width: 0;
+  overflow: hidden;
+  color: #a9b8c7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-free-input > header > .terminal-free-input-counter {
+  flex: 1 0 auto;
+  margin-left: auto;
+  color: #718397;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.terminal-free-input > header button {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.terminal-free-input > header button:hover:not(:disabled),
+.terminal-free-input > header button:focus-visible {
+  outline: 0;
+  border-color: rgba(94, 234, 212, 0.4);
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--cyan);
+}
+
+.terminal-free-input > header button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.terminal-free-input > textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 10px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: #0d141b;
+  color: #e2eaf1;
+  caret-color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+@keyframes terminal-free-input-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @container (max-width: 420px) {
   .terminal-search-bar {
     right: 6px;
@@ -2002,6 +2108,23 @@ button {
 
   .terminal-search-status {
     margin-left: auto;
+  }
+
+  .terminal-free-input {
+    right: 4px;
+    bottom: 4px;
+    left: 4px;
+    max-height: min(180px, calc(100% - 8px));
+  }
+
+  .terminal-free-input > header > .terminal-free-input-session {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-free-input {
+    animation: none;
   }
 }
 

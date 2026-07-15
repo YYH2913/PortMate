@@ -53,6 +53,7 @@ import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
+import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalSearch } from "./terminal-search";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
@@ -937,6 +938,11 @@ function handleMenuAction(item: string) {
       else setNotice({ title: "查找", message: "请先打开一个终端会话。" });
       return;
     }
+    if (item === "自由输入") {
+      if (active) requestTerminalFreeInput();
+      else setNotice({ title: "自由输入", message: "请先打开一个终端会话。" });
+      return;
+    }
     if (item === "会话搜索") {
       setSearchDialog({ mode: "sessions", query: "" });
       setUtilityDialog("search");
@@ -977,7 +983,7 @@ function handleMenuAction(item: string) {
       setUtilityDialog("search");
       return;
     }
-    if (["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏", "远程模式", "本地模式", "自由输入"].includes(item)) {
+    if (["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏", "远程模式", "本地模式"].includes(item)) {
       setNotice({ title: item, message: "该工作区视图已经显示在当前桌面布局中。" });
       return;
     }
@@ -4070,7 +4076,7 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : document.activeElement;
-  if (element?.closest(".terminal-search-bar")) return false;
+  if (element?.closest(".terminal-search-bar, .terminal-free-input")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
 }
 
