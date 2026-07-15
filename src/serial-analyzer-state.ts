@@ -1,3 +1,4 @@
+import * as slip from "slip";
 import { serialCaptureAscii } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import type { SerialCaptureFrame } from "./types";
@@ -11,7 +12,8 @@ export const MAX_SERIAL_FIXED_LENGTH = 4096;
 export const MIN_SERIAL_GAP_MS = 1;
 export const MAX_SERIAL_GAP_MS = 60_000;
 
-export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap";
+export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap" | "slip";
+export type SerialFrameDecodeError = "" | "invalidEscape";
 
 export interface SerialFrameParserConfig {
   mode: SerialFrameParserMode;
@@ -27,8 +29,10 @@ export interface SerialAnalyzedFrame {
   endTs: string;
   direction: SerialCaptureFrame["direction"];
   bytes: number[];
+  wireBytes: number[];
   complete: boolean;
   truncated: boolean;
+  decodeError: SerialFrameDecodeError;
   sourceFrameIds: string[];
   bookmarkId: string;
 }
@@ -70,7 +74,7 @@ export const defaultSerialAnalyzerStoredState: SerialAnalyzerStoredState = {
 
 export function normalizeSerialFrameParserConfig(value: unknown): SerialFrameParserConfig {
   const source = objectValue(value);
-  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap"
+  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap" || source.mode === "slip"
     ? source.mode
     : "capture";
   const delimiter = serialAnalyzerDelimiterBytes(source.delimiterHex);
@@ -116,7 +120,8 @@ export function analyzeSerialCaptureFrames(
   if (config.mode === "capture") analyzeCaptureFrames(frames, collector);
   else if (config.mode === "delimiter") analyzeDelimitedFrames(frames, config, collector);
   else if (config.mode === "fixed") analyzeFixedFrames(frames, config.fixedLength, collector);
-  else analyzeGapFrames(frames, config.gapMs, collector);
+  else if (config.mode === "gap") analyzeGapFrames(frames, config.gapMs, collector);
+  else analyzeSlipFrames(frames, collector);
   return collector.result(capturedBytes);
 }
 
@@ -134,8 +139,20 @@ export function filterSerialAnalyzedFrames(
     if (bookmarksOnly && !bookmarkIds.has(frame.bookmarkId)) return false;
     if (!normalizedQuery) return true;
     const ascii = serialCaptureAscii(frame.bytes).toLowerCase();
-    return ascii.includes(normalizedQuery) || Boolean(hexQuery && compactHex(frame.bytes).includes(hexQuery));
+    const distinctWire = serialAnalyzerHasDistinctWire(frame);
+    const wireAscii = distinctWire ? serialCaptureAscii(frame.wireBytes).toLowerCase() : ascii;
+    return ascii.includes(normalizedQuery)
+      || wireAscii.includes(normalizedQuery)
+      || Boolean(hexQuery && (
+        compactHex(frame.bytes).includes(hexQuery)
+        || (distinctWire && compactHex(frame.wireBytes).includes(hexQuery))
+      ));
   });
+}
+
+export function serialAnalyzerHasDistinctWire(frame: SerialAnalyzedFrame): boolean {
+  return frame.bytes.length !== frame.wireBytes.length
+    || frame.bytes.some((byte, index) => byte !== frame.wireBytes[index]);
 }
 
 export function toggleSerialAnalyzerBookmark(
@@ -178,8 +195,10 @@ function analyzeCaptureFrames(frames: SerialCaptureFrame[], collector: SerialAna
       endTs: frame.ts,
       direction: frame.direction,
       bytes: [...frame.bytes],
+      wireBytes: [...frame.bytes],
       complete: true,
       truncated: frame.truncated,
+      decodeError: "",
       sourceFrameIds: [frame.id],
       bookmarkId: frame.id,
     });
@@ -258,6 +277,94 @@ function analyzeGapFrames(
   flush(false);
 }
 
+function analyzeSlipFrames(
+  frames: SerialCaptureFrame[],
+  collector: SerialAnalyzedFrameCollector,
+) {
+  let pending: PendingSerialFrame | null = null;
+  let hasPayload = false;
+  let escaped = false;
+  let invalidEscape = false;
+  let decoder = createDecoder();
+
+  function createDecoder() {
+    return new slip.Decoder({
+      onMessage(message) {
+        if (!pending) return;
+        collector.push(pendingSerialFrame(
+          pending,
+          Array.from(message),
+          true,
+          "slip",
+          collector.totalFrames,
+          invalidEscape ? "invalidEscape" : "",
+        ));
+        pending = null;
+        hasPayload = false;
+        invalidEscape = false;
+      },
+    });
+  }
+
+  function flushTail() {
+    if (pending && hasPayload) {
+      collector.push(pendingSerialFrame(
+        pending,
+        decodeSlipTail(pending.bytes, escaped),
+        false,
+        "slip",
+        collector.totalFrames,
+        invalidEscape ? "invalidEscape" : "",
+      ));
+    }
+    pending = null;
+    hasPayload = false;
+    escaped = false;
+    invalidEscape = false;
+    decoder = createDecoder();
+  }
+
+  for (const frame of frames) {
+    if (pending && pending.direction !== frame.direction) flushTail();
+    let segmentStart = 0;
+    for (let index = 0; index < frame.bytes.length; index += 1) {
+      const byte = frame.bytes[index];
+      const escapedBefore = escaped;
+      if (escapedBefore) {
+        invalidEscape ||= byte !== slip.ESC_END && byte !== slip.ESC_ESC;
+        escaped = false;
+      } else if (byte === slip.ESC) {
+        escaped = true;
+      }
+
+      const terminator = byte === slip.END && !escapedBefore;
+      if (terminator && !hasPayload) pending = appendPendingSerialByte(null, frame, byte);
+      else pending = appendPendingSerialByte(pending, frame, byte);
+      hasPayload ||= !terminator;
+      if (terminator) {
+        decoder.decode(new Uint8Array(frame.bytes.slice(segmentStart, index + 1)));
+        segmentStart = index + 1;
+      }
+    }
+    if (segmentStart < frame.bytes.length) decoder.decode(new Uint8Array(frame.bytes.slice(segmentStart)));
+  }
+  flushTail();
+}
+
+function decodeSlipTail(wireBytes: number[], trailingEscape: boolean): number[] {
+  let decoded: number[] | null = null;
+  const decoder = new slip.Decoder({
+    onMessage(message) {
+      decoded ??= Array.from(message);
+    },
+  });
+  const completePrefix = trailingEscape ? wireBytes.slice(0, -1) : wireBytes;
+  decoder.decode(new Uint8Array(completePrefix));
+  if (!decoded) decoder.decode(Uint8Array.of(slip.END));
+  if (!decoded) decoder.decode(Uint8Array.of(slip.END));
+  return decoded ?? [];
+}
+
 type PendingSerialFrame = {
   ts: string;
   endTs: string;
@@ -293,6 +400,7 @@ function pendingSerialFrame(
   complete: boolean,
   mode: SerialFrameParserMode,
   sequence: number,
+  decodeError: SerialFrameDecodeError = "",
 ): SerialAnalyzedFrame {
   return {
     id: `${mode}:${pending.sourceFrameIds[0]}:${pending.sourceFrameIds.at(-1)}:${sequence}`,
@@ -300,8 +408,10 @@ function pendingSerialFrame(
     endTs: pending.endTs,
     direction: pending.direction,
     bytes,
+    wireBytes: [...pending.bytes],
     complete,
     truncated: pending.truncated,
+    decodeError,
     sourceFrameIds: [...pending.sourceFrameIds],
     bookmarkId: pending.sourceFrameIds[0],
   };

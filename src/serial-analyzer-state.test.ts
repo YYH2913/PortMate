@@ -75,6 +75,81 @@ describe("serial analyzer state", () => {
     ]);
   });
 
+  it("decodes RFC 1055 SLIP frames across capture chunks and preserves wire evidence", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("rx-a", "inbound", [0xc0, 0x41, 0xdb]),
+      frame("rx-b", "inbound", [0xdc, 0x42, 0xdb, 0xdd, 0xc0, 0xc0, 0x43, 0xc0]),
+      frame("tx-a", "outbound", [0x44]),
+    ], { mode: "slip", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+
+    expect(result.frames.map((item) => ({
+      direction: item.direction,
+      bytes: item.bytes,
+      wireBytes: item.wireBytes,
+      complete: item.complete,
+      sources: item.sourceFrameIds,
+    }))).toEqual([
+      {
+        direction: "inbound",
+        bytes: [0x41, 0xc0, 0x42, 0xdb],
+        wireBytes: [0xc0, 0x41, 0xdb, 0xdc, 0x42, 0xdb, 0xdd, 0xc0],
+        complete: true,
+        sources: ["rx-a", "rx-b"],
+      },
+      {
+        direction: "inbound",
+        bytes: [0x43],
+        wireBytes: [0xc0, 0x43, 0xc0],
+        complete: true,
+        sources: ["rx-b"],
+      },
+      {
+        direction: "outbound",
+        bytes: [0x44],
+        wireBytes: [0x44],
+        complete: false,
+        sources: ["tx-a"],
+      },
+    ]);
+    expect(filterSerialAnalyzedFrames(result.frames, "all", "DB DC")).toEqual([result.frames[0]]);
+  });
+
+  it("reports malformed SLIP escapes without losing the decoded packet", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("bad", "inbound", [0xc0, 0x41, 0xdb, 0x01, 0xc0]),
+    ], { mode: "slip", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+    expect(result.frames).toHaveLength(1);
+    expect(result.frames[0]).toMatchObject({
+      bytes: [0x41, 0x01],
+      wireBytes: [0xc0, 0x41, 0xdb, 0x01, 0xc0],
+      complete: true,
+      decodeError: "invalidEscape",
+    });
+  });
+
+  it("keeps a dangling SLIP escape in wire evidence without inventing a decoded byte", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("tail", "inbound", [0xc0, 0x41, 0xdb]),
+    ], { mode: "slip", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+    expect(result.frames[0]).toMatchObject({
+      bytes: [0x41],
+      wireBytes: [0xc0, 0x41, 0xdb],
+      complete: false,
+      decodeError: "",
+    });
+  });
+
+  it("does not combine unfinished SLIP payloads across RX and TX", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("rx", "inbound", [0x41]),
+      frame("tx", "outbound", [0x42, 0xc0]),
+    ], { mode: "slip", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+    expect(result.frames.map((item) => [item.direction, item.bytes, item.complete])).toEqual([
+      ["inbound", [0x41], false],
+      ["outbound", [0x42], true],
+    ]);
+  });
+
   it("bounds high-cardinality analysis with a ring instead of retaining every byte frame", () => {
     const bytes = Array.from({ length: MAX_SERIAL_ANALYZED_FRAMES + 20 }, (_, index) => index % 256);
     const result = analyzeSerialCaptureFrames([frame("large", "inbound", bytes)], {

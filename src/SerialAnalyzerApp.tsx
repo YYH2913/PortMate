@@ -23,6 +23,7 @@ import {
   normalizeSerialFrameParserConfig,
   SERIAL_ANALYZER_STORAGE_KEY,
   serialAnalyzerDelimiterBytes,
+  serialAnalyzerHasDistinctWire,
   serialAnalyzerHexDump,
   toggleSerialAnalyzerBookmark,
 } from "./serial-analyzer-state";
@@ -41,6 +42,7 @@ const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
   { value: "delimiter", label: "分隔符" },
   { value: "fixed", label: "定长" },
   { value: "gap", label: "间隔" },
+  { value: "slip", label: "SLIP" },
 ];
 
 export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
@@ -212,6 +214,7 @@ function SerialAnalyzerWorkspace({
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [page, setPage] = useState(0);
+  const [inspectorView, setInspectorView] = useState<"decoded" | "wire">("decoded");
   const [delimiterDraft, setDelimiterDraft] = useState(stored.parser.delimiterHex);
   const serial = session.profile.connection.kind === "serial" ? session.profile.connection : null;
   const analysis = useMemo(() => analyzeSerialCaptureFrames(frames, stored.parser), [frames, stored.parser]);
@@ -229,6 +232,9 @@ function SerialAnalyzerWorkspace({
   const delimiterValid = Boolean(serialAnalyzerDelimiterBytes(delimiterDraft));
   const rxCount = analysis.frames.filter((frame) => frame.direction === "inbound").length;
   const txCount = analysis.frames.length - rxCount;
+  const errorCount = analysis.frames.filter((frame) => frame.decodeError).length;
+  const hasDistinctWire = selected ? serialAnalyzerHasDistinctWire(selected) : false;
+  const inspectedBytes = selected && inspectorView === "wire" && hasDistinctWire ? selected.wireBytes : selected?.bytes ?? [];
 
   useEffect(() => {
     try {
@@ -311,7 +317,7 @@ function SerialAnalyzerWorkspace({
             <label><span>字节</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
           ) : stored.parser.mode === "gap" ? (
             <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.gapMs} onChange={(event) => updateParser({ gapMs: Number(event.target.value) })} /></label>
-          ) : <span className="serial-analyzer-parser-value">读取分片</span>}
+          ) : <span className="serial-analyzer-parser-value">{stored.parser.mode === "slip" ? "RFC 1055" : "读取分片"}</span>}
         </div>
         <div className="serial-analyzer-segmented direction" aria-label="帧方向">
           {(["all", "inbound", "outbound"] as const).map((direction) => (
@@ -333,6 +339,7 @@ function SerialAnalyzerWorkspace({
         <span>RX {rxCount}</span>
         <span>TX {txCount}</span>
         <span>{formatAnalyzerBytes(analysis.capturedBytes)}</span>
+        {errorCount ? <span className="error">错误 {errorCount}</span> : null}
         {analysis.droppedFrames ? <span className="warning">窗口外 {analysis.droppedFrames}</span> : null}
         <span className="serial-analyzer-last-disconnect" title={lastDisconnect}>上次断开 {lastDisconnect}</span>
       </section>
@@ -377,8 +384,8 @@ function SerialAnalyzerWorkspace({
                 <button type="button" role="gridcell" title={bookmarked ? "移除书签" : "添加书签"} aria-label={bookmarked ? "移除帧书签" : "添加帧书签"} onClick={(event) => { event.stopPropagation(); toggleBookmark(frame); }}><Bookmark size={13} fill={bookmarked ? "currentColor" : "none"} /></button>
                 <span role="gridcell" title={new Date(frame.ts).toLocaleString()}>{formatAnalyzerTime(frame.ts)}</span>
                 <strong role="gridcell">{frame.direction === "inbound" ? "RX" : "TX"}</strong>
-                <span role="gridcell">{frame.bytes.length} B</span>
-                <span role="gridcell" className={!frame.complete || frame.truncated ? "warning" : ""}>{frame.truncated ? "截断" : frame.complete ? "完整" : "尾帧"}</span>
+                <span role="gridcell" title={serialAnalyzerLengthTitle(frame)}>{serialAnalyzerLengthLabel(frame)}</span>
+                <span role="gridcell" className={frame.decodeError ? "error" : !frame.complete || frame.truncated ? "warning" : ""}>{serialAnalyzerFrameStatus(frame)}</span>
                 <code role="gridcell">{serialCaptureHex(frame.bytes, 48) || "--"}</code>
                 <span role="gridcell" className="ascii">{serialCaptureAscii(frame.bytes.slice(0, 128)) || "--"}</span>
               </div>
@@ -391,15 +398,22 @@ function SerialAnalyzerWorkspace({
         {selected ? (
           <>
             <header>
-              <strong>{selected.direction === "inbound" ? "RX" : "TX"} · {selected.bytes.length} B</strong>
+              <strong>{selected.direction === "inbound" ? "RX" : "TX"} · {inspectedBytes.length} B</strong>
               <span>{new Date(selected.ts).toLocaleString()}</span>
               <span>{selected.sourceFrameIds.length} 个捕获分片</span>
-              <button type="button" title="复制完整 Hex" aria-label="复制完整帧 Hex" onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(selected.bytes, selected.bytes.length)).catch(() => {})}><Copy size={13} /></button>
+              {hasDistinctWire ? (
+                <select className="serial-analyzer-byte-view" aria-label="详情字节视图" value={inspectorView} onChange={(event) => setInspectorView(event.target.value === "wire" ? "wire" : "decoded")}>
+                  <option value="decoded">解码 {selected.bytes.length} B</option>
+                  <option value="wire">线上 {selected.wireBytes.length} B</option>
+                </select>
+              ) : null}
+              {selected.decodeError ? <span className="serial-analyzer-decode-error">无效 SLIP 转义</span> : null}
+              <button type="button" title={inspectorView === "wire" && hasDistinctWire ? "复制线上 Hex" : "复制解码 Hex"} aria-label="复制完整帧 Hex" onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(inspectedBytes, inspectedBytes.length)).catch(() => {})}><Copy size={13} /></button>
               <button type="button" className={bookmarkIds.has(selected.bookmarkId) ? "active" : ""} title="切换书签" aria-label="切换帧书签" onClick={() => toggleBookmark(selected)}><Bookmark size={13} fill={bookmarkIds.has(selected.bookmarkId) ? "currentColor" : "none"} /></button>
             </header>
             <div className="serial-analyzer-dump">
-              <pre>{serialAnalyzerHexDump(selected.bytes) || "--"}</pre>
-              <pre className="ascii">{serialCaptureAscii(selected.bytes.slice(0, 4096)) || "--"}</pre>
+              <pre>{serialAnalyzerHexDump(inspectedBytes) || "--"}</pre>
+              <pre className="ascii">{serialCaptureAscii(inspectedBytes.slice(0, 4096)) || "--"}</pre>
             </div>
           </>
         ) : <div className="serial-analyzer-empty">没有选中的帧</div>}
@@ -447,6 +461,22 @@ function formatAnalyzerBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
   return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+function serialAnalyzerLengthLabel(frame: SerialAnalyzedFrame): string {
+  return serialAnalyzerHasDistinctWire(frame) ? `${frame.bytes.length}/${frame.wireBytes.length} B` : `${frame.bytes.length} B`;
+}
+
+function serialAnalyzerLengthTitle(frame: SerialAnalyzedFrame): string {
+  return serialAnalyzerHasDistinctWire(frame)
+    ? `解码 ${frame.bytes.length} B · 线上 ${frame.wireBytes.length} B`
+    : `${frame.bytes.length} B`;
+}
+
+function serialAnalyzerFrameStatus(frame: SerialAnalyzedFrame): string {
+  if (frame.truncated) return "截断";
+  if (frame.decodeError) return "转义错";
+  return frame.complete ? "完整" : "尾帧";
 }
 
 function formatAnalyzerError(error: unknown): string {

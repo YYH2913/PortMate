@@ -288,7 +288,7 @@ body.serial-analyzer-window {
 
 .serial-analyzer-segmented {
   display: inline-grid;
-  grid-template-columns: repeat(4, minmax(48px, 1fr));
+  grid-template-columns: repeat(5, minmax(44px, 1fr));
   align-items: center;
   min-width: 0;
   border: 1px solid var(--line);
@@ -419,6 +419,12 @@ body.serial-analyzer-window {
 .serial-analyzer-status-strip .warning,
 .serial-analyzer-row .warning {
   color: var(--amber);
+}
+
+.serial-analyzer-status-strip .error,
+.serial-analyzer-row .error,
+.serial-analyzer-decode-error {
+  color: var(--red);
 }
 
 .serial-analyzer-last-disconnect {
@@ -568,6 +574,20 @@ body.serial-analyzer-window {
   min-width: 0;
   flex: 1;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-analyzer-byte-view {
+  flex: 0 0 auto;
+  height: 23px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: #bfd0df;
+  font-size: 10px;
+}
+
+.serial-analyzer-decode-error {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -8373,6 +8393,7 @@ fieldset label {
   }
 
   .serial-analyzer-inspector > header span:nth-of-type(2),
+  .serial-analyzer-decode-error,
   .serial-analyzer-dump pre.ascii {
     display: none;
   }

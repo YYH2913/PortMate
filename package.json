@@ -28,12 +28,14 @@
     "@xterm/xterm": "6.0.0",
     "lucide-react": "^0.553.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "slip": "^1.0.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@types/slip": "^1.0.0",
     "@vitejs/plugin-react": "^6.0.1",
     "playwright-core": "^1.61.1",
     "typescript": "^6.0.3",

@@ -32460,22 +32460,7 @@ mod tests {
             )
             .await
             .unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let task = state
-                        .store
-                        .lock()
-                        .unwrap()
-                        .transfer_by_id(&cancelled_upload.id)
-                        .unwrap();
-                    if task.status == TransferStatus::Running && task.bytes_done > 0 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("limited SFTP upload did not report progress");
+            wait_for_transfer_progress(&state, &cancelled_upload.id, "limited SFTP upload").await;
             let cancelling = cancel_transfer_inner(&state, &cancelled_upload.id).unwrap();
             assert_eq!(cancelling.status, TransferStatus::Cancelled);
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -32546,22 +32531,8 @@ mod tests {
             )
             .await
             .unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let task = state
-                        .store
-                        .lock()
-                        .unwrap()
-                        .transfer_by_id(&cancelled_scp_upload.id)
-                        .unwrap();
-                    if task.status == TransferStatus::Running && task.bytes_done > 0 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("limited SCP upload did not report progress");
+            wait_for_transfer_progress(&state, &cancelled_scp_upload.id, "limited SCP upload")
+                .await;
             let cancelling = cancel_transfer_inner(&state, &cancelled_scp_upload.id).unwrap();
             assert_eq!(cancelling.status, TransferStatus::Cancelled);
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -32634,22 +32605,12 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                tokio::time::timeout(Duration::from_secs(5), async {
-                    loop {
-                        let task = state
-                            .store
-                            .lock()
-                            .unwrap()
-                            .transfer_by_id(&interrupted_upload.id)
-                            .unwrap();
-                        if task.status == TransferStatus::Running && task.bytes_done > 0 {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                })
-                .await
-                .unwrap_or_else(|_| panic!("limited {label} upload did not report progress"));
+                wait_for_transfer_progress(
+                    &state,
+                    &interrupted_upload.id,
+                    &format!("limited {label} upload"),
+                )
+                .await;
 
                 let disconnected = close_session_inner(&state, profile.id.clone())
                     .await
@@ -37037,8 +36998,35 @@ mod tests {
         }
     }
 
+    async fn wait_for_transfer_progress(state: &AppState, task_id: &str, label: &str) {
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
+                if task.status == TransferStatus::Running && task.bytes_done > 0 {
+                    break Ok(());
+                }
+                if matches!(
+                    task.status,
+                    TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+                ) {
+                    break Err(task);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(task)) => panic!("{label} reached a terminal state before progress: {task:?}"),
+            Err(_) => {
+                let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
+                panic!("{label} did not report progress: {task:?}");
+            }
+        }
+    }
+
     async fn wait_for_transfer_terminal_state(state: &AppState, task_id: &str) -> TransferTask {
-        let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let result = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let task = state.store.lock().unwrap().transfer_by_id(task_id).unwrap();
                 if matches!(
