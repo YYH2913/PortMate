@@ -6671,6 +6671,12 @@ fieldset label {
   color: #fca5a5;
 }
 
+.tmux-row-actions button.tmux-control-active {
+  border-color: rgba(94, 234, 212, 0.45);
+  background: rgba(94, 234, 212, 0.08);
+  color: var(--cyan);
+}
+
 .tmux-row-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;

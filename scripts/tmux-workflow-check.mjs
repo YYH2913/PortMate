@@ -145,13 +145,58 @@ try {
     }));
     window.__invokeCalls = [];
     window.__tmuxState = structuredClone(tmuxState);
-    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    window.__tmuxControlTarget = "";
+    window.__tmuxControlRuntimeId = "";
+    window.__tmuxControlSequence = 0;
+    window.__tauriCallbacks = new Map();
+    window.__tauriEventListeners = new Map();
+    window.__tauriCallbackId = 0;
+    window.__emitTauriEvent = (event, payload) => {
+      const listeners = window.__tauriEventListeners.get(event) || [];
+      for (const id of listeners) {
+        window.__tauriCallbacks.get(id)?.({ event, id, payload });
+      }
+    };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (event, id) => {
+        const listeners = window.__tauriEventListeners.get(event) || [];
+        window.__tauriEventListeners.set(event, listeners.filter((listenerId) => listenerId !== id));
+        window.__tauriCallbacks.delete(id);
+      },
+    };
     window.__TAURI_INTERNALS__ = {
       invoke: async (command, args = {}) => {
         window.__invokeCalls.push({ command, args });
+        if (command === "plugin:event|listen") {
+          const listeners = window.__tauriEventListeners.get(args.event) || [];
+          window.__tauriEventListeners.set(args.event, [...listeners, args.handler]);
+          return args.handler;
+        }
+        if (command === "plugin:event|unlisten") {
+          window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
+          return null;
+        }
         if (command === "list_sessions") return [initialSession];
         if (command === "tail_log") return [];
         if (command === "list_tmux_state") return structuredClone(window.__tmuxState);
+        if (command === "start_tmux_control") {
+          window.__tmuxControlTarget = args.target;
+          window.__tmuxControlSequence += 1;
+          window.__tmuxControlRuntimeId = `control-${window.__tmuxControlSequence}`;
+          return {
+            sessionId: args.sessionId,
+            target: args.target,
+            active: true,
+            runtimeId: window.__tmuxControlRuntimeId,
+          };
+        }
+        if (command === "stop_tmux_control") {
+          const target = window.__tmuxControlTarget;
+          const runtimeId = window.__tmuxControlRuntimeId;
+          window.__tmuxControlTarget = "";
+          window.__tmuxControlRuntimeId = "";
+          return { sessionId: args.sessionId, target, active: false, runtimeId };
+        }
         if (command === "set_tmux_pane_sync") {
           if (args.target === "lab:1" && args.enabled === false) throw new Error("tmux permission denied");
           window.__tmuxState = {
@@ -359,12 +404,16 @@ try {
         if (command === "attach_tmux") return null;
         if (command === "list_host_keys") return { keys: [] };
         if (["list_files", "list_transfers", "list_mcp_audit", "list_mcp_grants", "list_serial_ports", "list_one_keys"].includes(command)) return [];
-        if (command.startsWith("plugin:event|")) return 1;
+        if (command.startsWith("plugin:event|")) return null;
         return null;
       },
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
-      transformCallback: () => 1,
-      unregisterCallback: () => {},
+      transformCallback: (callback) => {
+        window.__tauriCallbackId += 1;
+        window.__tauriCallbacks.set(window.__tauriCallbackId, callback);
+        return window.__tauriCallbackId;
+      },
+      unregisterCallback: (id) => window.__tauriCallbacks.delete(id),
       convertFileSrc: (path) => path,
     };
   }, { initialSession: session, initialWorkspace: workspace, tmuxState: initialTmuxState });
@@ -385,6 +434,54 @@ try {
   assert(await labZero.locator(".tmux-window-panes > div strong").allTextContents().then((values) => values.join(",")) === "lab:0.0,lab:0.1", "pane rows must be sorted by pane index");
   assert(await labZeroSwitch.isChecked() === false, "lab:0 must initially be unsynchronized");
   assert(await labOneSwitch.isChecked() === true, "lab:1 must initially be synchronized");
+
+  await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-tmux-control-event") || []).length > 0);
+  await page.getByRole("button", { name: "实时监听 session lab", exact: true }).click();
+  await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  const activeControlButton = page.getByRole("button", { name: "停止实时监听 session lab", exact: true });
+  assert(await activeControlButton.getAttribute("aria-pressed") === "true", "control-mode button did not become active");
+
+  await page.getByRole("button", { name: "重命名 session build", exact: true }).click();
+  const draftSessionName = page.getByRole("textbox", { name: "新名称 build" });
+  await draftSessionName.fill("build-draft");
+  const listCallsBeforeControlEvent = await page.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length
+  ));
+  await page.evaluate(() => {
+    window.__tmuxState = {
+      ...window.__tmuxState,
+      windows: window.__tmuxState.windows.map((item) => (
+        item.session === "lab" && item.windowIndex === 0 ? { ...item, name: "external-editor" } : item
+      )),
+    };
+    window.__emitTauriEvent("portmate-tmux-control-event", {
+      sessionId: "ssh-tmux",
+      target: "lab",
+      kind: "state-changed",
+      active: true,
+      runtimeId: window.__tmuxControlRuntimeId,
+      protocolEvent: "window-renamed",
+      error: null,
+    });
+  });
+  await page.waitForFunction((previous) => (
+    window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length > previous
+  ), listCallsBeforeControlEvent);
+  await page.locator('[data-tmux-target="lab:0"] > header small').getByText(/external-editor/).waitFor();
+  assert(await draftSessionName.inputValue() === "build-draft", "control-mode refresh discarded the inline editor");
+  await page.evaluate(() => {
+    window.__emitTauriEvent("portmate-tmux-control-event", {
+      sessionId: "ssh-tmux",
+      target: "lab",
+      kind: "stopped",
+      active: false,
+      runtimeId: "stale-control-runtime",
+      protocolEvent: null,
+      error: null,
+    });
+  });
+  assert(await activeControlButton.getAttribute("aria-pressed") === "true", "stale watcher stop cleared the active runtime");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
 
   await labZeroSwitch.check();
   await page.getByText("lab:0 已开启 pane 同步输入", { exact: true }).waitFor();
@@ -531,6 +628,17 @@ try {
     && mobile.toolbar.left >= mobile.dialog.left && mobile.toolbar.right <= mobile.dialog.right,
   `invalid mobile tmux layout: ${JSON.stringify(mobile)}`);
 
+  await activeControlButton.click();
+  await page.getByText("lab 已停止 control-mode 实时监听", { exact: true }).waitFor();
+  const controlCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "start_tmux_control" || call.command === "stop_tmux_control"
+  )));
+  assert(controlCalls.length === 2
+    && controlCalls[0].args.sessionId === "ssh-tmux"
+    && controlCalls[0].args.target === "lab"
+    && controlCalls[1].args.sessionId === "ssh-tmux",
+  `invalid control-mode lifecycle: ${JSON.stringify(controlCalls)}`);
+
   const targetInput = page.getByPlaceholder("session name");
   await targetInput.fill("new-lab");
   await page.getByRole("button", { name: "附着/新建", exact: true }).click();
@@ -541,6 +649,7 @@ try {
 
   console.log(JSON.stringify({
     enabledCall,
+    controlCalls,
     mutationCalls,
     attachCall,
     desktop,

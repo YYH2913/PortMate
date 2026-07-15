@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
-import { Check, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { Check, Pencil, Play, Plus, Radio, RefreshCw, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { groupTmuxPanes } from "./tmux-state";
 import type { TmuxWindowGroup } from "./tmux-state";
 import type {
   SessionEvent,
   SessionSummary,
+  TmuxControlEvent,
+  TmuxControlStatus,
   TmuxMutationAction,
   TmuxMutationRequest,
   TmuxState,
@@ -56,15 +59,101 @@ export default function TmuxDialog({
   const [busy, setBusy] = useState(false);
   const [syncingTarget, setSyncingTarget] = useState("");
   const [mutatingTarget, setMutatingTarget] = useState("");
+  const [controlTarget, setControlTarget] = useState("");
+  const [controlBusy, setControlBusy] = useState(false);
   const [editor, setEditor] = useState<TmuxEditor | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<TmuxDeleteConfirmation | null>(null);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
+  const mountedRef = useRef(true);
+  const sessionIdRef = useRef(session.profile.id);
+  const controlTargetRef = useRef("");
+  const controlRuntimeIdRef = useRef("");
+  const controlRequestedTargetRef = useRef("");
+  const stoppedControlRuntimeIdsRef = useRef(new Set<string>());
+  const controlOwnedRef = useRef(false);
+  const controlRefreshInFlightRef = useRef(false);
+  const controlRefreshPendingRef = useRef(false);
+  sessionIdRef.current = session.profile.id;
   const windows = useMemo(() => groupTmuxPanes(state.panes, state.windows), [state.panes, state.windows]);
-  const operationBusy = busy || Boolean(syncingTarget) || Boolean(mutatingTarget);
+  const operationBusy = busy || controlBusy || Boolean(syncingTarget) || Boolean(mutatingTarget);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const sessionId = session.profile.id;
+    controlOwnedRef.current = false;
+    controlTargetRef.current = "";
+    controlRuntimeIdRef.current = "";
+    controlRequestedTargetRef.current = "";
+    stoppedControlRuntimeIdsRef.current.clear();
+    controlRefreshPendingRef.current = false;
+    setControlTarget("");
+    setControlBusy(false);
     void refreshTmux();
+    return () => {
+      const owned = controlOwnedRef.current;
+      controlOwnedRef.current = false;
+      controlTargetRef.current = "";
+      controlRuntimeIdRef.current = "";
+      controlRequestedTargetRef.current = "";
+      controlRefreshPendingRef.current = false;
+      if (owned) {
+        void invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId }).catch(() => {});
+      }
+    };
+  }, [session.profile.id]);
+
+  useEffect(() => {
+    const sessionId = session.profile.id;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<TmuxControlEvent>("portmate-tmux-control-event", (event) => {
+      if (disposed || event.payload.sessionId !== sessionId) return;
+      const payload = event.payload;
+      if (payload.kind === "started") {
+        const requested = controlRequestedTargetRef.current;
+        if (
+          requested === payload.target
+          || (!requested && (!controlTargetRef.current || controlTargetRef.current === payload.target))
+        ) {
+          controlRuntimeIdRef.current = payload.runtimeId;
+          controlTargetRef.current = payload.target;
+          setControlTarget(payload.target);
+        }
+        return;
+      }
+      if (payload.kind === "state-changed") {
+        if (controlRuntimeIdRef.current === payload.runtimeId) {
+          void refreshTmuxFromControl(sessionId);
+        }
+        return;
+      }
+      if (controlRequestedTargetRef.current === payload.target) {
+        stoppedControlRuntimeIdsRef.current.add(payload.runtimeId);
+      }
+      if (controlRuntimeIdRef.current !== payload.runtimeId) return;
+      controlOwnedRef.current = false;
+      controlTargetRef.current = "";
+      controlRuntimeIdRef.current = "";
+      setControlTarget("");
+      setControlBusy(false);
+      if (payload.error) setError(payload.error);
+    })
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [session.profile.id]);
 
   async function refreshTmux() {
@@ -82,6 +171,101 @@ export default function TmuxDialog({
       setError(formatTmuxError(error));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshTmuxFromControl(expectedSessionId: string) {
+    controlRefreshPendingRef.current = true;
+    if (controlRefreshInFlightRef.current) return;
+    controlRefreshInFlightRef.current = true;
+    try {
+      while (
+        controlRefreshPendingRef.current
+        && mountedRef.current
+        && sessionIdRef.current === expectedSessionId
+      ) {
+        controlRefreshPendingRef.current = false;
+        try {
+          const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId: expectedSessionId });
+          if (mountedRef.current && sessionIdRef.current === expectedSessionId) setState(nextState);
+        } catch (error) {
+          if (mountedRef.current && sessionIdRef.current === expectedSessionId) {
+            setError(formatTmuxError(error));
+          }
+        }
+      }
+    } finally {
+      controlRefreshInFlightRef.current = false;
+      if (controlRefreshPendingRef.current && mountedRef.current) {
+        void refreshTmuxFromControl(sessionIdRef.current);
+      }
+    }
+  }
+
+  async function startControl(nextTarget: string) {
+    const sessionId = session.profile.id;
+    setControlBusy(true);
+    setError("");
+    setFeedback("");
+    setEditor(null);
+    setDeleteConfirmation(null);
+    controlOwnedRef.current = true;
+    controlRequestedTargetRef.current = nextTarget;
+    try {
+      const status = await invokeBackend<TmuxControlStatus>("start_tmux_control", {
+        sessionId,
+        target: nextTarget,
+      });
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) {
+        if (status.active) {
+          void invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId }).catch(() => {});
+        }
+        return;
+      }
+      controlRequestedTargetRef.current = "";
+      if (status.runtimeId && stoppedControlRuntimeIdsRef.current.delete(status.runtimeId)) {
+        controlOwnedRef.current = false;
+        return;
+      }
+      controlOwnedRef.current = status.active;
+      controlRuntimeIdRef.current = status.active ? status.runtimeId || "" : "";
+      controlTargetRef.current = status.active ? status.target : "";
+      setControlTarget(controlTargetRef.current);
+      setFeedback(`${nextTarget} 已开启 control-mode 实时监听`);
+    } catch (error) {
+      controlOwnedRef.current = false;
+      controlRequestedTargetRef.current = "";
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        setError(formatTmuxError(error));
+      }
+    } finally {
+      if (mountedRef.current && sessionIdRef.current === sessionId) setControlBusy(false);
+    }
+  }
+
+  async function stopControl() {
+    const sessionId = session.profile.id;
+    const previousTarget = controlTargetRef.current;
+    const wasOwned = controlOwnedRef.current;
+    setControlBusy(true);
+    setError("");
+    setFeedback("");
+    controlOwnedRef.current = false;
+    controlRequestedTargetRef.current = "";
+    try {
+      await invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId });
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
+      controlTargetRef.current = "";
+      controlRuntimeIdRef.current = "";
+      setControlTarget("");
+      setFeedback(`${previousTarget} 已停止 control-mode 实时监听`);
+    } catch (error) {
+      controlOwnedRef.current = wasOwned;
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        setError(formatTmuxError(error));
+      }
+    } finally {
+      if (mountedRef.current && sessionIdRef.current === sessionId) setControlBusy(false);
     }
   }
 
@@ -287,6 +471,18 @@ export default function TmuxDialog({
                         <small>{item.created ? new Date(item.created).toLocaleString() : "created time unavailable"}</small>
                       </button>
                       <div className="tmux-row-actions">
+                        <button
+                          type="button"
+                          className={controlTarget === item.name ? "tmux-control-active" : ""}
+                          title={controlTarget === item.name ? `停止实时监听 session ${item.name}` : `实时监听 session ${item.name}`}
+                          aria-label={controlTarget === item.name ? `停止实时监听 session ${item.name}` : `实时监听 session ${item.name}`}
+                          aria-pressed={controlTarget === item.name}
+                          disabled={operationBusy}
+                          onClick={() => {
+                            if (controlTarget === item.name) void stopControl();
+                            else void startControl(item.name);
+                          }}
+                        ><Radio size={13} /></button>
                         <button type="button" title={`在 ${item.name} 新建 window`} aria-label={`在 ${item.name} 新建 window`} disabled={operationBusy} onClick={() => openEditor({ action: "new-window", target: item.name, value: "" })}><Plus size={13} /></button>
                         <button type="button" title={`重命名 session ${item.name}`} aria-label={`重命名 session ${item.name}`} disabled={operationBusy} onClick={() => openEditor({ action: "rename-session", target: item.name, value: item.name })}><Pencil size={13} /></button>
                         <button type="button" className="danger" title={`关闭 session ${item.name}`} aria-label={`关闭 session ${item.name}`} disabled={operationBusy} onClick={() => {

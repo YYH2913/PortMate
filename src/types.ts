@@ -552,6 +552,20 @@ export interface TmuxState {
   panes: TmuxPaneInfo[];
 }
 
+export interface TmuxControlStatus {
+  sessionId: string;
+  target: string;
+  active: boolean;
+  runtimeId?: string | null;
+}
+
+export interface TmuxControlEvent extends TmuxControlStatus {
+  kind: "started" | "state-changed" | "stopped";
+  runtimeId: string;
+  protocolEvent?: string | null;
+  error?: string | null;
+}
+
 export type TmuxMutationAction =
   | "rename-session"
   | "kill-session"

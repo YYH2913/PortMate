@@ -178,6 +178,10 @@ const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
+const MAX_TMUX_CONTROL_LINE_BYTES: usize = 64 * 1024;
+const MAX_TMUX_CONTROL_STDERR_BYTES: usize = 64 * 1024;
+const TMUX_CONTROL_EVENT_DEBOUNCE: Duration = Duration::from_millis(120);
+const TMUX_CONTROL_EVENT_MAX_LATENCY: Duration = Duration::from_secs(1);
 const MAX_LOCAL_SYSMON_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOCAL_SYSMON_STDERR_BYTES: usize = 64 * 1024;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
@@ -288,6 +292,7 @@ pub struct AppState {
     credential_lock_path: PathBuf,
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
+    tmux_controls: Arc<Mutex<HashMap<String, TmuxControlRuntime>>>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
@@ -653,6 +658,46 @@ struct SshRuntime {
     tap: broadcast::Sender<Vec<u8>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct TmuxControlRuntime {
+    runtime_id: String,
+    target: String,
+    cancel: Arc<AtomicBool>,
+}
+
+struct TmuxControlEventContext {
+    session_id: String,
+    target: String,
+    runtime_id: String,
+}
+
+impl TmuxControlEventContext {
+    fn emit(
+        &self,
+        app_handle: Option<&AppHandle>,
+        kind: &str,
+        active: bool,
+        protocol_event: Option<&str>,
+        error: Option<&str>,
+    ) {
+        let Some(app_handle) = app_handle else {
+            return;
+        };
+        let _ = app_handle.emit(
+            "portmate-tmux-control-event",
+            TmuxControlEvent {
+                session_id: self.session_id.clone(),
+                target: self.target.clone(),
+                kind: kind.to_string(),
+                active,
+                runtime_id: self.runtime_id.clone(),
+                protocol_event: protocol_event.map(str::to_string),
+                error: error.map(bounded_tmux_control_error),
+            },
+        );
+    }
 }
 
 struct ShellRuntime {
@@ -1977,6 +2022,30 @@ pub struct TmuxState {
     pub sessions: Vec<TmuxSessionInfo>,
     pub windows: Vec<TmuxWindowInfo>,
     pub panes: Vec<TmuxPaneInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxControlStatus {
+    pub session_id: String,
+    pub target: String,
+    pub active: bool,
+    #[serde(default)]
+    pub runtime_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxControlEvent {
+    pub session_id: String,
+    pub target: String,
+    pub kind: String,
+    pub active: bool,
+    pub runtime_id: String,
+    #[serde(default)]
+    pub protocol_event: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -3500,6 +3569,7 @@ async fn close_session_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    let _ = cancel_tmux_control_runtime(state, &session_id);
     let existing = {
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections.remove(&session_id)
@@ -4847,6 +4917,23 @@ async fn mutate_tmux(
     request: TmuxMutationRequest,
 ) -> Result<TmuxState, String> {
     mutate_tmux_inner(state.inner(), request).await
+}
+
+#[tauri::command]
+async fn start_tmux_control(
+    state: State<'_, AppState>,
+    session_id: String,
+    target: String,
+) -> Result<TmuxControlStatus, String> {
+    start_tmux_control_inner(state.inner(), &session_id, &target).await
+}
+
+#[tauri::command]
+fn stop_tmux_control(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<TmuxControlStatus, String> {
+    stop_tmux_control_inner(state.inner(), &session_id)
 }
 
 #[tauri::command]
@@ -10651,6 +10738,314 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
             let _ = state;
             Err("当前平台不支持本地 chmod".to_string())
         }
+    }
+}
+
+async fn start_tmux_control_inner(
+    state: &AppState,
+    session_id: &str,
+    target: &str,
+) -> Result<TmuxControlStatus, String> {
+    let target = normalize_tmux_target(target)?.to_string();
+    {
+        let controls = state
+            .tmux_controls
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if let Some(runtime) = controls
+            .get(session_id)
+            .filter(|runtime| runtime.target == target && !runtime.cancel.load(Ordering::SeqCst))
+        {
+            return Ok(TmuxControlStatus {
+                session_id: session_id.to_string(),
+                target,
+                active: true,
+                runtime_id: Some(runtime.runtime_id.clone()),
+            });
+        }
+    }
+
+    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let mut channel = {
+        let handle = handle.lock().await;
+        handle
+            .channel_open_session()
+            .await
+            .map_err(|error| format!("Tmux control-mode 打开 SSH channel 失败: {error}"))?
+    };
+    let command = format!(
+        "tmux -C attach-session -t {}",
+        shell_quote(normalize_tmux_target(&target)?)
+    );
+    channel
+        .exec(true, command)
+        .await
+        .map_err(|error| format!("Tmux control-mode 启动失败: {error}"))?;
+
+    let runtime_id = Uuid::new_v4().to_string();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let previous = {
+        let mut controls = state
+            .tmux_controls
+            .lock()
+            .map_err(|error| error.to_string())?;
+        controls.insert(
+            session_id.to_string(),
+            TmuxControlRuntime {
+                runtime_id: runtime_id.clone(),
+                target: target.clone(),
+                cancel: Arc::clone(&cancel),
+            },
+        )
+    };
+    if let Some(previous) = previous {
+        previous.cancel.store(true, Ordering::SeqCst);
+    }
+
+    let app_handle = state.app_handle.clone();
+    let controls = Arc::clone(&state.tmux_controls);
+    let event_context = TmuxControlEventContext {
+        session_id: session_id.to_string(),
+        target: target.clone(),
+        runtime_id: runtime_id.clone(),
+    };
+    tauri::async_runtime::spawn(async move {
+        event_context.emit(app_handle.as_ref(), "started", true, None, None);
+        let mut parser = TmuxControlLineParser::default();
+        let mut stderr = Vec::new();
+        let mut pending_protocol_event = None;
+        let mut first_pending_at = None;
+        let mut last_pending_at = None;
+        let mut stopped_error = None;
+        let mut ticker = tokio::time::interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let now = Instant::now();
+                    let quiet = last_pending_at
+                        .is_some_and(|last: Instant| now.duration_since(last) >= TMUX_CONTROL_EVENT_DEBOUNCE);
+                    let overdue = first_pending_at
+                        .is_some_and(|first: Instant| now.duration_since(first) >= TMUX_CONTROL_EVENT_MAX_LATENCY);
+                    if pending_protocol_event.is_some() && (quiet || overdue) {
+                        event_context.emit(
+                            app_handle.as_ref(),
+                            "state-changed",
+                            true,
+                            pending_protocol_event,
+                            None,
+                        );
+                        pending_protocol_event = None;
+                        first_pending_at = None;
+                        last_pending_at = None;
+                    }
+                }
+                message = channel.wait() => {
+                    match message {
+                        Some(ChannelMsg::Data { data }) => match parser.push(&data) {
+                            Ok(parsed) if parsed.changed => {
+                                let now = Instant::now();
+                                if first_pending_at.is_none() {
+                                    first_pending_at = Some(now);
+                                }
+                                last_pending_at = Some(now);
+                                pending_protocol_event = parsed.last_event;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                stopped_error = Some(error);
+                                break;
+                            }
+                        },
+                        Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            if let Err(error) = append_bounded_ssh_exec_data(
+                                &mut stderr,
+                                &data,
+                                MAX_TMUX_CONTROL_STDERR_BYTES,
+                                "tmux control stderr",
+                            ) {
+                                stopped_error = Some(error);
+                                break;
+                            }
+                        }
+                        Some(ChannelMsg::Failure) => {
+                            stopped_error = Some("远端拒绝启动 tmux control-mode".to_string());
+                            break;
+                        }
+                        Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
+                            let detail = String::from_utf8_lossy(&stderr);
+                            stopped_error = Some(if detail.trim().is_empty() {
+                                format!("tmux control-mode 返回非零状态 {exit_status}")
+                            } else {
+                                format!("tmux control-mode 返回非零状态 {exit_status}: {}", detail.trim())
+                            });
+                            break;
+                        }
+                        Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if pending_protocol_event.is_some() {
+            event_context.emit(
+                app_handle.as_ref(),
+                "state-changed",
+                true,
+                pending_protocol_event,
+                None,
+            );
+        }
+        let _ = channel.close().await;
+        if let Ok(mut controls) = controls.lock() {
+            let current = controls
+                .get(&event_context.session_id)
+                .is_some_and(|runtime| runtime.runtime_id == event_context.runtime_id);
+            if current {
+                controls.remove(&event_context.session_id);
+            }
+        }
+        event_context.emit(
+            app_handle.as_ref(),
+            "stopped",
+            false,
+            None,
+            stopped_error.as_deref(),
+        );
+    });
+
+    Ok(TmuxControlStatus {
+        session_id: session_id.to_string(),
+        target,
+        active: true,
+        runtime_id: Some(runtime_id),
+    })
+}
+
+fn stop_tmux_control_inner(
+    state: &AppState,
+    session_id: &str,
+) -> Result<TmuxControlStatus, String> {
+    let runtime = cancel_tmux_control_runtime(state, session_id)?;
+    Ok(TmuxControlStatus {
+        session_id: session_id.to_string(),
+        target: runtime
+            .as_ref()
+            .map(|runtime| runtime.target.clone())
+            .unwrap_or_default(),
+        active: false,
+        runtime_id: runtime.map(|runtime| runtime.runtime_id),
+    })
+}
+
+fn cancel_tmux_control_runtime(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<TmuxControlRuntime>, String> {
+    let runtime = state
+        .tmux_controls
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(session_id);
+    if let Some(runtime) = runtime {
+        runtime.cancel.store(true, Ordering::SeqCst);
+        Ok(Some(runtime))
+    } else {
+        Ok(None)
+    }
+}
+
+fn shutdown_tmux_controls(state: &AppState) {
+    if let Ok(mut controls) = state.tmux_controls.lock() {
+        for (_, runtime) in controls.drain() {
+            runtime.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+fn bounded_tmux_control_error(error: &str) -> String {
+    const MAX_ERROR_CHARS: usize = 512;
+    let mut value = error.chars().take(MAX_ERROR_CHARS).collect::<String>();
+    if error.chars().count() > MAX_ERROR_CHARS {
+        value.push_str("...");
+    }
+    value
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TmuxControlParseResult {
+    changed: bool,
+    last_event: Option<&'static str>,
+}
+
+#[derive(Debug, Default)]
+struct TmuxControlLineParser {
+    partial: Vec<u8>,
+}
+
+impl TmuxControlLineParser {
+    fn push(&mut self, data: &[u8]) -> Result<TmuxControlParseResult, String> {
+        let mut parsed = TmuxControlParseResult::default();
+        let mut start = 0;
+        for (index, byte) in data.iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            self.append_partial(&data[start..index])?;
+            if let Some(kind) = tmux_control_event_kind(&self.partial) {
+                parsed.changed = true;
+                parsed.last_event = Some(kind);
+            }
+            self.partial.clear();
+            start = index + 1;
+        }
+        self.append_partial(&data[start..])?;
+        Ok(parsed)
+    }
+
+    fn append_partial(&mut self, data: &[u8]) -> Result<(), String> {
+        let next_len = self
+            .partial
+            .len()
+            .checked_add(data.len())
+            .ok_or_else(|| "Tmux control-mode 行长度溢出".to_string())?;
+        if next_len > MAX_TMUX_CONTROL_LINE_BYTES {
+            return Err(format!(
+                "Tmux control-mode 单行超过 {MAX_TMUX_CONTROL_LINE_BYTES} 字节上限"
+            ));
+        }
+        self.partial.extend_from_slice(data);
+        Ok(())
+    }
+}
+
+fn tmux_control_event_kind(line: &[u8]) -> Option<&'static str> {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let name = line.split(|byte| *byte == b' ').next().unwrap_or_default();
+    match name {
+        b"%client-active-pane" => Some("client-active-pane"),
+        b"%client-session-changed" => Some("client-session-changed"),
+        b"%layout-change" => Some("layout-change"),
+        b"%pane-exited" => Some("pane-exited"),
+        b"%pane-mode-changed" => Some("pane-mode-changed"),
+        b"%session-changed" => Some("session-changed"),
+        b"%session-renamed" => Some("session-renamed"),
+        b"%session-window-changed" => Some("session-window-changed"),
+        b"%sessions-changed" => Some("sessions-changed"),
+        b"%subscription-changed" => Some("subscription-changed"),
+        b"%unlinked-window-add" => Some("unlinked-window-add"),
+        b"%unlinked-window-close" => Some("unlinked-window-close"),
+        b"%unlinked-window-renamed" => Some("unlinked-window-renamed"),
+        b"%window-add" => Some("window-add"),
+        b"%window-close" => Some("window-close"),
+        b"%window-pane-changed" => Some("window-pane-changed"),
+        b"%window-renamed" => Some("window-renamed"),
+        _ => None,
     }
 }
 
@@ -24886,6 +25281,7 @@ pub fn run() {
                 credential_lock_path: data_dir.join("credentials.lock"),
                 system_event_sink: Arc::new(Mutex::new(None)),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
+                tmux_controls: Arc::new(Mutex::new(HashMap::new())),
                 shell: Arc::new(Mutex::new(HashMap::new())),
                 tcp: Arc::new(Mutex::new(HashMap::new())),
                 serial: Arc::new(Mutex::new(HashMap::new())),
@@ -24972,6 +25368,8 @@ pub fn run() {
             attach_tmux,
             set_tmux_pane_sync,
             mutate_tmux,
+            start_tmux_control,
+            stop_tmux_control,
             list_files,
             file_properties,
             create_directory,
@@ -24998,6 +25396,7 @@ pub fn run() {
                 tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
             ) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
+                    shutdown_tmux_controls(state.inner());
                     shutdown_system_event_sink(state.inner());
                 }
             }
@@ -36625,6 +37024,7 @@ mod tests {
             credential_lock_path: store_path.with_file_name("test-credentials.lock"),
             system_event_sink: Arc::new(Mutex::new(None)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
+            tmux_controls: Arc::new(Mutex::new(HashMap::new())),
             shell: Arc::new(Mutex::new(HashMap::new())),
             tcp: Arc::new(Mutex::new(HashMap::new())),
             serial: Arc::new(Mutex::new(HashMap::new())),
@@ -36880,6 +37280,78 @@ mod tests {
         assert!(window.active);
         assert!(!window.synchronized);
         assert!(parse_tmux_window("\t2\t@4\tmetrics\t3\t1").is_none());
+    }
+
+    #[test]
+    fn tmux_control_parser_ignores_output_and_tracks_fragmented_state_events() {
+        let mut parser = TmuxControlLineParser::default();
+        assert_eq!(
+            parser.push(b"%out").unwrap(),
+            TmuxControlParseResult::default()
+        );
+        let parsed = parser
+            .push(b"put %1 ignored terminal bytes\n%window-add @2\r\n%layout")
+            .unwrap();
+        assert_eq!(
+            parsed,
+            TmuxControlParseResult {
+                changed: true,
+                last_event: Some("window-add"),
+            }
+        );
+        let parsed = parser
+            .push(b"-change @2 layout visible flags\n%begin 1 2 3\n")
+            .unwrap();
+        assert_eq!(
+            parsed,
+            TmuxControlParseResult {
+                changed: true,
+                last_event: Some("layout-change"),
+            }
+        );
+        assert_eq!(
+            tmux_control_event_kind(b"%window-pane-changed @2 %7"),
+            Some("window-pane-changed")
+        );
+        assert_eq!(
+            tmux_control_event_kind(b"%extended-output %7 0 : data"),
+            None
+        );
+
+        let mut oversized = TmuxControlLineParser::default();
+        assert!(oversized
+            .push(&vec![b'x'; MAX_TMUX_CONTROL_LINE_BYTES + 1])
+            .is_err());
+        assert_eq!(
+            bounded_tmux_control_error(&"x".repeat(600)).chars().count(),
+            515
+        );
+    }
+
+    #[test]
+    fn tmux_control_runtime_cancel_is_idempotent_and_clears_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_ssh_profile(), temp.path().join("store.sqlite3"));
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.tmux_controls.lock().unwrap().insert(
+            "session:1".to_string(),
+            TmuxControlRuntime {
+                runtime_id: "control-1".to_string(),
+                target: "lab".to_string(),
+                cancel: Arc::clone(&cancel),
+            },
+        );
+
+        let cancelled = cancel_tmux_control_runtime(&state, "session:1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.runtime_id, "control-1");
+        assert_eq!(cancelled.target, "lab");
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(state.tmux_controls.lock().unwrap().is_empty());
+        assert!(cancel_tmux_control_runtime(&state, "session:1")
+            .unwrap()
+            .is_none());
     }
 
     fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {
