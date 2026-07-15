@@ -8,6 +8,7 @@ import {
   normalizeSerialAnalyzerStoredState,
   serialAnalyzerDelimiterBytes,
   serialAnalyzerHexDump,
+  serialModbusSilenceMs,
   toggleSerialAnalyzerBookmark,
 } from "./serial-analyzer-state";
 import type { SerialCaptureFrame } from "./types";
@@ -23,14 +24,14 @@ const frame = (
 describe("serial analyzer state", () => {
   it("normalizes persisted parser settings, filters and bookmark bounds", () => {
     const stored = normalizeSerialAnalyzerStoredState({
-      parser: { mode: "fixed", delimiterHex: "0x0d, 0x0a", includeDelimiter: false, fixedLength: 99_999, gapMs: 0 },
+      parser: { mode: "fixed", delimiterHex: "0x0d, 0x0a", includeDelimiter: false, fixedLength: 99_999, gapMs: 0, modbusAutoGap: false, modbusGapMs: 99_999 },
       direction: "outbound",
       pageSize: 500,
       follow: false,
       bookmarksOnly: true,
       bookmarks: { serial: Array.from({ length: MAX_SERIAL_ANALYZER_BOOKMARKS + 2 }, (_, index) => `frame-${index}`) },
     });
-    expect(stored.parser).toMatchObject({ mode: "fixed", delimiterHex: "0D 0A", includeDelimiter: false, fixedLength: 4096, gapMs: 1 });
+    expect(stored.parser).toMatchObject({ mode: "fixed", delimiterHex: "0D 0A", includeDelimiter: false, fixedLength: 4096, gapMs: 1, modbusAutoGap: false, modbusGapMs: 60_000 });
     expect(stored).toMatchObject({ direction: "outbound", pageSize: 500, follow: false, bookmarksOnly: true });
     expect(stored.bookmarks.serial).toHaveLength(MAX_SERIAL_ANALYZER_BOOKMARKS);
   });
@@ -209,6 +210,80 @@ describe("serial analyzer state", () => {
     expect(result.frames.map((item) => [item.direction, item.bytes, item.complete])).toEqual([
       ["inbound", [0x41], false],
       ["outbound", [0x42], true],
+    ]);
+  });
+
+  it("groups and decodes Modbus RTU frames with baud-derived silence", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("request-a", "outbound", [0x01, 0x03, 0x00], "2026-07-15T00:00:00.000Z"),
+      frame("request-b", "outbound", [0x00, 0x00, 0x0a, 0xc5, 0xcd], "2026-07-15T00:00:00.001Z"),
+      frame("bad-crc", "outbound", [0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0x00], "2026-07-15T00:00:00.006Z"),
+      frame("exception", "inbound", [0x01, 0x83, 0x02, 0xc0, 0xf1], "2026-07-15T00:00:00.007Z"),
+    ], {
+      mode: "modbus",
+      delimiterHex: "0A",
+      includeDelimiter: true,
+      fixedLength: 8,
+      gapMs: 20,
+      modbusAutoGap: true,
+      modbusGapMs: 2,
+    }, 9_600);
+
+    expect(serialModbusSilenceMs(9_600)).toBe(5);
+    expect(serialModbusSilenceMs(19_200)).toBe(2);
+    expect(result.frames.map((item) => ({
+      direction: item.direction,
+      bytes: item.bytes,
+      complete: item.complete,
+      error: item.decodeError,
+      protocol: item.protocol,
+      sources: item.sourceFrameIds,
+    }))).toEqual([
+      {
+        direction: "outbound",
+        bytes: [0x00, 0x00, 0x00, 0x0a],
+        complete: true,
+        error: "",
+        protocol: { kind: "modbusRtu", address: 1, functionCode: 3, exceptionCode: null },
+        sources: ["request-a", "request-b"],
+      },
+      {
+        direction: "outbound",
+        bytes: [],
+        complete: true,
+        error: "modbusCrc",
+        protocol: null,
+        sources: ["bad-crc"],
+      },
+      {
+        direction: "inbound",
+        bytes: [0x02],
+        complete: false,
+        error: "",
+        protocol: { kind: "modbusRtu", address: 1, functionCode: 0x83, exceptionCode: 2 },
+        sources: ["exception"],
+      },
+    ]);
+  });
+
+  it("maps Modbus RTU short-frame, reserved-address and CRC failures", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("short", "inbound", [0x01, 0x03, 0x00], "2026-07-15T00:00:00.000Z"),
+      frame("address", "inbound", [0xf8, 0x03, 0x00, 0x00, 0x00, 0x01, 0x90, 0x63], "2026-07-15T00:00:00.010Z"),
+      frame("crc", "inbound", [0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0x00], "2026-07-15T00:00:00.020Z"),
+    ], {
+      mode: "modbus",
+      delimiterHex: "0A",
+      includeDelimiter: true,
+      fixedLength: 8,
+      gapMs: 20,
+      modbusAutoGap: false,
+      modbusGapMs: 5,
+    });
+    expect(result.frames.map((item) => item.decodeError)).toEqual([
+      "modbusTooShort",
+      "modbusAddress",
+      "modbusCrc",
     ]);
   });
 

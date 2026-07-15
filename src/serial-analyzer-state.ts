@@ -1,4 +1,5 @@
 import { CobsError, decode as decodeCobs } from "@serialpilot/cobs";
+import { ModbusFrameError, decode as decodeModbusRtu, silenceMillisFor } from "@serialpilot/modbus-rtu";
 import * as slip from "slip";
 import { serialCaptureAscii } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -12,9 +13,16 @@ export const MIN_SERIAL_FIXED_LENGTH = 1;
 export const MAX_SERIAL_FIXED_LENGTH = 4096;
 export const MIN_SERIAL_GAP_MS = 1;
 export const MAX_SERIAL_GAP_MS = 60_000;
+export const DEFAULT_SERIAL_MODBUS_GAP_MS = 2;
 
-export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap" | "slip" | "cobs";
-export type SerialFrameDecodeError = "" | "invalidEscape" | "invalidCobs" | "truncatedCobs";
+export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap" | "slip" | "cobs" | "modbus";
+export type SerialFrameDecodeError = ""
+  | "invalidEscape"
+  | "invalidCobs"
+  | "truncatedCobs"
+  | "modbusTooShort"
+  | "modbusAddress"
+  | "modbusCrc";
 
 export interface SerialFrameParserConfig {
   mode: SerialFrameParserMode;
@@ -22,6 +30,15 @@ export interface SerialFrameParserConfig {
   includeDelimiter: boolean;
   fixedLength: number;
   gapMs: number;
+  modbusAutoGap?: boolean;
+  modbusGapMs?: number;
+}
+
+export interface SerialAnalyzedProtocol {
+  kind: "modbusRtu";
+  address: number;
+  functionCode: number;
+  exceptionCode: number | null;
 }
 
 export interface SerialAnalyzedFrame {
@@ -34,6 +51,7 @@ export interface SerialAnalyzedFrame {
   complete: boolean;
   truncated: boolean;
   decodeError: SerialFrameDecodeError;
+  protocol: SerialAnalyzedProtocol | null;
   sourceFrameIds: string[];
   bookmarkId: string;
 }
@@ -61,6 +79,8 @@ export const defaultSerialFrameParserConfig: SerialFrameParserConfig = {
   includeDelimiter: true,
   fixedLength: 8,
   gapMs: 20,
+  modbusAutoGap: true,
+  modbusGapMs: DEFAULT_SERIAL_MODBUS_GAP_MS,
 };
 
 export const defaultSerialAnalyzerStoredState: SerialAnalyzerStoredState = {
@@ -75,7 +95,7 @@ export const defaultSerialAnalyzerStoredState: SerialAnalyzerStoredState = {
 
 export function normalizeSerialFrameParserConfig(value: unknown): SerialFrameParserConfig {
   const source = objectValue(value);
-  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap" || source.mode === "slip" || source.mode === "cobs"
+  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap" || source.mode === "slip" || source.mode === "cobs" || source.mode === "modbus"
     ? source.mode
     : "capture";
   const delimiter = serialAnalyzerDelimiterBytes(source.delimiterHex);
@@ -85,6 +105,8 @@ export function normalizeSerialFrameParserConfig(value: unknown): SerialFramePar
     includeDelimiter: source.includeDelimiter !== false,
     fixedLength: boundedInteger(source.fixedLength, MIN_SERIAL_FIXED_LENGTH, MAX_SERIAL_FIXED_LENGTH, defaultSerialFrameParserConfig.fixedLength),
     gapMs: boundedInteger(source.gapMs, MIN_SERIAL_GAP_MS, MAX_SERIAL_GAP_MS, defaultSerialFrameParserConfig.gapMs),
+    modbusAutoGap: source.modbusAutoGap !== false,
+    modbusGapMs: boundedInteger(source.modbusGapMs, MIN_SERIAL_GAP_MS, MAX_SERIAL_GAP_MS, DEFAULT_SERIAL_MODBUS_GAP_MS),
   };
 }
 
@@ -113,6 +135,7 @@ export function serialAnalyzerDelimiterBytes(value: unknown): number[] | null {
 export function analyzeSerialCaptureFrames(
   sourceFrames: SerialCaptureFrame[],
   requestedConfig: SerialFrameParserConfig,
+  baudRate = 115_200,
 ): SerialAnalysisResult {
   const config = normalizeSerialFrameParserConfig(requestedConfig);
   const collector = new SerialAnalyzedFrameCollector();
@@ -123,7 +146,8 @@ export function analyzeSerialCaptureFrames(
   else if (config.mode === "fixed") analyzeFixedFrames(frames, config.fixedLength, collector);
   else if (config.mode === "gap") analyzeGapFrames(frames, config.gapMs, collector);
   else if (config.mode === "slip") analyzeSlipFrames(frames, collector);
-  else analyzeCobsFrames(frames, collector);
+  else if (config.mode === "cobs") analyzeCobsFrames(frames, collector);
+  else analyzeModbusFrames(frames, config, baudRate, collector);
   return collector.result(capturedBytes);
 }
 
@@ -155,6 +179,11 @@ export function filterSerialAnalyzedFrames(
 export function serialAnalyzerHasDistinctWire(frame: SerialAnalyzedFrame): boolean {
   return frame.bytes.length !== frame.wireBytes.length
     || frame.bytes.some((byte, index) => byte !== frame.wireBytes[index]);
+}
+
+export function serialModbusSilenceMs(baudRate: number): number {
+  const normalizedBaudRate = Number.isFinite(baudRate) && baudRate > 0 ? baudRate : 115_200;
+  return Math.max(MIN_SERIAL_GAP_MS, Math.ceil(silenceMillisFor(normalizedBaudRate)));
 }
 
 export function toggleSerialAnalyzerBookmark(
@@ -201,6 +230,7 @@ function analyzeCaptureFrames(frames: SerialCaptureFrame[], collector: SerialAna
       complete: true,
       truncated: frame.truncated,
       decodeError: "",
+      protocol: null,
       sourceFrameIds: [frame.id],
       bookmarkId: frame.id,
     });
@@ -258,20 +288,32 @@ function analyzeGapFrames(
   gapMs: number,
   collector: SerialAnalyzedFrameCollector,
 ) {
+  consumeGapFrames(frames, gapMs, (pending, complete) => {
+    collector.push(pendingSerialFrame(pending, [...pending.bytes], complete, "gap", collector.totalFrames));
+  });
+}
+
+function consumeGapFrames(
+  frames: SerialCaptureFrame[],
+  gapMs: number,
+  onFrame: (pending: PendingSerialFrame, complete: boolean) => void,
+  boundaryAtThreshold = false,
+) {
   let pending: PendingSerialFrame | null = null;
   const flush = (complete: boolean) => {
     if (!pending) return;
-    collector.push(pendingSerialFrame(pending, [...pending.bytes], complete, "gap", collector.totalFrames));
+    onFrame(pending, complete);
     pending = null;
   };
   for (const frame of frames) {
     const currentTime = Date.parse(frame.ts);
     const previousTime = pending ? Date.parse(pending.endTs) : Number.NaN;
+    const elapsed = currentTime - previousTime;
     const boundary = pending && (
       pending.direction !== frame.direction
       || !Number.isFinite(currentTime)
       || !Number.isFinite(previousTime)
-      || currentTime - previousTime > gapMs
+      || (boundaryAtThreshold ? elapsed >= gapMs : elapsed > gapMs)
     );
     if (boundary) flush(true);
     for (const byte of frame.bytes) pending = appendPendingSerialByte(pending, frame, byte);
@@ -391,6 +433,45 @@ function analyzeCobsFrames(
   flush(false);
 }
 
+function analyzeModbusFrames(
+  frames: SerialCaptureFrame[],
+  config: SerialFrameParserConfig,
+  baudRate: number,
+  collector: SerialAnalyzedFrameCollector,
+) {
+  const gapMs = config.modbusAutoGap === false
+    ? config.modbusGapMs ?? DEFAULT_SERIAL_MODBUS_GAP_MS
+    : serialModbusSilenceMs(baudRate);
+  consumeGapFrames(frames, gapMs, (pending, complete) => {
+    let bytes: number[] = [];
+    let decodeError: SerialFrameDecodeError = "";
+    let protocol: SerialAnalyzedProtocol | null = null;
+    try {
+      const decoded = decodeModbusRtu(new Uint8Array(pending.bytes));
+      bytes = Array.from(decoded.pdu);
+      protocol = {
+        kind: "modbusRtu",
+        address: decoded.address,
+        functionCode: decoded.fc,
+        exceptionCode: decoded.fc >= 0x80 && decoded.pdu.length ? decoded.pdu[0] : null,
+      };
+    } catch (error) {
+      if (error instanceof ModbusFrameError && error.code === "TOO_SHORT") decodeError = "modbusTooShort";
+      else if (error instanceof ModbusFrameError && error.code === "BAD_ADDRESS") decodeError = "modbusAddress";
+      else decodeError = "modbusCrc";
+    }
+    collector.push(pendingSerialFrame(
+      pending,
+      bytes,
+      complete,
+      "modbus",
+      collector.totalFrames,
+      decodeError,
+      protocol,
+    ));
+  }, true);
+}
+
 function decodeSlipTail(wireBytes: number[], trailingEscape: boolean): number[] {
   let decoded: number[] | null = null;
   const decoder = new slip.Decoder({
@@ -441,6 +522,7 @@ function pendingSerialFrame(
   mode: SerialFrameParserMode,
   sequence: number,
   decodeError: SerialFrameDecodeError = "",
+  protocol: SerialAnalyzedProtocol | null = null,
 ): SerialAnalyzedFrame {
   return {
     id: `${mode}:${pending.sourceFrameIds[0]}:${pending.sourceFrameIds.at(-1)}:${sequence}`,
@@ -452,6 +534,7 @@ function pendingSerialFrame(
     complete,
     truncated: pending.truncated,
     decodeError,
+    protocol,
     sourceFrameIds: [...pending.sourceFrameIds],
     bookmarkId: pending.sourceFrameIds[0],
   };

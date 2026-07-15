@@ -25,6 +25,7 @@ import {
   serialAnalyzerDelimiterBytes,
   serialAnalyzerHasDistinctWire,
   serialAnalyzerHexDump,
+  serialModbusSilenceMs,
   toggleSerialAnalyzerBookmark,
 } from "./serial-analyzer-state";
 import type {
@@ -44,6 +45,7 @@ const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
   { value: "gap", label: "间隔" },
   { value: "slip", label: "SLIP" },
   { value: "cobs", label: "COBS" },
+  { value: "modbus", label: "Modbus" },
 ];
 
 export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
@@ -218,7 +220,10 @@ function SerialAnalyzerWorkspace({
   const [inspectorView, setInspectorView] = useState<"decoded" | "wire">("decoded");
   const [delimiterDraft, setDelimiterDraft] = useState(stored.parser.delimiterHex);
   const serial = session.profile.connection.kind === "serial" ? session.profile.connection : null;
-  const analysis = useMemo(() => analyzeSerialCaptureFrames(frames, stored.parser), [frames, stored.parser]);
+  const analysis = useMemo(
+    () => analyzeSerialCaptureFrames(frames, stored.parser, serial?.baudRate),
+    [frames, serial?.baudRate, stored.parser],
+  );
   const bookmarkIds = useMemo(() => new Set(stored.bookmarks[session.profile.id] ?? []), [session.profile.id, stored.bookmarks]);
   const filtered = useMemo(
     () => filterSerialAnalyzedFrames(analysis.frames, stored.direction, query, bookmarkIds, stored.bookmarksOnly),
@@ -318,6 +323,13 @@ function SerialAnalyzerWorkspace({
             <label><span>字节</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
           ) : stored.parser.mode === "gap" ? (
             <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.gapMs} onChange={(event) => updateParser({ gapMs: Number(event.target.value) })} /></label>
+          ) : stored.parser.mode === "modbus" ? (
+            <>
+              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.modbusAutoGap !== false} onChange={(event) => updateParser({ modbusAutoGap: event.target.checked })} /><span>自动</span></label>
+              {stored.parser.modbusAutoGap !== false
+                ? <span className="serial-analyzer-parser-value">{serialModbusSilenceMs(serial?.baudRate ?? 115_200)} ms</span>
+                : <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.modbusGapMs ?? 2} onChange={(event) => updateParser({ modbusGapMs: Number(event.target.value) })} /></label>}
+            </>
           ) : <span className="serial-analyzer-parser-value">{
             stored.parser.mode === "slip" ? "RFC 1055" : stored.parser.mode === "cobs" ? "0x00 帧界" : "读取分片"
           }</span>}
@@ -402,8 +414,9 @@ function SerialAnalyzerWorkspace({
           <>
             <header>
               <strong>{selected.direction === "inbound" ? "RX" : "TX"} · {inspectedBytes.length} B</strong>
-              <span>{new Date(selected.ts).toLocaleString()}</span>
-              <span>{selected.sourceFrameIds.length} 个捕获分片</span>
+              <span className="serial-analyzer-inspector-time">{new Date(selected.ts).toLocaleString()}</span>
+              <span className="serial-analyzer-inspector-sources">{selected.sourceFrameIds.length} 个捕获分片</span>
+              {selected.protocol ? <span className="serial-analyzer-protocol">{serialAnalyzerProtocolLabel(selected)}</span> : null}
               {hasDistinctWire ? (
                 <select className="serial-analyzer-byte-view" aria-label="详情字节视图" value={inspectorView} onChange={(event) => setInspectorView(event.target.value === "wire" ? "wire" : "decoded")}>
                   <option value="decoded">解码 {selected.bytes.length} B</option>
@@ -481,6 +494,10 @@ function serialAnalyzerFrameStatus(frame: SerialAnalyzedFrame): string {
   if (frame.decodeError === "invalidEscape") return "转义错";
   if (frame.decodeError === "truncatedCobs") return "长度错";
   if (frame.decodeError === "invalidCobs") return "编码错";
+  if (frame.decodeError === "modbusTooShort") return "帧太短";
+  if (frame.decodeError === "modbusAddress") return "地址错";
+  if (frame.decodeError === "modbusCrc") return "CRC 错";
+  if (frame.protocol?.kind === "modbusRtu") return "CRC OK";
   return frame.complete ? "完整" : "尾帧";
 }
 
@@ -488,7 +505,20 @@ function serialAnalyzerDecodeErrorLabel(error: SerialAnalyzedFrame["decodeError"
   if (error === "invalidEscape") return "无效 SLIP 转义";
   if (error === "truncatedCobs") return "COBS 长度截断";
   if (error === "invalidCobs") return "无效 COBS 编码";
+  if (error === "modbusTooShort") return "Modbus RTU 帧太短";
+  if (error === "modbusAddress") return "Modbus RTU 地址无效";
+  if (error === "modbusCrc") return "Modbus RTU CRC 不匹配";
   return "";
+}
+
+function serialAnalyzerProtocolLabel(frame: SerialAnalyzedFrame): string {
+  const protocol = frame.protocol;
+  if (!protocol || protocol.kind !== "modbusRtu") return "";
+  const functionCode = protocol.functionCode.toString(16).padStart(2, "0").toUpperCase();
+  const exception = protocol.exceptionCode === null
+    ? ""
+    : ` · 异常 ${protocol.exceptionCode.toString(16).padStart(2, "0").toUpperCase()}`;
+  return `站 ${protocol.address} · FC ${functionCode}${exception}`;
 }
 
 function formatAnalyzerError(error: unknown): string {
