@@ -11,7 +11,7 @@ This repository currently contains the active desktop implementation slice:
 - WindTerm-style OneKeys manager for encrypted Account/SSH credentials, bound public-key identities, session binding, terminal-prompt completion, and explicit injection
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
 - Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
-- Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux attach/list/pane inspection paths in the Tauri backend
+- Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux attach/list/pane inspection/window synchronization paths in the Tauri backend
 - Standalone serial analyzer window with capture/delimiter/fixed-length/idle-gap framing, bookmarks, filtering, paging, and exact source-frame export
 - SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
 - Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
@@ -252,12 +252,13 @@ cargo run -p portmate-mcp -- --http
 ```bash
 npm test
 npm run test:terminal-compat
+npm run test:tmux-workflow
 npm run build
 cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The terminal compatibility check uses the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere.
+The terminal compatibility and Tmux workflow checks use the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 

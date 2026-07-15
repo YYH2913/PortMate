@@ -531,6 +531,7 @@ export interface TmuxPaneInfo {
   paneIndex: number;
   paneId: string;
   active: boolean;
+  synchronized: boolean;
   command: string;
   title: string;
 }

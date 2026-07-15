@@ -1954,6 +1954,7 @@ pub struct TmuxPaneInfo {
     pub pane_index: u32,
     pub pane_id: String,
     pub active: bool,
+    pub synchronized: bool,
     pub command: String,
     pub title: String,
 }
@@ -4756,12 +4757,7 @@ async fn attach_tmux(
     session_id: String,
     target: String,
 ) -> Result<SessionEvent, String> {
-    let command = format!(
-        "tmux switch-client -t {} || tmux attach -t {} || tmux new-session -A -s {}\r",
-        shell_quote(&target),
-        shell_quote(&target),
-        shell_quote(&target)
-    );
+    let command = tmux_attach_command(&target)?;
     send_text_inner_with_context(
         state.inner().session_io(),
         session_id,
@@ -4770,6 +4766,16 @@ async fn attach_tmux(
         Some("attach_tmux"),
     )
     .await
+}
+
+#[tauri::command]
+async fn set_tmux_pane_sync(
+    state: State<'_, AppState>,
+    session_id: String,
+    target: String,
+    enabled: bool,
+) -> Result<TmuxState, String> {
+    set_tmux_pane_sync_inner(state.inner(), &session_id, &target, enabled).await
 }
 
 #[tauri::command]
@@ -5781,12 +5787,7 @@ async fn execute_ipc_request(
         "attach_tmux" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let target = ipc_string_arg(&request.args, "target")?.to_string();
-            let command = format!(
-                "tmux switch-client -t {} || tmux attach -t {} || tmux new-session -A -s {}\r",
-                shell_quote(&target),
-                shell_quote(&target),
-                shell_quote(&target)
-            );
+            let command = tmux_attach_command(&target)?;
             let actor = mcp_audit_actor(&request.client_id);
             let event =
                 send_text_inner_with_context(state.session_io(), session_id, command, &actor, None)
@@ -10592,7 +10593,7 @@ async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<Tmu
     .await?;
     let panes_output = exec_ssh_command_capture(
         handle,
-        "tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_title}' 2>/dev/null || true",
+        "tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_title}\t#{pane_synchronized}' 2>/dev/null || true",
         Duration::from_secs(8),
     )
     .await?;
@@ -10606,6 +10607,59 @@ async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<Tmu
         .filter_map(parse_tmux_pane)
         .collect::<Vec<_>>();
     Ok(TmuxState { sessions, panes })
+}
+
+async fn set_tmux_pane_sync_inner(
+    state: &AppState,
+    session_id: &str,
+    target: &str,
+    enabled: bool,
+) -> Result<TmuxState, String> {
+    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let command = tmux_pane_sync_command(target, enabled)?;
+    exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
+    if let Ok(mut store) = state.store.lock() {
+        store.record_system_event(
+            session_id,
+            format!(
+                "PortMate: tmux pane synchronization {} ({})",
+                if enabled { "enabled" } else { "disabled" },
+                normalize_tmux_target(target)?
+            ),
+        );
+    }
+    list_tmux_state_inner(state, session_id).await
+}
+
+fn normalize_tmux_target(target: &str) -> Result<&str, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("Tmux target 不能为空".to_string());
+    }
+    if target.chars().count() > 256 {
+        return Err("Tmux target 不能超过 256 个字符".to_string());
+    }
+    if target.chars().any(char::is_control) {
+        return Err("Tmux target 不能包含控制字符".to_string());
+    }
+    Ok(target)
+}
+
+fn tmux_attach_command(target: &str) -> Result<String, String> {
+    let target = normalize_tmux_target(target)?;
+    let target = shell_quote(target);
+    Ok(format!(
+        "tmux switch-client -t {target} || tmux attach -t {target} || tmux new-session -A -s {target}\r"
+    ))
+}
+
+fn tmux_pane_sync_command(target: &str, enabled: bool) -> Result<String, String> {
+    let target = normalize_tmux_target(target)?;
+    Ok(format!(
+        "tmux set-option -w -t {} synchronize-panes {}",
+        shell_quote(target),
+        if enabled { "on" } else { "off" }
+    ))
 }
 
 fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
@@ -10655,6 +10709,7 @@ fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
         active: parts.next().unwrap_or_default() == "1",
         command: parts.next().unwrap_or_default().to_string(),
         title: parts.next().unwrap_or_default().to_string(),
+        synchronized: parts.next().unwrap_or_default() == "1",
     })
 }
 
@@ -24632,6 +24687,7 @@ pub fn run() {
             export_serial_capture,
             list_tmux_state,
             attach_tmux,
+            set_tmux_pane_sync,
             list_files,
             file_properties,
             create_directory,
@@ -36333,6 +36389,42 @@ mod tests {
             triggers: Vec::new(),
             transfer: portmate_core::TransferSettings::default(),
         }
+    }
+
+    #[test]
+    fn tmux_targets_are_bounded_and_shell_quoted() {
+        assert!(tmux_attach_command("  ").is_err());
+        assert!(tmux_attach_command("bad\nname").is_err());
+        assert!(tmux_attach_command(&"x".repeat(257)).is_err());
+        assert_eq!(
+            tmux_attach_command("  lab  ").unwrap(),
+            "tmux switch-client -t 'lab' || tmux attach -t 'lab' || tmux new-session -A -s 'lab'\r"
+        );
+        assert_eq!(
+            tmux_pane_sync_command("lab'; touch /tmp/portmate-tmux #", true).unwrap(),
+            "tmux set-option -w -t 'lab'\\''; touch /tmp/portmate-tmux #' synchronize-panes on"
+        );
+        assert_eq!(
+            tmux_pane_sync_command("lab:2", false).unwrap(),
+            "tmux set-option -w -t 'lab:2' synchronize-panes off"
+        );
+    }
+
+    #[test]
+    fn tmux_pane_parser_reads_synchronization_state_conservatively() {
+        let pane = parse_tmux_pane("lab\t2\t1\t%7\t1\tvim\teditor\t1").unwrap();
+        assert_eq!(pane.session, "lab");
+        assert_eq!(pane.window_index, 2);
+        assert_eq!(pane.pane_index, 1);
+        assert_eq!(pane.pane_id, "%7");
+        assert!(pane.active);
+        assert!(pane.synchronized);
+        assert_eq!(pane.command, "vim");
+        assert_eq!(pane.title, "editor");
+
+        let legacy = parse_tmux_pane("lab\t0\t0\t%1\t0\tbash\tshell").unwrap();
+        assert!(!legacy.synchronized);
+        assert!(parse_tmux_pane("\t0\t0\t%1\t0\tbash\tshell\t1").is_none());
     }
 
     fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {

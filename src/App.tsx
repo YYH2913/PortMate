@@ -76,13 +76,14 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
+const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
@@ -2759,11 +2760,15 @@ function handleMenuAction(item: string) {
         setUtilityDialog(null);
         setNotice({ title: "端口转发", message: label });
       }} />}
-      {utilityDialog === "tmux" && active && <TmuxDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
-        setUtilityDialog(null);
-        setNotice({ title: "Tmux", message });
-        void refreshActiveLog(active.profile.id);
-      }} />}
+      {utilityDialog === "tmux" && active && (
+        <Suspense fallback={null}>
+          <LazyTmuxDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
+            setUtilityDialog(null);
+            setNotice({ title: "Tmux", message });
+            void refreshActiveLog(active.profile.id);
+          }} />
+        </Suspense>
+      )}
       {utilityDialog === "sysmon" && active && <SysmonDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "search" && <SearchDialog state={searchDialog} sessions={sessions} logs={logs} onChange={setSearchDialog} onSelect={(sessionId) => {
         activateSession(sessionId);
@@ -4921,96 +4926,6 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
           <button type="submit" disabled={busy || !bindHost || !bindPort || (mode !== "dynamic" && (!targetHost || !targetPort))}>{busy ? "创建中" : "创建"}</button>
         </footer>
       </form>
-    </div>
-  );
-}
-
-function TmuxDialog({ session, onClose, onDone }: { session: SessionSummary; onClose: () => void; onDone: (message: string) => void }) {
-  const [state, setState] = useState<TmuxState>({ sessions: [], panes: [] });
-  const [target, setTarget] = useState("portmate");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    void refreshTmux();
-  }, [session.profile.id]);
-
-  async function refreshTmux() {
-    setBusy(true);
-    setError("");
-    try {
-      const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId: session.profile.id });
-      setState(nextState);
-      setTarget((current) => current || nextState.sessions[0]?.name || "portmate");
-    } catch (error) {
-      setState({ sessions: [], panes: [] });
-      setError(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function attach(nextTarget = target) {
-    const cleanTarget = nextTarget.trim();
-    if (!cleanTarget) return;
-    setBusy(true);
-    setError("");
-    try {
-      await invokeBackend<SessionEvent>("attach_tmux", { sessionId: session.profile.id, target: cleanTarget });
-      onDone(`已发送 tmux attach/new-session：${cleanTarget}`);
-    } catch (error) {
-      setError(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog tmux-dialog">
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>Tmux</strong>
-          <button onClick={onClose}><X size={20} /></button>
-        </header>
-        <div className="tmux-content">
-          <div className="tmux-toolbar">
-            <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="session name" />
-            <button onClick={() => void attach()} disabled={busy || !target.trim()}><Play size={14} />附着/新建</button>
-            <button onClick={() => void refreshTmux()} disabled={busy}><RefreshCw size={14} />刷新</button>
-          </div>
-          {error ? <div className="utility-error">{error}</div> : null}
-          <section className="tmux-section">
-            <h2>会话</h2>
-            <div className="tmux-list">
-              {state.sessions.map((item) => (
-                <button key={item.name} onClick={() => {
-                  setTarget(item.name);
-                  void attach(item.name);
-                }}>
-                  <strong>{item.name}</strong>
-                  <span>{item.windows} windows · {item.attached} attached</span>
-                  <small>{item.created ? new Date(item.created).toLocaleString() : "created time unavailable"}</small>
-                </button>
-              ))}
-              {!state.sessions.length ? <div className="empty-pane top">没有检测到 tmux session</div> : null}
-            </div>
-          </section>
-          <section className="tmux-section">
-            <h2>窗格</h2>
-            <div className="tmux-pane-list">
-              {state.panes.map((pane) => (
-                <div key={pane.paneId || `${pane.session}-${pane.windowIndex}-${pane.paneIndex}`} className={pane.active ? "active" : ""}>
-                  <strong>{pane.session}:{pane.windowIndex}.{pane.paneIndex}</strong>
-                  <span>{pane.command || "shell"}</span>
-                  <small>{pane.title || pane.paneId}</small>
-                </div>
-              ))}
-              {!state.panes.length ? <div className="empty-pane top">没有可显示的 pane</div> : null}
-            </div>
-          </section>
-        </div>
-      </section>
     </div>
   );
 }
