@@ -7087,7 +7087,11 @@ function CredentialDialog({
               <KeyRound size={14} />
               <span>
                 <strong>{selectedOneKey.label}</strong>
-                <small>{[selectedOneKey.hasPassword ? "密码" : "", selectedOneKey.hasPassphrase ? "私钥口令" : ""].filter(Boolean).join(" / ")}</small>
+                <small>{[
+                  selectedOneKey.hasPassword ? "密码" : "",
+                  selectedOneKey.hasPassphrase ? "私钥口令" : "",
+                  selectedOneKey.identity ? `公钥身份 · ${selectedOneKey.identity.label}` : "",
+                ].filter(Boolean).join(" / ")}</small>
               </span>
             </div>
           ) : null}

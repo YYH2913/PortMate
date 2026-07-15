@@ -151,6 +151,13 @@ pub enum OneKeyKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OneKeyIdentity {
+    pub source_profile_id: String,
+    pub identity: IdentityRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OneKeyCredential {
     pub id: String,
     pub label: String,
@@ -158,6 +165,8 @@ pub struct OneKeyCredential {
     pub username: String,
     pub password_secret_ref: Option<String>,
     pub passphrase_secret_ref: Option<String>,
+    #[serde(default)]
+    pub identity: Option<OneKeyIdentity>,
     #[serde(default)]
     pub session_ids: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -880,6 +889,27 @@ pub struct AuditRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_key_deserializes_legacy_shape_without_identity() {
+        let one_key: OneKeyCredential = serde_json::from_str(
+            r#"{
+                "id": "onekey:legacy",
+                "label": "Legacy SSH",
+                "kind": "ssh",
+                "username": "operator",
+                "passwordSecretRef": "keychain:legacy-password",
+                "passphraseSecretRef": null,
+                "sessionIds": ["ssh-session-1"],
+                "createdAt": "2026-07-15T00:00:00Z",
+                "updatedAt": "2026-07-15T00:00:00Z"
+            }"#,
+        )
+        .expect("legacy OneKey should deserialize");
+
+        assert!(one_key.identity.is_none());
+        assert_eq!(one_key.session_ids, ["ssh-session-1"]);
+    }
 
     #[test]
     fn jump_hop_deserializes_legacy_shape_with_optional_defaults() {

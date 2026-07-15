@@ -172,6 +172,14 @@ export interface IdentityRef {
 
 export type OneKeyKind = "account" | "ssh";
 
+export interface OneKeyIdentitySummary {
+  sourceProfileId: string;
+  id: string;
+  label: string;
+  source: IdentityRef["source"];
+  fingerprintSha256?: string | null;
+}
+
 export interface OneKeySummary {
   id: string;
   label: string;
@@ -179,6 +187,7 @@ export interface OneKeySummary {
   username: string;
   hasPassword: boolean;
   hasPassphrase: boolean;
+  identity?: OneKeyIdentitySummary | null;
   sessionIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -189,6 +198,11 @@ export type OneKeySecretUpdate =
   | { action: "clear" }
   | { action: "set"; secret: string; storage?: "native" | "portable" | null };
 
+export type OneKeyIdentityUpdate =
+  | { action: "preserve" }
+  | { action: "clear" }
+  | { action: "set"; sourceProfileId: string; identityId: string };
+
 export interface SaveOneKeyRequest {
   id?: string | null;
   label: string;
@@ -196,6 +210,7 @@ export interface SaveOneKeyRequest {
   username: string;
   passwordUpdate: OneKeySecretUpdate;
   passphraseUpdate: OneKeySecretUpdate;
+  identityUpdate: OneKeyIdentityUpdate;
   sessionIds: string[];
 }
 

@@ -2,7 +2,15 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { KeyRound, Plus, Save, Send, Trash2, UserRound, X } from "lucide-react";
 import { invokeBackend } from "./api";
+import {
+  oneKeyIdentityCandidates,
+  oneKeyIdentitySelectionKey,
+  oneKeyIdentityUpdate,
+  selectionFromOneKeyIdentity,
+} from "./one-key-identity-state";
+import type { OneKeyIdentitySelection } from "./one-key-identity-state";
 import type {
+  OneKeyIdentitySummary,
   OneKeyKind,
   OneKeyMutationResponse,
   OneKeySecretUpdate,
@@ -26,6 +34,8 @@ type OneKeyDraft = {
   clearPassphrase: boolean;
   hasPassword: boolean;
   hasPassphrase: boolean;
+  currentIdentity: OneKeyIdentitySummary | null;
+  identitySelection: OneKeyIdentitySelection | null;
   storage: SecretStorageChoice;
   sessionIds: string[];
 };
@@ -42,6 +52,8 @@ function emptyDraft(): OneKeyDraft {
     clearPassphrase: false,
     hasPassword: false,
     hasPassphrase: false,
+    currentIdentity: null,
+    identitySelection: null,
     storage: "auto",
     sessionIds: [],
   };
@@ -59,6 +71,8 @@ function draftFromItem(item: OneKeySummary): OneKeyDraft {
     clearPassphrase: false,
     hasPassword: item.hasPassword,
     hasPassphrase: item.hasPassphrase,
+    currentIdentity: item.identity ?? null,
+    identitySelection: selectionFromOneKeyIdentity(item.identity),
     storage: "auto",
     sessionIds: [...item.sessionIds],
   };
@@ -102,6 +116,19 @@ export default function OneKeyDialog({
     () => sessions.filter((session) => draft.kind === "account" || session.profile.kind === "ssh" || session.profile.kind === "tmux"),
     [draft.kind, sessions],
   );
+  const identityCandidates = useMemo(
+    () => oneKeyIdentityCandidates(sessions, draft.sessionIds),
+    [draft.sessionIds, sessions],
+  );
+  const currentIdentitySelection = selectionFromOneKeyIdentity(draft.currentIdentity);
+  const showSavedIdentityOption = Boolean(
+    currentIdentitySelection
+      && draft.sessionIds.includes(currentIdentitySelection.sourceProfileId)
+      && !identityCandidates.some((item) => (
+        item.sourceProfileId === currentIdentitySelection.sourceProfileId
+        && item.identity.id === currentIdentitySelection.identityId
+      )),
+  );
 
   function selectItem(item: OneKeySummary) {
     setSelectedId(item.id);
@@ -120,12 +147,18 @@ export default function OneKeyDialog({
   }
 
   function toggleSession(sessionId: string) {
-    setDraft((current) => ({
-      ...current,
-      sessionIds: current.sessionIds.includes(sessionId)
-        ? current.sessionIds.filter((id) => id !== sessionId)
-        : [...current.sessionIds, sessionId],
-    }));
+    setDraft((current) => {
+      const removing = current.sessionIds.includes(sessionId);
+      return {
+        ...current,
+        sessionIds: removing
+          ? current.sessionIds.filter((id) => id !== sessionId)
+          : [...current.sessionIds, sessionId],
+        identitySelection: removing && current.identitySelection?.sourceProfileId === sessionId
+          ? null
+          : current.identitySelection,
+      };
+    });
     setFeedback(null);
   }
 
@@ -141,8 +174,9 @@ export default function OneKeyDialog({
     }
     const hasPasswordAfterSave = Boolean(draft.password) || (draft.hasPassword && !draft.clearPassword);
     const hasPassphraseAfterSave = draft.kind === "ssh" && (Boolean(draft.passphrase) || (draft.hasPassphrase && !draft.clearPassphrase));
-    if (!hasPasswordAfterSave && !hasPassphraseAfterSave) {
-      setFeedback({ kind: "error", text: "至少保存密码或私钥口令。" });
+    const hasIdentityAfterSave = draft.kind === "ssh" && draft.identitySelection !== null;
+    if (!hasPasswordAfterSave && !hasPassphraseAfterSave && !hasIdentityAfterSave) {
+      setFeedback({ kind: "error", text: "至少保存密码、私钥口令或公钥身份。" });
       return;
     }
     const request: SaveOneKeyRequest = {
@@ -154,6 +188,7 @@ export default function OneKeyDialog({
       passphraseUpdate: draft.kind === "ssh"
         ? secretUpdate(draft.passphrase, draft.clearPassphrase, draft.storage)
         : { action: "clear" },
+      identityUpdate: oneKeyIdentityUpdate(draft.kind, draft.currentIdentity, draft.identitySelection),
       sessionIds: draft.sessionIds,
     };
     setBusy("save");
@@ -250,6 +285,7 @@ export default function OneKeyDialog({
                 setDraft((current) => ({
                   ...current,
                   kind,
+                  identitySelection: kind === "ssh" ? current.identitySelection : null,
                   sessionIds: current.sessionIds.filter((id) => {
                     const session = sessions.find((candidate) => candidate.profile.id === id);
                     return kind === "account" || session?.profile.kind === "ssh" || session?.profile.kind === "tmux";
@@ -261,6 +297,27 @@ export default function OneKeyDialog({
               {draft.hasPassword ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassword} disabled={Boolean(draft.password)} onChange={(event) => setDraft((current) => ({ ...current, clearPassword: event.target.checked }))} /><span>清除已存密码</span></label> : null}
               {draft.kind === "ssh" ? <label><span>{draft.hasPassphrase ? "私钥口令（已存）" : "私钥口令"}</span><input type="password" value={draft.passphrase} autoComplete="off" placeholder={draft.hasPassphrase ? "留空保持原值" : ""} onChange={(event) => setDraft((current) => ({ ...current, passphrase: event.target.value, clearPassphrase: false }))} /></label> : null}
               {draft.kind === "ssh" && draft.hasPassphrase ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassphrase} disabled={Boolean(draft.passphrase)} onChange={(event) => setDraft((current) => ({ ...current, clearPassphrase: event.target.checked }))} /><span>清除已存口令</span></label> : null}
+              {draft.kind === "ssh" ? <label><span>公钥身份</span><select value={draft.identitySelection ? oneKeyIdentitySelectionKey(draft.identitySelection) : ""} onChange={(event) => {
+                const candidate = identityCandidates.find((item) => oneKeyIdentitySelectionKey({ sourceProfileId: item.sourceProfileId, identityId: item.identity.id }) === event.target.value);
+                const saved = currentIdentitySelection && oneKeyIdentitySelectionKey(currentIdentitySelection) === event.target.value
+                  ? currentIdentitySelection
+                  : null;
+                setDraft((current) => ({
+                  ...current,
+                  identitySelection: candidate
+                    ? { sourceProfileId: candidate.sourceProfileId, identityId: candidate.identity.id }
+                    : saved,
+                }));
+              }}>
+                <option value="">不使用</option>
+                {showSavedIdentityOption && currentIdentitySelection
+                  ? <option value={oneKeyIdentitySelectionKey(currentIdentitySelection)}>{draft.currentIdentity?.label ?? currentIdentitySelection.identityId} · 已保存</option>
+                  : null}
+                {identityCandidates.map((item) => {
+                  const selection = { sourceProfileId: item.sourceProfileId, identityId: item.identity.id };
+                  return <option key={oneKeyIdentitySelectionKey(selection)} value={oneKeyIdentitySelectionKey(selection)}>{item.identity.label} · {item.sourceProfileName}</option>;
+                })}
+              </select></label> : null}
               <label><span>新 Secret 存储</span><select value={draft.storage} onChange={(event) => setDraft((current) => ({ ...current, storage: event.target.value as SecretStorageChoice }))}><option value="auto">自动</option><option value="native">系统密钥库</option><option value="portable">Portable Stronghold</option></select></label>
             </div>
             <section className="one-key-sessions">
