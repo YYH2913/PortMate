@@ -6680,6 +6680,36 @@ fieldset label {
   padding-right: 0;
 }
 
+.tmux-layout-select,
+.tmux-pane-actions select {
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.tmux-layout-select {
+  width: 82px;
+  padding: 0 5px;
+}
+
+.tmux-layout-select:hover:not(:disabled),
+.tmux-layout-select:focus-visible,
+.tmux-pane-actions select:hover:not(:disabled),
+.tmux-pane-actions select:focus-visible {
+  border-color: rgba(94, 234, 212, 0.45);
+  outline: 0;
+  color: var(--text);
+}
+
+.tmux-layout-select:disabled,
+.tmux-pane-actions select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .tmux-sync-toggle {
   display: inline-flex;
   min-width: 88px;
@@ -6772,6 +6802,64 @@ fieldset label {
   color: var(--text);
 }
 
+.tmux-pane-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  min-width: 0;
+}
+
+.tmux-pane-summary strong,
+.tmux-pane-summary span,
+.tmux-pane-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tmux-pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tmux-pane-actions select {
+  width: 62px;
+  padding: 0 3px;
+}
+
+.tmux-pane-actions select:last-child {
+  width: 68px;
+}
+
+.tmux-pane-actions button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tmux-pane-actions button:hover:not(:disabled),
+.tmux-pane-actions button:focus-visible {
+  border-color: rgba(248, 113, 113, 0.45);
+  outline: 0;
+  background: var(--control-hover);
+  color: #fca5a5;
+}
+
+.tmux-pane-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .tmux-window-panes > div + div {
   border-top: 1px solid var(--line-soft);
 }
@@ -6813,6 +6901,20 @@ fieldset label {
   .tmux-window-controls {
     align-items: flex-end;
     flex-direction: column;
+  }
+
+  .tmux-window-panes > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tmux-pane-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 28px;
+  }
+
+  .tmux-pane-actions select,
+  .tmux-pane-actions select:last-child {
+    width: 100%;
   }
 
   .tmux-delete-confirmation {

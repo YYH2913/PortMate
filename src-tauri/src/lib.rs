@@ -1987,6 +1987,26 @@ pub enum TmuxMutationAction {
     NewWindow,
     RenameWindow,
     KillWindow,
+    KillPane,
+    SplitPaneHorizontal,
+    SplitPaneVertical,
+    SwapPanePrevious,
+    SwapPaneNext,
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    SelectLayout,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TmuxWindowLayout {
+    EvenHorizontal,
+    EvenVertical,
+    MainHorizontal,
+    MainVertical,
+    Tiled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1997,6 +2017,10 @@ pub struct TmuxMutationRequest {
     pub target: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub layout: Option<TmuxWindowLayout>,
+    #[serde(default)]
+    pub amount: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10782,6 +10806,53 @@ fn tmux_mutation_command(request: &TmuxMutationRequest) -> Result<String, String
             shell_quote(name.ok_or_else(|| "重命名 window 需要新名称".to_string())?)
         )),
         TmuxMutationAction::KillWindow => Ok(format!("tmux kill-window -t {target}")),
+        TmuxMutationAction::KillPane => Ok(format!("tmux kill-pane -t {target}")),
+        TmuxMutationAction::SplitPaneHorizontal => Ok(format!("tmux split-window -h -t {target}")),
+        TmuxMutationAction::SplitPaneVertical => Ok(format!("tmux split-window -v -t {target}")),
+        TmuxMutationAction::SwapPanePrevious => Ok(format!("tmux swap-pane -t {target} -U")),
+        TmuxMutationAction::SwapPaneNext => Ok(format!("tmux swap-pane -t {target} -D")),
+        TmuxMutationAction::ResizePaneLeft => Ok(format!(
+            "tmux resize-pane -t {target} -L {}",
+            normalize_tmux_resize_amount(request.amount)?
+        )),
+        TmuxMutationAction::ResizePaneRight => Ok(format!(
+            "tmux resize-pane -t {target} -R {}",
+            normalize_tmux_resize_amount(request.amount)?
+        )),
+        TmuxMutationAction::ResizePaneUp => Ok(format!(
+            "tmux resize-pane -t {target} -U {}",
+            normalize_tmux_resize_amount(request.amount)?
+        )),
+        TmuxMutationAction::ResizePaneDown => Ok(format!(
+            "tmux resize-pane -t {target} -D {}",
+            normalize_tmux_resize_amount(request.amount)?
+        )),
+        TmuxMutationAction::SelectLayout => Ok(format!(
+            "tmux select-layout -t {target} {}",
+            tmux_window_layout_argument(
+                request
+                    .layout
+                    .ok_or_else(|| "切换 window 布局需要 layout".to_string())?
+            )
+        )),
+    }
+}
+
+fn normalize_tmux_resize_amount(amount: Option<u16>) -> Result<u16, String> {
+    let amount = amount.unwrap_or(5);
+    if !(1..=100).contains(&amount) {
+        return Err("Tmux pane 调整步长必须在 1..=100 之间".to_string());
+    }
+    Ok(amount)
+}
+
+fn tmux_window_layout_argument(layout: TmuxWindowLayout) -> &'static str {
+    match layout {
+        TmuxWindowLayout::EvenHorizontal => "even-horizontal",
+        TmuxWindowLayout::EvenVertical => "even-vertical",
+        TmuxWindowLayout::MainHorizontal => "main-horizontal",
+        TmuxWindowLayout::MainVertical => "main-vertical",
+        TmuxWindowLayout::Tiled => "tiled",
     }
 }
 
@@ -10792,6 +10863,16 @@ fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
         TmuxMutationAction::NewWindow => "window created",
         TmuxMutationAction::RenameWindow => "window renamed",
         TmuxMutationAction::KillWindow => "window closed",
+        TmuxMutationAction::KillPane => "pane closed",
+        TmuxMutationAction::SplitPaneHorizontal => "pane split horizontally",
+        TmuxMutationAction::SplitPaneVertical => "pane split vertically",
+        TmuxMutationAction::SwapPanePrevious => "pane swapped with previous",
+        TmuxMutationAction::SwapPaneNext => "pane swapped with next",
+        TmuxMutationAction::ResizePaneLeft => "pane resized left",
+        TmuxMutationAction::ResizePaneRight => "pane resized right",
+        TmuxMutationAction::ResizePaneUp => "pane resized up",
+        TmuxMutationAction::ResizePaneDown => "pane resized down",
+        TmuxMutationAction::SelectLayout => "window layout selected",
     }
 }
 
@@ -36570,6 +36651,8 @@ mod tests {
             action,
             target: target.to_string(),
             name: name.map(str::to_string),
+            layout: None,
+            amount: None,
         };
         assert_eq!(
             tmux_mutation_command(&request(
@@ -36605,6 +36688,82 @@ mod tests {
         assert_eq!(
             tmux_mutation_command(&request(TmuxMutationAction::KillWindow, "lab:2", None)).unwrap(),
             "tmux kill-window -t 'lab:2'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::KillPane, "%7", None)).unwrap(),
+            "tmux kill-pane -t '%7'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(
+                TmuxMutationAction::SplitPaneHorizontal,
+                "%7'; touch /tmp/nope #",
+                None,
+            ))
+            .unwrap(),
+            "tmux split-window -h -t '%7'\\''; touch /tmp/nope #'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::SplitPaneVertical, "%7", None,))
+                .unwrap(),
+            "tmux split-window -v -t '%7'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::SwapPanePrevious, "%7", None,))
+                .unwrap(),
+            "tmux swap-pane -t '%7' -U"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::SwapPaneNext, "%7", None)).unwrap(),
+            "tmux swap-pane -t '%7' -D"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::ResizePaneLeft, "%7", None))
+                .unwrap(),
+            "tmux resize-pane -t '%7' -L 5"
+        );
+        let mut resize = request(TmuxMutationAction::ResizePaneRight, "%7", None);
+        resize.amount = Some(12);
+        assert_eq!(
+            tmux_mutation_command(&resize).unwrap(),
+            "tmux resize-pane -t '%7' -R 12"
+        );
+        resize.action = TmuxMutationAction::ResizePaneUp;
+        assert_eq!(
+            tmux_mutation_command(&resize).unwrap(),
+            "tmux resize-pane -t '%7' -U 12"
+        );
+        resize.action = TmuxMutationAction::ResizePaneDown;
+        assert_eq!(
+            tmux_mutation_command(&resize).unwrap(),
+            "tmux resize-pane -t '%7' -D 12"
+        );
+        resize.amount = Some(0);
+        assert!(tmux_mutation_command(&resize).is_err());
+        resize.amount = Some(101);
+        assert!(tmux_mutation_command(&resize).is_err());
+        let mut layout = request(TmuxMutationAction::SelectLayout, "lab:2", None);
+        assert!(tmux_mutation_command(&layout).is_err());
+        layout.layout = Some(TmuxWindowLayout::Tiled);
+        assert_eq!(
+            tmux_mutation_command(&layout).unwrap(),
+            "tmux select-layout -t 'lab:2' tiled"
+        );
+        assert_eq!(
+            [
+                TmuxWindowLayout::EvenHorizontal,
+                TmuxWindowLayout::EvenVertical,
+                TmuxWindowLayout::MainHorizontal,
+                TmuxWindowLayout::MainVertical,
+                TmuxWindowLayout::Tiled,
+            ]
+            .map(tmux_window_layout_argument),
+            [
+                "even-horizontal",
+                "even-vertical",
+                "main-horizontal",
+                "main-vertical",
+                "tiled",
+            ]
         );
         assert!(
             tmux_mutation_command(&request(TmuxMutationAction::RenameSession, "lab", None,))

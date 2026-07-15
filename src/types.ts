@@ -552,11 +552,30 @@ export interface TmuxState {
   panes: TmuxPaneInfo[];
 }
 
-export type TmuxMutationAction = "rename-session" | "kill-session" | "new-window" | "rename-window" | "kill-window";
+export type TmuxMutationAction =
+  | "rename-session"
+  | "kill-session"
+  | "new-window"
+  | "rename-window"
+  | "kill-window"
+  | "kill-pane"
+  | "split-pane-horizontal"
+  | "split-pane-vertical"
+  | "swap-pane-previous"
+  | "swap-pane-next"
+  | "resize-pane-left"
+  | "resize-pane-right"
+  | "resize-pane-up"
+  | "resize-pane-down"
+  | "select-layout";
+
+export type TmuxWindowLayout = "even-horizontal" | "even-vertical" | "main-horizontal" | "main-vertical" | "tiled";
 
 export interface TmuxMutationRequest {
   sessionId: string;
   action: TmuxMutationAction;
   target: string;
   name?: string | null;
+  layout?: TmuxWindowLayout | null;
+  amount?: number | null;
 }

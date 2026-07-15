@@ -2,7 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { groupTmuxPanes } from "./tmux-state";
-import type { SessionEvent, SessionSummary, TmuxMutationAction, TmuxMutationRequest, TmuxState } from "./types";
+import type {
+  SessionEvent,
+  SessionSummary,
+  TmuxMutationAction,
+  TmuxMutationRequest,
+  TmuxState,
+  TmuxWindowLayout,
+} from "./types";
 
 type TmuxEditor = {
   action: "rename-session" | "new-window" | "rename-window";
@@ -11,9 +18,20 @@ type TmuxEditor = {
 };
 
 type TmuxDeleteConfirmation = {
-  action: "kill-session" | "kill-window";
+  action: "kill-session" | "kill-window" | "kill-pane";
   target: string;
+  label: string;
 };
+
+type TmuxPaneMutationAction =
+  | "split-pane-horizontal"
+  | "split-pane-vertical"
+  | "swap-pane-previous"
+  | "swap-pane-next"
+  | "resize-pane-left"
+  | "resize-pane-right"
+  | "resize-pane-up"
+  | "resize-pane-down";
 
 export default function TmuxDialog({
   session,
@@ -100,6 +118,7 @@ export default function TmuxDialog({
     mutationTarget: string,
     name: string | null,
     successMessage: string,
+    options: Pick<TmuxMutationRequest, "layout" | "amount"> = {},
   ) {
     setMutatingTarget(mutationTarget);
     setError("");
@@ -110,6 +129,7 @@ export default function TmuxDialog({
         action,
         target: mutationTarget,
         name,
+        ...options,
       };
       const nextState = await invokeBackend<TmuxState>("mutate_tmux", { request });
       setState(nextState);
@@ -152,12 +172,37 @@ export default function TmuxDialog({
 
   function confirmDelete() {
     if (!deleteConfirmation) return;
-    const { action, target: deletionTarget } = deleteConfirmation;
+    const { action, target: deletionTarget, label } = deleteConfirmation;
     void mutate(
       action,
       deletionTarget,
       null,
-      `${deletionTarget} 已关闭`,
+      `${label} 已关闭`,
+    );
+  }
+
+  function applyPaneMutation(action: TmuxPaneMutationAction, paneTarget: string, paneLabel: string) {
+    setEditor(null);
+    setDeleteConfirmation(null);
+    const amount = action.startsWith("resize-pane-") ? 5 : null;
+    void mutate(
+      action,
+      paneTarget,
+      null,
+      paneMutationFeedback(action, paneLabel),
+      amount ? { amount } : {},
+    );
+  }
+
+  function applyWindowLayout(windowTarget: string, layout: TmuxWindowLayout) {
+    setEditor(null);
+    setDeleteConfirmation(null);
+    void mutate(
+      "select-layout",
+      windowTarget,
+      null,
+      `${windowTarget} 已应用 ${layout} 布局`,
+      { layout },
     );
   }
 
@@ -182,8 +227,10 @@ export default function TmuxDialog({
               <div className="tmux-delete-confirmation" role="alert">
                 <span>
                   {deleteConfirmation.action === "kill-session"
-                    ? `关闭 session ${deleteConfirmation.target} 及其全部 window？`
-                    : `关闭 window ${deleteConfirmation.target}？`}
+                    ? `关闭 session ${deleteConfirmation.label} 及其全部 window？`
+                    : deleteConfirmation.action === "kill-window"
+                      ? `关闭 window ${deleteConfirmation.label}？`
+                      : `关闭 pane ${deleteConfirmation.label}？`}
                 </span>
                 <button type="button" onClick={() => setDeleteConfirmation(null)} disabled={Boolean(mutatingTarget)}>取消</button>
                 <button type="button" className="danger" onClick={confirmDelete} disabled={Boolean(mutatingTarget)}>
@@ -222,7 +269,7 @@ export default function TmuxDialog({
                           setError("");
                           setFeedback("");
                           setEditor(null);
-                          setDeleteConfirmation({ action: "kill-session", target: item.name });
+                          setDeleteConfirmation({ action: "kill-session", target: item.name, label: item.name });
                         }}><Trash2 size={13} /></button>
                       </div>
                     </>
@@ -243,6 +290,25 @@ export default function TmuxDialog({
                       <small>{window.name || window.windowId || "unnamed"} · {window.panes.length} panes{window.active ? " · active" : ""}</small>
                     </span>
                     <div className="tmux-window-controls">
+                      <select
+                        className="tmux-layout-select"
+                        aria-label={`${window.target} window 布局`}
+                        title={`切换 ${window.target} 布局`}
+                        defaultValue=""
+                        disabled={operationBusy}
+                        onChange={(event) => {
+                          const layout = event.currentTarget.value as TmuxWindowLayout;
+                          event.currentTarget.value = "";
+                          if (layout) applyWindowLayout(window.target, layout);
+                        }}
+                      >
+                        <option value="" disabled>布局</option>
+                        <option value="even-horizontal">等宽左右</option>
+                        <option value="even-vertical">等高上下</option>
+                        <option value="main-horizontal">主窗格上方</option>
+                        <option value="main-vertical">主窗格左侧</option>
+                        <option value="tiled">平铺</option>
+                      </select>
                       <label className="tmux-sync-toggle">
                         <input
                           type="checkbox"
@@ -260,7 +326,7 @@ export default function TmuxDialog({
                           setError("");
                           setFeedback("");
                           setEditor(null);
-                          setDeleteConfirmation({ action: "kill-window", target: window.target });
+                          setDeleteConfirmation({ action: "kill-window", target: window.target, label: window.target });
                         }}><Trash2 size={13} /></button>
                       </div>
                     </div>
@@ -276,10 +342,82 @@ export default function TmuxDialog({
                   ) : null}
                   <div className="tmux-window-panes">
                     {window.panes.map((pane) => (
-                      <div key={pane.paneId || `${pane.session}-${pane.windowIndex}-${pane.paneIndex}`} className={pane.active ? "active" : ""}>
-                        <strong>{window.target}.{pane.paneIndex}</strong>
-                        <span>{pane.command || "shell"}</span>
-                        <small>{pane.title || pane.paneId}</small>
+                      <div
+                        key={pane.paneId || `${pane.session}-${pane.windowIndex}-${pane.paneIndex}`}
+                        className={pane.active ? "active" : ""}
+                        data-tmux-pane={pane.paneId}
+                      >
+                        <div className="tmux-pane-summary">
+                          <strong>{window.target}.{pane.paneIndex}</strong>
+                          <span>{pane.command || "shell"}</span>
+                          <small>{pane.title || pane.paneId}</small>
+                        </div>
+                        <div className="tmux-pane-actions">
+                          <select
+                            aria-label={`${window.target}.${pane.paneIndex} pane 分割`}
+                            title={`分割 ${window.target}.${pane.paneIndex}`}
+                            defaultValue=""
+                            disabled={operationBusy || !pane.paneId}
+                            onChange={(event) => {
+                              const action = event.currentTarget.value as TmuxPaneMutationAction;
+                              event.currentTarget.value = "";
+                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                            }}
+                          >
+                            <option value="" disabled>分割</option>
+                            <option value="split-pane-horizontal">左右</option>
+                            <option value="split-pane-vertical">上下</option>
+                          </select>
+                          <select
+                            aria-label={`${window.target}.${pane.paneIndex} pane 交换`}
+                            title={`交换 ${window.target}.${pane.paneIndex}`}
+                            defaultValue=""
+                            disabled={operationBusy || !pane.paneId || window.panes.length < 2}
+                            onChange={(event) => {
+                              const action = event.currentTarget.value as TmuxPaneMutationAction;
+                              event.currentTarget.value = "";
+                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                            }}
+                          >
+                            <option value="" disabled>交换</option>
+                            <option value="swap-pane-previous">向前</option>
+                            <option value="swap-pane-next">向后</option>
+                          </select>
+                          <select
+                            aria-label={`${window.target}.${pane.paneIndex} pane 调整尺寸`}
+                            title={`调整 ${window.target}.${pane.paneIndex} 尺寸`}
+                            defaultValue=""
+                            disabled={operationBusy || !pane.paneId}
+                            onChange={(event) => {
+                              const action = event.currentTarget.value as TmuxPaneMutationAction;
+                              event.currentTarget.value = "";
+                              if (action) applyPaneMutation(action, pane.paneId, `${window.target}.${pane.paneIndex}`);
+                            }}
+                          >
+                            <option value="" disabled>尺寸</option>
+                            <option value="resize-pane-left">向左 5</option>
+                            <option value="resize-pane-right">向右 5</option>
+                            <option value="resize-pane-up">向上 5</option>
+                            <option value="resize-pane-down">向下 5</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="danger"
+                            title={`关闭 pane ${window.target}.${pane.paneIndex}`}
+                            aria-label={`关闭 pane ${window.target}.${pane.paneIndex}`}
+                            disabled={operationBusy || !pane.paneId}
+                            onClick={() => {
+                              setError("");
+                              setFeedback("");
+                              setEditor(null);
+                              setDeleteConfirmation({
+                                action: "kill-pane",
+                                target: pane.paneId,
+                                label: `${window.target}.${pane.paneIndex}`,
+                              });
+                            }}
+                          ><Trash2 size={13} /></button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -292,6 +430,19 @@ export default function TmuxDialog({
       </section>
     </div>
   );
+}
+
+function paneMutationFeedback(action: TmuxPaneMutationAction, paneLabel: string): string {
+  switch (action) {
+    case "split-pane-horizontal": return `${paneLabel} 已左右分割`;
+    case "split-pane-vertical": return `${paneLabel} 已上下分割`;
+    case "swap-pane-previous": return `${paneLabel} 已与前一 pane 交换`;
+    case "swap-pane-next": return `${paneLabel} 已与后一 pane 交换`;
+    case "resize-pane-left": return `${paneLabel} 已向左调整 5 cells`;
+    case "resize-pane-right": return `${paneLabel} 已向右调整 5 cells`;
+    case "resize-pane-up": return `${paneLabel} 已向上调整 5 cells`;
+    case "resize-pane-down": return `${paneLabel} 已向下调整 5 cells`;
+  }
 }
 
 function TmuxInlineEditor({
