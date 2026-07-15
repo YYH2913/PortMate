@@ -8,7 +8,8 @@ export type WorkspaceHotkeyAction =
   | { kind: "focus"; direction: WorkspacePaneDirection }
   | { kind: "split"; direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }
   | { kind: "close" }
-  | { kind: "zoom" };
+  | { kind: "zoom" }
+  | { kind: "one-keys" };
 
 export type WorkspaceHotkeyCommandId =
   | "focus-up"
@@ -20,7 +21,8 @@ export type WorkspaceHotkeyCommandId =
   | "split-left"
   | "split-right"
   | "close-pane"
-  | "zoom-pane";
+  | "zoom-pane"
+  | "manage-one-keys";
 
 export type WorkspaceKeymap = Record<WorkspaceHotkeyCommandId, string>;
 
@@ -51,6 +53,10 @@ type WorkspaceHotkeyCommand = {
   action: WorkspaceHotkeyAction;
 };
 
+const primaryChordModifier = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
+  ? "Meta"
+  : "Ctrl";
+
 export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "focus-up", label: "焦点向上", defaultBinding: "Alt+ArrowUp", requiresMultiplePanes: true, action: { kind: "focus", direction: "up" } },
   { id: "focus-down", label: "焦点向下", defaultBinding: "Alt+ArrowDown", requiresMultiplePanes: true, action: { kind: "focus", direction: "down" } },
@@ -62,6 +68,7 @@ export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "split-right", label: "向右拆分", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
   { id: "close-pane", label: "关闭窗格", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
   { id: "zoom-pane", label: "切换窗格缩放", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
+  { id: "manage-one-keys", label: "打开 OneKeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
 ];
 
 export const defaultWorkspaceKeymap = Object.fromEntries(

@@ -103,6 +103,8 @@ pub struct SessionStore {
     pub runtimes: Vec<SessionRuntime>,
     pub events: Vec<SessionEvent>,
     pub transfers: Vec<TransferTask>,
+    #[serde(default)]
+    pub one_keys: Vec<OneKeyCredential>,
     pub host_keys: HostKeyStore,
     pub grants: Vec<McpGrant>,
     pub audit: Vec<AuditRecord>,
@@ -958,6 +960,14 @@ fn apply_runtime_health(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_store_without_one_keys_deserializes_empty() {
+        let mut value = serde_json::to_value(SessionStore::default()).unwrap();
+        value.as_object_mut().unwrap().remove("oneKeys");
+        let store: SessionStore = serde_json::from_value(value).unwrap();
+        assert!(store.one_keys.is_empty());
+    }
 
     #[test]
     fn write_scope_requires_grant() {

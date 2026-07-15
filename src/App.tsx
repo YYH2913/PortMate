@@ -73,10 +73,11 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
+const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
@@ -90,7 +91,7 @@ const menuGroups = [
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
-  { label: "工具", items: ["终端设置", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
+  { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
@@ -149,7 +150,7 @@ const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoveryS
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "quick-commands" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | null;
 type ProtocolTab = (typeof protocolTabs)[number];
 type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
@@ -269,6 +270,7 @@ export default function App() {
   const [audit, setAudit] = useState<AuditRecord[]>(emptyAudit);
   const [grants, setGrants] = useState<McpGrant[]>(emptyGrants);
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
+  const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
@@ -649,6 +651,8 @@ export default function App() {
         closeWorkspacePane();
       } else if (!event.repeat && hotkey.kind === "zoom") {
         toggleWorkspaceZoom();
+      } else if (!event.repeat && hotkey.kind === "one-keys") {
+        setUtilityDialog("one-keys");
       }
     };
     let chordPrefix = "";
@@ -819,6 +823,7 @@ export default function App() {
     setAudit(await callBackend("list_mcp_audit", {}, emptyAudit));
     setGrants(await callBackend("list_mcp_grants", {}, emptyGrants));
     setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
+    setOneKeys(await callBackend("list_one_keys", {}, []));
     setSerialPorts(await callBackend("list_serial_ports", {}, []));
     const restored = reconcileWorkspaceSnapshot({
       version: 4,
@@ -982,6 +987,10 @@ function handleMenuAction(item: string) {
     }
     if (item === "快速命令") {
       setUtilityDialog("quick-commands");
+      return;
+    }
+    if (item === "OneKeys") {
+      setUtilityDialog("one-keys");
       return;
     }
     if (item === "MCP Bridge") {
@@ -2676,6 +2685,11 @@ function handleMenuAction(item: string) {
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
+      {utilityDialog === "one-keys" && (
+        <Suspense fallback={null}>
+          <LazyOneKeyDialog oneKeys={oneKeys} sessions={sessions} activeId={activeId} onChange={setOneKeys} onClose={() => setUtilityDialog(null)} />
+        </Suspense>
+      )}
       {utilityDialog === "quick-commands" && (
         <Suspense fallback={null}>
           <LazyQuickCommandDialog
@@ -7430,7 +7444,6 @@ function TerminalSettingsContent({
         <>
           <SettingsSection title="完成">
             <SettingCheck label="启用自动补全(A)" checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
-            <SettingCheck label="Enable OneKey completion" checked={prefs.oneKeyCompletion} onChange={(value) => updatePref("oneKeyCompletion", value)} />
             <div className="settings-subtitle">自动完成命令使用：</div>
             <SettingCheck label="命令名称(N)" checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
             <SettingCheck label="命令选项(O)" checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
@@ -8219,14 +8232,6 @@ function SessionCommonOverviewFields({
 }) {
   return (
     <>
-      <DialogField label="OneKey:">
-        <select value={prefs.oneKey} onChange={(event) => updatePref("oneKey", event.target.value)}>
-          <option>无</option>
-          <option>密码</option>
-          <option>公钥</option>
-          <option>Keyboard Interactive</option>
-        </select>
-      </DialogField>
       <DialogField label="标签:(L)">
         <input value={draft.tags.join(", ")} onChange={(event) => onDraftChange({ ...draft, tags: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
       </DialogField>
@@ -9305,7 +9310,6 @@ function createTerminalPrefs() {
     terminalScrollback: 200000,
     pasteBracketed: true,
     completionEnabled: true,
-    oneKeyCompletion: true,
     completionCommandNames: true,
     completionCommandOptions: true,
     completionCommandArgs: true,
@@ -9353,7 +9357,6 @@ function createTerminalPrefs() {
 
 function createSessionPrefs() {
   return {
-    oneKey: "无",
     shellPreset: "admin:cmd",
     shellSysmon: true,
     shellLogin: false,

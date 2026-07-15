@@ -170,6 +170,40 @@ export interface IdentityRef {
   secretRef?: string | null;
 }
 
+export type OneKeyKind = "account" | "ssh";
+
+export interface OneKeySummary {
+  id: string;
+  label: string;
+  kind: OneKeyKind;
+  username: string;
+  hasPassword: boolean;
+  hasPassphrase: boolean;
+  sessionIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OneKeySecretUpdate =
+  | { action: "preserve" }
+  | { action: "clear" }
+  | { action: "set"; secret: string; storage?: "native" | "portable" | null };
+
+export interface SaveOneKeyRequest {
+  id?: string | null;
+  label: string;
+  kind: OneKeyKind;
+  username: string;
+  passwordUpdate: OneKeySecretUpdate;
+  passphraseUpdate: OneKeySecretUpdate;
+  sessionIds: string[];
+}
+
+export interface OneKeyMutationResponse {
+  items: OneKeySummary[];
+  savedId: string;
+}
+
 export interface TunnelSpec {
   id: string;
   label: string;

@@ -142,6 +142,28 @@ pub struct IdentityRef {
     pub secret_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OneKeyKind {
+    Account,
+    Ssh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneKeyCredential {
+    pub id: String,
+    pub label: String,
+    pub kind: OneKeyKind,
+    pub username: String,
+    pub password_secret_ref: Option<String>,
+    pub passphrase_secret_ref: Option<String>,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityPolicy {

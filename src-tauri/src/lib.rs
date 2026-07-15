@@ -8,11 +8,11 @@ use portmate_core::{
     compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, resource_templates,
     tool_definitions, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
-    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, ProxyConfig, ProxyKind,
-    SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary,
-    SshConnection, SysmonDisk, SysmonNetworkInterface, SysmonProcess, SysmonSnapshot,
-    TcpConnection, TimelineMark, TransferProtocol, TransferStatus, TransferTask, TriggerAction,
-    TrustedHostKey, TunnelMode, TunnelSpec,
+    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential, OneKeyKind,
+    ProxyConfig, ProxyKind, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionStore,
+    SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface, SysmonProcess,
+    SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus, TransferTask,
+    TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -123,6 +123,11 @@ const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
+const MAX_ONE_KEYS: usize = 64;
+const MAX_ONE_KEY_LABEL_CHARACTERS: usize = 64;
+const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
+const MAX_ONE_KEY_SESSIONS: usize = 64;
+const MAX_ONE_KEY_SECRET_BYTES: usize = 32 * 1024;
 const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
 const PORTABLE_VAULT_FILE_NAME: &str = "portmate-vault.hold";
@@ -1626,6 +1631,73 @@ pub struct SecretWriteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OneKeySummary {
+    pub id: String,
+    pub label: String,
+    pub kind: OneKeyKind,
+    pub username: String,
+    pub has_password: bool,
+    pub has_passphrase: bool,
+    pub session_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneKeyMutationResponse {
+    pub items: Vec<OneKeySummary>,
+    pub saved_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum OneKeySecretUpdate {
+    Preserve,
+    Set {
+        secret: String,
+        #[serde(default)]
+        storage: Option<SecretStorage>,
+    },
+    Clear,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOneKeyRequest {
+    pub id: Option<String>,
+    pub label: String,
+    pub kind: OneKeyKind,
+    pub username: String,
+    pub password_update: OneKeySecretUpdate,
+    pub passphrase_update: OneKeySecretUpdate,
+    pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteOneKeyRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OneKeyField {
+    Username,
+    Password,
+    Passphrase,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendOneKeyRequest {
+    pub id: String,
+    pub session_id: String,
+    pub field: OneKeyField,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PortableVaultStatus {
     pub exists: bool,
     pub unlocked: bool,
@@ -2053,6 +2125,94 @@ async fn run_command(
     let io = state.inner().session_io();
     let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
     send_text_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
+}
+
+#[tauri::command]
+async fn send_one_key(
+    state: State<'_, AppState>,
+    request: SendOneKeyRequest,
+) -> Result<SessionEvent, String> {
+    let value = {
+        let _credential_guard = lock_credential_operations(state.inner())?;
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        let one_key = store
+            .one_keys
+            .iter()
+            .find(|one_key| one_key.id == request.id)
+            .ok_or_else(|| "OneKey 已被删除，请刷新后重试".to_string())?;
+        if !one_key
+            .session_ids
+            .iter()
+            .any(|session_id| session_id == &request.session_id)
+        {
+            return Err("OneKey 未绑定当前会话".to_string());
+        }
+        let status = store
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == request.session_id)
+            .map(|runtime| runtime.status)
+            .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
+        if status != SessionStatus::Connected {
+            return Err("OneKey 只能发送到已连接会话".to_string());
+        }
+        match request.field {
+            OneKeyField::Username => Zeroizing::new(one_key.username.clone()),
+            OneKeyField::Password => Zeroizing::new(
+                read_optional_secret_ref(
+                    one_key.password_secret_ref.as_deref(),
+                    "OneKey password",
+                )?
+                .ok_or_else(|| "OneKey 没有保存密码".to_string())?,
+            ),
+            OneKeyField::Passphrase => Zeroizing::new(
+                read_optional_secret_ref(
+                    one_key.passphrase_secret_ref.as_deref(),
+                    "OneKey passphrase",
+                )?
+                .ok_or_else(|| "OneKey 没有保存私钥口令".to_string())?,
+            ),
+        }
+    };
+    send_one_key_value(
+        state.inner().session_io(),
+        &request.session_id,
+        value.as_str(),
+    )
+    .await
+}
+
+async fn send_one_key_value(
+    io: SessionIo,
+    session_id: &str,
+    value: &str,
+) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, session_id)?;
+    let _lane_guard = lane.lock().await;
+    let text = Zeroizing::new(format!("{value}\r"));
+    let wire_text = Zeroizing::new(outbound_text_for_session(
+        &io.store,
+        &io.runtimes.tcp,
+        session_id,
+        text.as_str(),
+    )?);
+    write_session_bytes(
+        &io.store,
+        &io.runtimes.ssh,
+        &io.runtimes.shell,
+        &io.runtimes.tcp,
+        &io.runtimes.serial,
+        session_id,
+        wire_text.as_bytes(),
+    )
+    .await?;
+    Ok(record_outbound_control_event(
+        &io,
+        session_id,
+        wire_text.as_bytes(),
+        "one-key",
+        true,
+    ))
 }
 
 async fn send_text_inner(
@@ -3301,6 +3461,268 @@ async fn list_ssh_agent_identities() -> Result<Vec<IdentityRef>, String> {
         .collect())
 }
 
+fn truncate_one_key_text(value: &str, max_characters: usize) -> String {
+    value.chars().take(max_characters).collect()
+}
+
+fn one_key_summary(one_key: &OneKeyCredential) -> OneKeySummary {
+    OneKeySummary {
+        id: one_key.id.clone(),
+        label: one_key.label.clone(),
+        kind: one_key.kind,
+        username: one_key.username.clone(),
+        has_password: one_key.password_secret_ref.is_some(),
+        has_passphrase: one_key.passphrase_secret_ref.is_some(),
+        session_ids: one_key.session_ids.clone(),
+        created_at: one_key.created_at,
+        updated_at: one_key.updated_at,
+    }
+}
+
+fn one_key_summaries(store: &SessionStore) -> Vec<OneKeySummary> {
+    store.one_keys.iter().map(one_key_summary).collect()
+}
+
+fn normalize_one_key_sessions(
+    store: &SessionStore,
+    kind: OneKeyKind,
+    session_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for session_id in session_ids {
+        let session_id = session_id.trim();
+        if session_id.is_empty() || normalized.iter().any(|existing| existing == session_id) {
+            continue;
+        }
+        if normalized.len() >= MAX_ONE_KEY_SESSIONS {
+            return Err(format!("OneKey 最多绑定 {MAX_ONE_KEY_SESSIONS} 个会话"));
+        }
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == session_id)
+            .ok_or_else(|| format!("OneKey 绑定了不存在的会话: {session_id}"))?;
+        if kind == OneKeyKind::Ssh && !matches!(profile.kind, SessionKind::Ssh | SessionKind::Tmux)
+        {
+            return Err(format!(
+                "SSH OneKey 只能绑定 SSH/Tmux 会话: {}",
+                profile.name
+            ));
+        }
+        normalized.push(session_id.to_string());
+    }
+    if normalized.is_empty() {
+        return Err("OneKey 至少需要绑定一个会话".to_string());
+    }
+    Ok(normalized)
+}
+
+fn apply_one_key_secret_update(
+    current: Option<String>,
+    update: OneKeySecretUpdate,
+    generated: &mut Vec<String>,
+) -> Result<Option<String>, String> {
+    match update {
+        OneKeySecretUpdate::Preserve => Ok(current),
+        OneKeySecretUpdate::Clear => Ok(None),
+        OneKeySecretUpdate::Set { secret, storage } => {
+            let secret = Zeroizing::new(secret.trim_end_matches(['\r', '\n']).to_string());
+            if secret.is_empty() {
+                return Err("OneKey Secret 不能为空".to_string());
+            }
+            if secret.len() > MAX_ONE_KEY_SECRET_BYTES {
+                return Err(format!(
+                    "OneKey Secret 不能超过 {MAX_ONE_KEY_SECRET_BYTES} bytes"
+                ));
+            }
+            if secret.contains('\0') {
+                return Err("OneKey Secret 不能包含 NUL".to_string());
+            }
+            let secret_ref = write_new_secret(storage, secret.as_str())?;
+            generated.push(secret_ref.clone());
+            Ok(Some(secret_ref))
+        }
+    }
+}
+
+fn cleanup_generated_one_key_secrets(secret_refs: &[String]) {
+    for secret_ref in secret_refs {
+        if let Err(error) = delete_secret_from_store(secret_ref) {
+            eprintln!("PortMate: failed to clean up generated OneKey secret: {error}");
+        }
+    }
+}
+
+fn cleanup_replaced_one_key_secrets(
+    store: &SessionStore,
+    old_refs: impl IntoIterator<Item = String>,
+    retained_refs: &HashSet<String>,
+) {
+    for secret_ref in old_refs {
+        if !retained_refs.contains(&secret_ref) && secret_ref_usage_count(store, &secret_ref) == 0 {
+            if let Err(error) = delete_secret_from_store(&secret_ref) {
+                eprintln!("PortMate: OneKey saved but old secret cleanup failed: {error}");
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn list_one_keys(state: State<'_, AppState>) -> Result<Vec<OneKeySummary>, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    Ok(one_key_summaries(&store))
+}
+
+#[tauri::command]
+fn save_one_key(
+    state: State<'_, AppState>,
+    request: SaveOneKeyRequest,
+) -> Result<OneKeyMutationResponse, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let existing = request.id.as_deref().and_then(|id| {
+        store
+            .one_keys
+            .iter()
+            .find(|one_key| one_key.id == id)
+            .cloned()
+    });
+    if request.id.is_some() && existing.is_none() {
+        return Err("OneKey 已被删除，请刷新后重试".to_string());
+    }
+    if existing.is_none() && store.one_keys.len() >= MAX_ONE_KEYS {
+        return Err(format!("OneKey 最多保存 {MAX_ONE_KEYS} 条"));
+    }
+
+    let label = truncate_one_key_text(request.label.trim(), MAX_ONE_KEY_LABEL_CHARACTERS);
+    if label.is_empty() || label.contains('\0') {
+        return Err("OneKey 名称不能为空".to_string());
+    }
+    let username = truncate_one_key_text(request.username.trim(), MAX_ONE_KEY_USERNAME_CHARACTERS);
+    if username.is_empty() || username.contains(['\0', '\r', '\n']) {
+        return Err("OneKey 用户名不能为空且不能包含换行或 NUL".to_string());
+    }
+    let session_ids = normalize_one_key_sessions(&store, request.kind, request.session_ids)?;
+    let now = Utc::now();
+    let current_password = existing
+        .as_ref()
+        .and_then(|one_key| one_key.password_secret_ref.clone());
+    let current_passphrase = existing
+        .as_ref()
+        .and_then(|one_key| one_key.passphrase_secret_ref.clone());
+    let old_refs = [current_password.clone(), current_passphrase.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut generated = Vec::new();
+    let password_secret_ref = match apply_one_key_secret_update(
+        current_password,
+        request.password_update,
+        &mut generated,
+    ) {
+        Ok(secret_ref) => secret_ref,
+        Err(error) => {
+            cleanup_generated_one_key_secrets(&generated);
+            return Err(error);
+        }
+    };
+    let passphrase_update = if request.kind == OneKeyKind::Account {
+        OneKeySecretUpdate::Clear
+    } else {
+        request.passphrase_update
+    };
+    let passphrase_secret_ref =
+        match apply_one_key_secret_update(current_passphrase, passphrase_update, &mut generated) {
+            Ok(secret_ref) => secret_ref,
+            Err(error) => {
+                cleanup_generated_one_key_secrets(&generated);
+                return Err(error);
+            }
+        };
+    if password_secret_ref.is_none() && passphrase_secret_ref.is_none() {
+        cleanup_generated_one_key_secrets(&generated);
+        return Err("OneKey 至少需要保存密码或私钥口令".to_string());
+    }
+
+    let one_key = OneKeyCredential {
+        id: existing
+            .as_ref()
+            .map(|one_key| one_key.id.clone())
+            .unwrap_or_else(|| format!("onekey:{}", Uuid::new_v4())),
+        label,
+        kind: request.kind,
+        username,
+        password_secret_ref,
+        passphrase_secret_ref,
+        session_ids,
+        created_at: existing
+            .as_ref()
+            .map(|one_key| one_key.created_at)
+            .unwrap_or(now),
+        updated_at: now,
+    };
+    let saved_id = one_key.id.clone();
+    let retained_refs = [
+        one_key.password_secret_ref.clone(),
+        one_key.passphrase_secret_ref.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<HashSet<_>>();
+    let mut next_store = store.clone();
+    if let Some(index) = next_store
+        .one_keys
+        .iter()
+        .position(|candidate| candidate.id == one_key.id)
+    {
+        next_store.one_keys[index] = one_key;
+    } else {
+        next_store.one_keys.push(one_key);
+    }
+    if let Err(error) = save_store(&state.store_path, &next_store) {
+        cleanup_generated_one_key_secrets(&generated);
+        return Err(error);
+    }
+    *store = next_store;
+    cleanup_replaced_one_key_secrets(&store, old_refs, &retained_refs);
+    Ok(OneKeyMutationResponse {
+        items: one_key_summaries(&store),
+        saved_id,
+    })
+}
+
+#[tauri::command]
+fn delete_one_key(
+    state: State<'_, AppState>,
+    request: DeleteOneKeyRequest,
+) -> Result<Vec<OneKeySummary>, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let one_key = store
+        .one_keys
+        .iter()
+        .find(|one_key| one_key.id == request.id)
+        .cloned()
+        .ok_or_else(|| "OneKey 已被删除，请刷新后重试".to_string())?;
+    let mut next_store = store.clone();
+    next_store
+        .one_keys
+        .retain(|one_key| one_key.id != request.id);
+    save_store(&state.store_path, &next_store)?;
+    *store = next_store;
+    let retained = HashSet::new();
+    cleanup_replaced_one_key_secrets(
+        &store,
+        [one_key.password_secret_ref, one_key.passphrase_secret_ref]
+            .into_iter()
+            .flatten(),
+        &retained,
+    );
+    Ok(one_key_summaries(&store))
+}
+
 #[tauri::command]
 fn save_secret(
     state: State<'_, AppState>,
@@ -3330,7 +3752,7 @@ fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), S
     let usage_count = secret_ref_usage_count(&store, &secret_ref);
     if usage_count > 0 {
         return Err(format!(
-            "secretRef 仍被 {usage_count} 个 Profile 凭据引用，无法删除"
+            "secretRef 仍被 {usage_count} 个凭据字段引用，无法删除"
         ));
     }
     delete_secret_from_store(&secret_ref)
@@ -13356,12 +13778,27 @@ fn secret_ref_usage_count(store: &SessionStore, secret_ref: &str) -> usize {
     let Some(expected) = canonical_secret_ref(secret_ref) else {
         return 0;
     };
-    store
+    let profile_count = store
         .profiles
         .iter()
         .flat_map(profile_secret_ref_occurrences)
         .filter(|secret_ref| secret_ref == &expected)
-        .count()
+        .count();
+    let one_key_count = store
+        .one_keys
+        .iter()
+        .flat_map(|one_key| {
+            [
+                one_key.password_secret_ref.as_deref(),
+                one_key.passphrase_secret_ref.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .filter_map(canonical_secret_ref)
+        .filter(|secret_ref| secret_ref == &expected)
+        .count();
+    profile_count + one_key_count
 }
 
 fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
@@ -22099,6 +22536,84 @@ fn session_kind_for_connection(connection: &ConnectionConfig) -> SessionKind {
     }
 }
 
+fn normalize_loaded_one_keys(store: &mut SessionStore) {
+    let profiles = store
+        .profiles
+        .iter()
+        .map(|profile| (profile.id.clone(), profile.kind))
+        .collect::<HashMap<_, _>>();
+    let mut used_ids = HashSet::new();
+    let one_keys = std::mem::take(&mut store.one_keys);
+    for (index, mut one_key) in one_keys.into_iter().enumerate() {
+        if store.one_keys.len() >= MAX_ONE_KEYS {
+            break;
+        }
+        one_key.id = one_key.id.trim().to_string();
+        if one_key.id.is_empty()
+            || one_key.id.len() > 128
+            || !one_key
+                .id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || ":_-".contains(character))
+            || !used_ids.insert(one_key.id.clone())
+        {
+            one_key.id = format!("onekey:loaded:{}", index + 1);
+            while !used_ids.insert(one_key.id.clone()) {
+                one_key.id.push('x');
+            }
+        }
+        one_key.label = truncate_one_key_text(
+            one_key.label.trim().trim_matches('\0'),
+            MAX_ONE_KEY_LABEL_CHARACTERS,
+        );
+        if one_key.label.is_empty() {
+            one_key.label = format!("OneKey {}", store.one_keys.len() + 1);
+        }
+        one_key.username = truncate_one_key_text(
+            one_key.username.trim().trim_matches(['\0', '\r', '\n']),
+            MAX_ONE_KEY_USERNAME_CHARACTERS,
+        );
+        if one_key.username.is_empty() {
+            continue;
+        }
+        one_key.password_secret_ref = one_key
+            .password_secret_ref
+            .as_deref()
+            .and_then(canonical_secret_ref);
+        one_key.passphrase_secret_ref = if one_key.kind == OneKeyKind::Ssh {
+            one_key
+                .passphrase_secret_ref
+                .as_deref()
+                .and_then(canonical_secret_ref)
+        } else {
+            None
+        };
+        if one_key.password_secret_ref.is_none() && one_key.passphrase_secret_ref.is_none() {
+            continue;
+        }
+        let mut session_ids = Vec::new();
+        for session_id in one_key.session_ids {
+            let session_id = session_id.trim();
+            let Some(profile_kind) = profiles.get(session_id) else {
+                continue;
+            };
+            if one_key.kind == OneKeyKind::Ssh
+                && !matches!(profile_kind, SessionKind::Ssh | SessionKind::Tmux)
+            {
+                continue;
+            }
+            if !session_id.is_empty()
+                && session_ids.len() < MAX_ONE_KEY_SESSIONS
+                && !session_ids.iter().any(|existing| existing == session_id)
+            {
+                session_ids.push(session_id.to_string());
+            }
+        }
+        one_key.session_ids = session_ids;
+        store.one_keys.push(one_key);
+    }
+}
+
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
     let saved_runtimes = std::mem::take(&mut store.runtimes)
@@ -22111,6 +22626,7 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     for profile in profiles {
         let _ = store.upsert_profile(normalize_session_profile(profile));
     }
+    normalize_loaded_one_keys(&mut store);
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
             runtime.pane_id = saved.pane_id.clone();
@@ -23499,6 +24015,10 @@ pub fn run() {
             rotate_mcp_http_token,
             list_host_keys,
             list_ssh_agent_identities,
+            list_one_keys,
+            save_one_key,
+            delete_one_key,
+            send_one_key,
             save_secret,
             delete_secret,
             has_secret,
@@ -25367,6 +25887,58 @@ mod tests {
                 .await
                 .expect("TCP loopback server timed out")
                 .expect("TCP loopback server task failed");
+        });
+    }
+
+    #[test]
+    fn one_key_send_writes_value_without_readable_event_text() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expected = b"private-value\r".to_vec();
+            let expected_len = expected.len();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = vec![0_u8; expected_len];
+                socket.read_exact(&mut received).await.unwrap();
+                let _ = release_rx.await;
+                received
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-one-key-send-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            let event = send_one_key_value(state.session_io(), &profile.id, "private-value")
+                .await
+                .unwrap();
+            assert!(event.text.is_none());
+            assert_eq!(
+                event.annotations.get("origin").map(String::as_str),
+                Some("one-key")
+            );
+            assert!(!serde_json::to_string(&event)
+                .unwrap()
+                .contains("private-value"));
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            let _ = release_tx.send(());
+            let received = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("OneKey loopback server timed out")
+                .expect("OneKey loopback server failed");
+            assert_eq!(received, expected);
+            let _ = fs::remove_dir_all(root);
         });
     }
 
@@ -33136,6 +33708,38 @@ mod tests {
         let mut store = SessionStore::default();
         store.upsert_profile(profile);
         assert_eq!(secret_ref_usage_count(&store, "keychain:shared"), 5);
+    }
+
+    #[test]
+    fn one_key_summaries_hide_refs_and_count_secret_usage() {
+        let mut store = SessionStore::default();
+        let now = Utc::now();
+        store.one_keys.push(OneKeyCredential {
+            id: "onekey:test".to_string(),
+            label: "Lab account".to_string(),
+            kind: OneKeyKind::Ssh,
+            username: "operator".to_string(),
+            password_secret_ref: Some("keychain:onekey-password".to_string()),
+            passphrase_secret_ref: Some("keychain:onekey-passphrase".to_string()),
+            session_ids: vec!["ssh-session-1".to_string()],
+            created_at: now,
+            updated_at: now,
+        });
+
+        assert_eq!(
+            secret_ref_usage_count(&store, "keychain:onekey-password"),
+            1
+        );
+        assert_eq!(
+            secret_ref_usage_count(&store, "keychain:onekey-passphrase"),
+            1
+        );
+        let summaries = one_key_summaries(&store);
+        assert!(summaries[0].has_password);
+        assert!(summaries[0].has_passphrase);
+        let json = serde_json::to_string(&summaries).unwrap();
+        assert!(!json.contains("onekey-password"));
+        assert!(!json.contains("onekey-passphrase"));
     }
 
     #[test]

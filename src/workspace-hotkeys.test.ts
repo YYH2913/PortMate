@@ -52,7 +52,7 @@ describe("workspace hotkeys", () => {
     expect(keymap["focus-up"]).toBe("Alt+Shift+KeyK");
     expect(keymap["focus-down"]).toBe("");
     expect(keymap["split-left"]).toBe(defaultWorkspaceKeymap["split-left"]);
-    expect(Object.keys(keymap)).toHaveLength(10);
+    expect(Object.keys(keymap)).toHaveLength(11);
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowDown" }, 3, keymap)).toBeNull();
   });
 
@@ -99,6 +99,19 @@ describe("workspace hotkeys", () => {
       "Alt+KeyW",
     )).toEqual({ kind: "action", action: { kind: "split", direction: "horizontal", placement: "second" } });
     expect(formatWorkspaceKeyBinding(keymap["split-down"])).toBe("Alt + W  →  Ctrl + Shift + H");
+  });
+
+  it("opens OneKeys with WindTerm's Ctrl+T Ctrl+K chord", () => {
+    expect(resolveWorkspaceHotkeySequence(
+      { ...baseInput, altKey: false, ctrlKey: true, code: "KeyT" },
+      1,
+    )).toEqual({ kind: "pending", prefix: "Ctrl+KeyT" });
+    expect(resolveWorkspaceHotkeySequence(
+      { ...baseInput, altKey: false, ctrlKey: true, code: "KeyK" },
+      1,
+      defaultWorkspaceKeymap,
+      "Ctrl+KeyT",
+    )).toEqual({ kind: "action", action: { kind: "one-keys" } });
   });
 
   it("rejects bindings longer than two strokes and detects prefix ambiguity", () => {
