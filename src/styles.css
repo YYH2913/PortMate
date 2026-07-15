@@ -12,6 +12,7 @@
   --muted: #8da0b3;
   --blue: #68a7ff;
   --cyan: #5eead4;
+  --green: #37d67a;
   --violet: #a78bfa;
   --amber: #f4b860;
   --pink: #e879f9;
@@ -34,6 +35,10 @@ body {
 }
 
 body.detached-window {
+  min-width: 0;
+}
+
+body.serial-analyzer-window {
   min-width: 0;
 }
 
@@ -174,6 +179,482 @@ body.detached-window {
 
 .detached-pane-status.error {
   color: var(--red);
+}
+
+.serial-analyzer-root {
+  display: grid;
+  grid-template-rows: 38px auto 28px minmax(0, 1fr) minmax(150px, 190px) 30px;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d1117;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.serial-analyzer-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 0 9px;
+  border-bottom: 1px solid var(--line);
+  background: #111820;
+}
+
+.serial-analyzer-brand {
+  color: var(--cyan);
+  font-weight: 700;
+}
+
+.serial-analyzer-titlebar > strong {
+  font-size: 12px;
+}
+
+.serial-analyzer-session {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  color: #bfd0df;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-analyzer-connection {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.serial-analyzer-connection.connected {
+  color: var(--green);
+}
+
+.serial-analyzer-connection.reconnecting,
+.serial-analyzer-connection.connecting {
+  color: var(--amber);
+}
+
+.serial-analyzer-titlebar button,
+.serial-analyzer-toolbar > button,
+.serial-analyzer-inspector button,
+.serial-analyzer-footer button {
+  display: inline-grid;
+  width: 28px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.serial-analyzer-titlebar button:hover:not(:disabled),
+.serial-analyzer-titlebar button:focus-visible,
+.serial-analyzer-toolbar > button:hover:not(:disabled),
+.serial-analyzer-toolbar > button:focus-visible,
+.serial-analyzer-inspector button:hover,
+.serial-analyzer-inspector button:focus-visible,
+.serial-analyzer-footer button:hover:not(:disabled),
+.serial-analyzer-footer button:focus-visible,
+.serial-analyzer-toolbar > button.active,
+.serial-analyzer-inspector button.active {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--cyan);
+}
+
+.serial-analyzer-titlebar button:disabled,
+.serial-analyzer-toolbar > button:disabled,
+.serial-analyzer-footer button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.serial-analyzer-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(112px, auto) auto minmax(160px, 1fr) repeat(5, 28px);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.serial-analyzer-segmented {
+  display: inline-grid;
+  grid-template-columns: repeat(4, minmax(48px, 1fr));
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+}
+
+.serial-analyzer-segmented.direction {
+  grid-template-columns: repeat(3, minmax(38px, 1fr));
+}
+
+.serial-analyzer-segmented button {
+  height: 25px;
+  min-width: 0;
+  padding: 0 7px;
+  border-right: 1px solid var(--line-soft);
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.serial-analyzer-segmented button:last-child {
+  border-right: 0;
+}
+
+.serial-analyzer-segmented button[aria-pressed="true"] {
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--cyan);
+}
+
+.serial-analyzer-parser-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 27px;
+}
+
+.serial-analyzer-parser-option label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.serial-analyzer-parser-option input:not([type="checkbox"]) {
+  width: 94px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.serial-analyzer-parser-option input[type="number"] {
+  width: 72px;
+}
+
+.serial-analyzer-parser-option input.invalid {
+  border-color: var(--red);
+}
+
+.serial-analyzer-parser-option .serial-analyzer-check {
+  flex: 0 0 auto;
+}
+
+.serial-analyzer-parser-value {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.serial-analyzer-search {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 27px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--muted);
+}
+
+.serial-analyzer-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.serial-analyzer-toolbar .spin {
+  animation: serial-analyzer-spin 650ms linear infinite;
+}
+
+@keyframes serial-analyzer-spin {
+  to { transform: rotate(360deg); }
+}
+
+.serial-analyzer-status-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 0 9px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line-soft);
+  background: #111820;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.serial-analyzer-status-strip > span:first-child {
+  overflow: hidden;
+  min-width: 100px;
+  flex: 1;
+  color: #bfd0df;
+  text-overflow: ellipsis;
+}
+
+.serial-analyzer-status-strip .warning,
+.serial-analyzer-row .warning {
+  color: var(--amber);
+}
+
+.serial-analyzer-last-disconnect {
+  overflow: hidden;
+  max-width: 32%;
+  text-overflow: ellipsis;
+}
+
+.serial-analyzer-table {
+  display: grid;
+  grid-template-rows: 27px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  outline: 0;
+  background: #0d1117;
+}
+
+.serial-analyzer-table:focus-visible {
+  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.4);
+}
+
+.serial-analyzer-table-head,
+.serial-analyzer-row {
+  display: grid;
+  grid-template-columns: 28px 126px 48px 66px 58px minmax(220px, 1.35fr) minmax(150px, 1fr);
+  align-items: center;
+  min-width: 0;
+}
+
+.serial-analyzer-table-head {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.serial-analyzer-table-head > span,
+.serial-analyzer-row > span,
+.serial-analyzer-row > strong,
+.serial-analyzer-row > code {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-analyzer-table-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.serial-analyzer-row {
+  position: relative;
+  min-height: 33px;
+  border-bottom: 1px solid var(--line-soft);
+  color: #bfd0df;
+  cursor: default;
+}
+
+.serial-analyzer-row:hover {
+  background: rgba(104, 167, 255, 0.06);
+}
+
+.serial-analyzer-row.selected {
+  background: rgba(94, 234, 212, 0.09);
+  box-shadow: inset 2px 0 var(--cyan);
+}
+
+.serial-analyzer-row.outbound {
+  box-shadow: inset 2px 0 rgba(244, 184, 96, 0.72);
+}
+
+.serial-analyzer-row.outbound.selected {
+  box-shadow: inset 2px 0 var(--amber);
+}
+
+.serial-analyzer-row > button {
+  display: grid;
+  width: 28px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.serial-analyzer-row > button:hover,
+.serial-analyzer-row > button:focus-visible {
+  outline: 0;
+  color: var(--cyan);
+}
+
+.serial-analyzer-row > strong {
+  color: var(--green);
+  font-size: 10px;
+}
+
+.serial-analyzer-row.outbound > strong {
+  color: var(--amber);
+}
+
+.serial-analyzer-row > code,
+.serial-analyzer-row > .ascii {
+  font-family: var(--mono);
+}
+
+.serial-analyzer-row > .ascii {
+  color: var(--muted);
+}
+
+.serial-analyzer-empty {
+  display: grid;
+  min-height: 80px;
+  place-items: center;
+  color: var(--muted);
+}
+
+.serial-analyzer-inspector {
+  display: grid;
+  grid-template-rows: 29px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.serial-analyzer-inspector > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+.serial-analyzer-inspector > header strong {
+  color: var(--text);
+}
+
+.serial-analyzer-inspector > header span:nth-of-type(2) {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-analyzer-dump {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(180px, 0.45fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.serial-analyzer-dump pre {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-right: 1px solid var(--line-soft);
+  color: #d7e1eb;
+  font: 11px/1.45 var(--mono);
+  white-space: pre;
+}
+
+.serial-analyzer-dump pre.ascii {
+  border-right: 0;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.serial-analyzer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 7px;
+  border-top: 1px solid var(--line);
+  background: #111820;
+  color: var(--muted);
+}
+
+.serial-analyzer-footer > span:first-child {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-analyzer-footer > span.message {
+  color: #bfd0df;
+}
+
+.serial-analyzer-footer label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.serial-analyzer-footer select {
+  height: 23px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.serial-analyzer-missing {
+  display: grid;
+  grid-row: 1 / -1;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.serial-analyzer-missing strong {
+  color: var(--text);
+}
+
+.serial-analyzer-missing button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
 }
 
 button,
@@ -974,7 +1455,7 @@ button {
 
 .serial-monitor-search {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 25px 25px;
+  grid-template-columns: auto minmax(0, 1fr) repeat(3, 25px);
   align-items: center;
   gap: 4px;
 }
@@ -7398,4 +7879,89 @@ fieldset label {
   display: grid;
   gap: 3px;
   font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .serial-analyzer-root {
+    grid-template-rows: 38px auto 28px minmax(0, 1fr) 150px 30px;
+  }
+
+  .serial-analyzer-titlebar {
+    gap: 6px;
+  }
+
+  .serial-analyzer-brand {
+    display: none;
+  }
+
+  .serial-analyzer-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .serial-analyzer-toolbar > .serial-analyzer-segmented:first-child {
+    flex: 1 1 100%;
+  }
+
+  .serial-analyzer-parser-option,
+  .serial-analyzer-segmented.direction {
+    flex: 1 1 120px;
+  }
+
+  .serial-analyzer-search {
+    flex: 1 1 100%;
+  }
+
+  .serial-analyzer-toolbar > button {
+    flex: 0 0 28px;
+  }
+
+  .serial-analyzer-status-strip {
+    gap: 9px;
+  }
+
+  .serial-analyzer-status-strip > :nth-child(n + 4) {
+    display: none;
+  }
+
+  .serial-analyzer-table-head,
+  .serial-analyzer-row {
+    grid-template-columns: 26px 96px 38px 52px 52px minmax(120px, 1fr);
+  }
+
+  .serial-analyzer-table-head > :nth-child(7),
+  .serial-analyzer-row > :nth-child(7) {
+    display: none;
+  }
+
+  .serial-analyzer-table-head > span,
+  .serial-analyzer-row > span,
+  .serial-analyzer-row > strong,
+  .serial-analyzer-row > code {
+    padding-inline: 5px;
+  }
+
+  .serial-analyzer-inspector > header {
+    gap: 7px;
+  }
+
+  .serial-analyzer-inspector > header span:nth-of-type(2),
+  .serial-analyzer-dump pre.ascii {
+    display: none;
+  }
+
+  .serial-analyzer-dump {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .serial-analyzer-footer label {
+    display: none;
+  }
+}
+
+@media (max-height: 600px) {
+  .serial-analyzer-root {
+    grid-template-rows: 38px auto 28px minmax(0, 1fr) 130px 30px;
+  }
 }

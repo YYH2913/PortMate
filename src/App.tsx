@@ -51,6 +51,7 @@ import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandPayload } from "./quick-command-state";
 import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
+import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
@@ -95,7 +96,7 @@ const menuGroups = [
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
   { label: "模式", items: ["远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
-  { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
+  { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "串口分析器", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
@@ -1216,6 +1217,14 @@ function handleMenuAction(item: string) {
       setUtilityDialog("sysmon");
       return;
     }
+    if (item === "串口分析器") {
+      if (!active || active.profile.connection.kind !== "serial") {
+        setNotice({ title: "串口分析器", message: "请先选择一个串口会话。" });
+        return;
+      }
+      void openSerialAnalyzer(active);
+      return;
+    }
     if (item === "Tmux") {
       if (!active || !isSshLikeProfile(active.profile) || active.runtime.status !== "connected") {
         setNotice({ title: "Tmux", message: "请选择一个已连接的 SSH/Tmux 会话后再管理 tmux。" });
@@ -1856,6 +1865,19 @@ function handleMenuAction(item: string) {
       }
     } catch (error) {
       setNotice({ title: "移到新窗口失败", message: formatError(error) });
+    }
+  }
+
+  async function openSerialAnalyzer(session: SessionSummary) {
+    const request: SerialAnalyzerRequest = {
+      windowId: createWorkspaceNodeId("pane").replace(/^pane-/, "serial-analyzer-").replace(/[^A-Za-z0-9_-]/g, "-"),
+      sessionId: session.profile.id,
+    };
+    try {
+      const { openSerialAnalyzerWindow } = await import("./serial-analyzer-window");
+      await openSerialAnalyzerWindow(request, session.profile.name);
+    } catch (error) {
+      setNotice({ title: "打开串口分析器失败", message: formatError(error) });
     }
   }
 
@@ -2555,6 +2577,7 @@ function handleMenuAction(item: string) {
                 <SerialMonitorPanel
                   key={active.profile.id}
                   frames={serialCaptures[active.profile.id] ?? []}
+                  onOpen={() => void openSerialAnalyzer(active)}
                   onClear={() => void clearSerialCapture(active.profile.id)}
                   onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
                   canExport={isBackendAvailable()}
@@ -3071,11 +3094,13 @@ function QuickCommandBar({
 
 function SerialMonitorPanel({
   frames,
+  onOpen,
   onClear,
   onExport,
   canExport,
 }: {
   frames: SerialCaptureFrame[];
+  onOpen: () => void;
   onClear: () => void;
   onExport: (frameIds: string[]) => void;
   canExport: boolean;
@@ -3106,6 +3131,9 @@ function SerialMonitorPanel({
         <div className="serial-monitor-search">
           <Search size={13} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hex / ASCII" aria-label="筛选串口捕获" />
+          <button type="button" title="在独立窗口中分析" aria-label="打开串口分析器" onClick={onOpen}>
+            <Maximize2 size={13} />
+          </button>
           <button
             type="button"
             title="导出可见帧（原始字节，不脱敏）"

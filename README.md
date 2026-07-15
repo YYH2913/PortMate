@@ -12,6 +12,7 @@ This repository currently contains the active desktop implementation slice:
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
 - Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
 - Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux attach/list/pane inspection paths in the Tauri backend
+- Standalone serial analyzer window with capture/delimiter/fixed-length/idle-gap framing, bookmarks, filtering, paging, and exact source-frame export
 - SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
 - Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
 - Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking

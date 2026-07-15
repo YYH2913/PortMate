@@ -1,0 +1,460 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowDownToLine,
+  Bookmark,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Copy,
+  Download,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { callBackend, invokeBackend, isBackendAvailable } from "./api";
+import {
+  analyzeSerialCaptureFrames,
+  defaultSerialAnalyzerStoredState,
+  filterSerialAnalyzedFrames,
+  normalizeSerialAnalyzerStoredState,
+  normalizeSerialFrameParserConfig,
+  SERIAL_ANALYZER_STORAGE_KEY,
+  serialAnalyzerDelimiterBytes,
+  serialAnalyzerHexDump,
+  toggleSerialAnalyzerBookmark,
+} from "./serial-analyzer-state";
+import type {
+  SerialAnalyzedFrame,
+  SerialAnalyzerStoredState,
+  SerialFrameParserConfig,
+  SerialFrameParserMode,
+} from "./serial-analyzer-state";
+import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
+import { mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
+import type { ExportSerialCaptureResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionSummary } from "./types";
+
+const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
+  { value: "capture", label: "捕获" },
+  { value: "delimiter", label: "分隔符" },
+  { value: "fixed", label: "定长" },
+  { value: "gap", label: "间隔" },
+];
+
+export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
+  const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
+  const [frames, setFrames] = useState<SerialCaptureFrame[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [message, setMessage] = useState("");
+  const framesRef = useRef<SerialCaptureFrame[]>([]);
+  const captureRefreshRef = useRef(false);
+  const captureEpochRef = useRef(0);
+  const session = sessions.find((item) => item.profile.id === request.sessionId);
+  const isSerial = session?.profile.connection.kind === "serial";
+
+  useEffect(() => {
+    document.title = `${session?.profile.name ?? "串口"} - PortMate 串口分析器`;
+  }, [session?.profile.name]);
+
+  useEffect(() => {
+    let disposed = false;
+    void refreshSession();
+    void refreshCapture();
+    const captureTimer = window.setInterval(() => void refreshCapture(), 750);
+    const sessionTimer = window.setInterval(() => void refreshSession(), 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(captureTimer);
+      window.clearInterval(sessionTimer);
+    };
+
+    async function refreshSession() {
+      const next = await callBackend("list_sessions", {}, loadLocalSessions());
+      if (!disposed) setSessions(next);
+    }
+
+    async function refreshCapture(force = false) {
+      if (!isBackendAvailable() || captureRefreshRef.current) return;
+      captureRefreshRef.current = true;
+      const epoch = captureEpochRef.current;
+      setRefreshing(true);
+      try {
+        const current = force ? [] : framesRef.current;
+        const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
+          sessionId: request.sessionId,
+          afterId: current.at(-1)?.id ?? null,
+        });
+        if (disposed || captureEpochRef.current !== epoch) return;
+        storeFrames(mergeSerialCaptureSnapshot(current, snapshot));
+        setMessage("");
+      } catch (error) {
+        if (!disposed) setMessage(formatAnalyzerError(error));
+      } finally {
+        captureRefreshRef.current = false;
+        if (!disposed) setRefreshing(false);
+      }
+    }
+  }, [request.sessionId]);
+
+  function storeFrames(next: SerialCaptureFrame[]) {
+    framesRef.current = next;
+    setFrames(next);
+  }
+
+  async function refreshNow() {
+    if (!isBackendAvailable() || captureRefreshRef.current) return;
+    captureRefreshRef.current = true;
+    setRefreshing(true);
+    const epoch = captureEpochRef.current;
+    try {
+      const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
+        sessionId: request.sessionId,
+        afterId: null,
+      });
+      if (captureEpochRef.current !== epoch) return;
+      storeFrames(mergeSerialCaptureSnapshot([], snapshot));
+      setSessions(await callBackend("list_sessions", {}, sessions));
+      setMessage("");
+    } catch (error) {
+      setMessage(formatAnalyzerError(error));
+    } finally {
+      captureRefreshRef.current = false;
+      setRefreshing(false);
+    }
+  }
+
+  async function clearCapture() {
+    if (!frames.length || !window.confirm("清空当前串口会话的全部内存捕获帧？")) return;
+    captureEpochRef.current += 1;
+    try {
+      if (isBackendAvailable()) {
+        const snapshot = await invokeBackend<SerialCaptureSnapshot>("clear_serial_capture", { sessionId: request.sessionId });
+        storeFrames(mergeSerialCaptureSnapshot([], snapshot));
+      } else {
+        storeFrames([]);
+      }
+      setMessage("捕获已清空");
+    } catch (error) {
+      setMessage(formatAnalyzerError(error));
+    }
+  }
+
+  async function exportFrames(frameIds: string[]) {
+    if (!frameIds.length) return;
+    try {
+      const result = await invokeBackend<ExportSerialCaptureResult>("export_serial_capture", {
+        request: { sessionId: request.sessionId, frameIds },
+      });
+      setMessage(`${result.frames} 帧 · ${formatAnalyzerBytes(result.capturedBytes)} · ${result.path}`);
+    } catch (error) {
+      setMessage(formatAnalyzerError(error));
+    }
+  }
+
+  async function closeWindow() {
+    try {
+      if (isBackendAvailable()) await getCurrentWebviewWindow().close();
+      else window.close();
+    } catch {
+      window.close();
+    }
+  }
+
+  return (
+    <main className="serial-analyzer-root" data-window-id={request.windowId} data-session-id={request.sessionId}>
+      {session && isSerial ? (
+        <SerialAnalyzerWorkspace
+          session={session}
+          frames={frames}
+          refreshing={refreshing}
+          message={message}
+          canExport={isBackendAvailable()}
+          onRefresh={() => void refreshNow()}
+          onClear={() => void clearCapture()}
+          onExport={(frameIds) => void exportFrames(frameIds)}
+          onClose={() => void closeWindow()}
+        />
+      ) : (
+        <section className="serial-analyzer-missing">
+          <strong>{session ? "会话不是串口类型" : "串口会话不可用"}</strong>
+          <span>{request.sessionId}</span>
+          <button type="button" onClick={() => void closeWindow()}>关闭窗口</button>
+        </section>
+      )}
+    </main>
+  );
+}
+
+function SerialAnalyzerWorkspace({
+  session,
+  frames,
+  refreshing,
+  message,
+  canExport,
+  onRefresh,
+  onClear,
+  onExport,
+  onClose,
+}: {
+  session: SessionSummary;
+  frames: SerialCaptureFrame[];
+  refreshing: boolean;
+  message: string;
+  canExport: boolean;
+  onRefresh: () => void;
+  onClear: () => void;
+  onExport: (frameIds: string[]) => void;
+  onClose: () => void;
+}) {
+  const [stored, setStored] = useState<SerialAnalyzerStoredState>(loadStoredAnalyzerState);
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [page, setPage] = useState(0);
+  const [delimiterDraft, setDelimiterDraft] = useState(stored.parser.delimiterHex);
+  const serial = session.profile.connection.kind === "serial" ? session.profile.connection : null;
+  const analysis = useMemo(() => analyzeSerialCaptureFrames(frames, stored.parser), [frames, stored.parser]);
+  const bookmarkIds = useMemo(() => new Set(stored.bookmarks[session.profile.id] ?? []), [session.profile.id, stored.bookmarks]);
+  const filtered = useMemo(
+    () => filterSerialAnalyzedFrames(analysis.frames, stored.direction, query, bookmarkIds, stored.bookmarksOnly),
+    [analysis.frames, bookmarkIds, query, stored.bookmarksOnly, stored.direction],
+  );
+  const pageCount = Math.max(1, Math.ceil(filtered.length / stored.pageSize));
+  const activePage = stored.follow ? pageCount - 1 : Math.min(page, pageCount - 1);
+  const visible = filtered.slice(activePage * stored.pageSize, (activePage + 1) * stored.pageSize);
+  const selected = (stored.follow ? filtered.at(-1) : filtered.find((frame) => frame.id === selectedId))
+    ?? visible.at(-1)
+    ?? null;
+  const delimiterValid = Boolean(serialAnalyzerDelimiterBytes(delimiterDraft));
+  const rxCount = analysis.frames.filter((frame) => frame.direction === "inbound").length;
+  const txCount = analysis.frames.length - rxCount;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SERIAL_ANALYZER_STORAGE_KEY, JSON.stringify(stored));
+    } catch {
+      // Analyzer remains usable when browser storage is unavailable.
+    }
+  }, [stored]);
+
+  function updateParser(patch: Partial<SerialFrameParserConfig>) {
+    setStored((current) => ({
+      ...current,
+      parser: normalizeSerialFrameParserConfig({ ...current.parser, ...patch }),
+    }));
+    setPage(0);
+    setSelectedId("");
+  }
+
+  function commitDelimiter() {
+    const bytes = serialAnalyzerDelimiterBytes(delimiterDraft);
+    if (!bytes) return;
+    updateParser({ delimiterHex: delimiterDraft });
+    setDelimiterDraft(bytes.map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" "));
+  }
+
+  function selectFrame(frame: SerialAnalyzedFrame) {
+    setStored((current) => ({ ...current, follow: false }));
+    setSelectedId(frame.id);
+  }
+
+  function moveSelection(offset: number) {
+    if (!filtered.length) return;
+    const currentIndex = selected ? filtered.findIndex((frame) => frame.id === selected.id) : filtered.length - 1;
+    const nextIndex = Math.min(filtered.length - 1, Math.max(0, currentIndex + offset));
+    const next = filtered[nextIndex];
+    setStored((current) => ({ ...current, follow: false }));
+    setSelectedId(next.id);
+    setPage(Math.floor(nextIndex / stored.pageSize));
+  }
+
+  function toggleBookmark(frame: SerialAnalyzedFrame) {
+    setStored((current) => toggleSerialAnalyzerBookmark(current, session.profile.id, frame.bookmarkId));
+  }
+
+  function exportVisible() {
+    const ids = [...new Set(filtered.flatMap((frame) => frame.sourceFrameIds))];
+    onExport(ids);
+  }
+
+  const connectionLabel = serial
+    ? `${serial.port || "未选择端口"} · ${serial.baudRate} baud · ${serial.dataBits}${serial.parity.slice(0, 1).toUpperCase()}${serial.stopBits} · ${serial.flowControl}`
+    : "Serial";
+  const lastDisconnect = session.runtime.lastDisconnect
+    ? `${new Date(session.runtime.lastDisconnect).toLocaleString()}${session.runtime.lastDisconnectReason ? ` · ${session.runtime.lastDisconnectReason}` : ""}`
+    : "--";
+
+  return (
+    <>
+      <header className="serial-analyzer-titlebar">
+        <span className="serial-analyzer-brand">PortMate</span>
+        <strong>串口分析器</strong>
+        <span className="serial-analyzer-session" title={session.profile.name}>{session.profile.name}</span>
+        <span className={`serial-analyzer-connection ${session.runtime.status}`}>{session.runtime.status}</span>
+        <button type="button" title="关闭串口分析器" aria-label="关闭串口分析器" onClick={onClose}><X size={17} /></button>
+      </header>
+
+      <section className="serial-analyzer-toolbar" aria-label="串口分析设置">
+        <div className="serial-analyzer-segmented" aria-label="帧解析方式">
+          {parserModes.map((mode) => (
+            <button key={mode.value} type="button" aria-pressed={stored.parser.mode === mode.value} onClick={() => updateParser({ mode: mode.value })}>{mode.label}</button>
+          ))}
+        </div>
+        <div className="serial-analyzer-parser-option">
+          {stored.parser.mode === "delimiter" ? (
+            <>
+              <label><span>Hex</span><input className={delimiterValid ? "" : "invalid"} aria-label="帧分隔符 Hex" aria-invalid={!delimiterValid} value={delimiterDraft} onChange={(event) => setDelimiterDraft(event.target.value.slice(0, 128))} onBlur={commitDelimiter} onKeyDown={(event) => event.key === "Enter" && commitDelimiter()} /></label>
+              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.includeDelimiter} onChange={(event) => updateParser({ includeDelimiter: event.target.checked })} /><span>保留</span></label>
+            </>
+          ) : stored.parser.mode === "fixed" ? (
+            <label><span>字节</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
+          ) : stored.parser.mode === "gap" ? (
+            <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.gapMs} onChange={(event) => updateParser({ gapMs: Number(event.target.value) })} /></label>
+          ) : <span className="serial-analyzer-parser-value">读取分片</span>}
+        </div>
+        <div className="serial-analyzer-segmented direction" aria-label="帧方向">
+          {(["all", "inbound", "outbound"] as const).map((direction) => (
+            <button key={direction} type="button" aria-pressed={stored.direction === direction} onClick={() => setStored((current) => ({ ...current, direction }))}>{direction === "all" ? "全部" : direction === "inbound" ? "RX" : "TX"}</button>
+          ))}
+        </div>
+        <label className="serial-analyzer-search"><Search size={13} /><input aria-label="筛选分析帧" placeholder="Hex / ASCII" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
+        <button type="button" className={stored.bookmarksOnly ? "active" : ""} aria-pressed={stored.bookmarksOnly} title="只显示书签" aria-label="只显示书签" onClick={() => setStored((current) => ({ ...current, bookmarksOnly: !current.bookmarksOnly }))}><Bookmark size={14} fill={stored.bookmarksOnly ? "currentColor" : "none"} /></button>
+        <button type="button" className={stored.follow ? "active" : ""} aria-pressed={stored.follow} title="跟随最新帧" aria-label="跟随最新帧" onClick={() => setStored((current) => ({ ...current, follow: !current.follow }))}><ArrowDownToLine size={14} /></button>
+        <button type="button" title="刷新捕获" aria-label="刷新串口捕获" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
+        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={!canExport || !filtered.length} onClick={exportVisible}><Download size={14} /></button>
+        <button type="button" title="清空捕获" aria-label="清空串口捕获" disabled={!frames.length} onClick={onClear}><Trash2 size={14} /></button>
+      </section>
+
+      <section className="serial-analyzer-status-strip">
+        <span title={connectionLabel}>{connectionLabel}</span>
+        <span>捕获 {frames.length}</span>
+        <span>解析 {analysis.totalFrames}</span>
+        <span>RX {rxCount}</span>
+        <span>TX {txCount}</span>
+        <span>{formatAnalyzerBytes(analysis.capturedBytes)}</span>
+        {analysis.droppedFrames ? <span className="warning">窗口外 {analysis.droppedFrames}</span> : null}
+        <span className="serial-analyzer-last-disconnect" title={lastDisconnect}>上次断开 {lastDisconnect}</span>
+      </section>
+
+      <section
+        className="serial-analyzer-table"
+        role="grid"
+        aria-label="串口分析帧"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            event.preventDefault();
+            moveSelection(event.key === "ArrowUp" ? -1 : 1);
+          } else if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            moveSelection(event.key === "Home" ? -filtered.length : filtered.length);
+          }
+        }}
+      >
+        <div className="serial-analyzer-table-head" role="row">
+          <span role="columnheader" aria-label="书签" />
+          <span role="columnheader">时间</span>
+          <span role="columnheader">方向</span>
+          <span role="columnheader">长度</span>
+          <span role="columnheader">边界</span>
+          <span role="columnheader">Hex</span>
+          <span role="columnheader">ASCII</span>
+        </div>
+        <div className="serial-analyzer-table-body">
+          {!visible.length ? <div className="serial-analyzer-empty">没有匹配的分析帧</div> : null}
+          {visible.map((frame) => {
+            const bookmarked = bookmarkIds.has(frame.bookmarkId);
+            return (
+              <div
+                key={frame.id}
+                role="row"
+                aria-selected={selected?.id === frame.id}
+                className={`serial-analyzer-row ${frame.direction}${selected?.id === frame.id ? " selected" : ""}`}
+                tabIndex={-1}
+                onClick={() => selectFrame(frame)}
+              >
+                <button type="button" role="gridcell" title={bookmarked ? "移除书签" : "添加书签"} aria-label={bookmarked ? "移除帧书签" : "添加帧书签"} onClick={(event) => { event.stopPropagation(); toggleBookmark(frame); }}><Bookmark size={13} fill={bookmarked ? "currentColor" : "none"} /></button>
+                <span role="gridcell" title={new Date(frame.ts).toLocaleString()}>{formatAnalyzerTime(frame.ts)}</span>
+                <strong role="gridcell">{frame.direction === "inbound" ? "RX" : "TX"}</strong>
+                <span role="gridcell">{frame.bytes.length} B</span>
+                <span role="gridcell" className={!frame.complete || frame.truncated ? "warning" : ""}>{frame.truncated ? "截断" : frame.complete ? "完整" : "尾帧"}</span>
+                <code role="gridcell">{serialCaptureHex(frame.bytes, 48) || "--"}</code>
+                <span role="gridcell" className="ascii">{serialCaptureAscii(frame.bytes.slice(0, 128)) || "--"}</span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="serial-analyzer-inspector">
+        {selected ? (
+          <>
+            <header>
+              <strong>{selected.direction === "inbound" ? "RX" : "TX"} · {selected.bytes.length} B</strong>
+              <span>{new Date(selected.ts).toLocaleString()}</span>
+              <span>{selected.sourceFrameIds.length} 个捕获分片</span>
+              <button type="button" title="复制完整 Hex" aria-label="复制完整帧 Hex" onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(selected.bytes, selected.bytes.length)).catch(() => {})}><Copy size={13} /></button>
+              <button type="button" className={bookmarkIds.has(selected.bookmarkId) ? "active" : ""} title="切换书签" aria-label="切换帧书签" onClick={() => toggleBookmark(selected)}><Bookmark size={13} fill={bookmarkIds.has(selected.bookmarkId) ? "currentColor" : "none"} /></button>
+            </header>
+            <div className="serial-analyzer-dump">
+              <pre>{serialAnalyzerHexDump(selected.bytes) || "--"}</pre>
+              <pre className="ascii">{serialCaptureAscii(selected.bytes.slice(0, 4096)) || "--"}</pre>
+            </div>
+          </>
+        ) : <div className="serial-analyzer-empty">没有选中的帧</div>}
+      </section>
+
+      <footer className="serial-analyzer-footer">
+        <span className={message ? "message" : ""}>{message || `${filtered.length}/${analysis.frames.length} 帧`}</span>
+        <label>每页<select value={stored.pageSize} onChange={(event) => { const pageSize = Number(event.target.value) as 100 | 250 | 500; setStored((current) => ({ ...current, pageSize, follow: false })); setPage(0); }}><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label>
+        <button type="button" title="第一页" aria-label="第一页" disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(0); }}><ChevronsLeft size={14} /></button>
+        <button type="button" title="上一页" aria-label="上一页" disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.max(0, activePage - 1)); }}><ChevronLeft size={14} /></button>
+        <span>{activePage + 1}/{pageCount}</span>
+        <button type="button" title="下一页" aria-label="下一页" disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.min(pageCount - 1, activePage + 1)); }}><ChevronRight size={14} /></button>
+        <button type="button" title="最后一页" aria-label="最后一页" disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(pageCount - 1); }}><ChevronsRight size={14} /></button>
+      </footer>
+    </>
+  );
+}
+
+function loadStoredAnalyzerState(): SerialAnalyzerStoredState {
+  try {
+    const raw = window.localStorage.getItem(SERIAL_ANALYZER_STORAGE_KEY);
+    return normalizeSerialAnalyzerStoredState(raw ? JSON.parse(raw) : defaultSerialAnalyzerStoredState);
+  } catch {
+    return normalizeSerialAnalyzerStoredState(defaultSerialAnalyzerStoredState);
+  }
+}
+
+function loadLocalSessions(): SessionSummary[] {
+  try {
+    const raw = window.localStorage.getItem("portmate.sessions");
+    return raw ? JSON.parse(raw) as SessionSummary[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatAnalyzerTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 })
+    : "--";
+}
+
+function formatAnalyzerBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+function formatAnalyzerError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
