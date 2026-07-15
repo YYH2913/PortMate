@@ -47,6 +47,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
 - WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/追加回车执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
+- WindTerm scheme 风格命令补全已接入焦点 Remote 模式的 Shell/SSH/Tmux/Telnet/Raw TCP 主窗口与独立窗口。候选在本地合并常用命令名、选项、子命令、显式历史和 Quick Commands，不探测远端或调用外部服务；已有 Auto Completion 设置会独立控制来源、1/2/3 字符触发、5/7/10 行列表和预览方式。方向键选择、Tab 只经现有交互/同步输入 lane 追加尚未输入的后缀、Escape 关闭，绝不自动执行命令。跟踪器支持纯追加输入、Backspace、Ctrl+U/Ctrl+W；粘贴、光标/未知控制序列、引号、重定向和 shell 运算符会保守暂停到下一行，OneKey 敏感提示出现时也会先抑制候选，避免伪造远端行编辑状态。
 - WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。主窗口和独立窗口还会按 WindTerm 默认规则跨分片/ANSI/退格识别当前末行的 username/login/password 提示，过滤密码修改提示，只在聚焦 pane 显示绑定候选确认条；用户输入、提示变化或关闭 `终端设置 -> Auto Completion -> OneKey 终端提示补全` 会撤销。补全请求仅提交 OneKey/会话/字段/提示事件 ID，后端在 Secret 读取前及等待出站 lane 后重新验证提示时效、字段、绑定、用户名和 OneKey 版本，成功只记录关联原提示事件且无正文的 `one-key-completion` control event。OneKeys 与 localStorage Quick Commands 保持独立。
 - `查看` 菜单中的资源管理器、文件管理器、会话、历史命令、发送、快捷栏和状态栏已从无效提示改为带勾选态的真实开关；四个 dock 标题栏和发送面板使用可聚焦的关闭/设置按钮。单侧只剩一个 pane 时自动占满，整侧、发送区或状态栏隐藏后空间会完整归还终端，并与 Quick Bar 正确组合。六项 pane/bar 状态使用有版本的本地快照跨重启恢复，损坏字段独立回退为显示；移动端的响应式隐藏不覆盖桌面选择。`模式 -> 专注模式`、顶部按钮和 WindTerm `Alt+Enter` 会临时隐藏这些区域但不改写持久化选择，退出精确恢复；快捷键只在 XTerm 工作区生效，同步输入开启时强制保留状态栏风险提示。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
@@ -192,7 +193,7 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把应用壳、Quick Command 管理器、串口分析器/窗口创建器、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 497 kB、Quick Command 管理器约 4.4 kB、串口分析器约 36.1 kB、串口窗口创建器约 0.9 kB、终端 core JS 约 449 kB、WebGL JS 约 120 kB、主 CSS 约 124 kB、终端 CSS 约 4 kB；大 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、当前 pane 查找和自由输入，v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组定点拖放、独立窗口颜色/键盘模式往返，以及手动/快捷键/启动/空闲锁屏、刷新恢复、detached 同步遮罩、焦点封闭和桌面/移动端几何。键盘模式另覆盖 1440x900 与 390x844 菜单单选态/可见边界、Local/Command 零 `send_text`、Remote 恢复发送、Normal 草稿往返/原子提交和 detached URL 保持。串口分析器回归覆盖跨读取分片 CRLF framing、SLIP 跨分片转义/解码、COBS 跨分片/空载荷/长度错误、Modbus RTU 自动静默阈值/CRC/地址/短帧/FC83 异常、实时/日志源隔离、日志源单次读取/窗口与损坏计数/精确导出/禁用清空、解码与线上证据切换、方向边界、尾帧/截断状态、书签重载、重连诊断、主菜单/侧栏入口，以及 1440x900/390x844 无页面或工具栏溢出。Quick Commands 覆盖首次懒加载、增改排序、取消隔离、显式保存、Quick Bar 显隐/刷新恢复、插入/执行历史差异，以及桌面/移动无溢出布局；面板回归覆盖标题栏/菜单两种关闭入口、勾选态、单 pane 填充、全 dock/sender/status 聚焦布局、Quick Bar 组合、刷新恢复及移动端响应式隔离。专注模式另覆盖顶部按钮/精确 `Alt+Enter`、不改写持久化状态、退出恢复，以及同步输入保留 active 状态栏；工作台布局不塌陷。
+`npm run build` 已把应用壳、Quick Command 管理器、串口分析器/窗口创建器、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 498 kB、Quick Command 管理器约 4.4 kB、串口分析器约 36.2 kB、串口窗口创建器约 0.9 kB、终端 core JS 约 459 kB、WebGL JS 约 120 kB、主 CSS 约 126 kB、终端 CSS 约 4 kB；大 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、当前 pane 查找和自由输入，v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组定点拖放、独立窗口颜色/键盘模式往返，以及手动/快捷键/启动/空闲锁屏、刷新恢复、detached 同步遮罩、焦点封闭和桌面/移动端几何。键盘模式另覆盖 1440x900 与 390x844 菜单单选态/可见边界、Local/Command 零 `send_text`、Remote 恢复发送、Normal 草稿往返/原子提交和 detached URL 保持；命令补全另覆盖 Quick/历史/参数排序、方向选择、Tab 精确追加顺序、Escape/未知控制序列暂停/换行恢复、禁用设置、主/独立窗口一致性及 1440x900/390x844 无溢出。串口分析器回归覆盖跨读取分片 CRLF framing、SLIP 跨分片转义/解码、COBS 跨分片/空载荷/长度错误、Modbus RTU 自动静默阈值/CRC/地址/短帧/FC83 异常、实时/日志源隔离、日志源单次读取/窗口与损坏计数/精确导出/禁用清空、解码与线上证据切换、方向边界、尾帧/截断状态、书签重载、重连诊断、主菜单/侧栏入口，以及 1440x900/390x844 无页面或工具栏溢出。Quick Commands 覆盖首次懒加载、增改排序、取消隔离、显式保存、Quick Bar 显隐/刷新恢复、插入/执行历史差异，以及桌面/移动无溢出布局；面板回归覆盖标题栏/菜单两种关闭入口、勾选态、单 pane 填充、全 dock/sender/status 聚焦布局、Quick Bar 组合、刷新恢复及移动端响应式隔离。专注模式另覆盖顶部按钮/精确 `Alt+Enter`、不改写持久化状态、退出恢复，以及同步输入保留 active 状态栏；工作台布局不塌陷。
 
 已有单元测试覆盖：
 
@@ -204,6 +205,7 @@ npm run build
 - 当前终端查找的标准/WindTerm 快捷键识别、选中文本单行化和 UTF-16 长度边界、结果/溢出/非法表达式状态，以及菜单到焦点 pane 的事件分发。
 - 自由输入的 Unicode 字符上限、跨平台换行原子提交、空/空格草稿、可编辑选区剪切和菜单到焦点 pane 的事件分发。
 - 键盘模式非法值回退、Remote/Local/Normal/Command 转换、`Ctrl+Enter`、计数前缀、Vim 风格导航/搜索/可视选择命令，以及非 Remote 模式对未映射键和组合输入的消费。
+- 命令补全损坏设置归一化、输入/退格/Ctrl+U/Ctrl+W 状态、未知控制序列暂停和换行恢复、命令/选项/子命令后缀、Quick/历史去重排序、来源开关、触发阈值与复杂 shell 语法退让。
 - 串口分析器设置损坏值修复、Hex 分隔符校验、跨捕获分片且方向隔离的 delimiter/SLIP/COBS/Modbus framing、RFC 1055 END/ESC 解码、COBS 连续/空载荷/长度错误、Modbus 自动/手动静默阈值、标准 FC03/FC83 向量、CRC/地址/短帧错误、实时/Raw 日志源隔离、持久引用路径/范围/hash 校验、不可用/窗口外计数、历史精确导出、解码/线上双视图、定长完整/尾帧、空闲间隔、截断传播、4,096 帧环形显示边界、方向/Hex/ASCII/书签筛选、书签上限/不可变切换、Hex dump 和独立窗口路由校验。
 - Quick Commands 的旧数组迁移、Unicode 名称/正文边界、NUL 清理、无效/重复 ID 修复、64 条上限、插入/执行 payload 和不可变上下排序。
 - 工作区 pane/bar 显示状态的默认值、v1/旧直存快照恢复、逐字段损坏修复、幂等设置和不可变切换，以及不修改原状态的专注布局派生、同步输入状态栏保留和精确 `Alt+Enter` 识别。
@@ -261,7 +263,7 @@ npm run build
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`；当前焦点 pane 增量查找、Unicode 11、write-only OSC 52、进程内有界 Serialize/鼠标编码恢复、单一 PTY resize owner 及 WebGL→DOM fallback 已接入。 |
-| WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个独立 ID view、v1/v2/v3→v4 迁移、同 session view 复制/独立重命名/逐 view 着色、同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom 快捷键、方向 pane 交换、保留 view 身份/颜色的 Tauri 独立窗口/返回、主密码/隐私降级锁屏、启动/空闲锁屏、启动会话策略及 xterm/CSS lazy chunk 已有。 |
+| WindTerm 风格工作台 | 大部分实现 | 主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个独立 ID view、v1/v2/v3→v4 迁移、同 session view 复制/独立重命名/逐 view 着色、同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom 快捷键、方向 pane 交换、保留 view 身份/颜色的 Tauri 独立窗口/返回、主密码/隐私降级锁屏、启动/空闲锁屏、启动会话策略、本地命令/选项/子命令/历史/Quick 补全及 xterm/CSS lazy chunk 已有。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、带可选认证的 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；健康故障矩阵和 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
@@ -276,7 +278,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
-| 测试体系 | 部分实现 | core/协议集成测试、31 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | core/协议集成测试、32 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
@@ -293,7 +295,7 @@ npm run build
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
 2. pane view group、启动自动连接、session/逐 view 标签颜色、workspace restore、v1/v2/v3→v4 自动迁移、同 session view duplicate/独立 rename、view 同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、任意递归嵌套分屏、保留 view 身份/颜色的独立 Tauri 窗口/返回、跨主/独立窗口锁屏、可持久化的 dock/sender/status 显示开关、可逆专注模式，以及支持最多两段 chord 的可配置 WindTerm 分屏创建/方向焦点/关闭/zoom 快捷键和方向 pane 交换已完成。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
-4. FreeType 风格自由输入、按 view 持久化的 Remote/Local/Normal/Command 键盘模式、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、Vim 风格 scrollback 导航/选择/复制、非 Remote 输入阻断、终端换行、查找互斥、同步输入复用、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送、仅传 ID 的 SSH 登录弹窗选择和经后端重验证的终端用户名/密码提示补全均已接入。
+4. FreeType 风格自由输入、按 view 持久化的 Remote/Local/Normal/Command 键盘模式、scheme 风格本地命令补全、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、Vim 风格 scrollback 导航/选择/复制、非 Remote 输入阻断、终端换行、查找互斥、同步输入复用、本地命令/选项/子命令/历史/Quick 后缀补全、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送、仅传 ID 的 SSH 登录弹窗选择和经后端重验证的终端用户名/密码提示补全均已接入。
 5. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤、JSONL + SHA-256 导出、独立 Tauri 分析窗口、capture/delimiter/fixed/gap framing、RFC 1055 SLIP/COBS/Modbus RTU 解码、解码/线上证据切换、协议错误、分页、书签、重连状态，以及显式 Raw 日志支撑的 4,096 帧/8 MiB 持久历史均已完成；下一步补更广物理设备和跨平台矩阵。
 6. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。
 7. Tmux session/window/pane 列表、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、五种内置布局、window 级同步输入和单目标 control-mode 推送刷新已完成，并有 source/destination 注入/resize/control-line 边界与成功/失败/旧 generation Playwright workflow 回归；下一步补真实多版本 tmux server/control 协议矩阵和多 session 同时监听。

@@ -2546,6 +2546,9 @@ function handleMenuAction(item: string) {
             eventsBySession={logs}
             oneKeys={oneKeys}
             oneKeyCompletionEnabled={terminalPrefs.oneKeyCompletionEnabled}
+            completionSettings={terminalPrefs}
+            completionHistory={commandHistory}
+            completionQuickCommands={quickCommands}
             mouseReporting={terminalPrefs.mouseReporting}
             copyOnSelect={terminalPrefs.mouseCopyOnSelect}
             blockSelection={blockSelection}
@@ -4006,6 +4009,9 @@ function TerminalPaneGrid({
   eventsBySession,
   oneKeys,
   oneKeyCompletionEnabled,
+  completionSettings,
+  completionHistory,
+  completionQuickCommands,
   mouseReporting,
   copyOnSelect,
   blockSelection,
@@ -4031,6 +4037,9 @@ function TerminalPaneGrid({
   eventsBySession: Record<string, SessionEvent[]>;
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
+  completionSettings: unknown;
+  completionHistory: readonly string[];
+  completionQuickCommands: readonly QuickCommand[];
   mouseReporting: boolean;
   copyOnSelect: boolean;
   blockSelection: boolean;
@@ -4055,7 +4064,7 @@ function TerminalPaneGrid({
 }) {
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={completionHistory} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
   }
 
   return (
@@ -4070,6 +4079,9 @@ function TerminalPaneGrid({
         eventsBySession={eventsBySession}
         oneKeys={oneKeys}
         oneKeyCompletionEnabled={oneKeyCompletionEnabled}
+        completionSettings={completionSettings}
+        completionHistory={completionHistory}
+        completionQuickCommands={completionQuickCommands}
         mouseReporting={mouseReporting}
         copyOnSelect={copyOnSelect}
         onInput={onInput}
@@ -4100,6 +4112,9 @@ type TerminalWorkspaceNodeProps = {
   eventsBySession: Record<string, SessionEvent[]>;
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
+  completionSettings: unknown;
+  completionHistory: readonly string[];
+  completionQuickCommands: readonly QuickCommand[];
   mouseReporting: boolean;
   copyOnSelect: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
@@ -4304,6 +4319,9 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         focused={node.id === props.activePaneId}
         oneKeys={props.oneKeys}
         oneKeyCompletionEnabled={props.oneKeyCompletionEnabled}
+        completionSettings={props.completionSettings}
+        completionHistory={props.completionHistory}
+        completionQuickCommands={props.completionQuickCommands}
         mouseReporting={props.mouseReporting}
         copyOnSelect={props.copyOnSelect}
         keyMode={activeView.keyMode}
@@ -4403,6 +4421,9 @@ type TerminalCanvasProps = {
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  completionSettings?: unknown;
+  completionHistory?: readonly string[];
+  completionQuickCommands?: readonly QuickCommand[];
   mouseReporting?: boolean;
   copyOnSelect?: boolean;
   keyMode?: TerminalKeyMode;

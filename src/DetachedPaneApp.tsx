@@ -12,6 +12,7 @@ import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-s
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
 import TerminalCanvas from "./TerminalCanvas";
+import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
@@ -78,7 +79,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === "portmate.terminalPrefs" || event.key === null) {
+      if (["portmate.terminalPrefs", "portmate.commandHistory", QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
         setTerminalInteractionPrefs(readTerminalInteractionPrefs());
       }
     };
@@ -169,7 +170,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={error ? "detached-pane-status error" : "detached-pane-status"}>
         <span>{error || session?.runtime.status || "missing"}</span>
@@ -269,7 +270,14 @@ function loadLocalSessions(): SessionSummary[] {
 }
 
 function readTerminalInteractionPrefs() {
-  const defaults = { oneKeyCompletionEnabled: true, mouseReporting: true, copyOnSelect: true };
+  const defaults = {
+    oneKeyCompletionEnabled: true,
+    completionSettings: {},
+    completionHistory: readCompletionHistory(),
+    completionQuickCommands: readCompletionQuickCommands(),
+    mouseReporting: true,
+    copyOnSelect: true,
+  };
   try {
     const raw = window.localStorage.getItem("portmate.terminalPrefs");
     if (!raw) return defaults;
@@ -280,11 +288,32 @@ function readTerminalInteractionPrefs() {
     };
     return {
       oneKeyCompletionEnabled: typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true,
+      completionSettings: value,
+      completionHistory: readCompletionHistory(),
+      completionQuickCommands: readCompletionQuickCommands(),
       mouseReporting: typeof value.mouseReporting === "boolean" ? value.mouseReporting : true,
       copyOnSelect: typeof value.mouseCopyOnSelect === "boolean" ? value.mouseCopyOnSelect : true,
     };
   } catch {
     return defaults;
+  }
+}
+
+function readCompletionHistory(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem("portmate.commandHistory") ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 200) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readCompletionQuickCommands() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(QUICK_COMMAND_STORAGE_KEY) ?? "null") as unknown;
+    return normalizeQuickCommandLibrary(value).items;
+  } catch {
+    return [];
   }
 }
 

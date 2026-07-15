@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { CaseSensitive, ChevronDown, ChevronUp, KeyRound, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
@@ -15,6 +16,18 @@ import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptSt
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import {
+  emptyTerminalCompletionInputState,
+  reduceTerminalCompletionInput,
+  terminalCompletionSourceLabel,
+  terminalCompletionSuggestions,
+} from "./terminal-completion-state";
+import type {
+  TerminalCompletionInputState,
+  TerminalCompletionSuggestion,
+} from "./terminal-completion-state";
+import { defaultTerminalCompletionPreferences, terminalCompletionPreferencesFromSettings } from "./terminal-completion-prefs";
+import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
 import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
@@ -32,6 +45,9 @@ type TerminalCanvasProps = {
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  completionSettings?: unknown;
+  completionHistory?: readonly string[];
+  completionQuickCommands?: readonly TerminalCompletionQuickCommand[];
   mouseReporting?: boolean;
   copyOnSelect?: boolean;
   keyMode?: TerminalKeyMode;
@@ -47,6 +63,8 @@ type TerminalCanvasProps = {
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
+const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
+const EMPTY_COMPLETION_QUICK_COMMANDS: readonly TerminalCompletionQuickCommand[] = [];
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
@@ -96,6 +114,9 @@ export default function TerminalCanvas({
   focused = false,
   oneKeys = EMPTY_ONE_KEYS,
   oneKeyCompletionEnabled = true,
+  completionSettings,
+  completionHistory = EMPTY_COMPLETION_HISTORY,
+  completionQuickCommands = EMPTY_COMPLETION_QUICK_COMMANDS,
   mouseReporting = true,
   copyOnSelect = true,
   keyMode = "remote",
@@ -112,6 +133,7 @@ export default function TerminalCanvas({
   const seenEventsRef = useRef<Set<string>>(new Set());
   const pendingInputRef = useRef("");
   const inputFlushTimerRef = useRef<number | null>(null);
+  const flushInputRef = useRef<() => void>(() => {});
   const lastSizeRef = useRef("");
   const focusedRef = useRef(focused);
   const fitAndReportRef = useRef<() => void>(() => {});
@@ -130,6 +152,11 @@ export default function TerminalCanvas({
   const oneKeyPromptStateRef = useRef<OneKeyPromptDetectionState>(emptyOneKeyPromptDetectionState());
   const oneKeyPromptSessionRef = useRef("");
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
+  const completionInputRef = useRef<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
+  const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
+  const completionSelectionRef = useRef(0);
+  const acceptCompletionRef = useRef<(suggestion: TerminalCompletionSuggestion) => void>(() => {});
+  const dismissCompletionRef = useRef<() => void>(() => {});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
@@ -143,6 +170,15 @@ export default function TerminalCanvas({
   const [oneKeyCompletionId, setOneKeyCompletionId] = useState("");
   const [oneKeyCompletionBusy, setOneKeyCompletionBusy] = useState(false);
   const [oneKeyCompletionError, setOneKeyCompletionError] = useState("");
+  const [completionInput, setCompletionInput] = useState<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
+  const [completionDismissedLine, setCompletionDismissedLine] = useState("");
+  const [completionSelection, setCompletionSelection] = useState(0);
+  const completionPreferences: TerminalCompletionPreferences = useMemo(
+    () => completionSettings === undefined
+      ? defaultTerminalCompletionPreferences
+      : terminalCompletionPreferencesFromSettings(completionSettings),
+    [completionSettings],
+  );
   const oneKeyCompletionCandidates = useMemo(
     () => oneKeyCompletionEnabled && active && oneKeyPrompt
       ? oneKeyPromptCandidates(oneKeys, active.profile.id, oneKeyPrompt)
@@ -152,12 +188,50 @@ export default function TerminalCanvas({
   const selectedOneKeyCompletion = oneKeyCompletionCandidates.find((oneKey) => oneKey.id === oneKeyCompletionId)
     ?? oneKeyCompletionCandidates[0]
     ?? null;
+  const completionSupported = active
+    ? ["shell", "ssh", "tcp", "telnet", "tmux"].includes(active.profile.kind)
+    : false;
+  const completionCandidates = useMemo(() => (
+    focused
+      && completionSupported
+      && keyMode === "remote"
+      && !searchOpen
+      && !freeInputSource
+      && !oneKeyPrompt
+      && completionInput.synchronized
+      && completionInput.line !== completionDismissedLine
+      ? terminalCompletionSuggestions({
+        line: completionInput.line,
+        preferences: completionPreferences,
+        history: completionHistory,
+        quickCommands: completionQuickCommands,
+      }).slice(0, completionPreferences.listRows)
+      : []
+  ), [
+    completionDismissedLine,
+    completionHistory,
+    completionInput,
+    completionPreferences,
+    completionQuickCommands,
+    completionSupported,
+    focused,
+    freeInputSource,
+    keyMode,
+    oneKeyPrompt,
+    searchOpen,
+  ]);
+  const activeCompletionIndex = completionCandidates.length
+    ? Math.min(completionSelection, completionCandidates.length - 1)
+    : 0;
+  const selectedCompletion = completionCandidates[activeCompletionIndex] ?? null;
   onInputRef.current = onInput;
   focusedRef.current = focused;
   mouseReportingRef.current = mouseReporting;
   copyOnSelectRef.current = copyOnSelect;
   keyModeRef.current = keyMode;
   onKeyModeChangeRef.current = onKeyModeChange;
+  completionSuggestionsRef.current = completionCandidates;
+  completionSelectionRef.current = activeCompletionIndex;
   const freeInputOpen = freeInputSource !== null;
   openSearchRef.current = () => {
     setFreeInputSource(null);
@@ -183,6 +257,50 @@ export default function TerminalCanvas({
   };
   runSearchRef.current = (direction) => runTerminalSearch(direction);
 
+  function storeCompletionInput(next: TerminalCompletionInputState) {
+    completionInputRef.current = next;
+    setCompletionInput(next);
+  }
+
+  function resetCompletionInput(synchronized = true) {
+    storeCompletionInput({ line: "", synchronized });
+    setCompletionDismissedLine("");
+    completionSelectionRef.current = 0;
+    setCompletionSelection(0);
+  }
+
+  function updateCompletionInput(text: string) {
+    const current = oneKeyPromptStateRef.current.prompt
+      ? { line: "", synchronized: false }
+      : completionInputRef.current;
+    const next = reduceTerminalCompletionInput(current, text);
+    storeCompletionInput(next);
+    setCompletionDismissedLine("");
+    completionSelectionRef.current = 0;
+    setCompletionSelection(0);
+  }
+
+  acceptCompletionRef.current = (suggestion) => {
+    if (!active || !suggestion.appendText) return;
+    const next = reduceTerminalCompletionInput(completionInputRef.current, suggestion.appendText);
+    storeCompletionInput(next);
+    setCompletionDismissedLine(suggestion.source === "history" || suggestion.source === "quick" ? next.line : "");
+    completionSelectionRef.current = 0;
+    setCompletionSelection(0);
+    pendingInputRef.current += suggestion.appendText;
+    if (inputFlushTimerRef.current !== null) {
+      window.clearTimeout(inputFlushTimerRef.current);
+      inputFlushTimerRef.current = null;
+    }
+    flushInputRef.current();
+    window.requestAnimationFrame(() => termRef.current?.focus());
+  };
+  dismissCompletionRef.current = () => {
+    setCompletionDismissedLine(completionInputRef.current.line);
+    completionSelectionRef.current = 0;
+    setCompletionSelection(0);
+  };
+
   function applyOneKeyPromptState(state: OneKeyPromptDetectionState) {
     const previousEventId = oneKeyPromptStateRef.current.prompt?.eventId;
     oneKeyPromptStateRef.current = state;
@@ -193,6 +311,7 @@ export default function TerminalCanvas({
       setOneKeyCompletionBusy(false);
       setOneKeyCompletionError("");
     }
+    if (prompt) resetCompletionInput(false);
     setOneKeyPrompt(prompt);
   }
 
@@ -335,6 +454,27 @@ export default function TerminalCanvas({
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       const mode = keyModeRef.current;
+      const completions = completionSuggestionsRef.current;
+      if (mode === "remote" && completions.length && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) {
+          event.preventDefault();
+          const offset = event.key === "ArrowDown" ? 1 : -1;
+          const next = (completionSelectionRef.current + offset + completions.length) % completions.length;
+          completionSelectionRef.current = next;
+          setCompletionSelection(next);
+          return false;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          acceptCompletionRef.current(completions[completionSelectionRef.current] ?? completions[0]);
+          return false;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismissCompletionRef.current();
+          return false;
+        }
+      }
       if (isTerminalFindShortcut(event) && mode !== "command") {
         event.preventDefault();
         openSearchRef.current();
@@ -447,9 +587,11 @@ export default function TerminalCanvas({
         onInputRef.current(active.profile.id, text, "interactive");
       }
     };
+    flushInputRef.current = flushInput;
     const inputDisposable = term.onData((text) => {
       if (keyModeRef.current !== "remote") return;
       if (!mouseReportingRef.current && isTerminalMouseReport(text)) return;
+      updateCompletionInput(text);
       dismissOneKeyPrompt();
       pendingInputRef.current += text;
       if (/[\x00-\x1f\x7f]/.test(text)) {
@@ -476,6 +618,7 @@ export default function TerminalCanvas({
       if (keyModeRef.current !== "remote") return;
       void navigator.clipboard?.readText().then((text) => {
         if (text) {
+          resetCompletionInput(false);
           dismissOneKeyPrompt();
           onInputRef.current(active.profile.id, text, "atomic");
         }
@@ -501,6 +644,7 @@ export default function TerminalCanvas({
         inputFlushTimerRef.current = null;
       }
       pendingInputRef.current = "";
+      if (flushInputRef.current === flushInput) flushInputRef.current = () => {};
       resizeObserver.disconnect();
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
@@ -537,10 +681,10 @@ export default function TerminalCanvas({
       dismissedOneKeyPromptEventsRef.current.clear();
       setOneKeyCompletionId("");
     }
-    applyOneKeyPromptState(oneKeyCompletionEnabled && sessionId
+    applyOneKeyPromptState(sessionId
       ? oneKeyPromptStateFromEvents(events, sessionId)
       : emptyOneKeyPromptDetectionState());
-  }, [active?.profile.id, events, oneKeyCompletionEnabled]);
+  }, [active?.profile.id, events]);
 
   useEffect(() => {
     if (!oneKeyCompletionCandidates.length) {
@@ -571,6 +715,7 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
+    resetCompletionInput();
     setFreeInputSource(null);
     setFreeInputValue("");
   }, [active?.profile.id, viewId]);
@@ -587,6 +732,7 @@ export default function TerminalCanvas({
     }
 
     if (keyMode === "local" || keyMode === "command") {
+      resetCompletionInput();
       setFreeInputSource(null);
       if (!(previousMode === "normal" && keyMode === "command")) setFreeInputValue("");
       if (term) {
@@ -600,6 +746,7 @@ export default function TerminalCanvas({
     localNavigationRef.current = null;
     term?.clearSelection();
     if (keyMode === "normal") {
+      resetCompletionInput();
       searchRef.current?.clearDecorations();
       setSearchOpen(false);
       setSearchResult(null);
@@ -650,12 +797,10 @@ export default function TerminalCanvas({
       if (disposed || event.payload.sessionId !== active.profile.id) return;
       const term = termRef.current;
       if (!term || !writeEventRef.current(event.payload)) return;
-      if (oneKeyCompletionEnabled) {
-        applyOneKeyPromptState(reduceOneKeyPromptDetection(
-          oneKeyPromptStateRef.current,
-          event.payload,
-        ));
-      }
+      applyOneKeyPromptState(reduceOneKeyPromptDetection(
+        oneKeyPromptStateRef.current,
+        event.payload,
+      ));
     })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -670,7 +815,7 @@ export default function TerminalCanvas({
       disposed = true;
       unlisten?.();
     };
-  }, [active?.profile.id, oneKeyCompletionEnabled]);
+  }, [active?.profile.id]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -786,6 +931,41 @@ export default function TerminalCanvas({
                 </button>
               </form>
             ) : null}
+          {completionCandidates.length ? (
+            <section
+              className="terminal-completion"
+              aria-label="终端命令补全"
+              data-preview-mode={completionPreferences.previewMode}
+              style={{ "--terminal-completion-rows": completionPreferences.listRows } as CSSProperties}
+            >
+              {completionPreferences.previewMode === "input" && selectedCompletion ? (
+                <div className="terminal-completion-preview" aria-hidden="true">
+                  <code>{completionInput.line}</code><code>{selectedCompletion.appendText}</code>
+                </div>
+              ) : null}
+              <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
+                {completionCandidates.map((suggestion, index) => (
+                  <button
+                    key={suggestion.id}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeCompletionIndex}
+                    className={index === activeCompletionIndex ? "active" : ""}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => {
+                      completionSelectionRef.current = index;
+                      setCompletionSelection(index);
+                    }}
+                    onClick={() => acceptCompletionRef.current(suggestion)}
+                  >
+                    <span>{terminalCompletionSourceLabel(suggestion.source)}</span>
+                    <code>{suggestion.label}</code>
+                    <small>{suggestion.detail}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
           {searchOpen ? (
             <form className="terminal-search-bar" onSubmit={(event) => {
               event.preventDefault();

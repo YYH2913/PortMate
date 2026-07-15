@@ -1,0 +1,126 @@
+import { describe, expect, it } from "vitest";
+import {
+  emptyTerminalCompletionInputState,
+  reduceTerminalCompletionInput,
+  terminalCompletionSuggestions,
+} from "./terminal-completion-state";
+import {
+  defaultTerminalCompletionPreferences,
+  normalizeTerminalCompletionPreferences,
+  terminalCompletionPreferencesFromSettings,
+} from "./terminal-completion-prefs";
+
+describe("terminal completion state", () => {
+  it("normalizes damaged preferences to bounded defaults", () => {
+    expect(normalizeTerminalCompletionPreferences({
+      enabled: false,
+      commandNames: "yes",
+      triggerCharacters: 3,
+      listRows: 10,
+      previewMode: "input",
+    })).toEqual({
+      ...defaultTerminalCompletionPreferences,
+      enabled: false,
+      triggerCharacters: 3,
+      listRows: 10,
+      previewMode: "input",
+    });
+    expect(normalizeTerminalCompletionPreferences({ triggerCharacters: 9, listRows: 99, previewMode: "invalid" }))
+      .toEqual(defaultTerminalCompletionPreferences);
+    expect(terminalCompletionPreferencesFromSettings({
+      completionEnabled: true,
+      completionCommandNames: false,
+      completionTriggerChars: "3 字符",
+      completionListHeight: "10 行",
+      completionPreviewMode: "列表顶部",
+    })).toEqual({
+      ...defaultTerminalCompletionPreferences,
+      commandNames: false,
+      triggerCharacters: 3,
+      listRows: 10,
+      previewMode: "top",
+    });
+  });
+
+  it("tracks only append-only terminal lines and resynchronizes at boundaries", () => {
+    let state = reduceTerminalCompletionInput(emptyTerminalCompletionInputState, "git sta");
+    expect(state).toEqual({ line: "git sta", synchronized: true });
+    state = reduceTerminalCompletionInput(state, "\u007fatus");
+    expect(state.line).toBe("git status");
+    state = reduceTerminalCompletionInput(state, "\u0017diff");
+    expect(state.line).toBe("git diff");
+    state = reduceTerminalCompletionInput(state, "\u0015");
+    expect(state.line).toBe("");
+    state = reduceTerminalCompletionInput(state, "git status");
+    state = reduceTerminalCompletionInput(state, "\u001b[A");
+    expect(state).toEqual({ line: "", synchronized: false });
+    expect(reduceTerminalCompletionInput(state, "ignored").synchronized).toBe(false);
+    expect(reduceTerminalCompletionInput(state, "\rnext")).toEqual({ line: "next", synchronized: true });
+  });
+
+  it("suggests commands, options, and subcommands as append-only suffixes", () => {
+    const command = terminalCompletionSuggestions({
+      line: "gi",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(command.find((item) => item.label === "git")).toMatchObject({
+      source: "command",
+      appendText: "t ",
+    });
+
+    const argument = terminalCompletionSuggestions({
+      line: "git st",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(argument.find((item) => item.label === "status")?.appendText).toBe("atus ");
+
+    const option = terminalCompletionSuggestions({
+      line: "ssh -p",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(option.find((item) => item.label === "-p")?.appendText).toBe(" ");
+  });
+
+  it("ranks exact Quick Commands and explicit history without accepting multiline payloads", () => {
+    const suggestions = terminalCompletionSuggestions({
+      line: "git s",
+      preferences: defaultTerminalCompletionPreferences,
+      history: ["git status", "git\nsecret"],
+      quickCommands: [
+        { id: "status", label: "仓库状态", command: "git status" },
+        { id: "multi", label: "多行", command: "git status\ngit diff" },
+        { id: "operator", label: "复合命令", command: "git status; rm output" },
+      ],
+    });
+    expect(suggestions[0]).toMatchObject({ source: "quick", label: "仓库状态", appendText: "tatus" });
+    expect(suggestions.some((item) => item.target.includes("\n"))).toBe(false);
+    expect(suggestions.some((item) => item.target.includes(";"))).toBe(false);
+    expect(suggestions.filter((item) => item.target === "git status")).toHaveLength(1);
+  });
+
+  it("honors source switches, trigger length, and conservative shell syntax boundaries", () => {
+    const preferences = {
+      ...defaultTerminalCompletionPreferences,
+      commandNames: false,
+      commandArgs: false,
+      commandOptions: false,
+      history: false,
+      quickCommands: true,
+      triggerCharacters: 3 as const,
+    };
+    expect(terminalCompletionSuggestions({
+      line: "gi",
+      preferences,
+      quickCommands: [{ id: "one", label: "状态", command: "git status" }],
+    })).toEqual([]);
+    expect(terminalCompletionSuggestions({
+      line: "git",
+      preferences,
+      quickCommands: [{ id: "one", label: "状态", command: "git status" }],
+    })[0]?.source).toBe("quick");
+    expect(terminalCompletionSuggestions({
+      line: "git status | gr",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual([]);
+  });
+});

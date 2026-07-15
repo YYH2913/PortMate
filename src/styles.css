@@ -2636,6 +2636,123 @@ button {
   height: 100%;
 }
 
+.terminal-completion {
+  --terminal-completion-rows: 7;
+  position: absolute;
+  z-index: 5;
+  bottom: 8px;
+  left: 8px;
+  width: min(520px, calc(100% - 16px));
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #344252;
+  border-radius: 4px;
+  background: #111820;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  animation: terminal-completion-enter 100ms ease-out both;
+}
+
+.terminal-completion-preview {
+  display: flex;
+  min-width: 0;
+  height: 28px;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 9px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #0c131a;
+  white-space: pre;
+}
+
+.terminal-completion-preview code {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.terminal-completion-preview code:last-child {
+  flex: 0 0 auto;
+  color: #7b8a99;
+}
+
+.terminal-completion-list {
+  max-height: calc(var(--terminal-completion-rows) * 30px);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.terminal-completion-list > button {
+  display: grid;
+  grid-template-columns: 48px minmax(86px, 0.8fr) minmax(100px, 1.2fr);
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border-bottom: 1px solid rgba(65, 78, 91, 0.38);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.terminal-completion-list > button:last-child {
+  border-bottom: 0;
+}
+
+.terminal-completion-list > button:hover,
+.terminal-completion-list > button.active {
+  outline: 0;
+  background: #1b2833;
+}
+
+.terminal-completion[data-preview-mode="top"] .terminal-completion-list > button:first-child {
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+
+.terminal-completion-list > button > span {
+  overflow: hidden;
+  color: var(--cyan);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-completion-list > button > code,
+.terminal-completion-list > button > small {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-completion-list > button > code {
+  color: #f1f5f9;
+  font-size: 11px;
+}
+
+.terminal-completion-list > button > small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+@keyframes terminal-completion-enter {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@container (max-width: 320px) {
+  .terminal-completion-list > button {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .terminal-completion-list > button > small {
+    display: none;
+  }
+}
+
 .terminal-one-key-completion {
   position: absolute;
   z-index: 6;
