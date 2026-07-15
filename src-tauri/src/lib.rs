@@ -2965,28 +2965,96 @@ async fn open_session(
     passphrase: Option<String>,
 ) -> Result<SessionSummary, String> {
     let state = state.inner().clone();
-    open_session_inner(state, session_id, password, passphrase).await
+    open_session_inner(
+        state,
+        session_id,
+        SessionOpenCredentials {
+            password,
+            passphrase,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn open_session_with_one_key(
+    state: State<'_, AppState>,
+    session_id: String,
+    one_key_id: String,
+) -> Result<SessionSummary, String> {
+    let credentials = resolve_one_key_login_credentials(state.inner(), &session_id, &one_key_id)?;
+    let state = state.inner().clone();
+    open_session_inner(
+        state,
+        session_id,
+        SessionOpenCredentials {
+            username: Some(credentials.username),
+            password: credentials.password,
+            passphrase: credentials.passphrase,
+            isolate_saved_ssh_credentials: true,
+        },
+    )
+    .await
+}
+
+#[derive(Default)]
+struct SessionOpenCredentials {
+    username: Option<String>,
+    password: Option<String>,
+    passphrase: Option<String>,
+    isolate_saved_ssh_credentials: bool,
+}
+
+fn apply_session_open_profile_credentials(
+    profile: &mut SessionProfile,
+    username: Option<&str>,
+    isolate_saved_ssh_credentials: bool,
+) -> Result<(), String> {
+    if username.is_none() && !isolate_saved_ssh_credentials {
+        return Ok(());
+    }
+    let ssh = ssh_connection_mut(profile)?;
+    if let Some(username) = username {
+        ssh.username = username.to_string();
+    }
+    if isolate_saved_ssh_credentials {
+        ssh.password_secret_ref = None;
+        ssh.passphrase_secret_ref = None;
+    }
+    Ok(())
 }
 
 async fn open_session_inner(
     state: AppState,
     session_id: String,
-    password: Option<String>,
-    passphrase: Option<String>,
+    credentials: SessionOpenCredentials,
 ) -> Result<SessionSummary, String> {
+    let SessionOpenCredentials {
+        username,
+        password,
+        passphrase,
+        isolate_saved_ssh_credentials,
+    } = credentials;
     let profile = {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
         let profile = store
             .profile(&session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         let endpoint = describe_endpoint(&profile);
+        let mut profile = normalize_session_profile(profile);
+        apply_session_open_profile_credentials(
+            &mut profile,
+            username.as_deref(),
+            isolate_saved_ssh_credentials,
+        )?;
         store.set_runtime_status(&session_id, SessionStatus::Connecting)?;
         store.record_system_event(
             &session_id,
             format!("PortMate: connecting to {endpoint} ({:?})", profile.kind),
         );
         save_store(&state.store_path, &store)?;
-        normalize_session_profile(profile)
+        profile
     };
 
     if matches!(
@@ -3481,6 +3549,104 @@ fn one_key_summary(one_key: &OneKeyCredential) -> OneKeySummary {
 
 fn one_key_summaries(store: &SessionStore) -> Vec<OneKeySummary> {
     store.one_keys.iter().map(one_key_summary).collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OneKeyLoginCredentials {
+    username: String,
+    password: Option<String>,
+    passphrase: Option<String>,
+}
+
+fn read_one_key_login_secret<ReadSecret>(
+    secret_ref: Option<&str>,
+    field: &str,
+    read_secret: &mut ReadSecret,
+) -> Result<Option<String>, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+{
+    let Some(secret_ref) = secret_ref else {
+        return Ok(None);
+    };
+    let secret_ref = canonical_secret_ref(secret_ref)
+        .ok_or_else(|| format!("OneKey {field} Secret 引用无效"))?;
+    let secret =
+        read_secret(&secret_ref).map_err(|error| format!("读取 OneKey {field} 失败: {error}"))?;
+    if secret.is_empty() || secret.len() > MAX_ONE_KEY_SECRET_BYTES || secret.contains('\0') {
+        return Err(format!("OneKey {field} 内容无效"));
+    }
+    Ok(Some(secret))
+}
+
+fn resolve_one_key_login_credentials_with<ReadSecret>(
+    store: &SessionStore,
+    session_id: &str,
+    one_key_id: &str,
+    mut read_secret: ReadSecret,
+) -> Result<OneKeyLoginCredentials, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+{
+    let profile = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    if !matches!(profile.kind, SessionKind::Ssh | SessionKind::Tmux)
+        || !matches!(
+            &profile.connection,
+            ConnectionConfig::Ssh(_) | ConnectionConfig::Tmux(_)
+        )
+    {
+        return Err("OneKey 登录只支持 SSH/Tmux 会话".to_string());
+    }
+    let one_key = store
+        .one_keys
+        .iter()
+        .find(|one_key| one_key.id == one_key_id)
+        .ok_or_else(|| "OneKey 已被删除，请刷新后重试".to_string())?;
+    if one_key.kind != OneKeyKind::Ssh {
+        return Err("SSH 登录向导只能使用 SSH OneKey".to_string());
+    }
+    if !one_key
+        .session_ids
+        .iter()
+        .any(|bound_session_id| bound_session_id == session_id)
+    {
+        return Err("OneKey 未绑定当前会话".to_string());
+    }
+    if one_key.username.trim().is_empty() {
+        return Err("OneKey 用户名无效".to_string());
+    }
+    let password = read_one_key_login_secret(
+        one_key.password_secret_ref.as_deref(),
+        "密码",
+        &mut read_secret,
+    )?;
+    let passphrase = read_one_key_login_secret(
+        one_key.passphrase_secret_ref.as_deref(),
+        "私钥口令",
+        &mut read_secret,
+    )?;
+    if password.is_none() && passphrase.is_none() {
+        return Err("OneKey 没有可用于 SSH 登录的 Secret".to_string());
+    }
+    Ok(OneKeyLoginCredentials {
+        username: one_key.username.clone(),
+        password,
+        passphrase,
+    })
+}
+
+fn resolve_one_key_login_credentials(
+    state: &AppState,
+    session_id: &str,
+    one_key_id: &str,
+) -> Result<OneKeyLoginCredentials, String> {
+    let _credential_guard = lock_credential_operations(state)?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    resolve_one_key_login_credentials_with(&store, session_id, one_key_id, read_secret_from_store)
 }
 
 fn normalize_one_key_sessions(
@@ -5171,8 +5337,16 @@ async fn execute_ipc_request(
                 .get("passphrase")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            let summary =
-                open_session_inner(state.clone(), session_id, password, passphrase).await?;
+            let summary = open_session_inner(
+                state.clone(),
+                session_id,
+                SessionOpenCredentials {
+                    password,
+                    passphrase,
+                    ..Default::default()
+                },
+            )
+            .await?;
             serde_json::to_value(summary).map_err(|error| error.to_string())
         }
         "close_session" => {
@@ -23994,6 +24168,7 @@ pub fn run() {
             resize_session,
             save_session_profile,
             open_session,
+            open_session_with_one_key,
             close_session,
             evaluate_host_key,
             apply_host_key_decision,
@@ -33740,6 +33915,89 @@ mod tests {
         let json = serde_json::to_string(&summaries).unwrap();
         assert!(!json.contains("onekey-password"));
         assert!(!json.contains("onekey-passphrase"));
+    }
+
+    #[test]
+    fn one_key_login_resolves_only_bound_ssh_credentials() {
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_ssh_profile());
+        let now = Utc::now();
+        store.one_keys.push(OneKeyCredential {
+            id: "onekey:login".to_string(),
+            label: "Operations".to_string(),
+            kind: OneKeyKind::Ssh,
+            username: "operator".to_string(),
+            password_secret_ref: Some(" keychain:login-password ".to_string()),
+            passphrase_secret_ref: Some("stronghold:login-passphrase".to_string()),
+            session_ids: vec!["ssh-session-1".to_string()],
+            created_at: now,
+            updated_at: now,
+        });
+
+        let mut reads = Vec::new();
+        let resolved = resolve_one_key_login_credentials_with(
+            &store,
+            "ssh-session-1",
+            "onekey:login",
+            |secret_ref| {
+                reads.push(secret_ref.to_string());
+                Ok(match secret_ref {
+                    "keychain:login-password" => "login-secret",
+                    "stronghold:login-passphrase" => "key-secret",
+                    _ => panic!("unexpected OneKey Secret reference"),
+                }
+                .to_string())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolved,
+            OneKeyLoginCredentials {
+                username: "operator".to_string(),
+                password: Some("login-secret".to_string()),
+                passphrase: Some("key-secret".to_string()),
+            }
+        );
+        assert_eq!(
+            reads,
+            [
+                "keychain:login-password".to_string(),
+                "stronghold:login-passphrase".to_string(),
+            ]
+        );
+
+        let mut runtime_profile = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut runtime_profile.connection {
+            ssh.password_secret_ref = Some("keychain:profile-password".to_string());
+            ssh.passphrase_secret_ref = Some("keychain:profile-passphrase".to_string());
+        }
+        apply_session_open_profile_credentials(&mut runtime_profile, Some("operator"), true)
+            .unwrap();
+        let runtime_ssh = ssh_connection(&runtime_profile).unwrap();
+        assert_eq!(runtime_ssh.username, "operator");
+        assert!(runtime_ssh.password_secret_ref.is_none());
+        assert!(runtime_ssh.passphrase_secret_ref.is_none());
+
+        store.one_keys[0].session_ids = vec!["another-session".to_string()];
+        assert!(resolve_one_key_login_credentials_with(
+            &store,
+            "ssh-session-1",
+            "onekey:login",
+            |_| panic!("unbound OneKey must not read Secret data"),
+        )
+        .unwrap_err()
+        .contains("未绑定"));
+
+        store.one_keys[0].session_ids = vec!["ssh-session-1".to_string()];
+        store.one_keys[0].kind = OneKeyKind::Account;
+        assert!(resolve_one_key_login_credentials_with(
+            &store,
+            "ssh-session-1",
+            "onekey:login",
+            |_| panic!("Account OneKey must not read SSH Secret data"),
+        )
+        .unwrap_err()
+        .contains("SSH OneKey"));
     }
 
     #[test]

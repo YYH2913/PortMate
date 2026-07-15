@@ -74,6 +74,7 @@ import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnaps
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
@@ -155,7 +156,7 @@ type ProtocolTab = (typeof protocolTabs)[number];
 type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type SessionPrefs = ReturnType<typeof createSessionPrefs>;
-type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; savePassword: boolean; savePassphrase: boolean };
+type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; oneKeyId: string | null; savePassword: boolean; savePassphrase: boolean };
 type NoticeState = { title: string; message: string } | null;
 type SearchDialogState = { mode: "sessions" | "logs"; query: string };
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -222,6 +223,7 @@ type ContextMenuState = { x: number; y: number; sessionId: string | null } | nul
 type CredentialPromptState = {
   target: string;
   initialUsername: string;
+  oneKeys: OneKeySummary[];
   hasIdentityFiles: boolean;
   hasSavedPassword: boolean;
   hasSavedPassphrase: boolean;
@@ -2020,7 +2022,9 @@ function handleMenuAction(item: string) {
       const persisted = await saveProfile(profileForConnect);
       applySavedSession(persisted, activateWorkspace);
       const saved = isBackendAvailable()
-        ? await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
+        ? credentials.oneKeyId
+          ? await invokeBackend<SessionSummary>("open_session_with_one_key", { sessionId: persisted.profile.id, oneKeyId: credentials.oneKeyId })
+          : await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
         : setSessionStatus(persisted, "connected");
       const fallbackLog = [...(logs[persisted.profile.id] ?? []), createLocalSystemEvent(saved.profile, `PortMate: connected to ${describeProfileEndpoint(saved.profile)}`)];
       const nextLog = await callBackend("tail_log", { sessionId: persisted.profile.id, limit: 600 }, fallbackLog);
@@ -2271,7 +2275,7 @@ function handleMenuAction(item: string) {
 
   function requestSessionCredentials(profile: SessionProfile): Promise<ConnectionCredentials | null> {
     if (!isSshLikeProfile(profile)) {
-      return Promise.resolve({ username: null, password: null, passphrase: null, savePassword: false, savePassphrase: false });
+      return Promise.resolve({ username: null, password: null, passphrase: null, oneKeyId: null, savePassword: false, savePassphrase: false });
     }
 
     const ssh = profile.connection;
@@ -2280,6 +2284,7 @@ function handleMenuAction(item: string) {
     const prompt: CredentialPromptState = {
       target,
       initialUsername: ssh.username || "",
+      oneKeys: sshOneKeysForSession(oneKeys, profile.id),
       hasIdentityFiles: hasPrivateKey,
       hasSavedPassword: Boolean(ssh.passwordSecretRef),
       hasSavedPassphrase: Boolean(ssh.passphraseSecretRef),
@@ -7012,28 +7017,43 @@ function CredentialDialog({
   const [username, setUsername] = useState(request.initialUsername);
   const [password, setPassword] = useState("");
   const [passphrase, setPassphrase] = useState("");
+  const [oneKeyId, setOneKeyId] = useState("");
   const [savePassword, setSavePassword] = useState(false);
   const [savePassphrase, setSavePassphrase] = useState(false);
   const usernameRef = useRef<HTMLInputElement | null>(null);
+  const selectedOneKey = selectedSshOneKey(request.oneKeys, oneKeyId);
 
   useEffect(() => {
     usernameRef.current?.focus();
     usernameRef.current?.select();
   }, []);
 
+  function selectOneKey(nextOneKeyId: string) {
+    const oneKey = selectedSshOneKey(request.oneKeys, nextOneKeyId);
+    setOneKeyId(oneKey?.id ?? "");
+    if (oneKey) {
+      setUsername(oneKey.username);
+      setPassword("");
+      setPassphrase("");
+      setSavePassword(false);
+      setSavePassphrase(false);
+    }
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
-    const nextUsername = username.trim();
+    const nextUsername = (selectedOneKey?.username ?? username).trim();
     if (!nextUsername) {
       usernameRef.current?.focus();
       return;
     }
     onSubmit({
       username: nextUsername,
-      password: request.needsPassword ? password : null,
-      passphrase: request.hasIdentityFiles ? passphrase : null,
-      savePassword: request.needsPassword && savePassword,
-      savePassphrase: request.hasIdentityFiles && savePassphrase,
+      password: !selectedOneKey && request.needsPassword ? password : null,
+      passphrase: !selectedOneKey && request.hasIdentityFiles ? passphrase : null,
+      oneKeyId: selectedOneKey?.id ?? null,
+      savePassword: !selectedOneKey && request.needsPassword && savePassword,
+      savePassphrase: !selectedOneKey && request.hasIdentityFiles && savePassphrase,
     });
   }
 
@@ -7054,16 +7074,34 @@ function CredentialDialog({
         </header>
         <section className="credential-content">
           <label className="credential-field">
+            <span>OneKey</span>
+            <select value={oneKeyId} onChange={(event) => selectOneKey(event.target.value)} disabled={!request.oneKeys.length}>
+              <option value="">{request.oneKeys.length ? "手动输入" : "没有绑定 OneKey"}</option>
+              {request.oneKeys.map((oneKey) => (
+                <option key={oneKey.id} value={oneKey.id}>{oneKey.label}</option>
+              ))}
+            </select>
+          </label>
+          {selectedOneKey ? (
+            <div className="credential-one-key-meta">
+              <KeyRound size={14} />
+              <span>
+                <strong>{selectedOneKey.label}</strong>
+                <small>{[selectedOneKey.hasPassword ? "密码" : "", selectedOneKey.hasPassphrase ? "私钥口令" : ""].filter(Boolean).join(" / ")}</small>
+              </span>
+            </div>
+          ) : null}
+          <label className="credential-field">
             <span>用户名</span>
-            <input ref={usernameRef} value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+            <input ref={usernameRef} value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={Boolean(selectedOneKey)} />
           </label>
           {request.needsPassword ? (
             <label className="credential-field">
-              <span>{request.hasSavedPassword ? "登录密码(已存)" : "登录密码"}</span>
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" />
+              <span>{selectedOneKey ? "OneKey 密码" : request.hasSavedPassword ? "登录密码(已存)" : "登录密码"}</span>
+              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassword ? "已安全保存" : "未保存" : ""} />
             </label>
           ) : null}
-          {request.needsPassword ? (
+          {request.needsPassword && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password} />
               <span>保存登录密码到系统密钥库</span>
@@ -7071,11 +7109,11 @@ function CredentialDialog({
           ) : null}
           {request.hasIdentityFiles ? (
             <label className="credential-field">
-              <span>{request.hasSavedPassphrase ? "私钥口令(已存)" : "私钥口令"}</span>
-              <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" autoComplete="off" placeholder="没有可留空" />
+              <span>{selectedOneKey ? "OneKey 私钥口令" : request.hasSavedPassphrase ? "私钥口令(已存)" : "私钥口令"}</span>
+              <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" autoComplete="off" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassphrase ? "已安全保存" : "未保存" : "没有可留空"} />
             </label>
           ) : null}
-          {request.hasIdentityFiles ? (
+          {request.hasIdentityFiles && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase} />
               <span>保存私钥口令到系统密钥库</span>
