@@ -1,3 +1,6 @@
+import { normalizeTerminalKeyMode } from "./terminal-key-mode";
+import type { TerminalKeyMode } from "./terminal-key-mode";
+
 export const DETACHED_PANE_EVENT = "portmate-detached-pane-command";
 export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
 
@@ -8,6 +11,7 @@ export type DetachedPaneRequest = {
   sessionId: string;
   title: string;
   color: string;
+  keyMode: TerminalKeyMode;
 };
 
 export type DetachedPaneCommand = DetachedPaneRequest & {
@@ -30,6 +34,7 @@ export function buildDetachedPanePath(request: DetachedPaneRequest): string {
     sessionId: request.sessionId,
     title: request.title,
     color: request.color,
+    keyMode: request.keyMode,
   });
   return `/?${params.toString()}`;
 }
@@ -43,8 +48,9 @@ export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | 
   const sessionId = cleanRouteId(params.get("sessionId"));
   const title = cleanRouteTitle(params.get("title"));
   const color = cleanRouteColor(params.get("color"));
+  const keyMode = normalizeTerminalKeyMode(params.get("keyMode"));
   if (!windowIdPattern.test(windowId) || !paneId || !viewId || !sessionId || title === null || color === null) return null;
-  return { windowId, paneId, viewId, sessionId, title, color };
+  return { windowId, paneId, viewId, sessionId, title, color, keyMode };
 }
 
 export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
@@ -59,6 +65,7 @@ export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneComman
     sessionId: typeof source.sessionId === "string" ? source.sessionId : "",
     title: typeof source.title === "string" ? source.title : "",
     color: typeof source.color === "string" ? source.color : "",
+    keyMode: typeof source.keyMode === "string" ? source.keyMode : "remote",
   })}`);
   return request ? { ...request, action: source.action } : null;
 }

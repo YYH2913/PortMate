@@ -59,6 +59,8 @@ import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefau
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
+import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
+import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
@@ -69,7 +71,7 @@ import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEY
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import { isWorkspaceFocusModeShortcut, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspacePanelId } from "./workspace-panel-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -91,7 +93,7 @@ const menuGroups = [
   { label: "选择", items: ["选择全部", "块选择", "清除选择"] },
   { label: "转到", items: ["上一个标签", "下一个标签", "跳转到行"] },
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
-  { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
+  { label: "模式", items: ["远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
@@ -105,6 +107,13 @@ const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
   历史命令: "history",
   发送: "sender",
   状态栏: "statusBar",
+};
+
+const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
+  远程模式: "remote",
+  本地模式: "local",
+  "Normal 模式": "normal",
+  "Command 模式": "command",
 };
 
 const workspaceViewGroupSplitActions: Record<string, { direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }> = {
@@ -337,6 +346,9 @@ export default function App() {
   const restoredScreenLockPreparedRef = useRef(false);
 
   const active = sessions.find((session) => session.profile.id === activeId);
+  const activeWorkspacePane = findWorkspacePane(workspaceRoot, activePaneId);
+  const activeWorkspaceView = activeWorkspacePane ? workspacePaneActiveView(activeWorkspacePane) : undefined;
+  const activeTerminalKeyMode = activeWorkspaceView?.keyMode ?? "remote";
   const workspaceContextPane = workspaceViewContextMenu
     ? findWorkspacePane(workspaceRoot, workspaceViewContextMenu.paneId)
     : undefined;
@@ -1067,8 +1079,9 @@ function handleMenuAction(item: string) {
       setUtilityDialog("search");
       return;
     }
-    if (["远程模式", "本地模式"].includes(item)) {
-      setNotice({ title: item, message: "WindTerm 本地/远程键盘模式依赖完整的 Normal/Command 本地导航键表，当前尚未实现。" });
+    const terminalKeyMode = terminalKeyModeMenuItems[item];
+    if (terminalKeyMode) {
+      setActiveWorkspaceViewKeyMode(terminalKeyMode);
       return;
     }
     if (item === "锁屏") {
@@ -1451,6 +1464,16 @@ function handleMenuAction(item: string) {
     setZoomedPaneId((current) => current ? paneId : "");
   }
 
+  function setActiveWorkspaceViewKeyMode(
+    keyMode: TerminalKeyMode,
+    paneId = activePaneId,
+    viewId = findWorkspacePane(workspaceRoot, paneId)?.activeViewId,
+  ) {
+    if (!viewId) return;
+    setWorkspaceRoot((current) => setWorkspacePaneViewKeyMode(current, paneId, viewId, keyMode));
+    focusWorkspacePaneInput(paneId);
+  }
+
   function restoreWorkspaceLayout() {
     const restored = reconcileWorkspaceSnapshot(
       loadWorkspaceSnapshot(),
@@ -1817,6 +1840,7 @@ function handleMenuAction(item: string) {
       sessionId: activeView!.sessionId,
       title: activeView!.title,
       color: activeView!.color,
+      keyMode: activeView!.keyMode,
     };
     try {
       await openDetachedPaneWindow(request, activeView!.title || session.profile.name);
@@ -1841,7 +1865,7 @@ function handleMenuAction(item: string) {
       setNotice({ title: "返回主窗口失败", message: "原会话已不存在。" });
       return;
     }
-    const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color };
+    const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color, keyMode: command.keyMode };
     const alreadyReturned = workspacePaneLeaves(workspaceRoot).find((pane) => pane.views.some((view) => view.id === command.viewId));
     if (alreadyReturned) {
       setWorkspaceRoot(activateWorkspacePaneView(workspaceRoot, alreadyReturned.id, command.viewId));
@@ -2285,6 +2309,8 @@ function handleMenuAction(item: string) {
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) return visibleWorkspacePanels[workspacePanel];
     if (item === "快捷栏") return visibleQuickBar;
+    const terminalKeyMode = terminalKeyModeMenuItems[item];
+    if (terminalKeyMode) return activeTerminalKeyMode === terminalKeyMode;
     if (item === "同步输入") return syncInput;
     if (item === "块选择") return blockSelection;
     if (item === "专注模式") return focusMode;
@@ -2500,6 +2526,7 @@ function handleMenuAction(item: string) {
             blockSelection={blockSelection}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onOneKeyCompletion={completeOneKeyPrompt}
+            onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
             onActivate={activateWorkspacePane}
             onCloseView={closeWorkspaceViews}
             onDuplicateView={duplicateActiveWorkspaceView}
@@ -2597,7 +2624,16 @@ function handleMenuAction(item: string) {
       {visibleWorkspacePanels.statusBar ? <footer className="status-bar">
         <span>就绪</span>
         <span />
-        <span className={syncInput ? "sync-status active" : "sync-status"}>{syncInput ? `同步输入 · ${syncInputTargetCount}` : "远程模式"}</span>
+        <button
+          type="button"
+          className={`sync-status terminal-key-mode-status ${syncInput ? "active" : ""}`}
+          data-key-mode={activeTerminalKeyMode}
+          title="切换远程/本地模式 (Ctrl+Enter)"
+          aria-label={`当前${terminalKeyModeLabel(activeTerminalKeyMode)}，切换远程/本地模式`}
+          onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalRemoteLocalMode(activeTerminalKeyMode))}
+        >
+          {syncInput ? `同步 ${syncInputTargetCount} · ` : ""}{terminalKeyModeLabel(activeTerminalKeyMode)}
+        </button>
         <span>窗口 -1×-1</span>
         <span>行 1</span>
         <span>字符 0</span>
@@ -3938,6 +3974,7 @@ function TerminalPaneGrid({
   blockSelection,
   onInput,
   onOneKeyCompletion,
+  onKeyModeChange,
   onActivate,
   onCloseView,
   onDuplicateView,
@@ -3965,6 +4002,7 @@ function TerminalPaneGrid({
     field: OneKeyPromptField,
     promptEventId: string,
   ) => Promise<void>;
+  onKeyModeChange: (paneId: string, viewId: string, keyMode: TerminalKeyMode) => void;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -3995,6 +4033,7 @@ function TerminalPaneGrid({
         oneKeyCompletionEnabled={oneKeyCompletionEnabled}
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
+        onKeyModeChange={onKeyModeChange}
         onActivate={onActivate}
         onCloseView={onCloseView}
         onDuplicateView={onDuplicateView}
@@ -4027,6 +4066,7 @@ type TerminalWorkspaceNodeProps = {
     field: OneKeyPromptField,
     promptEventId: string,
   ) => Promise<void>;
+  onKeyModeChange: (paneId: string, viewId: string, keyMode: TerminalKeyMode) => void;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -4214,7 +4254,18 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           <X size={13} />
         </button>
       </header>
-      <TerminalCanvas active={session} events={session ? props.eventsBySession[activeView.sessionId] ?? [] : []} focused={node.id === props.activePaneId} oneKeys={props.oneKeys} oneKeyCompletionEnabled={props.oneKeyCompletionEnabled} onInput={props.onInput} onOneKeyCompletion={props.onOneKeyCompletion} />
+      <TerminalCanvas
+        viewId={activeView.id}
+        active={session}
+        events={session ? props.eventsBySession[activeView.sessionId] ?? [] : []}
+        focused={node.id === props.activePaneId}
+        oneKeys={props.oneKeys}
+        oneKeyCompletionEnabled={props.oneKeyCompletionEnabled}
+        keyMode={activeView.keyMode}
+        onKeyModeChange={(keyMode) => props.onKeyModeChange(node.id, activeView.id, keyMode)}
+        onInput={props.onInput}
+        onOneKeyCompletion={props.onOneKeyCompletion}
+      />
     </section>
   );
 }
@@ -4301,11 +4352,14 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
 }
 
 type TerminalCanvasProps = {
+  viewId?: string;
   active?: SessionSummary;
   events: SessionEvent[];
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  keyMode?: TerminalKeyMode;
+  onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion?: (
     sessionId: string,

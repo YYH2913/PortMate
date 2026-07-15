@@ -21,6 +21,7 @@ import {
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
   setWorkspacePaneViewColor,
+  setWorkspacePaneViewKeyMode,
   splitWorkspacePane,
   splitWorkspacePaneSessionToGroup,
   splitWorkspacePaneViewToGroup,
@@ -276,7 +277,7 @@ describe("workspace snapshots", () => {
     expect(snapshot.version).toBe(4);
     expect(pane.sessionIds).toEqual(["session-a", "session-a"]);
     expect(pane.views[0].color).toBe("#228B22");
-    expect(workspacePaneActiveView(pane)).toMatchObject({ id: "view-b", title: "Mirror", color: "" });
+    expect(workspacePaneActiveView(pane)).toMatchObject({ id: "view-b", title: "Mirror", color: "", keyMode: "remote" });
     const activated = activateWorkspacePaneView(snapshot.root, pane.id, "view-a")!;
     expect(workspacePaneActiveView(findWorkspacePane(activated, pane.id)!)).toMatchObject({ id: "view-a", title: "Primary" });
   });
@@ -305,6 +306,38 @@ describe("workspace snapshots", () => {
     expect(findWorkspacePane(closed, "group-a")?.views.map((view) => view.id)).toEqual(["view-copy", pane.views[2].id]);
     const cleared = setWorkspacePaneViewColor(closed, "group-a", "view-copy", "not-a-color")!;
     expect(findWorkspacePane(cleared, "group-a")?.views[0].color).toBe("");
+  });
+
+  it("persists key mode per view and repairs invalid or legacy values", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "pane",
+        id: "group-a",
+        activeViewId: "view-a",
+        views: [
+          { id: "view-a", sessionId: "a", title: "", color: "", keyMode: "command" },
+          { id: "view-b", sessionId: "b", title: "", color: "", keyMode: "invalid" },
+        ],
+      },
+      activePaneId: "group-a",
+      activeId: "a",
+    });
+    expect(findWorkspacePane(snapshot.root, "group-a")?.views.map((view) => view.keyMode)).toEqual(["command", "remote"]);
+
+    const changed = setWorkspacePaneViewKeyMode(snapshot.root, "group-a", "view-b", "local")!;
+    expect(findWorkspacePane(changed, "group-a")?.views.map((view) => view.keyMode)).toEqual(["command", "local"]);
+    expect(setWorkspacePaneViewKeyMode(changed, "group-a", "view-b", "local")).toBe(changed);
+    const duplicated = duplicateWorkspacePaneView(changed, "group-a", "view-a", "view-copy")!;
+    expect(findWorkspacePane(duplicated, "group-a")?.views.find((view) => view.id === "view-copy")?.keyMode).toBe("command");
+
+    const legacy = sanitizeWorkspaceSnapshot({
+      version: 3,
+      root: { kind: "pane", id: "legacy", sessionId: "a", sessionIds: ["a"] },
+      activePaneId: "legacy",
+      activeId: "a",
+    });
+    expect(workspacePaneActiveView(findWorkspacePane(legacy.root, "legacy")!).keyMode).toBe("remote");
   });
 
   it("moves and splits the exact aliased view among duplicate session bindings", () => {
@@ -338,7 +371,7 @@ describe("workspace snapshots", () => {
     expect(findWorkspacePane(moved, "group-a")?.views.map((view) => view.id)).toEqual(["view-primary"]);
     expect(findWorkspacePane(moved, "group-b")?.views.map((view) => view.id)).toEqual(["view-mirror", "view-b"]);
     const split = splitWorkspacePaneViewToGroup(moved, "group-b", "view-mirror", "horizontal", "group-c", "split-c")!;
-    expect(findWorkspacePane(split, "group-c")?.views).toEqual([{ id: "view-mirror", sessionId: "a", title: "Mirror", color: "#FF1493" }]);
+    expect(findWorkspacePane(split, "group-c")?.views).toEqual([{ id: "view-mirror", sessionId: "a", title: "Mirror", color: "#FF1493", keyMode: "remote" }]);
     expect(findWorkspacePane(split, "group-b")?.views.map((view) => view.id)).toEqual(["view-b"]);
   });
 

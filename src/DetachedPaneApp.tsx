@@ -4,6 +4,7 @@ import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewW
 import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
 import {
+  buildDetachedPanePath,
   DETACHED_PANE_EVENT,
   DETACHED_PANE_MESSAGE_TYPE,
 } from "./detached-pane-state";
@@ -13,12 +14,15 @@ import type { ScreenLockMarker } from "./screen-lock-state";
 import TerminalCanvas from "./TerminalCanvas";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
+import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
+import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [oneKeyCompletionEnabled, setOneKeyCompletionEnabled] = useState(readOneKeyCompletionEnabled);
+  const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
@@ -26,6 +30,10 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
   }, [request.title, session?.profile.name]);
+
+  useEffect(() => {
+    window.history.replaceState(null, "", buildDetachedPanePath({ ...request, keyMode }));
+  }, [keyMode, request]);
 
   useEffect(() => {
     let disposed = false;
@@ -118,7 +126,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   }
 
   async function sendMainCommand(action: DetachedPaneCommand["action"]) {
-    const command: DetachedPaneCommand = { ...request, action };
+    const command: DetachedPaneCommand = { ...request, keyMode, action };
     try {
       if (isBackendAvailable()) {
         await emitTo("main", DETACHED_PANE_EVENT, command);
@@ -161,11 +169,18 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={error ? "detached-pane-status error" : "detached-pane-status"}>
         <span>{error || session?.runtime.status || "missing"}</span>
-        <span>{request.paneId}</span>
+        <button
+          type="button"
+          data-key-mode={keyMode}
+          title="切换远程/本地模式 (Ctrl+Enter)"
+          onClick={() => setKeyMode(toggleTerminalRemoteLocalMode(keyMode))}
+        >
+          {terminalKeyModeLabel(keyMode)}
+        </button>
       </footer>
       {screenLock ? <DetachedScreenLockOverlay marker={screenLock} /> : null}
     </main>

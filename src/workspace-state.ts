@@ -1,3 +1,6 @@
+import { normalizeTerminalKeyMode } from "./terminal-key-mode";
+import type { TerminalKeyMode } from "./terminal-key-mode";
+
 export type WorkspaceLayout = "single" | "horizontal" | "vertical";
 export type WorkspaceSplitDirection = Exclude<WorkspaceLayout, "single">;
 export type WorkspacePaneDirection = "up" | "down" | "left" | "right";
@@ -8,6 +11,7 @@ export interface WorkspaceView {
   sessionId: string;
   title: string;
   color: string;
+  keyMode: TerminalKeyMode;
 }
 
 export interface WorkspacePaneNode {
@@ -71,7 +75,7 @@ export function createWorkspaceView(
   title = "",
   color = "",
 ): WorkspaceView {
-  return { id, sessionId, title, color: sanitizeViewColor(color) };
+  return { id, sessionId, title, color: sanitizeViewColor(color), keyMode: "remote" };
 }
 
 export function createWorkspacePane(
@@ -95,6 +99,7 @@ export function createWorkspacePaneFromViews(
   const normalizedViews = views.slice(0, MAX_WORKSPACE_GROUP_TABS).map((view) => ({
     ...view,
     color: sanitizeViewColor(view.color),
+    keyMode: normalizeTerminalKeyMode(view.keyMode),
   }));
   if (!normalizedViews.length) return null;
   const activeView = normalizedViews.find((view) => view.id === activeViewId) ?? normalizedViews[0];
@@ -348,6 +353,7 @@ export function duplicateWorkspacePaneView(
     sessionId: source.sessionId,
     title: title ?? source.title,
     color: source.color,
+    keyMode: source.keyMode,
   }, index + 1);
 }
 
@@ -390,6 +396,27 @@ export function setWorkspacePaneViewColor(
   }
   const first = setWorkspacePaneViewColor(root.first, paneId, viewId, color);
   const second = setWorkspacePaneViewColor(root.second, paneId, viewId, color);
+  return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
+}
+
+export function setWorkspacePaneViewKeyMode(
+  root: WorkspaceNode | null,
+  paneId: string,
+  viewId: string,
+  keyMode: TerminalKeyMode,
+): WorkspaceNode | null {
+  if (!root) return root;
+  if (root.kind === "pane") {
+    if (root.id !== paneId) return root;
+    const index = root.views.findIndex((view) => view.id === viewId);
+    const normalizedMode = normalizeTerminalKeyMode(keyMode);
+    if (index < 0 || root.views[index].keyMode === normalizedMode) return root;
+    const views = [...root.views];
+    views[index] = { ...views[index], keyMode: normalizedMode };
+    return createWorkspacePaneFromViews(root.id, views, root.activeViewId)!;
+  }
+  const first = setWorkspacePaneViewKeyMode(root.first, paneId, viewId, keyMode);
+  const second = setWorkspacePaneViewKeyMode(root.second, paneId, viewId, keyMode);
   return first === root.first && second === root.second ? root : { ...root, first: first!, second: second! };
 }
 
@@ -836,6 +863,7 @@ function sanitizeWorkspaceNode(
         sessionId,
         title: "",
         color: "",
+        keyMode: "remote" as const,
       }));
     if (!views.length || state.paneCount >= MAX_WORKSPACE_PANES) return null;
     const requestedActiveViewId = cleanString(source.activeViewId, 128);
@@ -901,6 +929,7 @@ function createSanitizedPane(
     sessionId: candidate,
     title: "",
     color: "",
+    keyMode: "remote" as const,
   }));
   const activeView = views.find((view) => view.sessionId === sessionId) ?? views[0];
   if (!activeView) return null;
@@ -961,6 +990,7 @@ function sanitizeWorkspaceViews(value: unknown, paneId: string, state: SanitizeS
       sessionId,
       title: cleanString(source.title, 128),
       color: sanitizeViewColor(source.color),
+      keyMode: normalizeTerminalKeyMode(source.keyMode),
     });
     if (views.length >= MAX_WORKSPACE_GROUP_TABS) break;
   }

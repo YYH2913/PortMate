@@ -146,6 +146,32 @@ body.detached-window {
   white-space: nowrap;
 }
 
+.detached-pane-status button {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: #bfd0df;
+  font: inherit;
+  cursor: pointer;
+}
+
+.detached-pane-status button:hover,
+.detached-pane-status button:focus-visible {
+  outline: 0;
+  color: var(--cyan);
+}
+
+.detached-pane-status button[data-key-mode="local"],
+.detached-pane-status button[data-key-mode="command"] {
+  color: var(--cyan);
+}
+
+.detached-pane-status button[data-key-mode="normal"] {
+  color: var(--green);
+}
+
 .detached-pane-status.error {
   color: var(--red);
 }
@@ -2571,6 +2597,31 @@ button {
 
 .sync-status {
   min-width: 72px;
+}
+
+.terminal-key-mode-status {
+  overflow: hidden;
+  max-width: 190px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #bfd0df;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.terminal-key-mode-status:hover,
+.terminal-key-mode-status:focus-visible,
+.terminal-key-mode-status[data-key-mode="local"],
+.terminal-key-mode-status[data-key-mode="command"] {
+  outline: 0;
+  color: var(--cyan);
+}
+
+.terminal-key-mode-status[data-key-mode="normal"] {
+  color: var(--green);
 }
 
 .sync-status.active {
@@ -5312,6 +5363,17 @@ fieldset label {
 
   .menu-row {
     flex: 0 0 auto;
+  }
+
+  .menu-popover {
+    position: fixed;
+    top: 31px;
+    left: 4px;
+  }
+
+  .menu-item:nth-child(n + 5) .menu-popover {
+    right: 4px;
+    left: auto;
   }
 
   .menu-tools {

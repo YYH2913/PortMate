@@ -6,6 +6,7 @@ This repository currently contains the active desktop implementation slice:
 
 - Tauri v2 + React/TypeScript desktop shell
 - WindTerm-style workbench UI with persistent, independently toggleable resource/file/session/history/send/status panes and modal settings dialogs
+- Per-view Remote/Local/Normal/Command keyboard modes with Vim-style scrollback navigation and a local command editor
 - WindTerm-style Quick Command manager and persistent Quick Bar for bounded insert or execute snippets
 - WindTerm-style OneKeys manager for encrypted Account/SSH credentials, bound public-key identities, session binding, terminal-prompt completion, and explicit injection
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys

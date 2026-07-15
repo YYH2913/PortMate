@@ -9,7 +9,7 @@ import {
 
 describe("detached pane state", () => {
   it("round-trips an encoded detached pane route", () => {
-    const request = { windowId: "pane-123", paneId: "pane/a", viewId: "view/1", sessionId: "ssh host", title: "Router Copy", color: "#228B22" };
+    const request = { windowId: "pane-123", paneId: "pane/a", viewId: "view/1", sessionId: "ssh host", title: "Router Copy", color: "#228B22", keyMode: "command" as const };
     const path = buildDetachedPanePath(request);
 
     expect(path).toContain("detachedPane=1");
@@ -21,6 +21,7 @@ describe("detached pane state", () => {
       sessionId: "b",
       title: "Old",
       color: "",
+      keyMode: "remote",
     });
   });
 
@@ -33,9 +34,10 @@ describe("detached pane state", () => {
   });
 
   it("normalizes only supported cross-window commands", () => {
-    const payload = { action: "reattach", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1" };
+    const payload = { action: "reattach", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
+    expect(normalizeDetachedPaneCommand({ ...payload, keyMode: "invalid" })).toMatchObject({ keyMode: "remote" });
     expect(normalizeDetachedPaneCommand({ ...payload, action: "remove" })).toBeNull();
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
       type: DETACHED_PANE_MESSAGE_TYPE,
@@ -45,7 +47,7 @@ describe("detached pane state", () => {
   });
 
   it("accepts a global lock request from a detached window", () => {
-    const payload = { action: "lock-screen", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1" };
+    const payload = { action: "lock-screen", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({

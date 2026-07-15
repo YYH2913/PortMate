@@ -16,17 +16,22 @@ import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPromp
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
+import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./terminal-key-mode";
+import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
+  viewId?: string;
   active?: SessionSummary;
   events: SessionEvent[];
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  keyMode?: TerminalKeyMode;
+  onKeyModeChange?: (mode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion?: (
     sessionId: string,
@@ -39,6 +44,11 @@ type TerminalCanvasProps = {
 const MAX_SERIALIZED_SCROLLBACK = 2000;
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
+type LocalNavigationPosition = { row: number; column: number };
+type LocalNavigationState = LocalNavigationPosition & {
+  anchor: LocalNavigationPosition | null;
+  lineSelection: boolean;
+};
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   matchBackground: "#284457",
@@ -76,11 +86,14 @@ const portmateTerminalTheme = {
 };
 
 export default function TerminalCanvas({
+  viewId = "",
   active,
   events,
   focused = false,
   oneKeys = EMPTY_ONE_KEYS,
   oneKeyCompletionEnabled = true,
+  keyMode = "remote",
+  onKeyModeChange = () => {},
   onInput,
   onOneKeyCompletion,
 }: TerminalCanvasProps) {
@@ -95,8 +108,14 @@ export default function TerminalCanvas({
   const lastSizeRef = useRef("");
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
+  const keyModeRef = useRef(keyMode);
+  const previousKeyModeRef = useRef(keyMode);
+  const onKeyModeChangeRef = useRef(onKeyModeChange);
+  const keySequenceRef = useRef<TerminalKeySequenceState>(emptyTerminalKeySequenceState());
+  const localNavigationRef = useRef<LocalNavigationState | null>(null);
   const openSearchRef = useRef<() => void>(() => {});
   const openFreeInputRef = useRef<() => void>(() => {});
+  const runSearchRef = useRef<(direction: "next" | "previous") => void>(() => {});
   const oneKeyPromptStateRef = useRef<OneKeyPromptDetectionState>(emptyOneKeyPromptDetectionState());
   const oneKeyPromptSessionRef = useRef("");
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
@@ -107,7 +126,7 @@ export default function TerminalCanvas({
   const [searchWholeWord, setSearchWholeWord] = useState(false);
   const [searchResult, setSearchResult] = useState<TerminalSearchResult | null>(null);
   const [searchInvalid, setSearchInvalid] = useState(false);
-  const [freeInputOpen, setFreeInputOpen] = useState(false);
+  const [freeInputSource, setFreeInputSource] = useState<"manual" | "normal" | null>(null);
   const [freeInputValue, setFreeInputValue] = useState("");
   const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
   const [oneKeyCompletionId, setOneKeyCompletionId] = useState("");
@@ -123,8 +142,11 @@ export default function TerminalCanvas({
     ?? oneKeyCompletionCandidates[0]
     ?? null;
   onInputRef.current = onInput;
+  keyModeRef.current = keyMode;
+  onKeyModeChangeRef.current = onKeyModeChange;
+  const freeInputOpen = freeInputSource !== null;
   openSearchRef.current = () => {
-    setFreeInputOpen(false);
+    setFreeInputSource(null);
     setFreeInputValue("");
     const selection = terminalSearchSeed(termRef.current?.getSelection() ?? "");
     if (!searchOpen && selection) setSearchQuery(selection);
@@ -142,9 +164,10 @@ export default function TerminalCanvas({
     setSearchResult(null);
     setSearchInvalid(false);
     if (!freeInputOpen) setFreeInputValue("");
-    setFreeInputOpen(true);
+    setFreeInputSource("manual");
     window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
   };
+  runSearchRef.current = (direction) => runTerminalSearch(direction);
 
   function applyOneKeyPromptState(state: OneKeyPromptDetectionState) {
     const previousEventId = oneKeyPromptStateRef.current.prompt?.eventId;
@@ -250,8 +273,13 @@ export default function TerminalCanvas({
   }
 
   function closeTerminalFreeInput() {
-    setFreeInputOpen(false);
+    const wasNormalMode = freeInputSource === "normal";
+    setFreeInputSource(null);
     setFreeInputValue("");
+    if (wasNormalMode) {
+      keyModeRef.current = "remote";
+      onKeyModeChangeRef.current("remote");
+    }
     window.requestAnimationFrame(() => termRef.current?.focus());
   }
 
@@ -300,9 +328,36 @@ export default function TerminalCanvas({
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new ClipboardAddon(undefined, createWriteOnlyClipboardProvider(navigator.clipboard)));
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type !== "keydown" || !isTerminalFindShortcut(event)) return true;
+      if (event.type !== "keydown") return true;
+      const mode = keyModeRef.current;
+      if (isTerminalFindShortcut(event) && mode !== "command") {
+        event.preventDefault();
+        openSearchRef.current();
+        return false;
+      }
+      const resolution = resolveTerminalKeyModeEvent(mode, event, keySequenceRef.current);
+      keySequenceRef.current = resolution.state;
+      if (!resolution.handled) return true;
       event.preventDefault();
-      openSearchRef.current();
+      if (resolution.nextMode) {
+        keyModeRef.current = resolution.nextMode;
+        onKeyModeChangeRef.current(resolution.nextMode);
+      }
+      if (resolution.command) {
+        const result = runTerminalLocalCommand(
+          term,
+          localNavigationRef.current,
+          resolution.command,
+          resolution.count,
+        );
+        localNavigationRef.current = result.state;
+        if (result.copyText) void navigator.clipboard?.writeText(result.copyText).catch(() => {});
+        if (result.search === "open") {
+          term.clearSelection();
+          openSearchRef.current();
+        }
+        else if (result.search) runSearchRef.current(result.search);
+      }
       return false;
     });
     host.dataset.terminalUnicodeVersion = term.unicode.activeVersion;
@@ -310,6 +365,7 @@ export default function TerminalCanvas({
     host.dataset.terminalSerialization = "active";
     host.dataset.terminalRenderer = "dom";
     host.dataset.terminalWebgl = "loading";
+    host.dataset.terminalKeyMode = keyModeRef.current;
     host.dataset.terminalRestored = cachedState ? "true" : "false";
     if (cachedState) term.write(cachedState.serialized);
     term.open(host);
@@ -363,6 +419,7 @@ export default function TerminalCanvas({
       }
     };
     const inputDisposable = term.onData((text) => {
+      if (keyModeRef.current !== "remote") return;
       dismissOneKeyPrompt();
       pendingInputRef.current += text;
       if (/[\x00-\x1f\x7f]/.test(text)) {
@@ -377,6 +434,7 @@ export default function TerminalCanvas({
       }
     });
     const selectionDisposable = term.onSelectionChange(() => {
+      if (keyModeRef.current !== "remote") return;
       const selected = term.getSelection();
       if (!selected || selected === lastCopiedSelectionRef.current) return;
       lastCopiedSelectionRef.current = selected;
@@ -384,6 +442,7 @@ export default function TerminalCanvas({
     });
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
+      if (keyModeRef.current !== "remote") return;
       void navigator.clipboard?.readText().then((text) => {
         if (text) {
           dismissOneKeyPrompt();
@@ -472,9 +531,45 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
-    setFreeInputOpen(false);
+    setFreeInputSource(null);
     setFreeInputValue("");
-  }, [active?.profile.id]);
+  }, [active?.profile.id, viewId]);
+
+  useEffect(() => {
+    const previousMode = previousKeyModeRef.current;
+    previousKeyModeRef.current = keyMode;
+    keySequenceRef.current = emptyTerminalKeySequenceState();
+    const term = termRef.current;
+    const host = hostRef.current;
+    if (host) host.dataset.terminalKeyMode = keyMode;
+
+    if (keyMode === "local" || keyMode === "command") {
+      setFreeInputSource(null);
+      if (!(previousMode === "normal" && keyMode === "command")) setFreeInputValue("");
+      if (term) {
+        localNavigationRef.current = clampLocalNavigationState(term, localNavigationRef.current);
+        renderTerminalLocalSelection(term, localNavigationRef.current);
+        window.requestAnimationFrame(() => term.focus());
+      }
+      return;
+    }
+
+    localNavigationRef.current = null;
+    term?.clearSelection();
+    if (keyMode === "normal") {
+      searchRef.current?.clearDecorations();
+      setSearchOpen(false);
+      setSearchResult(null);
+      if (previousMode !== "command") setFreeInputValue("");
+      setFreeInputSource("normal");
+      window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+      return;
+    }
+
+    setFreeInputSource(null);
+    setFreeInputValue("");
+    window.requestAnimationFrame(() => term?.focus());
+  }, [active?.profile.id, keyMode, viewId]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -548,7 +643,7 @@ export default function TerminalCanvas({
               submitTerminalFreeInput();
             }}>
               <header>
-                <strong>自由输入</strong>
+                <strong>{freeInputSource === "normal" ? "Normal 本地编辑" : "自由输入"}</strong>
                 <span className="terminal-free-input-session" title={active.profile.name}>{active.profile.name}</span>
                 <span className="terminal-free-input-counter">
                   {terminalFreeInputCharacterCount(freeInputValue)}/{MAX_TERMINAL_FREE_INPUT_CHARACTERS}
@@ -569,7 +664,21 @@ export default function TerminalCanvas({
                   if (event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();
-                    closeTerminalFreeInput();
+                    if (freeInputSource === "normal") {
+                      setFreeInputSource(null);
+                      keyModeRef.current = "command";
+                      onKeyModeChangeRef.current("command");
+                    } else {
+                      closeTerminalFreeInput();
+                    }
+                    return;
+                  }
+                  if (freeInputSource === "normal" && (event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setFreeInputSource(null);
+                    keyModeRef.current = "command";
+                    onKeyModeChangeRef.current("command");
                     return;
                   }
                   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "x") {
@@ -672,6 +781,149 @@ export default function TerminalCanvas({
       )}
     </div>
   );
+}
+
+type TerminalLocalCommandResult = {
+  state: LocalNavigationState;
+  copyText?: string;
+  search?: "open" | "next" | "previous";
+};
+
+function runTerminalLocalCommand(
+  term: XTerm,
+  current: LocalNavigationState | null,
+  command: TerminalLocalCommand,
+  requestedCount: number,
+): TerminalLocalCommandResult {
+  const state = clampLocalNavigationState(term, current);
+  const count = Math.max(1, Math.min(100_000, Math.trunc(requestedCount) || 1));
+  const lastRow = Math.max(0, term.buffer.active.length - 1);
+  let copyText: string | undefined;
+  let search: TerminalLocalCommandResult["search"];
+
+  if (command === "move-left") state.column -= count;
+  else if (command === "move-right") state.column += count;
+  else if (command === "move-up") state.row -= count;
+  else if (command === "move-down") state.row += count;
+  else if (command === "line-start") state.column = 0;
+  else if (command === "line-end") state.column = terminalBufferLineEnd(term, state.row);
+  else if (command === "document-start") {
+    state.row = 0;
+    state.column = 0;
+  } else if (command === "document-end") {
+    state.row = lastRow;
+    state.column = terminalBufferLineEnd(term, state.row);
+  } else if (command === "word-forward" || command === "word-backward" || command === "word-end") {
+    const next = moveTerminalWord(term, state, command, count);
+    state.row = next.row;
+    state.column = next.column;
+  } else if (command === "page-up" || command === "page-down") {
+    const direction = command === "page-up" ? -1 : 1;
+    state.row += direction * term.rows * count;
+    term.scrollPages(direction * count);
+  } else if (command === "half-page-up" || command === "half-page-down") {
+    const direction = command === "half-page-up" ? -1 : 1;
+    const lines = Math.max(1, Math.floor(term.rows / 2)) * count;
+    state.row += direction * lines;
+    term.scrollLines(direction * lines);
+  } else if (command === "scroll-line-up" || command === "scroll-line-down") {
+    const direction = command === "scroll-line-up" ? -1 : 1;
+    state.row += direction * count;
+    term.scrollLines(direction * count);
+  } else if (command === "toggle-selection") {
+    if (state.anchor && !state.lineSelection) state.anchor = null;
+    else state.anchor = { row: state.row, column: state.column };
+    state.lineSelection = false;
+  } else if (command === "toggle-line-selection") {
+    if (state.anchor && state.lineSelection) state.anchor = null;
+    else state.anchor = { row: state.row, column: 0 };
+    state.lineSelection = Boolean(state.anchor);
+  } else if (command === "clear-selection") {
+    state.anchor = null;
+    state.lineSelection = false;
+  } else if (command === "yank") {
+    copyText = state.anchor
+      ? term.getSelection()
+      : term.buffer.active.getLine(state.row)?.translateToString(true) ?? "";
+    state.anchor = null;
+    state.lineSelection = false;
+  } else if (command === "open-search") search = "open";
+  else if (command === "find-next") search = "next";
+  else if (command === "find-previous") search = "previous";
+
+  const clamped = clampLocalNavigationState(term, state);
+  renderTerminalLocalSelection(term, clamped);
+  return { state: clamped, copyText, search };
+}
+
+function clampLocalNavigationState(term: XTerm, current: LocalNavigationState | null): LocalNavigationState {
+  const buffer = term.buffer.active;
+  const lastRow = Math.max(0, buffer.length - 1);
+  const initialRow = Math.min(lastRow, Math.max(0, buffer.baseY + buffer.cursorY));
+  const row = Math.min(lastRow, Math.max(0, current?.row ?? initialRow));
+  const column = Math.min(terminalBufferLineEnd(term, row), Math.max(0, current?.column ?? buffer.cursorX));
+  const anchor = current?.anchor
+    ? {
+      row: Math.min(lastRow, Math.max(0, current.anchor.row)),
+      column: Math.min(term.cols - 1, Math.max(0, current.anchor.column)),
+    }
+    : null;
+  return { row, column, anchor, lineSelection: Boolean(anchor && current?.lineSelection) };
+}
+
+function renderTerminalLocalSelection(term: XTerm, state: LocalNavigationState) {
+  const viewport = term.buffer.active.viewportY;
+  if (state.row < viewport) term.scrollToLine(state.row);
+  else if (state.row >= viewport + term.rows) term.scrollToLine(Math.max(0, state.row - term.rows + 1));
+
+  if (!state.anchor) {
+    term.select(state.column, state.row, 1);
+    return;
+  }
+  if (state.lineSelection) {
+    term.selectLines(Math.min(state.anchor.row, state.row), Math.max(state.anchor.row, state.row));
+    return;
+  }
+  const anchorIndex = state.anchor.row * term.cols + state.anchor.column;
+  const cursorIndex = state.row * term.cols + state.column;
+  const startIndex = Math.min(anchorIndex, cursorIndex);
+  term.select(startIndex % term.cols, Math.floor(startIndex / term.cols), Math.abs(cursorIndex - anchorIndex) + 1);
+}
+
+function terminalBufferLineEnd(term: XTerm, row: number): number {
+  const text = term.buffer.active.getLine(row)?.translateToString(true) ?? "";
+  return Math.min(term.cols - 1, Math.max(0, text.length - 1));
+}
+
+function moveTerminalWord(
+  term: XTerm,
+  position: LocalNavigationPosition,
+  command: "word-forward" | "word-backward" | "word-end",
+  count: number,
+): LocalNavigationPosition {
+  const next = { ...position };
+  for (let index = 0; index < count; index += 1) {
+    const line = term.buffer.active.getLine(next.row)?.translateToString(true) ?? "";
+    if (command === "word-backward") {
+      const prefix = line.slice(0, Math.max(0, next.column));
+      const match = prefix.match(/\w+\W*$/);
+      if (match?.index !== undefined) next.column = match.index;
+      else if (next.row > 0) {
+        next.row -= 1;
+        next.column = terminalBufferLineEnd(term, next.row);
+      } else next.column = 0;
+      continue;
+    }
+    const suffix = line.slice(Math.min(line.length, next.column + 1));
+    const match = command === "word-end" ? suffix.match(/\w\b/) : suffix.match(/\w+/);
+    if (match?.index !== undefined) {
+      next.column += match.index + (command === "word-end" ? 1 : 1);
+    } else if (next.row < term.buffer.active.length - 1) {
+      next.row += 1;
+      next.column = command === "word-end" ? terminalBufferLineEnd(term, next.row) : 0;
+    } else next.column = terminalBufferLineEnd(term, next.row);
+  }
+  return next;
 }
 
 function writeTerminalEvent(term: XTerm, event: SessionEvent) {
