@@ -21,6 +21,8 @@ import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } 
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
+import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
+import type { TerminalMouseEncoding } from "./terminal-mouse";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
@@ -30,6 +32,8 @@ type TerminalCanvasProps = {
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  mouseReporting?: boolean;
+  copyOnSelect?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (mode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
@@ -92,6 +96,8 @@ export default function TerminalCanvas({
   focused = false,
   oneKeys = EMPTY_ONE_KEYS,
   oneKeyCompletionEnabled = true,
+  mouseReporting = true,
+  copyOnSelect = true,
   keyMode = "remote",
   onKeyModeChange = () => {},
   onInput,
@@ -99,6 +105,7 @@ export default function TerminalCanvas({
 }: TerminalCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
+  const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const freeInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -106,6 +113,10 @@ export default function TerminalCanvas({
   const pendingInputRef = useRef("");
   const inputFlushTimerRef = useRef<number | null>(null);
   const lastSizeRef = useRef("");
+  const focusedRef = useRef(focused);
+  const fitAndReportRef = useRef<() => void>(() => {});
+  const mouseReportingRef = useRef(mouseReporting);
+  const copyOnSelectRef = useRef(copyOnSelect);
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
   const keyModeRef = useRef(keyMode);
@@ -142,6 +153,9 @@ export default function TerminalCanvas({
     ?? oneKeyCompletionCandidates[0]
     ?? null;
   onInputRef.current = onInput;
+  focusedRef.current = focused;
+  mouseReportingRef.current = mouseReporting;
+  copyOnSelectRef.current = copyOnSelect;
   keyModeRef.current = keyMode;
   onKeyModeChangeRef.current = onKeyModeChange;
   const freeInputOpen = freeInputSource !== null;
@@ -217,15 +231,6 @@ export default function TerminalCanvas({
         setOneKeyCompletionError(formatTerminalCanvasError(error));
       }
     }
-  }
-
-  function markEventSeen(id: string): boolean {
-    if (seenEventsRef.current.size > 4000) {
-      seenEventsRef.current.clear();
-    }
-    if (seenEventsRef.current.has(id)) return true;
-    seenEventsRef.current.add(id);
-    return false;
   }
 
   function runTerminalSearch(direction: "next" | "previous", incremental = false) {
@@ -366,10 +371,33 @@ export default function TerminalCanvas({
     host.dataset.terminalRenderer = "dom";
     host.dataset.terminalWebgl = "loading";
     host.dataset.terminalKeyMode = keyModeRef.current;
+    host.dataset.terminalMouseReporting = mouseReportingRef.current ? "enabled" : "disabled";
     host.dataset.terminalRestored = cachedState ? "true" : "false";
-    if (cachedState) term.write(cachedState.serialized);
+    let mouseEncoding: TerminalMouseEncoding = cachedState?.mouseEncoding ?? "default";
+    const mouseEncodingSetDisposable = term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+      mouseEncoding = reduceTerminalMouseEncoding(mouseEncoding, params, true);
+      return false;
+    });
+    const mouseEncodingResetDisposable = term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+      mouseEncoding = reduceTerminalMouseEncoding(mouseEncoding, params, false);
+      return false;
+    });
+    let restorePending = Boolean(cachedState);
+    if (cachedState) {
+      term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => { restorePending = false; });
+    }
     term.open(host);
     let terminalDisposed = false;
+    const pendingEventIds = new Set<string>();
+    const writeEvent = (event: SessionEvent) => {
+      if (seenEventsRef.current.size > 4000) seenEventsRef.current.clear();
+      if (seenEventsRef.current.has(event.id)) return false;
+      seenEventsRef.current.add(event.id);
+      pendingEventIds.add(event.id);
+      writeTerminalEvent(term, event, () => { pendingEventIds.delete(event.id); });
+      return true;
+    };
+    writeEventRef.current = writeEvent;
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
     void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
@@ -395,17 +423,18 @@ export default function TerminalCanvas({
     const fitAndReport = () => {
       fit.fit();
       const size = `${term.cols}x${term.rows}`;
-      if (lastSizeRef.current !== size) {
-        lastSizeRef.current = size;
-        if (isBackendAvailable()) {
-          void invokeBackend("resize_session", {
-            sessionId: active.profile.id,
-            cols: term.cols,
-            rows: term.rows,
-          }).catch(() => {});
-        }
+      host.dataset.terminalSize = size;
+      if (!focusedRef.current || lastSizeRef.current === size) return;
+      lastSizeRef.current = size;
+      if (isBackendAvailable()) {
+        void invokeBackend("resize_session", {
+          sessionId: active.profile.id,
+          cols: term.cols,
+          rows: term.rows,
+        }).catch(() => {});
       }
     };
+    fitAndReportRef.current = fitAndReport;
     queueMicrotask(fitAndReport);
 
     const resizeObserver = new ResizeObserver(fitAndReport);
@@ -420,6 +449,7 @@ export default function TerminalCanvas({
     };
     const inputDisposable = term.onData((text) => {
       if (keyModeRef.current !== "remote") return;
+      if (!mouseReportingRef.current && isTerminalMouseReport(text)) return;
       dismissOneKeyPrompt();
       pendingInputRef.current += text;
       if (/[\x00-\x1f\x7f]/.test(text)) {
@@ -435,6 +465,7 @@ export default function TerminalCanvas({
     });
     const selectionDisposable = term.onSelectionChange(() => {
       if (keyModeRef.current !== "remote") return;
+      if (!copyOnSelectRef.current) return;
       const selected = term.getSelection();
       if (!selected || selected === lastCopiedSelectionRef.current) return;
       lastCopiedSelectionRef.current = selected;
@@ -471,18 +502,27 @@ export default function TerminalCanvas({
       }
       pendingInputRef.current = "";
       resizeObserver.disconnect();
+      if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
+      if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
+      mouseEncodingSetDisposable.dispose();
+      mouseEncodingResetDisposable.dispose();
       webglContextLossDisposable?.dispose();
-      try {
-        terminalStateCache.save(active.profile.id, {
-          serialized: serialize.serialize({
-            scrollback: Math.min(MAX_SERIALIZED_SCROLLBACK, active.profile.terminal.scrollback),
-          }),
-          cols: term.cols,
-          rows: term.rows,
-          seenEventIds: [...seenEventsRef.current],
-        });
-      } catch {
-        // Serialization must not prevent terminal disposal.
+      if (restorePending || pendingEventIds.size) {
+        for (const eventId of pendingEventIds) seenEventsRef.current.delete(eventId);
+      } else {
+        try {
+          terminalStateCache.save(active.profile.id, {
+            serialized: serialize.serialize({
+              scrollback: Math.min(MAX_SERIALIZED_SCROLLBACK, active.profile.terminal.scrollback),
+            }),
+            cols: term.cols,
+            rows: term.rows,
+            seenEventIds: [...seenEventsRef.current],
+            mouseEncoding,
+          });
+        } catch {
+          // Serialization must not prevent terminal disposal.
+        }
       }
       term.dispose();
       if (searchRef.current === search) searchRef.current = null;
@@ -541,7 +581,10 @@ export default function TerminalCanvas({
     keySequenceRef.current = emptyTerminalKeySequenceState();
     const term = termRef.current;
     const host = hostRef.current;
-    if (host) host.dataset.terminalKeyMode = keyMode;
+    if (host) {
+      host.dataset.terminalKeyMode = keyMode;
+      host.dataset.terminalMouseReporting = mouseReporting ? "enabled" : "disabled";
+    }
 
     if (keyMode === "local" || keyMode === "command") {
       setFreeInputSource(null);
@@ -569,7 +612,7 @@ export default function TerminalCanvas({
     setFreeInputSource(null);
     setFreeInputValue("");
     window.requestAnimationFrame(() => term?.focus());
-  }, [active?.profile.id, keyMode, viewId]);
+  }, [active?.profile.id, keyMode, mouseReporting, viewId]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -588,7 +631,14 @@ export default function TerminalCanvas({
   }, [active?.profile.id, searchOpen]);
 
   useEffect(() => {
-    if (focused) termRef.current?.focus();
+    const host = hostRef.current;
+    if (host) host.dataset.terminalResizeOwner = focused ? "active" : "inactive";
+    if (focused) {
+      // Another view of this session may have resized the shared PTY while this view was inactive.
+      lastSizeRef.current = "";
+      termRef.current?.focus();
+      fitAndReportRef.current();
+    }
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
@@ -599,14 +649,13 @@ export default function TerminalCanvas({
     void listen<SessionEvent>("portmate-session-event", (event) => {
       if (disposed || event.payload.sessionId !== active.profile.id) return;
       const term = termRef.current;
-      if (!term || markEventSeen(event.payload.id)) return;
+      if (!term || !writeEventRef.current(event.payload)) return;
       if (oneKeyCompletionEnabled) {
         applyOneKeyPromptState(reduceOneKeyPromptDetection(
           oneKeyPromptStateRef.current,
           event.payload,
         ));
       }
-      writeTerminalEvent(term, event.payload);
     })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -627,8 +676,7 @@ export default function TerminalCanvas({
     const term = termRef.current;
     if (!term) return;
     for (const event of events) {
-      if (markEventSeen(event.id)) continue;
-      writeTerminalEvent(term, event);
+      writeEventRef.current(event);
     }
   }, [events, active?.profile.id]);
 
@@ -926,13 +974,16 @@ function moveTerminalWord(
   return next;
 }
 
-function writeTerminalEvent(term: XTerm, event: SessionEvent) {
-  if (!event.text || event.direction === "outbound") return;
-  if (event.direction === "system" || event.stream === "control" || event.stream === "audit") {
-    term.writeln(`\x1b[38;5;245m${event.text}\x1b[0m`);
+function writeTerminalEvent(term: XTerm, event: SessionEvent, onParsed: () => void) {
+  if (!event.text || event.direction === "outbound") {
+    onParsed();
     return;
   }
-  term.write(event.text);
+  if (event.direction === "system" || event.stream === "control" || event.stream === "audit") {
+    term.writeln(`\x1b[38;5;245m${event.text}\x1b[0m`, onParsed);
+    return;
+  }
+  term.write(event.text, onParsed);
 }
 
 function formatTerminalCanvasError(error: unknown): string {

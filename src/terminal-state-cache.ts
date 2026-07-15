@@ -1,8 +1,11 @@
+import type { TerminalMouseEncoding } from "./terminal-mouse";
+
 export type SerializedTerminalState = {
   serialized: string;
   cols: number;
   rows: number;
   seenEventIds: string[];
+  mouseEncoding?: TerminalMouseEncoding;
 };
 
 export const MAX_SERIALIZED_TERMINALS = 32;
@@ -36,6 +39,7 @@ export class TerminalStateCache {
       cols: normalizeDimension(state.cols),
       rows: normalizeDimension(state.rows),
       seenEventIds: state.seenEventIds.slice(-MAX_SERIALIZED_TERMINAL_EVENTS),
+      mouseEncoding: normalizeMouseEncoding(state.mouseEncoding),
     };
     this.states.delete(sessionId);
     this.states.set(sessionId, normalized);
@@ -64,4 +68,10 @@ function normalizeDimension(value: number): number {
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function normalizeMouseEncoding(value: TerminalMouseEncoding | undefined): TerminalMouseEncoding {
+  return value === "utf8" || value === "sgr" || value === "urxvt" || value === "sgr-pixels"
+    ? value
+    : "default";
 }

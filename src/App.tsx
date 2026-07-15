@@ -2545,6 +2545,8 @@ function handleMenuAction(item: string) {
             eventsBySession={logs}
             oneKeys={oneKeys}
             oneKeyCompletionEnabled={terminalPrefs.oneKeyCompletionEnabled}
+            mouseReporting={terminalPrefs.mouseReporting}
+            copyOnSelect={terminalPrefs.mouseCopyOnSelect}
             blockSelection={blockSelection}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onOneKeyCompletion={completeOneKeyPrompt}
@@ -3999,6 +4001,8 @@ function TerminalPaneGrid({
   eventsBySession,
   oneKeys,
   oneKeyCompletionEnabled,
+  mouseReporting,
+  copyOnSelect,
   blockSelection,
   onInput,
   onOneKeyCompletion,
@@ -4022,6 +4026,8 @@ function TerminalPaneGrid({
   eventsBySession: Record<string, SessionEvent[]>;
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
+  mouseReporting: boolean;
+  copyOnSelect: boolean;
   blockSelection: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
@@ -4044,7 +4050,7 @@ function TerminalPaneGrid({
 }) {
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
   }
 
   return (
@@ -4059,6 +4065,8 @@ function TerminalPaneGrid({
         eventsBySession={eventsBySession}
         oneKeys={oneKeys}
         oneKeyCompletionEnabled={oneKeyCompletionEnabled}
+        mouseReporting={mouseReporting}
+        copyOnSelect={copyOnSelect}
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
@@ -4087,6 +4095,8 @@ type TerminalWorkspaceNodeProps = {
   eventsBySession: Record<string, SessionEvent[]>;
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
+  mouseReporting: boolean;
+  copyOnSelect: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4289,6 +4299,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         focused={node.id === props.activePaneId}
         oneKeys={props.oneKeys}
         oneKeyCompletionEnabled={props.oneKeyCompletionEnabled}
+        mouseReporting={props.mouseReporting}
+        copyOnSelect={props.copyOnSelect}
         keyMode={activeView.keyMode}
         onKeyModeChange={(keyMode) => props.onKeyModeChange(node.id, activeView.id, keyMode)}
         onInput={props.onInput}
@@ -4386,6 +4398,8 @@ type TerminalCanvasProps = {
   focused?: boolean;
   oneKeys?: readonly OneKeySummary[];
   oneKeyCompletionEnabled?: boolean;
+  mouseReporting?: boolean;
+  copyOnSelect?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
@@ -10028,6 +10042,12 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
     oneKeyCompletionEnabled: typeof source.oneKeyCompletionEnabled === "boolean"
       ? source.oneKeyCompletionEnabled
       : defaults.oneKeyCompletionEnabled,
+    mouseReporting: typeof source.mouseReporting === "boolean"
+      ? source.mouseReporting
+      : defaults.mouseReporting,
+    mouseCopyOnSelect: typeof source.mouseCopyOnSelect === "boolean"
+      ? source.mouseCopyOnSelect
+      : defaults.mouseCopyOnSelect,
     startupSessions: Array.isArray(source.startupSessions)
       ? source.startupSessions.slice(0, 4).map((item) => typeof item === "string" ? item : "")
       : defaults.startupSessions,

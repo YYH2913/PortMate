@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "test:terminal-compat": "node scripts/terminal-compat-check.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "desktop": "tauri dev",
@@ -33,6 +34,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "playwright-core": "^1.61.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"

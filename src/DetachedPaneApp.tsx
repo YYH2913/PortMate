@@ -21,7 +21,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
-  const [oneKeyCompletionEnabled, setOneKeyCompletionEnabled] = useState(readOneKeyCompletionEnabled);
+  const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(readTerminalInteractionPrefs);
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
@@ -79,7 +79,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === "portmate.terminalPrefs" || event.key === null) {
-        setOneKeyCompletionEnabled(readOneKeyCompletionEnabled());
+        setTerminalInteractionPrefs(readTerminalInteractionPrefs());
       }
     };
     window.addEventListener("storage", handleStorage);
@@ -169,7 +169,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={error ? "detached-pane-status error" : "detached-pane-status"}>
         <span>{error || session?.runtime.status || "missing"}</span>
@@ -268,14 +268,23 @@ function loadLocalSessions(): SessionSummary[] {
   }
 }
 
-function readOneKeyCompletionEnabled(): boolean {
+function readTerminalInteractionPrefs() {
+  const defaults = { oneKeyCompletionEnabled: true, mouseReporting: true, copyOnSelect: true };
   try {
     const raw = window.localStorage.getItem("portmate.terminalPrefs");
-    if (!raw) return true;
-    const value = JSON.parse(raw) as { oneKeyCompletionEnabled?: unknown };
-    return typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true;
+    if (!raw) return defaults;
+    const value = JSON.parse(raw) as {
+      oneKeyCompletionEnabled?: unknown;
+      mouseReporting?: unknown;
+      mouseCopyOnSelect?: unknown;
+    };
+    return {
+      oneKeyCompletionEnabled: typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true,
+      mouseReporting: typeof value.mouseReporting === "boolean" ? value.mouseReporting : true,
+      copyOnSelect: typeof value.mouseCopyOnSelect === "boolean" ? value.mouseCopyOnSelect : true,
+    };
   } catch {
-    return true;
+    return defaults;
   }
 }
 

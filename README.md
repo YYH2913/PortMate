@@ -251,10 +251,13 @@ cargo run -p portmate-mcp -- --http
 
 ```bash
 npm test
+npm run test:terminal-compat
 npm run build
 cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+The terminal compatibility check uses the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 

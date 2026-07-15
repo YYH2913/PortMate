@@ -28,12 +28,13 @@ describe("terminal state cache", () => {
   it("normalizes dimensions and bounds copied event ids", () => {
     const cache = new TerminalStateCache();
     const eventIds = Array.from({ length: MAX_SERIALIZED_TERMINAL_EVENTS + 2 }, (_, index) => `event-${index}`);
-    expect(cache.save("a", { serialized: "screen", cols: 0, rows: Number.NaN, seenEventIds: eventIds })).toBe(true);
+    expect(cache.save("a", { serialized: "screen", cols: 0, rows: Number.NaN, seenEventIds: eventIds, mouseEncoding: "sgr" })).toBe(true);
     const restored = cache.get("a")!;
     restored.seenEventIds.push("mutated");
 
     expect(restored.cols).toBe(1);
     expect(restored.rows).toBe(1);
+    expect(restored.mouseEncoding).toBe("sgr");
     expect(restored.seenEventIds).toHaveLength(MAX_SERIALIZED_TERMINAL_EVENTS + 1);
     expect(cache.get("a")?.seenEventIds).toHaveLength(MAX_SERIALIZED_TERMINAL_EVENTS);
     expect(cache.get("a")?.seenEventIds[0]).toBe("event-2");
@@ -42,7 +43,7 @@ describe("terminal state cache", () => {
   it("retains an empty serialized screen with its dimensions", () => {
     const cache = new TerminalStateCache();
     expect(cache.save("blank", state(""))).toBe(true);
-    expect(cache.get("blank")).toMatchObject({ serialized: "", cols: 80, rows: 24 });
+    expect(cache.get("blank")).toMatchObject({ serialized: "", cols: 80, rows: 24, mouseEncoding: "default" });
   });
 });
 
