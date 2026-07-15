@@ -46,6 +46,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - pane 标签与窗口菜单支持关闭活动/其他/右侧 view，以及当前进程内最近 32 条有界关闭历史的重新打开；关闭 view 不断开后端 session，空 group 自动折叠，最后一个工作区 view 受保护，原 group 消失时恢复到活动非满 group。顶层 session 右键菜单已改为明确的“断开会话”语义。
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
+- WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/追加回车执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络/趋势四标签工作窗口，趋势可切换 CPU/内存利用率与 RX/TX 速率，并提供当前会话可启停、立即采样后每 10 秒刷新的紧凑工具栏 applet。
@@ -57,7 +58,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - WindTerm 的 view 精确排序/跨 group 定点拖放和完整 group 合并、逐 view 标签颜色、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。
 - 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘；仍缺 vttest、鼠标协议和全屏程序兼容基线。
-- OneKeys/Quick Commands 等 WindTerm 细节仍不完整。
+- OneKeys 凭据工作流等 WindTerm 细节仍不完整；它与已完成的文本型 Quick Commands 保持独立。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
 
 ### 连接与传输
@@ -189,7 +190,7 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把应用壳、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 495 kB、终端 core JS 约 439 kB、WebGL JS 约 120 kB、主 CSS 约 89 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、当前 pane 查找和自由输入，v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组定点拖放、独立窗口颜色往返，以及手动/快捷键/启动/空闲锁屏、刷新恢复、detached 同步遮罩、焦点封闭和桌面/移动端几何，且工作台布局不塌陷。
+`npm run build` 已把应用壳、Quick Command 管理器、xterm core、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 489 kB、Quick Command 管理器约 4.4 kB、终端 core JS 约 439 kB、WebGL JS 约 120 kB、主 CSS 约 96 kB、终端 CSS 约 4 kB；此前约 805 kB 的单 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、当前 pane 查找和自由输入，v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组定点拖放、独立窗口颜色往返，以及手动/快捷键/启动/空闲锁屏、刷新恢复、detached 同步遮罩、焦点封闭和桌面/移动端几何。Quick Commands 另覆盖首次懒加载、增改排序、取消隔离、显式保存、Quick Bar 显隐/刷新恢复、插入/执行历史差异，以及 1440x900 与 390x844 无溢出布局；工作台布局不塌陷。
 
 已有单元测试覆盖：
 
@@ -200,6 +201,7 @@ npm run build
 - 终端序列化缓存的 UTF-8 字节上限、LRU 淘汰、事件 ID 上限、空屏恢复和防御性复制，以及 OSC 52 只写剪贴板、拒绝远端读取、权限 Promise 拒绝/同步异常降级。
 - 当前终端查找的标准/WindTerm 快捷键识别、选中文本单行化和 UTF-16 长度边界、结果/溢出/非法表达式状态，以及菜单到焦点 pane 的事件分发。
 - 自由输入的 Unicode 字符上限、跨平台换行原子提交、空/空格草稿、可编辑选区剪切和菜单到焦点 pane 的事件分发。
+- Quick Commands 的旧数组迁移、Unicode 名称/正文边界、NUL 清理、无效/重复 ID 修复、64 条上限、插入/执行 payload 和不可变上下排序。
 - workspace v1/v2/v3→v4 迁移、重复 node/view ID 修复、同 session 多 view、独立别名/颜色、精确激活/复制/关闭/排序/定点移动/拆分/合并、失效 session 收敛和带 view 身份/颜色的 detach route 校验。
 - 锁屏超时 `1..=1440` 归一化、绝对空闲 deadline、精确 WindTerm/Linux/macOS 快捷键，以及版本化跨窗口 marker 对损坏值的保守锁定与修复。
 - Secret redaction。
@@ -235,7 +237,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 127 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 217：`portmate` 156、`portmate-kdf` 1、`portmate-core` 33、`portmate-mcp` 27；`npm test` 另有 22 个文件、133 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/quick-command/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -285,7 +287,7 @@ npm run build
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
 2. pane view group、启动自动连接、session/逐 view 标签颜色、workspace restore、v1/v2/v3→v4 自动迁移、同 session view duplicate/独立 rename、view 同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、任意递归嵌套分屏、保留 view 身份/颜色的独立 Tauri 窗口/返回、跨主/独立窗口锁屏，以及支持最多两段 chord 的可配置 WindTerm 分屏创建/方向焦点/关闭/zoom 快捷键和方向 pane 交换已完成。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
-4. FreeType 风格自由输入已完成：焦点 pane 本地有界多行编辑、剪切/取消/原子提交、终端换行、查找互斥和同步输入复用均已接入；下一步补 OneKeys/Quick Commands 管理与调用。
+4. FreeType 风格自由输入与 Quick Commands 已完成：焦点 pane 本地有界多行编辑、剪切/取消/原子提交、终端换行、查找互斥、同步输入复用，以及有界命令管理/排序/持久化、Quick Bar 插入或执行均已接入；下一步补独立的 OneKeys 凭据工作流。
 5. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤与 JSONL + SHA-256 导出已完成；下一步补独立分析窗口、协议帧解析、书签和重连状态可视化。
 6. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。
 

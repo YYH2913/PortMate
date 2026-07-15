@@ -6,6 +6,7 @@ This repository currently contains the active desktop implementation slice:
 
 - Tauri v2 + React/TypeScript desktop shell
 - WindTerm-style workbench UI with resource/file/session/history/send panes and modal settings dialogs
+- WindTerm-style Quick Command manager and persistent Quick Bar for bounded insert or execute snippets
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
 - Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
 - Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux attach/list/pane inspection paths in the Tauri backend
@@ -53,7 +54,7 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - `View`: session tree, explorer pane, shell pane, quick bar, split views, focus mode
    - `Mode`: remote mode, local mode, synchronized input, free type, lock screen
    - `Transfer`: SFTP, SCP, X/Y/ZModem
-   - `Tools`: forwarding, Sysmon, triggers, logs, MCP bridge, key manager
+   - `Tools`: quick commands, forwarding, Sysmon, triggers, logs, MCP bridge, key manager
    - `Preferences`: global settings, font, color scheme, tab color, transparency, mouse behavior
 
 4. Open settings from any settings-oriented menu item, for example `会话 -> 会话设置` or `工具 -> 终端设置`.
@@ -86,6 +87,8 @@ WindTerm's directional `Split View To Group` workflow is available as four Windo
 Pane tabs and the Window menu implement WindTerm-style view lifecycle commands: close the active view, close the other views in its group, close views to its right, and reopen the most recently closed view. Closing a view never disconnects its backend session, empty groups collapse, and the final workspace view is protected. Up to 32 closed views are retained for the current app process; reopening prefers the original group and index, then falls back to the active non-full group when the original group no longer exists. The global session-tab context menu uses explicit disconnect wording because those actions change transport state rather than workspace membership.
 
 `模式 -> 自由输入` opens a WindTerm FreeType-style editor only inside the focused terminal pane. Drafts are local and bounded to 32,768 Unicode characters: `Enter` submits the edited text as one atomic terminal input, `Shift+Enter` keeps a line break, `Escape` cancels, and `Ctrl/Meta+Shift+X` cuts the editable selection. Submission normalizes edited line breaks to terminal carriage returns and adds one final carriage return; switching sessions discards the unsubmitted draft. Terminal search and free input replace each other instead of overlapping, workspace hotkeys ignore the editor, and atomic submission reuses synchronized input's target, protocol-newline, delay, prefix, and suffix rules when broadcasting is enabled.
+
+`工具 -> 快速命令` opens the WindTerm-style Quick Command manager, while `查看 -> 快捷栏` toggles its compact workspace bar. Up to 64 ordered snippets are stored locally; labels are bounded to 64 Unicode characters and command bodies to 8,192. A snippet can either insert its exact text or append one carriage return and execute it. Both paths use the same atomic synchronized-input queue as paste and free input, including target filtering, newline policy, delay, prefix, and suffix; executed snippets also enter the bounded command history. The manager saves only on explicit confirmation, repairs malformed or duplicate IDs when loading, and migrates legacy `{name,text}` arrays. Quick Commands use frontend localStorage rather than the encrypted credential providers, so passwords, tokens, private keys, and other secrets must not be stored in them.
 
 `模式 -> 锁屏`, the status-bar lock button, and WindTerm's `Ctrl+Alt+L` (`Meta+Alt+L` on macOS) shortcut from either the main or a detached terminal open one opaque, focus-trapped screen lock without disconnecting sessions or stopping output. `工具 -> 终端设置 -> 安全` can enable startup locking and a bounded 1..1,440 minute idle timeout, defaulting to WindTerm's 30 minutes. A versioned local marker containing only the reason and timestamp keeps the main and detached windows covered across refresh, restart, and window boundaries until explicit unlock; a present but malformed marker fails closed and is repaired by the main window. Detached terminals become inert and direct the user back to the main window. When an IOTA Stronghold Portable Vault exists, locking closes its in-memory provider and unlocking verifies that vault's master password, then restores whether the vault was locked before the screen lock; a session-scoped restore hint preserves that state across a locked-page refresh. Invalid passwords and vault-status failures remain behind the opaque layer and do not expose backend paths. Without a configured Portable Vault, including browser preview, the feature is explicitly a privacy cover with confirmation rather than an authenticated security boundary.
 

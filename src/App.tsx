@@ -45,6 +45,8 @@ import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneComman
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
+import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandPayload } from "./quick-command-state";
+import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -69,6 +71,7 @@ import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrati
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
+const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
@@ -79,10 +82,10 @@ const menuGroups = [
   { label: "搜索", items: ["会话搜索", "日志搜索", "在线搜索"] },
   { label: "选择", items: ["选择全部", "块选择", "清除选择"] },
   { label: "转到", items: ["上一个标签", "下一个标签", "跳转到行"] },
-  { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏"] },
+  { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
   { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
-  { label: "工具", items: ["终端设置", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
+  { label: "工具", items: ["终端设置", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
@@ -132,7 +135,7 @@ const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoveryS
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "quick-commands" | null;
 type ProtocolTab = (typeof protocolTabs)[number];
 type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
@@ -271,6 +274,12 @@ export default function App() {
     normalizeSyncInputSettings(loadLocalValue<unknown>("portmate.syncInputSettings", defaultSyncInputSettings))
   ));
   const [commandHistory, setCommandHistory] = useState<string[]>(() => loadLocalValue("portmate.commandHistory", []));
+  const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
+    normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
+  ));
+  const [quickBarVisible, setQuickBarVisible] = useState(() => (
+    loadLocalValue<unknown>(QUICK_BAR_VISIBLE_STORAGE_KEY, false) === true
+  ));
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
@@ -641,6 +650,14 @@ export default function App() {
   }, [commandHistory]);
 
   useEffect(() => {
+    saveLocalValue(QUICK_COMMAND_STORAGE_KEY, { version: 1, items: quickCommands });
+  }, [quickCommands]);
+
+  useEffect(() => {
+    saveLocalValue(QUICK_BAR_VISIBLE_STORAGE_KEY, quickBarVisible);
+  }, [quickBarVisible]);
+
+  useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
       event.preventDefault();
     };
@@ -921,6 +938,10 @@ function handleMenuAction(item: string) {
       setDialog("terminal");
       return;
     }
+    if (item === "快速命令") {
+      setUtilityDialog("quick-commands");
+      return;
+    }
     if (item === "MCP Bridge") {
       setUtilityDialog("mcp");
       return;
@@ -941,6 +962,10 @@ function handleMenuAction(item: string) {
     if (item === "自由输入") {
       if (active) requestTerminalFreeInput();
       else setNotice({ title: "自由输入", message: "请先打开一个终端会话。" });
+      return;
+    }
+    if (item === "快捷栏") {
+      setQuickBarVisible((visible) => !visible);
       return;
     }
     if (item === "会话搜索") {
@@ -2163,6 +2188,17 @@ function handleMenuAction(item: string) {
     }
   }
 
+  function runQuickCommand(command: QuickCommand) {
+    if (!active) {
+      setNotice({ title: "快速命令", message: "请先打开一个终端会话。" });
+      return;
+    }
+    if (command.appendEnter && command.command.trim()) {
+      setCommandHistory((current) => [command.command, ...current.filter((item) => item !== command.command)].slice(0, 200));
+    }
+    void routeTerminalInput(active.profile.id, quickCommandPayload(command), "atomic");
+  }
+
   function requestSessionCredentials(profile: SessionProfile): Promise<ConnectionCredentials | null> {
     if (!isSshLikeProfile(profile)) {
       return Promise.resolve({ username: null, password: null, passphrase: null, savePassword: false, savePassphrase: false });
@@ -2216,7 +2252,7 @@ function handleMenuAction(item: string) {
   }
 
   return (
-    <main className="wind-root" onContextMenu={openAppContextMenu} onClick={() => {
+    <main className={quickBarVisible ? "wind-root quick-bar-visible" : "wind-root"} onContextMenu={openAppContextMenu} onClick={() => {
       setContextMenu(null);
       setWorkspaceViewContextMenu(null);
     }}>
@@ -2252,6 +2288,16 @@ function handleMenuAction(item: string) {
           <span>专注模式</span>
         </div>
       </header>
+
+      {quickBarVisible ? (
+        <QuickCommandBar
+          commands={quickCommands}
+          activeSessionName={active?.profile.name ?? ""}
+          onRun={runQuickCommand}
+          onManage={() => setUtilityDialog("quick-commands")}
+          onClose={() => setQuickBarVisible(false)}
+        />
+      ) : null}
 
       <section className="wind-layout">
         <aside className="left-stack">
@@ -2548,6 +2594,19 @@ function handleMenuAction(item: string) {
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
+      {utilityDialog === "quick-commands" && (
+        <Suspense fallback={null}>
+          <LazyQuickCommandDialog
+            commands={quickCommands}
+            onSave={(items) => {
+              setQuickCommands(items);
+              setUtilityDialog(null);
+              if (items.length) setQuickBarVisible(true);
+            }}
+            onClose={() => setUtilityDialog(null)}
+          />
+        </Suspense>
+      )}
       {credentialPrompt && <CredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />}
       {hostKeyPrompt && (
         <HostKeyConfirmDialog
@@ -2811,6 +2870,47 @@ function CommandHistoryPanel({ history, onPick }: { history: string[]; onPick: (
         </button>
       ))}
     </div>
+  );
+}
+
+function QuickCommandBar({
+  commands,
+  activeSessionName,
+  onRun,
+  onManage,
+  onClose,
+}: {
+  commands: QuickCommand[];
+  activeSessionName: string;
+  onRun: (command: QuickCommand) => void;
+  onManage: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <nav className="quick-command-bar" aria-label="快速命令栏">
+      <strong>快速命令</strong>
+      <div className="quick-command-strip">
+        {commands.length ? commands.map((command) => (
+          <button
+            key={command.id}
+            type="button"
+            className="quick-command-run"
+            title={`${command.label} · ${command.appendEnter ? "执行" : "插入"}\n${command.command}`}
+            aria-label={`${command.appendEnter ? "执行" : "插入"}快速命令 ${command.label}`}
+            disabled={!activeSessionName}
+            onClick={() => onRun(command)}
+          >
+            {command.appendEnter ? <Play size={11} /> : <Pencil size={11} />}
+            <span>{command.label}</span>
+          </button>
+        )) : (
+          <button type="button" className="quick-command-empty" onClick={onManage}><Plus size={12} /><span>添加命令</span></button>
+        )}
+      </div>
+      <span className="quick-command-target" title={activeSessionName || "未打开会话"}>{activeSessionName || "未打开会话"}</span>
+      <button type="button" className="quick-command-tool" title="管理快速命令" aria-label="管理快速命令" onClick={onManage}><Settings size={14} /></button>
+      <button type="button" className="quick-command-tool" title="隐藏快捷栏" aria-label="隐藏快捷栏" onClick={onClose}><X size={14} /></button>
+    </nav>
   );
 }
 
