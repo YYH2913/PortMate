@@ -43,6 +43,7 @@ const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
   { value: "fixed", label: "定长" },
   { value: "gap", label: "间隔" },
   { value: "slip", label: "SLIP" },
+  { value: "cobs", label: "COBS" },
 ];
 
 export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
@@ -317,7 +318,9 @@ function SerialAnalyzerWorkspace({
             <label><span>字节</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
           ) : stored.parser.mode === "gap" ? (
             <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.gapMs} onChange={(event) => updateParser({ gapMs: Number(event.target.value) })} /></label>
-          ) : <span className="serial-analyzer-parser-value">{stored.parser.mode === "slip" ? "RFC 1055" : "读取分片"}</span>}
+          ) : <span className="serial-analyzer-parser-value">{
+            stored.parser.mode === "slip" ? "RFC 1055" : stored.parser.mode === "cobs" ? "0x00 帧界" : "读取分片"
+          }</span>}
         </div>
         <div className="serial-analyzer-segmented direction" aria-label="帧方向">
           {(["all", "inbound", "outbound"] as const).map((direction) => (
@@ -407,7 +410,7 @@ function SerialAnalyzerWorkspace({
                   <option value="wire">线上 {selected.wireBytes.length} B</option>
                 </select>
               ) : null}
-              {selected.decodeError ? <span className="serial-analyzer-decode-error">无效 SLIP 转义</span> : null}
+              {selected.decodeError ? <span className="serial-analyzer-decode-error">{serialAnalyzerDecodeErrorLabel(selected.decodeError)}</span> : null}
               <button type="button" title={inspectorView === "wire" && hasDistinctWire ? "复制线上 Hex" : "复制解码 Hex"} aria-label="复制完整帧 Hex" onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(inspectedBytes, inspectedBytes.length)).catch(() => {})}><Copy size={13} /></button>
               <button type="button" className={bookmarkIds.has(selected.bookmarkId) ? "active" : ""} title="切换书签" aria-label="切换帧书签" onClick={() => toggleBookmark(selected)}><Bookmark size={13} fill={bookmarkIds.has(selected.bookmarkId) ? "currentColor" : "none"} /></button>
             </header>
@@ -475,8 +478,17 @@ function serialAnalyzerLengthTitle(frame: SerialAnalyzedFrame): string {
 
 function serialAnalyzerFrameStatus(frame: SerialAnalyzedFrame): string {
   if (frame.truncated) return "截断";
-  if (frame.decodeError) return "转义错";
+  if (frame.decodeError === "invalidEscape") return "转义错";
+  if (frame.decodeError === "truncatedCobs") return "长度错";
+  if (frame.decodeError === "invalidCobs") return "编码错";
   return frame.complete ? "完整" : "尾帧";
+}
+
+function serialAnalyzerDecodeErrorLabel(error: SerialAnalyzedFrame["decodeError"]): string {
+  if (error === "invalidEscape") return "无效 SLIP 转义";
+  if (error === "truncatedCobs") return "COBS 长度截断";
+  if (error === "invalidCobs") return "无效 COBS 编码";
+  return "";
 }
 
 function formatAnalyzerError(error: unknown): string {

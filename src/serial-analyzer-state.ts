@@ -1,3 +1,4 @@
+import { CobsError, decode as decodeCobs } from "@serialpilot/cobs";
 import * as slip from "slip";
 import { serialCaptureAscii } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -12,8 +13,8 @@ export const MAX_SERIAL_FIXED_LENGTH = 4096;
 export const MIN_SERIAL_GAP_MS = 1;
 export const MAX_SERIAL_GAP_MS = 60_000;
 
-export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap" | "slip";
-export type SerialFrameDecodeError = "" | "invalidEscape";
+export type SerialFrameParserMode = "capture" | "delimiter" | "fixed" | "gap" | "slip" | "cobs";
+export type SerialFrameDecodeError = "" | "invalidEscape" | "invalidCobs" | "truncatedCobs";
 
 export interface SerialFrameParserConfig {
   mode: SerialFrameParserMode;
@@ -74,7 +75,7 @@ export const defaultSerialAnalyzerStoredState: SerialAnalyzerStoredState = {
 
 export function normalizeSerialFrameParserConfig(value: unknown): SerialFrameParserConfig {
   const source = objectValue(value);
-  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap" || source.mode === "slip"
+  const mode = source.mode === "delimiter" || source.mode === "fixed" || source.mode === "gap" || source.mode === "slip" || source.mode === "cobs"
     ? source.mode
     : "capture";
   const delimiter = serialAnalyzerDelimiterBytes(source.delimiterHex);
@@ -121,7 +122,8 @@ export function analyzeSerialCaptureFrames(
   else if (config.mode === "delimiter") analyzeDelimitedFrames(frames, config, collector);
   else if (config.mode === "fixed") analyzeFixedFrames(frames, config.fixedLength, collector);
   else if (config.mode === "gap") analyzeGapFrames(frames, config.gapMs, collector);
-  else analyzeSlipFrames(frames, collector);
+  else if (config.mode === "slip") analyzeSlipFrames(frames, collector);
+  else analyzeCobsFrames(frames, collector);
   return collector.result(capturedBytes);
 }
 
@@ -349,6 +351,44 @@ function analyzeSlipFrames(
     if (segmentStart < frame.bytes.length) decoder.decode(new Uint8Array(frame.bytes.slice(segmentStart)));
   }
   flushTail();
+}
+
+function analyzeCobsFrames(
+  frames: SerialCaptureFrame[],
+  collector: SerialAnalyzedFrameCollector,
+) {
+  let pending: PendingSerialFrame | null = null;
+  const flush = (complete: boolean) => {
+    if (!pending) return;
+    let bytes: number[] = [];
+    let decodeError: SerialFrameDecodeError = "";
+    try {
+      bytes = Array.from(decodeCobs(new Uint8Array(pending.bytes)));
+    } catch (error) {
+      decodeError = error instanceof CobsError && error.code === "TRUNCATED"
+        ? "truncatedCobs"
+        : "invalidCobs";
+    }
+    collector.push(pendingSerialFrame(
+      pending,
+      bytes,
+      complete,
+      "cobs",
+      collector.totalFrames,
+      decodeError,
+    ));
+    pending = null;
+  };
+
+  for (const frame of frames) {
+    if (pending && pending.direction !== frame.direction) flush(false);
+    for (const byte of frame.bytes) {
+      if (byte === 0 && !pending) continue;
+      pending = appendPendingSerialByte(pending, frame, byte);
+      if (byte === 0) flush(true);
+    }
+  }
+  flush(false);
 }
 
 function decodeSlipTail(wireBytes: number[], trailingEscape: boolean): number[] {

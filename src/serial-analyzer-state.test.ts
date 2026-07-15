@@ -150,6 +150,68 @@ describe("serial analyzer state", () => {
     ]);
   });
 
+  it("decodes COBS frames across capture chunks and preserves empty payloads and wire bytes", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("rx-a", "inbound", [0x03, 0x11]),
+      frame("rx-b", "inbound", [0x22, 0x02, 0x33, 0x00, 0x01, 0x00, 0x00]),
+      frame("tx", "outbound", [0x03, 0x44, 0x00, 0x02, 0x55]),
+    ], { mode: "cobs", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+
+    expect(result.frames.map((item) => ({
+      direction: item.direction,
+      bytes: item.bytes,
+      wireBytes: item.wireBytes,
+      complete: item.complete,
+      error: item.decodeError,
+      sources: item.sourceFrameIds,
+    }))).toEqual([
+      {
+        direction: "inbound",
+        bytes: [0x11, 0x22, 0x00, 0x33],
+        wireBytes: [0x03, 0x11, 0x22, 0x02, 0x33, 0x00],
+        complete: true,
+        error: "",
+        sources: ["rx-a", "rx-b"],
+      },
+      {
+        direction: "inbound",
+        bytes: [],
+        wireBytes: [0x01, 0x00],
+        complete: true,
+        error: "",
+        sources: ["rx-b"],
+      },
+      {
+        direction: "outbound",
+        bytes: [],
+        wireBytes: [0x03, 0x44, 0x00],
+        complete: true,
+        error: "truncatedCobs",
+        sources: ["tx"],
+      },
+      {
+        direction: "outbound",
+        bytes: [0x55],
+        wireBytes: [0x02, 0x55],
+        complete: false,
+        error: "",
+        sources: ["tx"],
+      },
+    ]);
+    expect(filterSerialAnalyzedFrames(result.frames, "all", "03 11")).toEqual([result.frames[0]]);
+  });
+
+  it("does not combine unfinished COBS payloads across RX and TX", () => {
+    const result = analyzeSerialCaptureFrames([
+      frame("rx", "inbound", [0x02, 0x41]),
+      frame("tx", "outbound", [0x02, 0x42, 0x00]),
+    ], { mode: "cobs", delimiterHex: "0A", includeDelimiter: true, fixedLength: 8, gapMs: 20 });
+    expect(result.frames.map((item) => [item.direction, item.bytes, item.complete])).toEqual([
+      ["inbound", [0x41], false],
+      ["outbound", [0x42], true],
+    ]);
+  });
+
   it("bounds high-cardinality analysis with a ring instead of retaining every byte frame", () => {
     const bytes = Array.from({ length: MAX_SERIAL_ANALYZED_FRAMES + 20 }, (_, index) => index % 256);
     const result = analyzeSerialCaptureFrames([frame("large", "inbound", bytes)], {
