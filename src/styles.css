@@ -177,6 +177,14 @@ button {
   grid-template-rows: 32px 34px minmax(0, 1fr) 28px;
 }
 
+.wind-root.status-bar-hidden {
+  grid-template-rows: 32px minmax(0, 1fr);
+}
+
+.wind-root.quick-bar-visible.status-bar-hidden {
+  grid-template-rows: 32px 34px minmax(0, 1fr);
+}
+
 .wind-menu {
   display: flex;
   align-items: stretch;
@@ -244,6 +252,17 @@ button {
 
 .menu-popover button:hover {
   background: var(--panel-3);
+}
+
+.menu-popover button.menu-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 12px;
+}
+
+.menu-popover button.menu-toggle svg {
+  color: var(--cyan);
 }
 
 .portmate-context-menu {
@@ -372,6 +391,22 @@ button {
   min-height: 0;
 }
 
+.wind-layout.left-dock-hidden {
+  grid-template-columns: minmax(0, 1fr) 344px;
+}
+
+.wind-layout.right-dock-hidden {
+  grid-template-columns: 340px minmax(0, 1fr);
+}
+
+.wind-layout.left-dock-hidden.right-dock-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.wind-layout.sender-hidden {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .quick-command-bar {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(90px, auto) 28px 28px;
@@ -488,6 +523,11 @@ button {
   border-right: 1px solid var(--line);
 }
 
+.left-stack.single-panel,
+.right-stack.single-panel {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .right-stack {
   border-right: 0;
   border-left: 1px solid var(--line);
@@ -523,8 +563,29 @@ button {
 .panel-actions {
   margin-left: auto;
   display: flex;
-  gap: 8px;
   color: var(--muted);
+}
+
+.panel-actions button,
+.send-panel-tool {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.panel-actions button:hover,
+.panel-actions button:focus-visible,
+.send-panel-tool:hover,
+.send-panel-tool:focus-visible {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
 }
 
 .filter-line {
@@ -2273,6 +2334,15 @@ button {
   background: transparent;
   color: #d7e1eb;
   cursor: pointer;
+}
+
+.send-tabs button.send-panel-tool {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  color: var(--muted);
 }
 
 .send-tabs button.active {

@@ -5,7 +5,7 @@ PortMate is a Rust-first terminal workbench for serial, SSH, shell, Telnet, raw 
 This repository currently contains the active desktop implementation slice:
 
 - Tauri v2 + React/TypeScript desktop shell
-- WindTerm-style workbench UI with resource/file/session/history/send panes and modal settings dialogs
+- WindTerm-style workbench UI with persistent, independently toggleable resource/file/session/history/send/status panes and modal settings dialogs
 - WindTerm-style Quick Command manager and persistent Quick Bar for bounded insert or execute snippets
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
 - Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
@@ -85,6 +85,8 @@ The frontend persists a v4 recursive workspace tree whose pane leaves are bounde
 WindTerm's directional `Split View To Group` workflow is available as four Window menu commands. It atomically removes the active view from a multi-view group and creates a new sibling group on the requested side; the operation leaves the original tree unchanged when the source has no spare view or the pane/depth boundary is reached.
 
 Pane tabs and the Window menu implement WindTerm-style view lifecycle commands: close the active view, close the other views in its group, close views to its right, and reopen the most recently closed view. Closing a view never disconnects its backend session, empty groups collapse, and the final workspace view is protected. Up to 32 closed views are retained for the current app process; reopening prefers the original group and index, then falls back to the active non-full group when the original group no longer exists. The global session-tab context menu uses explicit disconnect wording because those actions change transport state rather than workspace membership.
+
+The `查看` menu now mirrors WindTerm's checkable pane actions for the resource explorer, file manager, session list, command history, sender, Quick Bar, and status bar. The four dock panes can also be hidden from real title-bar buttons; when only one pane remains in a side dock it fills that dock, and removing a complete side, the sender, or the status bar returns the exact space to the terminal workspace. The sender's settings and close icons are keyboard-focusable commands rather than decorative glyphs. A bounded v1 local snapshot restores the six pane/bar choices after restart, repairs invalid fields independently, and defaults every existing pane to visible. The responsive mobile layout still suppresses side docks and the sender without corrupting the saved desktop choices.
 
 `模式 -> 自由输入` opens a WindTerm FreeType-style editor only inside the focused terminal pane. Drafts are local and bounded to 32,768 Unicode characters: `Enter` submits the edited text as one atomic terminal input, `Shift+Enter` keeps a line break, `Escape` cancels, and `Ctrl/Meta+Shift+X` cuts the editable selection. Submission normalizes edited line breaks to terminal carriage returns and adds one final carriage return; switching sessions discards the unsubmitted draft. Terminal search and free input replace each other instead of overlapping, workspace hotkeys ignore the editor, and atomic submission reuses synchronized input's target, protocol-newline, delay, prefix, and suffix rules when broadcasting is enabled.
 

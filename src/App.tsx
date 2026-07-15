@@ -12,6 +12,7 @@ import {
   Ban,
   ChevronDown,
   ChevronRight,
+  Check,
   CheckCircle2,
   Clock3,
   Copy,
@@ -64,6 +65,8 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
+import { normalizeWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
+import type { WorkspacePanelId } from "./workspace-panel-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
@@ -89,6 +92,15 @@ const menuGroups = [
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
+
+const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
+  资源管理器: "explorer",
+  文件管理器: "fileManager",
+  会话: "sessions",
+  历史命令: "history",
+  发送: "sender",
+  状态栏: "statusBar",
+};
 
 const workspaceViewGroupSplitActions: Record<string, { direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }> = {
   视图移到左侧新分组: { direction: "vertical", placement: "first" },
@@ -279,6 +291,9 @@ export default function App() {
   ));
   const [quickBarVisible, setQuickBarVisible] = useState(() => (
     loadLocalValue<unknown>(QUICK_BAR_VISIBLE_STORAGE_KEY, false) === true
+  ));
+  const [workspacePanels, setWorkspacePanels] = useState(() => (
+    normalizeWorkspacePanelVisibility(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
   ));
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
@@ -658,6 +673,10 @@ export default function App() {
   }, [quickBarVisible]);
 
   useEffect(() => {
+    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, { version: 1, panels: workspacePanels });
+  }, [workspacePanels]);
+
+  useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
       event.preventDefault();
     };
@@ -934,6 +953,11 @@ export default function App() {
   ).length, [activeId, paneSessions, syncInputSettings]);
 
 function handleMenuAction(item: string) {
+    const workspacePanel = workspacePanelMenuItems[item];
+    if (workspacePanel) {
+      setWorkspacePanels((current) => toggleWorkspacePanelVisibility(current, workspacePanel));
+      return;
+    }
     if (item === "终端设置") {
       setDialog("terminal");
       return;
@@ -1008,7 +1032,7 @@ function handleMenuAction(item: string) {
       setUtilityDialog("search");
       return;
     }
-    if (["资源管理器", "文件管理器", "会话", "历史命令", "发送", "状态栏", "远程模式", "本地模式"].includes(item)) {
+    if (["远程模式", "本地模式"].includes(item)) {
       setNotice({ title: item, message: "该工作区视图已经显示在当前桌面布局中。" });
       return;
     }
@@ -2199,6 +2223,19 @@ function handleMenuAction(item: string) {
     void routeTerminalInput(active.profile.id, quickCommandPayload(command), "atomic");
   }
 
+  function setWorkspacePanelVisible(panel: WorkspacePanelId, visible: boolean) {
+    setWorkspacePanels((current) => setWorkspacePanelVisibility(current, panel, visible));
+  }
+
+  function menuToggleState(item: string): boolean | undefined {
+    const workspacePanel = workspacePanelMenuItems[item];
+    if (workspacePanel) return workspacePanels[workspacePanel];
+    if (item === "快捷栏") return quickBarVisible;
+    if (item === "同步输入") return syncInput;
+    if (item === "块选择") return blockSelection;
+    return undefined;
+  }
+
   function requestSessionCredentials(profile: SessionProfile): Promise<ConnectionCredentials | null> {
     if (!isSshLikeProfile(profile)) {
       return Promise.resolve({ username: null, password: null, passphrase: null, savePassword: false, savePassphrase: false });
@@ -2252,7 +2289,7 @@ function handleMenuAction(item: string) {
   }
 
   return (
-    <main className={quickBarVisible ? "wind-root quick-bar-visible" : "wind-root"} onContextMenu={openAppContextMenu} onClick={() => {
+    <main className={["wind-root", quickBarVisible ? "quick-bar-visible" : "", workspacePanels.statusBar ? "" : "status-bar-hidden"].filter(Boolean).join(" ")} onContextMenu={openAppContextMenu} onClick={() => {
       setContextMenu(null);
       setWorkspaceViewContextMenu(null);
     }}>
@@ -2265,18 +2302,24 @@ function handleMenuAction(item: string) {
               </button>
               {openMenu === group.label && (
                 <div className="menu-popover">
-                  {group.items.map((item) => (
-                    <button
-                      key={item}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleMenuAction(item);
-                        setOpenMenu(null);
-                      }}
-                    >
-                      {item}
-                    </button>
-                  ))}
+                  {group.items.map((item) => {
+                    const toggleState = menuToggleState(item);
+                    return (
+                      <button
+                        key={item}
+                        className={toggleState === undefined ? "" : "menu-toggle"}
+                        aria-pressed={toggleState}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleMenuAction(item);
+                          setOpenMenu(null);
+                        }}
+                      >
+                        <span>{item}</span>
+                        {toggleState ? <Check size={13} /> : null}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2299,16 +2342,23 @@ function handleMenuAction(item: string) {
         />
       ) : null}
 
-      <section className="wind-layout">
-        <aside className="left-stack">
-          <DockPanel title="资源管理器" accent="#5eead4" actions>
+      <section className={[
+        "wind-layout",
+        workspacePanels.explorer || workspacePanels.fileManager ? "" : "left-dock-hidden",
+        workspacePanels.sessions || workspacePanels.history ? "" : "right-dock-hidden",
+        workspacePanels.sender ? "" : "sender-hidden",
+      ].filter(Boolean).join(" ")}>
+        {workspacePanels.explorer || workspacePanels.fileManager ? (
+        <aside className={`left-stack ${workspacePanels.explorer && workspacePanels.fileManager ? "" : "single-panel"}`}>
+          {workspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
             <FilterLine />
             <TreeList sessions={sessions} groups={sessionGroups} activeId={activeId} onSelect={activateSession} />
-          </DockPanel>
-          <DockPanel title="文件管理器" accent="#8b5cf6" actions>
+          </DockPanel> : null}
+          {workspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
             <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
-          </DockPanel>
+          </DockPanel> : null}
         </aside>
+        ) : null}
 
         <section className="center-workspace">
           <div className="tab-line">
@@ -2400,12 +2450,13 @@ function handleMenuAction(item: string) {
           />
         </section>
 
-        <aside className="right-stack">
-          <DockPanel title="会话" accent="#68a7ff" actions>
+        {workspacePanels.sessions || workspacePanels.history ? (
+        <aside className={`right-stack ${workspacePanels.sessions && workspacePanels.history ? "" : "single-panel"}`}>
+          {workspacePanels.sessions ? <DockPanel title="会话" accent="#68a7ff" onClose={() => setWorkspacePanelVisible("sessions", false)}>
             <FilterLine />
             <FolderList sessions={sessions} />
-          </DockPanel>
-          <DockPanel title="历史命令" accent="#f4b860" actions>
+          </DockPanel> : null}
+          {workspacePanels.history ? <DockPanel title="历史命令" accent="#f4b860" onClose={() => setWorkspacePanelVisible("history", false)}>
             <FilterLine compact />
             <div className="right-tools-list">
               {activeSerial && active ? (
@@ -2419,16 +2470,17 @@ function handleMenuAction(item: string) {
               ) : null}
               <CommandHistoryPanel history={commandHistory} onPick={setSendText} />
             </div>
-          </DockPanel>
+          </DockPanel> : null}
         </aside>
+        ) : null}
 
-        <section className="send-panel">
+        {workspacePanels.sender ? <section className="send-panel">
           <div className="send-tabs">
             <button className="active">发送</button>
             <button>Shell</button>
             <span />
-            <Settings size={14} />
-            <X size={14} />
+            <button type="button" className="send-panel-tool" title="发送设置" aria-label="发送设置" onClick={() => setDialog("terminal")}><Settings size={14} /></button>
+            <button type="button" className="send-panel-tool" title="隐藏发送面板" aria-label="隐藏发送面板" onClick={() => setWorkspacePanelVisible("sender", false)}><X size={14} /></button>
           </div>
           <div className="send-toolbar">
             <button className="send-icon-button" onClick={() => void runSendPanel()} disabled={sendBusy}>
@@ -2474,10 +2526,10 @@ function handleMenuAction(item: string) {
               }
             }}
           />
-        </section>
+        </section> : null}
       </section>
 
-      <footer className="status-bar">
+      {workspacePanels.statusBar ? <footer className="status-bar">
         <span>就绪</span>
         <span />
         <span className={syncInput ? "sync-status active" : "sync-status"}>{syncInput ? `同步输入 · ${syncInputTargetCount}` : "远程模式"}</span>
@@ -2491,7 +2543,7 @@ function handleMenuAction(item: string) {
           <Lock size={12} />
           <span>锁屏</span>
         </button>
-      </footer>
+      </footer> : null}
 
       {contextMenu && (
         <PortMateContextMenu
@@ -2786,18 +2838,15 @@ function ScreenLockOverlay({
   );
 }
 
-function DockPanel({ title, accent, actions, children }: { title: string; accent: string; actions?: boolean; children: React.ReactNode }) {
+function DockPanel({ title, accent, onClose, children }: { title: string; accent: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <section className="dock-panel">
       <header>
         <span className="panel-accent" style={{ background: accent }} />
         <strong>{title}</strong>
-        {actions && (
-          <div className="panel-actions">
-            <Settings size={13} />
-            <X size={13} />
-          </div>
-        )}
+        <div className="panel-actions">
+          <button type="button" title={`隐藏${title}`} aria-label={`隐藏${title}`} onClick={onClose}><X size={13} /></button>
+        </div>
       </header>
       {children}
     </section>
