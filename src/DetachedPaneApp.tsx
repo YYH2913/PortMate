@@ -11,11 +11,14 @@ import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-s
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
 import TerminalCanvas from "./TerminalCanvas";
-import type { SessionEvent, SessionSummary } from "./types";
+import type { OneKeyPromptField } from "./one-key-completion-state";
+import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
+  const [oneKeyCompletionEnabled, setOneKeyCompletionEnabled] = useState(readOneKeyCompletionEnabled);
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
@@ -38,8 +41,14 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       if (disposed) return;
       setSessions(nextSessions);
       if (!includeLog) return;
-      const nextEvents = await callBackend("tail_log", { sessionId: request.sessionId, limit: 600 }, []);
-      if (!disposed) setEvents(nextEvents);
+      const [nextEvents, nextOneKeys] = await Promise.all([
+        callBackend("tail_log", { sessionId: request.sessionId, limit: 600 }, []),
+        callBackend("list_one_keys", {}, []),
+      ]);
+      if (!disposed) {
+        setEvents(nextEvents);
+        setOneKeys(nextOneKeys);
+      }
     }
   }, [request.sessionId]);
 
@@ -57,6 +66,16 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       window.clearInterval(timer);
       window.removeEventListener("storage", handleStorage);
     };
+  }, []);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === "portmate.terminalPrefs" || event.key === null) {
+        setOneKeyCompletionEnabled(readOneKeyCompletionEnabled());
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   useEffect(() => {
@@ -78,6 +97,24 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     } catch (inputError) {
       setError(formatDetachedError(inputError));
     }
+  }
+
+  async function completeOneKeyPrompt(
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) {
+    if (!isBackendAvailable()) throw new Error("PortMate desktop backend is unavailable");
+    await invokeBackend("send_one_key", {
+      request: {
+        id: oneKeyId,
+        sessionId,
+        field,
+        source: "prompt-completion",
+        promptEventId,
+      },
+    });
   }
 
   async function sendMainCommand(action: DetachedPaneCommand["action"]) {
@@ -124,7 +161,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas active={session} events={events} focused onInput={(sessionId, text) => void sendInput(sessionId, text)} />
+        <TerminalCanvas active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={error ? "detached-pane-status error" : "detached-pane-status"}>
         <span>{error || session?.runtime.status || "missing"}</span>
@@ -213,6 +250,17 @@ function loadLocalSessions(): SessionSummary[] {
     return raw ? JSON.parse(raw) as SessionSummary[] : [];
   } catch {
     return [];
+  }
+}
+
+function readOneKeyCompletionEnabled(): boolean {
+  try {
+    const raw = window.localStorage.getItem("portmate.terminalPrefs");
+    if (!raw) return true;
+    const value = JSON.parse(raw) as { oneKeyCompletionEnabled?: unknown };
+    return typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true;
+  } catch {
+    return true;
   }
 }
 

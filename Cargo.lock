@@ -5179,6 +5179,7 @@ dependencies = [
  "portable-pty",
  "portmate-core",
  "portmate-kdf",
+ "regex",
  "rusqlite",
  "russh",
  "russh-sftp",

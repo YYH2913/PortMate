@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CaseSensitive, ChevronDown, ChevronUp, KeyRound, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -11,22 +11,33 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
+import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptStateFromEvents, reduceOneKeyPromptDetection } from "./one-key-completion-state";
+import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
-import type { SessionEvent, SessionSummary } from "./types";
+import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
   active?: SessionSummary;
   events: SessionEvent[];
   focused?: boolean;
+  oneKeys?: readonly OneKeySummary[];
+  oneKeyCompletionEnabled?: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onOneKeyCompletion?: (
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) => Promise<void>;
 };
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
+const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
@@ -64,7 +75,15 @@ const portmateTerminalTheme = {
   extendedAnsi: createXterm256Palette(),
 };
 
-export default function TerminalCanvas({ active, events, focused = false, onInput }: TerminalCanvasProps) {
+export default function TerminalCanvas({
+  active,
+  events,
+  focused = false,
+  oneKeys = EMPTY_ONE_KEYS,
+  oneKeyCompletionEnabled = true,
+  onInput,
+  onOneKeyCompletion,
+}: TerminalCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -78,6 +97,9 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   const onInputRef = useRef(onInput);
   const openSearchRef = useRef<() => void>(() => {});
   const openFreeInputRef = useRef<() => void>(() => {});
+  const oneKeyPromptStateRef = useRef<OneKeyPromptDetectionState>(emptyOneKeyPromptDetectionState());
+  const oneKeyPromptSessionRef = useRef("");
+  const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
@@ -87,6 +109,19 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
   const [searchInvalid, setSearchInvalid] = useState(false);
   const [freeInputOpen, setFreeInputOpen] = useState(false);
   const [freeInputValue, setFreeInputValue] = useState("");
+  const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
+  const [oneKeyCompletionId, setOneKeyCompletionId] = useState("");
+  const [oneKeyCompletionBusy, setOneKeyCompletionBusy] = useState(false);
+  const [oneKeyCompletionError, setOneKeyCompletionError] = useState("");
+  const oneKeyCompletionCandidates = useMemo(
+    () => oneKeyCompletionEnabled && active && oneKeyPrompt
+      ? oneKeyPromptCandidates(oneKeys, active.profile.id, oneKeyPrompt)
+      : [],
+    [active?.profile.id, oneKeyCompletionEnabled, oneKeyPrompt, oneKeys],
+  );
+  const selectedOneKeyCompletion = oneKeyCompletionCandidates.find((oneKey) => oneKey.id === oneKeyCompletionId)
+    ?? oneKeyCompletionCandidates[0]
+    ?? null;
   onInputRef.current = onInput;
   openSearchRef.current = () => {
     setFreeInputOpen(false);
@@ -101,6 +136,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     });
   };
   openFreeInputRef.current = () => {
+    dismissOneKeyPrompt();
     searchRef.current?.clearDecorations();
     setSearchOpen(false);
     setSearchResult(null);
@@ -109,6 +145,56 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     setFreeInputOpen(true);
     window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
   };
+
+  function applyOneKeyPromptState(state: OneKeyPromptDetectionState) {
+    const previousEventId = oneKeyPromptStateRef.current.prompt?.eventId;
+    oneKeyPromptStateRef.current = state;
+    const prompt = state.prompt && !dismissedOneKeyPromptEventsRef.current.has(state.prompt.eventId)
+      ? state.prompt
+      : null;
+    if (previousEventId !== prompt?.eventId) {
+      setOneKeyCompletionBusy(false);
+      setOneKeyCompletionError("");
+    }
+    setOneKeyPrompt(prompt);
+  }
+
+  function dismissOneKeyPrompt() {
+    const prompt = oneKeyPromptStateRef.current.prompt;
+    if (prompt) {
+      if (dismissedOneKeyPromptEventsRef.current.size >= 256) {
+        dismissedOneKeyPromptEventsRef.current.clear();
+      }
+      dismissedOneKeyPromptEventsRef.current.add(prompt.eventId);
+    }
+    oneKeyPromptStateRef.current = emptyOneKeyPromptDetectionState();
+    setOneKeyPrompt(null);
+    setOneKeyCompletionBusy(false);
+    setOneKeyCompletionError("");
+  }
+
+  async function submitOneKeyCompletion() {
+    if (!active || !oneKeyPrompt || !selectedOneKeyCompletion || !onOneKeyCompletion) return;
+    const promptEventId = oneKeyPrompt.eventId;
+    setOneKeyCompletionBusy(true);
+    setOneKeyCompletionError("");
+    try {
+      await onOneKeyCompletion(
+        active.profile.id,
+        selectedOneKeyCompletion.id,
+        oneKeyPrompt.field,
+        promptEventId,
+      );
+      if (oneKeyPromptStateRef.current.prompt?.eventId === promptEventId) {
+        dismissOneKeyPrompt();
+      }
+    } catch (error) {
+      if (oneKeyPromptStateRef.current.prompt?.eventId === promptEventId) {
+        setOneKeyCompletionBusy(false);
+        setOneKeyCompletionError(formatTerminalCanvasError(error));
+      }
+    }
+  }
 
   function markEventSeen(id: string): boolean {
     if (seenEventsRef.current.size > 4000) {
@@ -277,6 +363,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       }
     };
     const inputDisposable = term.onData((text) => {
+      dismissOneKeyPrompt();
       pendingInputRef.current += text;
       if (/[\x00-\x1f\x7f]/.test(text)) {
         if (inputFlushTimerRef.current !== null) {
@@ -298,7 +385,10 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
       void navigator.clipboard?.readText().then((text) => {
-        if (text) onInputRef.current(active.profile.id, text, "atomic");
+        if (text) {
+          dismissOneKeyPrompt();
+          onInputRef.current(active.profile.id, text, "atomic");
+        }
       }).catch(() => {});
     };
     const pasteOnMiddleClick = (event: MouseEvent) => {
@@ -340,6 +430,30 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       termRef.current = null;
     };
   }, [active?.profile.id]);
+
+  useEffect(() => {
+    const sessionId = active?.profile.id ?? "";
+    if (oneKeyPromptSessionRef.current !== sessionId) {
+      oneKeyPromptSessionRef.current = sessionId;
+      dismissedOneKeyPromptEventsRef.current.clear();
+      setOneKeyCompletionId("");
+    }
+    applyOneKeyPromptState(oneKeyCompletionEnabled && sessionId
+      ? oneKeyPromptStateFromEvents(events, sessionId)
+      : emptyOneKeyPromptDetectionState());
+  }, [active?.profile.id, events, oneKeyCompletionEnabled]);
+
+  useEffect(() => {
+    if (!oneKeyCompletionCandidates.length) {
+      setOneKeyCompletionId("");
+      return;
+    }
+    setOneKeyCompletionId((current) => (
+      oneKeyCompletionCandidates.some((oneKey) => oneKey.id === current)
+        ? current
+        : oneKeyCompletionCandidates[0].id
+    ));
+  }, [oneKeyPrompt?.eventId, oneKeyCompletionCandidates]);
 
   useEffect(() => {
     const requestSearch = () => {
@@ -391,6 +505,12 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       if (disposed || event.payload.sessionId !== active.profile.id) return;
       const term = termRef.current;
       if (!term || markEventSeen(event.payload.id)) return;
+      if (oneKeyCompletionEnabled) {
+        applyOneKeyPromptState(reduceOneKeyPromptDetection(
+          oneKeyPromptStateRef.current,
+          event.payload,
+        ));
+      }
       writeTerminalEvent(term, event.payload);
     })
       .then((nextUnlisten) => {
@@ -406,7 +526,7 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
       disposed = true;
       unlisten?.();
     };
-  }, [active?.profile.id]);
+  }, [active?.profile.id, oneKeyCompletionEnabled]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -474,6 +594,41 @@ export default function TerminalCanvas({ active, events, focused = false, onInpu
               />
             </form>
           ) : null}
+          {focused
+            && !freeInputOpen
+            && oneKeyPrompt
+            && selectedOneKeyCompletion
+            && onOneKeyCompletion ? (
+              <form className="terminal-one-key-completion" aria-label="OneKey 终端提示补全" onSubmit={(event) => {
+                event.preventDefault();
+                void submitOneKeyCompletion();
+              }}>
+                <KeyRound size={15} aria-hidden="true" />
+                <span className="terminal-one-key-prompt">
+                  <strong>{oneKeyPrompt.field === "username" ? "用户名提示" : "密码提示"}</strong>
+                  <small className={oneKeyCompletionError ? "error" : ""} title={oneKeyCompletionError || oneKeyPrompt.line}>
+                    {oneKeyCompletionError || oneKeyPrompt.line}
+                  </small>
+                </span>
+                <select
+                  aria-label="选择 OneKey"
+                  value={selectedOneKeyCompletion.id}
+                  disabled={oneKeyCompletionBusy}
+                  onChange={(event) => setOneKeyCompletionId(event.target.value)}
+                >
+                  {oneKeyCompletionCandidates.map((oneKey) => (
+                    <option key={oneKey.id} value={oneKey.id}>{oneKey.label} · {oneKey.username}</option>
+                  ))}
+                </select>
+                <button className="primary" type="submit" title="发送 OneKey 凭据" disabled={oneKeyCompletionBusy}>
+                  <SendHorizontal size={14} />
+                  <span>{oneKeyCompletionBusy ? "发送中" : "发送"}</span>
+                </button>
+                <button type="button" title="忽略当前提示" aria-label="忽略当前 OneKey 提示" disabled={oneKeyCompletionBusy} onClick={dismissOneKeyPrompt}>
+                  <X size={14} />
+                </button>
+              </form>
+            ) : null}
           {searchOpen ? (
             <form className="terminal-search-bar" onSubmit={(event) => {
               event.preventDefault();
@@ -526,6 +681,16 @@ function writeTerminalEvent(term: XTerm, event: SessionEvent) {
     return;
   }
   term.write(event.text);
+}
+
+function formatTerminalCanvasError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }
 
 function createXterm256Palette() {

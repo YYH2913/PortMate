@@ -14,6 +14,7 @@ use portmate_core::{
     SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
     TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
 };
+use regex::Regex;
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::{AgentClient, AgentStream};
@@ -1705,12 +1706,20 @@ pub struct DeleteOneKeyRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OneKeyField {
     Username,
     Password,
     Passphrase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OneKeySendSource {
+    #[default]
+    Manual,
+    PromptCompletion,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1719,6 +1728,10 @@ pub struct SendOneKeyRequest {
     pub id: String,
     pub session_id: String,
     pub field: OneKeyField,
+    #[serde(default)]
+    pub source: OneKeySendSource,
+    #[serde(default)]
+    pub prompt_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2157,7 +2170,7 @@ async fn send_one_key(
     state: State<'_, AppState>,
     request: SendOneKeyRequest,
 ) -> Result<SessionEvent, String> {
-    let value = {
+    let (value, origin, prompt_event_id, prompt_validation) = {
         let _credential_guard = lock_credential_operations(state.inner())?;
         let store = state.store.lock().map_err(|error| error.to_string())?;
         let one_key = store
@@ -2181,7 +2194,35 @@ async fn send_one_key(
         if status != SessionStatus::Connected {
             return Err("OneKey 只能发送到已连接会话".to_string());
         }
-        match request.field {
+        let (prompt_event_id, prompt_validation) = match request.source {
+            OneKeySendSource::Manual => (None, None),
+            OneKeySendSource::PromptCompletion => {
+                let prompt_event_id = request
+                    .prompt_event_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|event_id| !event_id.is_empty())
+                    .ok_or_else(|| "OneKey 提示补全缺少 promptEventId".to_string())?;
+                validate_one_key_prompt_completion(
+                    &store,
+                    one_key,
+                    &request.session_id,
+                    request.field,
+                    prompt_event_id,
+                )?;
+                let prompt_event_id = prompt_event_id.to_string();
+                (
+                    Some(prompt_event_id.clone()),
+                    Some(OneKeyPromptValidation {
+                        one_key_id: request.id.clone(),
+                        one_key_updated_at: one_key.updated_at,
+                        field: request.field,
+                        prompt_event_id,
+                    }),
+                )
+            }
+        };
+        let value = match request.field {
             OneKeyField::Username => Zeroizing::new(one_key.username.clone()),
             OneKeyField::Password => Zeroizing::new(
                 read_optional_secret_ref(
@@ -2197,23 +2238,247 @@ async fn send_one_key(
                 )?
                 .ok_or_else(|| "OneKey 没有保存私钥口令".to_string())?,
             ),
-        }
+        };
+        let origin = match request.source {
+            OneKeySendSource::Manual => "one-key",
+            OneKeySendSource::PromptCompletion => "one-key-completion",
+        };
+        (value, origin, prompt_event_id, prompt_validation)
     };
     send_one_key_value(
         state.inner().session_io(),
         &request.session_id,
         value.as_str(),
+        origin,
+        prompt_event_id.as_deref(),
+        prompt_validation.as_ref(),
     )
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DetectedOneKeyPrompt {
+    Username,
+    Password { username_hint: Option<String> },
+}
+
+struct OneKeyPromptValidation {
+    one_key_id: String,
+    one_key_updated_at: DateTime<Utc>,
+    field: OneKeyField,
+    prompt_event_id: String,
+}
+
+fn validate_one_key_prompt_completion(
+    store: &SessionStore,
+    one_key: &OneKeyCredential,
+    session_id: &str,
+    field: OneKeyField,
+    prompt_event_id: &str,
+) -> Result<(), String> {
+    let prompt = one_key_prompt_at_event(store, session_id, prompt_event_id)?;
+    match (field, prompt) {
+        (OneKeyField::Username, DetectedOneKeyPrompt::Username) => Ok(()),
+        (OneKeyField::Password, DetectedOneKeyPrompt::Password { username_hint }) => {
+            if username_hint
+                .as_deref()
+                .is_some_and(|username| username != one_key.username)
+            {
+                return Err("OneKey 用户名与终端密码提示不匹配".to_string());
+            }
+            Ok(())
+        }
+        (OneKeyField::Passphrase, _) => Err("终端提示补全不支持发送私钥口令".to_string()),
+        _ => Err("OneKey 字段与当前终端提示不匹配".to_string()),
+    }
+}
+
+fn one_key_prompt_at_event(
+    store: &SessionStore,
+    session_id: &str,
+    prompt_event_id: &str,
+) -> Result<DetectedOneKeyPrompt, String> {
+    let mut raw = String::new();
+    let mut found = false;
+    for event in store
+        .events
+        .iter()
+        .filter(|event| event.session_id == session_id)
+    {
+        if found {
+            if matches!(
+                event.direction,
+                EventDirection::Inbound | EventDirection::Outbound
+            ) {
+                return Err("终端提示已变化，请等待新的 OneKey 补全提示".to_string());
+            }
+            continue;
+        }
+        if event.direction == EventDirection::Outbound {
+            raw.clear();
+        } else if event.direction == EventDirection::Inbound
+            && matches!(event.stream, EventStream::Stdout | EventStream::Stderr)
+        {
+            if let Some(text) = &event.text {
+                raw.push_str(text);
+                raw = raw
+                    .chars()
+                    .rev()
+                    .take(MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+            }
+        }
+        if event.id == prompt_event_id {
+            if event.direction != EventDirection::Inbound
+                || !matches!(event.stream, EventStream::Stdout | EventStream::Stderr)
+                || event.text.as_deref().is_none_or(str::is_empty)
+            {
+                return Err("promptEventId 不是有效的终端入站提示事件".to_string());
+            }
+            found = true;
+        }
+    }
+    if !found {
+        return Err("终端提示已不存在，请等待新的 OneKey 补全提示".to_string());
+    }
+    detect_one_key_terminal_prompt(&raw)
+        .ok_or_else(|| "promptEventId 不再匹配 OneKey 用户名或密码提示".to_string())
+}
+
+const MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS: usize = 1024;
+
+fn detect_one_key_terminal_prompt(raw: &str) -> Option<DetectedOneKeyPrompt> {
+    static PASSWORD_CHANGE: OnceLock<Regex> = OnceLock::new();
+    static PASSWORD_FOR: OnceLock<Regex> = OnceLock::new();
+    static OPENSSH_PASSWORD: OnceLock<Regex> = OnceLock::new();
+    static PASSWORD: OnceLock<Regex> = OnceLock::new();
+    static USERNAME: OnceLock<Regex> = OnceLock::new();
+
+    let display = sanitize_terminal_prompt_text(raw)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let line = display.rsplit('\n').next()?.trim_end();
+    if line.is_empty() {
+        return None;
+    }
+    let password_change = PASSWORD_CHANGE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:new|retype|repeat|confirm)\s+(?:new\s+)?password(?:\s+for\s+\S+)?\s*:\s*$",
+        )
+        .expect("valid OneKey regex")
+    });
+    if password_change.is_match(line) {
+        return None;
+    }
+    let password_for = PASSWORD_FOR.get_or_init(|| {
+        Regex::new(r"(?i)\bpassword\s+for\s+([^\s:]+)\s*:\s*$").expect("valid OneKey regex")
+    });
+    if let Some(captures) = password_for.captures(line) {
+        return Some(DetectedOneKeyPrompt::Password {
+            username_hint: captures.get(1).map(|value| value.as_str().to_string()),
+        });
+    }
+    let openssh_password = OPENSSH_PASSWORD.get_or_init(|| {
+        Regex::new(r"(?i)(?:^|\s)([^\s@]+)@\S+(?:'s)?\s+password\s*:\s*$")
+            .expect("valid OneKey regex")
+    });
+    if let Some(captures) = openssh_password.captures(line) {
+        return Some(DetectedOneKeyPrompt::Password {
+            username_hint: captures.get(1).map(|value| value.as_str().to_string()),
+        });
+    }
+    let password =
+        PASSWORD.get_or_init(|| Regex::new(r"(?i)\bpassword\s*:\s*$").expect("valid OneKey regex"));
+    if password.is_match(line) {
+        return Some(DetectedOneKeyPrompt::Password {
+            username_hint: None,
+        });
+    }
+    let username = USERNAME.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:username|login)\s*:\s*$").expect("valid OneKey regex")
+    });
+    username
+        .is_match(line)
+        .then_some(DetectedOneKeyPrompt::Username)
+}
+
+fn sanitize_terminal_prompt_text(raw: &str) -> String {
+    let mut output = Vec::new();
+    let mut characters = raw.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' {
+            match characters.next() {
+                Some('[') => {
+                    for value in characters.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&value) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') | Some('P') | Some('^') | Some('_') => {
+                    let mut escaped = false;
+                    for value in characters.by_ref() {
+                        if value == '\u{7}' || (escaped && value == '\\') {
+                            break;
+                        }
+                        escaped = value == '\u{1b}';
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+        if matches!(character, '\u{8}' | '\u{7f}') {
+            if !matches!(output.last(), Some('\n' | '\r')) {
+                output.pop();
+            }
+            continue;
+        }
+        if !character.is_control() || matches!(character, '\n' | '\r' | '\t') {
+            output.push(character);
+        }
+    }
+    output.into_iter().collect()
 }
 
 async fn send_one_key_value(
     io: SessionIo,
     session_id: &str,
     value: &str,
+    origin: &str,
+    prompt_event_id: Option<&str>,
+    prompt_validation: Option<&OneKeyPromptValidation>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, session_id)?;
     let _lane_guard = lane.lock().await;
+    if let Some(validation) = prompt_validation {
+        let store = io.store.lock().map_err(|error| error.to_string())?;
+        let one_key = store
+            .one_keys
+            .iter()
+            .find(|one_key| one_key.id == validation.one_key_id)
+            .ok_or_else(|| "OneKey 已被删除，请刷新后重试".to_string())?;
+        if one_key.updated_at != validation.one_key_updated_at {
+            return Err("OneKey 已在补全等待期间更新，请重新选择".to_string());
+        }
+        if !one_key
+            .session_ids
+            .iter()
+            .any(|bound_session_id| bound_session_id == session_id)
+        {
+            return Err("OneKey 未绑定当前会话".to_string());
+        }
+        validate_one_key_prompt_completion(
+            &store,
+            one_key,
+            session_id,
+            validation.field,
+            &validation.prompt_event_id,
+        )?;
+    }
     let text = Zeroizing::new(format!("{value}\r"));
     let wire_text = Zeroizing::new(outbound_text_for_session(
         &io.store,
@@ -2235,7 +2500,8 @@ async fn send_one_key_value(
         &io,
         session_id,
         wire_text.as_bytes(),
-        "one-key",
+        origin,
+        prompt_event_id,
         true,
     ))
 }
@@ -2382,13 +2648,17 @@ fn record_outbound_control_event(
     session_id: &str,
     wire_bytes: &[u8],
     origin: &str,
+    related_event_id: Option<&str>,
     persist_store: bool,
 ) -> SessionEvent {
     let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, "");
-    let annotations = BTreeMap::from([
+    let mut annotations = BTreeMap::from([
         ("origin".to_string(), origin.to_string()),
         ("wireBytes".to_string(), wire_bytes.len().to_string()),
     ]);
+    if let Some(related_event_id) = related_event_id {
+        annotations.insert("relatedEventId".to_string(), related_event_id.to_string());
+    }
     let mut event = match io.store.lock() {
         Ok(mut store) => match store.record_event(
             session_id,
@@ -2782,7 +3052,7 @@ async fn resize_session_inner(
                 .write_all(&message)
                 .await
                 .map_err(|error| format!("Telnet NAWS resize failed: {error}"))?;
-            record_outbound_control_event(&io, &session_id, &message, "telnet-naws", true);
+            record_outbound_control_event(&io, &session_id, &message, "telnet-naws", None, true);
         }
     }
 
@@ -7397,7 +7667,7 @@ async fn write_runtime_bytes(
             .data(wire_bytes.as_slice())
             .await
             .map_err(|error| format!("SSH modem 写入失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
         return Ok(());
     }
 
@@ -7415,7 +7685,7 @@ async fn write_runtime_bytes(
         writer
             .flush()
             .map_err(|error| format!("Shell modem 刷新失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
         return Ok(());
     }
 
@@ -7431,7 +7701,7 @@ async fn write_runtime_bytes(
             .write_all(&wire_bytes)
             .await
             .map_err(|error| format!("TCP/Telnet modem 写入失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
+        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
         return Ok(());
     }
 
@@ -7454,7 +7724,7 @@ async fn write_runtime_bytes(
                 .flush()
                 .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
             record_serial_capture(&capture, EventDirection::Outbound, &wire_bytes);
-            record_outbound_control_event(&io, session_id, &wire_bytes, "modem", false);
+            record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
             return Ok(());
         }
         Some((None, _)) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
@@ -18309,6 +18579,7 @@ fn read_tcp_stream(
                             &session_id,
                             &reply,
                             "telnet-negotiation",
+                            None,
                             true,
                         );
                     }
@@ -26212,7 +26483,7 @@ mod tests {
     }
 
     #[test]
-    fn one_key_send_writes_value_without_readable_event_text() {
+    fn one_key_completion_writes_value_with_prompt_audit_without_readable_text() {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -26238,14 +26509,57 @@ mod tests {
             fs::create_dir_all(&root).unwrap();
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
             open_tcp_session(&state, profile.clone()).await.unwrap();
+            let (prompt_event_id, one_key_updated_at) = {
+                let mut store = state.store.lock().unwrap();
+                let now = Utc::now();
+                store.one_keys.push(OneKeyCredential {
+                    id: "onekey:completion".to_string(),
+                    label: "Completion".to_string(),
+                    kind: OneKeyKind::Account,
+                    username: "operator".to_string(),
+                    password_secret_ref: Some("keychain:completion".to_string()),
+                    passphrase_secret_ref: None,
+                    identity: None,
+                    session_ids: vec![profile.id.clone()],
+                    created_at: now,
+                    updated_at: now,
+                });
+                let prompt_event_id = store
+                    .record_stream_event(
+                        &profile.id,
+                        EventDirection::Inbound,
+                        EventStream::Stdout,
+                        "Password:",
+                    )
+                    .unwrap()
+                    .id;
+                (prompt_event_id, now)
+            };
+            let validation = OneKeyPromptValidation {
+                one_key_id: "onekey:completion".to_string(),
+                one_key_updated_at,
+                field: OneKeyField::Password,
+                prompt_event_id: prompt_event_id.clone(),
+            };
 
-            let event = send_one_key_value(state.session_io(), &profile.id, "private-value")
-                .await
-                .unwrap();
+            let event = send_one_key_value(
+                state.session_io(),
+                &profile.id,
+                "private-value",
+                "one-key-completion",
+                Some(&prompt_event_id),
+                Some(&validation),
+            )
+            .await
+            .unwrap();
             assert!(event.text.is_none());
             assert_eq!(
                 event.annotations.get("origin").map(String::as_str),
-                Some("one-key")
+                Some("one-key-completion")
+            );
+            assert_eq!(
+                event.annotations.get("relatedEventId").map(String::as_str),
+                Some(prompt_event_id.as_str())
             );
             assert!(!serde_json::to_string(&event)
                 .unwrap()
@@ -34099,6 +34413,115 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn one_key_prompt_completion_revalidates_field_username_and_event_freshness() {
+        let legacy_request: SendOneKeyRequest = serde_json::from_value(serde_json::json!({
+            "id": "onekey:legacy",
+            "sessionId": "ssh-session-1",
+            "field": "username"
+        }))
+        .unwrap();
+        assert_eq!(legacy_request.source, OneKeySendSource::Manual);
+        assert!(legacy_request.prompt_event_id.is_none());
+
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_ssh_profile());
+        let now = Utc::now();
+        let one_key = OneKeyCredential {
+            id: "onekey:prompt".to_string(),
+            label: "Prompt login".to_string(),
+            kind: OneKeyKind::Account,
+            username: "operator".to_string(),
+            password_secret_ref: Some("keychain:prompt-password".to_string()),
+            passphrase_secret_ref: None,
+            identity: None,
+            session_ids: vec!["ssh-session-1".to_string()],
+            created_at: now,
+            updated_at: now,
+        };
+        store
+            .record_stream_event(
+                "ssh-session-1",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "\x1b[33mPass",
+            )
+            .unwrap();
+        let prompt = store
+            .record_stream_event(
+                "ssh-session-1",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "word for operator:\x1b[0m",
+            )
+            .unwrap();
+        store.record_system_event("ssh-session-1", "PortMate: diagnostic");
+
+        validate_one_key_prompt_completion(
+            &store,
+            &one_key,
+            "ssh-session-1",
+            OneKeyField::Password,
+            &prompt.id,
+        )
+        .unwrap();
+        assert!(validate_one_key_prompt_completion(
+            &store,
+            &one_key,
+            "ssh-session-1",
+            OneKeyField::Username,
+            &prompt.id,
+        )
+        .unwrap_err()
+        .contains("字段"));
+
+        let mut wrong_username = one_key.clone();
+        wrong_username.username = "root".to_string();
+        assert!(validate_one_key_prompt_completion(
+            &store,
+            &wrong_username,
+            "ssh-session-1",
+            OneKeyField::Password,
+            &prompt.id,
+        )
+        .unwrap_err()
+        .contains("用户名"));
+
+        store
+            .record_event(
+                "ssh-session-1",
+                EventDirection::Outbound,
+                EventStream::Control,
+                None,
+                None,
+                BTreeMap::new(),
+            )
+            .unwrap();
+        assert!(validate_one_key_prompt_completion(
+            &store,
+            &one_key,
+            "ssh-session-1",
+            OneKeyField::Password,
+            &prompt.id,
+        )
+        .unwrap_err()
+        .contains("已变化"));
+
+        assert_eq!(
+            detect_one_key_terminal_prompt("root@router's password:"),
+            Some(DetectedOneKeyPrompt::Password {
+                username_hint: Some("root".to_string()),
+            })
+        );
+        assert_eq!(
+            detect_one_key_terminal_prompt("device login:"),
+            Some(DetectedOneKeyPrompt::Username)
+        );
+        assert!(detect_one_key_terminal_prompt("Password:\r\n").is_none());
+        assert!(detect_one_key_terminal_prompt("New password:").is_none());
+        assert!(detect_one_key_terminal_prompt("Retype new password:").is_none());
     }
 
     #[test]

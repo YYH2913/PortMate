@@ -47,7 +47,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
 - WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/追加回车执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
-- WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。OneKeys 与 localStorage Quick Commands 保持独立。
+- WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。主窗口和独立窗口还会按 WindTerm 默认规则跨分片/ANSI/退格识别当前末行的 username/login/password 提示，过滤密码修改提示，只在聚焦 pane 显示绑定候选确认条；用户输入、提示变化或关闭 `终端设置 -> Auto Completion -> OneKey 终端提示补全` 会撤销。补全请求仅提交 OneKey/会话/字段/提示事件 ID，后端在 Secret 读取前及等待出站 lane 后重新验证提示时效、字段、绑定、用户名和 OneKey 版本，成功只记录关联原提示事件且无正文的 `one-key-completion` control event。OneKeys 与 localStorage Quick Commands 保持独立。
 - `查看` 菜单中的资源管理器、文件管理器、会话、历史命令、发送、快捷栏和状态栏已从无效提示改为带勾选态的真实开关；四个 dock 标题栏和发送面板使用可聚焦的关闭/设置按钮。单侧只剩一个 pane 时自动占满，整侧、发送区或状态栏隐藏后空间会完整归还终端，并与 Quick Bar 正确组合。六项 pane/bar 状态使用有版本的本地快照跨重启恢复，损坏字段独立回退为显示；移动端的响应式隐藏不覆盖桌面选择。`模式 -> 专注模式`、顶部按钮和 WindTerm `Alt+Enter` 会临时隐藏这些区域但不改写持久化选择，退出精确恢复；快捷键只在 XTerm 工作区生效，同步输入开启时强制保留状态栏风险提示。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按指定列表顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。
 - 搜索弹窗支持会话和已加载日志搜索。
@@ -60,7 +60,6 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - WindTerm 的 view 精确排序/跨 group 定点拖放和完整 group 合并、逐 view 标签颜色、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。
 - 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘；仍缺 vttest、鼠标协议和全屏程序兼容基线。
-- OneKeys 管理、加密 Secret 生命周期、会话绑定、自有公钥身份选择、手动发送和 SSH 登录弹窗选择已完成；仍缺自动识别终端登录提示并补全。
 - WindTerm Local/Remote/Normal/Command 键盘模式需要本地导航和命令键表，当前未实现；菜单点击会给出明确缺口，不再误报为已显示视图。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
 
@@ -242,7 +241,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 225：`portmate` 162、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 25 个文件、143 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/quick-command/OneKey-shortcut/OneKey-login/OneKey-identity/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 226：`portmate` 163、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 26 个文件、147 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/free-input/quick-command/OneKey-shortcut/OneKey-login/OneKey-identity/OneKey-completion/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -292,7 +291,7 @@ npm run build
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
 2. pane view group、启动自动连接、session/逐 view 标签颜色、workspace restore、v1/v2/v3→v4 自动迁移、同 session view duplicate/独立 rename、view 同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、任意递归嵌套分屏、保留 view 身份/颜色的独立 Tauri 窗口/返回、跨主/独立窗口锁屏、可持久化的 dock/sender/status 显示开关、可逆专注模式，以及支持最多两段 chord 的可配置 WindTerm 分屏创建/方向焦点/关闭/zoom 快捷键和方向 pane 交换已完成。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
-4. FreeType 风格自由输入、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、剪切/取消/原子提交、终端换行、查找互斥、同步输入复用、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送和仅传 ID 的 SSH 登录弹窗选择均已接入；下一步补 OneKeys 自动终端提示补全。
+4. FreeType 风格自由输入、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、剪切/取消/原子提交、终端换行、查找互斥、同步输入复用、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送、仅传 ID 的 SSH 登录弹窗选择和经后端重验证的终端用户名/密码提示补全均已接入。
 5. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤与 JSONL + SHA-256 导出已完成；下一步补独立分析窗口、协议帧解析、书签和重连状态可视化。
 6. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。
 

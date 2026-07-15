@@ -75,6 +75,7 @@ import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, c
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TmuxState, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
+import type { OneKeyPromptField } from "./one-key-completion-state";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
@@ -2185,6 +2186,23 @@ function handleMenuAction(item: string) {
     }
   }
 
+  async function completeOneKeyPrompt(
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) {
+    await invokeBackend<SessionEvent>("send_one_key", {
+      request: {
+        id: oneKeyId,
+        sessionId,
+        field,
+        source: "prompt-completion",
+        promptEventId,
+      },
+    });
+  }
+
   async function sendTerminalBytes(sessionId: string, bytes: number[]) {
     if (!sessionId || !bytes.length) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
@@ -2477,8 +2495,11 @@ function handleMenuAction(item: string) {
             zoomedPaneId={zoomedPaneId}
             activeId={activeId}
             eventsBySession={logs}
+            oneKeys={oneKeys}
+            oneKeyCompletionEnabled={terminalPrefs.oneKeyCompletionEnabled}
             blockSelection={blockSelection}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
+            onOneKeyCompletion={completeOneKeyPrompt}
             onActivate={activateWorkspacePane}
             onCloseView={closeWorkspaceViews}
             onDuplicateView={duplicateActiveWorkspaceView}
@@ -3912,8 +3933,11 @@ function TerminalPaneGrid({
   zoomedPaneId,
   activeId,
   eventsBySession,
+  oneKeys,
+  oneKeyCompletionEnabled,
   blockSelection,
   onInput,
+  onOneKeyCompletion,
   onActivate,
   onCloseView,
   onDuplicateView,
@@ -3931,8 +3955,16 @@ function TerminalPaneGrid({
   zoomedPaneId: string;
   activeId: string;
   eventsBySession: Record<string, SessionEvent[]>;
+  oneKeys: readonly OneKeySummary[];
+  oneKeyCompletionEnabled: boolean;
   blockSelection: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onOneKeyCompletion: (
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) => Promise<void>;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -3946,7 +3978,7 @@ function TerminalPaneGrid({
 }) {
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused onInput={onInput} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
   }
 
   return (
@@ -3959,7 +3991,10 @@ function TerminalPaneGrid({
         canMoveView={workspacePaneLeaves(root).length > 1}
         canCloseView={workspacePaneLeaves(root).reduce((count, pane) => count + pane.views.length, 0) > 1}
         eventsBySession={eventsBySession}
+        oneKeys={oneKeys}
+        oneKeyCompletionEnabled={oneKeyCompletionEnabled}
         onInput={onInput}
+        onOneKeyCompletion={onOneKeyCompletion}
         onActivate={onActivate}
         onCloseView={onCloseView}
         onDuplicateView={onDuplicateView}
@@ -3983,7 +4018,15 @@ type TerminalWorkspaceNodeProps = {
   canMoveView: boolean;
   canCloseView: boolean;
   eventsBySession: Record<string, SessionEvent[]>;
+  oneKeys: readonly OneKeySummary[];
+  oneKeyCompletionEnabled: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onOneKeyCompletion: (
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) => Promise<void>;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -4171,7 +4214,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           <X size={13} />
         </button>
       </header>
-      <TerminalCanvas active={session} events={session ? props.eventsBySession[activeView.sessionId] ?? [] : []} focused={node.id === props.activePaneId} onInput={props.onInput} />
+      <TerminalCanvas active={session} events={session ? props.eventsBySession[activeView.sessionId] ?? [] : []} focused={node.id === props.activePaneId} oneKeys={props.oneKeys} oneKeyCompletionEnabled={props.oneKeyCompletionEnabled} onInput={props.onInput} onOneKeyCompletion={props.onOneKeyCompletion} />
     </section>
   );
 }
@@ -4261,7 +4304,15 @@ type TerminalCanvasProps = {
   active?: SessionSummary;
   events: SessionEvent[];
   focused?: boolean;
+  oneKeys?: readonly OneKeySummary[];
+  oneKeyCompletionEnabled?: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onOneKeyCompletion?: (
+    sessionId: string,
+    oneKeyId: string,
+    field: OneKeyPromptField,
+    promptEventId: string,
+  ) => Promise<void>;
 };
 
 function TerminalCanvas(props: TerminalCanvasProps) {
@@ -4274,7 +4325,7 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : document.activeElement;
-  if (element?.closest(".terminal-search-bar, .terminal-free-input")) return false;
+  if (element?.closest(".terminal-search-bar, .terminal-free-input, .terminal-one-key-completion")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
 }
 
@@ -7486,6 +7537,7 @@ function TerminalSettingsContent({
         <>
           <SettingsSection title="完成">
             <SettingCheck label="启用自动补全(A)" checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
+            <SettingCheck label="OneKey 终端提示补全(K)" checked={prefs.oneKeyCompletionEnabled} onChange={(value) => updatePref("oneKeyCompletionEnabled", value)} />
             <div className="settings-subtitle">自动完成命令使用：</div>
             <SettingCheck label="命令名称(N)" checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
             <SettingCheck label="命令选项(O)" checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
@@ -9352,6 +9404,7 @@ function createTerminalPrefs() {
     terminalScrollback: 200000,
     pasteBracketed: true,
     completionEnabled: true,
+    oneKeyCompletionEnabled: true,
     completionCommandNames: true,
     completionCommandOptions: true,
     completionCommandArgs: true,
@@ -9890,6 +9943,9 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
     requireMasterPassword: typeof source.requireMasterPassword === "boolean"
       ? source.requireMasterPassword
       : defaults.requireMasterPassword,
+    oneKeyCompletionEnabled: typeof source.oneKeyCompletionEnabled === "boolean"
+      ? source.oneKeyCompletionEnabled
+      : defaults.oneKeyCompletionEnabled,
     startupSessions: Array.isArray(source.startupSessions)
       ? source.startupSessions.slice(0, 4).map((item) => typeof item === "string" ? item : "")
       : defaults.startupSessions,
