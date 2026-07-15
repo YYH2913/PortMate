@@ -536,7 +536,27 @@ export interface TmuxPaneInfo {
   title: string;
 }
 
+export interface TmuxWindowInfo {
+  session: string;
+  windowIndex: number;
+  windowId: string;
+  name: string;
+  panes: number;
+  active: boolean;
+  synchronized: boolean;
+}
+
 export interface TmuxState {
   sessions: TmuxSessionInfo[];
+  windows: TmuxWindowInfo[];
   panes: TmuxPaneInfo[];
+}
+
+export type TmuxMutationAction = "rename-session" | "kill-session" | "new-window" | "rename-window" | "kill-window";
+
+export interface TmuxMutationRequest {
+  sessionId: string;
+  action: TmuxMutationAction;
+  target: string;
+  name?: string | null;
 }

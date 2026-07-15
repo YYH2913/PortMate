@@ -24,6 +24,29 @@ describe("tmux state", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].synchronized).toBe(false);
   });
+
+  it("keeps list-windows metadata while reconciling pane state", () => {
+    const groups = groupTmuxPanes(
+      [pane({ paneId: "%1", synchronized: true })],
+      [{
+        session: "alpha",
+        windowIndex: 1,
+        windowId: "@3",
+        name: "metrics",
+        panes: 1,
+        active: true,
+        synchronized: true,
+      }],
+    );
+
+    expect(groups[0]).toMatchObject({
+      target: "alpha:1",
+      windowId: "@3",
+      name: "metrics",
+      active: true,
+      synchronized: true,
+    });
+  });
 });
 
 function pane(overrides: Partial<TmuxPaneInfo>): TmuxPaneInfo {

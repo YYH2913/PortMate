@@ -6497,23 +6497,35 @@ fieldset label {
   overflow: auto;
 }
 
-.tmux-list button {
+.tmux-session-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 10px;
   min-height: 52px;
-  padding: 8px 10px;
   border: 1px solid var(--line-soft);
   background: rgba(15, 23, 32, 0.42);
   color: var(--text);
-  text-align: left;
 }
 
-.tmux-list button {
+.tmux-session-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
   cursor: pointer;
 }
 
-.tmux-list button:hover,
+.tmux-session-main:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.tmux-session-row:hover,
+.tmux-session-row:focus-within,
 .tmux-window-panes > div.active {
   border-color: rgba(94, 234, 212, 0.45);
 }
@@ -6537,6 +6549,44 @@ fieldset label {
   display: grid;
   min-height: 0;
   gap: 6px;
+}
+
+.tmux-delete-confirmation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fecaca;
+  font-size: 11px;
+}
+
+.tmux-delete-confirmation > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tmux-delete-confirmation button {
+  min-width: 58px;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.tmux-delete-confirmation button.danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fca5a5;
+}
+
+.tmux-delete-confirmation button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .utility-success {
@@ -6581,6 +6631,55 @@ fieldset label {
   font-size: 11px;
 }
 
+.tmux-window-controls,
+.tmux-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tmux-row-actions {
+  align-self: center;
+  padding-right: 7px;
+}
+
+.tmux-row-actions button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tmux-row-actions button:hover:not(:disabled),
+.tmux-row-actions button:focus-visible {
+  border-color: var(--line);
+  outline: 0;
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.tmux-row-actions button.danger:hover:not(:disabled),
+.tmux-row-actions button.danger:focus-visible {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fca5a5;
+}
+
+.tmux-row-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tmux-window-controls > .tmux-row-actions {
+  padding-right: 0;
+}
+
 .tmux-sync-toggle {
   display: inline-flex;
   min-width: 88px;
@@ -6610,6 +6709,56 @@ fieldset label {
 
 .tmux-window-panes {
   display: grid;
+}
+
+.tmux-inline-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 42px;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  background: rgba(94, 234, 212, 0.04);
+}
+
+.tmux-window > .tmux-inline-editor {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tmux-inline-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--cyan);
+  outline: 0;
+  background: var(--control);
+  color: var(--text);
+  font: inherit;
+}
+
+.tmux-inline-editor button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tmux-inline-editor button[type="submit"] {
+  color: var(--cyan);
+}
+
+.tmux-inline-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .tmux-window-panes > div {
@@ -6655,6 +6804,23 @@ fieldset label {
   .tmux-toolbar button {
     min-width: 0;
     min-height: 32px;
+  }
+
+  .tmux-window > header {
+    align-items: flex-start;
+  }
+
+  .tmux-window-controls {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .tmux-delete-confirmation {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tmux-delete-confirmation > span {
+    grid-column: 1 / -1;
   }
 }
 

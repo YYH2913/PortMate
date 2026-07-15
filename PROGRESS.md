@@ -22,7 +22,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - Tauri v2 + React/TypeScript + Rust 桌面应用可构建运行。
 - `@xterm/xterm` 已固定为 `6.0.0`，Unicode 11、Serialize、Clipboard 和 WebGL 兼容插件已按验证版本固定。
-- SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux attach/list/pane sync、SFTP/SCP、X/Y/ZModem、SSH tunnel、Sysmon、触发器、MCP stdio bridge 都已有实际实现。
+- SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux attach/list/session-window lifecycle/pane sync、SFTP/SCP、X/Y/ZModem、SSH tunnel、Sysmon、触发器、MCP stdio bridge 都已有实际实现。
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
@@ -77,7 +77,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Serial：端口枚举、波特率、数据位、停止位、校验、流控、DTR/RTS、Break、文本/Hex 字节发送、读写；每 Profile 保留最多 512 帧/1 MiB 的进程内精确 RX/TX 原始字节捕获，侧栏支持方向、Hex、ASCII 筛选、显式清空，以及把当前可见帧原子导出为未脱敏 JSONL + SHA-256 sidecar。捕获跨自动重连并在断线后保留，但默认不持久化；单帧超过 64 KiB 时明确显示 captured/original 长度。Profile 可配置 100-60,000 ms 自动重连延迟（默认 1,000 ms），等待期间每 100 ms 重读最新 Profile，因此缩短延迟或关闭 reconnect 会及时生效。可选 1-86,400 秒接收空闲超时默认关闭/60 秒，只观察 RX 且不会向设备注入通用 heartbeat；适合预期持续上报的设备。读错误或空闲超时会保留精确断线原因。每次尝试都会重新加载最新 Profile，端口、线路或健康参数变化会废弃旧尝试并改用新配置，pending/connected 阶段关闭 reconnect 都会收敛到 `Disconnected`；用户关闭或手动重连也会取消旧重连循环。
 - Telnet/Raw TCP：socket 模式读写；Telnet 已有增量 IAC 选项协商、Profile TERMINAL-TYPE、方向独立的 BINARY、NAWS 初始/持续 resize、NVT `CR NUL`/CRLF 编解码和 Hex/raw byte IAC 转义。BINARY/NAWS 可按 Profile 关闭，旧 Profile 默认开启；协商状态按 runtime 隔离并在重连时重置，协商回复写失败会结束旧 transport 并进入统一断开/重连流程。
 - TCP/Telnet：profile 开启 reconnect 后，远端断开会进入 `Reconnecting`，保留可取消的 runtime 占位并按 Profile 延迟（100-60,000 ms，默认 1,000 ms）后台重连；等待期间每 100 ms 检查最新配置，因此修改延迟或关闭 reconnect 会影响下一次尝试。每次连接前重新加载最新 Profile，host/port/协议/代理/健康参数及终端类型/尺寸变化会废弃旧连接并改用新配置，关闭 reconnect 会移除占位并收敛到 `Disconnected`。socket 的 OS keepalive 开关、idle、probe interval 和 retry 均由 Profile 持久化，默认 30/10/3；平台支持相应参数时无需注入协议字节即可检测半开连接。loopback 回归覆盖自定义/关闭内核 keepalive、远端立即断开、runtime id 轮换、`Connected -> Reconnecting -> Connected`、断线后切换端口与缩短延迟、代理端点切换，以及 pending/connected 两种阶段关闭重连。
-- Tmux：远端 `list-sessions`、`list-panes`、attach/new-session，以及按 `session:window` 读取和切换 `synchronize-panes`。管理弹窗按 window 聚合并排序 pane，展示活动 pane/命令/标题；开关只采用 SSH exec 成功后重新读取的远端状态，失败不会保留错误的乐观值。Tmux target 限制为 1..=256 字符、拒绝控制字符并经过 shell quoting，带引号/分号的名称不会注入命令；管理器已拆为独立 lazy chunk。
+- Tmux：远端 `list-sessions`、`list-windows`、`list-panes`、attach/new-session，以及按 `session:window` 读取和切换 `synchronize-panes`。管理弹窗按 window 聚合并排序 pane，展示活动 pane/命令/标题，并支持新建 window、重命名 session/window，以及经对象确认条关闭 session/window；所有操作都等待 SSH exec 成功并重新读取远端快照后再更新，失败不会保留错误的乐观状态。后端只接受五种固定 lifecycle action，target 限制为 1..=256 字符、名称限制为 1..=128 字符，均拒绝控制字符并经过 shell quoting；带引号/分号的名称不会注入命令，成功 mutation 会写入 session system event。管理器已拆为独立 lazy chunk。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
 - X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。X/YModem sender 会在收到 NAK 或等待 ACK 超时后重发数据块和 EOT，重试次数有界。
@@ -243,7 +243,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 228：`portmate` 165、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 31 个文件、168 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 228：`portmate` 165、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 31 个文件、169 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -252,7 +252,7 @@ npm run build
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
-- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容与 Tmux workflow 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session 及桌面/移动截图边界。
+- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容与 Tmux workflow 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭及桌面/移动截图边界。
 - Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好和缓存恢复已有可重复 Playwright 基线，仍缺完整 vttest 与真实全屏程序矩阵。
 
 ## 对照最终目标的完成度
@@ -267,7 +267,7 @@ npm run build
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
 | Bitvise 风格密钥管理 | 大部分实现 | keyring/secretRef、Host Key Manager scope/profile 分组过滤和批量删除/复制、host key 字段编辑、Client Key profile/source 搜索分组、跨 profile 批量复制/置顶/安全移除、私钥文件/粘贴导入、Agent identity 单条/批量添加、identity 字段编辑、Vault 私钥轮换、共享 secret 生命周期保护、Argon2id + IOTA Stronghold portable vault/fallback/主密码轮换，以及带预检 token、durable SQLite journal、原子 commit point、跨重启显式恢复、冲突冻结和安全诊断导出的 SSH/Tmux/TCP/Telnet profile 凭据双向迁移已有；跨平台 provider 故障矩阵待补。 |
 | Shell/SSH/Telnet/TCP/Serial | 部分实现 | 基础连接读写、SSH/Tmux/TCP/Telnet 的 Profile 级 HTTP CONNECT/SOCKS5 与可选认证、SSH/Tmux 的重连延迟与协议 KeepAlive 阈值、Telnet 增量协商/NVT CR 编解码/Profile TTYPE/方向性 BINARY/NAWS/raw byte IAC 转义、Telnet/Raw TCP loopback、TCP/Telnet 的 Profile 级重连延迟与 OS keepalive、Serial 的重连延迟/无探测接收空闲阈值/精确有界 RX-TX 捕获/方向与内容过滤/原子 JSONL 导出、独立分析窗口/四种通用 framing/书签/分页/源帧导出/重连诊断、SSH/TCP/Telnet/Serial 重连加载最新 Profile 并拒绝过期尝试、TCP/Telnet/Serial pending/connected 阶段禁用收敛、虚拟串口切换最新端口自动重连、runtime 最近断开原因可见、break、DTR/RTS 和 hex 字节发送可用；专用协议解码和超过内存环的大数据集待补。 |
-| Tmux | 部分实现 | list/attach/new-session、按 window 聚合的 pane inspection 和经 SSH exec 确认的 `synchronize-panes` 开关可用；window/session 新建、重命名、关闭、布局操作和 control-mode 实时事件仍待补。 |
+| Tmux | 部分实现 | list/attach/new-session、按 window 聚合的 pane inspection、经 SSH exec 确认的 `synchronize-panes` 开关，以及 session/window 新建、重命名和确认关闭可用；pane split/swap/resize、布局操作和 control-mode 实时事件仍待补。 |
 | SFTP/SCP | 部分实现 | 原生 SFTP 和 SCP、双栏、多选/连选/全选、批量删除、rename、chmod、属性查看、面板间及原生外部文件/目录树拖放、远端目录递归下载、空目录保留、安全批次规划、四种冲突策略、retry、速度、local/SFTP/SCP 分块进度与取消、profile 级异步可取消限速、local/SFTP/SCP upload/download 断点续传、远端命令复制大小标记/目标大小轮询进度/取消和 `.portmate-part` 续传、后台串行队列调度、全量队列视图、批量取消/重试和失败诊断展示已有；真实 OpenSSH 递归上传/下载和冲突重命名已覆盖，更广服务故障矩阵待补。 |
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
@@ -296,7 +296,7 @@ npm run build
 4. FreeType 风格自由输入、按 view 持久化的 Remote/Local/Normal/Command 键盘模式、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、Vim 风格 scrollback 导航/选择/复制、非 Remote 输入阻断、终端换行、查找互斥、同步输入复用、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送、仅传 ID 的 SSH 登录弹窗选择和经后端重验证的终端用户名/密码提示补全均已接入。
 5. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤、JSONL + SHA-256 导出、独立 Tauri 分析窗口、capture/delimiter/fixed/gap framing、分页、书签和重连状态可视化已完成；下一步补 Modbus/SLIP/COBS 等专用解码和突破 512 帧/1 MiB 内存环的持久大数据集。
 6. 密钥管理器继续增强：portable vault 创建/解锁/锁定、主密码轮换、Client identity 字段编辑、密钥轮换、底层 secret 生命周期管理、SSH/Tmux profile 凭据双向批量迁移、migration journal、恢复/重载 UX 和人工 conflict 诊断导出已完成；下一步补跨平台 provider 回归。
-7. Tmux session/pane 列表、attach/new-session 和 window 级同步输入已完成，并有目标注入边界与 Playwright workflow 回归；下一步补 window/session 生命周期、布局操作和 control-mode 实时事件。
+7. Tmux session/window/pane 列表、attach/new-session、session/window 新建/重命名/确认关闭和 window 级同步输入已完成，并有目标注入边界与 Playwright workflow 回归；下一步补 pane split/swap/resize、布局操作和 control-mode 实时事件。
 
 ### P2：日志、诊断和 MCP 产品化
 
@@ -304,7 +304,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
-5. 终端兼容和 Tmux workflow 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，以及同步开关/失败回滚/attach/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
+5. 终端兼容和 Tmux workflow 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，以及同步开关/失败回滚/attach/session-window lifecycle/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
 
 ### P3：架构整理与发布准备
 

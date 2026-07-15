@@ -99,10 +99,16 @@ const initialTmuxState = {
     { name: "lab", windows: 2, attached: 1, created: now },
     { name: "build", windows: 1, attached: 0, created: null },
   ],
+  windows: [
+    { session: "lab", windowIndex: 0, windowId: "@1", name: "editor", panes: 2, active: true, synchronized: false },
+    { session: "lab", windowIndex: 1, windowId: "@2", name: "shell", panes: 1, active: false, synchronized: true },
+    { session: "build", windowIndex: 0, windowId: "@3", name: "compile", panes: 1, active: true, synchronized: false },
+  ],
   panes: [
     { session: "lab", windowIndex: 0, paneIndex: 1, paneId: "%2", active: false, synchronized: false, command: "tail", title: "logs" },
     { session: "lab", windowIndex: 0, paneIndex: 0, paneId: "%1", active: true, synchronized: false, command: "vim", title: "editor" },
     { session: "lab", windowIndex: 1, paneIndex: 0, paneId: "%3", active: true, synchronized: true, command: "bash", title: "shell" },
+    { session: "build", windowIndex: 0, paneIndex: 0, paneId: "%4", active: true, synchronized: false, command: "cargo", title: "compile" },
   ],
 };
 
@@ -150,12 +156,64 @@ try {
           if (args.target === "lab:1" && args.enabled === false) throw new Error("tmux permission denied");
           window.__tmuxState = {
             ...window.__tmuxState,
+            windows: window.__tmuxState.windows.map((item) => (
+              `${item.session}:${item.windowIndex}` === args.target
+                ? { ...item, synchronized: args.enabled }
+                : item
+            )),
             panes: window.__tmuxState.panes.map((pane) => (
               `${pane.session}:${pane.windowIndex}` === args.target
                 ? { ...pane, synchronized: args.enabled }
                 : pane
             )),
           };
+          return structuredClone(window.__tmuxState);
+        }
+        if (command === "mutate_tmux") {
+          const request = args.request;
+          if (request.action === "rename-session") {
+            window.__tmuxState = {
+              sessions: window.__tmuxState.sessions.map((item) => item.name === request.target ? { ...item, name: request.name } : item),
+              windows: window.__tmuxState.windows.map((item) => item.session === request.target ? { ...item, session: request.name } : item),
+              panes: window.__tmuxState.panes.map((item) => item.session === request.target ? { ...item, session: request.name } : item),
+            };
+          } else if (request.action === "new-window") {
+            const indexes = window.__tmuxState.windows.filter((item) => item.session === request.target).map((item) => item.windowIndex);
+            const windowIndex = indexes.length ? Math.max(...indexes) + 1 : 0;
+            const windowId = `@${window.__tmuxState.windows.length + 1}`;
+            const paneId = `%${window.__tmuxState.panes.length + 1}`;
+            window.__tmuxState = {
+              sessions: window.__tmuxState.sessions.map((item) => item.name === request.target ? { ...item, windows: item.windows + 1 } : item),
+              windows: [...window.__tmuxState.windows, {
+                session: request.target, windowIndex, windowId, name: request.name || `window-${windowIndex}`,
+                panes: 1, active: false, synchronized: false,
+              }],
+              panes: [...window.__tmuxState.panes, {
+                session: request.target, windowIndex, paneIndex: 0, paneId, active: true,
+                synchronized: false, command: "bash", title: request.name || `window-${windowIndex}`,
+              }],
+            };
+          } else if (request.action === "rename-window") {
+            window.__tmuxState = {
+              ...window.__tmuxState,
+              windows: window.__tmuxState.windows.map((item) => (
+                `${item.session}:${item.windowIndex}` === request.target ? { ...item, name: request.name } : item
+              )),
+            };
+          } else if (request.action === "kill-window") {
+            const removed = window.__tmuxState.windows.find((item) => `${item.session}:${item.windowIndex}` === request.target);
+            window.__tmuxState = {
+              sessions: window.__tmuxState.sessions.map((item) => item.name === removed?.session ? { ...item, windows: Math.max(0, item.windows - 1) } : item),
+              windows: window.__tmuxState.windows.filter((item) => `${item.session}:${item.windowIndex}` !== request.target),
+              panes: window.__tmuxState.panes.filter((item) => `${item.session}:${item.windowIndex}` !== request.target),
+            };
+          } else if (request.action === "kill-session") {
+            window.__tmuxState = {
+              sessions: window.__tmuxState.sessions.filter((item) => item.name !== request.target),
+              windows: window.__tmuxState.windows.filter((item) => item.session !== request.target),
+              panes: window.__tmuxState.panes.filter((item) => item.session !== request.target),
+            };
+          }
           return structuredClone(window.__tmuxState);
         }
         if (command === "attach_tmux") return null;
@@ -205,6 +263,49 @@ try {
 
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length >= 2);
+
+  await page.getByRole("button", { name: "重命名 session build", exact: true }).click();
+  const sessionNameInput = page.getByRole("textbox", { name: "新名称 build" });
+  await sessionNameInput.fill("build-renamed");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("build 已重命名为 build-renamed", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-session="build-renamed"]').count() === 1, "renamed session is missing");
+
+  await page.getByRole("button", { name: "在 lab 新建 window", exact: true }).click();
+  await page.getByRole("textbox", { name: "新 window 名称 lab" }).fill("ops");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("lab 已新建 window", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-target="lab:2"]').count() === 1, "new window is missing");
+
+  await page.getByRole("button", { name: "重命名 window lab:1", exact: true }).click();
+  await page.getByRole("textbox", { name: "新名称 lab:1" }).fill("metrics");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("lab:1 已重命名为 metrics", { exact: true }).waitFor();
+  assert((await page.locator('[data-tmux-target="lab:1"] > header small').textContent())?.includes("metrics"), "renamed window metadata is missing");
+
+  await page.getByRole("button", { name: "关闭 window lab:1", exact: true }).click();
+  await page.getByText("关闭 window lab:1？", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  assert(await page.locator('[data-tmux-target="lab:1"]').count() === 1, "cancelled window deletion changed state");
+
+  await page.getByRole("button", { name: "关闭 window lab:2", exact: true }).click();
+  await page.getByText("关闭 window lab:2？", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "确认关闭", exact: true }).click();
+  await page.getByText("lab:2 已关闭", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-target="lab:2"]').count() === 0, "closed window remains visible");
+
+  await page.getByRole("button", { name: "关闭 session build-renamed", exact: true }).click();
+  await page.getByText("关闭 session build-renamed 及其全部 window？", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "确认关闭", exact: true }).click();
+  await page.getByText("build-renamed 已关闭", { exact: true }).waitFor();
+  assert(await page.locator('[data-tmux-session="build-renamed"]').count() === 0, "closed session remains visible");
+
+  const mutationCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "mutate_tmux"));
+  assert(mutationCalls.map((call) => call.args.request.action).join(",") === "rename-session,new-window,rename-window,kill-window,kill-session",
+    `unexpected lifecycle request sequence: ${JSON.stringify(mutationCalls)}`);
+  await page.evaluate(() => {
+    document.querySelectorAll(".tmux-list, .tmux-window-list").forEach((element) => { element.scrollTop = 0; });
+  });
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
   const desktop = await page.evaluate(() => {
     const dialog = document.querySelector(".tmux-dialog").getBoundingClientRect();
@@ -242,6 +343,7 @@ try {
 
   console.log(JSON.stringify({
     enabledCall,
+    mutationCalls,
     attachCall,
     desktop,
     mobile,

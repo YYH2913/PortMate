@@ -1961,9 +1961,42 @@ pub struct TmuxPaneInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TmuxWindowInfo {
+    pub session: String,
+    pub window_index: u32,
+    pub window_id: String,
+    pub name: String,
+    pub panes: u32,
+    pub active: bool,
+    pub synchronized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TmuxState {
     pub sessions: Vec<TmuxSessionInfo>,
+    pub windows: Vec<TmuxWindowInfo>,
     pub panes: Vec<TmuxPaneInfo>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TmuxMutationAction {
+    RenameSession,
+    KillSession,
+    NewWindow,
+    RenameWindow,
+    KillWindow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxMutationRequest {
+    pub session_id: String,
+    pub action: TmuxMutationAction,
+    pub target: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4776,6 +4809,14 @@ async fn set_tmux_pane_sync(
     enabled: bool,
 ) -> Result<TmuxState, String> {
     set_tmux_pane_sync_inner(state.inner(), &session_id, &target, enabled).await
+}
+
+#[tauri::command]
+async fn mutate_tmux(
+    state: State<'_, AppState>,
+    request: TmuxMutationRequest,
+) -> Result<TmuxState, String> {
+    mutate_tmux_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -10591,6 +10632,12 @@ async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<Tmu
         Duration::from_secs(8),
     )
     .await?;
+    let windows_output = exec_ssh_command_capture(
+        Arc::clone(&handle),
+        "tmux list-windows -a -F '#{session_name}\t#{window_index}\t#{window_id}\t#{window_name}\t#{window_panes}\t#{window_active}' 2>/dev/null || true",
+        Duration::from_secs(8),
+    )
+    .await?;
     let panes_output = exec_ssh_command_capture(
         handle,
         "tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_title}\t#{pane_synchronized}' 2>/dev/null || true",
@@ -10602,11 +10649,28 @@ async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<Tmu
         .lines()
         .filter_map(parse_tmux_session)
         .collect::<Vec<_>>();
+    let mut windows = windows_output
+        .lines()
+        .filter_map(parse_tmux_window)
+        .collect::<Vec<_>>();
     let panes = panes_output
         .lines()
         .filter_map(parse_tmux_pane)
         .collect::<Vec<_>>();
-    Ok(TmuxState { sessions, panes })
+    for window in &mut windows {
+        let matching = panes
+            .iter()
+            .filter(|pane| {
+                pane.session == window.session && pane.window_index == window.window_index
+            })
+            .collect::<Vec<_>>();
+        window.synchronized = !matching.is_empty() && matching.iter().all(|pane| pane.synchronized);
+    }
+    Ok(TmuxState {
+        sessions,
+        windows,
+        panes,
+    })
 }
 
 async fn set_tmux_pane_sync_inner(
@@ -10631,6 +10695,26 @@ async fn set_tmux_pane_sync_inner(
     list_tmux_state_inner(state, session_id).await
 }
 
+async fn mutate_tmux_inner(
+    state: &AppState,
+    request: TmuxMutationRequest,
+) -> Result<TmuxState, String> {
+    let command = tmux_mutation_command(&request)?;
+    let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+    exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
+    if let Ok(mut store) = state.store.lock() {
+        store.record_system_event(
+            &request.session_id,
+            format!(
+                "PortMate: tmux {} ({})",
+                tmux_mutation_label(request.action),
+                normalize_tmux_target(&request.target)?
+            ),
+        );
+    }
+    list_tmux_state_inner(state, &request.session_id).await
+}
+
 fn normalize_tmux_target(target: &str) -> Result<&str, String> {
     let target = target.trim();
     if target.is_empty() {
@@ -10643,6 +10727,20 @@ fn normalize_tmux_target(target: &str) -> Result<&str, String> {
         return Err("Tmux target 不能包含控制字符".to_string());
     }
     Ok(target)
+}
+
+fn normalize_tmux_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Tmux 名称不能为空".to_string());
+    }
+    if name.chars().count() > 128 {
+        return Err("Tmux 名称不能超过 128 个字符".to_string());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("Tmux 名称不能包含控制字符".to_string());
+    }
+    Ok(name)
 }
 
 fn tmux_attach_command(target: &str) -> Result<String, String> {
@@ -10660,6 +10758,41 @@ fn tmux_pane_sync_command(target: &str, enabled: bool) -> Result<String, String>
         shell_quote(target),
         if enabled { "on" } else { "off" }
     ))
+}
+
+fn tmux_mutation_command(request: &TmuxMutationRequest) -> Result<String, String> {
+    let target = shell_quote(normalize_tmux_target(&request.target)?);
+    let name = request
+        .name
+        .as_deref()
+        .map(normalize_tmux_name)
+        .transpose()?;
+    match request.action {
+        TmuxMutationAction::RenameSession => Ok(format!(
+            "tmux rename-session -t {target} {}",
+            shell_quote(name.ok_or_else(|| "重命名 session 需要新名称".to_string())?)
+        )),
+        TmuxMutationAction::KillSession => Ok(format!("tmux kill-session -t {target}")),
+        TmuxMutationAction::NewWindow => Ok(match name {
+            Some(name) => format!("tmux new-window -t {target} -n {}", shell_quote(name)),
+            None => format!("tmux new-window -t {target}"),
+        }),
+        TmuxMutationAction::RenameWindow => Ok(format!(
+            "tmux rename-window -t {target} {}",
+            shell_quote(name.ok_or_else(|| "重命名 window 需要新名称".to_string())?)
+        )),
+        TmuxMutationAction::KillWindow => Ok(format!("tmux kill-window -t {target}")),
+    }
+}
+
+fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
+    match action {
+        TmuxMutationAction::RenameSession => "session renamed",
+        TmuxMutationAction::KillSession => "session closed",
+        TmuxMutationAction::NewWindow => "window created",
+        TmuxMutationAction::RenameWindow => "window renamed",
+        TmuxMutationAction::KillWindow => "window closed",
+    }
 }
 
 fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
@@ -10686,6 +10819,29 @@ fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
         windows,
         attached,
         created,
+    })
+}
+
+fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
+    let mut parts = line.split('\t');
+    let session = parts.next()?.to_string();
+    if session.is_empty() {
+        return None;
+    }
+    Some(TmuxWindowInfo {
+        session,
+        window_index: parts
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_default(),
+        window_id: parts.next().unwrap_or_default().to_string(),
+        name: parts.next().unwrap_or_default().to_string(),
+        panes: parts
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_default(),
+        active: parts.next().unwrap_or_default() == "1",
+        synchronized: false,
     })
 }
 
@@ -24688,6 +24844,7 @@ pub fn run() {
             list_tmux_state,
             attach_tmux,
             set_tmux_pane_sync,
+            mutate_tmux,
             list_files,
             file_properties,
             create_directory,
@@ -36408,6 +36565,57 @@ mod tests {
             tmux_pane_sync_command("lab:2", false).unwrap(),
             "tmux set-option -w -t 'lab:2' synchronize-panes off"
         );
+        let request = |action, target: &str, name: Option<&str>| TmuxMutationRequest {
+            session_id: "ssh-session-1".to_string(),
+            action,
+            target: target.to_string(),
+            name: name.map(str::to_string),
+        };
+        assert_eq!(
+            tmux_mutation_command(&request(
+                TmuxMutationAction::RenameSession,
+                "lab",
+                Some("release'; touch /tmp/nope #"),
+            ))
+            .unwrap(),
+            "tmux rename-session -t 'lab' 'release'\\''; touch /tmp/nope #'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::KillSession, "lab", None)).unwrap(),
+            "tmux kill-session -t 'lab'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::NewWindow, "lab", Some("logs"),))
+                .unwrap(),
+            "tmux new-window -t 'lab' -n 'logs'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::NewWindow, "lab", None)).unwrap(),
+            "tmux new-window -t 'lab'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(
+                TmuxMutationAction::RenameWindow,
+                "lab:2",
+                Some("metrics"),
+            ))
+            .unwrap(),
+            "tmux rename-window -t 'lab:2' 'metrics'"
+        );
+        assert_eq!(
+            tmux_mutation_command(&request(TmuxMutationAction::KillWindow, "lab:2", None)).unwrap(),
+            "tmux kill-window -t 'lab:2'"
+        );
+        assert!(
+            tmux_mutation_command(&request(TmuxMutationAction::RenameSession, "lab", None,))
+                .is_err()
+        );
+        assert!(tmux_mutation_command(&request(
+            TmuxMutationAction::RenameWindow,
+            "lab:2",
+            Some("bad\nname"),
+        ))
+        .is_err());
     }
 
     #[test]
@@ -36425,6 +36633,16 @@ mod tests {
         let legacy = parse_tmux_pane("lab\t0\t0\t%1\t0\tbash\tshell").unwrap();
         assert!(!legacy.synchronized);
         assert!(parse_tmux_pane("\t0\t0\t%1\t0\tbash\tshell\t1").is_none());
+
+        let window = parse_tmux_window("lab\t2\t@4\tmetrics\t3\t1").unwrap();
+        assert_eq!(window.session, "lab");
+        assert_eq!(window.window_index, 2);
+        assert_eq!(window.window_id, "@4");
+        assert_eq!(window.name, "metrics");
+        assert_eq!(window.panes, 3);
+        assert!(window.active);
+        assert!(!window.synchronized);
+        assert!(parse_tmux_window("\t2\t@4\tmetrics\t3\t1").is_none());
     }
 
     fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {
