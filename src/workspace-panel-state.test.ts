@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultWorkspacePanelVisibility,
+  isWorkspaceFocusModeShortcut,
   normalizeWorkspacePanelVisibility,
+  resolveWorkspacePanelVisibility,
   setWorkspacePanelVisibility,
   toggleWorkspacePanelVisibility,
 } from "./workspace-panel-state";
@@ -33,5 +35,28 @@ describe("workspace panel state", () => {
     expect(shown.history).toBe(true);
     expect(setWorkspacePanelVisibility(shown, "history", true)).toBe(shown);
     expect(toggleWorkspacePanelVisibility(shown, "sessions")).toEqual({ ...shown, sessions: false });
+  });
+
+  it("derives focus mode without changing the saved panel choices", () => {
+    const current = { ...defaultWorkspacePanelVisibility, fileManager: false };
+    expect(resolveWorkspacePanelVisibility(current, false)).toBe(current);
+    expect(resolveWorkspacePanelVisibility(current, true)).toEqual({
+      explorer: false,
+      fileManager: false,
+      sessions: false,
+      history: false,
+      sender: false,
+      statusBar: false,
+    });
+    expect(resolveWorkspacePanelVisibility(current, true, true).statusBar).toBe(true);
+    expect(current).toEqual({ ...defaultWorkspacePanelVisibility, fileManager: false });
+  });
+
+  it("matches only the exact WindTerm focus-mode shortcut", () => {
+    const event = { altKey: true, code: "Enter", ctrlKey: false, metaKey: false, shiftKey: false };
+    expect(isWorkspaceFocusModeShortcut(event)).toBe(true);
+    expect(isWorkspaceFocusModeShortcut({ ...event, altKey: false })).toBe(false);
+    expect(isWorkspaceFocusModeShortcut({ ...event, shiftKey: true })).toBe(false);
+    expect(isWorkspaceFocusModeShortcut({ ...event, code: "NumpadEnter" })).toBe(false);
   });
 });

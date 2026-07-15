@@ -206,6 +206,31 @@ button {
   font-size: 12px;
 }
 
+.menu-tools button {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.menu-tools button:hover,
+.menu-tools button:focus-visible,
+.menu-tools button.active {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.menu-tools button.active {
+  color: var(--cyan);
+}
+
 .menu-item {
   position: relative;
   height: 100%;

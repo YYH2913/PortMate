@@ -24,6 +24,8 @@ import {
   KeyRound,
   Lock,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
   Package,
   Pencil,
   Play,
@@ -65,7 +67,7 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
-import { normalizeWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
+import { isWorkspaceFocusModeShortcut, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspacePanelId } from "./workspace-panel-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
@@ -86,7 +88,7 @@ const menuGroups = [
   { label: "选择", items: ["选择全部", "块选择", "清除选择"] },
   { label: "转到", items: ["上一个标签", "下一个标签", "跳转到行"] },
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
-  { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "锁屏"] },
+  { label: "模式", items: ["远程模式", "本地模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "快速命令", "端口转发", "Tmux", "Sysmon", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
@@ -295,6 +297,7 @@ export default function App() {
   const [workspacePanels, setWorkspacePanels] = useState(() => (
     normalizeWorkspacePanelVisibility(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
   ));
+  const [focusMode, setFocusMode] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
@@ -601,6 +604,12 @@ export default function App() {
     const handleWorkspaceHotkey = (event: KeyboardEvent) => {
       if (!isWorkspaceHotkeyTarget(event.target)) {
         clearWorkspaceChord();
+        return;
+      }
+      if (isWorkspaceFocusModeShortcut(event)) {
+        consumeWorkspaceHotkey(event);
+        clearWorkspaceChord();
+        if (!event.repeat) setFocusMode((current) => !current);
         return;
       }
       const panes = workspacePaneLeaves(workspaceRoot);
@@ -955,7 +964,16 @@ export default function App() {
 function handleMenuAction(item: string) {
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) {
-      setWorkspacePanels((current) => toggleWorkspacePanelVisibility(current, workspacePanel));
+      if (focusMode) {
+        setFocusMode(false);
+        setWorkspacePanels((current) => setWorkspacePanelVisibility(current, workspacePanel, true));
+      } else {
+        setWorkspacePanels((current) => toggleWorkspacePanelVisibility(current, workspacePanel));
+      }
+      return;
+    }
+    if (item === "专注模式") {
+      setFocusMode((current) => !current);
       return;
     }
     if (item === "终端设置") {
@@ -989,7 +1007,12 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "快捷栏") {
-      setQuickBarVisible((visible) => !visible);
+      if (focusMode) {
+        setFocusMode(false);
+        setQuickBarVisible(true);
+      } else {
+        setQuickBarVisible((visible) => !visible);
+      }
       return;
     }
     if (item === "会话搜索") {
@@ -1033,7 +1056,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (["远程模式", "本地模式"].includes(item)) {
-      setNotice({ title: item, message: "该工作区视图已经显示在当前桌面布局中。" });
+      setNotice({ title: item, message: "WindTerm 本地/远程键盘模式依赖完整的 Normal/Command 本地导航键表，当前尚未实现。" });
       return;
     }
     if (item === "锁屏") {
@@ -2229,10 +2252,11 @@ function handleMenuAction(item: string) {
 
   function menuToggleState(item: string): boolean | undefined {
     const workspacePanel = workspacePanelMenuItems[item];
-    if (workspacePanel) return workspacePanels[workspacePanel];
-    if (item === "快捷栏") return quickBarVisible;
+    if (workspacePanel) return visibleWorkspacePanels[workspacePanel];
+    if (item === "快捷栏") return visibleQuickBar;
     if (item === "同步输入") return syncInput;
     if (item === "块选择") return blockSelection;
+    if (item === "专注模式") return focusMode;
     return undefined;
   }
 
@@ -2288,8 +2312,11 @@ function handleMenuAction(item: string) {
     }
   }
 
+  const visibleWorkspacePanels = resolveWorkspacePanelVisibility(workspacePanels, focusMode, syncInput);
+  const visibleQuickBar = quickBarVisible && !focusMode;
+
   return (
-    <main className={["wind-root", quickBarVisible ? "quick-bar-visible" : "", workspacePanels.statusBar ? "" : "status-bar-hidden"].filter(Boolean).join(" ")} onContextMenu={openAppContextMenu} onClick={() => {
+    <main className={["wind-root", visibleQuickBar ? "quick-bar-visible" : "", visibleWorkspacePanels.statusBar ? "" : "status-bar-hidden", focusMode ? "focus-mode" : ""].filter(Boolean).join(" ")} onContextMenu={openAppContextMenu} onClick={() => {
       setContextMenu(null);
       setWorkspaceViewContextMenu(null);
     }}>
@@ -2327,12 +2354,15 @@ function handleMenuAction(item: string) {
         </div>
         <div className="menu-tools">
           <Search size={13} />
-          <span>隧道</span>
-          <span>专注模式</span>
+          <button type="button" onClick={() => handleMenuAction("端口转发")}>隧道</button>
+          <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
+            {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span>{focusMode ? "退出专注" : "专注模式"}</span>
+          </button>
         </div>
       </header>
 
-      {quickBarVisible ? (
+      {visibleQuickBar ? (
         <QuickCommandBar
           commands={quickCommands}
           activeSessionName={active?.profile.name ?? ""}
@@ -2344,17 +2374,17 @@ function handleMenuAction(item: string) {
 
       <section className={[
         "wind-layout",
-        workspacePanels.explorer || workspacePanels.fileManager ? "" : "left-dock-hidden",
-        workspacePanels.sessions || workspacePanels.history ? "" : "right-dock-hidden",
-        workspacePanels.sender ? "" : "sender-hidden",
+        visibleWorkspacePanels.explorer || visibleWorkspacePanels.fileManager ? "" : "left-dock-hidden",
+        visibleWorkspacePanels.sessions || visibleWorkspacePanels.history ? "" : "right-dock-hidden",
+        visibleWorkspacePanels.sender ? "" : "sender-hidden",
       ].filter(Boolean).join(" ")}>
-        {workspacePanels.explorer || workspacePanels.fileManager ? (
-        <aside className={`left-stack ${workspacePanels.explorer && workspacePanels.fileManager ? "" : "single-panel"}`}>
-          {workspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
+        {visibleWorkspacePanels.explorer || visibleWorkspacePanels.fileManager ? (
+        <aside className={`left-stack ${visibleWorkspacePanels.explorer && visibleWorkspacePanels.fileManager ? "" : "single-panel"}`}>
+          {visibleWorkspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
             <FilterLine />
             <TreeList sessions={sessions} groups={sessionGroups} activeId={activeId} onSelect={activateSession} />
           </DockPanel> : null}
-          {workspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
+          {visibleWorkspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
             <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
           </DockPanel> : null}
         </aside>
@@ -2450,13 +2480,13 @@ function handleMenuAction(item: string) {
           />
         </section>
 
-        {workspacePanels.sessions || workspacePanels.history ? (
-        <aside className={`right-stack ${workspacePanels.sessions && workspacePanels.history ? "" : "single-panel"}`}>
-          {workspacePanels.sessions ? <DockPanel title="会话" accent="#68a7ff" onClose={() => setWorkspacePanelVisible("sessions", false)}>
+        {visibleWorkspacePanels.sessions || visibleWorkspacePanels.history ? (
+        <aside className={`right-stack ${visibleWorkspacePanels.sessions && visibleWorkspacePanels.history ? "" : "single-panel"}`}>
+          {visibleWorkspacePanels.sessions ? <DockPanel title="会话" accent="#68a7ff" onClose={() => setWorkspacePanelVisible("sessions", false)}>
             <FilterLine />
             <FolderList sessions={sessions} />
           </DockPanel> : null}
-          {workspacePanels.history ? <DockPanel title="历史命令" accent="#f4b860" onClose={() => setWorkspacePanelVisible("history", false)}>
+          {visibleWorkspacePanels.history ? <DockPanel title="历史命令" accent="#f4b860" onClose={() => setWorkspacePanelVisible("history", false)}>
             <FilterLine compact />
             <div className="right-tools-list">
               {activeSerial && active ? (
@@ -2474,7 +2504,7 @@ function handleMenuAction(item: string) {
         </aside>
         ) : null}
 
-        {workspacePanels.sender ? <section className="send-panel">
+        {visibleWorkspacePanels.sender ? <section className="send-panel">
           <div className="send-tabs">
             <button className="active">发送</button>
             <button>Shell</button>
@@ -2529,7 +2559,7 @@ function handleMenuAction(item: string) {
         </section> : null}
       </section>
 
-      {workspacePanels.statusBar ? <footer className="status-bar">
+      {visibleWorkspacePanels.statusBar ? <footer className="status-bar">
         <span>就绪</span>
         <span />
         <span className={syncInput ? "sync-status active" : "sync-status"}>{syncInput ? `同步输入 · ${syncInputTargetCount}` : "远程模式"}</span>

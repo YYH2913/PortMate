@@ -51,8 +51,8 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
 
    - `Session`: new session, session settings, duplicate session, startup sessions, layout restore
    - `Edit`: copy, paste, paste dialog, search, online search
-   - `View`: session tree, explorer pane, shell pane, quick bar, split views, focus mode
-   - `Mode`: remote mode, local mode, synchronized input, free type, lock screen
+   - `View`: resource, file, session, history, sender, Quick Bar, and status-bar visibility
+   - `Mode`: synchronized input, free type, focus mode, lock screen
    - `Transfer`: SFTP, SCP, X/Y/ZModem
    - `Tools`: quick commands, forwarding, Sysmon, triggers, logs, MCP bridge, key manager
    - `Preferences`: global settings, font, color scheme, tab color, transparency, mouse behavior
@@ -87,6 +87,8 @@ WindTerm's directional `Split View To Group` workflow is available as four Windo
 Pane tabs and the Window menu implement WindTerm-style view lifecycle commands: close the active view, close the other views in its group, close views to its right, and reopen the most recently closed view. Closing a view never disconnects its backend session, empty groups collapse, and the final workspace view is protected. Up to 32 closed views are retained for the current app process; reopening prefers the original group and index, then falls back to the active non-full group when the original group no longer exists. The global session-tab context menu uses explicit disconnect wording because those actions change transport state rather than workspace membership.
 
 The `查看` menu now mirrors WindTerm's checkable pane actions for the resource explorer, file manager, session list, command history, sender, Quick Bar, and status bar. The four dock panes can also be hidden from real title-bar buttons; when only one pane remains in a side dock it fills that dock, and removing a complete side, the sender, or the status bar returns the exact space to the terminal workspace. The sender's settings and close icons are keyboard-focusable commands rather than decorative glyphs. A bounded v1 local snapshot restores the six pane/bar choices after restart, repairs invalid fields independently, and defaults every existing pane to visible. The responsive mobile layout still suppresses side docks and the sender without corrupting the saved desktop choices.
+
+`模式 -> 专注模式`, the top-right focus command, and WindTerm's `Alt+Enter` shortcut temporarily suppress every dock, the sender, Quick Bar, and status bar without overwriting those saved choices. Exiting restores the exact prior layout; focus mode itself does not survive reload. The shortcut is consumed only while an XTerm workspace owns focus, so dialogs and local editors keep their normal Enter behavior. When synchronized input is active, the status bar intentionally remains visible in focus mode so the broadcast state and target count cannot disappear.
 
 `模式 -> 自由输入` opens a WindTerm FreeType-style editor only inside the focused terminal pane. Drafts are local and bounded to 32,768 Unicode characters: `Enter` submits the edited text as one atomic terminal input, `Shift+Enter` keeps a line break, `Escape` cancels, and `Ctrl/Meta+Shift+X` cuts the editable selection. Submission normalizes edited line breaks to terminal carriage returns and adds one final carriage return; switching sessions discards the unsubmitted draft. Terminal search and free input replace each other instead of overlapping, workspace hotkeys ignore the editor, and atomic submission reuses synchronized input's target, protocol-newline, delay, prefix, and suffix rules when broadcasting is enabled.
 

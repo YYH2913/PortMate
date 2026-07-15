@@ -49,3 +49,19 @@ export function toggleWorkspacePanelVisibility(
 ): WorkspacePanelVisibility {
   return setWorkspacePanelVisibility(current, panel, !current[panel]);
 }
+
+export function resolveWorkspacePanelVisibility(
+  current: WorkspacePanelVisibility,
+  focusMode: boolean,
+  preserveStatusBar = false,
+): WorkspacePanelVisibility {
+  if (!focusMode) return current;
+  return Object.fromEntries(workspacePanelIds.map((id) => [
+    id,
+    id === "statusBar" && preserveStatusBar,
+  ])) as WorkspacePanelVisibility;
+}
+
+export function isWorkspaceFocusModeShortcut(event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "metaKey" | "shiftKey">): boolean {
+  return event.code === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+}
