@@ -1,4 +1,5 @@
 import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPlacement } from "./workspace-state";
+import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export const WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v2";
 export const LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v1";
@@ -10,6 +11,7 @@ export type WorkspaceHotkeyAction =
   | { kind: "close" }
   | { kind: "zoom" }
   | { kind: "cycle-view"; offset: -1 | 1 }
+  | { kind: "view-history"; operation: "close" | "reopen" }
   | { kind: "one-keys" };
 
 export type WorkspaceHotkeyCommandId =
@@ -25,6 +27,8 @@ export type WorkspaceHotkeyCommandId =
   | "zoom-pane"
   | "previous-view"
   | "next-view"
+  | "close-view"
+  | "reopen-view"
   | "manage-one-keys";
 
 export type WorkspaceKeymap = Record<WorkspaceHotkeyCommandId, string>;
@@ -53,12 +57,12 @@ type WorkspaceHotkeyCommand = {
   label: string;
   defaultBinding: string;
   requiresMultiplePanes: boolean;
-  remoteOnly?: boolean;
+  terminalModes?: "remote" | "remote-local";
   action: WorkspaceHotkeyAction;
 };
 
 type WorkspaceHotkeyContext = {
-  remoteMode?: boolean;
+  terminalKeyMode?: TerminalKeyMode;
 };
 
 const primaryChordModifier = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
@@ -76,8 +80,10 @@ export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "split-right", label: "向右拆分", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
   { id: "close-pane", label: "关闭窗格", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
   { id: "zoom-pane", label: "切换窗格缩放", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
-  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, remoteOnly: true, action: { kind: "cycle-view", offset: -1 } },
-  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, remoteOnly: true, action: { kind: "cycle-view", offset: 1 } },
+  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, terminalModes: "remote", action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, terminalModes: "remote", action: { kind: "cycle-view", offset: 1 } },
+  { id: "close-view", label: "关闭视图", defaultBinding: "Ctrl+Shift+KeyW", requiresMultiplePanes: false, terminalModes: "remote-local", action: { kind: "view-history", operation: "close" } },
+  { id: "reopen-view", label: "重新打开视图", defaultBinding: "Ctrl+Shift+KeyT", requiresMultiplePanes: false, action: { kind: "view-history", operation: "reopen" } },
   { id: "manage-one-keys", label: "打开 OneKeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
 ];
 
@@ -181,7 +187,10 @@ export function resolveWorkspaceHotkeySequence(
   const binding = prefix ? `${prefix} ${stroke}` : stroke;
   const eligibleCommands = workspaceHotkeyCommands.filter((command) => (
     (!command.requiresMultiplePanes || paneCount > 1)
-      && (!command.remoteOnly || context.remoteMode !== false)
+      && (!command.terminalModes
+        || context.terminalKeyMode === undefined
+        || context.terminalKeyMode === "remote"
+        || (command.terminalModes === "remote-local" && context.terminalKeyMode === "local"))
   ));
   const exactMatches = eligibleCommands.filter((command) => keymap[command.id] === binding);
   const longerMatches = eligibleCommands.filter((command) => keymap[command.id].startsWith(`${binding} `));

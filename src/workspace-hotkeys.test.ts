@@ -48,10 +48,28 @@ describe("workspace hotkeys", () => {
       { ...baseInput, code: "BracketRight" },
       1,
       defaultWorkspaceKeymap,
-      { remoteMode: false },
+      { terminalKeyMode: "local" },
     )).toBeNull();
     expect(formatWorkspaceKeyBinding("Alt+BracketLeft")).toBe("Alt + [");
     expect(formatWorkspaceKeyBinding("Alt+BracketRight")).toBe("Alt + ]");
+  });
+
+  it("closes and reopens views with WindTerm lifecycle shortcuts in eligible modes", () => {
+    const closeInput = { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyW" };
+    const reopenInput = { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyT" };
+
+    expect(resolveWorkspaceHotkey(closeInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "remote" }))
+      .toEqual({ kind: "view-history", operation: "close" });
+    expect(resolveWorkspaceHotkey(closeInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "local" }))
+      .toEqual({ kind: "view-history", operation: "close" });
+    expect(resolveWorkspaceHotkey(closeInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "normal" }))
+      .toBeNull();
+    expect(resolveWorkspaceHotkey(closeInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "command" }))
+      .toBeNull();
+    expect(resolveWorkspaceHotkey(reopenInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "command" }))
+      .toEqual({ kind: "view-history", operation: "reopen" });
+    expect(formatWorkspaceKeyBinding("Ctrl+Shift+KeyW")).toBe("Ctrl + Shift + W");
+    expect(formatWorkspaceKeyBinding("Ctrl+Shift+KeyT")).toBe("Ctrl + Shift + T");
   });
 
   it("normalizes stored bindings, preserves explicit disables, and ignores unknown commands", () => {
@@ -65,7 +83,7 @@ describe("workspace hotkeys", () => {
     expect(keymap["focus-up"]).toBe("Alt+Shift+KeyK");
     expect(keymap["focus-down"]).toBe("");
     expect(keymap["split-left"]).toBe(defaultWorkspaceKeymap["split-left"]);
-    expect(Object.keys(keymap)).toHaveLength(13);
+    expect(Object.keys(keymap)).toHaveLength(15);
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowDown" }, 3, keymap)).toBeNull();
   });
 
