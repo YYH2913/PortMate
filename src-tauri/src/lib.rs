@@ -2777,20 +2777,24 @@ fn record_outbound_user_event_with_context(
     audit_action: Option<&str>,
     additional_annotations: BTreeMap<String, String>,
 ) -> SessionEvent {
-    let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, text);
+    let PendingEventLogs {
+        profile,
+        bytes_ref,
+        errors,
+    } = begin_event_log_shards(io, session_id, wire_bytes);
     let mut event = match io.store.lock() {
         Ok(mut store) => {
             let event = store.send_text_with_bytes_ref_and_audit_action(
                 actor,
                 session_id,
                 text,
-                shard_append.bytes_ref.clone(),
+                bytes_ref.clone(),
                 audit_action,
             );
             match event {
                 Ok(mut event) => {
                     event.annotations.extend(additional_annotations.clone());
-                    append_logging_errors(&mut event, &shard_append.errors);
+                    append_logging_errors(&mut event, &errors);
                     sync_stored_event(&mut store, &event);
                     if let Err(error) = save_store(&io.store_path, &store) {
                         eprintln!(
@@ -2804,33 +2808,31 @@ fn record_outbound_user_event_with_context(
                 Err(error) => fallback_outbound_event(
                     session_id,
                     text,
-                    shard_append.bytes_ref.clone(),
+                    bytes_ref.clone(),
                     actor,
                     additional_annotations.clone(),
-                    merge_logging_error_messages(&shard_append.errors, error),
+                    merge_logging_error_messages(&errors, error),
                 ),
             }
         }
         Err(error) => fallback_outbound_event(
             session_id,
             text,
-            shard_append.bytes_ref,
+            bytes_ref,
             actor,
             additional_annotations,
-            merge_logging_error_messages(
-                &shard_append.errors,
-                format!("session store lock poisoned: {error}"),
-            ),
+            merge_logging_error_messages(&errors, format!("session store lock poisoned: {error}")),
         ),
     };
-    if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
-        append_logging_error(&mut event, error);
+    if profile.as_ref().is_some_and(|profile| {
+        append_event_text_and_jsonl_log_shards(&io.store_path, profile, &mut event)
+    }) {
         if let Ok(mut store) = io.store.lock() {
             sync_stored_event(&mut store, &event);
             if let Err(error) = save_store(&io.store_path, &store) {
                 append_logging_error(
                     &mut event,
-                    format!("store save after JSONL failure failed: {error}"),
+                    format!("store save after file log failure failed: {error}"),
                 );
                 sync_stored_event(&mut store, &event);
             }
@@ -2850,7 +2852,11 @@ fn record_outbound_control_event(
     related_event_id: Option<&str>,
     persist_store: bool,
 ) -> SessionEvent {
-    let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, "");
+    let PendingEventLogs {
+        profile,
+        bytes_ref,
+        errors,
+    } = begin_event_log_shards(io, session_id, wire_bytes);
     let mut annotations = BTreeMap::from([
         ("origin".to_string(), origin.to_string()),
         ("wireBytes".to_string(), wire_bytes.len().to_string()),
@@ -2864,11 +2870,11 @@ fn record_outbound_control_event(
             EventDirection::Outbound,
             EventStream::Control,
             None,
-            shard_append.bytes_ref.clone(),
+            bytes_ref.clone(),
             annotations.clone(),
         ) {
             Ok(mut event) => {
-                append_logging_errors(&mut event, &shard_append.errors);
+                append_logging_errors(&mut event, &errors);
                 sync_stored_event(&mut store, &event);
                 if persist_store {
                     if let Err(error) = save_store(&io.store_path, &store) {
@@ -2883,30 +2889,28 @@ fn record_outbound_control_event(
             }
             Err(error) => fallback_outbound_control_event(
                 session_id,
-                shard_append.bytes_ref.clone(),
+                bytes_ref.clone(),
                 annotations,
-                merge_logging_error_messages(&shard_append.errors, error),
+                merge_logging_error_messages(&errors, error),
             ),
         },
         Err(error) => fallback_outbound_control_event(
             session_id,
-            shard_append.bytes_ref,
+            bytes_ref,
             annotations,
-            merge_logging_error_messages(
-                &shard_append.errors,
-                format!("session store lock poisoned: {error}"),
-            ),
+            merge_logging_error_messages(&errors, format!("session store lock poisoned: {error}")),
         ),
     };
-    if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
-        append_logging_error(&mut event, error);
+    if profile.as_ref().is_some_and(|profile| {
+        append_event_text_and_jsonl_log_shards(&io.store_path, profile, &mut event)
+    }) {
         if let Ok(mut store) = io.store.lock() {
             sync_stored_event(&mut store, &event);
             if persist_store {
                 if let Err(error) = save_store(&io.store_path, &store) {
                     append_logging_error(
                         &mut event,
-                        format!("store save after JSONL failure failed: {error}"),
+                        format!("store save after file log failure failed: {error}"),
                     );
                     sync_stored_event(&mut store, &event);
                 }
@@ -20833,7 +20837,11 @@ fn record_channel_bytes(
     text: String,
 ) {
     let command_id = active_command_id(io, session_id);
-    let shard_append = append_raw_and_text_log_shards(io, session_id, raw_bytes, &text);
+    let PendingEventLogs {
+        profile,
+        bytes_ref,
+        errors,
+    } = begin_event_log_shards(io, session_id, raw_bytes);
     if text.is_empty() {
         return;
     }
@@ -20847,12 +20855,12 @@ fn record_channel_bytes(
                 EventDirection::Inbound,
                 stream,
                 Some(text.clone()),
-                shard_append.bytes_ref,
+                bytes_ref,
                 annotations,
             )
             .ok();
         if let Some(event) = event.as_mut() {
-            append_logging_errors(event, &shard_append.errors);
+            append_logging_errors(event, &errors);
             sync_stored_event(&mut store, event);
         }
         event
@@ -20864,8 +20872,9 @@ fn record_channel_bytes(
         None
     };
     if let Some(mut event) = live_event {
-        if let Err(error) = append_jsonl_log_shard(io, session_id, &event) {
-            append_logging_error(&mut event, error);
+        if profile.as_ref().is_some_and(|profile| {
+            append_event_text_and_jsonl_log_shards(&io.store_path, profile, &mut event)
+        }) {
             if let Ok(mut store) = io.store.lock() {
                 sync_stored_event(&mut store, &event);
             }
@@ -20915,12 +20924,7 @@ fn publish_system_event(
     profile: Option<SessionProfile>,
 ) {
     if let Some(profile) = profile {
-        if let Err(error) = append_system_text_log_shard(store_path, &profile, &event) {
-            append_logging_error(&mut event, error);
-        }
-        if let Err(error) = append_jsonl_log_shard_for_profile(store_path, &profile, &event) {
-            append_logging_error(&mut event, error);
-        }
+        append_event_text_and_jsonl_log_shards(store_path, &profile, &mut event);
     } else {
         let session_id = event.session_id.clone();
         append_logging_error(
@@ -20949,7 +20953,99 @@ fn publish_system_event(
     }
 }
 
-fn append_system_text_log_shard(
+#[derive(Default)]
+struct PendingEventLogs {
+    profile: Option<SessionProfile>,
+    bytes_ref: Option<String>,
+    errors: Vec<String>,
+}
+
+fn begin_event_log_shards(io: &SessionIo, session_id: &str, raw_bytes: &[u8]) -> PendingEventLogs {
+    let profile = match logging_profile(io, session_id) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return PendingEventLogs {
+                errors: vec![error],
+                ..PendingEventLogs::default()
+            };
+        }
+    };
+    if !profile.logging.enabled {
+        return PendingEventLogs {
+            profile: Some(profile),
+            ..PendingEventLogs::default()
+        };
+    }
+
+    let mut result = PendingEventLogs::default();
+    if profile.logging.raw && !raw_bytes.is_empty() {
+        match append_log_bytes(&io.store_path, &profile, "raw", raw_bytes) {
+            Ok(reference) => result.bytes_ref = Some(reference),
+            Err(error) => {
+                let error = format!("raw shard append failed: {error}");
+                eprintln!("PortMate: {error}");
+                result.errors.push(error);
+            }
+        }
+    }
+    result.profile = Some(profile);
+    result
+}
+
+fn text_log_field(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            ']' => escaped.push_str("\\]"),
+            character if character.is_control() => escaped.extend(character.escape_default()),
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn format_text_log_event(event: &SessionEvent, text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let direction = match event.direction {
+        EventDirection::Inbound => "inbound",
+        EventDirection::Outbound => "outbound",
+        EventDirection::System => "system",
+    };
+    let stream = match event.stream {
+        EventStream::Stdout => "stdout",
+        EventStream::Stderr => "stderr",
+        EventStream::Control => "control",
+        EventStream::Audit => "audit",
+    };
+    let command_id = event
+        .annotations
+        .get("commandId")
+        .map(String::as_str)
+        .unwrap_or("-");
+    let prefix = format!(
+        "[{}] [{direction}/{stream}] [session={}] [pane={}] [command={}] ",
+        event
+            .ts
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        text_log_field(&event.session_id),
+        text_log_field(&event.pane_id),
+        text_log_field(command_id),
+    );
+    let mut rendered = String::with_capacity(text.len().saturating_add(prefix.len()));
+    for line in text.split_inclusive('\n') {
+        rendered.push_str(&prefix);
+        rendered.push_str(line);
+        if !line.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+    rendered
+}
+
+fn append_text_log_shard_for_profile(
     store_path: &Path,
     profile: &SessionProfile,
     event: &SessionEvent,
@@ -20963,86 +21059,19 @@ fn append_system_text_log_shard(
     if text.is_empty() {
         return Ok(());
     }
-    let mut line = if profile.logging.redact_secrets {
+    let text = if profile.logging.redact_secrets {
         redact_secrets(text)
     } else {
         text.to_string()
     };
-    if !line.ends_with('\n') {
-        line.push('\n');
-    }
-    append_log_bytes(store_path, profile, "txt", line.as_bytes())
+    let rendered = format_text_log_event(event, &text);
+    append_log_bytes(store_path, profile, "txt", rendered.as_bytes())
         .map(|_| ())
         .map_err(|error| {
-            let error = format!("system text shard append failed: {error}");
+            let error = format!("text shard append failed: {error}");
             eprintln!("PortMate: {error}");
             error
         })
-}
-
-#[derive(Default)]
-struct LogShardAppend {
-    bytes_ref: Option<String>,
-    errors: Vec<String>,
-}
-
-fn append_raw_and_text_log_shards(
-    io: &SessionIo,
-    session_id: &str,
-    raw_bytes: &[u8],
-    text: &str,
-) -> LogShardAppend {
-    let profile = match logging_profile(io, session_id) {
-        Ok(profile) => profile,
-        Err(error) => {
-            return LogShardAppend {
-                errors: vec![error],
-                ..LogShardAppend::default()
-            };
-        }
-    };
-    if !profile.logging.enabled {
-        return LogShardAppend::default();
-    }
-
-    let mut result = LogShardAppend::default();
-    if profile.logging.raw && !raw_bytes.is_empty() {
-        match append_log_bytes(&io.store_path, &profile, "raw", raw_bytes) {
-            Ok(reference) => result.bytes_ref = Some(reference),
-            Err(error) => {
-                let error = format!("raw shard append failed: {error}");
-                eprintln!("PortMate: {error}");
-                result.errors.push(error);
-            }
-        }
-    }
-
-    if profile.logging.text && !text.is_empty() {
-        let mut line = if profile.logging.redact_secrets {
-            redact_secrets(text)
-        } else {
-            text.to_string()
-        };
-        if !line.ends_with('\n') {
-            line.push('\n');
-        }
-        if let Err(error) = append_log_bytes(&io.store_path, &profile, "txt", line.as_bytes()) {
-            let error = format!("text shard append failed: {error}");
-            eprintln!("PortMate: {error}");
-            result.errors.push(error);
-        }
-    }
-
-    result
-}
-
-fn append_jsonl_log_shard(
-    io: &SessionIo,
-    session_id: &str,
-    event: &SessionEvent,
-) -> Result<(), String> {
-    let profile = logging_profile(io, session_id)?;
-    append_jsonl_log_shard_for_profile(&io.store_path, &profile, event)
 }
 
 fn append_jsonl_log_shard_for_profile(
@@ -21067,6 +21096,23 @@ fn append_jsonl_log_shard_for_profile(
             eprintln!("PortMate: {error}");
             error
         })
+}
+
+fn append_event_text_and_jsonl_log_shards(
+    store_path: &Path,
+    profile: &SessionProfile,
+    event: &mut SessionEvent,
+) -> bool {
+    let mut failed = false;
+    if let Err(error) = append_text_log_shard_for_profile(store_path, profile, event) {
+        append_logging_error(event, error);
+        failed = true;
+    }
+    if let Err(error) = append_jsonl_log_shard_for_profile(store_path, profile, event) {
+        append_logging_error(event, error);
+        failed = true;
+    }
+    failed
 }
 
 fn logging_profile(io: &SessionIo, session_id: &str) -> Result<SessionProfile, String> {
@@ -30694,6 +30740,31 @@ mod tests {
     }
 
     #[test]
+    fn text_log_events_include_millisecond_metadata_on_every_line() {
+        let event = SessionEvent {
+            id: "event-1".to_string(),
+            session_id: "session:1".to_string(),
+            pane_id: "session:1:main".to_string(),
+            ts: DateTime::parse_from_rfc3339("2026-07-15T12:34:56.123456789Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            direction: EventDirection::Inbound,
+            stream: EventStream::Stderr,
+            bytes_ref: None,
+            text: Some("first\nsecond".to_string()),
+            annotations: BTreeMap::from([("commandId".to_string(), "command-1".to_string())]),
+        };
+        let prefix = "[2026-07-15T12:34:56.123Z] [inbound/stderr] [session=session:1] \
+                      [pane=session:1:main] [command=command-1] ";
+
+        assert_eq!(
+            format_text_log_event(&event, event.text.as_deref().unwrap()),
+            format!("{prefix}first\n{prefix}second\n")
+        );
+        assert_eq!(text_log_field("field]\\\n\t"), "field\\]\\\\\\n\\t");
+    }
+
+    #[test]
     fn inbound_event_refs_exact_transport_bytes_before_text_decoding() {
         let root = std::env::temp_dir().join(format!("portmate-log-inbound-{}", Uuid::new_v4()));
         let store_path = root.join("portmate-store.sqlite3");
@@ -30869,6 +30940,21 @@ mod tests {
                 event.id == second_output.id
                     && event.annotations.get("commandId") == Some(&second_command_id)
             }));
+
+            let text_path = log_shard_path(&store_path, &profile, "txt").unwrap();
+            let text_log = fs::read_to_string(text_path).unwrap();
+            assert!(text_log.contains(&format!(
+                "[outbound/stdout] [session={}] [pane={}:main] [command={}] first",
+                profile.id, profile.id, first_command_id
+            )));
+            assert!(text_log.contains(&format!(
+                "[inbound/stderr] [session={}] [pane={}:main] [command={}] second output",
+                profile.id, profile.id, second_command_id
+            )));
+            assert!(text_log.contains(&format!(
+                "[inbound/stdout] [session={}] [pane={}:main] [command=-] manual output",
+                profile.id, profile.id
+            )));
 
             let bundle = state
                 .store
@@ -31141,6 +31227,64 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(stored.annotations, event.annotations);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn text_log_failure_is_persisted_in_the_following_jsonl_event() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-text-shard-failure-{}", Uuid::new_v4()));
+        let store_path = root.join("store.sqlite3");
+        let mut profile = test_shell_profile();
+        profile.logging.enabled = true;
+        profile.logging.raw = false;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
+        let state = test_app_state(profile.clone(), store_path.clone());
+        let text_path = log_shard_path(&store_path, &profile, "txt").unwrap();
+        fs::create_dir_all(&text_path).unwrap();
+
+        let event = record_outbound_user_event_with_context(
+            &state.session_io(),
+            &profile.id,
+            "status\n",
+            b"status\n",
+            "desktop-user",
+            Some("send_text"),
+            BTreeMap::new(),
+        );
+
+        assert!(event
+            .annotations
+            .get("loggingError")
+            .is_some_and(|error| error.contains("text shard append failed")));
+        let jsonl_path = log_shard_path(&store_path, &profile, "jsonl").unwrap();
+        let jsonl_event = serde_json::from_str::<SessionEvent>(
+            fs::read_to_string(jsonl_path).unwrap().trim_end(),
+        )
+        .unwrap();
+        assert_eq!(jsonl_event.annotations, event.annotations);
+        let stored = state
+            .store
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .find(|stored| stored.id == event.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(stored.annotations, event.annotations);
+        let persisted = load_store_sqlite(&store_path).unwrap();
+        assert_eq!(
+            persisted
+                .events
+                .iter()
+                .find(|stored| stored.id == event.id)
+                .unwrap()
+                .annotations,
+            event.annotations
+        );
 
         let _ = fs::remove_dir_all(root);
     }

@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵、毫秒级日志分片与 bundle 签名/附件、完整 vttest/真实全屏程序兼容矩阵、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵、bundle 签名/自定义附件、完整 vttest/真实全屏程序兼容矩阵、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
 
 ## 当前实现快照
 
@@ -134,6 +134,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
 - 会话事件、屏幕文本、传输任务、host keys、MCP grants/audit、timeline、sysmon 都进入统一 store。events 每会话保留目标 5,000 条并使用 512 条实时批量裁剪余量；审计按 session/global scope 保留目标 5,000 条、timeline 每会话 2,000 条、Sysmon 每会话 1,024 条，并使用 128 条余量；终态 transfer 每会话精确保留 1,000 条，queued/running 永不淘汰。桌面和独立 MCP 加载旧快照时会把每个 event/history scope 收敛到精确上限并重建 event count cache，防止未继续产生日志的旧会话绕过边界，也避免 KV JSON、内存和 mirror 同步成本无限增长。
 - terminal stream 可按 profile 设置追加写入 raw/text/jsonl 分片；入站 Raw 保存 SSH channel、PTY、Raw TCP/Telnet socket 和 Serial 解码前精确字节，出站 Raw 保存成功用户 text/bytes 经协议编码后的 wire、Telnet 协商回复和 modem 帧。每会话 lane 保证出站 transport/write/event 顺序；每个 `bytesRef` 精确绑定对应字节，但双向并发时不承诺共享分片的跨方向因果排序。写成功后的 SQLite/Raw/Text/JSONL 降级会通过事件 `loggingError` 报告，不会伪装成发送失败；二进制结构化事件只保存长度，不复制可逆 Hex。最终分片路径上的追加、读取和删除互斥；新 `bytesRef` 带 segment SHA-256，可拒绝删除重建/修改后的错误内容，同时兼容旧 path/offset/length 引用。新 profile 默认关闭日志和 Raw，UI 明示 Raw 不脱敏。
+- Text 分片的每个逻辑行带固定三位 UTC 毫秒时间、方向/stream、转义后的 session/pane 和 command ID（无关联为 `-`）；多行事件逐行重复元数据。Raw 保持纯 wire bytes，并由 JSONL 事件与 `bytesRef` 承载相同来源信息。Raw/Text/JSONL 会使用事件开始时的同一 profile 快照，配置并发更新不会把一个事件拆到不同路径；Text 失败会进入随后 JSONL、内存和 SQLite 的 `loggingError`。
 - 显式 `run_command` 在 transport write 前生成 UUID `commandId`，命令出站事件带 `commandState=started`，后续入站事件继承同一 ID；下一条显式命令会替换，普通/OneKey/modem 输入、open/close、断线和重连会清理。该模型不猜测 prompt 或命令结束，快速回显不会先于关联激活，写入失败也不残留；annotations 会保留到 SQLite、JSONL、MCP 和 session bundle。执行型 Quick Command 使用该路径，已加载日志可按完整 ID 搜索并显示短 ID。
 - direct、连接生命周期、trigger、重连、transfer、tunnel 等 system/control 事件通过 Core 的单槽 wake + 4,096 条有界 outbox 统一写入脱敏 Text/JSONL 并实时 emit；system sink 不创建或追加 Raw，正常运行中每个入队事件只发布一次，退出时会停用共享 notifier、drain 并 join worker。积压超限或 worker 断开会在 store event 写入 `loggingError`，不会无限增长或静默丢弃后续诊断。事件后补 annotations 会按内容变化更新 SQLite `events` mirror，不退化为重复插入全部历史。
 - `工具 -> 日志管理` 可安全枚举 raw/txt/jsonl 分片，按路径和格式筛选、查看受限尾部预览（raw/非 UTF-8 使用 Hex）并批量清理；扫描、预览和删除均有数量/大小上限，symlink、路径穿越和非分片扩展不会进入操作范围。
@@ -146,7 +147,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 主要缺口：
 
-- 毫秒级分片文件，以及 bundle 的签名/自定义附件选择还需增强。
+- bundle 的签名/自定义附件选择还需增强。
 - 传输任务对 local/SFTP/SCP copy loop、远端命令型复制目标大小轮询和 X/Y/ZModem block loop 已有实时进度/速度与取消。
 
 ### MCP Surface
@@ -246,7 +247,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 233：`portmate` 170、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 32 个文件、182 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 235：`portmate` 172、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 32 个文件、182 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -275,7 +276,7 @@ npm run build
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；本机 macOS/Windows 使用带超时和输出边界的异步平台命令，Windows 远端在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
-| 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；毫秒级分片待补。 |
+| 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；bundle 签名/附件仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
@@ -303,7 +304,7 @@ npm run build
 
 ### P2：日志、诊断和 MCP 产品化
 
-1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、显式命令 UUID 关联和 system Text/JSONL sink 已完成；继续补毫秒级分片。
+1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、逐行毫秒元数据、显式命令 UUID 关联和 system Text/JSONL sink 已完成。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
