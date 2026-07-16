@@ -2339,6 +2339,9 @@ button {
 
 .workspace-view-context-menu {
   width: 244px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .workspace-view-context-title {

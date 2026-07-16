@@ -71,8 +71,10 @@ import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrend
 import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
+import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
 import { isWorkspaceFocusModeShortcut, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspacePanelId } from "./workspace-panel-state";
+import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
@@ -85,6 +87,7 @@ const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
+const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -357,6 +360,15 @@ export default function App() {
     ? findWorkspacePane(workspaceRoot, workspaceViewContextMenu.paneId)
     : undefined;
   const workspaceContextView = workspaceContextPane?.views.find((view) => view.id === workspaceViewContextMenu?.viewId);
+  const workspaceContextSession = sessions.find((session) => session.profile.id === workspaceContextView?.sessionId);
+  const workspacePanes = workspacePaneLeaves(workspaceRoot);
+  const workspaceContextCapabilities = workspaceViewContextCapabilities(
+    workspaceContextPane,
+    workspaceContextView?.id,
+    workspacePanes.length,
+    workspacePanes.reduce((count, pane) => count + pane.views.length, 0),
+    closedWorkspaceViews.some((closed) => sessions.some((session) => session.profile.id === closed.view.sessionId)),
+  );
   const activeStatus = active?.runtime.status;
   const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
   syncInputRef.current = syncInput;
@@ -1104,7 +1116,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "水平拆分" || item === "垂直拆分") {
-      splitWorkspace(item === "水平拆分" ? "vertical" : "horizontal");
+      splitWorkspace(workspaceSplitDirectionForVisualOrientation(item === "水平拆分" ? "horizontal" : "vertical"));
       return;
     }
     if (item === "复制视图") {
@@ -1297,11 +1309,11 @@ function handleMenuAction(item: string) {
     applySavedSession(saved);
   }
 
-  async function saveSessionFromContext(sessionId?: string | null) {
+  async function saveSessionFromContext(sessionId?: string | null, activateWorkspace = true) {
     const session = contextSession(sessionId);
     if (!session) return;
     const saved = await saveProfile(prepareSessionProfile(session.profile));
-    applySavedSession(saved);
+    applySavedSession(saved, activateWorkspace);
     setNotice({ title: "保存会话", message: `已保存 ${saved.profile.name}` });
   }
 
@@ -1408,10 +1420,10 @@ function handleMenuAction(item: string) {
         void saveSessionFromContext(sessionId);
         return;
       case "split-h":
-        splitWorkspace("horizontal");
+        splitWorkspace(workspaceSplitDirectionForVisualOrientation("horizontal"));
         return;
       case "split-v":
-        splitWorkspace("vertical");
+        splitWorkspace(workspaceSplitDirectionForVisualOrientation("vertical"));
         return;
       case "move-group":
         void moveSessionToGroupFromContext(sessionId);
@@ -1519,19 +1531,24 @@ function handleMenuAction(item: string) {
     });
   }
 
-  function splitWorkspace(direction: WorkspaceSplitDirection, placement: WorkspaceSplitPlacement = "second") {
-    const primaryId = activeId || sessions[0]?.profile.id;
+  function splitWorkspace(
+    direction: WorkspaceSplitDirection,
+    placement: WorkspaceSplitPlacement = "second",
+    paneId = activePaneId,
+    sessionId = activeId,
+  ) {
+    const primaryId = sessionId || sessions[0]?.profile.id;
     if (!primaryId) {
       openNewSessionDialog();
       return;
     }
-    const root = workspaceRoot ?? createWorkspacePane(primaryId, activePaneId || createWorkspaceNodeId("pane"));
+    const root = workspaceRoot ?? createWorkspacePane(primaryId, paneId || createWorkspaceNodeId("pane"));
     const panes = workspacePaneLeaves(root);
     if (panes.length >= MAX_WORKSPACE_PANES) {
       setNotice({ title: "分屏", message: `最多同时打开 ${MAX_WORKSPACE_PANES} 个窗格。` });
       return;
     }
-    const targetPane = findWorkspacePane(root, activePaneId)
+    const targetPane = findWorkspacePane(root, paneId)
       ?? findWorkspacePaneBySession(root, primaryId)
       ?? panes[0];
     if (!targetPane) return;
@@ -1681,10 +1698,11 @@ function handleMenuAction(item: string) {
     if (pane) closeWorkspaceViews(pane.id, [pane.activeViewId]);
   }
 
-  function closeOtherWorkspaceViews() {
-    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+  function closeOtherWorkspaceViews(paneId = activePaneId, viewId?: string) {
+    const pane = findWorkspacePane(workspaceRoot, paneId);
     if (!pane) return;
-    const viewIds = pane.views.filter((view) => view.id !== pane.activeViewId).map((view) => view.id);
+    const activeViewId = viewId ?? pane.activeViewId;
+    const viewIds = pane.views.filter((view) => view.id !== activeViewId).map((view) => view.id);
     if (!viewIds.length) {
       setNotice({ title: "关闭其他视图", message: "当前分组没有其他视图。" });
       return;
@@ -1692,10 +1710,11 @@ function handleMenuAction(item: string) {
     closeWorkspaceViews(pane.id, viewIds);
   }
 
-  function closeRightWorkspaceViews() {
-    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+  function closeRightWorkspaceViews(paneId = activePaneId, viewId?: string) {
+    const pane = findWorkspacePane(workspaceRoot, paneId);
     if (!pane) return;
-    const activeIndex = pane.views.findIndex((view) => view.id === pane.activeViewId);
+    const activeIndex = pane.views.findIndex((view) => view.id === (viewId ?? pane.activeViewId));
+    if (activeIndex < 0) return;
     const viewIds = pane.views.slice(activeIndex + 1).map((view) => view.id);
     if (!viewIds.length) {
       setNotice({ title: "关闭右侧视图", message: "活动视图右侧没有其他视图。" });
@@ -1743,6 +1762,55 @@ function handleMenuAction(item: string) {
     setZoomedPaneId((current) => current ? target.id : "");
     setClosedWorkspaceViews((current) => current.slice(0, historyIndex));
     focusWorkspacePaneInput(target.id);
+  }
+
+  function handleWorkspaceViewContextAction(
+    action: WorkspaceViewContextAction,
+    paneId: string,
+    viewId: string,
+  ) {
+    const pane = findWorkspacePane(workspaceRoot, paneId);
+    const view = pane?.views.find((candidate) => candidate.id === viewId);
+    if (!pane || !view) return;
+    setWorkspaceViewContextMenu(null);
+    switch (action) {
+      case "copy-name":
+        copySessionNameFromContext(view.sessionId);
+        return;
+      case "copy-url":
+        copySessionUrlFromContext(view.sessionId);
+        return;
+      case "reconnect":
+        void connectSession(view.sessionId, undefined, false);
+        return;
+      case "save":
+        void saveSessionFromContext(view.sessionId, false);
+        return;
+      case "split-horizontal":
+        splitWorkspace(workspaceSplitDirectionForVisualOrientation("horizontal"), "second", pane.id, view.sessionId);
+        return;
+      case "split-vertical":
+        splitWorkspace(workspaceSplitDirectionForVisualOrientation("vertical"), "second", pane.id, view.sessionId);
+        return;
+      case "move-group":
+        setWorkspaceGroupMove({ paneId: pane.id, mode: "view" });
+        return;
+      case "close":
+        closeWorkspaceViews(pane.id, [view.id]);
+        return;
+      case "close-other":
+        closeOtherWorkspaceViews(pane.id, view.id);
+        return;
+      case "close-right":
+        closeRightWorkspaceViews(pane.id, view.id);
+        return;
+      case "reopen":
+        reopenClosedWorkspaceView();
+        return;
+      case "settings":
+        openSessionSettingsFromContext(view.sessionId);
+        return;
+    }
   }
 
   function closeWorkspacePane(paneId = activePaneId, recordHistory = true) {
@@ -2710,27 +2778,26 @@ function handleMenuAction(item: string) {
         />
       )}
 
-      {workspaceViewContextMenu && workspaceContextPane && workspaceContextView && (
-        <WorkspaceViewContextMenu
-          state={workspaceViewContextMenu}
-          view={workspaceContextView}
-          label={workspaceContextView.title || sessions.find((session) => session.profile.id === workspaceContextView.sessionId)?.profile.name || "会话"}
-          canDuplicate={workspaceContextPane.views.length < MAX_WORKSPACE_GROUP_TABS}
-          canClose={workspacePaneLeaves(workspaceRoot).reduce((count, pane) => count + pane.views.length, 0) > 1}
-          onColor={(color) => changeWorkspaceViewColor(workspaceContextPane.id, workspaceContextView.id, color)}
-          onDuplicate={() => {
-            setWorkspaceViewContextMenu(null);
-            duplicateActiveWorkspaceView(workspaceContextPane.id, workspaceContextView.id);
-          }}
-          onRename={() => {
-            setWorkspaceViewContextMenu(null);
-            openWorkspaceViewRename(workspaceContextPane.id, workspaceContextView.id);
-          }}
-          onClose={() => {
-            setWorkspaceViewContextMenu(null);
-            closeWorkspaceViews(workspaceContextPane.id, [workspaceContextView.id]);
-          }}
-        />
+      {workspaceViewContextMenu && workspaceContextPane && workspaceContextView && workspaceContextSession && (
+        <Suspense fallback={null}>
+          <LazyWorkspaceViewContextMenu
+            state={workspaceViewContextMenu}
+            view={workspaceContextView}
+            label={workspaceContextView.title || workspaceContextSession.profile.name}
+            colors={tabColorChoices}
+            {...workspaceContextCapabilities}
+            onColor={(color) => changeWorkspaceViewColor(workspaceContextPane.id, workspaceContextView.id, color)}
+            onDuplicate={() => {
+              setWorkspaceViewContextMenu(null);
+              duplicateActiveWorkspaceView(workspaceContextPane.id, workspaceContextView.id);
+            }}
+            onRename={() => {
+              setWorkspaceViewContextMenu(null);
+              openWorkspaceViewRename(workspaceContextPane.id, workspaceContextView.id);
+            }}
+            onAction={(action) => handleWorkspaceViewContextAction(action, workspaceContextPane.id, workspaceContextView.id)}
+          />
+        </Suspense>
       )}
 
       {workspaceGroupMove && (
@@ -4473,78 +4540,6 @@ function clearWorkspaceDropTarget(element: HTMLElement) {
 
 function clearWorkspaceDropIndicators() {
   document.querySelectorAll<HTMLElement>("[data-drop-position]").forEach(clearWorkspaceDropTarget);
-}
-
-function WorkspaceViewContextMenu({
-  state,
-  view,
-  label,
-  canDuplicate,
-  canClose,
-  onColor,
-  onDuplicate,
-  onRename,
-  onClose,
-}: {
-  state: NonNullable<WorkspaceViewContextMenuState>;
-  view: WorkspaceView;
-  label: string;
-  canDuplicate: boolean;
-  canClose: boolean;
-  onColor: (color: string) => void;
-  onDuplicate: () => void;
-  onRename: () => void;
-  onClose: () => void;
-}) {
-  const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
-  const top = Math.max(8, Math.min(state.y, window.innerHeight - 310));
-  return (
-    <div
-      className="portmate-context-menu workspace-view-context-menu"
-      style={{ left, top }}
-      onClick={(event) => event.stopPropagation()}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      <div className="workspace-view-context-title" title={label}>
-        <span className={view.color ? "tab-mark colored" : "tab-mark"} style={view.color ? { background: view.color } : undefined} />
-        <strong>{label}</strong>
-      </div>
-      <span className="context-section-label">标签颜色</span>
-      <div className="workspace-view-color-grid" role="group" aria-label="标签颜色">
-        {tabColorChoices.map((color) => (
-          <button
-            key={color.value}
-            type="button"
-            className={view.color === color.value ? "active" : ""}
-            title={color.label}
-            aria-label={color.label}
-            aria-pressed={view.color === color.value}
-            onClick={() => onColor(color.value)}
-          >
-            <span style={{ background: color.value }} />
-          </button>
-        ))}
-        <button
-          type="button"
-          className={!view.color ? "active clear" : "clear"}
-          title="清除颜色"
-          aria-label="清除颜色"
-          aria-pressed={!view.color}
-          onClick={() => onColor("")}
-        >
-          <Ban size={13} />
-        </button>
-      </div>
-      <ContextDivider />
-      <ContextMenuButton label="复制视图" disabled={!canDuplicate} onClick={onDuplicate} />
-      <ContextMenuButton label="重命名视图" onClick={onRename} />
-      <ContextDivider />
-      <ContextMenuButton label="关闭视图" disabled={!canClose} onClick={onClose} />
-    </div>
-  );
 }
 
 function PortMateContextMenu({
