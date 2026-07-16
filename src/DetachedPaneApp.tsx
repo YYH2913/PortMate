@@ -3,6 +3,7 @@ import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
+import { COMMAND_HISTORY_STORAGE_KEY, commandHistoryCommands, normalizeCommandHistory, normalizeCommandHistoryPolicy } from "./command-history-state";
 import {
   buildDetachedPanePath,
   DETACHED_PANE_EVENT,
@@ -79,7 +80,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (["portmate.terminalPrefs", "portmate.commandHistory", QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
+      if (["portmate.terminalPrefs", COMMAND_HISTORY_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
         setTerminalInteractionPrefs(readTerminalInteractionPrefs());
       }
     };
@@ -283,13 +284,15 @@ function readTerminalInteractionPrefs() {
     if (!raw) return defaults;
     const value = JSON.parse(raw) as {
       oneKeyCompletionEnabled?: unknown;
+      historyLimit?: unknown;
+      historyRetentionDays?: unknown;
       mouseReporting?: unknown;
       mouseCopyOnSelect?: unknown;
     };
     return {
       oneKeyCompletionEnabled: typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true,
       completionSettings: value,
-      completionHistory: readCompletionHistory(),
+      completionHistory: readCompletionHistory(value.historyLimit, value.historyRetentionDays),
       completionQuickCommands: readCompletionQuickCommands(),
       mouseReporting: typeof value.mouseReporting === "boolean" ? value.mouseReporting : true,
       copyOnSelect: typeof value.mouseCopyOnSelect === "boolean" ? value.mouseCopyOnSelect : true,
@@ -299,10 +302,13 @@ function readTerminalInteractionPrefs() {
   }
 }
 
-function readCompletionHistory(): string[] {
+function readCompletionHistory(limit?: unknown, retentionDays?: unknown): string[] {
   try {
-    const value = JSON.parse(window.localStorage.getItem("portmate.commandHistory") ?? "[]") as unknown;
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 200) : [];
+    const value = JSON.parse(window.localStorage.getItem(COMMAND_HISTORY_STORAGE_KEY) ?? "null") as unknown;
+    return commandHistoryCommands(normalizeCommandHistory(
+      value,
+      normalizeCommandHistoryPolicy(limit, retentionDays),
+    ));
   } catch {
     return [];
   }

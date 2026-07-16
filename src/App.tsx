@@ -41,6 +41,7 @@ import {
   X,
 } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
+import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards, summarizeBundleAttachmentSelection } from "./log-shard-state";
@@ -101,6 +102,9 @@ const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDi
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
+const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
+const MAX_COMMAND_HISTORY_LIMIT = 10_000;
+const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "导出终端文本", "导出选中文本", "复制会话", "还原布局"] },
@@ -330,7 +334,16 @@ export default function App() {
   const [syncInputSettings, setSyncInputSettings] = useState<SyncInputSettings>(() => (
     normalizeSyncInputSettings(loadLocalValue<unknown>("portmate.syncInputSettings", defaultSyncInputSettings))
   ));
-  const [commandHistory, setCommandHistory] = useState<string[]>(() => loadLocalValue("portmate.commandHistory", []));
+  const commandHistoryPolicy = useMemo(
+    () => ({
+      limit: normalizeCommandHistoryInteger(terminalPrefs.historyLimit, 1, MAX_COMMAND_HISTORY_LIMIT, MAX_COMMAND_HISTORY_LIMIT),
+      retentionDays: normalizeCommandHistoryInteger(terminalPrefs.historyRetentionDays, 0, MAX_COMMAND_HISTORY_RETENTION_DAYS, 30),
+    }),
+    [terminalPrefs.historyLimit, terminalPrefs.historyRetentionDays],
+  );
+  const [commandHistoryEntries, setCommandHistoryEntries] = useState<CommandHistoryEntry[]>([]);
+  const [commandHistoryReady, setCommandHistoryReady] = useState(false);
+  const commandHistory = commandHistoryEntries.map((entry) => entry.command);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
     normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
   ));
@@ -741,8 +754,45 @@ export default function App() {
   }, [syncInputSettings]);
 
   useEffect(() => {
-    saveLocalValue("portmate.commandHistory", commandHistory.slice(0, 200));
-  }, [commandHistory]);
+    let disposed = false;
+    void import("./command-history-state").then(({ normalizeCommandHistory }) => {
+      if (disposed) return;
+      setCommandHistoryEntries(normalizeCommandHistory(
+        terminalPrefs.historyEnabled
+          ? loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null)
+          : null,
+        commandHistoryPolicy,
+      ));
+      setCommandHistoryReady(true);
+    });
+    return () => { disposed = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!commandHistoryReady) return;
+    let disposed = false;
+    void import("./command-history-state").then((history) => {
+      if (disposed) return;
+      const normalized = history.normalizeCommandHistory(
+        history.commandHistorySnapshot(commandHistoryEntries),
+        commandHistoryPolicy,
+      );
+      if (!history.commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
+        setCommandHistoryEntries(normalized);
+        return;
+      }
+      try {
+        if (terminalPrefs.historyEnabled && normalized.length) {
+          window.localStorage.setItem(COMMAND_HISTORY_STORAGE_KEY, JSON.stringify(history.commandHistorySnapshot(normalized)));
+        } else {
+          window.localStorage.removeItem(COMMAND_HISTORY_STORAGE_KEY);
+        }
+      } catch {
+        // History persistence is best-effort; the in-memory list remains available.
+      }
+    });
+    return () => { disposed = true; };
+  }, [commandHistoryEntries, commandHistoryPolicy, commandHistoryReady, terminalPrefs.historyEnabled]);
 
   useEffect(() => {
     saveLocalValue(QUICK_COMMAND_STORAGE_KEY, { version: 1, items: quickCommands });
@@ -2582,7 +2632,7 @@ function handleMenuAction(item: string) {
         }
       }
       if (sendMode === "text" && textPayload.trim()) {
-        setCommandHistory((current) => [textPayload, ...current.filter((item) => item !== textPayload)].slice(0, 200));
+        rememberCommand(textPayload);
       }
     } catch (error) {
       setNotice({ title: "发送失败", message: formatError(error) });
@@ -2597,10 +2647,26 @@ function handleMenuAction(item: string) {
       return;
     }
     if (command.appendEnter && command.command.trim()) {
-      setCommandHistory((current) => [command.command, ...current.filter((item) => item !== command.command)].slice(0, 200));
+      rememberCommand(command.command);
     }
     const dispatch = quickCommandDispatch(command);
     void routeTerminalInput(active.profile.id, dispatch.text, dispatch.origin);
+  }
+
+  function rememberCommand(command: string) {
+    void import("./command-history-state").then(({ recordCommandHistory }) => {
+      setCommandHistoryEntries((current) => recordCommandHistory(current, command, commandHistoryPolicy));
+      setCommandHistoryReady(true);
+    });
+  }
+
+  function clearCommandHistory() {
+    setCommandHistoryEntries([]);
+    try {
+      window.localStorage.removeItem(COMMAND_HISTORY_STORAGE_KEY);
+    } catch {
+      // Clearing the in-memory list still succeeds when storage is unavailable.
+    }
   }
 
   function setWorkspacePanelVisible(panel: WorkspacePanelId, visible: boolean) {
@@ -3001,6 +3067,7 @@ function handleMenuAction(item: string) {
           syncSettings={syncInputSettings}
           workspaceKeymap={workspaceKeymap}
           onPrefsChange={setTerminalPrefs}
+          onClearCommandHistory={clearCommandHistory}
           onSyncSettingsChange={setSyncInputSettings}
           onWorkspaceKeymapChange={setWorkspaceKeymap}
           onClose={() => setDialog(null)}
@@ -7328,6 +7395,7 @@ function TerminalSettingsDialog({
   syncSettings,
   workspaceKeymap,
   onPrefsChange,
+  onClearCommandHistory,
   onSyncSettingsChange,
   onWorkspaceKeymapChange,
   onClose,
@@ -7336,6 +7404,7 @@ function TerminalSettingsDialog({
   syncSettings: SyncInputSettings;
   workspaceKeymap: WorkspaceKeymap;
   onPrefsChange: (prefs: TerminalPrefs) => void;
+  onClearCommandHistory: () => void;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
@@ -7393,6 +7462,7 @@ function TerminalSettingsDialog({
           prefs={prefs}
           workspaceKeymap={workspaceKeymapDraft}
           updatePref={updatePref}
+          onClearCommandHistory={onClearCommandHistory}
           onWorkspaceKeymapChange={setWorkspaceKeymapDraft}
           syncSettings={syncDraft}
           onSyncSettingsChange={setSyncDraft}
@@ -7416,6 +7486,7 @@ function TerminalSettingsContent({
   prefs,
   workspaceKeymap,
   updatePref,
+  onClearCommandHistory,
   onWorkspaceKeymapChange,
   syncSettings,
   onSyncSettingsChange,
@@ -7424,6 +7495,7 @@ function TerminalSettingsContent({
   prefs: TerminalPrefs;
   workspaceKeymap: WorkspaceKeymap;
   updatePref: <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => void;
+  onClearCommandHistory: () => void;
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   syncSettings: SyncInputSettings;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
@@ -7604,13 +7676,13 @@ function TerminalSettingsContent({
       return (
         <>
           <SettingsSection title="容量">
-            <SettingInput label="保留历史天数:(D)" value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
-            <SettingInput label="历史大小:(H)" value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
+            <SettingInput label="保留历史天数:(D)" type="number" min={0} max={MAX_COMMAND_HISTORY_RETENTION_DAYS} step={1} value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
+            <SettingInput label="历史大小:(H)" type="number" min={1} max={MAX_COMMAND_HISTORY_LIMIT} step={1} value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
           </SettingsSection>
           <SettingsSection title="存储">
             <SettingCheck label="将命令历史保存到磁盘(S)" checked={prefs.historyEnabled} onChange={(value) => updatePref("historyEnabled", value)} />
             <SettingButtonRow label="已保存的命令历史:">
-              <button className="settings-secondary-button" type="button">
+              <button className="settings-secondary-button" type="button" onClick={onClearCommandHistory}>
                 清除(C)
               </button>
             </SettingButtonRow>
@@ -9983,6 +10055,8 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? value as Partial<TerminalPrefs>
     : {};
+  const historyLimit = normalizeCommandHistoryInteger(source.historyLimit, 1, MAX_COMMAND_HISTORY_LIMIT, MAX_COMMAND_HISTORY_LIMIT);
+  const historyRetentionDays = normalizeCommandHistoryInteger(source.historyRetentionDays, 0, MAX_COMMAND_HISTORY_RETENTION_DAYS, 30);
   return {
     ...defaults,
     ...source,
@@ -10000,10 +10074,26 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
     mouseCopyOnSelect: typeof source.mouseCopyOnSelect === "boolean"
       ? source.mouseCopyOnSelect
       : defaults.mouseCopyOnSelect,
+    historyEnabled: typeof source.historyEnabled === "boolean"
+      ? source.historyEnabled
+      : defaults.historyEnabled,
+    historyRetentionDays: String(historyRetentionDays),
+    historyLimit: String(historyLimit),
     startupSessions: Array.isArray(source.startupSessions)
       ? source.startupSessions.slice(0, 4).map((item) => typeof item === "string" ? item : "")
       : defaults.startupSessions,
   };
+}
+
+function normalizeCommandHistoryInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.trunc(parsed)));
 }
 
 function loadTerminalPrefs(): TerminalPrefs {

@@ -50,6 +50,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
 - WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/按目标协议终止符执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史并走显式 `run_command`；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
+- `终端设置 -> 命令历史` 已从空表单补为真实策略：旧字符串数组迁移为带毫秒时间戳的 v2 快照，保存开关、`1..10,000` 条容量、`0..3,650` 天保留期和清除按钮共同驱动主窗口历史面板及主/独立窗口补全。重复命令更新到首位，单项限制 8,192 Unicode 字符，持久化 UTF-8 总量限制 2 MiB；关闭磁盘保存会删除快照但保留当前进程历史，清除同时清空两者。历史引擎按需加载，避免重新推高主包。
 - WindTerm scheme 风格命令补全已接入焦点 Remote 模式的 Shell/SSH/Tmux/Telnet/Raw TCP 主窗口与独立窗口。候选在本地合并常用命令名、选项、子命令、显式历史和 Quick Commands，不探测远端或调用外部服务；已有 Auto Completion 设置会独立控制来源、1/2/3 字符触发、5/7/10 行列表和预览方式。方向键选择、Tab 只经现有交互/同步输入 lane 追加尚未输入的后缀、Escape 关闭，绝不自动执行命令。跟踪器支持纯追加输入、Backspace、Ctrl+U/Ctrl+W；粘贴、光标/未知控制序列、引号、重定向和 shell 运算符会保守暂停到下一行，OneKey 敏感提示出现时也会先抑制候选，避免伪造远端行编辑状态。
 - WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。主窗口和独立窗口还会按 WindTerm 默认规则跨分片/ANSI/退格识别当前末行的 username/login/password 提示，过滤密码修改提示，只在聚焦 pane 显示绑定候选确认条；用户输入、提示变化或关闭 `终端设置 -> Auto Completion -> OneKey 终端提示补全` 会撤销。补全请求仅提交 OneKey/会话/字段/提示事件 ID，后端在 Secret 读取前及等待出站 lane 后重新验证提示时效、字段、绑定、用户名和 OneKey 版本，成功只记录关联原提示事件且无正文的 `one-key-completion` control event。OneKeys 与 localStorage Quick Commands 保持独立。
 - `查看` 菜单中的资源管理器、文件管理器、会话、历史命令、发送、快捷栏和状态栏已从无效提示改为带勾选态的真实开关；四个 dock 标题栏和发送面板使用可聚焦的关闭/设置按钮。默认工作区现只保留 280px 资源树、pane 自身的单层 view 标签、终端和精简状态栏；重复的全局 session 标签已删除，文件/右侧重复会话/历史/发送按需开启，状态栏也移除了伪窗口/行列值、时钟和 Issues 占位。v2 pane 快照会把旧版未经修改的六面板全开默认迁移为紧凑布局，同时保留定制过的 v1 组合；session 右键操作已迁到资源树并携带精确 session ID。单侧只剩一个 pane 时自动占满，整侧、发送区或状态栏隐藏后空间会完整归还终端，并与 Quick Bar 正确组合；移动端响应式隐藏不覆盖桌面选择。`模式 -> 专注模式`、顶部按钮和 WindTerm `Alt+Enter` 会临时隐藏这些区域但不改写持久化选择，退出精确恢复；快捷键只在 XTerm 工作区生效，同步输入开启时强制保留状态栏风险提示。
@@ -197,11 +198,11 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把应用壳、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 498.3 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.4 kB、终端 CSS 约 3.9 kB；session/终端菜单约 4.9 kB、终端 buffer 与选择事件/执行各约 1.4 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
+`npm run build` 已把应用壳、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 499.9 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.4 kB、终端 CSS 约 3.9 kB；命令历史状态约 1.8 kB、session/终端菜单约 4.9 kB、终端 buffer 与选择事件/执行各约 1.4 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
-工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式、主/独立窗口锁屏及 1440x900/390x844 边界。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。上述非输入操作均检查不会意外调用 `send_text`、`send_bytes` 或 `run_command`。
+工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式、主/独立窗口锁屏及 1440x900/390x844 边界。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。上述非输入操作均检查不会意外调用 `send_text`、`send_bytes` 或 `run_command`。
 
 已有单元测试覆盖：
 
@@ -220,6 +221,7 @@ npm run build
 - 自由输入的 Unicode 字符上限、跨平台换行原子提交、空/空格草稿、可编辑选区剪切和菜单到焦点 pane 的事件分发。
 - 键盘模式非法值回退、Remote/Local/Normal/Command 转换、`Ctrl+Enter`、计数前缀、Vim 风格导航/搜索/可视选择命令，以及非 Remote 模式对未映射键和组合输入的消费。
 - 命令补全损坏设置归一化、输入/退格/Ctrl+U/Ctrl+W 状态、未知控制序列暂停和换行恢复、命令/选项/子命令后缀、Quick/历史去重排序、来源开关、触发阈值与复杂 shell 语法退让。
+- 命令历史容量/保留期归一化、旧字符串数组迁移、空/NUL/超长/重复命令拒绝、未来/过期时间戳处理、重复命令置顶、条数与 2 MiB UTF-8 总量上限，以及防御性 v2 快照。
 - 串口分析器设置损坏值修复、Hex 分隔符校验、跨捕获分片且方向隔离的 delimiter/SLIP/COBS/Modbus framing、RFC 1055 END/ESC 解码、COBS 连续/空载荷/长度错误、Modbus 自动/手动静默阈值、标准 FC03/FC83 向量、CRC/地址/短帧错误、实时/Raw 日志源隔离、持久引用路径/范围/hash 校验、不可用/窗口外计数、历史精确导出、解码/线上双视图、定长完整/尾帧、空闲间隔、截断传播、4,096 帧环形显示边界、方向/Hex/ASCII/书签筛选、书签上限/不可变切换、Hex dump 和独立窗口路由校验。
 - Quick Commands 的旧数组迁移、Unicode 名称/正文边界、NUL 清理、无效/重复 ID 修复、64 条上限、插入/执行 payload 和不可变上下排序。
 - 工作区 pane/bar 的紧凑默认值、未经修改的 v1 全开布局到 v2 的迁移、定制 v1/旧直存快照恢复、逐字段损坏修复、幂等设置和不可变切换，以及不修改原状态的专注布局派生、同步输入状态栏保留和精确 `Alt+Enter` 识别。
@@ -259,7 +261,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 38 个文件、214 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 39 个文件、219 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -292,7 +294,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
-| 测试体系 | 部分实现 | core/协议集成测试、38 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | core/协议集成测试、39 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
