@@ -2865,7 +2865,8 @@ button {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.terminal-search-bar {
+.terminal-search-bar,
+.terminal-goto-line {
   position: absolute;
   z-index: 6;
   top: 8px;
@@ -2883,6 +2884,10 @@ button {
   background: #111820;
   color: var(--muted);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.terminal-goto-line {
+  width: min(500px, calc(100% - 20px));
 }
 
 @media (max-width: 600px) {
@@ -2904,11 +2909,13 @@ button {
   }
 }
 
-.terminal-search-bar:focus-within {
+.terminal-search-bar:focus-within,
+.terminal-goto-line:focus-within {
   border-color: rgba(94, 234, 212, 0.55);
 }
 
-.terminal-search-bar > input {
+.terminal-search-bar > input,
+.terminal-goto-line > input {
   flex: 1 1 160px;
   min-width: 72px;
   height: 26px;
@@ -2922,7 +2929,8 @@ button {
   font-size: 12px;
 }
 
-.terminal-search-bar > input::placeholder {
+.terminal-search-bar > input::placeholder,
+.terminal-goto-line > input::placeholder {
   color: #6f8194;
 }
 
@@ -2939,13 +2947,26 @@ button {
   color: var(--red);
 }
 
-.terminal-search-controls {
+.terminal-goto-line-status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.terminal-goto-line-status.invalid {
+  color: var(--red);
+}
+
+.terminal-search-controls,
+.terminal-goto-line-controls {
   display: flex;
   flex: 0 0 auto;
   gap: 2px;
 }
 
-.terminal-search-controls button {
+.terminal-search-controls button,
+.terminal-goto-line-controls button {
   display: grid;
   width: 26px;
   height: 26px;
@@ -2959,7 +2980,9 @@ button {
 }
 
 .terminal-search-controls button:hover:not(:disabled),
-.terminal-search-controls button:focus-visible {
+.terminal-search-controls button:focus-visible,
+.terminal-goto-line-controls button:hover:not(:disabled),
+.terminal-goto-line-controls button:focus-visible {
   outline: 0;
   border-color: var(--line);
   background: var(--control-hover);
@@ -2972,7 +2995,8 @@ button {
   color: var(--cyan);
 }
 
-.terminal-search-controls button:disabled {
+.terminal-search-controls button:disabled,
+.terminal-goto-line-controls button:disabled {
   cursor: default;
   opacity: 0.3;
 }
@@ -3084,16 +3108,19 @@ button {
 }
 
 @container (max-width: 420px) {
-  .terminal-search-bar {
+  .terminal-search-bar,
+  .terminal-goto-line {
     right: 6px;
     width: calc(100% - 12px);
   }
 
-  .terminal-search-bar > input {
+  .terminal-search-bar > input,
+  .terminal-goto-line > input {
     flex-basis: calc(100% - 24px);
   }
 
-  .terminal-search-status {
+  .terminal-search-status,
+  .terminal-goto-line-status {
     margin-left: auto;
   }
 

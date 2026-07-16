@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { CaseSensitive, ChevronDown, ChevronUp, KeyRound, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
+import { CaseSensitive, ChevronDown, ChevronUp, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -29,6 +29,8 @@ import type {
 import { defaultTerminalCompletionPreferences, terminalCompletionPreferencesFromSettings } from "./terminal-completion-prefs";
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
+import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine, TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line";
+import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
@@ -70,6 +72,13 @@ type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
   anchor: LocalNavigationPosition | null;
   lineSelection: boolean;
+};
+type TerminalGotoLineContext = {
+  currentLine: number;
+  lineCount: number;
+  originViewport: number;
+  resumeFreeInputSource: "manual" | "normal" | null;
+  resumeFreeInputValue: string;
 };
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
@@ -129,6 +138,7 @@ export default function TerminalCanvas({
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const gotoLineInputRef = useRef<HTMLInputElement | null>(null);
   const freeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const pendingInputRef = useRef("");
@@ -148,6 +158,7 @@ export default function TerminalCanvas({
   const localNavigationRef = useRef<LocalNavigationState | null>(null);
   const openSearchRef = useRef<() => void>(() => {});
   const openFreeInputRef = useRef<() => void>(() => {});
+  const openGotoLineRef = useRef<() => void>(() => {});
   const runSearchRef = useRef<(direction: "next" | "previous") => void>(() => {});
   const oneKeyPromptStateRef = useRef<OneKeyPromptDetectionState>(emptyOneKeyPromptDetectionState());
   const oneKeyPromptSessionRef = useRef("");
@@ -164,6 +175,8 @@ export default function TerminalCanvas({
   const [searchWholeWord, setSearchWholeWord] = useState(false);
   const [searchResult, setSearchResult] = useState<TerminalSearchResult | null>(null);
   const [searchInvalid, setSearchInvalid] = useState(false);
+  const [gotoLineContext, setGotoLineContext] = useState<TerminalGotoLineContext | null>(null);
+  const [gotoLineQuery, setGotoLineQuery] = useState("");
   const [freeInputSource, setFreeInputSource] = useState<"manual" | "normal" | null>(null);
   const [freeInputValue, setFreeInputValue] = useState("");
   const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
@@ -173,6 +186,14 @@ export default function TerminalCanvas({
   const [completionInput, setCompletionInput] = useState<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
+  const gotoLineOpen = gotoLineContext !== null;
+  const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
+    ? resolveTerminalGotoLine(
+      gotoLineQuery,
+      gotoLineContext.currentLine,
+      gotoLineContext.lineCount,
+    )
+    : { kind: "empty" };
   const completionPreferences: TerminalCompletionPreferences = useMemo(
     () => completionSettings === undefined
       ? defaultTerminalCompletionPreferences
@@ -196,6 +217,7 @@ export default function TerminalCanvas({
       && completionSupported
       && keyMode === "remote"
       && !searchOpen
+      && !gotoLineOpen
       && !freeInputSource
       && !oneKeyPrompt
       && completionInput.synchronized
@@ -216,6 +238,7 @@ export default function TerminalCanvas({
     completionSupported,
     focused,
     freeInputSource,
+    gotoLineOpen,
     keyMode,
     oneKeyPrompt,
     searchOpen,
@@ -234,6 +257,7 @@ export default function TerminalCanvas({
   completionSelectionRef.current = activeCompletionIndex;
   const freeInputOpen = freeInputSource !== null;
   openSearchRef.current = () => {
+    closeTerminalGotoLine(true, false);
     setFreeInputSource(null);
     setFreeInputValue("");
     const selection = terminalSearchSeed(termRef.current?.getSelection() ?? "");
@@ -246,14 +270,42 @@ export default function TerminalCanvas({
     });
   };
   openFreeInputRef.current = () => {
+    closeTerminalGotoLine(true, false);
     dismissOneKeyPrompt();
     searchRef.current?.clearDecorations();
     setSearchOpen(false);
     setSearchResult(null);
     setSearchInvalid(false);
-    if (!freeInputOpen) setFreeInputValue("");
+    if (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource) setFreeInputValue("");
     setFreeInputSource("manual");
     window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+  };
+  openGotoLineRef.current = () => {
+    const term = termRef.current;
+    if (!term) return;
+    if (gotoLineContext) {
+      window.requestAnimationFrame(() => gotoLineInputRef.current?.focus({ preventScroll: true }));
+      return;
+    }
+    searchRef.current?.clearDecorations();
+    setSearchOpen(false);
+    setSearchResult(null);
+    setSearchInvalid(false);
+    setFreeInputSource(null);
+    const buffer = term.buffer.active;
+    const lineCount = Math.max(1, buffer.length);
+    const currentLine = localNavigationRef.current
+      ? Math.min(lineCount, localNavigationRef.current.row + 1)
+      : terminalGotoCurrentLine(buffer.viewportY, term.rows, lineCount);
+    setGotoLineQuery("");
+    setGotoLineContext({
+      currentLine,
+      lineCount,
+      originViewport: buffer.viewportY,
+      resumeFreeInputSource: freeInputSource,
+      resumeFreeInputValue: freeInputValue,
+    });
+    window.requestAnimationFrame(() => gotoLineInputRef.current?.focus({ preventScroll: true }));
   };
   runSearchRef.current = (direction) => runTerminalSearch(direction);
 
@@ -394,6 +446,53 @@ export default function TerminalCanvas({
     setSearchResult(null);
     setSearchInvalid(false);
     window.requestAnimationFrame(() => termRef.current?.focus());
+  }
+
+  function scrollToTerminalGotoLine(targetLine: number) {
+    const term = termRef.current;
+    if (!term || !gotoLineContext) return;
+    term.scrollToLine(terminalGotoViewportLine(
+      targetLine,
+      term.rows,
+      gotoLineContext.lineCount,
+    ));
+  }
+
+  function previewTerminalGotoLine(query: string) {
+    setGotoLineQuery(query);
+    if (!gotoLineContext) return;
+    const resolution = resolveTerminalGotoLine(
+      query,
+      gotoLineContext.currentLine,
+      gotoLineContext.lineCount,
+    );
+    if (resolution.kind === "valid") scrollToTerminalGotoLine(resolution.targetLine);
+    else termRef.current?.scrollToLine(gotoLineContext.originViewport);
+  }
+
+  function closeTerminalGotoLine(restoreViewport: boolean, focusTerminal = true) {
+    if (restoreViewport && gotoLineContext) {
+      termRef.current?.scrollToLine(gotoLineContext.originViewport);
+    }
+    const resumeFreeInputSource = gotoLineContext?.resumeFreeInputSource ?? null;
+    const resumeFreeInputValue = gotoLineContext?.resumeFreeInputValue ?? "";
+    setGotoLineContext(null);
+    setGotoLineQuery("");
+    if (resumeFreeInputSource) {
+      setFreeInputSource(resumeFreeInputSource);
+      setFreeInputValue(resumeFreeInputValue);
+      if (focusTerminal) {
+        window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+      }
+    } else if (focusTerminal) {
+      window.requestAnimationFrame(() => termRef.current?.focus());
+    }
+  }
+
+  function submitTerminalGotoLine() {
+    if (gotoLineResolution.kind !== "valid") return;
+    scrollToTerminalGotoLine(gotoLineResolution.targetLine);
+    closeTerminalGotoLine(false);
   }
 
   function closeTerminalFreeInput() {
@@ -707,6 +806,14 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
+    const requestGotoLine = () => {
+      if (active && focused) openGotoLineRef.current();
+    };
+    window.addEventListener(TERMINAL_GOTO_LINE_REQUEST_EVENT, requestGotoLine);
+    return () => window.removeEventListener(TERMINAL_GOTO_LINE_REQUEST_EVENT, requestGotoLine);
+  }, [active?.profile.id, focused]);
+
+  useEffect(() => {
     const requestFreeInput = () => {
       if (active && focused) openFreeInputRef.current();
     };
@@ -718,6 +825,8 @@ export default function TerminalCanvas({
     resetCompletionInput();
     setFreeInputSource(null);
     setFreeInputValue("");
+    setGotoLineContext(null);
+    setGotoLineQuery("");
   }, [active?.profile.id, viewId]);
 
   useEffect(() => {
@@ -789,6 +898,10 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
+    if (!focused && gotoLineOpen) closeTerminalGotoLine(true, false);
+  }, [focused, gotoLineOpen]);
+
+  useEffect(() => {
     if (!active || !isBackendAvailable()) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -829,7 +942,7 @@ export default function TerminalCanvas({
     <div className="terminal-canvas">
       {active ? (
         <>
-          <div ref={hostRef} className="terminal-host" inert={freeInputOpen} />
+          <div ref={hostRef} className="terminal-host" inert={freeInputOpen || gotoLineOpen} />
           {freeInputOpen ? (
             <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
               event.preventDefault();
@@ -898,6 +1011,7 @@ export default function TerminalCanvas({
           ) : null}
           {focused
             && !freeInputOpen
+            && !gotoLineOpen
             && oneKeyPrompt
             && selectedOneKeyCompletion
             && onOneKeyCompletion ? (
@@ -965,6 +1079,45 @@ export default function TerminalCanvas({
                 ))}
               </div>
             </section>
+          ) : null}
+          {gotoLineContext ? (
+            <form className="terminal-goto-line" aria-label="跳转到终端行" onSubmit={(event) => {
+              event.preventDefault();
+              submitTerminalGotoLine();
+            }}>
+              <ListOrdered size={14} aria-hidden="true" />
+              <input
+                ref={gotoLineInputRef}
+                aria-label="终端行号"
+                aria-invalid={gotoLineResolution.kind === "invalid" || gotoLineResolution.kind === "out-of-range"}
+                value={gotoLineQuery}
+                maxLength={MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH}
+                placeholder="行号，或 +20 / -10"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => previewTerminalGotoLine(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeTerminalGotoLine(true);
+                  }
+                }}
+              />
+              <span
+                className={gotoLineResolution.kind === "invalid" || gotoLineResolution.kind === "out-of-range" ? "terminal-goto-line-status invalid" : "terminal-goto-line-status"}
+                role="status"
+                aria-live="polite"
+              >{terminalGotoLineStatus(
+                gotoLineResolution,
+                gotoLineContext.currentLine,
+                gotoLineContext.lineCount,
+              )}</span>
+              <div className="terminal-goto-line-controls">
+                <button type="submit" aria-label="确认跳转" title="确认跳转" disabled={gotoLineResolution.kind !== "valid"}><CornerDownLeft size={15} /></button>
+                <button type="button" aria-label="取消跳转" title="取消跳转" onClick={() => closeTerminalGotoLine(true)}><X size={15} /></button>
+              </div>
+            </form>
           ) : null}
           {searchOpen ? (
             <form className="terminal-search-bar" onSubmit={(event) => {

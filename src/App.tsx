@@ -60,6 +60,7 @@ import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefau
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
+import { requestTerminalGotoLine } from "./terminal-goto-line";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
@@ -1077,8 +1078,8 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "跳转到行") {
-      setSearchDialog({ mode: "logs", query: "" });
-      setUtilityDialog("search");
+      if (active) requestTerminalGotoLine();
+      else setNotice({ title: "跳转到行", message: "请先打开一个终端会话。" });
       return;
     }
     const terminalKeyMode = terminalKeyModeMenuItems[item];
