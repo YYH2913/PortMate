@@ -6,6 +6,8 @@ export type WorkspaceViewContextAction =
   | "copy-url"
   | "reconnect"
   | "save"
+  | "export-buffer"
+  | "export-selection"
   | "split-horizontal"
   | "split-vertical"
   | "move-group"
@@ -97,6 +99,8 @@ export default function WorkspaceViewContextMenu({
       <Divider />
       <MenuButton label="重新连接会话" onClick={() => onAction("reconnect")} />
       <MenuButton label="保存会话配置" onClick={() => onAction("save")} />
+      <MenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
+      <MenuButton label="导出选中文本" onClick={() => onAction("export-selection")} />
       <Divider />
       <MenuButton label="水平拆分视图" onClick={() => onAction("split-horizontal")} />
       <MenuButton label="垂直拆分视图" onClick={() => onAction("split-vertical")} />

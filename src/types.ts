@@ -329,6 +329,16 @@ export interface ExportSerialCaptureResult {
   truncatedFrames: number;
 }
 
+export interface ExportTerminalTextResult {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  sessionId: string;
+  viewId: string;
+  source: "buffer" | "selection";
+}
+
 export interface LogShardInfo {
   path: string;
   format: "raw" | "txt" | "jsonl";

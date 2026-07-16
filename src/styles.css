@@ -6513,6 +6513,8 @@ fieldset label {
   color: #d7e1eb;
   font-size: 13px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .notice-actions {

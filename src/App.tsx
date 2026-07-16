@@ -52,6 +52,7 @@ import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMM
 import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
+import type { SearchDialogState } from "./SearchDialog";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
@@ -60,6 +61,8 @@ import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefau
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
+import { requestTerminalTextExport } from "./terminal-export-event";
+import type { TerminalTextExportSource } from "./terminal-export-event";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
@@ -79,13 +82,14 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelSpec, TunnelStatus, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
+const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
@@ -94,7 +98,7 @@ const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 
 const menuGroups = [
-  { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "复制会话", "还原布局"] },
+  { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "导出终端文本", "导出选中文本", "复制会话", "还原布局"] },
   { label: "编辑", items: ["复制", "粘贴", "粘贴确认", "全选", "查找"] },
   { label: "搜索", items: ["会话搜索", "日志搜索", "在线搜索"] },
   { label: "选择", items: ["选择全部", "块选择", "清除选择"] },
@@ -175,7 +179,6 @@ type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type SessionPrefs = ReturnType<typeof createSessionPrefs>;
 type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; oneKeyId: string | null; savePassword: boolean; savePassphrase: boolean };
 type NoticeState = { title: string; message: string } | null;
-type SearchDialogState = { mode: "sessions" | "logs"; query: string };
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
@@ -1102,6 +1105,10 @@ function handleMenuAction(item: string) {
       else setNotice({ title: "跳转到行", message: "请先打开一个终端会话。" });
       return;
     }
+    if (item === "导出终端文本" || item === "导出选中文本") {
+      void exportTerminalText(item === "导出终端文本" ? "buffer" : "selection");
+      return;
+    }
     const terminalKeyMode = terminalKeyModeMenuItems[item];
     if (terminalKeyMode) {
       setActiveWorkspaceViewKeyMode(terminalKeyMode);
@@ -1350,6 +1357,46 @@ function handleMenuAction(item: string) {
     if (!session) return;
     const url = `portmate://sessions/${encodeURIComponent(session.profile.id)}?kind=${encodeURIComponent(session.profile.kind)}&endpoint=${encodeURIComponent(describeProfileEndpoint(session.profile))}`;
     void navigator.clipboard?.writeText(url);
+  }
+
+  async function exportTerminalText(
+    source: TerminalTextExportSource,
+    target?: { sessionId: string; viewId: string },
+  ) {
+    const viewId = target?.viewId ?? activeWorkspaceView?.id;
+    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
+    const session = sessions.find((candidate) => candidate.profile.id === sessionId);
+    const title = source === "selection" ? "导出选中文本" : "导出终端文本";
+    if (!session || !viewId) {
+      setNotice({ title, message: "请先打开一个终端视图。" });
+      return;
+    }
+    try {
+      const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId, source });
+      if (payload.sessionId !== session.profile.id || payload.viewId !== viewId || payload.source !== source) {
+        throw new Error("终端导出响应与目标视图不匹配。");
+      }
+      if (isBackendAvailable()) {
+        const result = await invokeBackend<ExportTerminalTextResult>("export_terminal_text", {
+          request: {
+            sessionId: payload.sessionId,
+            viewId: payload.viewId,
+            source: payload.source,
+            text: payload.text,
+          },
+        });
+        setNotice({
+          title,
+          message: `${formatBytes(result.size)} · ${payload.logicalLines} 行 · SHA-256 ${result.sha256.slice(0, 16)}...\n${result.path}`,
+        });
+      } else {
+        const { downloadTerminalText } = await import("./terminal-export-download");
+        const fileName = downloadTerminalText(payload.text, session.profile.name, source);
+        setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.logicalLines} 行` });
+      }
+    } catch (error) {
+      setNotice({ title, message: formatError(error) });
+    }
   }
 
   function setTabColorFromContext(sessionId: string | null | undefined, color: string) {
@@ -1785,6 +1832,12 @@ function handleMenuAction(item: string) {
         return;
       case "save":
         void saveSessionFromContext(view.sessionId, false);
+        return;
+      case "export-buffer":
+        void exportTerminalText("buffer", { sessionId: view.sessionId, viewId: view.id });
+        return;
+      case "export-selection":
+        void exportTerminalText("selection", { sessionId: view.sessionId, viewId: view.id });
         return;
       case "split-horizontal":
         splitWorkspace(workspaceSplitDirectionForVisualOrientation("horizontal"), "second", pane.id, view.sessionId);
@@ -2864,10 +2917,14 @@ function handleMenuAction(item: string) {
         </Suspense>
       )}
       {utilityDialog === "sysmon" && active && <SysmonDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} />}
-      {utilityDialog === "search" && <SearchDialog state={searchDialog} sessions={sessions} logs={logs} onChange={setSearchDialog} onSelect={(sessionId) => {
-        activateSession(sessionId);
-        setUtilityDialog(null);
-      }} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "search" && (
+        <Suspense fallback={null}>
+          <LazySearchDialog state={searchDialog} sessions={sessions} logs={logs} onChange={setSearchDialog} onSelect={(sessionId) => {
+            activateSession(sessionId);
+            setUtilityDialog(null);
+          }} onClose={() => setUtilityDialog(null)} />
+        </Suspense>
+      )}
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
@@ -5279,70 +5336,6 @@ function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: 
           </button>
           <button type="button" onClick={onClose}>关闭</button>
         </footer>
-      </section>
-    </div>
-  );
-}
-
-function SearchDialog({
-  state,
-  sessions,
-  logs,
-  onChange,
-  onSelect,
-  onClose,
-}: {
-  state: SearchDialogState;
-  sessions: SessionSummary[];
-  logs: Record<string, SessionEvent[]>;
-  onChange: (state: SearchDialogState) => void;
-  onSelect: (sessionId: string) => void;
-  onClose: () => void;
-}) {
-  const query = state.query.trim().toLowerCase();
-  const results = state.mode === "sessions"
-    ? sessions
-        .filter((session) => !query || `${session.profile.name} ${describeProfileEndpoint(session.profile)} ${session.profile.group}`.toLowerCase().includes(query))
-        .map((session) => ({ id: session.profile.id, title: session.profile.name, detail: describeProfileEndpoint(session.profile) }))
-    : Object.values(logs)
-        .flat()
-        .filter((event) => !query || `${event.text ?? ""} ${event.annotations.commandId ?? ""}`.toLowerCase().includes(query))
-        .slice(-80)
-        .reverse()
-        .map((event) => {
-          const commandId = event.annotations.commandId;
-          const commandLabel = commandId ? `[命令 ${commandId.slice(0, 8)}] ` : "";
-          return {
-            id: event.sessionId,
-            title: sessions.find((session) => session.profile.id === event.sessionId)?.profile.name ?? event.sessionId,
-            detail: `${commandLabel}${event.text ?? ""}`,
-          };
-        });
-
-  return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog search-dialog">
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>{state.mode === "sessions" ? "会话搜索" : "日志搜索"}</strong>
-          <button onClick={onClose}><X size={20} /></button>
-        </header>
-        <div className="search-content">
-          <div className="search-tabs">
-            <button className={state.mode === "sessions" ? "active" : ""} onClick={() => onChange({ ...state, mode: "sessions" })}>会话</button>
-            <button className={state.mode === "logs" ? "active" : ""} onClick={() => onChange({ ...state, mode: "logs" })}>日志</button>
-          </div>
-          <input autoFocus value={state.query} onChange={(event) => onChange({ ...state, query: event.target.value })} placeholder="输入关键字" />
-          <div className="search-results">
-            {results.map((result, index) => (
-              <button key={`${result.id}-${index}`} onClick={() => onSelect(result.id)}>
-                <strong>{result.title}</strong>
-                <span>{result.detail}</span>
-              </button>
-            ))}
-            {!results.length ? <div className="empty-pane top">没有匹配结果</div> : null}
-          </div>
-        </div>
       </section>
     </div>
   );

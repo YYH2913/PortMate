@@ -161,6 +161,7 @@ const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_BUNDLE_ATTACHMENTS: usize = 32;
 const MAX_BUNDLE_ATTACHMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TERMINAL_TEXT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
 const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
@@ -1537,6 +1538,43 @@ pub struct ExportSerialCaptureResult {
     pub frames: usize,
     pub captured_bytes: usize,
     pub truncated_frames: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalTextExportSource {
+    Buffer,
+    Selection,
+}
+
+impl TerminalTextExportSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Buffer => "buffer",
+            Self::Selection => "selection",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportTerminalTextRequest {
+    pub session_id: String,
+    pub view_id: String,
+    pub source: TerminalTextExportSource,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportTerminalTextResult {
+    pub path: String,
+    pub checksum_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub session_id: String,
+    pub view_id: String,
+    pub source: TerminalTextExportSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5025,6 +5063,21 @@ fn export_serial_capture_history(
 }
 
 #[tauri::command]
+fn export_terminal_text(
+    state: State<'_, AppState>,
+    request: ExportTerminalTextRequest,
+) -> Result<ExportTerminalTextResult, String> {
+    validate_terminal_text_export_request(&request, MAX_TERMINAL_TEXT_EXPORT_BYTES)?;
+    {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if store.profile(&request.session_id).is_none() {
+            return Err("unknown terminal export session".to_string());
+        }
+    }
+    export_terminal_text_inner(&state.store_path, request)
+}
+
+#[tauri::command]
 async fn list_tmux_state(
     state: State<'_, AppState>,
     session_id: String,
@@ -5491,6 +5544,76 @@ fn export_serial_capture_frames(
         captured_bytes,
         truncated_frames,
     })
+}
+
+fn export_terminal_text_inner(
+    store_path: &Path,
+    request: ExportTerminalTextRequest,
+) -> Result<ExportTerminalTextResult, String> {
+    validate_terminal_text_export_request(&request, MAX_TERMINAL_TEXT_EXPORT_BYTES)?;
+    let created_at = Utc::now();
+    let export_dir = store_path
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .unwrap_or_else(|| PathBuf::from("exports"));
+    fs::create_dir_all(&export_dir).map_err(|error| {
+        format!(
+            "failed to create terminal text export directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let session_name = sanitize_log_path_segment(&request.session_id);
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "{}-{timestamp}-{}-{}.txt",
+        if session_name.is_empty() {
+            "session"
+        } else {
+            &session_name
+        },
+        request.source.as_str(),
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let finalized = write_atomic_export_with_checksum(
+        &final_path,
+        request.text.as_bytes(),
+        "terminal text export",
+    )?;
+    Ok(ExportTerminalTextResult {
+        path: final_path.display().to_string(),
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
+        session_id: request.session_id,
+        view_id: request.view_id,
+        source: request.source,
+    })
+}
+
+fn validate_terminal_text_export_request(
+    request: &ExportTerminalTextRequest,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if request.session_id.trim().is_empty()
+        || request.session_id.len() > 256
+        || request.session_id.chars().any(char::is_control)
+    {
+        return Err("invalid terminal export session id".to_string());
+    }
+    if request.view_id.trim().is_empty()
+        || request.view_id.len() > 128
+        || request.view_id.chars().any(char::is_control)
+    {
+        return Err("invalid terminal export view id".to_string());
+    }
+    if request.text.is_empty() {
+        return Err("terminal export text is empty".to_string());
+    }
+    if request.text.len() > max_bytes {
+        return Err(format!("terminal export exceeds {max_bytes} byte limit"));
+    }
+    Ok(())
 }
 
 fn write_atomic_export_with_checksum(
@@ -26232,6 +26355,7 @@ pub fn run() {
             clear_serial_capture,
             export_serial_capture,
             export_serial_capture_history,
+            export_terminal_text,
             list_tmux_state,
             attach_tmux,
             set_tmux_pane_sync,
@@ -29918,6 +30042,94 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".part")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_text_export_is_atomic_bounded_and_checksummed() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-terminal-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let request = ExportTerminalTextRequest {
+            session_id: "../shell export".to_string(),
+            view_id: "view-mirror".to_string(),
+            source: TerminalTextExportSource::Buffer,
+            text: "prompt$ echo 终端\n终端\n".to_string(),
+        };
+        let result =
+            export_terminal_text_inner(&root.join("portmate-store.sqlite3"), request.clone())
+                .unwrap();
+        assert_eq!(result.session_id, request.session_id);
+        assert_eq!(result.view_id, request.view_id);
+        assert_eq!(result.source, TerminalTextExportSource::Buffer);
+        assert_eq!(fs::read_to_string(&result.path).unwrap(), request.text);
+        assert_eq!(result.size as usize, request.text.len());
+        assert_eq!(result.sha256, sha256_file(Path::new(&result.path)).unwrap());
+        assert!(fs::read_to_string(&result.checksum_path)
+            .unwrap()
+            .starts_with(&result.sha256));
+        let export_dir = root.join("exports").canonicalize().unwrap();
+        assert_eq!(Path::new(&result.path).parent().unwrap(), export_dir);
+        assert!(Path::new(&result.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("shell_export"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&result.path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&result.checksum_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        assert!(fs::read_dir(&export_dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".part")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_text_export_rejects_empty_invalid_and_oversized_requests() {
+        let mut request = ExportTerminalTextRequest {
+            session_id: "shell-a".to_string(),
+            view_id: "view-a".to_string(),
+            source: TerminalTextExportSource::Selection,
+            text: "selected".to_string(),
+        };
+        assert!(validate_terminal_text_export_request(&request, 8).is_ok());
+        request.text.push('!');
+        assert!(validate_terminal_text_export_request(&request, 8)
+            .unwrap_err()
+            .contains("8 byte limit"));
+        request.text.clear();
+        assert!(validate_terminal_text_export_request(&request, 8)
+            .unwrap_err()
+            .contains("empty"));
+        request.text = "text".to_string();
+        request.view_id = "bad\nview".to_string();
+        assert!(validate_terminal_text_export_request(&request, 8)
+            .unwrap_err()
+            .contains("view id"));
+        request.view_id = "view-a".to_string();
+        request.session_id.clear();
+        assert!(validate_terminal_text_export_request(&request, 8)
+            .unwrap_err()
+            .contains("session id"));
+        request.session_id = "bad\nsession".to_string();
+        assert!(validate_terminal_text_export_request(&request, 8)
+            .unwrap_err()
+            .contains("session id"));
     }
 
     #[test]

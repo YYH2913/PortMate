@@ -92,6 +92,8 @@ Pane tabs and the Window menu implement WindTerm-style view lifecycle commands: 
 
 The pane-tab context menu now follows WindTerm's view popup more closely. In addition to color, duplicate, rename, and close, it can copy the bound session name or PortMate URL, reconnect or save that session profile, split right or below, move the exact view to another group, close sibling/right-side views, reopen the latest eligible view, and open the bound session settings. Every action is routed by pane ID, view ID, and session ID; saving or reconnecting one of multiple views of the same session therefore keeps the selected view identity instead of activating the first matching view. The main and pane-tab context menus share one visual-orientation mapping, fixing the prior inversion where their horizontal and vertical split commands disagreed with the Window menu.
 
+`会话 -> 导出终端文本` / `导出选中文本` and the matching pane-tab actions implement WindTerm-style terminal text export against the exact focused view. Full-buffer export reads XTerm's active buffer, removes terminal control sequences through the parsed cell model, joins physical rows marked as wrapped, preserves intermediate blank logical lines, and drops trailing empty rows; selection export preserves the exact selected spaces and line breaks. Both paths count UTF-8 bytes and reject empty data or content above 16 MiB before invoking the backend. The desktop backend requires a saved session, validates bounded session/view identifiers again, and writes a private file under the app data `exports/` directory through an atomic `.part` rename plus a SHA-256 sidecar (`0600` on Unix). Browser preview uses a `.txt` Blob download. Exported terminal content is never inserted into session events, logs, SQLite, or terminal input.
+
 The `查看` menu now mirrors WindTerm's checkable pane actions for the resource explorer, file manager, session list, command history, sender, Quick Bar, and status bar. The four dock panes can also be hidden from real title-bar buttons; when only one pane remains in a side dock it fills that dock, and removing a complete side, the sender, or the status bar returns the exact space to the terminal workspace. The sender's settings and close icons are keyboard-focusable commands rather than decorative glyphs. A bounded v1 local snapshot restores the six pane/bar choices after restart, repairs invalid fields independently, and defaults every existing pane to visible. The responsive mobile layout still suppresses side docks and the sender without corrupting the saved desktop choices.
 
 `模式 -> 专注模式`, the top-right focus command, and WindTerm's `Alt+Enter` shortcut temporarily suppress every dock, the sender, Quick Bar, and status bar without overwriting those saved choices. Exiting restores the exact prior layout; focus mode itself does not survive reload. The shortcut is consumed only while an XTerm workspace owns focus, so dialogs and local editors keep their normal Enter behavior. When synchronized input is active, the status bar intentionally remains visible in focus mode so the broadcast state and target count cannot disappear.
@@ -175,9 +177,11 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 493 kB of main JS, 439 kB of terminal core JS, 120 kB of WebGL JS, and 10 kB
-for the lazy OneKeys manager, with xterm CSS split alongside them; the previous approximately
-805 kB single-chunk warning is eliminated without raising the warning threshold.
+emits approximately 499.3 kB of main JS, 464.2 kB of terminal core JS, 120.4 kB of WebGL JS,
+11.7 kB for the OneKeys manager, 3.0 kB for the view context menu, 2.3 kB for search, and a
+0.5 kB browser export helper, with xterm CSS split alongside them. Search and browser download
+code load only when used; the previous approximately 805 kB single-chunk warning is eliminated
+without raising the warning threshold.
 
 To run the MCP bridge:
 

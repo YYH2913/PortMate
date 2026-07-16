@@ -29,6 +29,9 @@ import type {
 import { defaultTerminalCompletionPreferences, terminalCompletionPreferencesFromSettings } from "./terminal-completion-prefs";
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
+import { TERMINAL_TEXT_EXPORT_REQUEST_EVENT } from "./terminal-export-event";
+import type { TerminalTextExportRequestDetail } from "./terminal-export-event";
+import { extractTerminalBufferText, extractTerminalSelectionText, MAX_TERMINAL_EXPORT_BYTES } from "./terminal-export-state";
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
@@ -821,6 +824,49 @@ export default function TerminalCanvas({
     window.addEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
     return () => window.removeEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
   }, [active?.profile.id, focused]);
+
+  useEffect(() => {
+    const requestExport = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalTextExportRequestDetail>).detail;
+      if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
+        || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      const source = (detail as { source?: unknown }).source;
+      if (source !== "buffer" && source !== "selection") {
+        detail.respond({ ok: false, error: "不支持的终端文本导出来源。" });
+        return;
+      }
+      const term = termRef.current;
+      if (!term) {
+        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        return;
+      }
+      const extracted = source === "selection"
+        ? extractTerminalSelectionText(term.getSelection())
+        : extractTerminalBufferText(term.buffer.active);
+      if (!extracted.ok) {
+        detail.respond({
+          ok: false,
+          error: extracted.reason === "empty"
+            ? source === "selection" ? "当前终端没有选中文本。" : "当前终端缓冲为空。"
+            : `终端文本超过 ${MAX_TERMINAL_EXPORT_BYTES / (1024 * 1024)} MiB 导出上限。`,
+        });
+        return;
+      }
+      detail.respond({
+        ok: true,
+        payload: {
+          sessionId: active.profile.id,
+          viewId,
+          source,
+          text: extracted.text,
+          bytes: extracted.bytes,
+          logicalLines: extracted.logicalLines,
+        },
+      });
+    };
+    window.addEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
+    return () => window.removeEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
+  }, [active?.profile.id, focused, viewId]);
 
   useEffect(() => {
     resetCompletionInput();
