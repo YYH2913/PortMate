@@ -1,0 +1,177 @@
+import type { ReactNode } from "react";
+import type { SessionSummary } from "./types";
+
+export type SessionContextAction =
+  | "sync-on"
+  | "sync-off"
+  | "paste"
+  | "rename"
+  | "duplicate"
+  | "copy-name"
+  | "copy-url"
+  | "reconnect"
+  | "save"
+  | "split-h"
+  | "split-v"
+  | "move-group"
+  | "close"
+  | "close-all"
+  | "close-inactive"
+  | "close-side"
+  | "settings";
+
+export type TerminalContextAction =
+  | "copy"
+  | "paste"
+  | "find"
+  | "clear-scrollback"
+  | "clear-screen"
+  | "clear-all"
+  | "select-all"
+  | "clear-selection"
+  | "export-buffer"
+  | "export-selection"
+  | "triggers";
+
+export function SessionContextMenu({
+  state,
+  active,
+  syncInput,
+  colors,
+  onAction,
+  onColor,
+}: {
+  state: { x: number; y: number; sessionId: string | null };
+  active?: SessionSummary;
+  syncInput: boolean;
+  colors: readonly { label: string; value: string }[];
+  onAction: (action: SessionContextAction, sessionId?: string | null) => void;
+  onColor: (color: string) => void;
+}) {
+  const left = Math.max(8, Math.min(state.x, window.innerWidth - 318));
+  const top = Math.max(8, Math.min(state.y, window.innerHeight - 540));
+  const sessionId = active?.profile.id ?? state.sessionId;
+  const disabled = !active;
+
+  return (
+    <div className="portmate-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+      <ContextSubmenu label="设置标签页颜色(C)" disabled={disabled}>
+        <div className="context-color-grid">
+          {colors.map((color) => (
+            <button key={color.value} type="button" onClick={() => onColor(color.value)}>
+              <span style={{ background: color.value }} />
+              {color.label}
+            </button>
+          ))}
+        </div>
+      </ContextSubmenu>
+      <ContextSubmenu label="同步输入(S)">
+        <ContextMenuButton label={syncInput ? "同步输入已开启" : "开启同步输入"} checked={syncInput} onClick={() => onAction("sync-on", sessionId)} />
+        <ContextMenuButton label="关闭同步输入" checked={!syncInput} onClick={() => onAction("sync-off", sessionId)} />
+      </ContextSubmenu>
+      <ContextMenuButton label="粘贴(P)" shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
+      <ContextMenuButton label="重命名会话(R)" disabled={disabled} onClick={() => onAction("rename", sessionId)} />
+      <ContextMenuButton label="复制会话(D)" shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
+      <ContextMenuButton label="复制SSH通道(D)" disabled />
+      <ContextDivider />
+      <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
+      <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
+      <ContextDivider />
+      <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={disabled} onClick={() => onAction("reconnect", sessionId)} />
+      <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
+      <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
+      <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
+      <ContextSubmenu label="拆分为(S)" disabled={disabled}>
+        <ContextMenuButton label="水平拆分" onClick={() => onAction("split-h", sessionId)} />
+        <ContextMenuButton label="垂直拆分" onClick={() => onAction("split-v", sessionId)} />
+      </ContextSubmenu>
+      <ContextSubmenu label="移动至分组(M)" disabled={disabled}>
+        <ContextMenuButton label="选择分组..." onClick={() => onAction("move-group", sessionId)} />
+      </ContextSubmenu>
+      <ContextDivider />
+      <ContextMenuButton label="断开会话(C)" disabled={disabled} onClick={() => onAction("close", sessionId)} />
+      <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
+      <ContextMenuButton label="断开所有非活动会话(I)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
+      <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
+      <ContextDivider />
+      <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
+    </div>
+  );
+}
+
+export function TerminalContextMenu({
+  state,
+  onAction,
+}: {
+  state: { x: number; y: number; alternate: boolean; hasSelection: boolean };
+  onAction: (action: TerminalContextAction) => void;
+}) {
+  const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
+  const top = Math.max(8, Math.min(state.y, window.innerHeight - 460));
+  return (
+    <div className="portmate-context-menu terminal-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+      <ContextMenuButton label="复制" shortcut="Ctrl+Shift+C" disabled={!state.hasSelection} onClick={() => onAction("copy")} />
+      <ContextMenuButton label="粘贴" shortcut="Ctrl+V" onClick={() => onAction("paste")} />
+      <ContextMenuButton label="查找" shortcut="Ctrl+Shift+F" onClick={() => onAction("find")} />
+      <ContextDivider />
+      <ContextMenuButton label="清除回滚" shortcut="Ctrl+Shift+L" onClick={() => onAction("clear-scrollback")} />
+      <ContextMenuButton label="清除屏幕" shortcut="Ctrl+L" disabled={state.alternate} onClick={() => onAction("clear-screen")} />
+      <ContextMenuButton label="清除屏幕和回滚" disabled={state.alternate} onClick={() => onAction("clear-all")} />
+      <ContextDivider />
+      <ContextMenuButton label="选择全部" shortcut="Ctrl+Shift+A" onClick={() => onAction("select-all")} />
+      <ContextMenuButton label="清除选择" disabled={!state.hasSelection} onClick={() => onAction("clear-selection")} />
+      <ContextDivider />
+      <ContextMenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label="导出选中文本" disabled={!state.hasSelection} onClick={() => onAction("export-selection")} />
+      <ContextDivider />
+      <ContextMenuButton label="管理触发器..." onClick={() => onAction("triggers")} />
+    </div>
+  );
+}
+
+function ContextMenuButton({
+  label,
+  shortcut,
+  disabled,
+  checked,
+  onClick,
+}: {
+  label: string;
+  shortcut?: string;
+  disabled?: boolean;
+  checked?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
+      <span className={checked ? "context-check active" : "context-check"}>{checked ? "✓" : ""}</span>
+      <span className="context-label">{label}</span>
+      {shortcut ? <span className="context-shortcut">{shortcut}</span> : null}
+    </button>
+  );
+}
+
+function ContextSubmenu({
+  label,
+  disabled,
+  children,
+}: {
+  label: string;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
+      <button type="button" className="context-menu-row" disabled={disabled}>
+        <span className="context-check" />
+        <span className="context-label">{label}</span>
+        <span className="context-arrow">›</span>
+      </button>
+      {!disabled ? <div className="context-submenu-panel">{children}</div> : null}
+    </div>
+  );
+}
+
+function ContextDivider() {
+  return <div className="context-divider" />;
+}

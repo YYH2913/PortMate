@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -63,6 +63,7 @@ import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
+import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
@@ -76,7 +77,7 @@ import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
-import { isWorkspaceFocusModeShortcut, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
+import { isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
@@ -86,12 +87,15 @@ import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrati
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
+import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
+const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
+const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
 
@@ -240,7 +244,21 @@ type HostKeyPromptState = {
 };
 type SendMode = "text" | "hex";
 type SendTarget = "active" | "panes" | "connected";
-type ContextMenuState = { x: number; y: number; sessionId: string | null } | null;
+type ContextMenuState = {
+  kind: "session";
+  x: number;
+  y: number;
+  sessionId: string | null;
+} | {
+  kind: "terminal";
+  x: number;
+  y: number;
+  paneId: string;
+  viewId: string;
+  sessionId: string;
+  alternate: boolean;
+  hasSelection: boolean;
+} | null;
 type CredentialPromptState = {
   target: string;
   initialUsername: string;
@@ -320,7 +338,10 @@ export default function App() {
     loadLocalValue<unknown>(QUICK_BAR_VISIBLE_STORAGE_KEY, false) === true
   ));
   const [workspacePanels, setWorkspacePanels] = useState(() => (
-    normalizeWorkspacePanelVisibility(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
+    normalizeWorkspacePanelVisibility(loadLocalValue<unknown>(
+      WORKSPACE_PANEL_STORAGE_KEY,
+      loadLocalValue<unknown>(LEGACY_WORKSPACE_PANEL_STORAGE_KEY, null),
+    ))
   ));
   const [focusMode, setFocusMode] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
@@ -732,7 +753,7 @@ export default function App() {
   }, [quickBarVisible]);
 
   useEffect(() => {
-    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, { version: 1, panels: workspacePanels });
+    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, { version: 2, panels: workspacePanels });
   }, [workspacePanels]);
 
   useEffect(() => {
@@ -1289,13 +1310,36 @@ function handleMenuAction(item: string) {
   function openAppContextMenu(event: ReactMouseEvent, sessionId?: string) {
     event.preventDefault();
     event.stopPropagation();
+    const target = event.target instanceof Element ? event.target : null;
+    const terminalHost = target?.closest<HTMLElement>(".terminal-host");
+    const paneElement = terminalHost?.closest<HTMLElement>(".terminal-pane[data-pane-id]");
+    const pane = paneElement?.dataset.paneId
+      ? findWorkspacePane(workspaceRoot, paneElement.dataset.paneId)
+      : undefined;
+    const view = pane ? workspacePaneActiveView(pane) : undefined;
     const nextSessionId = sessionId ?? (activeId || sessions[0]?.profile.id || null);
+    if (terminalHost && pane && view) {
+      activateWorkspacePane(pane.id, view.id);
+      setOpenMenu(null);
+      setWorkspaceViewContextMenu(null);
+      setContextMenu({
+        kind: "terminal",
+        x: event.clientX,
+        y: event.clientY,
+        paneId: pane.id,
+        viewId: view.id,
+        sessionId: view.sessionId,
+        alternate: terminalHost.dataset.terminalBuffer === "alternate",
+        hasSelection: terminalHost.dataset.terminalHasSelection === "true",
+      });
+      return;
+    }
     if (sessionId) {
       activateSession(sessionId);
     }
     setOpenMenu(null);
     setWorkspaceViewContextMenu(null);
-    setContextMenu({ x: event.clientX, y: event.clientY, sessionId: nextSessionId });
+    setContextMenu({ kind: "session", x: event.clientX, y: event.clientY, sessionId: nextSessionId });
   }
 
   function contextSession(sessionId?: string | null) {
@@ -1403,15 +1447,39 @@ function handleMenuAction(item: string) {
     }
   }
 
-  async function runTerminalSelectionAction(action: TerminalSelectionAction, title: string) {
-    const view = activeWorkspaceView;
-    if (!view) {
+  async function runTerminalSelectionAction(
+    action: TerminalSelectionAction,
+    title: string,
+    target?: { sessionId: string; viewId: string },
+  ) {
+    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
+    const viewId = target?.viewId ?? activeWorkspaceView?.id;
+    if (!sessionId || !viewId) {
       setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
     try {
       const { executeTerminalSelectionAction } = await import("./terminal-selection-event");
-      await executeTerminalSelectionAction({ sessionId: view.sessionId, viewId: view.id, action });
+      await executeTerminalSelectionAction({ sessionId, viewId, action });
+    } catch (error) {
+      setNotice({ title, message: formatError(error) });
+    }
+  }
+
+  async function runTerminalBufferAction(
+    action: TerminalBufferAction,
+    title: string,
+    target?: { sessionId: string; viewId: string },
+  ) {
+    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
+    const viewId = target?.viewId ?? activeWorkspaceView?.id;
+    if (!sessionId || !viewId) {
+      setNotice({ title, message: "请先打开一个终端视图。" });
+      return;
+    }
+    try {
+      const { executeTerminalBufferAction } = await import("./terminal-buffer-event");
+      await executeTerminalBufferAction({ sessionId, viewId, action });
     } catch (error) {
       setNotice({ title, message: formatError(error) });
     }
@@ -1453,7 +1521,7 @@ function handleMenuAction(item: string) {
     void closeSessionsByIds(rightIds);
   }
 
-  function handleContextMenuAction(action: string, sessionId?: string | null) {
+  function handleContextMenuAction(action: SessionContextAction, sessionId?: string | null) {
     setContextMenu(null);
     const target = contextSession(sessionId);
     switch (action) {
@@ -1510,6 +1578,56 @@ function handleMenuAction(item: string) {
         return;
       default:
         return;
+    }
+  }
+
+  function handleTerminalContextMenuAction(
+    action: TerminalContextAction,
+    state: Extract<NonNullable<ContextMenuState>, { kind: "terminal" }>,
+  ) {
+    setContextMenu(null);
+    activateWorkspacePane(state.paneId, state.viewId);
+    const target = { sessionId: state.sessionId, viewId: state.viewId };
+    switch (action) {
+      case "copy":
+        void runTerminalSelectionAction("copy", "复制", target);
+        return;
+      case "paste":
+        void navigator.clipboard?.readText().then((text) => {
+          if (text) return routeTerminalInput(state.sessionId, text, "atomic");
+        }).catch((error) => setNotice({ title: "粘贴", message: formatError(error) }));
+        return;
+      case "find":
+        window.requestAnimationFrame(() => requestTerminalSearch());
+        return;
+      case "clear-scrollback":
+        void runTerminalBufferAction(action, "清除回滚", target);
+        return;
+      case "clear-screen":
+        void runTerminalBufferAction(action, "清除屏幕", target);
+        return;
+      case "clear-all":
+        void runTerminalBufferAction(action, "清除屏幕和回滚", target);
+        return;
+      case "select-all":
+        void runTerminalSelectionAction("select-all", "选择全部", target);
+        return;
+      case "clear-selection":
+        void runTerminalSelectionAction("clear", "清除选择", target);
+        return;
+      case "export-buffer":
+        void exportTerminalText("buffer", target);
+        return;
+      case "export-selection":
+        void exportTerminalText("selection", target);
+        return;
+      case "triggers": {
+        const session = sessions.find((candidate) => candidate.profile.id === state.sessionId);
+        setDraft(session?.profile ?? createSessionDraft());
+        setSessionSettingsSection("触发器");
+        setDialog("session");
+        return;
+      }
     }
   }
 
@@ -2624,7 +2742,14 @@ function handleMenuAction(item: string) {
         <aside className={`left-stack ${visibleWorkspacePanels.explorer && visibleWorkspacePanels.fileManager ? "" : "single-panel"}`}>
           {visibleWorkspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
             <FilterLine />
-            <TreeList sessions={sessions} groups={sessionGroups} activeId={activeId} onSelect={activateSession} />
+            <TreeList
+              sessions={sessions}
+              groups={sessionGroups}
+              activeId={activeId}
+              colors={tabColors}
+              onSelect={activateSession}
+              onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
+            />
           </DockPanel> : null}
           {visibleWorkspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
             <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
@@ -2633,37 +2758,6 @@ function handleMenuAction(item: string) {
         ) : null}
 
         <section className="center-workspace">
-          <div className="tab-line">
-            {sessions.length ? (
-              sessions.map((session) => (
-                <button
-                  key={session.profile.id}
-                  className={session.profile.id === activeId ? "terminal-tab active" : "terminal-tab"}
-                  onClick={() => activateSession(session.profile.id)}
-                  onContextMenu={(event) => openAppContextMenu(event, session.profile.id)}
-                >
-                  <span className="tab-mark" style={{ background: tabColors[session.profile.id] ?? "#5eead4" }} />
-                  <span className="tab-title">{session.profile.name}</span>
-                  <span className={`tab-status ${session.runtime.status}`} />
-                  <X
-                    size={13}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void disconnectSession(session.profile.id);
-                    }}
-                  />
-                </button>
-              ))
-            ) : (
-              <button className="terminal-tab muted" onClick={openNewSessionDialog}>
-                <Plus size={13} />
-                新建会话
-              </button>
-            )}
-            <button className="terminal-tab new-tab" onClick={openNewSessionDialog}>
-              <Plus size={13} />
-            </button>
-          </div>
           <div className="crumb-line">
             <button onClick={openNewSessionDialog}>
               <Plus size={14} />
@@ -2824,29 +2918,36 @@ function handleMenuAction(item: string) {
         >
           {syncInput ? `同步 ${syncInputTargetCount} · ` : ""}{terminalKeyModeLabel(activeTerminalKeyMode)}
         </button>
-        <span>窗口 -1×-1</span>
-        <span>行 1</span>
-        <span>字符 0</span>
-        <span>{blockSelection ? "块选择" : "Plain Text"}</span>
-        <span>{new Date().toLocaleString()}</span>
-        <span>PortMate Issues</span>
+        {blockSelection ? <span>块选择</span> : null}
         <button type="button" className="status-lock-button" title="锁屏 (Ctrl+Alt+L)" aria-label="锁屏" onClick={() => lockScreen("manual")}>
           <Lock size={12} />
           <span>锁屏</span>
         </button>
       </footer> : null}
 
-      {contextMenu && (
-        <PortMateContextMenu
-          state={contextMenu}
-          active={contextSession(contextMenu.sessionId)}
-          syncInput={syncInput}
-          onAction={handleContextMenuAction}
-          onColor={(color) => {
-            setTabColorFromContext(contextMenu.sessionId, color);
-            setContextMenu(null);
-          }}
-        />
+      {contextMenu?.kind === "session" && (
+        <Suspense fallback={null}>
+          <LazySessionContextMenu
+            state={contextMenu}
+            active={contextSession(contextMenu.sessionId)}
+            syncInput={syncInput}
+            colors={tabColorChoices}
+            onAction={handleContextMenuAction}
+            onColor={(color) => {
+              setTabColorFromContext(contextMenu.sessionId, color);
+              setContextMenu(null);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {contextMenu?.kind === "terminal" && (
+        <Suspense fallback={null}>
+          <LazyTerminalContextMenu
+            state={contextMenu}
+            onAction={(action) => handleTerminalContextMenuAction(action, contextMenu)}
+          />
+        </Suspense>
       )}
 
       {workspaceViewContextMenu && workspaceContextPane && workspaceContextView && workspaceContextSession && (
@@ -3162,7 +3263,21 @@ function FilterLine({ compact = false }: { compact?: boolean }) {
   return <input className={compact ? "filter-line compact" : "filter-line"} placeholder="筛选" />;
 }
 
-function TreeList({ sessions, groups, activeId, onSelect }: { sessions: SessionSummary[]; groups: Record<string, SessionSummary[]>; activeId: string; onSelect: (id: string) => void }) {
+function TreeList({
+  sessions,
+  groups,
+  activeId,
+  colors,
+  onSelect,
+  onOpenContextMenu,
+}: {
+  sessions: SessionSummary[];
+  groups: Record<string, SessionSummary[]>;
+  activeId: string;
+  colors: Record<string, string>;
+  onSelect: (id: string) => void;
+  onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
+}) {
   if (!sessions.length) return <div className="empty-pane top">没有可用的会话</div>;
   return (
     <div className="tree-list">
@@ -3174,8 +3289,13 @@ function TreeList({ sessions, groups, activeId, onSelect }: { sessions: SessionS
             {group}
           </div>
           {items.map((session) => (
-            <button key={session.profile.id} className={session.profile.id === activeId ? "tree-session active" : "tree-session"} onClick={() => onSelect(session.profile.id)}>
-              <span className="cyan-dot" />
+            <button
+              key={session.profile.id}
+              className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
+              onClick={() => onSelect(session.profile.id)}
+              onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
+            >
+              <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
               {session.profile.name}
             </button>
           ))}
@@ -4374,7 +4494,6 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           })}
           {!groupViews.length ? <strong>会话不可用</strong> : null}
         </div>
-        <span>{session?.runtime.status ?? "missing"}</span>
         <button
           type="button"
           className="duplicate-view-button"
@@ -4619,117 +4738,6 @@ function clearWorkspaceDropTarget(element: HTMLElement) {
 
 function clearWorkspaceDropIndicators() {
   document.querySelectorAll<HTMLElement>("[data-drop-position]").forEach(clearWorkspaceDropTarget);
-}
-
-function PortMateContextMenu({
-  state,
-  active,
-  syncInput,
-  onAction,
-  onColor,
-}: {
-  state: NonNullable<ContextMenuState>;
-  active?: SessionSummary;
-  syncInput: boolean;
-  onAction: (action: string, sessionId?: string | null) => void;
-  onColor: (color: string) => void;
-}) {
-  const left = Math.max(8, Math.min(state.x, window.innerWidth - 318));
-  const top = Math.max(8, Math.min(state.y, window.innerHeight - 540));
-  const sessionId = active?.profile.id ?? state.sessionId;
-  const disabled = !active;
-
-  return (
-    <div className="portmate-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
-      <ContextSubmenu label="设置标签页颜色(C)" disabled={disabled}>
-        <div className="context-color-grid">
-          {tabColorChoices.map((color) => (
-            <button key={color.value} type="button" onClick={() => onColor(color.value)}>
-              <span style={{ background: color.value }} />
-              {color.label}
-            </button>
-          ))}
-        </div>
-      </ContextSubmenu>
-      <ContextSubmenu label="同步输入(S)">
-        <ContextMenuButton label={syncInput ? "同步输入已开启" : "开启同步输入"} checked={syncInput} onClick={() => onAction("sync-on", sessionId)} />
-        <ContextMenuButton label="关闭同步输入" checked={!syncInput} onClick={() => onAction("sync-off", sessionId)} />
-      </ContextSubmenu>
-      <ContextMenuButton label="粘贴(P)" shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
-      <ContextMenuButton label="重命名会话(R)" disabled={disabled} onClick={() => onAction("rename", sessionId)} />
-      <ContextMenuButton label="复制会话(D)" shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
-      <ContextMenuButton label="复制SSH通道(D)" disabled />
-      <ContextDivider />
-      <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
-      <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
-      <ContextDivider />
-      <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={disabled} onClick={() => onAction("reconnect", sessionId)} />
-      <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
-      <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
-      <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
-      <ContextSubmenu label="拆分为(S)" disabled={disabled}>
-        <ContextMenuButton label="水平拆分" onClick={() => onAction("split-h", sessionId)} />
-        <ContextMenuButton label="垂直拆分" onClick={() => onAction("split-v", sessionId)} />
-      </ContextSubmenu>
-      <ContextSubmenu label="移动至分组(M)" disabled={disabled}>
-        <ContextMenuButton label="选择分组..." onClick={() => onAction("move-group", sessionId)} />
-      </ContextSubmenu>
-      <ContextDivider />
-      <ContextMenuButton label="断开会话(C)" disabled={disabled} onClick={() => onAction("close", sessionId)} />
-      <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
-      <ContextMenuButton label="断开所有非活动会话(I)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
-      <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
-      <ContextDivider />
-      <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
-    </div>
-  );
-}
-
-function ContextMenuButton({
-  label,
-  shortcut,
-  disabled,
-  checked,
-  onClick,
-}: {
-  label: string;
-  shortcut?: string;
-  disabled?: boolean;
-  checked?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
-      <span className={checked ? "context-check active" : "context-check"}>{checked ? "✓" : ""}</span>
-      <span className="context-label">{label}</span>
-      {shortcut ? <span className="context-shortcut">{shortcut}</span> : null}
-    </button>
-  );
-}
-
-function ContextSubmenu({
-  label,
-  disabled,
-  children,
-}: {
-  label: string;
-  disabled?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
-      <button type="button" className="context-menu-row" disabled={disabled}>
-        <span className="context-check" />
-        <span className="context-label">{label}</span>
-        <span className="context-arrow">›</span>
-      </button>
-      {!disabled ? <div className="context-submenu-panel">{children}</div> : null}
-    </div>
-  );
-}
-
-function ContextDivider() {
-  return <div className="context-divider" />;
 }
 
 function TransferDialog({

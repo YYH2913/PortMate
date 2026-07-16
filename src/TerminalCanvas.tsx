@@ -32,6 +32,8 @@ import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL
 import { TERMINAL_TEXT_EXPORT_REQUEST_EVENT } from "./terminal-export-event";
 import type { TerminalTextExportRequestDetail } from "./terminal-export-event";
 import { extractTerminalBufferText, extractTerminalSelectionText, MAX_TERMINAL_EXPORT_BYTES } from "./terminal-export-state";
+import { resolveTerminalBufferAction, terminalBufferShortcut, TERMINAL_BUFFER_ACTION_REQUEST_EVENT } from "./terminal-buffer-event";
+import type { TerminalBufferActionRequestDetail, TerminalBufferType } from "./terminal-buffer-event";
 import { terminalBlockSelectionMouseEventInit, terminalSelectionShortcut, TERMINAL_SELECTION_REQUEST_EVENT } from "./terminal-selection-event";
 import type { TerminalSelectionRequestDetail } from "./terminal-selection-event";
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
@@ -575,6 +577,15 @@ export default function TerminalCanvas({
         }
         return false;
       }
+      const bufferAction = terminalBufferShortcut(event, mode);
+      if (bufferAction) {
+        event.preventDefault();
+        if (!event.repeat) {
+          const resolution = resolveTerminalBufferAction(bufferAction, terminalBufferType(term));
+          if (resolution.ok) term.write(resolution.sequence, () => term.focus());
+        }
+        return false;
+      }
       const completions = completionSuggestionsRef.current;
       if (mode === "remote" && completions.length && !event.altKey && !event.ctrlKey && !event.metaKey) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) {
@@ -648,6 +659,11 @@ export default function TerminalCanvas({
       term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => { restorePending = false; });
     }
     term.open(host);
+    host.dataset.terminalBuffer = terminalBufferType(term);
+    host.dataset.terminalHasSelection = "false";
+    const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
+      host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+    });
     let terminalDisposed = false;
     const pendingEventIds = new Set<string>();
     const writeEvent = (event: SessionEvent) => {
@@ -727,6 +743,7 @@ export default function TerminalCanvas({
       }
     });
     const selectionDisposable = term.onSelectionChange(() => {
+      host.dataset.terminalHasSelection = term.hasSelection() ? "true" : "false";
       if (keyModeRef.current !== "remote") return;
       if (!copyOnSelectRef.current) return;
       const selected = term.getSelection();
@@ -770,6 +787,7 @@ export default function TerminalCanvas({
       searchResultDisposable.dispose();
       inputDisposable.dispose();
       selectionDisposable.dispose();
+      bufferChangeDisposable.dispose();
       host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
       if (inputFlushTimerRef.current !== null) {
@@ -896,6 +914,39 @@ export default function TerminalCanvas({
     };
     window.addEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
     return () => window.removeEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
+  }, [active?.profile.id, focused, viewId]);
+
+  useEffect(() => {
+    const requestBufferAction = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalBufferActionRequestDetail>).detail;
+      if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
+        || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      const action = (detail as { action?: unknown }).action;
+      if (action !== "clear-scrollback" && action !== "clear-screen" && action !== "clear-all") {
+        detail.respond({ ok: false, error: "不支持的终端缓冲操作。" });
+        return;
+      }
+      const term = termRef.current;
+      if (!term) {
+        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        return;
+      }
+      const bufferType = terminalBufferType(term);
+      const resolution = resolveTerminalBufferAction(action, bufferType);
+      if (!resolution.ok) {
+        detail.respond({ ok: false, error: resolution.error });
+        return;
+      }
+      term.write(resolution.sequence, () => {
+        term.focus();
+        detail.respond({
+          ok: true,
+          payload: { sessionId: active.profile.id, viewId, action, bufferType },
+        });
+      });
+    };
+    window.addEventListener(TERMINAL_BUFFER_ACTION_REQUEST_EVENT, requestBufferAction);
+    return () => window.removeEventListener(TERMINAL_BUFFER_ACTION_REQUEST_EVENT, requestBufferAction);
   }, [active?.profile.id, focused, viewId]);
 
   useEffect(() => {
@@ -1390,6 +1441,10 @@ function renderTerminalLocalSelection(term: XTerm, state: LocalNavigationState) 
 function terminalBufferLineEnd(term: XTerm, row: number): number {
   const text = term.buffer.active.getLine(row)?.translateToString(true) ?? "";
   return Math.min(term.cols - 1, Math.max(0, text.length - 1));
+}
+
+function terminalBufferType(term: XTerm): TerminalBufferType {
+  return term.buffer.active.type === "alternate" ? "alternate" : "normal";
 }
 
 function moveTerminalWord(

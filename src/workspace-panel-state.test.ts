@@ -9,9 +9,28 @@ import {
 } from "./workspace-panel-state";
 
 describe("workspace panel state", () => {
-  it("uses visible defaults for missing or invalid state", () => {
+  it("uses compact defaults for missing or invalid state", () => {
     expect(normalizeWorkspacePanelVisibility(null)).toEqual(defaultWorkspacePanelVisibility);
-    expect(normalizeWorkspacePanelVisibility({ version: 2, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
+    expect(normalizeWorkspacePanelVisibility({ version: 3, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
+    expect(defaultWorkspacePanelVisibility).toEqual({
+      explorer: true,
+      fileManager: false,
+      sessions: false,
+      history: false,
+      sender: false,
+      statusBar: true,
+    });
+  });
+
+  it("migrates the old all-visible default without overwriting customized v1 layouts", () => {
+    expect(normalizeWorkspacePanelVisibility({
+      version: 1,
+      panels: { explorer: true, fileManager: true, sessions: true, history: true, sender: true, statusBar: true },
+    })).toEqual(defaultWorkspacePanelVisibility);
+    expect(normalizeWorkspacePanelVisibility({
+      version: 2,
+      panels: { explorer: false, sender: true },
+    })).toEqual({ ...defaultWorkspacePanelVisibility, explorer: false, sender: true });
   });
 
   it("restores v1 snapshots and repairs invalid fields independently", () => {
