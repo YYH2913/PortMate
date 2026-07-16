@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-07-15
+审查日期：2026-07-16
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵、bundle 签名/自定义附件、完整 vttest/真实全屏程序兼容矩阵、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
+但它还不是完整 WindTerm/Bitvise 替代品。主要差距集中在：portable-vault/keyring 的系统化跨平台故障矩阵、完整 vttest/真实全屏程序兼容矩阵、跨协议深度健康检测、HTTP MCP 客户端矩阵、以及系统化跨平台测试。
 
 ## 当前实现快照
 
@@ -141,13 +141,12 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 日志管理可全文搜索磁盘 Text/JSONL 分片，包括已从有界 store events 裁剪的历史；支持全部或选中路径，结果带分片、行号、字节偏移和受限上下文，并明确报告命中/单文件/总扫描上限与 warning。Raw 保持 Hex 预览，不伪装成文本搜索。
 - 日志管理可把最多 1,000 个、合计不超过 512 MiB 的选中 raw/txt/jsonl 分片流式归档为原子落盘的 `.tar.gz`，包内 manifest 记录逐文件 SHA-256，并生成 `.sha256` sidecar；源分片保留不删除，路径穿越、symlink、非法扩展和归档过程中截断的文件会被拒绝。
 - 每个 profile 可配置 0..=3650 天自动保留期；旧配置默认关闭。应用启动时后台检查，持续写入时最多每小时复查一次，只按 profile 模板匹配并在删除前二次核对 mtime，随后清理空目录；启用保留期的自定义模板必须含 `{session}` 或 `{profile}`，避免误删共享路径。
-- 日志管理可把选中会话导出为原子落盘的 `.tar.gz` 和 `.sha256` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。默认脱敏同时覆盖 event text 与 `summary.lastLine`，脱敏开启时强制排除 raw；只有显式关闭脱敏并启用 raw 后才按受限 `bytesRef` 读取片段。
+- 日志管理可把选中会话导出为原子落盘的 `.tar.gz`、`.sha256` 和 Ed25519 `.sig.json` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。签名覆盖最终归档名、SHA-256、大小和创建时间组成的版本化 NUL 分隔 payload，sidecar 携带独立验证所需的公钥和精确 payload；长期 seed 只进入系统 keyring 或已解锁 Stronghold，内部固定引用不会被通用 secret/Profile/迁移接口覆盖。默认脱敏同时覆盖 event text 与 `summary.lastLine`，脱敏开启时强制排除 raw 并禁止附件；只有显式关闭脱敏后，才可附加当前明确选中的最多 32 个、单个 16 MiB、合计 32 MiB 的受限日志分片，重复文件名会安全编号，读取期间的 symlink、截断和替换会失败。只有另行启用 raw 后才按受限 `bytesRef` 读取片段。
 - 触发器支持多个 contains/regex 规则和每条规则的有序多动作编辑；动作包括高亮、通知、时间线标记、本地命令、发送文本、自定义链接和 bell/chime/alert 声音。运行时视觉/声音效果通过 Tauri event 立即送达桌面，本地命令与发送文本保留后端 dispatch，并记录 system event/timeline 诊断。
 - secret redaction 有核心测试。
 
 主要缺口：
 
-- bundle 的签名/自定义附件选择还需增强。
 - 传输任务对 local/SFTP/SCP copy loop、远端命令型复制目标大小轮询和 X/Y/ZModem block loop 已有实时进度/速度与取消。
 
 ### MCP Surface
@@ -240,7 +239,7 @@ npm run build
 - 解码前非 UTF-8 入站 raw、Telnet IAC/NVT 精确分片、48 线程共享路径追加的无重叠引用、带 SHA-256 的 v2 `bytesRef` 删除重建检测和旧引用兼容。
 - Telnet 用户 text 的 CRLF wire、用户 bytes/modem 的 IAC doubling、协商 reply 的 outbound/control 无文本事件、每会话出站 lane、不可逆二进制结构化摘要、分片失败诊断，以及 transport 成功后 store 保存失败不触发重发且内存事件注解一致。
 - system/control 事件通道覆盖 direct/open/close 生命周期，验证脱敏 Text/JSONL 各恰好一次且 Raw 不变、shutdown drain，并锁定 inbound JSONL 先于由它触发的 system 诊断；Core 回归覆盖 wake 合并、4,096 条 outbox 上限和 worker 断开后的持续显式降级。SQLite mirror 会更新同 ID 事件的后补 annotations，同时不重复插入未变化历史。
-- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、脱敏/raw 互斥和 `bytesRef` 范围读取；回归同时覆盖此前遗漏的 `summary.lastLine` 敏感信息泄漏。
+- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、可独立验证的 Ed25519 detached signature、持久签名 seed 格式校验、已选日志附件的命名/哈希/数量/大小/symlink/截断/替换边界、脱敏与 raw/附件互斥和 `bytesRef` 范围读取；回归同时覆盖此前遗漏的 `summary.lastLine` 敏感信息泄漏。
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
@@ -276,7 +275,7 @@ npm run build
 | X/Y/ZModem | 部分实现 | 三者都有实现，块级进度与取消已接入；OpenSSH PTY + lrzsz 六方向传输、raw TTY、READY/DONE 门控、XModem 精确长度、静默对端取消后 CAN/worker 清理和 transport 重连态断线失败已覆盖，物理串口、OpenSSH 活动传输断线和工具变体矩阵待补。 |
 | 隧道 | 大部分实现 | local/remote/dynamic、运行中列表、停止入口、连接数/字节/最后错误、监听器终止、Linux/FreeBSD/macOS remote forward 被动探测、撤销后重建、cancel 失败本地收敛、SSH 断线清理和重连后原规格恢复已接入；OpenSSH 三模式、撤销/恢复/停止、重建失败隔离和 SOCKS5 错误协议已覆盖，真实 BSD/macOS 主机和更广服务端矩阵待补。 |
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；本机 macOS/Windows 使用带超时和输出边界的异步平台命令，Windows 远端在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
-| 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档和可选 raw 的脱敏 session bundle 已有；bundle 签名/附件仍待补。 |
+| 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
@@ -305,7 +304,7 @@ npm run build
 ### P2：日志、诊断和 MCP 产品化
 
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、逐行毫秒元数据、显式命令 UUID 关联和 system Text/JSONL sink 已完成。
-2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏和显式 raw 策略已完成；继续补签名和自定义附件选择。
+2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
 5. 终端兼容和 Tmux workflow 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，以及同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。

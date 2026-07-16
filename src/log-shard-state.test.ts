@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { LogShardInfo } from "./types";
-import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
+import {
+  filterLogShards,
+  MAX_BUNDLE_ATTACHMENT_BYTES,
+  MAX_BUNDLE_ATTACHMENTS,
+  MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES,
+  selectVisibleLogShards,
+  summarizeBundleAttachmentSelection,
+} from "./log-shard-state";
 
 const shards: LogShardInfo[] = [
   { path: "Bench/2026-07-12/session.raw", format: "raw", size: 10 },
@@ -26,5 +33,34 @@ describe("log shard state", () => {
       shards[0].path,
       shards[1].path,
     ]);
+  });
+
+  it("summarizes only existing selected shards for bundle attachments", () => {
+    expect(summarizeBundleAttachmentSelection(shards, [shards[0].path, "missing.raw"])).toEqual({
+      count: 1,
+      bytes: 10,
+      withinLimits: true,
+    });
+  });
+
+  it("rejects bundle attachment selections outside count or total-size limits", () => {
+    const tooMany = Array.from({ length: MAX_BUNDLE_ATTACHMENTS + 1 }, (_, index) => ({
+      path: `${index}.txt`,
+      format: "txt" as const,
+      size: 1,
+    }));
+    expect(summarizeBundleAttachmentSelection(tooMany, tooMany.map((shard) => shard.path)).withinLimits).toBe(false);
+    const tooLarge = [{
+      path: "large.raw",
+      format: "raw" as const,
+      size: MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES + 1,
+    }];
+    expect(summarizeBundleAttachmentSelection(tooLarge, ["large.raw"]).withinLimits).toBe(false);
+    const oversizedSingle = [{
+      path: "single.raw",
+      format: "raw" as const,
+      size: MAX_BUNDLE_ATTACHMENT_BYTES + 1,
+    }];
+    expect(summarizeBundleAttachmentSelection(oversizedSingle, ["single.raw"]).withinLimits).toBe(false);
   });
 });

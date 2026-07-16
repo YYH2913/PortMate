@@ -352,10 +352,14 @@ export interface DeleteLogShardsResult {
 export interface ExportSessionBundleArchiveResult {
   path: string;
   checksumPath: string;
+  signaturePath: string;
   sha256: string;
+  signatureAlgorithm: string;
+  signingPublicKey: string;
   size: number;
   files: number;
   rawLogSegments: number;
+  attachments: number;
   redacted: boolean;
   warnings: string[];
 }

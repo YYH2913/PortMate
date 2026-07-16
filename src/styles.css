@@ -5759,7 +5759,7 @@ fieldset label {
 .log-bundle-controls {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(160px, 1fr) auto auto auto;
+  grid-template-columns: minmax(160px, 1fr) auto auto auto auto;
   align-items: center;
   gap: 12px;
 }

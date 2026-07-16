@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signer as _, SigningKey};
 use flate2::{write::GzEncoder, Compression};
 use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
@@ -130,6 +131,9 @@ const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
 const MAX_ONE_KEY_SESSIONS: usize = 64;
 const MAX_ONE_KEY_SECRET_BYTES: usize = 32 * 1024;
 const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
+const BUNDLE_SIGNING_KEY_REF: &str = "keychain:bundle-signing-ed25519-v1";
+const BUNDLE_SIGNING_KEY_PORTABLE_REF: &str = "stronghold:bundle-signing-ed25519-v1";
+const BUNDLE_SIGNATURE_PAYLOAD_FORMAT: &str = "portmate-session-bundle-signature-v1";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
 const PORTABLE_VAULT_FILE_NAME: &str = "portmate-vault.hold";
 const PORTABLE_VAULT_SALT_FILE_NAME: &str = "portmate-vault.salt";
@@ -154,6 +158,9 @@ const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
 const LOG_RETENTION_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_BUNDLE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUNDLE_LOG_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_BUNDLE_ATTACHMENTS: usize = 32;
+const MAX_BUNDLE_ATTACHMENT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
 const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
@@ -1540,6 +1547,8 @@ pub struct ExportSessionBundleArchiveRequest {
     pub redact_secrets: bool,
     #[serde(default)]
     pub include_raw_logs: bool,
+    #[serde(default)]
+    pub attachment_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1547,10 +1556,14 @@ pub struct ExportSessionBundleArchiveRequest {
 pub struct ExportSessionBundleArchiveResult {
     pub path: String,
     pub checksum_path: String,
+    pub signature_path: String,
     pub sha256: String,
+    pub signature_algorithm: String,
+    pub signing_public_key: String,
     pub size: u64,
     pub files: usize,
     pub raw_log_segments: usize,
+    pub attachments: usize,
     pub redacted: bool,
     pub warnings: Vec<String>,
 }
@@ -2266,12 +2279,13 @@ fn export_session_bundle_archive(
     state: State<'_, AppState>,
     request: ExportSessionBundleArchiveRequest,
 ) -> Result<ExportSessionBundleArchiveResult, String> {
+    let signing_key = load_or_create_bundle_signing_key()?;
     let snapshot = state
         .store
         .lock()
         .map_err(|error| error.to_string())?
         .clone();
-    export_session_bundle_archive_inner(&state.store_path, &snapshot, request)
+    export_session_bundle_archive_inner(&state.store_path, &snapshot, request, &signing_key)
 }
 
 #[tauri::command]
@@ -3343,8 +3357,8 @@ fn save_session_profile(
     let new_secret_refs = profile_secret_refs(&profile);
     let save_result = (|| {
         for secret_ref in new_secret_refs.difference(&old_secret_refs) {
-            if is_reserved_mcp_secret_ref(secret_ref) {
-                return Err("MCP token 引用不能用作 Profile 凭据".to_string());
+            if is_reserved_internal_secret_ref(secret_ref) {
+                return Err("内部保留 secretRef 不能用作 Profile 凭据".to_string());
             }
             read_secret_from_store(secret_ref).map_err(|error| {
                 format!("新增 Profile secretRef 无法读取 ({secret_ref}): {error}")
@@ -4545,6 +4559,9 @@ fn save_secret(
     }
     let secret_ref =
         if let Some(secret_ref) = request.secret_ref.filter(|value| !value.trim().is_empty()) {
+            if is_reserved_internal_secret_ref(&secret_ref) {
+                return Err("内部保留 secretRef 不能通过通用凭据接口写入".to_string());
+            }
             write_secret_to_store(&secret_ref, &secret)?;
             secret_ref
         } else {
@@ -4557,6 +4574,9 @@ fn save_secret(
 fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
+    if is_reserved_internal_secret_ref(&secret_ref) {
+        return Err("内部保留 secretRef 不能通过通用凭据接口删除".to_string());
+    }
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let usage_count = secret_ref_usage_count(&store, &secret_ref);
     if usage_count > 0 {
@@ -4570,6 +4590,9 @@ fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), S
 #[tauri::command]
 fn has_secret(state: State<'_, AppState>, secret_ref: String) -> Result<bool, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    if is_reserved_internal_secret_ref(&secret_ref) {
+        return Err("内部保留 secretRef 不能通过通用凭据接口读取".to_string());
+    }
     match read_secret_from_store(&secret_ref) {
         Ok(_) => Ok(true),
         Err(error)
@@ -15611,9 +15634,12 @@ fn secret_ref_storage(secret_ref: &str) -> SecretStorage {
     }
 }
 
-fn is_reserved_mcp_secret_ref(secret_ref: &str) -> bool {
+fn is_reserved_internal_secret_ref(secret_ref: &str) -> bool {
     canonical_secret_ref(secret_ref).is_some_and(|secret_ref| {
-        secret_ref == MCP_HTTP_TOKEN_REF || secret_ref.starts_with("keychain:ipc-")
+        secret_ref == MCP_HTTP_TOKEN_REF
+            || secret_ref == BUNDLE_SIGNING_KEY_REF
+            || secret_ref == BUNDLE_SIGNING_KEY_PORTABLE_REF
+            || secret_ref.starts_with("keychain:ipc-")
     })
 }
 
@@ -15722,7 +15748,7 @@ fn build_profile_secret_migration_plan(
                 )
         });
         for secret_ref in profile_secret_ref_occurrences(profile) {
-            if is_reserved_mcp_secret_ref(&secret_ref) {
+            if is_reserved_internal_secret_ref(&secret_ref) {
                 excluded_reserved_reference_count += 1;
             } else if secret_ref_storage(&secret_ref) == request.target_storage {
                 already_target_reference_count += 1;
@@ -16154,8 +16180,8 @@ fn validate_profile_secret_migration_journal(
         if item.reference_count == 0
             || canonical_secret_ref(&item.source_ref).as_deref() != Some(item.source_ref.as_str())
             || canonical_secret_ref(&item.target_ref).as_deref() != Some(item.target_ref.as_str())
-            || is_reserved_mcp_secret_ref(&item.source_ref)
-            || is_reserved_mcp_secret_ref(&item.target_ref)
+            || is_reserved_internal_secret_ref(&item.source_ref)
+            || is_reserved_internal_secret_ref(&item.target_ref)
             || secret_ref_storage(&item.source_ref) == payload.target_storage
             || secret_ref_storage(&item.target_ref) != payload.target_storage
             || mappings
@@ -17494,6 +17520,126 @@ fn ensure_keyring_store() -> Result<(), String> {
                 .map_err(|error| format!("系统密钥库初始化失败: {error}"))
         })
         .clone()
+}
+
+fn decode_bundle_signing_key(encoded: &str) -> Result<SigningKey, String> {
+    let decoded = Zeroizing::new(
+        BASE64_STANDARD
+            .decode(encoded.trim())
+            .map_err(|_| "stored bundle signing key is not valid Base64".to_string())?,
+    );
+    let seed = <&[u8; 32]>::try_from(decoded.as_slice())
+        .map_err(|_| "stored bundle signing key has an invalid length".to_string())?;
+    Ok(SigningKey::from_bytes(seed))
+}
+
+fn load_or_create_bundle_signing_key() -> Result<SigningKey, String> {
+    static KEY_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = KEY_INIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "bundle signing key initialization lock is poisoned".to_string())?;
+
+    match probe_secret_from_keyring(BUNDLE_SIGNING_KEY_REF) {
+        SecretProbeResult::Present(encoded) => decode_bundle_signing_key(encoded.as_str()),
+        SecretProbeResult::Unavailable(keyring_error) => {
+            load_or_create_bundle_signing_key_in_portable_vault(keyring_error)
+        }
+        SecretProbeResult::Missing => {
+            if let Some(signing_key) = existing_portable_bundle_signing_key()? {
+                return Ok(signing_key);
+            }
+            let mut seed = Zeroizing::new([0_u8; 32]);
+            getrandom::fill(seed.as_mut())
+                .map_err(|error| format!("failed to generate bundle signing key: {error}"))?;
+            let encoded = Zeroizing::new(BASE64_STANDARD.encode(seed.as_ref()));
+            if let Err(keyring_error) =
+                write_secret_to_keyring(BUNDLE_SIGNING_KEY_REF, encoded.as_str())
+            {
+                return persist_bundle_signing_key_in_portable_vault(
+                    encoded.as_str(),
+                    keyring_error,
+                );
+            }
+            let persisted =
+                Zeroizing::new(read_secret_from_keyring(BUNDLE_SIGNING_KEY_REF).map_err(
+                    |error| format!("failed to verify persisted bundle signing key: {error}"),
+                )?);
+            if persisted.as_str() != encoded.as_str() {
+                return Err(
+                    "persisted bundle signing key did not pass read-back verification".to_string(),
+                );
+            }
+            decode_bundle_signing_key(persisted.as_str())
+        }
+    }
+}
+
+fn existing_portable_bundle_signing_key() -> Result<Option<SigningKey>, String> {
+    let status = match portable_vault_status_inner() {
+        Ok(status) => status,
+        Err(_) => return Ok(None),
+    };
+    if status.exists && !status.unlocked {
+        return Err(
+            "portable vault is locked; unlock it before creating or loading the bundle signing identity"
+                .to_string(),
+        );
+    }
+    if !status.unlocked {
+        return Ok(None);
+    }
+    match probe_secret_from_portable_vault(BUNDLE_SIGNING_KEY_PORTABLE_REF) {
+        SecretProbeResult::Present(encoded) => {
+            decode_bundle_signing_key(encoded.as_str()).map(Some)
+        }
+        SecretProbeResult::Missing => Ok(None),
+        SecretProbeResult::Unavailable(error) => Err(format!(
+            "failed to inspect portable bundle signing identity: {error}"
+        )),
+    }
+}
+
+fn load_or_create_bundle_signing_key_in_portable_vault(
+    keyring_error: String,
+) -> Result<SigningKey, String> {
+    let secret_ref = BUNDLE_SIGNING_KEY_PORTABLE_REF;
+    match probe_secret_from_portable_vault(secret_ref) {
+        SecretProbeResult::Present(encoded) => decode_bundle_signing_key(encoded.as_str()),
+        SecretProbeResult::Missing => {
+            let mut seed = Zeroizing::new([0_u8; 32]);
+            getrandom::fill(seed.as_mut())
+                .map_err(|error| format!("failed to generate bundle signing key: {error}"))?;
+            let encoded = Zeroizing::new(BASE64_STANDARD.encode(seed.as_ref()));
+            persist_bundle_signing_key_in_portable_vault(encoded.as_str(), keyring_error)
+        }
+        SecretProbeResult::Unavailable(portable_error) => Err(format!(
+            "bundle signing key is unavailable: system keyring failed ({keyring_error}); portable vault failed ({portable_error})"
+        )),
+    }
+}
+
+fn persist_bundle_signing_key_in_portable_vault(
+    encoded: &str,
+    keyring_error: String,
+) -> Result<SigningKey, String> {
+    let secret_ref = BUNDLE_SIGNING_KEY_PORTABLE_REF;
+    write_secret_to_portable_vault(secret_ref, encoded).map_err(|portable_error| {
+        format!(
+            "failed to persist bundle signing key: system keyring failed ({keyring_error}); portable vault failed ({portable_error})"
+        )
+    })?;
+    let persisted = Zeroizing::new(
+        read_secret_from_portable_vault(secret_ref).map_err(|portable_error| {
+            format!(
+                "failed to verify persisted bundle signing key: system keyring failed ({keyring_error}); portable vault failed ({portable_error})"
+            )
+        })?,
+    );
+    if persisted.as_str() != encoded {
+        return Err("persisted bundle signing key did not pass read-back verification".to_string());
+    }
+    decode_bundle_signing_key(persisted.as_str())
 }
 
 fn portable_vault_context() -> Result<&'static PortableVaultContext, String> {
@@ -21822,7 +21968,7 @@ fn archive_log_shards_inner(
         &Uuid::new_v4().simple().to_string()[..8]
     );
     let final_path = export_dir.join(name);
-    let temp_path = final_path.with_extension("tar.gz.part");
+    let temp_path = path_with_appended_suffix(&final_path, ".part")?;
     if let Err(error) = write_log_shard_archive(
         &temp_path,
         &validated,
@@ -21853,6 +21999,16 @@ struct BundleFileManifest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct BundleAttachmentManifest {
+    display_name: String,
+    source_path: String,
+    archive_path: String,
+    size: usize,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BundleManifest {
     format: &'static str,
     version: u32,
@@ -21860,6 +22016,7 @@ struct BundleManifest {
     created_at: String,
     redacted: bool,
     raw_log_segments: usize,
+    attachments: Vec<BundleAttachmentManifest>,
     files: Vec<BundleFileManifest>,
     warnings: Vec<String>,
 }
@@ -21869,16 +22026,33 @@ struct BundleArchiveEntry {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug)]
+struct PreparedBundleAttachment {
+    display_name: String,
+    source_path: String,
+    archive_path: String,
+    bytes: Vec<u8>,
+}
+
 fn export_session_bundle_archive_inner(
     store_path: &Path,
     store: &SessionStore,
     request: ExportSessionBundleArchiveRequest,
+    signing_key: &SigningKey,
 ) -> Result<ExportSessionBundleArchiveResult, String> {
     let profile = store
         .profile(&request.session_id)
         .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
     let redacted = request.redact_secrets;
     let include_raw_logs = request.include_raw_logs && !redacted;
+    if redacted && !request.attachment_paths.is_empty() {
+        return Err(
+            "bundle attachments are not redacted; disable redaction before attaching log shards"
+                .to_string(),
+        );
+    }
+    let prepared_attachments = prepare_bundle_attachments(store_path, &request.attachment_paths)?;
+    let attachment_count = prepared_attachments.len();
     let created_at = Utc::now();
     let bundle = if redacted {
         store.export_session_bundle_redacted(&request.session_id)
@@ -21934,6 +22108,7 @@ fn export_session_bundle_archive_inner(
         "redacted": redacted,
         "rawLogsRequested": request.include_raw_logs,
         "rawLogsIncluded": include_raw_logs,
+        "attachmentCount": attachment_count,
     });
     push_bundle_entry(
         &mut entries,
@@ -21941,6 +22116,19 @@ fn export_session_bundle_archive_inner(
         serde_json::to_vec_pretty(&diagnostics)
             .map_err(|error| format!("failed to serialize bundle diagnostics: {error}"))?,
     )?;
+
+    let mut attachment_manifests = Vec::with_capacity(attachment_count);
+    for attachment in prepared_attachments {
+        let sha256 = sha256_hex(&attachment.bytes);
+        attachment_manifests.push(BundleAttachmentManifest {
+            display_name: attachment.display_name,
+            source_path: attachment.source_path,
+            archive_path: attachment.archive_path.clone(),
+            size: attachment.bytes.len(),
+            sha256,
+        });
+        push_bundle_entry(&mut entries, &attachment.archive_path, attachment.bytes)?;
+    }
 
     let mut raw_log_segments = 0_usize;
     if include_raw_logs {
@@ -21981,11 +22169,12 @@ fn export_session_bundle_archive_inner(
         .collect::<Vec<_>>();
     let manifest = BundleManifest {
         format: "portmate-session-bundle",
-        version: 1,
+        version: 2,
         session_id: request.session_id.clone(),
         created_at: created_at.to_rfc3339(),
         redacted,
         raw_log_segments,
+        attachments: attachment_manifests,
         files: manifest_files,
         warnings: warnings.clone(),
     };
@@ -22013,22 +22202,38 @@ fn export_session_bundle_archive_inner(
         &Uuid::new_v4().simple().to_string()[..8]
     );
     let final_path = export_dir.join(name);
-    let temp_path = final_path.with_extension("tar.gz.part");
+    let temp_path = path_with_appended_suffix(&final_path, ".part")?;
     if let Err(error) =
         write_bundle_archive(&temp_path, &entries, created_at.timestamp().max(0) as u64)
     {
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
-    let finalized = finalize_archive_with_checksum(&temp_path, &final_path, "session bundle")?;
+    let finalized = match finalize_signed_bundle_archive(
+        &temp_path,
+        &final_path,
+        "session bundle",
+        signing_key,
+        &created_at.to_rfc3339(),
+    ) {
+        Ok(finalized) => finalized,
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    };
 
     Ok(ExportSessionBundleArchiveResult {
         path: final_path.display().to_string(),
         checksum_path: finalized.checksum_path.display().to_string(),
+        signature_path: finalized.signature_path.display().to_string(),
         sha256: finalized.sha256,
+        signature_algorithm: "Ed25519".to_string(),
+        signing_public_key: finalized.signing_public_key,
         size: finalized.size,
         files: entries.len(),
         raw_log_segments,
+        attachments: attachment_count,
         redacted,
         warnings,
     })
@@ -22050,6 +22255,138 @@ fn push_bundle_entry(
         bytes,
     });
     Ok(())
+}
+
+fn prepare_bundle_attachments(
+    store_path: &Path,
+    relative_paths: &[String],
+) -> Result<Vec<PreparedBundleAttachment>, String> {
+    if relative_paths.len() > MAX_BUNDLE_ATTACHMENTS {
+        return Err(format!(
+            "bundle attachment count limit exceeded ({MAX_BUNDLE_ATTACHMENTS})"
+        ));
+    }
+
+    let mut seen = HashSet::new();
+    let mut validated = Vec::new();
+    let mut total_bytes = 0_u64;
+    for relative in relative_paths {
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        let path = resolve_log_shard_path(store_path, relative)?;
+        let size = fs::metadata(&path)
+            .map_err(|error| format!("failed to read bundle attachment {relative}: {error}"))?
+            .len();
+        if size > MAX_BUNDLE_ATTACHMENT_BYTES {
+            return Err(format!(
+                "bundle attachment {relative} exceeds {MAX_BUNDLE_ATTACHMENT_BYTES} byte limit"
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(size)
+            .ok_or_else(|| "bundle attachment size overflow".to_string())?;
+        if total_bytes > MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES {
+            return Err(format!(
+                "bundle attachment total size limit exceeded ({MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES} bytes)"
+            ));
+        }
+        validated.push((relative.clone(), path, size));
+    }
+
+    validated
+        .into_iter()
+        .enumerate()
+        .map(|(index, (source_path, path, size))| {
+            let display_name = Path::new(&source_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("attachment")
+                .to_string();
+            let sanitized = sanitize_log_path_segment(&display_name);
+            let archive_name = if sanitized.is_empty() {
+                "attachment".to_string()
+            } else {
+                sanitized
+            };
+            Ok(PreparedBundleAttachment {
+                display_name,
+                source_path,
+                archive_path: format!("attachments/{:04}-{archive_name}", index + 1),
+                bytes: read_verified_bundle_attachment(&path, size)?,
+            })
+        })
+        .collect()
+}
+
+fn read_verified_bundle_attachment(path: &Path, expected_size: u64) -> Result<Vec<u8>, String> {
+    let path_lock = log_shard_lock(path)?;
+    let _guard = path_lock
+        .lock()
+        .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
+    let file = open_bundle_attachment_file(path)?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "failed to inspect bundle attachment {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(format!(
+            "bundle attachment changed before it could be read: {}",
+            path.display()
+        ));
+    }
+    let capacity = usize::try_from(expected_size)
+        .map_err(|_| "bundle attachment does not fit in memory".to_string())?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(expected_size.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            format!(
+                "failed to read bundle attachment {}: {error}",
+                path.display()
+            )
+        })?;
+    if bytes.len() as u64 != expected_size {
+        return Err(format!(
+            "bundle attachment changed while it was being read: {}",
+            path.display()
+        ));
+    }
+    let (verified_sha256, verified_size) = sha256_file_exact(path, expected_size)?;
+    if verified_size != expected_size || verified_sha256 != sha256_hex(&bytes) {
+        return Err(format!(
+            "bundle attachment was replaced or modified while it was being read: {}",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn open_bundle_attachment_file(path: &Path) -> Result<fs::File, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "failed to inspect bundle attachment {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "bundle attachment is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options.open(path).map_err(|error| {
+        format!(
+            "failed to open bundle attachment {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn read_log_bytes_ref(
@@ -22185,10 +22522,202 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+fn sha256_file_exact(path: &Path, expected_size: u64) -> Result<(String, u64), String> {
+    let file = open_bundle_attachment_file(path)?;
+    let mut reader = HashingReader::new(file.take(expected_size.saturating_add(1)));
+    std::io::copy(&mut reader, &mut std::io::sink())
+        .map_err(|error| format!("failed to read file for bounded checksum: {error}"))?;
+    let result = reader.finish();
+    if result.1 != expected_size {
+        return Err(format!(
+            "file changed during checksum: read {} of {expected_size} bytes",
+            result.1
+        ));
+    }
+    Ok(result)
+}
+
 struct FinalizedArchive {
     checksum_path: PathBuf,
     sha256: String,
     size: u64,
+}
+
+#[derive(Debug)]
+struct SignedFinalizedArchive {
+    checksum_path: PathBuf,
+    signature_path: PathBuf,
+    sha256: String,
+    signing_public_key: String,
+    size: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleDetachedSignature {
+    format: &'static str,
+    version: u32,
+    algorithm: &'static str,
+    payload_format: &'static str,
+    archive_file: String,
+    archive_size: u64,
+    archive_sha256: String,
+    created_at: String,
+    public_key_base64: String,
+    key_id: String,
+    signed_payload_base64: String,
+    signature_base64: String,
+}
+
+fn path_with_appended_suffix(path: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("path has no file name: {}", path.display()))?;
+    let mut suffixed = file_name.to_os_string();
+    suffixed.push(suffix);
+    Ok(path.with_file_name(suffixed))
+}
+
+fn write_new_synced_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("failed to create {label} {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("failed to write {label} {}: {error}", path.display()))
+}
+
+fn bundle_signature_payload(
+    archive_name: &str,
+    archive_sha256: &str,
+    archive_size: u64,
+    created_at: &str,
+) -> Vec<u8> {
+    [
+        BUNDLE_SIGNATURE_PAYLOAD_FORMAT.to_string(),
+        archive_name.to_string(),
+        archive_sha256.to_string(),
+        archive_size.to_string(),
+        created_at.to_string(),
+    ]
+    .join("\0")
+    .into_bytes()
+}
+
+fn finalize_signed_bundle_archive(
+    temp_path: &Path,
+    final_path: &Path,
+    label: &str,
+    signing_key: &SigningKey,
+    created_at: &str,
+) -> Result<SignedFinalizedArchive, String> {
+    let sha256 = sha256_file(temp_path)?;
+    let size = fs::metadata(temp_path)
+        .map_err(|error| format!("failed to read {label} metadata: {error}"))?
+        .len();
+    let archive_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid {label} file name"))?;
+    let signed_payload = bundle_signature_payload(archive_name, &sha256, size, created_at);
+    let signature = signing_key.sign(&signed_payload);
+    let public_key = signing_key.verifying_key().to_bytes();
+    let public_key_base64 = BASE64_STANDARD.encode(public_key);
+    let signature_document = BundleDetachedSignature {
+        format: "portmate-detached-signature",
+        version: 1,
+        algorithm: "Ed25519",
+        payload_format: BUNDLE_SIGNATURE_PAYLOAD_FORMAT,
+        archive_file: archive_name.to_string(),
+        archive_size: size,
+        archive_sha256: sha256.clone(),
+        created_at: created_at.to_string(),
+        public_key_base64: public_key_base64.clone(),
+        key_id: format!("sha256:{}", sha256_hex(&public_key)),
+        signed_payload_base64: BASE64_STANDARD.encode(&signed_payload),
+        signature_base64: BASE64_STANDARD.encode(signature.to_bytes()),
+    };
+    let mut signature_bytes = serde_json::to_vec_pretty(&signature_document)
+        .map_err(|error| format!("failed to serialize {label} signature: {error}"))?;
+    signature_bytes.push(b'\n');
+
+    let checksum_path = path_with_appended_suffix(final_path, ".sha256")?;
+    let checksum_temp_path = path_with_appended_suffix(final_path, ".sha256.part")?;
+    let signature_path = path_with_appended_suffix(final_path, ".sig.json")?;
+    let signature_temp_path = path_with_appended_suffix(final_path, ".sig.json.part")?;
+    for artifact in [
+        final_path,
+        checksum_path.as_path(),
+        checksum_temp_path.as_path(),
+        signature_path.as_path(),
+        signature_temp_path.as_path(),
+    ] {
+        if fs::symlink_metadata(artifact).is_ok() {
+            let _ = fs::remove_file(temp_path);
+            return Err(format!(
+                "refusing to overwrite existing {label} artifact {}",
+                artifact.display()
+            ));
+        }
+    }
+    let cleanup = || {
+        let _ = fs::remove_file(temp_path);
+        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&checksum_temp_path);
+        let _ = fs::remove_file(&checksum_path);
+        let _ = fs::remove_file(&signature_temp_path);
+        let _ = fs::remove_file(&signature_path);
+    };
+
+    if let Err(error) = write_new_synced_file(
+        &checksum_temp_path,
+        format!("{sha256}  {archive_name}\n").as_bytes(),
+        &format!("{label} checksum"),
+    ) {
+        cleanup();
+        return Err(error);
+    }
+    if let Err(error) = write_new_synced_file(
+        &signature_temp_path,
+        &signature_bytes,
+        &format!("{label} signature"),
+    ) {
+        cleanup();
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(temp_path, final_path) {
+        cleanup();
+        return Err(format!(
+            "failed to finalize {label} {}: {error}",
+            final_path.display()
+        ));
+    }
+    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+        cleanup();
+        return Err(format!(
+            "failed to finalize {label} checksum {}: {error}",
+            checksum_path.display()
+        ));
+    }
+    if let Err(error) = fs::rename(&signature_temp_path, &signature_path) {
+        cleanup();
+        return Err(format!(
+            "failed to finalize {label} signature {}: {error}",
+            signature_path.display()
+        ));
+    }
+
+    Ok(SignedFinalizedArchive {
+        checksum_path,
+        signature_path,
+        sha256,
+        signing_public_key: public_key_base64,
+        size,
+    })
 }
 
 fn finalize_archive_with_checksum(
@@ -22217,8 +22746,8 @@ fn finalize_archive_with_checksum(
             return Err(format!("failed to read {label} metadata: {error}"));
         }
     };
-    let checksum_path = final_path.with_extension("tar.gz.sha256");
-    let checksum_temp_path = final_path.with_extension("tar.gz.sha256.part");
+    let checksum_path = path_with_appended_suffix(final_path, ".sha256")?;
+    let checksum_temp_path = path_with_appended_suffix(final_path, ".sha256.part")?;
     let archive_name = final_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -31670,6 +32199,8 @@ mod tests {
         assert!(fs::read_to_string(&archived.checksum_path)
             .unwrap()
             .contains(&archived.sha256));
+        assert!(archived.checksum_path.ends_with(".tar.gz.sha256"));
+        assert!(!archived.checksum_path.contains(".tar.tar.gz"));
         assert!(logs.join("session.txt").exists());
         assert!(logs.join("nested/session.raw").exists());
 
@@ -31714,6 +32245,15 @@ mod tests {
                 Some(bytes_ref),
             )
             .unwrap();
+        let attachment_root = log_root(&store_path).join("attachments");
+        fs::create_dir_all(attachment_root.join("nested")).unwrap();
+        fs::write(attachment_root.join("report.txt"), b"primary report").unwrap();
+        fs::write(
+            attachment_root.join("nested/report.txt"),
+            b"secondary report",
+        )
+        .unwrap();
+        let signing_key = SigningKey::from_bytes(&[0x42; 32]);
 
         let redacted = export_session_bundle_archive_inner(
             &store_path,
@@ -31722,7 +32262,9 @@ mod tests {
                 session_id: session_id.clone(),
                 redact_secrets: true,
                 include_raw_logs: true,
+                attachment_paths: Vec::new(),
             },
+            &signing_key,
         )
         .unwrap();
         assert!(redacted.redacted);
@@ -31738,6 +32280,9 @@ mod tests {
         assert!(fs::read_to_string(&redacted.checksum_path)
             .unwrap()
             .contains(&redacted.sha256));
+        assert!(redacted.checksum_path.ends_with(".tar.gz.sha256"));
+        assert!(redacted.signature_path.ends_with(".tar.gz.sig.json"));
+        assert!(!redacted.checksum_path.contains(".tar.tar.gz"));
         let redacted_entries = read_test_bundle_entries(Path::new(&redacted.path));
         assert!(redacted_entries.contains_key("bundle.json"));
         assert!(redacted_entries.contains_key("events.jsonl"));
@@ -31766,11 +32311,23 @@ mod tests {
                 session_id,
                 redact_secrets: false,
                 include_raw_logs: true,
+                attachment_paths: vec![
+                    "attachments/report.txt".to_string(),
+                    "attachments/nested/report.txt".to_string(),
+                    "attachments/report.txt".to_string(),
+                ],
             },
+            &signing_key,
         )
         .unwrap();
         assert!(!plain.redacted);
         assert_eq!(plain.raw_log_segments, 1);
+        assert_eq!(plain.attachments, 2);
+        assert_eq!(plain.signature_algorithm, "Ed25519");
+        assert_eq!(
+            plain.signing_public_key,
+            BASE64_STANDARD.encode(signing_key.verifying_key().to_bytes())
+        );
         let plain_entries = read_test_bundle_entries(Path::new(&plain.path));
         let raw_entry = plain_entries
             .iter()
@@ -31778,8 +32335,182 @@ mod tests {
             .unwrap();
         assert_eq!(raw_entry.1, secret);
         assert!(String::from_utf8_lossy(&plain_entries["events.jsonl"]).contains("hunter2"));
+        assert_eq!(
+            plain_entries["attachments/0001-report.txt"],
+            b"primary report"
+        );
+        assert_eq!(
+            plain_entries["attachments/0002-report.txt"],
+            b"secondary report"
+        );
+
+        let plain_manifest: serde_json::Value =
+            serde_json::from_slice(&plain_entries["manifest.json"]).unwrap();
+        assert_eq!(plain_manifest["version"], 2);
+        let attachments = plain_manifest["attachments"].as_array().unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[0]["displayName"], "report.txt");
+        assert_eq!(attachments[0]["sourcePath"], "attachments/report.txt");
+        assert_eq!(attachments[1]["archivePath"], "attachments/0002-report.txt");
+        for attachment in attachments {
+            let path = attachment["archivePath"].as_str().unwrap();
+            assert_eq!(
+                attachment["sha256"].as_str().unwrap(),
+                sha256_hex(&plain_entries[path])
+            );
+        }
+
+        let signature_text = fs::read_to_string(&plain.signature_path).unwrap();
+        assert!(!signature_text.contains(&BASE64_STANDARD.encode(signing_key.to_bytes())));
+        let signature_document: serde_json::Value = serde_json::from_str(&signature_text).unwrap();
+        assert_eq!(signature_document["format"], "portmate-detached-signature");
+        assert_eq!(signature_document["algorithm"], "Ed25519");
+        assert_eq!(signature_document["archiveSha256"], plain.sha256);
+        assert_eq!(signature_document["archiveSize"], plain.size);
+        let signed_payload = BASE64_STANDARD
+            .decode(signature_document["signedPayloadBase64"].as_str().unwrap())
+            .unwrap();
+        let archive_name = Path::new(&plain.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap();
+        assert_eq!(
+            signed_payload,
+            bundle_signature_payload(
+                archive_name,
+                &plain.sha256,
+                plain.size,
+                signature_document["createdAt"].as_str().unwrap(),
+            )
+        );
+        let public_key = BASE64_STANDARD
+            .decode(signature_document["publicKeyBase64"].as_str().unwrap())
+            .unwrap();
+        let public_key = <[u8; 32]>::try_from(public_key).unwrap();
+        let signature = BASE64_STANDARD
+            .decode(signature_document["signatureBase64"].as_str().unwrap())
+            .unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(&signature).unwrap();
+        ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+            .unwrap()
+            .verify_strict(&signed_payload, &signature)
+            .unwrap();
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_bundle_attachments_reject_unsafe_paths_and_size_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-bundle-attachment-test-{}",
+            Uuid::new_v4()
+        ));
+        let store_path = root.join("portmate-store.sqlite3");
+        let logs = log_root(&store_path);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("valid.txt"), b"valid").unwrap();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        let signing_key = SigningKey::from_bytes(&[0x24; 32]);
+
+        let redacted_error = export_session_bundle_archive_inner(
+            &store_path,
+            &store,
+            ExportSessionBundleArchiveRequest {
+                session_id: session_id.clone(),
+                redact_secrets: true,
+                include_raw_logs: false,
+                attachment_paths: vec!["valid.txt".to_string()],
+            },
+            &signing_key,
+        )
+        .unwrap_err();
+        assert!(redacted_error.contains("not redacted"));
+
+        let traversal_error = export_session_bundle_archive_inner(
+            &store_path,
+            &store,
+            ExportSessionBundleArchiveRequest {
+                session_id: session_id.clone(),
+                redact_secrets: false,
+                include_raw_logs: false,
+                attachment_paths: vec!["../outside.txt".to_string()],
+            },
+            &signing_key,
+        )
+        .unwrap_err();
+        assert!(traversal_error.contains("invalid log shard path"));
+
+        let too_many = vec!["valid.txt".to_string(); MAX_BUNDLE_ATTACHMENTS + 1];
+        let count_error = prepare_bundle_attachments(&store_path, &too_many).unwrap_err();
+        assert!(count_error.contains("count limit"));
+
+        let oversized = logs.join("oversized.raw");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_BUNDLE_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        let size_error =
+            prepare_bundle_attachments(&store_path, &["oversized.raw".to_string()]).unwrap_err();
+        assert!(size_error.contains("byte limit"));
+
+        let changing = logs.join("changing.jsonl");
+        fs::write(&changing, b"one").unwrap();
+        fs::write(&changing, b"changed").unwrap();
+        let change_error = read_verified_bundle_attachment(&changing, 3).unwrap_err();
+        assert!(change_error.contains("changed"));
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(logs.join("valid.txt"), logs.join("linked.txt")).unwrap();
+            let symlink_error =
+                prepare_bundle_attachments(&store_path, &["linked.txt".to_string()]).unwrap_err();
+            assert!(symlink_error.contains("not a regular file"));
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn signed_bundle_finalization_refuses_existing_artifacts_without_partial_output() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-bundle-finalize-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("bundle.tar.gz");
+        let temp_path = root.join("bundle.tar.gz.part");
+        let signature_temp_path = path_with_appended_suffix(&final_path, ".sig.json.part").unwrap();
+        fs::write(&temp_path, b"archive").unwrap();
+        fs::write(&signature_temp_path, b"owned by another export").unwrap();
+
+        let error = finalize_signed_bundle_archive(
+            &temp_path,
+            &final_path,
+            "test bundle",
+            &SigningKey::from_bytes(&[0x11; 32]),
+            "2026-07-16T00:00:00Z",
+        )
+        .unwrap_err();
+        assert!(error.contains("refusing to overwrite"));
+        assert!(!temp_path.exists());
+        assert!(!final_path.exists());
+        assert!(signature_temp_path.exists());
+        assert!(!path_with_appended_suffix(&final_path, ".sha256")
+            .unwrap()
+            .exists());
+        assert!(!path_with_appended_suffix(&final_path, ".sig.json")
+            .unwrap()
+            .exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundle_signing_key_decoder_rejects_malformed_key_material() {
+        assert!(decode_bundle_signing_key("not-base64").is_err());
+        assert!(decode_bundle_signing_key(&BASE64_STANDARD.encode([7_u8; 31])).is_err());
+        assert!(decode_bundle_signing_key(&BASE64_STANDARD.encode([7_u8; 32])).is_ok());
     }
 
     fn read_test_bundle_entries(path: &Path) -> HashMap<String, Vec<u8>> {
@@ -37393,10 +38124,14 @@ mod tests {
                 .unwrap_err()
                 .contains("不支持 Profile 凭据迁移")
         );
-        assert!(is_reserved_mcp_secret_ref(MCP_HTTP_TOKEN_REF));
-        assert!(is_reserved_mcp_secret_ref("mcp-http-token"));
-        assert!(is_reserved_mcp_secret_ref("keychain:ipc-test-token"));
-        assert!(is_reserved_mcp_secret_ref("ipc-test-token"));
+        assert!(is_reserved_internal_secret_ref(MCP_HTTP_TOKEN_REF));
+        assert!(is_reserved_internal_secret_ref("mcp-http-token"));
+        assert!(is_reserved_internal_secret_ref("keychain:ipc-test-token"));
+        assert!(is_reserved_internal_secret_ref("ipc-test-token"));
+        assert!(is_reserved_internal_secret_ref(BUNDLE_SIGNING_KEY_REF));
+        assert!(is_reserved_internal_secret_ref(
+            BUNDLE_SIGNING_KEY_PORTABLE_REF
+        ));
     }
 
     #[test]

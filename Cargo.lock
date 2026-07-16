@@ -5170,11 +5170,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
  "iota_stronghold",
  "keyring",
  "keyring-core",
+ "libc",
  "pkcs5",
  "portable-pty",
  "portmate-core",

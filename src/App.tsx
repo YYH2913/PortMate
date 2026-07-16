@@ -43,7 +43,7 @@ import {
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
-import { filterLogShards, selectVisibleLogShards } from "./log-shard-state";
+import { filterLogShards, selectVisibleLogShards, summarizeBundleAttachmentSelection } from "./log-shard-state";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
@@ -5408,6 +5408,7 @@ function LogManagerDialog({
   const [bundleSessionId, setBundleSessionId] = useState(activeId || sessions[0]?.profile.id || "");
   const [bundleRedacted, setBundleRedacted] = useState(true);
   const [bundleRawLogs, setBundleRawLogs] = useState(false);
+  const [bundleAttachments, setBundleAttachments] = useState(false);
   const [bundleBusy, setBundleBusy] = useState(false);
   const [bundleResult, setBundleResult] = useState<ExportSessionBundleArchiveResult | null>(null);
   const [contentQuery, setContentQuery] = useState("");
@@ -5420,6 +5421,7 @@ function LogManagerDialog({
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
   const totalBytes = shards.reduce((sum, shard) => sum + shard.size, 0);
+  const bundleAttachmentSelection = summarizeBundleAttachmentSelection(shards, selected);
 
   async function refreshShards() {
     setBusy(true);
@@ -5442,6 +5444,10 @@ function LogManagerDialog({
   useEffect(() => {
     void refreshShards();
   }, []);
+
+  useEffect(() => {
+    if (!bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits) setBundleAttachments(false);
+  }, [bundleAttachmentSelection.count, bundleAttachmentSelection.withinLimits]);
 
   async function openPreview(path: string) {
     setBusy(true);
@@ -5494,6 +5500,7 @@ function LogManagerDialog({
           sessionId: bundleSessionId,
           redactSecrets: bundleRedacted,
           includeRawLogs: bundleRawLogs,
+          attachmentPaths: bundleAttachments ? selected : [],
         },
       });
       setBundleResult(result);
@@ -5601,16 +5608,28 @@ function LogManagerDialog({
               </select>
               <label><input type="checkbox" checked={bundleRedacted} onChange={(event) => {
                 setBundleRedacted(event.target.checked);
-                if (event.target.checked) setBundleRawLogs(false);
+                if (event.target.checked) {
+                  setBundleRawLogs(false);
+                  setBundleAttachments(false);
+                }
               }} />脱敏</label>
               <label className={bundleRedacted ? "disabled" : ""}><input type="checkbox" checked={bundleRawLogs} disabled={bundleRedacted} onChange={(event) => setBundleRawLogs(event.target.checked)} />Raw 片段</label>
+              <label
+                className={bundleRedacted || !bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits ? "disabled" : ""}
+                title={bundleRedacted ? "附件不会自动脱敏" : bundleAttachmentSelection.withinLimits ? "" : "附件最多 32 项，单项不超过 16 MiB，且合计不超过 32 MiB"}
+              ><input
+                type="checkbox"
+                checked={bundleAttachments}
+                disabled={bundleRedacted || !bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits}
+                onChange={(event) => setBundleAttachments(event.target.checked)}
+              />附件 {bundleAttachmentSelection.count} · {formatBytes(bundleAttachmentSelection.bytes)}</label>
               <button type="button" onClick={() => void exportBundle()} disabled={bundleBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? "导出中" : "导出会话包"}</button>
             </div>
             {bundleResult ? (
               <div className="log-bundle-result">
                 <code title={bundleResult.path}>{bundleResult.path}</code>
-                <span>{formatBytes(bundleResult.size)} · {bundleResult.files} 文件 · Raw {bundleResult.rawLogSegments} · SHA-256 {bundleResult.sha256.slice(0, 16)}...</span>
-                <button type="button" title="复制会话包信息" aria-label="复制会话包信息" onClick={() => void navigator.clipboard?.writeText(`${bundleResult.path}\n${bundleResult.checksumPath}\nSHA-256 ${bundleResult.sha256}`).catch(() => {})}><Copy size={14} /></button>
+                <span>{formatBytes(bundleResult.size)} · {bundleResult.files} 文件 · 附件 {bundleResult.attachments} · Raw {bundleResult.rawLogSegments} · {bundleResult.signatureAlgorithm}</span>
+                <button type="button" title="复制会话包信息" aria-label="复制会话包信息" onClick={() => void navigator.clipboard?.writeText(`${bundleResult.path}\n${bundleResult.checksumPath}\n${bundleResult.signaturePath}\nSHA-256 ${bundleResult.sha256}\nEd25519 ${bundleResult.signingPublicKey}`).catch(() => {})}><Copy size={14} /></button>
               </div>
             ) : null}
           </div>
