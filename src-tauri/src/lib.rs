@@ -279,6 +279,7 @@ $payload = [ordered]@{
 
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
+type ActiveCommandMap = Arc<Mutex<HashMap<String, String>>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
@@ -299,6 +300,7 @@ pub struct AppState {
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
     serial_captures: SerialCaptureMap,
+    active_commands: ActiveCommandMap,
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
@@ -998,6 +1000,7 @@ struct SessionIo {
     store: Arc<Mutex<SessionStore>>,
     runtimes: RuntimeRegistry,
     serial_captures: SerialCaptureMap,
+    active_commands: ActiveCommandMap,
     store_path: PathBuf,
 }
 
@@ -1091,6 +1094,7 @@ impl AppState {
             store: Arc::clone(&self.store),
             runtimes: self.runtimes(),
             serial_captures: Arc::clone(&self.serial_captures),
+            active_commands: Arc::clone(&self.active_commands),
             store_path: self.store_path.clone(),
         }
     }
@@ -2308,7 +2312,7 @@ async fn run_command(
 ) -> Result<SessionEvent, String> {
     let io = state.inner().session_io();
     let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
-    send_text_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
+    run_command_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
 }
 
 #[tauri::command]
@@ -2632,6 +2636,7 @@ async fn send_one_key_value(
         session_id,
         text.as_str(),
     )?);
+    clear_active_command(&io, session_id);
     write_session_bytes(
         &io.store,
         &io.runtimes.ssh,
@@ -2670,6 +2675,7 @@ async fn send_text_inner_with_context(
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
     let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
+    clear_active_command(&io, &session_id);
     write_session_bytes(
         &io.store,
         &io.runtimes.ssh,
@@ -2687,6 +2693,47 @@ async fn send_text_inner_with_context(
         wire_text.as_bytes(),
         actor,
         audit_action,
+        BTreeMap::new(),
+    ))
+}
+
+async fn run_command_inner_with_context(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    actor: &str,
+    audit_action: Option<&str>,
+) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, &session_id)?;
+    let _lane_guard = lane.lock().await;
+    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
+    let command_id = Uuid::new_v4().to_string();
+    set_active_command(&io, &session_id, &command_id);
+    if let Err(error) = write_session_bytes(
+        &io.store,
+        &io.runtimes.ssh,
+        &io.runtimes.shell,
+        &io.runtimes.tcp,
+        &io.runtimes.serial,
+        &session_id,
+        wire_text.as_bytes(),
+    )
+    .await
+    {
+        clear_active_command_if(&io, &session_id, &command_id);
+        return Err(error);
+    }
+    Ok(record_outbound_user_event_with_context(
+        &io,
+        &session_id,
+        &text,
+        wire_text.as_bytes(),
+        actor,
+        audit_action,
+        BTreeMap::from([
+            ("commandId".to_string(), command_id),
+            ("commandState".to_string(), "started".to_string()),
+        ]),
     ))
 }
 
@@ -2698,6 +2745,7 @@ async fn send_bytes_inner(
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
     let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
+    clear_active_command(&io, &session_id);
     write_session_bytes(
         &io.store,
         &io.runtimes.ssh,
@@ -2716,6 +2764,7 @@ async fn send_bytes_inner(
         &wire_bytes,
         "desktop-user",
         Some("send_bytes"),
+        BTreeMap::new(),
     ))
 }
 
@@ -2726,6 +2775,7 @@ fn record_outbound_user_event_with_context(
     wire_bytes: &[u8],
     actor: &str,
     audit_action: Option<&str>,
+    additional_annotations: BTreeMap<String, String>,
 ) -> SessionEvent {
     let shard_append = append_raw_and_text_log_shards(io, session_id, wire_bytes, text);
     let mut event = match io.store.lock() {
@@ -2739,6 +2789,7 @@ fn record_outbound_user_event_with_context(
             );
             match event {
                 Ok(mut event) => {
+                    event.annotations.extend(additional_annotations.clone());
                     append_logging_errors(&mut event, &shard_append.errors);
                     sync_stored_event(&mut store, &event);
                     if let Err(error) = save_store(&io.store_path, &store) {
@@ -2755,6 +2806,7 @@ fn record_outbound_user_event_with_context(
                     text,
                     shard_append.bytes_ref.clone(),
                     actor,
+                    additional_annotations.clone(),
                     merge_logging_error_messages(&shard_append.errors, error),
                 ),
             }
@@ -2764,6 +2816,7 @@ fn record_outbound_user_event_with_context(
             text,
             shard_append.bytes_ref,
             actor,
+            additional_annotations,
             merge_logging_error_messages(
                 &shard_append.errors,
                 format!("session store lock poisoned: {error}"),
@@ -2892,6 +2945,7 @@ fn fallback_outbound_event(
     text: &str,
     bytes_ref: Option<String>,
     actor: &str,
+    additional_annotations: BTreeMap<String, String>,
     error: String,
 ) -> SessionEvent {
     eprintln!("PortMate: outbound transport succeeded but event persistence degraded: {error}");
@@ -2907,7 +2961,42 @@ fn fallback_outbound_event(
         annotations: BTreeMap::from([
             ("actor".to_string(), actor.to_string()),
             ("loggingError".to_string(), error),
-        ]),
+        ])
+        .into_iter()
+        .chain(additional_annotations)
+        .collect(),
+    }
+}
+
+fn set_active_command(io: &SessionIo, session_id: &str, command_id: &str) {
+    io.active_commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(session_id.to_string(), command_id.to_string());
+}
+
+fn active_command_id(io: &SessionIo, session_id: &str) -> Option<String> {
+    io.active_commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(session_id)
+        .cloned()
+}
+
+fn clear_active_command(io: &SessionIo, session_id: &str) {
+    io.active_commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+}
+
+fn clear_active_command_if(io: &SessionIo, session_id: &str, command_id: &str) {
+    let mut active_commands = io
+        .active_commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if active_commands.get(session_id).map(String::as_str) == Some(command_id) {
+        active_commands.remove(session_id);
     }
 }
 
@@ -3487,6 +3576,7 @@ async fn open_session_inner(
     session_id: String,
     credentials: SessionOpenCredentials,
 ) -> Result<SessionSummary, String> {
+    clear_active_command(&state.session_io(), &session_id);
     let SessionOpenCredentials {
         username,
         password,
@@ -3582,6 +3672,7 @@ async fn close_session_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    clear_active_command(&state.session_io(), &session_id);
     let _ = cancel_tmux_control_runtime(state, &session_id);
     let existing = {
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
@@ -6053,7 +6144,7 @@ async fn execute_ipc_request(
             );
             let actor = mcp_audit_actor(&request.client_id);
             let event =
-                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
+                run_command_inner_with_context(state.session_io(), session_id, text, &actor, None)
                     .await?;
             serde_json::to_value(event).map_err(|error| error.to_string())
         }
@@ -7981,6 +8072,7 @@ async fn write_runtime_bytes(
     let lane = outbound_lane(&io.store_path, session_id)?;
     let _lane_guard = lane.lock().await;
     let wire_bytes = outbound_bytes_for_session(&io.store, session_id, bytes)?;
+    clear_active_command(&io, session_id);
     let ssh_writer = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -18522,6 +18614,7 @@ fn read_ssh_channel(
             {
                 return;
             }
+            clear_active_command(&io, &session_id);
 
             let mut store = match io.store.lock() {
                 Ok(store) => store,
@@ -19568,6 +19661,9 @@ fn read_tcp_stream(
                 false
             }
         };
+        if should_reconnect || removed_current {
+            clear_active_command(&io, &session_id);
+        }
 
         if should_reconnect {
             if let Ok(mut store) = io.store.lock() {
@@ -20099,6 +20195,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
         };
 
         if removed_current {
+            clear_active_command(&io, &session_id);
             if let Ok(mut store) = io.store.lock() {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
@@ -20245,6 +20342,9 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 false
             }
         };
+        if should_reconnect || removed_current {
+            clear_active_command(&io, &session_id);
+        }
 
         if should_reconnect {
             if let Ok(mut store) = io.store.lock() {
@@ -20732,18 +20832,23 @@ fn record_channel_bytes(
     raw_bytes: &[u8],
     text: String,
 ) {
+    let command_id = active_command_id(io, session_id);
     let shard_append = append_raw_and_text_log_shards(io, session_id, raw_bytes, &text);
     if text.is_empty() {
         return;
     }
     let live_event = if let Ok(mut store) = io.store.lock() {
+        let annotations = command_id
+            .map(|command_id| BTreeMap::from([("commandId".to_string(), command_id)]))
+            .unwrap_or_default();
         let mut event = store
-            .record_stream_event_with_bytes_ref(
+            .record_event(
                 session_id,
                 EventDirection::Inbound,
                 stream,
-                text.clone(),
+                Some(text.clone()),
                 shard_append.bytes_ref,
+                annotations,
             )
             .ok();
         if let Some(event) = event.as_mut() {
@@ -25471,6 +25576,7 @@ pub fn run() {
                 tcp: Arc::new(Mutex::new(HashMap::new())),
                 serial: Arc::new(Mutex::new(HashMap::new())),
                 serial_captures: Arc::new(Mutex::new(HashMap::new())),
+                active_commands: Arc::new(Mutex::new(HashMap::new())),
                 tunnels: Arc::new(Mutex::new(HashMap::new())),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
@@ -26893,12 +26999,15 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let address = listener.local_addr().unwrap();
+            let (drop_first_tx, drop_first_rx) = tokio::sync::oneshot::channel();
             let (second_connected_tx, second_connected_rx) = tokio::sync::oneshot::channel();
             let (release_server_tx, release_server_rx) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
                 let (first, _) = listener.accept().await.unwrap();
+                let _ = drop_first_rx.await;
                 drop(first);
-                let (second, _) = listener.accept().await.unwrap();
+                let (mut second, _) = listener.accept().await.unwrap();
+                second.write_all(b"new generation\n").await.unwrap();
                 let _ = second_connected_tx.send(());
                 let _ = release_server_rx.await;
                 drop(second);
@@ -26923,6 +27032,9 @@ mod tests {
                 .unwrap()
                 .runtime_id
                 .clone();
+            let io = state.session_io();
+            set_active_command(&io, &profile.id, "stale-command-id");
+            let _ = drop_first_tx.send(());
 
             tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
@@ -26944,6 +27056,7 @@ mod tests {
             })
             .await
             .expect("TCP runtime never entered reconnecting state");
+            assert!(active_command_id(&io, &profile.id).is_none());
 
             tokio::time::timeout(Duration::from_secs(3), second_connected_rx)
                 .await
@@ -26969,6 +27082,25 @@ mod tests {
             })
             .await
             .expect("TCP runtime did not return to connected state");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let reconnected_output = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .events
+                        .iter()
+                        .find(|event| event.text.as_deref() == Some("new generation\n"))
+                        .cloned();
+                    if let Some(event) = reconnected_output {
+                        assert!(!event.annotations.contains_key("commandId"));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("reconnected TCP output was not recorded");
 
             let runtime = state.tcp.lock().unwrap().remove(&profile.id).unwrap();
             assert_ne!(runtime.runtime_id, first_runtime_id);
@@ -30102,12 +30234,21 @@ mod tests {
                 .expect("TCP server timed out")
                 .expect("TCP server failed");
             assert_eq!(&received, b"\rstatus\n");
-            for event in [key_event, command_event] {
+            for event in [&key_event, &command_event] {
                 assert_eq!(
                     event.annotations.get("actor").map(String::as_str),
                     Some("mcp-e2e-client")
                 );
             }
+            assert!(!key_event.annotations.contains_key("commandId"));
+            assert!(command_event.annotations.contains_key("commandId"));
+            assert_eq!(
+                command_event
+                    .annotations
+                    .get("commandState")
+                    .map(String::as_str),
+                Some("started")
+            );
 
             let audit = state.store.lock().unwrap().audit.clone();
             assert_eq!(
@@ -30581,6 +30722,198 @@ mod tests {
     }
 
     #[test]
+    fn explicit_commands_associate_events_until_the_next_user_input() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = [0_u8; 19];
+                socket.read_exact(&mut received).await.unwrap();
+                received
+            });
+
+            let mut profile =
+                test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                    ..Default::default()
+                }));
+            profile.logging.enabled = true;
+            profile.logging.jsonl = true;
+            let root =
+                std::env::temp_dir().join(format!("portmate-command-log-{}", Uuid::new_v4()));
+            let store_path = root.join("portmate-store.sqlite3");
+            let state = test_app_state(profile.clone(), store_path.clone());
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: Uuid::new_v4().to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
+                },
+            );
+            let io = state.session_io();
+
+            let first = run_command_inner_with_context(
+                io.clone(),
+                profile.id.clone(),
+                "first\n".to_string(),
+                "desktop-user",
+                Some("run_command"),
+            )
+            .await
+            .unwrap();
+            let first_command_id = first.annotations.get("commandId").cloned().unwrap();
+            assert_eq!(
+                first.annotations.get("commandState").map(String::as_str),
+                Some("started")
+            );
+            record_channel_bytes(
+                &io,
+                &profile.id,
+                EventStream::Stdout,
+                b"first output\n",
+                "first output\n".to_string(),
+            );
+            let first_output = state.store.lock().unwrap().events.last().cloned().unwrap();
+            assert_eq!(
+                first_output.annotations.get("commandId"),
+                Some(&first_command_id)
+            );
+            assert!(!first_output.annotations.contains_key("commandState"));
+
+            let second = run_command_inner_with_context(
+                io.clone(),
+                profile.id.clone(),
+                "second\n".to_string(),
+                "desktop-user",
+                Some("run_command"),
+            )
+            .await
+            .unwrap();
+            let second_command_id = second.annotations.get("commandId").cloned().unwrap();
+            assert_ne!(second_command_id, first_command_id);
+            record_channel_bytes(
+                &io,
+                &profile.id,
+                EventStream::Stderr,
+                b"second output\n",
+                "second output\n".to_string(),
+            );
+            let second_output = state.store.lock().unwrap().events.last().cloned().unwrap();
+            assert_eq!(
+                second_output.annotations.get("commandId"),
+                Some(&second_command_id)
+            );
+
+            let manual = send_text_inner(io.clone(), profile.id.clone(), "manual".to_string())
+                .await
+                .unwrap();
+            assert!(!manual.annotations.contains_key("commandId"));
+            assert!(active_command_id(&io, &profile.id).is_none());
+            record_channel_bytes(
+                &io,
+                &profile.id,
+                EventStream::Stdout,
+                b"manual output\n",
+                "manual output\n".to_string(),
+            );
+            let manual_output = state.store.lock().unwrap().events.last().cloned().unwrap();
+            assert!(!manual_output.annotations.contains_key("commandId"));
+
+            persist_store_arc(&store_path, &state.store).unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("command association TCP server timed out")
+                .expect("command association TCP server failed");
+            assert_eq!(&received, b"first\nsecond\nmanual");
+
+            let persisted = load_store_sqlite(&store_path).unwrap();
+            let persisted_first = persisted
+                .events
+                .iter()
+                .find(|event| event.id == first.id)
+                .unwrap();
+            let persisted_output = persisted
+                .events
+                .iter()
+                .find(|event| event.id == second_output.id)
+                .unwrap();
+            assert_eq!(
+                persisted_first.annotations.get("commandId"),
+                Some(&first_command_id)
+            );
+            assert_eq!(
+                persisted_output.annotations.get("commandId"),
+                Some(&second_command_id)
+            );
+
+            let jsonl_path = log_shard_path(&store_path, &profile, "jsonl").unwrap();
+            let jsonl_events = fs::read_to_string(jsonl_path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<SessionEvent>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert!(jsonl_events.iter().any(|event| {
+                event.id == first.id
+                    && event.annotations.get("commandId") == Some(&first_command_id)
+            }));
+            assert!(jsonl_events.iter().any(|event| {
+                event.id == second_output.id
+                    && event.annotations.get("commandId") == Some(&second_command_id)
+            }));
+
+            let bundle = state
+                .store
+                .lock()
+                .unwrap()
+                .export_session_bundle_redacted(&profile.id);
+            let bundle_events =
+                serde_json::from_value::<Vec<SessionEvent>>(bundle.get("events").cloned().unwrap())
+                    .unwrap();
+            assert!(bundle_events.iter().any(|event| {
+                event.id == second_output.id
+                    && event.annotations.get("commandId") == Some(&second_command_id)
+            }));
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn failed_explicit_command_write_does_not_leave_an_active_command() {
+        tauri::async_runtime::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("portmate-command-failed-{}", Uuid::new_v4()));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let io = state.session_io();
+
+            let error = run_command_inner_with_context(
+                io.clone(),
+                profile.id.clone(),
+                "status\n".to_string(),
+                "desktop-user",
+                Some("run_command"),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.contains("尚未连接"), "unexpected error: {error}");
+            assert!(active_command_id(&io, &profile.id).is_none());
+            assert!(state.store.lock().unwrap().events.is_empty());
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
     fn system_event_sink_writes_redacted_text_and_jsonl_once_without_raw() {
         let root = std::env::temp_dir().join(format!("portmate-system-sink-{}", Uuid::new_v4()));
         let store_path = root.join("portmate-store.sqlite3");
@@ -30788,6 +31121,7 @@ mod tests {
             payload,
             "desktop-user",
             Some("send_bytes"),
+            BTreeMap::new(),
         );
 
         assert_eq!(event.text.as_deref(), Some("Binary payload: 16 bytes"));
@@ -37313,6 +37647,7 @@ mod tests {
             tcp: Arc::new(Mutex::new(HashMap::new())),
             serial: Arc::new(Mutex::new(HashMap::new())),
             serial_captures: Arc::new(Mutex::new(HashMap::new())),
+            active_commands: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),

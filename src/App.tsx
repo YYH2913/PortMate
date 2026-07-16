@@ -48,7 +48,7 @@ import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneComman
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
-import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandPayload } from "./quick-command-state";
+import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
 import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
@@ -2185,10 +2185,10 @@ function handleMenuAction(item: string) {
       sourceId: sessionId,
       text,
       broadcastEnabled,
-      applyAffixes: origin === "atomic",
+      applyAffixes: origin !== "interactive",
       settings,
       candidates,
-    }, sendTerminalInput, () => syncInputRef.current).then((result) => {
+    }, (targetId, payload) => sendTerminalInput(targetId, payload, origin), () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
         sessions.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
@@ -2204,14 +2204,18 @@ function handleMenuAction(item: string) {
     });
   }
 
-  async function sendTerminalInput(sessionId: string, text: string) {
+  async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin) {
     if (!sessionId || !text) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
       if (isBackendAvailable()) {
-        await invokeBackend<SessionEvent>("send_text", { sessionId, text });
+        if (origin === "command") {
+          await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
+        } else {
+          await invokeBackend<SessionEvent>("send_text", { sessionId, text });
+        }
         if (session.profile.connection.kind === "serial") {
           void refreshSerialCapture(sessionId);
         }
@@ -2296,7 +2300,7 @@ function handleMenuAction(item: string) {
           targets.map((target) =>
             sendMode === "hex"
               ? sendTerminalBytes(target, bytePayload)
-              : sendTerminalInput(target, textPayload),
+              : sendTerminalInput(target, textPayload, "atomic"),
           ),
         );
         if (index + 1 < Math.max(1, sendCount)) {
@@ -2321,7 +2325,8 @@ function handleMenuAction(item: string) {
     if (command.appendEnter && command.command.trim()) {
       setCommandHistory((current) => [command.command, ...current.filter((item) => item !== command.command)].slice(0, 200));
     }
-    void routeTerminalInput(active.profile.id, quickCommandPayload(command), "atomic");
+    const dispatch = quickCommandDispatch(command);
+    void routeTerminalInput(active.profile.id, dispatch.text, dispatch.origin);
   }
 
   function setWorkspacePanelVisible(panel: WorkspacePanelId, visible: boolean) {
@@ -5340,10 +5345,18 @@ function SearchDialog({
         .map((session) => ({ id: session.profile.id, title: session.profile.name, detail: describeProfileEndpoint(session.profile) }))
     : Object.values(logs)
         .flat()
-        .filter((event) => !query || (event.text ?? "").toLowerCase().includes(query))
+        .filter((event) => !query || `${event.text ?? ""} ${event.annotations.commandId ?? ""}`.toLowerCase().includes(query))
         .slice(-80)
         .reverse()
-        .map((event) => ({ id: event.sessionId, title: sessions.find((session) => session.profile.id === event.sessionId)?.profile.name ?? event.sessionId, detail: event.text ?? "" }));
+        .map((event) => {
+          const commandId = event.annotations.commandId;
+          const commandLabel = commandId ? `[命令 ${commandId.slice(0, 8)}] ` : "";
+          return {
+            id: event.sessionId,
+            title: sessions.find((session) => session.profile.id === event.sessionId)?.profile.name ?? event.sessionId,
+            detail: `${commandLabel}${event.text ?? ""}`,
+          };
+        });
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>

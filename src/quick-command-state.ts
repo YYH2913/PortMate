@@ -73,6 +73,15 @@ export function quickCommandPayload(command: QuickCommand): string {
   return `${command.command}${command.appendEnter ? "\r" : ""}`;
 }
 
+export function quickCommandDispatch(command: QuickCommand): {
+  text: string;
+  origin: "atomic" | "command";
+} {
+  return command.appendEnter
+    ? { text: command.command, origin: "command" }
+    : { text: quickCommandPayload(command), origin: "atomic" };
+}
+
 export function moveQuickCommand(items: QuickCommand[], id: string, offset: -1 | 1): QuickCommand[] {
   const index = items.findIndex((item) => item.id === id);
   const target = index + offset;

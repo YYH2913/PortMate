@@ -1,7 +1,7 @@
 import type { SessionKind } from "./types";
 
 export type SyncNewlineMode = "protocol" | "preserve" | "lf" | "crlf";
-export type SyncInputOrigin = "interactive" | "atomic";
+export type SyncInputOrigin = "interactive" | "atomic" | "command";
 
 export interface SyncInputSettings {
   protocols: SessionKind[];

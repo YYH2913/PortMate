@@ -7,6 +7,7 @@ import {
   MAX_QUICK_COMMANDS,
   moveQuickCommand,
   normalizeQuickCommandLibrary,
+  quickCommandDispatch,
   quickCommandPayload,
 } from "./quick-command-state";
 
@@ -55,6 +56,11 @@ describe("quick command state", () => {
     const command = { id: "quick:1", label: "Status", command: "git status --short", appendEnter: false };
     expect(quickCommandPayload(command)).toBe("git status --short");
     expect(quickCommandPayload({ ...command, appendEnter: true })).toBe("git status --short\r");
+    expect(quickCommandDispatch(command)).toEqual({ text: "git status --short", origin: "atomic" });
+    expect(quickCommandDispatch({ ...command, appendEnter: true })).toEqual({
+      text: "git status --short",
+      origin: "command",
+    });
   });
 
   it("moves commands within bounds without mutating the source", () => {
