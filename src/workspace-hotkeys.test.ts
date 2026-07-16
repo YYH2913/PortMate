@@ -54,6 +54,22 @@ describe("workspace hotkeys", () => {
     expect(formatWorkspaceKeyBinding("Alt+BracketRight")).toBe("Alt + ]");
   });
 
+  it("cycles views with WindTerm local and normal mode page keys", () => {
+    const previousInput = { ...baseInput, altKey: false, ctrlKey: true, code: "PageUp" };
+    const nextInput = { ...baseInput, altKey: false, ctrlKey: true, code: "PageDown" };
+
+    expect(resolveWorkspaceHotkey(previousInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "local" }))
+      .toEqual({ kind: "cycle-view", offset: -1 });
+    expect(resolveWorkspaceHotkey(nextInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "normal" }))
+      .toEqual({ kind: "cycle-view", offset: 1 });
+    expect(resolveWorkspaceHotkey(nextInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "remote" }))
+      .toBeNull();
+    expect(resolveWorkspaceHotkey(nextInput, 1, defaultWorkspaceKeymap, { terminalKeyMode: "command" }))
+      .toBeNull();
+    expect(formatWorkspaceKeyBinding("Ctrl+PageUp")).toBe("Ctrl + PgUp");
+    expect(formatWorkspaceKeyBinding("Ctrl+PageDown")).toBe("Ctrl + PgDn");
+  });
+
   it("closes and reopens views with WindTerm lifecycle shortcuts in eligible modes", () => {
     const closeInput = { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyW" };
     const reopenInput = { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyT" };
@@ -83,7 +99,7 @@ describe("workspace hotkeys", () => {
     expect(keymap["focus-up"]).toBe("Alt+Shift+KeyK");
     expect(keymap["focus-down"]).toBe("");
     expect(keymap["split-left"]).toBe(defaultWorkspaceKeymap["split-left"]);
-    expect(Object.keys(keymap)).toHaveLength(15);
+    expect(Object.keys(keymap)).toHaveLength(17);
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowDown" }, 3, keymap)).toBeNull();
   });
 

@@ -1,5 +1,5 @@
-import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPlacement } from "./workspace-state";
 import type { TerminalKeyMode } from "./terminal-key-mode";
+import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPlacement } from "./workspace-state";
 
 export const WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v2";
 export const LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY = "portmate.workspaceKeymap.v1";
@@ -27,6 +27,8 @@ export type WorkspaceHotkeyCommandId =
   | "zoom-pane"
   | "previous-view"
   | "next-view"
+  | "previous-view-local"
+  | "next-view-local"
   | "close-view"
   | "reopen-view"
   | "manage-one-keys";
@@ -57,7 +59,7 @@ type WorkspaceHotkeyCommand = {
   label: string;
   defaultBinding: string;
   requiresMultiplePanes: boolean;
-  terminalModes?: "remote" | "remote-local";
+  terminalModes?: number;
   action: WorkspaceHotkeyAction;
 };
 
@@ -68,6 +70,12 @@ type WorkspaceHotkeyContext = {
 const primaryChordModifier = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
   ? "Meta"
   : "Ctrl";
+const terminalModeMask: Record<TerminalKeyMode, number> = {
+  remote: 1,
+  local: 2,
+  normal: 4,
+  command: 8,
+};
 
 export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "focus-up", label: "焦点向上", defaultBinding: "Alt+ArrowUp", requiresMultiplePanes: true, action: { kind: "focus", direction: "up" } },
@@ -80,9 +88,11 @@ export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "split-right", label: "向右拆分", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
   { id: "close-pane", label: "关闭窗格", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
   { id: "zoom-pane", label: "切换窗格缩放", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
-  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, terminalModes: "remote", action: { kind: "cycle-view", offset: -1 } },
-  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, terminalModes: "remote", action: { kind: "cycle-view", offset: 1 } },
-  { id: "close-view", label: "关闭视图", defaultBinding: "Ctrl+Shift+KeyW", requiresMultiplePanes: false, terminalModes: "remote-local", action: { kind: "view-history", operation: "close" } },
+  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: 1 } },
+  { id: "previous-view-local", label: "Local/Normal 上一个标签", defaultBinding: "Ctrl+PageUp", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view-local", label: "Local/Normal 下一个标签", defaultBinding: "Ctrl+PageDown", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: 1 } },
+  { id: "close-view", label: "关闭视图", defaultBinding: "Ctrl+Shift+KeyW", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote | terminalModeMask.local, action: { kind: "view-history", operation: "close" } },
   { id: "reopen-view", label: "重新打开视图", defaultBinding: "Ctrl+Shift+KeyT", requiresMultiplePanes: false, action: { kind: "view-history", operation: "reopen" } },
   { id: "manage-one-keys", label: "打开 OneKeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
 ];
@@ -158,6 +168,8 @@ export function formatWorkspaceKeyBinding(binding: string): string {
     Equal: "=",
     BracketLeft: "[",
     BracketRight: "]",
+    PageUp: "PgUp",
+    PageDown: "PgDn",
     Space: "Space",
   };
   return binding.split(" ").map((stroke) => (
@@ -189,8 +201,7 @@ export function resolveWorkspaceHotkeySequence(
     (!command.requiresMultiplePanes || paneCount > 1)
       && (!command.terminalModes
         || context.terminalKeyMode === undefined
-        || context.terminalKeyMode === "remote"
-        || (command.terminalModes === "remote-local" && context.terminalKeyMode === "local"))
+        || Boolean(command.terminalModes & terminalModeMask[context.terminalKeyMode]))
   ));
   const exactMatches = eligibleCommands.filter((command) => keymap[command.id] === binding);
   const longerMatches = eligibleCommands.filter((command) => keymap[command.id].startsWith(`${binding} `));
