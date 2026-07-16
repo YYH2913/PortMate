@@ -29,6 +29,7 @@ import {
   updateWorkspaceSplitRatio,
   workspacePaneLeaves,
   workspacePaneActiveView,
+  workspacePaneViewAtOffset,
 } from "./workspace-state";
 import type { WorkspaceNode, WorkspaceSplitNode } from "./workspace-state";
 
@@ -280,6 +281,30 @@ describe("workspace snapshots", () => {
     expect(workspacePaneActiveView(pane)).toMatchObject({ id: "view-b", title: "Mirror", color: "", keyMode: "remote" });
     const activated = activateWorkspacePaneView(snapshot.root, pane.id, "view-a")!;
     expect(workspacePaneActiveView(findWorkspacePane(activated, pane.id)!)).toMatchObject({ id: "view-a", title: "Primary" });
+  });
+
+  it("cycles ordered views by identity with duplicate sessions and wraparound", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "pane",
+        id: "group-cycle",
+        activeViewId: "view-primary",
+        views: [
+          { id: "view-primary", sessionId: "session-a", title: "Primary" },
+          { id: "view-mirror", sessionId: "session-a", title: "Mirror" },
+          { id: "view-other", sessionId: "session-b", title: "Other" },
+        ],
+      },
+      activePaneId: "group-cycle",
+      activeId: "session-a",
+    });
+    const pane = findWorkspacePane(snapshot.root, "group-cycle")!;
+
+    expect(workspacePaneViewAtOffset(pane, 1)?.id).toBe("view-mirror");
+    expect(workspacePaneViewAtOffset(pane, -1)?.id).toBe("view-other");
+    expect(workspacePaneViewAtOffset(pane, 4)?.id).toBe("view-mirror");
+    expect(workspacePaneViewAtOffset({ ...pane, activeViewId: "missing" }, -1)?.id).toBe("view-other");
   });
 
   it("duplicates, renames, and closes one view without changing its sibling session view", () => {

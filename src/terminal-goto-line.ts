@@ -1,4 +1,3 @@
-export const TERMINAL_GOTO_LINE_REQUEST_EVENT = "portmate-terminal-goto-line";
 export const MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH = 16;
 
 export type TerminalGotoLineResolution =
@@ -54,10 +53,4 @@ export function terminalGotoLineStatus(
   if (resolution.kind === "invalid") return "请输入行号";
   if (resolution.kind === "out-of-range") return `范围 1..${lineCount}`;
   return `目标 ${resolution.targetLine} / 共 ${lineCount}`;
-}
-
-export function requestTerminalGotoLine(
-  target: Pick<EventTarget, "dispatchEvent"> = window,
-): boolean {
-  return target.dispatchEvent(new Event(TERMINAL_GOTO_LINE_REQUEST_EVENT));
 }

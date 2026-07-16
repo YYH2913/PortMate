@@ -60,7 +60,7 @@ import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefau
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
-import { requestTerminalGotoLine } from "./terminal-goto-line";
+import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
@@ -73,7 +73,7 @@ import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEY
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import { isWorkspaceFocusModeShortcut, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspacePanelId } from "./workspace-panel-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -643,7 +643,13 @@ export default function App() {
         clearWorkspaceChord();
         return;
       }
-      const resolution = resolveWorkspaceHotkeySequence(event, panes.length, workspaceKeymap, chordPrefix);
+      const resolution = resolveWorkspaceHotkeySequence(
+        event,
+        panes.length,
+        workspaceKeymap,
+        chordPrefix,
+        { remoteMode: activeTerminalKeyMode === "remote" },
+      );
       if (hadPendingChord && isModifierKeyEvent(event)) return;
       if (hadPendingChord) {
         consumeWorkspaceHotkey(event);
@@ -663,6 +669,8 @@ export default function App() {
       if (hotkey.kind === "focus") {
         const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, hotkey.direction);
         if (nextPane) activateWorkspacePane(nextPane.id, nextPane.activeViewId);
+      } else if (hotkey.kind === "cycle-view") {
+        cycleActiveWorkspaceView(hotkey.offset);
       } else if (!event.repeat && hotkey.kind === "split") {
         splitWorkspace(hotkey.direction, hotkey.placement);
       } else if (!event.repeat && hotkey.kind === "close") {
@@ -685,7 +693,7 @@ export default function App() {
       clearWorkspaceChord();
       window.removeEventListener("keydown", handleWorkspaceHotkey, true);
     };
-  }, [activeId, activePaneId, sessions, workspaceKeymap, workspaceRoot]);
+  }, [activeId, activePaneId, activeTerminalKeyMode, sessions, workspaceKeymap, workspaceRoot]);
 
   useEffect(() => {
     saveLocalValue("portmate.syncInputSettings", syncInputSettings);
@@ -1070,11 +1078,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "上一个标签" || item === "下一个标签") {
-      if (!sessions.length) return;
-      const current = Math.max(0, sessions.findIndex((session) => session.profile.id === activeId));
-      const offset = item === "上一个标签" ? -1 : 1;
-      const next = (current + offset + sessions.length) % sessions.length;
-      activateSession(sessions[next].profile.id);
+      cycleActiveWorkspaceView(item === "上一个标签" ? -1 : 1);
       return;
     }
     if (item === "跳转到行") {
@@ -1473,6 +1477,14 @@ function handleMenuAction(item: string) {
     setActivePaneId(paneId);
     setActiveId(view.sessionId);
     setZoomedPaneId((current) => current ? paneId : "");
+  }
+
+  function cycleActiveWorkspaceView(offset: -1 | 1) {
+    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    const view = pane ? workspacePaneViewAtOffset(pane, offset) : undefined;
+    if (!pane || !view) return;
+    if (view.id !== pane.activeViewId) activateWorkspacePane(pane.id, view.id);
+    focusWorkspacePaneInput(pane.id);
   }
 
   function setActiveWorkspaceViewKeyMode(
@@ -4453,7 +4465,7 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : document.activeElement;
-  if (element?.closest(".terminal-search-bar, .terminal-free-input, .terminal-one-key-completion")) return false;
+  if (element?.closest(".terminal-search-bar, .terminal-goto-line, .terminal-free-input, .terminal-one-key-completion")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
 }
 

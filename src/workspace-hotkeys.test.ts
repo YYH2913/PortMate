@@ -41,6 +41,19 @@ describe("workspace hotkeys", () => {
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "Backslash", altKey: false }, 2)).toBeNull();
   });
 
+  it("cycles views with WindTerm remote-mode brackets without consuming local modes", () => {
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "BracketLeft" }, 1)).toEqual({ kind: "cycle-view", offset: -1 });
+    expect(resolveWorkspaceHotkey({ ...baseInput, code: "BracketRight" }, 1)).toEqual({ kind: "cycle-view", offset: 1 });
+    expect(resolveWorkspaceHotkey(
+      { ...baseInput, code: "BracketRight" },
+      1,
+      defaultWorkspaceKeymap,
+      { remoteMode: false },
+    )).toBeNull();
+    expect(formatWorkspaceKeyBinding("Alt+BracketLeft")).toBe("Alt + [");
+    expect(formatWorkspaceKeyBinding("Alt+BracketRight")).toBe("Alt + ]");
+  });
+
   it("normalizes stored bindings, preserves explicit disables, and ignores unknown commands", () => {
     const keymap = normalizeWorkspaceKeymap({
       "focus-up": "Shift+Alt+KeyK",
@@ -52,7 +65,7 @@ describe("workspace hotkeys", () => {
     expect(keymap["focus-up"]).toBe("Alt+Shift+KeyK");
     expect(keymap["focus-down"]).toBe("");
     expect(keymap["split-left"]).toBe(defaultWorkspaceKeymap["split-left"]);
-    expect(Object.keys(keymap)).toHaveLength(11);
+    expect(Object.keys(keymap)).toHaveLength(13);
     expect(resolveWorkspaceHotkey({ ...baseInput, code: "ArrowDown" }, 3, keymap)).toBeNull();
   });
 

@@ -205,6 +205,17 @@ export function workspacePaneActiveView(pane: WorkspacePaneNode): WorkspaceView 
   return pane.views.find((view) => view.id === pane.activeViewId) ?? pane.views[0];
 }
 
+export function workspacePaneViewAtOffset(
+  pane: WorkspacePaneNode,
+  offset: number,
+): WorkspaceView | undefined {
+  if (!pane.views.length) return undefined;
+  const activeIndex = Math.max(0, pane.views.findIndex((view) => view.id === pane.activeViewId));
+  const normalizedOffset = Math.trunc(offset) % pane.views.length;
+  const targetIndex = (activeIndex + normalizedOffset + pane.views.length) % pane.views.length;
+  return pane.views[targetIndex];
+}
+
 export function findWorkspaceView(
   root: WorkspaceNode | null,
   paneId: string,

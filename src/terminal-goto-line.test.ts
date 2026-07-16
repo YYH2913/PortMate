@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH,
-  requestTerminalGotoLine,
   resolveTerminalGotoLine,
   terminalGotoCurrentLine,
   terminalGotoLineStatus,
   terminalGotoViewportLine,
-  TERMINAL_GOTO_LINE_REQUEST_EVENT,
 } from "./terminal-goto-line";
+import { requestTerminalGotoLine, TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
 
 describe("terminal goto line", () => {
   it("resolves absolute and relative lines from the current viewport line", () => {

@@ -29,8 +29,9 @@ import type {
 import { defaultTerminalCompletionPreferences, terminalCompletionPreferencesFromSettings } from "./terminal-completion-prefs";
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
-import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine, TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line";
+import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
+import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
 import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";

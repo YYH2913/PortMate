@@ -9,6 +9,7 @@ export type WorkspaceHotkeyAction =
   | { kind: "split"; direction: WorkspaceSplitDirection; placement: WorkspaceSplitPlacement }
   | { kind: "close" }
   | { kind: "zoom" }
+  | { kind: "cycle-view"; offset: -1 | 1 }
   | { kind: "one-keys" };
 
 export type WorkspaceHotkeyCommandId =
@@ -22,6 +23,8 @@ export type WorkspaceHotkeyCommandId =
   | "split-right"
   | "close-pane"
   | "zoom-pane"
+  | "previous-view"
+  | "next-view"
   | "manage-one-keys";
 
 export type WorkspaceKeymap = Record<WorkspaceHotkeyCommandId, string>;
@@ -50,7 +53,12 @@ type WorkspaceHotkeyCommand = {
   label: string;
   defaultBinding: string;
   requiresMultiplePanes: boolean;
+  remoteOnly?: boolean;
   action: WorkspaceHotkeyAction;
+};
+
+type WorkspaceHotkeyContext = {
+  remoteMode?: boolean;
 };
 
 const primaryChordModifier = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
@@ -68,6 +76,8 @@ export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
   { id: "split-right", label: "向右拆分", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
   { id: "close-pane", label: "关闭窗格", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
   { id: "zoom-pane", label: "切换窗格缩放", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
+  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, remoteOnly: true, action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, remoteOnly: true, action: { kind: "cycle-view", offset: 1 } },
   { id: "manage-one-keys", label: "打开 OneKeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
 ];
 
@@ -140,6 +150,8 @@ export function formatWorkspaceKeyBinding(binding: string): string {
     Backslash: "\\",
     Minus: "-",
     Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
     Space: "Space",
   };
   return binding.split(" ").map((stroke) => (
@@ -151,8 +163,9 @@ export function resolveWorkspaceHotkey(
   input: WorkspaceHotkeyInput,
   paneCount: number,
   keymap: WorkspaceKeymap = defaultWorkspaceKeymap,
+  context: WorkspaceHotkeyContext = {},
 ): WorkspaceHotkeyAction | null {
-  const resolution = resolveWorkspaceHotkeySequence(input, paneCount, keymap);
+  const resolution = resolveWorkspaceHotkeySequence(input, paneCount, keymap, "", context);
   return resolution.kind === "action" ? resolution.action : null;
 }
 
@@ -161,11 +174,15 @@ export function resolveWorkspaceHotkeySequence(
   paneCount: number,
   keymap: WorkspaceKeymap = defaultWorkspaceKeymap,
   prefix = "",
+  context: WorkspaceHotkeyContext = {},
 ): WorkspaceHotkeyResolution {
   const stroke = workspaceKeyBindingFromEvent(input);
   if (!stroke) return { kind: "none" };
   const binding = prefix ? `${prefix} ${stroke}` : stroke;
-  const eligibleCommands = workspaceHotkeyCommands.filter((command) => !command.requiresMultiplePanes || paneCount > 1);
+  const eligibleCommands = workspaceHotkeyCommands.filter((command) => (
+    (!command.requiresMultiplePanes || paneCount > 1)
+      && (!command.remoteOnly || context.remoteMode !== false)
+  ));
   const exactMatches = eligibleCommands.filter((command) => keymap[command.id] === binding);
   const longerMatches = eligibleCommands.filter((command) => keymap[command.id].startsWith(`${binding} `));
   if (exactMatches.length === 1 && !longerMatches.length) {
