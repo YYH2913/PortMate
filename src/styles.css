@@ -1163,19 +1163,46 @@ button {
   color: var(--text);
 }
 
-.filter-line {
+.panel-filter {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 5px;
   height: 32px;
   margin: 0 8px;
   border: 0;
   border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.panel-filter input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
   font-size: 12px;
 }
 
-.filter-line.compact {
-  width: calc(100% - 92px);
+.panel-filter button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.panel-filter button:hover,
+.panel-filter button:focus-visible {
+  outline: 0;
+  background: var(--control-hover);
+  color: var(--text);
 }
 
 .empty-pane {
@@ -3099,8 +3126,10 @@ button {
   color: var(--muted);
 }
 
-.send-tabs button.active {
-  border-bottom: 2px solid var(--violet);
+.send-panel-title {
+  color: #d7e1eb;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .send-tabs span {

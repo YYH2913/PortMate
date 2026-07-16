@@ -11,7 +11,6 @@ import {
   ArrowUp,
   Ban,
   ChevronDown,
-  ChevronRight,
   Check,
   CheckCircle2,
   Clock3,
@@ -97,6 +96,9 @@ const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
+const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
+const LazySessionListPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionListPanel }) => ({ default: SessionListPanel })));
+const LazyCommandHistoryList = lazy(() => import("./WorkspaceUtilityPanels").then(({ CommandHistoryList }) => ({ default: CommandHistoryList })));
 const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
 
@@ -105,6 +107,7 @@ const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
+const workspaceUtilityIcons = { Folder, Search, X };
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "导出终端文本", "导出选中文本", "复制会话", "还原布局"] },
@@ -1055,16 +1058,6 @@ export default function App() {
       saveLocalSessionSummaries(nextSessions);
     }
   }
-  const sessionGroups = useMemo(
-    () =>
-      sessions.reduce<Record<string, SessionSummary[]>>((acc, session) => {
-        acc[session.profile.group || "Sessions"] ??= [];
-        acc[session.profile.group || "Sessions"].push(session);
-        return acc;
-      }, {}),
-    [sessions],
-  );
-
   const paneSessions = useMemo(() => {
     const ids = workspacePaneLeaves(workspaceRoot).map((pane) => workspacePaneActiveView(pane).sessionId);
     const resolvedIds = ids.length ? ids : [activeId];
@@ -2779,7 +2772,7 @@ function handleMenuAction(item: string) {
           ))}
         </div>
         <div className="menu-tools">
-          <Search size={13} />
+          <button type="button" title="搜索会话" aria-label="搜索会话" onClick={() => handleMenuAction("会话搜索")}><Search size={13} /></button>
           <button type="button" onClick={() => handleMenuAction("端口转发")}>隧道</button>
           <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
@@ -2807,15 +2800,16 @@ function handleMenuAction(item: string) {
         {visibleWorkspacePanels.explorer || visibleWorkspacePanels.fileManager ? (
         <aside className={`left-stack ${visibleWorkspacePanels.explorer && visibleWorkspacePanels.fileManager ? "" : "single-panel"}`}>
           {visibleWorkspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
-            <FilterLine />
-            <TreeList
-              sessions={sessions}
-              groups={sessionGroups}
-              activeId={activeId}
-              colors={tabColors}
-              onSelect={activateSession}
-              onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
-            />
+            <Suspense fallback={null}>
+              <LazySessionExplorerPanel
+                sessions={sessions}
+                activeId={activeId}
+                colors={tabColors}
+                icons={workspaceUtilityIcons}
+                onSelect={activateSession}
+                onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
+              />
+            </Suspense>
           </DockPanel> : null}
           {visibleWorkspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
             <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
@@ -2894,44 +2888,49 @@ function handleMenuAction(item: string) {
         {visibleWorkspacePanels.sessions || visibleWorkspacePanels.history ? (
         <aside className={`right-stack ${visibleWorkspacePanels.sessions && visibleWorkspacePanels.history ? "" : "single-panel"}`}>
           {visibleWorkspacePanels.sessions ? <DockPanel title="会话" accent="#68a7ff" onClose={() => setWorkspacePanelVisible("sessions", false)}>
-            <FilterLine />
-            <FolderList sessions={sessions} />
+            <Suspense fallback={null}>
+              <LazySessionListPanel
+                sessions={sessions}
+                activeId={activeId}
+                icons={workspaceUtilityIcons}
+                onSelect={activateSession}
+                onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
+              />
+            </Suspense>
           </DockPanel> : null}
           {visibleWorkspacePanels.history ? <DockPanel title="历史命令" accent="#f4b860" onClose={() => setWorkspacePanelVisible("history", false)}>
-            <FilterLine compact />
-            <div className="right-tools-list">
-              {activeSerial && active ? (
-                <SerialMonitorPanel
-                  key={active.profile.id}
-                  frames={serialCaptures[active.profile.id] ?? []}
-                  onOpen={() => void openSerialAnalyzer(active)}
-                  onClear={() => void clearSerialCapture(active.profile.id)}
-                  onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
-                  canExport={isBackendAvailable()}
-                />
-              ) : null}
-              <CommandHistoryPanel history={commandHistory} onPick={setSendText} />
-            </div>
+            <Suspense fallback={null}>
+              <LazyCommandHistoryList
+                history={commandHistory}
+                icons={workspaceUtilityIcons}
+                onPick={setSendText}
+                beforeList={activeSerial && active ? (
+                  <SerialMonitorPanel
+                    key={active.profile.id}
+                    frames={serialCaptures[active.profile.id] ?? []}
+                    onOpen={() => void openSerialAnalyzer(active)}
+                    onClear={() => void clearSerialCapture(active.profile.id)}
+                    onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
+                    canExport={isBackendAvailable()}
+                  />
+                ) : null}
+              />
+            </Suspense>
           </DockPanel> : null}
         </aside>
         ) : null}
 
         {visibleWorkspacePanels.sender ? <section className="send-panel">
           <div className="send-tabs">
-            <button className="active">发送</button>
-            <button>Shell</button>
+            <strong className="send-panel-title">发送</strong>
             <span />
             <button type="button" className="send-panel-tool" title="发送设置" aria-label="发送设置" onClick={() => setDialog("terminal")}><Settings size={14} /></button>
             <button type="button" className="send-panel-tool" title="隐藏发送面板" aria-label="隐藏发送面板" onClick={() => setWorkspacePanelVisible("sender", false)}><X size={14} /></button>
           </div>
           <div className="send-toolbar">
-            <button className="send-icon-button" onClick={() => void runSendPanel()} disabled={sendBusy}>
+            <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
               <Play size={14} className="green" />
             </button>
-            <Square size={13} />
-            <Plus size={13} />
-            <span>−</span>
-            <X size={13} />
             <label>
               <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
             </label>
@@ -3323,94 +3322,6 @@ function DockPanel({ title, accent, onClose, children }: { title: string; accent
       </header>
       {children}
     </section>
-  );
-}
-
-function FilterLine({ compact = false }: { compact?: boolean }) {
-  return <input className={compact ? "filter-line compact" : "filter-line"} placeholder="筛选" />;
-}
-
-function TreeList({
-  sessions,
-  groups,
-  activeId,
-  colors,
-  onSelect,
-  onOpenContextMenu,
-}: {
-  sessions: SessionSummary[];
-  groups: Record<string, SessionSummary[]>;
-  activeId: string;
-  colors: Record<string, string>;
-  onSelect: (id: string) => void;
-  onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
-}) {
-  if (!sessions.length) return <div className="empty-pane top">没有可用的会话</div>;
-  return (
-    <div className="tree-list">
-      {Object.entries(groups).map(([group, items]) => (
-        <div key={group}>
-          <div className="tree-folder">
-            <ChevronDown size={13} />
-            <Folder size={14} />
-            {group}
-          </div>
-          {items.map((session) => (
-            <button
-              key={session.profile.id}
-              className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
-              onClick={() => onSelect(session.profile.id)}
-              onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
-            >
-              <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
-              {session.profile.name}
-            </button>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function FolderList({ sessions }: { sessions: SessionSummary[] }) {
-  if (!sessions.length) return <div className="empty-pane top">没有可用的会话</div>;
-
-  const grouped = sessions.reduce<Record<string, SessionSummary[]>>((acc, session) => {
-    acc[session.profile.kind] ??= [];
-    acc[session.profile.kind].push(session);
-    return acc;
-  }, {});
-
-  return (
-    <div className="tree-list">
-      {Object.entries(grouped).map(([kind, items]) => (
-        <div key={kind}>
-          <div className="tree-folder">
-            <ChevronRight size={13} />
-            <Folder size={14} />
-            {kind.toUpperCase()}
-          </div>
-          {items.map((session) => (
-            <div key={session.profile.id} className="tree-session">
-              {session.profile.name}
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CommandHistoryPanel({ history, onPick }: { history: string[]; onPick: (value: string) => void }) {
-  if (!history.length) return <div className="empty-pane top">没有可用的历史命令</div>;
-  return (
-    <div className="history-list">
-      {history.map((item, index) => (
-        <button key={`${index}-${item}`} onClick={() => onPick(item)}>
-          <span>{item.replace(/\s+/g, " ").trim() || item}</span>
-        </button>
-      ))}
-    </div>
   );
 }
 
