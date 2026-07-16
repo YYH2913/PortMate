@@ -45,6 +45,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - WindTerm `Split View To Group` 的上/下/左/右四个方向已接入窗口菜单；只会从至少含两个 view 的来源分组移出活动 view，达到 16 pane/8 层边界时保持原树不变。
 - pane 标签与窗口菜单支持关闭活动/其他/右侧 view，以及当前进程内最近 32 条有界关闭历史的重新打开；关闭 view 不断开后端 session，空 group 自动折叠，最后一个工作区 view 受保护，原 group 消失时恢复到活动非满 group。顶层 session 右键菜单已改为明确的“断开会话”语义。
 - WindTerm `Terminal.Save` / `SaveSelectionAs` 对应的终端文本导出已接入会话菜单和 pane 标签右键菜单，并按 session ID + view ID + 焦点状态只读取目标 XTerm。完整 buffer 导出基于 active buffer 的解析后 cell 文本，去除控制序列、拼接 `isWrapped` 物理行、保留中间空逻辑行并移除尾部空行；selection 保留精确空格和换行，空 buffer/selection 会在前端阻断。两条路径按 UTF-8 字节执行 16 MiB 双端上限且不触发任何终端输入。桌面端只允许已保存 session，复验有界且无控制字符的 session/view ID，把文本原子写入 app data 的 `exports/` 并生成 SHA-256 sidecar，Unix 文件权限为 `0600`；浏览器预览按需加载 Blob 下载 helper。导出正文不进入日志、SQLite 或 session event。
+- 编辑/选择菜单的复制、全选和清除已从页面级 `document.execCommand`/DOM selection 改为按 session ID + view ID + 焦点状态路由到唯一 XTerm；空选区复制明确报错，同 session 的 Primary/Mirror 不会混淆。Remote/Local 接入 WindTerm `Ctrl+Shift+C` 复制和 `Ctrl+Shift+A` 全选，Normal/Command 保留本地编辑语义，repeat 不重复写剪贴板。原先只有状态栏提示和边框的“块选择”现在会把左键拖拽转换为 XTerm 原生 Alt 列选择；远端启用 mouse reporting 时同时使用 XTerm force-selection modifier，矩形选择不会生成任何终端鼠标/键盘输入。清除选择只清除 XTerm range，不会意外关闭块选择模式。
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
 - WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/按目标协议终止符执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史并走显式 `run_command`；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
@@ -195,7 +196,11 @@ npm test -- --run
 npm run build
 ```
 
-`npm run build` 已把应用壳、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、串口分析器/窗口创建器、浏览器终端导出、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk：主 JS 约 499.3 kB、搜索约 2.3 kB、view 右键菜单约 3.0 kB、view 重命名弹窗约 1.4 kB、Quick Command 管理器约 4.4 kB、串口分析器约 36.2 kB、串口窗口创建器约 0.9 kB、浏览器导出 helper 约 0.5 kB、终端 core JS 约 464.2 kB、WebGL JS 约 120.4 kB、主 CSS 约 126.4 kB、终端 CSS 约 3.9 kB；行跳转/终端导出请求事件独立于终端解析模块，主包与终端 chunk 均低于 500 kB，大 chunk warning 已消失，未通过抬高阈值隐藏问题。浏览器回归已验证 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、当前 pane 查找、绝对/相对 buffer 行跳转和自由输入，v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组定点拖放、独立窗口颜色/键盘模式往返，以及手动/快捷键/启动/空闲锁屏、刷新恢复、detached 同步遮罩、焦点封闭和桌面/移动端几何。终端文本导出另覆盖同 session Primary/Mirror 精确 view 路由、ANSI 去除、wrapped row 拼接、完整 buffer/精确 selection、空 selection 前端阻断、会话与 view 菜单入口、零终端写入、通知路径换行及 1440x900/390x844 菜单边界；搜索懒加载后命令关联回归保持通过。标签循环另覆盖菜单、Remote `Alt+[`/`Alt+]`、Local/Normal `Ctrl+PgUp`/`Ctrl+PgDn`、模式间按键保留、首尾回绕、同 session 多 view、零后端写入及 1440x900/390x844 无溢出。view 右键菜单另覆盖完整操作可见性、session 名称/URL 复制、保存/重连后同 session view ID 保持、右侧关闭/恢复、水平向右/垂直向下分屏、精确 view 移组、零终端输入及 1440x900/390x844 菜单边界。视图生命周期快捷键另覆盖 Remote/Local 关闭、全模式恢复、Normal/Command 按键保留、repeat 阻断、最终 view 保护、同 session view ID/原索引 LIFO 恢复、lazy 重命名取消/保存和桌面/移动几何，且无后端连接或写入。行跳转另覆盖错误日志搜索路由移除、绝对/相对目标、实时预览、Escape viewport 恢复、Enter 提交、越界阻断、自由输入草稿恢复和零后端写入。键盘模式另覆盖 1440x900 与 390x844 菜单单选态/可见边界、Local/Command 零 `send_text`、Remote 恢复发送、Normal 草稿往返/原子提交和 detached URL 保持；命令补全另覆盖 Quick/历史/参数排序、方向选择、Tab 精确追加顺序、Escape/未知控制序列暂停/换行恢复、禁用设置、主/独立窗口一致性及 1440x900/390x844 无溢出。串口分析器回归覆盖跨读取分片 CRLF framing、SLIP 跨分片转义/解码、COBS 跨分片/空载荷/长度错误、Modbus RTU 自动静默阈值/CRC/地址/短帧/FC83 异常、实时/日志源隔离、日志源单次读取/窗口与损坏计数/精确导出/禁用清空、解码与线上证据切换、方向边界、尾帧/截断状态、书签重载、重连诊断、主菜单/侧栏入口，以及 1440x900/390x844 无页面或工具栏溢出。Quick Commands 覆盖首次懒加载、增改排序、取消隔离、显式保存、Quick Bar 显隐/刷新恢复、插入/执行历史差异，以及桌面/移动无溢出布局；面板回归覆盖标题栏/菜单两种关闭入口、勾选态、单 pane 填充、全 dock/sender/status 聚焦布局、Quick Bar 组合、刷新恢复及移动端响应式隔离。专注模式另覆盖顶部按钮/精确 `Alt+Enter`、不改写持久化状态、退出恢复，以及同步输入保留 active 状态栏；工作台布局不塌陷。
+`npm run build` 已把应用壳、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、串口分析器/窗口创建器、浏览器终端导出、终端选择、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 499.8 kB、终端 core JS 约 465.6 kB、WebGL JS 约 120.4 kB、主 CSS 约 126.4 kB、终端 CSS 约 3.9 kB；搜索约 2.3 kB、view 右键菜单约 3.0 kB、view 重命名约 1.4 kB、Quick Command 约 4.4 kB、串口分析器约 36.2 kB、串口窗口创建器约 0.9 kB、浏览器导出约 0.5 kB、终端选择事件/执行约 1.4 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
+
+终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。搜索、导出和选择模块均验证首次按需加载后的行为。
+
+工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式、主/独立窗口锁屏及 1440x900/390x844 边界。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。上述非输入操作均检查不会意外调用 `send_text`、`send_bytes` 或 `run_command`。
 
 已有单元测试覆盖：
 
@@ -206,6 +211,7 @@ npm run build
 - 终端序列化缓存的 UTF-8 字节上限、LRU 淘汰、事件 ID 上限、空屏恢复和防御性复制，以及 OSC 52 只写剪贴板、拒绝远端读取、权限 Promise 拒绝/同步异常降级。
 - 当前终端查找的标准/WindTerm 快捷键识别、选中文本单行化和 UTF-16 长度边界、结果/溢出/非法表达式状态，以及菜单到焦点 pane 的事件分发。
 - 终端文本 buffer 的 wrapped row 拼接、中间空行/尾部空行语义、UTF-8 精确字节计数、16 MiB 上限、空 buffer/selection 拒绝，以及 session/view/source 精确请求响应和无监听者超时。
+- 终端复制/全选/清除的精确 session/view/action 请求响应、错配与无监听者拒绝、Remote/Local `Ctrl+Shift+C/A` 模式隔离，以及块选择 Alt/force-selection 鼠标修饰转换。
 - WindTerm `跳转到行` 的绝对/相对行解析、安全整数/范围边界、目标居中 viewport 计算、状态文案和菜单到唯一焦点 pane 的事件分发。
 - 活动 pane 内按独立 view ID 的前后标签循环、首尾回绕、同 session 多 view 保留，以及 Remote `Alt+[`/`Alt+]`、Local/Normal `Ctrl+PgUp`/`Ctrl+PgDn` 快捷键解析与跨模式阻断；Remote/Local 关闭 view、全模式恢复 view 的默认快捷键及 Normal/Command 模式隔离。
 - view 右键菜单对 32-view 复制上限、最后 view 关闭保护、关闭其他/右侧索引、移组 pane 数和有效关闭历史的 capability 计算，以及水平/垂直视觉标签到递归树轴向的统一映射。
@@ -251,7 +257,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 36 个文件、204 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-goto-line/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 37 个文件、209 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-selection/terminal-goto-line/terminal-mouse/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -284,7 +290,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
-| 测试体系 | 部分实现 | core/协议集成测试、36 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | core/协议集成测试、37 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

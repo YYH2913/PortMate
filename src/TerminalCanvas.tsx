@@ -32,6 +32,8 @@ import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL
 import { TERMINAL_TEXT_EXPORT_REQUEST_EVENT } from "./terminal-export-event";
 import type { TerminalTextExportRequestDetail } from "./terminal-export-event";
 import { extractTerminalBufferText, extractTerminalSelectionText, MAX_TERMINAL_EXPORT_BYTES } from "./terminal-export-state";
+import { terminalBlockSelectionMouseEventInit, terminalSelectionShortcut, TERMINAL_SELECTION_REQUEST_EVENT } from "./terminal-selection-event";
+import type { TerminalSelectionRequestDetail } from "./terminal-selection-event";
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
@@ -56,6 +58,7 @@ type TerminalCanvasProps = {
   completionQuickCommands?: readonly TerminalCompletionQuickCommand[];
   mouseReporting?: boolean;
   copyOnSelect?: boolean;
+  blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (mode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
@@ -132,6 +135,7 @@ export default function TerminalCanvas({
   completionQuickCommands = EMPTY_COMPLETION_QUICK_COMMANDS,
   mouseReporting = true,
   copyOnSelect = true,
+  blockSelection = false,
   keyMode = "remote",
   onKeyModeChange = () => {},
   onInput,
@@ -153,6 +157,7 @@ export default function TerminalCanvas({
   const fitAndReportRef = useRef<() => void>(() => {});
   const mouseReportingRef = useRef(mouseReporting);
   const copyOnSelectRef = useRef(copyOnSelect);
+  const blockSelectionRef = useRef(blockSelection);
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
   const keyModeRef = useRef(keyMode);
@@ -255,6 +260,7 @@ export default function TerminalCanvas({
   focusedRef.current = focused;
   mouseReportingRef.current = mouseReporting;
   copyOnSelectRef.current = copyOnSelect;
+  blockSelectionRef.current = blockSelection;
   keyModeRef.current = keyMode;
   onKeyModeChangeRef.current = onKeyModeChange;
   completionSuggestionsRef.current = completionCandidates;
@@ -557,6 +563,18 @@ export default function TerminalCanvas({
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       const mode = keyModeRef.current;
+      const selectionAction = terminalSelectionShortcut(event, mode);
+      if (selectionAction) {
+        event.preventDefault();
+        if (!event.repeat) {
+          if (selectionAction === "select-all") term.selectAll();
+          else {
+            const selected = term.getSelection();
+            if (selected) void navigator.clipboard?.writeText(selected).catch(() => {});
+          }
+        }
+        return false;
+      }
       const completions = completionSuggestionsRef.current;
       if (mode === "remote" && completions.length && !event.altKey && !event.ctrlKey && !event.metaKey) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) {
@@ -732,6 +750,17 @@ export default function TerminalCanvas({
         pasteFromClipboard(event);
       }
     };
+    const forceBlockSelection = (event: MouseEvent) => {
+      if (!blockSelectionRef.current || event.altKey || event.button !== 0 || !event.target) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const forceSelection = term.modes.mouseTrackingMode !== "none";
+      event.target.dispatchEvent(new MouseEvent(
+        "mousedown",
+        terminalBlockSelectionMouseEventInit(event, forceSelection),
+      ));
+    };
+    host.addEventListener("mousedown", forceBlockSelection, true);
     host.addEventListener("auxclick", pasteOnMiddleClick);
 
     termRef.current = term;
@@ -741,6 +770,7 @@ export default function TerminalCanvas({
       searchResultDisposable.dispose();
       inputDisposable.dispose();
       selectionDisposable.dispose();
+      host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
       if (inputFlushTimerRef.current !== null) {
         window.clearTimeout(inputFlushTimerRef.current);
@@ -866,6 +896,45 @@ export default function TerminalCanvas({
     };
     window.addEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
     return () => window.removeEventListener(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, requestExport);
+  }, [active?.profile.id, focused, viewId]);
+
+  useEffect(() => {
+    const requestSelection = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalSelectionRequestDetail>).detail;
+      if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
+        || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      const action = (detail as { action?: unknown }).action;
+      if (action !== "copy" && action !== "select-all" && action !== "clear") {
+        detail.respond({ ok: false, error: "不支持的终端选择命令。" });
+        return;
+      }
+      const term = termRef.current;
+      if (!term) {
+        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        return;
+      }
+      if (action === "copy") {
+        const selection = term.getSelection();
+        if (!selection) {
+          detail.respond({ ok: false, error: "当前终端没有选中文本。" });
+          return;
+        }
+        detail.respond({
+          ok: true,
+          payload: { sessionId: active.profile.id, viewId, action, selection },
+        });
+        return;
+      }
+      if (action === "select-all") term.selectAll();
+      else term.clearSelection();
+      term.focus();
+      detail.respond({
+        ok: true,
+        payload: { sessionId: active.profile.id, viewId, action, selection: null },
+      });
+    };
+    window.addEventListener(TERMINAL_SELECTION_REQUEST_EVENT, requestSelection);
+    return () => window.removeEventListener(TERMINAL_SELECTION_REQUEST_EVENT, requestSelection);
   }, [active?.profile.id, focused, viewId]);
 
   useEffect(() => {

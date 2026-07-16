@@ -63,6 +63,7 @@ import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
+import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
@@ -1084,8 +1085,12 @@ function handleMenuAction(item: string) {
       window.open(`https://www.google.com/search?q=${encodeURIComponent(selectedText)}`, "_blank", "noopener,noreferrer");
       return;
     }
-    if (item === "复制" || item === "全选" || item === "选择全部") {
-      document.execCommand(item === "复制" ? "copy" : "selectAll");
+    if (item === "复制") {
+      void runTerminalSelectionAction("copy", item);
+      return;
+    }
+    if (item === "全选" || item === "选择全部") {
+      void runTerminalSelectionAction("select-all", item);
       return;
     }
     if (item === "粘贴" || item === "粘贴确认") {
@@ -1196,8 +1201,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "清除选择") {
-      window.getSelection()?.removeAllRanges();
-      setBlockSelection(false);
+      void runTerminalSelectionAction("clear", item);
       return;
     }
     if (item === "新建会话") {
@@ -1394,6 +1398,20 @@ function handleMenuAction(item: string) {
         const fileName = downloadTerminalText(payload.text, session.profile.name, source);
         setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.logicalLines} 行` });
       }
+    } catch (error) {
+      setNotice({ title, message: formatError(error) });
+    }
+  }
+
+  async function runTerminalSelectionAction(action: TerminalSelectionAction, title: string) {
+    const view = activeWorkspaceView;
+    if (!view) {
+      setNotice({ title, message: "请先打开一个终端视图。" });
+      return;
+    }
+    try {
+      const { executeTerminalSelectionAction } = await import("./terminal-selection-event");
+      await executeTerminalSelectionAction({ sessionId: view.sessionId, viewId: view.id, action });
     } catch (error) {
       setNotice({ title, message: formatError(error) });
     }
@@ -4159,7 +4177,7 @@ function TerminalPaneGrid({
 }) {
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={completionHistory} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={completionHistory} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
   }
 
   return (
@@ -4179,6 +4197,7 @@ function TerminalPaneGrid({
         completionQuickCommands={completionQuickCommands}
         mouseReporting={mouseReporting}
         copyOnSelect={copyOnSelect}
+        blockSelection={blockSelection}
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
@@ -4212,6 +4231,7 @@ type TerminalWorkspaceNodeProps = {
   completionQuickCommands: readonly QuickCommand[];
   mouseReporting: boolean;
   copyOnSelect: boolean;
+  blockSelection: boolean;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4419,6 +4439,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         completionQuickCommands={props.completionQuickCommands}
         mouseReporting={props.mouseReporting}
         copyOnSelect={props.copyOnSelect}
+        blockSelection={props.blockSelection}
         keyMode={activeView.keyMode}
         onKeyModeChange={(keyMode) => props.onKeyModeChange(node.id, activeView.id, keyMode)}
         onInput={props.onInput}
@@ -4521,6 +4542,7 @@ type TerminalCanvasProps = {
   completionQuickCommands?: readonly QuickCommand[];
   mouseReporting?: boolean;
   copyOnSelect?: boolean;
+  blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
