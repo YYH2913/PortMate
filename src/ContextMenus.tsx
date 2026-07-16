@@ -2,8 +2,7 @@ import type { ReactNode } from "react";
 import type { SessionSummary } from "./types";
 
 export type SessionContextAction =
-  | "sync-on"
-  | "sync-off"
+  | "sync-toggle"
   | "paste"
   | "rename"
   | "duplicate"
@@ -65,14 +64,10 @@ export function SessionContextMenu({
           ))}
         </div>
       </ContextSubmenu>
-      <ContextSubmenu label="同步输入(S)">
-        <ContextMenuButton label={syncInput ? "同步输入已开启" : "开启同步输入"} checked={syncInput} onClick={() => onAction("sync-on", sessionId)} />
-        <ContextMenuButton label="关闭同步输入" checked={!syncInput} onClick={() => onAction("sync-off", sessionId)} />
-      </ContextSubmenu>
+      <ContextMenuButton label={syncInput ? "关闭同步输入(S)" : "开启同步输入(S)"} checked={syncInput} onClick={() => onAction("sync-toggle", sessionId)} />
       <ContextMenuButton label="粘贴(P)" shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
       <ContextMenuButton label="重命名会话(R)" disabled={disabled} onClick={() => onAction("rename", sessionId)} />
       <ContextMenuButton label="复制会话(D)" shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
-      <ContextMenuButton label="复制SSH通道(D)" disabled />
       <ContextDivider />
       <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
       <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
@@ -81,13 +76,7 @@ export function SessionContextMenu({
       <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
       <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
       <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
-      <ContextSubmenu label="拆分为(S)" disabled={disabled}>
-        <ContextMenuButton label="水平拆分" onClick={() => onAction("split-h", sessionId)} />
-        <ContextMenuButton label="垂直拆分" onClick={() => onAction("split-v", sessionId)} />
-      </ContextSubmenu>
-      <ContextSubmenu label="移动至分组(M)" disabled={disabled}>
-        <ContextMenuButton label="选择分组..." onClick={() => onAction("move-group", sessionId)} />
-      </ContextSubmenu>
+      <ContextMenuButton label="移动视图到分组(M)" disabled={disabled} onClick={() => onAction("move-group", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="断开会话(C)" disabled={disabled} onClick={() => onAction("close", sessionId)} />
       <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />

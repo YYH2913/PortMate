@@ -1568,11 +1568,8 @@ function handleMenuAction(item: string) {
     setContextMenu(null);
     const target = contextSession(sessionId);
     switch (action) {
-      case "sync-on":
-        updateSyncInput(true);
-        return;
-      case "sync-off":
-        updateSyncInput(false);
+      case "sync-toggle":
+        updateSyncInput(!syncInputRef.current);
         return;
       case "rename":
         void renameSessionFromContext(sessionId);
