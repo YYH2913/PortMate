@@ -120,6 +120,7 @@ const MODEM_CRC_REQUEST: u8 = b'C';
 const MODEM_EOF: u8 = 0x1a;
 const MODEM_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MODEM_ACK_TIMEOUT: Duration = Duration::from_secs(12);
+const REMOTE_MODEM_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const MODEM_MAX_RETRIES: usize = 10;
 const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
@@ -8476,7 +8477,7 @@ impl ModemByteReader {
             if let Some((store, session_id)) = &connection {
                 ensure_modem_session_connected(store, session_id)?;
             }
-            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            let remaining = REMOTE_MODEM_READY_TIMEOUT.saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err("remote modem readiness marker timed out".to_string());
             }
