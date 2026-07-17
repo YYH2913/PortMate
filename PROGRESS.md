@@ -195,6 +195,7 @@ cargo fmt --all -- --check
 cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 npm test -- --run
+npm run test:workspace-ui
 npm run build
 ```
 
@@ -202,7 +203,7 @@ npm run build
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
-工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式、资源/会话/历史真实筛选、筛选后精确点击与右键、顶部会话搜索、发送区无伪控件、主/独立窗口锁屏及 1440x900/390x844 边界。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。上述非输入操作均检查不会意外调用 `send_text`、`send_bytes` 或 `run_command`。
+仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证 v2 终端优先迁移，并覆盖资源/会话/历史真实筛选、清除、筛选后精确点击与右键、同步输入正反切换、唯一拆分/移动入口、顶部会话搜索、发送区无伪控件、面板空间归还，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
 
 已有单元测试覆盖：
 
@@ -272,7 +273,7 @@ npm run build
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
-- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容与 Tmux workflow 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、control start/stop、推送静默刷新保留 editor、旧 runtime stop 隔离及桌面/移动截图边界。
+- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧面板迁移、真实筛选、精确上下文动作、无终端误写和桌面/移动布局；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、control start/stop、推送静默刷新保留 editor、旧 runtime stop 隔离及桌面/移动截图边界。
 - Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好和缓存恢复已有可重复 Playwright 基线，仍缺完整 vttest 与真实全屏程序矩阵。
 
 ## 对照最终目标的完成度
@@ -296,7 +297,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
-| 测试体系 | 部分实现 | core/协议集成测试、41 文件前端单测和仓库内终端/Tmux Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | core/协议集成测试、41 文件前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
@@ -324,7 +325,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
-5. 终端兼容和 Tmux workflow 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，以及同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
+5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/真实筛选/上下文动作/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
 
 ### P3：架构整理与发布准备
 
@@ -339,6 +340,6 @@ npm run build
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；durable migration journal、异常提交核对、重载 UX、双向迁移、跨进程 CAS 和 conflict 诊断导出已完成。
 3. 更深连接健康探测和跨平台传输故障矩阵。
-4. 继续把其余 CDP 检查整理为 Playwright UI 回归，并补完整 vttest 与真实 vim/tmux/top/less 程序矩阵；终端鼠标、alternate screen、缓存和 resize 基线已完成。
+4. 继续把其余 CDP 检查整理为 Playwright UI 回归，并补完整 vttest 与真实 vim/tmux/top/less 程序矩阵；终端鼠标、alternate screen、缓存、resize 和紧凑 workspace UI 基线已完成。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。

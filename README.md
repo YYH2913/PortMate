@@ -276,12 +276,13 @@ cargo run -p portmate-mcp -- --http
 npm test
 npm run test:terminal-compat
 npm run test:tmux-workflow
+npm run test:workspace-ui
 npm run build
 cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The terminal compatibility and Tmux workflow checks use the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere.
+The terminal compatibility, Tmux workflow, and workspace UI checks use the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, exercises resource/session/history filters and exact context actions, verifies that non-input UI operations produce no terminal writes, and captures compact desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 
