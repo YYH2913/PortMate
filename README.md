@@ -231,6 +231,11 @@ requires its `storePath` to match `PORTMATE_STORE_PATH`, its address to be loopb
 reference to use the dedicated `keychain:ipc-*` namespace. Desktop IPC requests and responses are
 bounded to 1 MiB and 64 MiB, with bounded connect, write, and total response waits.
 
+The repository's pinned official TypeScript SDK stdio check spawns the real bridge, negotiates the
+server's `2025-06-18` protocol version, completes initialize/initialized, ping, tools, resources,
+templates, prompts, and a resource read, then verifies that closing the client also terminates the
+bridge process.
+
 Write tools are denied by default. For a trusted local development run with an empty grant store:
 
 ```bash
@@ -285,6 +290,7 @@ npm run test:terminal-compat
 npm run test:tmux-workflow
 npm run test:workspace-ui
 npm run test:mcp-http-client
+npm run test:mcp-stdio-client
 npm run build
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings

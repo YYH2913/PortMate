@@ -161,6 +161,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 已实现：
 
 - `portmate-mcp` stdio bridge，JSON-RPC lifecycle/tools/resources/prompts。
+- 仓库固定的官方 TypeScript SDK 1.29.0 stdio 回归会启动真实 bridge 子进程，覆盖 initialize/initialized、ping、tools/resources/templates/prompts/resource read 共 8 条消息，确认服务端协商 `2025-06-18`，并验证客户端关闭 stdin 后 bridge 自行退出。
 - stdio 每条 newline-delimited JSON payload 上限为 1 MiB（不含 `LF/CRLF`）；超限行仅保留 `limit + 2` 字节并有界丢弃到换行，返回 JSON-RPC parse error 后可继续处理下一条消息，不会无界分配或协议失步。
 - stdio/HTTP 共用的 JSON-RPC envelope 会保留显式 null ID，拒绝对象/数组/布尔 ID 和非结构化 `params`；batch 在任何 tool dispatch 前限制为 128 项，避免小请求放大为无界调用与响应。
 - stdio/HTTP JSON-RPC 响应与 SSE JSON 数据共用 64 MiB 有界 writer，写入将在追加越界前停止。单响应超限会返回保留原 ID 的 `-32603`；batch 或 SSE 状态超限会以不含原大 payload 的受限错误替换，避免日志、screen 或状态数据造成无界二次序列化和输出。
@@ -238,7 +239,7 @@ npm run build
 - JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
-- MCP resource/template、ping、batch、notification、HTTP `202`、日志 limit、stdio 超限恢复、慢请求总 deadline、连接限额拒绝/permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限。
+- MCP resource/template、ping、batch、notification、HTTP `202`、日志 limit、stdio 超限恢复、慢请求总 deadline、连接限额拒绝/permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限；官方 TypeScript SDK 1.29.0 另以真实子进程覆盖 stdio 8 消息生命周期，并以真实 loopback bridge 覆盖 HTTP 9 请求序列。
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、外部目录树递归上传（含空目录）、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
@@ -299,7 +300,7 @@ npm run build
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；本机 macOS/Windows 使用带超时和输出边界的异步平台命令，Windows 远端在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；官方 TypeScript SDK 1.29.0 的真实 8 消息生命周期和子进程退出已通过。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过，桌面 UI 可展示配置并轮换 token；其他 SDK 矩阵待补。 |
 | 测试体系 | 部分实现 | 245 项 Rust core/协议集成测试、47 文件/244 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 

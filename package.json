@@ -11,6 +11,7 @@
     "test:tmux-workflow": "node scripts/tmux-workflow-check.mjs",
     "test:workspace-ui": "node scripts/workspace-ui-check.mjs",
     "test:mcp-http-client": "cargo build -p portmate-mcp && node scripts/mcp-http-client-check.mjs",
+    "test:mcp-stdio-client": "cargo build -p portmate-mcp && node scripts/mcp-stdio-client-check.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "desktop": "tauri dev",
