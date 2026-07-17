@@ -3439,17 +3439,24 @@ button {
 }
 
 .terminal-settings-dialog {
-  grid-template-columns: 210px minmax(0, 1fr);
-  grid-template-rows: 43px minmax(0, 1fr) 58px;
-  width: min(760px, calc(100vw - 24px));
-  height: min(680px, calc(100vh - 36px));
+  grid-template-rows: 43px 40px minmax(0, 1fr) 58px;
+  width: min(720px, calc(100vw - 24px));
+  height: min(620px, calc(100vh - 36px));
 }
 
 .session-settings-dialog {
-  grid-template-columns: 210px minmax(0, 1fr);
-  grid-template-rows: 43px 38px minmax(0, 1fr) 58px;
-  width: min(860px, calc(100vw - 24px));
-  height: min(720px, calc(100vh - 36px));
+  grid-template-rows: 43px 52px minmax(0, 1fr) 58px;
+  width: min(760px, calc(100vw - 24px));
+  height: min(640px, calc(100vh - 36px));
+  transition: height 140ms ease;
+}
+
+.session-settings-dialog.compact {
+  height: min(460px, calc(100vh - 36px));
+}
+
+.session-settings-dialog.medium {
+  height: min(520px, calc(100vh - 36px));
 }
 
 .dialog-title {
@@ -3480,57 +3487,37 @@ button {
   border-right-width: 7px;
 }
 
-.settings-tree {
-  margin: 14px 12px;
-  padding: 0;
-  overflow: auto;
-  background: #101820;
-  border: 1px solid var(--line-soft);
+.settings-tabs {
+  display: flex;
+  min-width: 0;
+  padding-inline: 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
 }
 
-.settings-tree-group {
-  display: grid;
-}
-
-.settings-tree button {
-  display: block;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 18px;
+.settings-tabs button {
+  flex: 0 0 auto;
+  min-width: 76px;
+  padding-inline: 12px;
+  border-bottom: 2px solid transparent;
   background: transparent;
-  color: #d7e1eb;
-  text-align: left;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.settings-tree-parent {
-  display: flex !important;
-  align-items: center;
-  color: #d7e1eb !important;
-}
-
-.settings-tree-parent.active {
-  color: var(--cyan) !important;
-}
-
-.settings-tree button.child {
-  padding-left: 66px;
-  font-size: 13px;
   color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
 }
 
-.settings-tree button.active {
-  background: rgba(94, 234, 212, 0.12);
+.settings-tabs button:hover,
+.settings-tabs button.active {
+  color: var(--text);
+}
+
+.settings-tabs button.active {
+  border-bottom-color: var(--cyan);
   color: var(--cyan);
 }
 
-.settings-tree button:hover {
-  background: rgba(141, 160, 179, 0.1);
-}
-
 .settings-content {
-  padding: 20px 14px 0 0;
+  padding: 18px 18px 0;
   overflow: auto;
 }
 
@@ -3666,7 +3653,7 @@ button {
 }
 
 .settings-section {
-  margin: 0 14px 16px 0;
+  margin: 0 0 16px;
 }
 
 .settings-section:has(.settings-box):last-child {
@@ -3676,9 +3663,8 @@ button {
 .settings-box {
   display: grid;
   gap: 14px;
-  padding: 18px 16px;
-  border: 1px solid var(--line);
-  background: rgba(15, 23, 32, 0.48);
+  padding: 14px 2px 4px;
+  border-top: 1px solid var(--line);
 }
 
 .setting-radio,
@@ -3782,45 +3768,42 @@ fieldset label {
   height: 35px;
 }
 
-.protocol-tabs {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+.session-settings-nav {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel-2);
+  background: #111820;
 }
 
-.protocol-tabs button {
-  background: transparent;
-  border-right: 1px solid var(--line-soft);
-  color: #d7e1eb;
-  cursor: pointer;
-  font-size: 14px;
+.session-settings-nav label {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 160px);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.protocol-tabs button:hover {
-  background: rgba(104, 167, 255, 0.1);
-}
-
-.protocol-tabs button.active {
-  color: var(--cyan);
-  background: #0f1720;
-  font-weight: 600;
-}
-
-.session-tree-nav {
-  grid-row: 3;
-}
-
-.session-tree-nav button.child {
-  padding-left: 42px;
+.session-settings-nav select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
 }
 
 .session-form {
   display: grid;
   align-content: start;
   gap: 11px;
-  padding: 22px 18px;
+  padding: 18px;
   overflow: auto;
 }
 
@@ -6011,15 +5994,15 @@ fieldset label {
 
   .terminal-settings-dialog {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 43px minmax(110px, 160px) minmax(0, 1fr) 58px;
+    grid-template-rows: 43px 40px minmax(0, 1fr) 58px;
     width: calc(100vw - 24px);
     height: calc(100vh - 24px);
   }
 
-  .terminal-settings-dialog > .settings-tree {
+  .terminal-settings-dialog > .settings-tabs {
     grid-column: 1;
     grid-row: 2;
-    margin: 10px 12px 0;
+    padding-inline: 4px;
   }
 
   .terminal-settings-dialog > .settings-content {
@@ -6066,49 +6049,43 @@ fieldset label {
 
   .session-settings-dialog {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 43px 76px 44px minmax(0, 1fr) auto;
+    grid-template-rows: 43px 66px minmax(0, 1fr) auto;
     width: calc(100vw - 24px);
-    height: min(720px, calc(100vh - 24px));
+    height: min(640px, calc(100vh - 24px));
   }
 
-  .session-settings-dialog .protocol-tabs {
+  .session-settings-dialog.compact {
+    height: min(480px, calc(100vh - 24px));
+  }
+
+  .session-settings-dialog.medium {
+    height: min(560px, calc(100vh - 24px));
+  }
+
+  .session-settings-dialog .session-settings-nav {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-template-rows: repeat(2, 38px);
-    overflow: hidden;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 7px 10px;
   }
 
-  .session-settings-dialog .session-tree-nav {
-    grid-column: 1;
-    grid-row: 3;
-    display: flex;
-    margin: 8px 12px 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .session-settings-dialog .settings-tree-group {
-    display: contents;
-  }
-
-  .session-settings-dialog .session-tree-nav button,
-  .session-settings-dialog .session-tree-nav button.child {
-    flex: 0 0 auto;
-    width: auto;
-    min-height: 35px;
-    padding: 0 14px;
+  .session-settings-dialog .session-settings-nav label {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 32px;
+    gap: 3px;
   }
 
   .session-settings-dialog .session-form {
     grid-column: 1;
-    grid-row: 4;
+    grid-row: 3;
     padding: 16px 12px;
   }
 
   .session-settings-dialog .dialog-actions {
     grid-column: 1;
-    grid-row: 5;
+    grid-row: 4;
     gap: 6px;
     padding: 0 12px 12px;
   }
@@ -8303,14 +8280,48 @@ fieldset label {
 }
 
 .mcp-dialog {
-  grid-template-rows: 46px minmax(0, 1fr);
-  width: min(920px, calc(100vw - 48px));
+  grid-template-rows: 46px 38px minmax(0, 1fr);
+  width: min(980px, calc(100vw - 48px));
   height: min(720px, calc(100vh - 56px));
+  transition: height 140ms ease;
+}
+
+.mcp-dialog[data-tab="grants"] {
+  height: min(560px, calc(100vh - 56px));
+}
+
+.mcp-dialog[data-tab="http"] {
+  height: min(430px, calc(100vh - 56px));
+}
+
+.mcp-tabs {
+  display: flex;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mcp-tabs button {
+  min-width: 82px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.mcp-tabs button:hover {
+  color: var(--text);
+}
+
+.mcp-tabs button.active {
+  border-bottom-color: var(--cyan);
+  color: var(--cyan);
 }
 
 .mcp-content {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -8341,10 +8352,10 @@ fieldset label {
 
 .mcp-grants button.active {
   border-color: rgba(94, 234, 212, 0.5);
+  background: rgba(20, 184, 166, 0.08);
 }
 
-.mcp-grants span,
-.mcp-audit span {
+.mcp-grants span {
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
@@ -8353,6 +8364,11 @@ fieldset label {
 }
 
 .mcp-new {
+  display: flex !important;
+  min-height: 34px !important;
+  align-items: center;
+  justify-content: center;
+  grid-template-columns: auto auto;
   color: var(--cyan) !important;
 }
 
@@ -8368,9 +8384,18 @@ fieldset label {
 .mcp-session-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
+  margin: 0;
   padding: 12px;
   border: 1px solid var(--line);
   background: rgba(15, 23, 32, 0.42);
+}
+
+.mcp-check-grid legend,
+.mcp-session-list legend {
+  padding-inline: 5px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .mcp-check-grid {
@@ -8402,12 +8427,16 @@ fieldset label {
   background: var(--control-hover);
 }
 
+.mcp-http-view {
+  min-height: 0;
+  padding: 22px;
+  overflow: auto;
+}
+
 .mcp-http-panel {
   display: grid;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  background: rgba(15, 23, 32, 0.42);
+  width: min(720px, 100%);
 }
 
 .mcp-http-panel header,
@@ -8440,7 +8469,7 @@ fieldset label {
 }
 
 .mcp-http-panel textarea {
-  min-height: 72px;
+  min-height: 88px;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -8451,20 +8480,295 @@ fieldset label {
   font-size: 12px;
 }
 
-.mcp-audit {
+.mcp-audit-view {
   display: grid;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line-soft);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  padding: 12px;
 }
 
-.mcp-audit div {
+.mcp-audit-toolbar {
   display: grid;
-  gap: 3px;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(112px, 0.62fr)) auto 30px 30px;
+  gap: 6px;
+  align-items: center;
+  padding-bottom: 10px;
+}
+
+.mcp-audit-toolbar select,
+.mcp-audit-search {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+}
+
+.mcp-audit-toolbar select {
+  min-width: 0;
+  padding-inline: 7px;
+}
+
+.mcp-audit-search {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  padding-inline: 6px;
+  color: var(--muted);
+}
+
+.mcp-audit-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.mcp-audit-count {
+  color: var(--muted);
+  white-space: nowrap;
   font-size: 12px;
 }
 
+.mcp-audit-toolbar .icon-button {
+  width: 30px;
+  height: 30px;
+}
+
+.mcp-audit-export {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mcp-audit-export span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-audit-export button {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mcp-audit-workspace {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+.mcp-audit-list,
+.mcp-audit-inspector {
+  min-height: 0;
+  overflow: auto;
+}
+
+.mcp-audit-list {
+  padding-block: 6px;
+}
+
+.mcp-audit-list > button {
+  display: grid;
+  width: 100%;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-audit-list > button:hover {
+  background: var(--control-hover);
+}
+
+.mcp-audit-list > button.active {
+  border-left-color: var(--cyan);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+.mcp-audit-list > button > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcp-audit-list strong,
+.mcp-audit-list code,
+.mcp-audit-list time,
+.mcp-audit-list em,
+.mcp-audit-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-audit-list code,
+.mcp-audit-list time,
+.mcp-audit-list small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.mcp-audit-list em {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.mcp-audit-list .decision-succeeded,
+.mcp-audit-list .decision-authorized {
+  color: #5eead4;
+}
+
+.mcp-audit-list .decision-denied,
+.mcp-audit-list .decision-failed,
+.mcp-audit-list .decision-invalid {
+  color: #fca5a5;
+}
+
+.mcp-audit-inspector {
+  padding: 12px 16px;
+  border-left: 1px solid var(--line);
+}
+
+.mcp-audit-inspector > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.mcp-audit-inspector > header span {
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.mcp-audit-inspector dl {
+  display: grid;
+  margin: 0;
+}
+
+.mcp-audit-inspector dl > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.mcp-audit-inspector dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mcp-audit-inspector dd {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.mcp-audit-inspector code {
+  overflow-wrap: anywhere;
+  color: #cbd5e1;
+  font-family: var(--mono);
+}
+
 @media (max-width: 720px) {
+  .mcp-dialog,
+  .mcp-dialog[data-tab] {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+  }
+
+  .mcp-tabs {
+    padding-inline: 4px;
+  }
+
+  .mcp-tabs button {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .mcp-content {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 132px minmax(0, 1fr);
+  }
+
+  .mcp-grants {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .mcp-grants button {
+    min-height: 42px;
+  }
+
+  .mcp-editor,
+  .mcp-http-view {
+    padding: 12px;
+  }
+
+  .mcp-check-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mcp-audit-view {
+    padding: 8px;
+  }
+
+  .mcp-audit-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto 30px 30px;
+  }
+
+  .mcp-audit-search {
+    grid-column: 1 / -1;
+  }
+
+  .mcp-audit-toolbar select:nth-of-type(3) {
+    grid-column: 1 / 3;
+  }
+
+  .mcp-audit-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(160px, 0.8fr) minmax(180px, 1.2fr);
+  }
+
+  .mcp-audit-inspector {
+    padding: 10px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
   .serial-analyzer-root {
     grid-template-rows: 38px auto 28px minmax(0, 1fr) 150px 30px;
   }

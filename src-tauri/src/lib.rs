@@ -146,6 +146,14 @@ const MAX_SYSMON_HISTORY_QUERY_LIMIT: usize = 240;
 const MAX_LOG_SHARDS: usize = 10_000;
 const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
 const MAX_LOG_DELETE_BATCH: usize = 1_000;
+const MAX_MCP_GRANTS: usize = 512;
+const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
+const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
+const MAX_MCP_GRANT_SESSIONS: usize = 1_024;
+const MAX_MCP_GRANT_SESSION_ID_BYTES: usize = 128;
+const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
+const MAX_MCP_AUDIT_EXPORT_RECORD_BYTES: usize = 64 * 1024;
+const MAX_MCP_AUDIT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_LOG_PREVIEW_BYTES: u64 = 64 * 1024;
 const MAX_LOG_PREVIEW_BYTES: u64 = 1024 * 1024;
 const DEFAULT_LOG_SHARD_SEARCH_LIMIT: u64 = 100;
@@ -1540,6 +1548,22 @@ pub struct ExportSerialCaptureResult {
     pub frames: usize,
     pub captured_bytes: usize,
     pub truncated_frames: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportMcpAuditRequest {
+    pub record_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportMcpAuditResult {
+    pub path: String,
+    pub checksum_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub records: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4059,6 +4083,15 @@ fn list_mcp_audit(state: State<'_, AppState>) -> Result<Vec<portmate_core::Audit
 }
 
 #[tauri::command]
+fn export_mcp_audit(
+    state: State<'_, AppState>,
+    request: ExportMcpAuditRequest,
+) -> Result<ExportMcpAuditResult, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    export_mcp_audit_inner(&state.store_path, &store.audit, request)
+}
+
+#[tauri::command]
 fn list_mcp_grants(state: State<'_, AppState>) -> Result<Vec<McpGrant>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.grants.clone())
@@ -4066,6 +4099,7 @@ fn list_mcp_grants(state: State<'_, AppState>) -> Result<Vec<McpGrant>, String> 
 
 #[tauri::command]
 fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<McpGrant>, String> {
+    let grant = normalize_mcp_grant(grant)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     if let Some(existing) = store
         .grants
@@ -4074,6 +4108,9 @@ fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<Mcp
     {
         *existing = grant;
     } else {
+        if store.grants.len() >= MAX_MCP_GRANTS {
+            return Err(format!("MCP grant limit exceeded ({MAX_MCP_GRANTS})"));
+        }
         store.grants.push(grant);
     }
     save_store(&state.store_path, &store)?;
@@ -4085,10 +4122,68 @@ fn revoke_mcp_grant(
     state: State<'_, AppState>,
     client_id: String,
 ) -> Result<Vec<McpGrant>, String> {
+    let client_id = normalize_mcp_client_id(&client_id)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     store.grants.retain(|grant| grant.client_id != client_id);
     save_store(&state.store_path, &store)?;
     Ok(store.grants.clone())
+}
+
+fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, String> {
+    grant.client_id = normalize_mcp_client_id(&grant.client_id)?;
+    grant.name = grant.name.trim().to_string();
+    if grant.name.len() > MAX_MCP_GRANT_NAME_BYTES || grant.name.chars().any(char::is_control) {
+        return Err(format!(
+            "MCP grant name must not contain control characters or exceed {MAX_MCP_GRANT_NAME_BYTES} bytes"
+        ));
+    }
+    if grant.scopes.len() > 6 {
+        return Err("MCP grant contains too many scopes".to_string());
+    }
+    for (index, scope) in grant.scopes.iter().enumerate() {
+        if grant.scopes[..index].contains(scope) {
+            return Err("MCP grant contains duplicate scopes".to_string());
+        }
+    }
+    if grant.allowed_sessions.len() > MAX_MCP_GRANT_SESSIONS {
+        return Err(format!(
+            "MCP grant session limit exceeded ({MAX_MCP_GRANT_SESSIONS})"
+        ));
+    }
+    let mut allowed_sessions = Vec::with_capacity(grant.allowed_sessions.len());
+    for session_id in grant.allowed_sessions {
+        let session_id = session_id.trim();
+        if session_id.is_empty()
+            || session_id.len() > MAX_MCP_GRANT_SESSION_ID_BYTES
+            || session_id.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "MCP grant session IDs must be non-empty, printable, and at most {MAX_MCP_GRANT_SESSION_ID_BYTES} bytes"
+            ));
+        }
+        if allowed_sessions
+            .iter()
+            .any(|existing| existing == session_id)
+        {
+            return Err("MCP grant contains duplicate session IDs".to_string());
+        }
+        allowed_sessions.push(session_id.to_string());
+    }
+    grant.allowed_sessions = allowed_sessions;
+    Ok(grant)
+}
+
+fn normalize_mcp_client_id(client_id: &str) -> Result<String, String> {
+    let client_id = client_id.trim();
+    if client_id.is_empty()
+        || client_id.len() > MAX_MCP_GRANT_CLIENT_ID_BYTES
+        || client_id.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "MCP client ID must be non-empty, printable, and at most {MAX_MCP_GRANT_CLIENT_ID_BYTES} bytes"
+        ));
+    }
+    Ok(client_id.to_string())
 }
 
 #[tauri::command]
@@ -5431,6 +5526,108 @@ fn export_serial_capture_inner(
     }
 
     export_serial_capture_frames(store_path, &request.session_id, "live", &selected)
+}
+
+fn export_mcp_audit_inner(
+    store_path: &Path,
+    audit: &[AuditRecord],
+    request: ExportMcpAuditRequest,
+) -> Result<ExportMcpAuditResult, String> {
+    if request.record_ids.is_empty() {
+        return Err("select at least one MCP audit record to export".to_string());
+    }
+    if request.record_ids.len() > MAX_MCP_AUDIT_EXPORT_RECORDS {
+        return Err(format!(
+            "MCP audit export record limit exceeded ({MAX_MCP_AUDIT_EXPORT_RECORDS})"
+        ));
+    }
+    let mut requested = HashSet::new();
+    for id in &request.record_ids {
+        if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+            return Err("MCP audit export contains an invalid record ID".to_string());
+        }
+        if !requested.insert(id.as_str()) {
+            return Err("MCP audit export contains duplicate record IDs".to_string());
+        }
+    }
+
+    let by_id = audit
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<HashMap<_, _>>();
+    let selected = request
+        .record_ids
+        .iter()
+        .map(|id| {
+            by_id
+                .get(id.as_str())
+                .copied()
+                .ok_or_else(|| "MCP audit changed; refresh before exporting".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let created_at = Utc::now();
+    let mut output = Vec::new();
+    append_mcp_audit_jsonl(
+        &mut output,
+        &serde_json::json!({
+            "type": "metadata",
+            "format": "portmate-mcp-audit",
+            "version": 1,
+            "createdAt": created_at.to_rfc3339(),
+            "recordCount": selected.len(),
+            "containsSecretBodies": false,
+        }),
+    )?;
+    for record in &selected {
+        append_mcp_audit_jsonl(
+            &mut output,
+            &serde_json::json!({ "type": "record", "record": record }),
+        )?;
+    }
+
+    let export_dir = store_path
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .unwrap_or_else(|| PathBuf::from("exports"));
+    fs::create_dir_all(&export_dir).map_err(|error| {
+        format!(
+            "failed to create MCP audit export directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "portmate-mcp-audit-{timestamp}-{}.jsonl",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let finalized = write_atomic_export_with_checksum(&final_path, &output, "MCP audit export")?;
+    Ok(ExportMcpAuditResult {
+        path: final_path.display().to_string(),
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
+        records: selected.len(),
+    })
+}
+
+fn append_mcp_audit_jsonl<T: Serialize>(output: &mut Vec<u8>, value: &T) -> Result<(), String> {
+    let encoded = serde_json::to_vec(value)
+        .map_err(|error| format!("failed to encode MCP audit export: {error}"))?;
+    if encoded.len() > MAX_MCP_AUDIT_EXPORT_RECORD_BYTES {
+        return Err(format!(
+            "MCP audit export record exceeds {MAX_MCP_AUDIT_EXPORT_RECORD_BYTES} bytes"
+        ));
+    }
+    if encoded.len().saturating_add(1) > MAX_MCP_AUDIT_EXPORT_BYTES.saturating_sub(output.len()) {
+        return Err(format!(
+            "MCP audit export exceeds {MAX_MCP_AUDIT_EXPORT_BYTES} bytes"
+        ));
+    }
+    output.extend_from_slice(&encoded);
+    output.push(b'\n');
+    Ok(())
 }
 
 fn export_serial_capture_history_inner(
@@ -26477,6 +26674,7 @@ pub fn run() {
             retry_transfer,
             cancel_transfer,
             list_mcp_audit,
+            export_mcp_audit,
             list_mcp_grants,
             save_mcp_grant,
             revoke_mcp_grant,
@@ -30199,6 +30397,115 @@ mod tests {
     }
 
     #[test]
+    fn mcp_audit_export_is_atomic_exact_and_checksummed() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-audit-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let audit = vec![
+            AuditRecord {
+                id: "audit-a".to_string(),
+                ts: Utc::now(),
+                actor: "mcp:alpha".to_string(),
+                action: "send_text".to_string(),
+                session_id: Some("edge".to_string()),
+                decision: "succeeded".to_string(),
+                details: BTreeMap::from([("scope".to_string(), "write-input".to_string())]),
+            },
+            AuditRecord {
+                id: "audit-b".to_string(),
+                ts: Utc::now(),
+                actor: "mcp:beta".to_string(),
+                action: "create_tunnel".to_string(),
+                session_id: Some("lab".to_string()),
+                decision: "denied".to_string(),
+                details: BTreeMap::from([("scope".to_string(), "tunnel".to_string())]),
+            },
+            AuditRecord {
+                id: "audit-c".to_string(),
+                ts: Utc::now(),
+                actor: "mcp:gamma".to_string(),
+                action: "list_sessions".to_string(),
+                session_id: None,
+                decision: "authorized".to_string(),
+                details: BTreeMap::from([("scope".to_string(), "read-sessions".to_string())]),
+            },
+        ];
+        let result = export_mcp_audit_inner(
+            &root.join("portmate-store.sqlite3"),
+            &audit,
+            ExportMcpAuditRequest {
+                record_ids: vec!["audit-c".to_string(), "audit-a".to_string()],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.records, 2);
+        assert_eq!(result.sha256, sha256_file(Path::new(&result.path)).unwrap());
+        assert!(fs::read_to_string(&result.checksum_path)
+            .unwrap()
+            .starts_with(&result.sha256));
+
+        let lines = fs::read_to_string(&result.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["format"], "portmate-mcp-audit");
+        assert_eq!(lines[0]["recordCount"], 2);
+        assert_eq!(lines[0]["containsSecretBodies"], false);
+        assert_eq!(lines[1]["record"]["id"], "audit-c");
+        assert_eq!(lines[2]["record"]["id"], "audit-a");
+        assert!(!fs::read_to_string(&result.path)
+            .unwrap()
+            .contains("audit-b"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&result.path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&result.checksum_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let duplicate = export_mcp_audit_inner(
+            &root.join("portmate-store.sqlite3"),
+            &audit,
+            ExportMcpAuditRequest {
+                record_ids: vec!["audit-a".to_string(), "audit-a".to_string()],
+            },
+        )
+        .unwrap_err();
+        assert!(duplicate.contains("duplicate"));
+        let stale = export_mcp_audit_inner(
+            &root.join("portmate-store.sqlite3"),
+            &audit,
+            ExportMcpAuditRequest {
+                record_ids: vec!["missing".to_string()],
+            },
+        )
+        .unwrap_err();
+        assert!(stale.contains("refresh"));
+
+        assert!(fs::read_dir(root.join("exports"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".part")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn terminal_text_export_is_atomic_bounded_and_checksummed() {
         let root =
             std::env::temp_dir().join(format!("portmate-terminal-export-{}", Uuid::new_v4()));
@@ -30886,6 +31193,40 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+    }
+
+    #[test]
+    fn mcp_grant_validation_normalizes_and_rejects_ambiguous_inputs() {
+        let grant = McpGrant {
+            client_id: "  ops-client  ".to_string(),
+            name: "  Operations  ".to_string(),
+            scopes: vec![McpScope::ReadSessions, McpScope::WriteInput],
+            allowed_sessions: vec!["  edge  ".to_string(), "lab".to_string()],
+            expires_at: None,
+            revoked_at: None,
+        };
+        let normalized = normalize_mcp_grant(grant.clone()).unwrap();
+        assert_eq!(normalized.client_id, "ops-client");
+        assert_eq!(normalized.name, "Operations");
+        assert_eq!(normalized.allowed_sessions, ["edge", "lab"]);
+
+        let mut invalid = grant.clone();
+        invalid.client_id = " \n ".to_string();
+        assert!(normalize_mcp_grant(invalid)
+            .unwrap_err()
+            .contains("client ID"));
+
+        let mut invalid = grant.clone();
+        invalid.scopes = vec![McpScope::ReadLogs, McpScope::ReadLogs];
+        assert!(normalize_mcp_grant(invalid)
+            .unwrap_err()
+            .contains("duplicate scopes"));
+
+        let mut invalid = grant;
+        invalid.allowed_sessions = vec![" edge ".to_string(), "edge".to_string()];
+        assert!(normalize_mcp_grant(invalid)
+            .unwrap_err()
+            .contains("duplicate session IDs"));
     }
 
     async fn exchange_test_ipc(state: AppState, token: &str, raw: Vec<u8>) -> IpcResponse {

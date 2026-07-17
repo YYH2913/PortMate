@@ -91,7 +91,7 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
@@ -101,6 +101,7 @@ const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
+const LazyMcpDialog = lazy(() => import("./McpDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -3010,7 +3011,11 @@ export default function App() {
       )}
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
-      {utilityDialog === "mcp" && <McpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onChange={setGrants} />}
+      {utilityDialog === "mcp" && (
+        <Suspense fallback={null}>
+          <LazyMcpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onGrantChange={setGrants} onAuditChange={setAudit} />
+        </Suspense>
+      )}
       {utilityDialog === "one-keys" && (
         <Suspense fallback={null}>
           <LazyOneKeyDialog oneKeys={oneKeys} sessions={sessions} activeId={activeId} onChange={setOneKeys} onClose={() => setUtilityDialog(null)} />
@@ -6819,180 +6824,6 @@ function KeyManagerDialog({
   );
 }
 
-const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "write-input", "transfer", "tunnel", "manage-sessions"];
-
-function McpDialog({
-  grants,
-  audit,
-  sessions,
-  onClose,
-  onChange,
-}: {
-  grants: McpGrant[];
-  audit: AuditRecord[];
-  sessions: SessionSummary[];
-  onClose: () => void;
-  onChange: (grants: McpGrant[]) => void;
-}) {
-  const [draft, setDraft] = useState<McpGrant>(() => grants[0] ?? createMcpGrant());
-  const [error, setError] = useState("");
-  const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
-  const [httpToken, setHttpToken] = useState("");
-  const [httpBusy, setHttpBusy] = useState(false);
-
-  useEffect(() => {
-    if (!isBackendAvailable()) return;
-    void loadHttpConfig();
-  }, []);
-
-  async function loadHttpConfig() {
-    try {
-      const config = await invokeBackend<McpHttpConfig>("mcp_http_config", {});
-      setHttpConfig(config);
-    } catch (error) {
-      setError(formatError(error));
-    }
-  }
-
-  async function rotateHttpToken() {
-    setError("");
-    setHttpBusy(true);
-    try {
-      const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-      setHttpConfig(response.config);
-      setHttpToken(response.token);
-    } catch (error) {
-      setError(formatError(error));
-    } finally {
-      setHttpBusy(false);
-    }
-  }
-
-  async function save() {
-    setError("");
-    try {
-      const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: draft });
-      onChange(saved);
-    } catch (error) {
-      setError(formatError(error));
-    }
-  }
-
-  async function revoke(clientId: string) {
-    setError("");
-    try {
-      const saved = await invokeBackend<McpGrant[]>("revoke_mcp_grant", { clientId });
-      onChange(saved);
-      setDraft(saved[0] ?? createMcpGrant());
-    } catch (error) {
-      setError(formatError(error));
-    }
-  }
-
-  function toggleScope(scope: McpScope) {
-    setDraft((current) => ({
-      ...current,
-      scopes: current.scopes.includes(scope) ? current.scopes.filter((item) => item !== scope) : [...current.scopes, scope],
-    }));
-  }
-
-  function toggleSession(sessionId: string) {
-    setDraft((current) => ({
-      ...current,
-      allowedSessions: current.allowedSessions.includes(sessionId) ? current.allowedSessions.filter((item) => item !== sessionId) : [...current.allowedSessions, sessionId],
-    }));
-  }
-
-  return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog mcp-dialog">
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>MCP Bridge</strong>
-          <button onClick={onClose}><X size={20} /></button>
-        </header>
-        <div className="mcp-content">
-          <aside className="mcp-grants">
-            <button className="mcp-new" onClick={() => setDraft(createMcpGrant())}>新建授权</button>
-            {grants.map((grant) => (
-              <button key={grant.clientId} className={grant.clientId === draft.clientId ? "active" : ""} onClick={() => setDraft(grant)}>
-                <strong>{grant.name || grant.clientId}</strong>
-                <span>{grant.scopes.join(", ") || "read-only"}</span>
-              </button>
-            ))}
-          </aside>
-          <section className="mcp-editor">
-            <DialogField label="Client ID:">
-              <input value={draft.clientId} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
-            </DialogField>
-            <DialogField label="名称:">
-              <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-            </DialogField>
-            <div className="mcp-check-grid">
-              {allMcpScopes.map((scope) => (
-                <label key={scope}>
-                  <input type="checkbox" checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />
-                  {scope}
-                </label>
-              ))}
-            </div>
-            <div className="mcp-session-list">
-              {sessions.map((session) => (
-                <label key={session.profile.id}>
-                  <input type="checkbox" checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />
-                  {session.profile.name}
-                </label>
-              ))}
-            </div>
-            {error ? <div className="utility-error">{error}</div> : null}
-            <div className="mcp-actions">
-              <button onClick={() => void save()}>保存</button>
-              <button onClick={() => void revoke(draft.clientId)} disabled={!draft.clientId}>撤销</button>
-            </div>
-            <div className="mcp-http-panel">
-              <header>
-                <strong>HTTP</strong>
-                <span>{httpConfig?.tokenAvailable ? "token 已保存" : "未生成 token"}</span>
-              </header>
-              <div className="mcp-http-row">
-                <span>Endpoint</span>
-                <code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code>
-              </div>
-              <div className="mcp-http-row">
-                <span>Origin</span>
-                <code>{httpConfig?.defaultOrigin ?? "http://127.0.0.1:8787"}</code>
-              </div>
-              <div className="mcp-http-row">
-                <span>Token Ref</span>
-                <code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code>
-              </div>
-              {httpToken ? (
-                <div className="mcp-http-token">
-                  <span>新 Token</span>
-                  <code>{httpToken}</code>
-                </div>
-              ) : null}
-              <textarea readOnly value={httpConfig?.startCommand ?? "PORTMATE_MCP_HTTP=1 cargo run -p portmate-mcp -- --http"} />
-              <div className="mcp-actions">
-                <button onClick={() => void rotateHttpToken()} disabled={httpBusy}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
-                <button onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig}>复制启动命令</button>
-              </div>
-            </div>
-            <div className="mcp-audit">
-              {audit.slice(-8).reverse().map((record) => (
-                <div key={record.id}>
-                  <strong>{record.action}</strong>
-                  <span>{record.actor} · {record.decision}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function CredentialDialog({
   request,
   onCancel,
@@ -7254,14 +7085,14 @@ function TerminalSettingsDialog({
 
   return (
     <DialogFrame title="终端设置" className="terminal-settings-dialog" onClose={onClose}>
-      <aside className="settings-tree">
+      <nav className="settings-tabs" role="tablist" aria-label="终端设置页面">
         {terminalSettingPages.map((page) => (
-          <button key={page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
+          <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
               {page}
             </button>
         ))}
-      </aside>
-      <section className="settings-content">
+      </nav>
+      <section className="settings-content" role="tabpanel">
         <TerminalSettingsContent
           activeItem={activeItem}
           prefs={prefs}
@@ -7614,39 +7445,25 @@ function SessionSettingsDialog({
   }
 
   return (
-    <DialogFrame title="会话设置" className="session-settings-dialog" onClose={onClose}>
-      <div className="protocol-tabs">
-        {protocolTabs.map((tab) => (
-          <button key={tab} className={tab === activeProtocol ? "active" : ""} onClick={() => changeProtocol(tab)}>
-            {tab}
-          </button>
-        ))}
+    <DialogFrame
+      title="会话设置"
+      className={`session-settings-dialog ${activeSection === "会话" ? "compact" : activeSection === "传输" ? "medium" : ""}`}
+      onClose={onClose}
+    >
+      <div className="session-settings-nav">
+        <label>
+          <span>会话类型</span>
+          <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)}>
+            {protocolTabs.map((tab) => <option key={tab} value={tab}>{tab}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>配置项</span>
+          <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)}>
+            {allowedSections.map((section) => <option key={section} value={section}>{section}</option>)}
+          </select>
+        </label>
       </div>
-      <aside className="settings-tree session-tree-nav">
-        {sessionTree.map((item) => {
-          const children = item.children;
-          if (children) {
-            return (
-              <div key={item.label} className="settings-tree-group">
-                <button className={`settings-tree-parent ${activeSection === item.label ? "active" : ""}`} onClick={() => setActiveSection(item.label)}>
-                  <span>{item.label}</span>
-                </button>
-                {children.map((child) => (
-                  <button key={child} className={`child ${activeSection === child ? "active" : ""}`} onClick={() => setActiveSection(child)}>
-                    {child}
-                  </button>
-                ))}
-              </div>
-            );
-          }
-
-          return (
-            <button key={item.label} className={activeSection === item.label ? "active" : ""} onClick={() => setActiveSection(item.label)}>
-              {item.label}
-            </button>
-          );
-        })}
-      </aside>
       <section className="session-form">
         <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={setProxyPasswordUpdate} />
       </section>
@@ -9421,17 +9238,6 @@ function createIdentityRef(): IdentityRef {
     fingerprintSha256: null,
     path: null,
     secretRef: null,
-  };
-}
-
-function createMcpGrant(): McpGrant {
-  return {
-    clientId: "portmate-local",
-    name: "Local MCP Client",
-    scopes: ["read-sessions", "read-logs"],
-    allowedSessions: [],
-    expiresAt: null,
-    revokedAt: null,
   };
 }
 

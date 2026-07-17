@@ -464,6 +464,14 @@ export interface AuditRecord {
   details: Record<string, string>;
 }
 
+export interface ExportMcpAuditResult {
+  path: string;
+  checksumPath: string;
+  sha256: string;
+  size: number;
+  records: number;
+}
+
 export type McpScope = "read-sessions" | "read-logs" | "write-input" | "transfer" | "tunnel" | "manage-sessions";
 
 export interface McpGrant {

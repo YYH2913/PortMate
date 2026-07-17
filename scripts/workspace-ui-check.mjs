@@ -127,6 +127,63 @@ const events = sessions.map((session) => ({
   annotations: {},
 }));
 
+const mcpGrants = [
+  {
+    clientId: "ops-console",
+    name: "Operations Console",
+    scopes: ["read-sessions", "read-logs", "write-input"],
+    allowedSessions: ["edge-router"],
+    expiresAt: null,
+    revokedAt: null,
+  },
+  {
+    clientId: "audit-reader",
+    name: "Audit Reader",
+    scopes: ["read-logs"],
+    allowedSessions: [],
+    expiresAt: null,
+    revokedAt: null,
+  },
+];
+
+const mcpAudit = [
+  {
+    id: "audit-write",
+    ts: new Date(recordedAt - 1_000).toISOString(),
+    actor: "mcp:ops-console",
+    action: "send_text",
+    sessionId: "edge-router",
+    decision: "succeeded",
+    details: { scope: "write-input", bytes: "18" },
+  },
+  {
+    id: "audit-denied",
+    ts: new Date(recordedAt - 2_000).toISOString(),
+    actor: "mcp:blocked-client",
+    action: "create_tunnel",
+    sessionId: null,
+    decision: "denied",
+    details: { scope: "tunnel", reason: "grant missing" },
+  },
+  {
+    id: "audit-read",
+    ts: new Date(recordedAt - 3_000).toISOString(),
+    actor: "mcp:audit-reader",
+    action: "read_logs",
+    sessionId: "bench-uart",
+    decision: "authorized",
+    details: { scope: "read-logs", source: "serial capture" },
+  },
+];
+
+const mcpHttpConfig = {
+  endpoint: "http://127.0.0.1:8787/mcp",
+  tokenRef: "keychain:mcp-http-token",
+  tokenAvailable: true,
+  defaultOrigin: "http://127.0.0.1:8787",
+  startCommand: "PORTMATE_MCP_HTTP=1 cargo run -p portmate-mcp -- --http",
+};
+
 const workspace = {
   version: 4,
   root: {
@@ -161,7 +218,7 @@ try {
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, historyTimestamp }) => {
+  await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
     localStorage.clear();
     localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
     localStorage.setItem("portmate.workspacePanels.v1", JSON.stringify({
@@ -208,6 +265,21 @@ try {
         window.__invokeCalls.push({ command, args });
         if (command === "list_sessions") return initialSessions;
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
+        if (command === "list_mcp_grants") return initialMcpGrants;
+        if (command === "list_mcp_audit") return initialMcpAudit;
+        if (command === "mcp_http_config") return initialMcpHttpConfig;
+        if (command === "save_mcp_grant") return initialMcpGrants;
+        if (command === "revoke_mcp_grant") return initialMcpGrants.filter((grant) => grant.clientId !== args.clientId);
+        if (command === "rotate_mcp_http_token") return { config: initialMcpHttpConfig, token: "portmate-test-token" };
+        if (command === "export_mcp_audit") {
+          return {
+            path: "/tmp/portmate-mcp-audit.jsonl",
+            checksumPath: "/tmp/portmate-mcp-audit.jsonl.sha256",
+            sha256: "a".repeat(64),
+            size: 384,
+            records: args.request.recordIds.length,
+          };
+        }
         if (command === "close_session") {
           if (window.__closeSessionError) throw new Error("simulated close failure");
           const session = initialSessions.find((item) => item.profile.id === args.sessionId);
@@ -217,8 +289,6 @@ try {
         if ([
           "list_files",
           "list_transfers",
-          "list_mcp_audit",
-          "list_mcp_grants",
           "list_serial_ports",
           "list_one_keys",
         ].includes(command)) return [];
@@ -234,6 +304,9 @@ try {
     initialSessions: sessions,
     initialEvents: events,
     initialWorkspace: workspace,
+    initialMcpGrants: mcpGrants,
+    initialMcpAudit: mcpAudit,
+    initialMcpHttpConfig: mcpHttpConfig,
     historyTimestamp: recordedAt,
   });
 
@@ -480,7 +553,7 @@ try {
   }
 
   await openTerminalSettings();
-  const settingsPages = await page.locator(".terminal-settings-dialog .settings-tree > button")
+  const settingsPages = await page.locator(".terminal-settings-dialog .settings-tabs > button")
     .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
   assert(JSON.stringify(settingsPages) === JSON.stringify([
     "应用",
@@ -495,7 +568,7 @@ try {
     const rect = dialog.getBoundingClientRect();
     return { width: rect.width, height: rect.height, scrollWidth: dialog.scrollWidth, scrollHeight: dialog.scrollHeight };
   });
-  assert(settingsBounds.width <= 760 && settingsBounds.height <= 680
+  assert(settingsBounds.width <= 720 && settingsBounds.height <= 620
     && settingsBounds.scrollWidth <= settingsBounds.width
     && settingsBounds.scrollHeight <= settingsBounds.height,
   `terminal settings dialog is not compact: ${JSON.stringify(settingsBounds)}`);
@@ -588,23 +661,29 @@ try {
     }
   });
   await openNewSessionSettings();
+  const protocolSelect = page.getByRole("combobox", { name: "会话类型", exact: true });
+  const sectionSelect = page.getByRole("combobox", { name: "会话配置项", exact: true });
+  assert(await page.locator(".session-settings-dialog .protocol-tabs").count() === 0
+    && await page.locator(".session-settings-dialog .settings-tree").count() === 0,
+  "redundant session settings navigation is still rendered");
   for (const [protocol, expectedPages] of Object.entries(expectedSessionPages)) {
-    await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: protocol }).click();
-    const actualPages = await page.locator(".session-settings-dialog .session-tree-nav button")
-      .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
+    await protocolSelect.selectOption(protocol);
+    const actualPages = await sectionSelect.locator("option")
+      .evaluateAll((options) => options.map((option) => option.textContent?.trim()));
     assert(JSON.stringify(actualPages) === JSON.stringify(expectedPages),
       `${protocol} session settings are redundant: ${JSON.stringify(actualPages)}`);
-    await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: protocolPageLabels[protocol] }).click();
+    await sectionSelect.selectOption({ label: protocolPageLabels[protocol] });
     assert(await page.locator(".session-settings-dialog .session-form > *").count() > 0,
       `${protocol} has no real protocol settings`);
   }
-  await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: "SSH" }).click();
-  await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: "传输" }).click();
+  await protocolSelect.selectOption("SSH");
+  await sectionSelect.selectOption("传输");
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "SCP:" }).count() === 1,
   "SSH transfer capabilities are missing from the consolidated page");
-  await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: "Serial" }).click();
-  await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: "传输" }).click();
+  await protocolSelect.selectOption("Serial");
+  await sectionSelect.selectOption("传输");
+  await page.waitForTimeout(180);
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 0
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "XModem:" }).count() === 1,
   "Serial transfer page exposes capabilities from another protocol");
@@ -618,18 +697,82 @@ try {
     const rect = dialog.getBoundingClientRect();
     return { width: rect.width, height: rect.height, scrollWidth: dialog.scrollWidth, scrollHeight: dialog.scrollHeight };
   });
-  assert(sessionSettingsBounds.width <= 860 && sessionSettingsBounds.height <= 720
+  assert(sessionSettingsBounds.width <= 760 && sessionSettingsBounds.height <= 640
     && sessionSettingsBounds.scrollWidth <= sessionSettingsBounds.width
     && sessionSettingsBounds.scrollHeight <= sessionSettingsBounds.height,
   `session settings dialog is not compact: ${JSON.stringify(sessionSettingsBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-session-settings.png`, fullPage: true });
   await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
+
   const sessionPreferenceKeys = await page.evaluate(() => (
     Object.keys(localStorage).filter((key) => key.startsWith("portmate.sessionPrefs."))
   ));
   assert(sessionPreferenceKeys.length === 0,
     `closing session settings persisted non-runtime preferences: ${JSON.stringify(sessionPreferenceKeys)}`);
+
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
+  const mcpDialog = page.locator(".mcp-dialog");
+  await mcpDialog.waitFor();
+  const mcpTabs = await mcpDialog.getByRole("tab").evaluateAll((tabs) => tabs.map((tab) => tab.textContent?.trim()));
+  assert(JSON.stringify(mcpTabs) === JSON.stringify(["授权", "HTTP", "审计"]),
+    `MCP task navigation is redundant: ${JSON.stringify(mcpTabs)}`);
+  assert(await mcpDialog.locator(".mcp-content").count() === 1
+    && await mcpDialog.locator(".mcp-http-view").count() === 0
+    && await mcpDialog.locator(".mcp-audit-view").count() === 0,
+  "MCP grant page renders inactive task content");
+  assert(await mcpDialog.locator(".mcp-grants > button").count() === mcpGrants.length + 1,
+    "MCP grants did not load into the compact grant workspace");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
+
+  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
+  await mcpDialog.locator(".mcp-http-view").waitFor();
+  assert(await mcpDialog.locator(".mcp-content").count() === 0
+    && await mcpDialog.locator(".mcp-audit-view").count() === 0,
+  "MCP HTTP page renders inactive task content");
+  assert((await mcpDialog.locator(".mcp-http-panel").textContent()).includes(mcpHttpConfig.endpoint),
+    "MCP HTTP configuration did not load");
+
+  await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
+  const auditView = mcpDialog.locator(".mcp-audit-view");
+  await auditView.waitFor();
+  assert(await mcpDialog.locator(".mcp-content").count() === 0
+    && await mcpDialog.locator(".mcp-http-view").count() === 0,
+  "MCP audit page renders inactive task content");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === mcpAudit.length,
+    "MCP audit list did not load all records");
+
+  const auditSearch = page.getByRole("textbox", { name: "筛选 MCP 审计", exact: true });
+  const auditDecision = page.getByRole("combobox", { name: "筛选审计决策", exact: true });
+  const auditSession = page.getByRole("combobox", { name: "筛选审计会话", exact: true });
+  const auditScope = page.getByRole("combobox", { name: "筛选审计权限", exact: true });
+  await auditSearch.fill("grant missing");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === 1
+    && (await auditView.locator(".mcp-audit-inspector").textContent()).includes("grant missing"),
+  "MCP audit query did not search record details");
+  await auditSearch.fill("");
+  await auditDecision.selectOption("authorized");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === 1,
+    "MCP audit decision filter is not applied");
+  await auditDecision.selectOption("");
+  await auditSession.selectOption("edge-router");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === 1,
+    "MCP audit session filter is not applied");
+  await auditSession.selectOption("");
+  await auditScope.selectOption("read-logs");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === 1
+    && (await auditView.locator(".mcp-audit-inspector").textContent()).includes("audit-read"),
+  "MCP audit scope filter or inspector selection is wrong");
+  await page.getByRole("button", { name: "导出 MCP 审计", exact: true }).click();
+  const exportCall = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "export_mcp_audit").at(-1));
+  assert(JSON.stringify(exportCall?.args?.request?.recordIds) === JSON.stringify(["audit-read"]),
+    `MCP audit export ignored the active filters: ${JSON.stringify(exportCall)}`);
+  assert((await auditView.locator(".mcp-audit-export").textContent()).includes("已导出 1 条"),
+    "MCP audit export result is not visible");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-audit.png`, fullPage: true });
+  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await mcpDialog.waitFor({ state: "detached" });
 
   await togglePanel("历史命令");
   await togglePanel("发送");
@@ -704,6 +847,35 @@ try {
   await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
 
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
+  await page.locator(".mcp-dialog").waitFor();
+  await page.getByRole("tab", { name: "审计", exact: true }).click();
+  const mobileMcpBounds = await page.locator(".mcp-dialog").evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: dialog.scrollWidth,
+      width: rect.width,
+      scrollHeight: dialog.scrollHeight,
+      height: rect.height,
+    };
+  });
+  assert(mobileMcpBounds.left >= 0 && mobileMcpBounds.right <= mobile.viewportWidth
+    && mobileMcpBounds.top >= 0 && mobileMcpBounds.bottom <= mobile.viewportHeight
+    && mobileMcpBounds.scrollWidth <= mobileMcpBounds.width
+    && mobileMcpBounds.scrollHeight <= mobileMcpBounds.height,
+  `mobile MCP audit workspace exceeds the viewport: ${JSON.stringify(mobileMcpBounds)}`);
+  assert(await page.locator(".mcp-audit-list").isVisible()
+    && await page.locator(".mcp-audit-inspector").isVisible(),
+  "mobile MCP audit list or inspector is unreachable");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-audit-mobile.png`, fullPage: true });
+  await page.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await page.locator(".mcp-dialog").waitFor({ state: "detached" });
+
   const terminalWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
   )));
@@ -726,6 +898,11 @@ try {
       desktop: sessionSettingsBounds,
       mobile: mobileSessionSettingsBounds,
     },
+    mcp: {
+      tabs: mcpTabs,
+      exportedRecordIds: exportCall.args.request.recordIds,
+      mobile: mobileMcpBounds,
+    },
     terminalWrites,
     desktop,
     mobile,
@@ -736,6 +913,9 @@ try {
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
+      `${screenshotPrefix}-mcp-grants.png`,
+      `${screenshotPrefix}-mcp-audit.png`,
+      `${screenshotPrefix}-mcp-audit-mobile.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],
