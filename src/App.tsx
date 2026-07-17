@@ -53,6 +53,7 @@ import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
+import { sessionConnectionAction } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
@@ -1559,11 +1560,8 @@ function handleMenuAction(item: string) {
   async function closeSessionsByIds(ids: string[]) {
     const failed: string[] = [];
     for (const id of ids) {
-      try {
-        await disconnectSession(id);
-      } catch {
-        failed.push(id);
-      }
+      const disconnected = await disconnectSession(id, false, false);
+      if (!disconnected) failed.push(id);
     }
     if (failed.length) {
       setNotice({ title: "断开会话", message: `${failed.length} 个会话断开失败，其余已断开。` });
@@ -2474,25 +2472,30 @@ function handleMenuAction(item: string) {
     setHostKeyPrompt(null);
   }
 
-  async function disconnectSession(sessionId = activeId, activateWorkspace = true) {
+  async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<boolean> {
     const session = sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return;
-    if (isBackendAvailable() && isSshLikeProfile(session.profile) && session.runtime.status !== "connected") {
-      return;
+    if (!session) return false;
+    if (isBackendAvailable() && session.runtime.status === "disconnected") return true;
+
+    try {
+      const saved = isBackendAvailable()
+        ? await invokeBackend<SessionSummary>("close_session", { sessionId })
+        : setSessionStatus(session, "disconnected");
+      const fallbackLog = [...(logs[sessionId] ?? []), createLocalSystemEvent(saved.profile, "PortMate: session disconnected")];
+      const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
+
+      setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+      if (activateWorkspace) activateSession(sessionId);
+      setSessions((current) => {
+        const nextSessions = mergeSessionSummaries(current, saved);
+        saveLocalSessionSummaries(nextSessions);
+        return nextSessions;
+      });
+      return true;
+    } catch (error) {
+      if (reportError) setNotice({ title: "断开会话失败", message: formatError(error) });
+      return false;
     }
-
-    const fallback = setSessionStatus(session, "disconnected");
-    const saved = await callBackend("close_session", { sessionId }, fallback);
-    const fallbackLog = [...(logs[sessionId] ?? []), createLocalSystemEvent(saved.profile, "PortMate: session disconnected")];
-    const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
-
-    setLogs((current) => ({ ...current, [sessionId]: nextLog }));
-    if (activateWorkspace) activateSession(sessionId);
-    setSessions((current) => {
-      const nextSessions = mergeSessionSummaries(current, saved);
-      saveLocalSessionSummaries(nextSessions);
-      return nextSessions;
-    });
   }
 
   function routeTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin = "interactive"): Promise<void> {
@@ -4358,6 +4361,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   const activeView = workspacePaneActiveView(node);
   const session = props.sessions.find((item) => item.profile.id === activeView.sessionId);
   const serialConnection = session?.profile.connection.kind === "serial" ? session.profile.connection : null;
+  const connectionAction = session ? sessionConnectionAction(session.runtime.status) : null;
   const groupViews = node.views.map((view) => ({
     view,
     session: props.sessions.find((item) => item.profile.id === view.sessionId),
@@ -4511,15 +4515,15 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           <button
             type="button"
             className={`connection-toggle ${session.runtime.status}`}
-            title={`${session.runtime.status === "connected" ? "断开" : "连接"} ${session.profile.name}`}
-            aria-label={`${session.runtime.status === "connected" ? "断开" : "连接"} ${session.profile.name}`}
+            title={`${connectionAction === "disconnect" ? "断开" : "连接"} ${session.profile.name}`}
+            aria-label={`${connectionAction === "disconnect" ? "断开" : "连接"} ${session.profile.name}`}
             onClick={(event) => {
               event.stopPropagation();
-              if (session.runtime.status === "connected") props.onDisconnect(session.profile.id);
+              if (connectionAction === "disconnect") props.onDisconnect(session.profile.id);
               else props.onConnect(session.profile.id);
             }}
           >
-            {session.runtime.status === "connected" ? <Square size={11} /> : <Play size={12} />}
+            {connectionAction === "disconnect" ? <Square size={11} /> : <Play size={12} />}
           </button>
         ) : null}
         <button

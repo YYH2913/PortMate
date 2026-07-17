@@ -194,6 +194,7 @@ try {
     }));
     window.__invokeCalls = [];
     window.__clipboardText = "";
+    window.__closeSessionError = false;
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -207,6 +208,11 @@ try {
         window.__invokeCalls.push({ command, args });
         if (command === "list_sessions") return initialSessions;
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
+        if (command === "close_session") {
+          if (window.__closeSessionError) throw new Error("simulated close failure");
+          const session = initialSessions.find((item) => item.profile.id === args.sessionId);
+          return session ? { ...session, runtime: { ...session.runtime, status: "disconnected" } } : null;
+        }
         if (command === "list_host_keys") return { keys: [] };
         if ([
           "list_files",
@@ -278,6 +284,19 @@ try {
     && !initial.panels.fileManager && !initial.panels.sessions
     && !initial.panels.history && !initial.panels.sender,
   `migrated v2 panel snapshot is wrong: ${JSON.stringify(initial.panels)}`);
+
+  await page.evaluate(() => { window.__closeSessionError = true; });
+  await page.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const closeFailure = page.locator(".notice-dialog", { hasText: "断开会话失败" });
+  await closeFailure.waitFor();
+  assert((await closeFailure.textContent()).includes("simulated close failure"),
+    "close-session backend failure did not surface its diagnostic");
+  assert(await page.locator('.workspace-pane-tab.status-connected[data-view-id="view-edge"]').count() === 1,
+    "failed close changed the connected workspace tab state");
+  assert(await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "close_session").length) === 1,
+    "close-session control did not reach the backend exactly once");
+  await closeFailure.getByRole("button", { name: "确定", exact: true }).click();
+  await page.evaluate(() => { window.__closeSessionError = false; });
 
   const explorerFilter = page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true });
   await explorerFilter.fill("production");
