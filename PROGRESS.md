@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-07-16
+审查日期：2026-07-17
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -86,7 +86,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Tmux：远端 `list-sessions`、`list-windows`、`list-panes`、attach/new-session，以及按 `session:window` 读取和切换 `synchronize-panes`。管理弹窗按 window 聚合并排序 pane，展示活动 pane/命令/标题，并支持点击激活 pane、新建 window、重命名 session/window、水平/垂直 split pane、与相邻 pane 交换、四方向按 5 cells 调整、break 为新 window、按左右/上下方向 move 到其他远端 window、五种内置 window layout，以及经对象确认条关闭 session/window/pane；所有操作都等待 SSH exec 成功并重新读取远端快照后再更新，失败不会保留错误的乐观状态。后端只接受固定 mutation action，source/destination target 限制为 1..=256 字符、名称限制为 1..=128 字符、resize amount 限制为 1..=100，文本均拒绝控制字符并经过 shell quoting；带引号/分号的目标或名称不会注入命令，成功 mutation 会写入带 source/destination 的 session system event。每个 session 行的 Radio 工具可独立启动带 runtime generation 的 `tmux -C` watcher；后端按 `(sessionId,target)` 保存，多 target 可在同一 SSH runtime 并存，精确停止和迟到 stop 事件不会清除其他 target，关闭弹窗会逐项停止自己拥有的 watcher，SSH/应用关闭仍有一次全量兜底清理。解析器忽略 `%output`/`%extended-output` 正文，未完成行与 stderr 各限制 64 KiB，只把结构事件按 120ms trailing/1s 最大延迟合并后推送给前端静默刷新；刷新及其他 target 的启停不会关闭行内 editor。管理器已拆为独立 lazy chunk。
 - SFTP：原生 subsystem 浏览、上传、下载、远端复制、递归建目录、递归删除。
 - SCP：上传、下载、远端 `cp` 复制。
-- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。X/YModem sender 会在收到 NAK 或等待 ACK 超时后重发数据块和 EOT，重试次数有界。
+- X/Y/ZModem：in-band 传输，块级进度与取消已接入；ZModem 使用 `zmodem2`，自动远端传输使用 lrzsz 的 `rx`/`sx`、`rb`/`sb`、`rz`/`sz`，并通过随机 READY/DONE marker 隔离相邻传输尾部字节、在 SSH PTY 上切换 raw TTY。READY 阶段为复杂交互 shell/低性能主机保留独立 30 秒启动窗口，仍每 100 ms 检查取消与断线；X/YModem sender 的块 ACK 维持独立 12 秒 deadline，并会在收到 NAK 或等待 ACK 超时后有界重发数据块和 EOT。
 - SSH tunnel：local、remote reverse、dynamic SOCKS5，桌面端可查看当前会话运行中的 tunnel、停止 tunnel、显示 active/total 连接数、双向字节计数和最后错误；local/dynamic 使用端口 0 时会回填实际监听端口；目标失败会记录错误，后续连接成功会清除 degraded 状态，监听器永久退出会从运行 registry 移除并禁用已保存配置；remote forward 每 15 秒通过远端 Linux `/proc/net/tcp`/`ss`、FreeBSD `sockstat`、macOS `lsof` 或成功执行的 `netstat -ltn` 被动核对监听端口，服务端撤销后会重发原 bind request 并记录恢复事件；存在但参数不兼容的探测工具会回退为 unsupported，不会把空输出误判为监听丢失；Stop 在服务端 cancel 拒绝/超时后仍会清理本地路由/runtime 并把 profile 置为 disabled；SSH channel 断开会移除该会话全部旧 tunnel runtime，自动重连成功后从最新 profile 按原 ID、标签和端口逐条恢复 enabled tunnel，单条恢复失败会保留期望状态、记录事件且不阻断会话和其他 tunnel。
 
 主要缺口：
@@ -176,12 +176,13 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 长运行 stdio bridge 会在每个 JSON-RPC envelope 前重新加载最新有效 Store 快照和原子发布的 endpoint；桌面重启、IPC token/address 轮换无需重启 bridge，endpoint 删除会立即清空 live forwarding，Store 暂时不可读时则保留最后一次有效只读快照。endpoint 正常缺失不会反复输出错误日志。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。POST 必须使用 `application/json`（允许 charset 参数），显式 `MCP-Protocol-Version` 必须匹配 `2025-06-18`，该版本头已加入 CORS preflight allow-list。
+- HTTP 明确采用 MCP 允许的无状态 Streamable HTTP 模式，不签发 `Mcp-Session-Id`，因此没有伪造的 session/DELETE/replay 生命周期；仓库固定的官方 TypeScript SDK 1.29.0 回归会启动真实 bridge，覆盖 initialize/initialized、GET SSE、ping、tools/resources/templates/prompts/resource read 共 9 个请求，并核对认证、双 Accept 和协商版本头。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；重复的 framing/认证单值头、不支持的 `Transfer-Encoding`、畸形头和声明 body 后的额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
 - MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
 
 主要缺口：
 
-- HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流、纯 SSE POST 的 `message` 事件响应，以及 Content-Type/协议版本/CORS preflight/严格 framing/重复头/quality value 回归；更完整客户端矩阵仍待补。
+- HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流、纯 SSE POST 的 `message` 事件响应，以及 Content-Type/协议版本/CORS preflight/严格 framing/重复头/quality value 回归；官方 TypeScript SDK 1.29.0 的真实客户端序列已覆盖，Python、其他语言 SDK 和旧版本矩阵仍待补。
 - MCP 已区分 `resources/list` 实际资源与 `resources/templates/list` URI 模板，支持 `ping`、有界 JSON-RPC batch/notification 语义；HTTP notification 返回无响应体的 `202 Accepted`。
 - MCP 与桌面 IPC 都执行日志查询 `limit` 的 1..=1000 边界，日志搜索返回最近命中并按时间正序排列。
 - 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
@@ -299,7 +300,7 @@ npm run build
 | 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
-| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
+| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过，桌面 UI 可展示配置并轮换 token；其他 SDK 矩阵待补。 |
 | 测试体系 | 部分实现 | 245 项 Rust core/协议集成测试、47 文件/244 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
@@ -326,7 +327,7 @@ npm run build
 
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、逐行毫秒元数据、显式命令 UUID 关联和 system Text/JSONL sink 已完成。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
-3. MCP HTTP 模式：补 streamable-http 客户端矩阵和更多客户端回归测试。
+3. MCP HTTP 模式：官方 TypeScript SDK 1.29.0 的无状态 Streamable HTTP 序列已纳入仓库回归；继续补 Python、其他语言 SDK 和旧版本客户端矩阵。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
 5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/真实筛选/上下文动作/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
 
