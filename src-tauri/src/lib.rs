@@ -7121,12 +7121,13 @@ async fn start_transfer_inner(
     state: &AppState,
     request: StartTransferRequest,
 ) -> Result<TransferTask, String> {
-    {
+    let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
-        if store.profile(&request.session_id).is_none() {
-            return Err(format!("unknown session: {}", request.session_id));
-        }
-    }
+        store
+            .profile(&request.session_id)
+            .ok_or_else(|| format!("unknown session: {}", request.session_id))?
+    };
+    let request = prepare_transfer_request(&profile, request)?;
 
     let task = TransferTask {
         id: Uuid::new_v4().to_string(),
@@ -7175,6 +7176,89 @@ async fn start_transfer_inner(
     Ok(task)
 }
 
+fn prepare_transfer_request(
+    profile: &SessionProfile,
+    mut request: StartTransferRequest,
+) -> Result<StartTransferRequest, String> {
+    let accesses_remote = has_remote_transfer_prefix(&request.source)
+        || has_remote_transfer_prefix(&request.destination);
+    validate_transfer_protocol(profile, &request.protocol, accesses_remote)?;
+    let Some(default_local_dir) = profile
+        .transfer
+        .default_local_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(request);
+    };
+
+    request.source = resolve_default_local_transfer_path(&request.source, default_local_dir);
+    request.destination =
+        resolve_default_local_transfer_path(&request.destination, default_local_dir);
+    Ok(request)
+}
+
+fn validate_transfer_protocol(
+    profile: &SessionProfile,
+    protocol: &TransferProtocol,
+    accesses_remote: bool,
+) -> Result<(), String> {
+    if !accesses_remote && matches!(protocol, TransferProtocol::Sftp | TransferProtocol::Scp) {
+        return Ok(());
+    }
+    let ssh_like = matches!(profile.kind, SessionKind::Ssh | SessionKind::Tmux);
+    if accesses_remote
+        && matches!(protocol, TransferProtocol::Sftp | TransferProtocol::Scp)
+        && !ssh_like
+    {
+        return Err(format!(
+            "{} 仅支持 SSH/Tmux 会话",
+            transfer_protocol_label(protocol)
+        ));
+    }
+
+    let enabled = match protocol {
+        TransferProtocol::Sftp => profile.transfer.sftp,
+        TransferProtocol::Scp => profile.transfer.scp,
+        TransferProtocol::Xmodem => profile.transfer.xmodem,
+        TransferProtocol::Ymodem => profile.transfer.ymodem,
+        TransferProtocol::Zmodem => profile.transfer.zmodem,
+    };
+    if enabled {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} 已在 Profile 传输设置中禁用",
+            transfer_protocol_label(protocol)
+        ))
+    }
+}
+
+fn transfer_protocol_label(protocol: &TransferProtocol) -> &'static str {
+    match protocol {
+        TransferProtocol::Sftp => "SFTP",
+        TransferProtocol::Scp => "SCP",
+        TransferProtocol::Xmodem => "XModem",
+        TransferProtocol::Ymodem => "YModem",
+        TransferProtocol::Zmodem => "ZModem",
+    }
+}
+
+fn resolve_default_local_transfer_path(value: &str, default_local_dir: &str) -> String {
+    if has_remote_transfer_prefix(value) || Path::new(value).is_absolute() {
+        return value.to_string();
+    }
+    Path::new(default_local_dir)
+        .join(value)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn has_remote_transfer_prefix(value: &str) -> bool {
+    value.starts_with("remote:") || value.starts_with("ssh:")
+}
+
 fn transfer_lane(
     state: &AppState,
     session_id: &str,
@@ -7205,6 +7289,18 @@ async fn run_queued_transfer(
             &request.session_id,
             TransferStatus::Cancelled,
             "cancelled".to_string(),
+            None,
+        );
+        return;
+    }
+
+    if let Err(error) = validate_current_transfer_protocol(&state, &request) {
+        finish_transfer_task(
+            &state,
+            &task_id,
+            &request.session_id,
+            TransferStatus::Failed,
+            error,
             None,
         );
         return;
@@ -7265,6 +7361,21 @@ async fn run_queued_transfer(
         message,
         bytes,
     );
+}
+
+fn validate_current_transfer_protocol(
+    state: &AppState,
+    request: &StartTransferRequest,
+) -> Result<(), String> {
+    let profile = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile(&request.session_id)
+        .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
+    let accesses_remote = has_remote_transfer_prefix(&request.source)
+        || has_remote_transfer_prefix(&request.destination);
+    validate_transfer_protocol(&profile, &request.protocol, accesses_remote)
 }
 
 fn mark_transfer_running(
@@ -31137,6 +31248,158 @@ mod tests {
     }
 
     #[test]
+    fn transfer_protocol_settings_are_enforced_before_queueing() {
+        tauri::async_runtime::block_on(async {
+            let mut profile = test_ssh_profile();
+            profile.transfer.sftp = false;
+            profile.transfer.ymodem = false;
+            let state = test_app_state(
+                profile.clone(),
+                PathBuf::from("transfer-capability-test.sqlite3"),
+            );
+
+            for (protocol, label) in [
+                (TransferProtocol::Sftp, "SFTP"),
+                (TransferProtocol::Ymodem, "YModem"),
+            ] {
+                let error = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol,
+                        source: "input.bin".to_string(),
+                        destination: "remote:/tmp/input.bin".to_string(),
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(error.contains(label));
+                assert!(error.contains("禁用"));
+            }
+
+            assert!(state.store.lock().unwrap().transfers.is_empty());
+            assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn queued_transfer_rechecks_latest_protocol_settings_before_running() {
+        tauri::async_runtime::block_on(async {
+            let profile = test_ssh_profile();
+            let root = std::env::temp_dir()
+                .join(format!("portmate-transfer-capability-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+            let lane = transfer_lane(&state, &profile.id).unwrap();
+            let lane_guard = lane.lock().await;
+            let task = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: "input.bin".to_string(),
+                    destination: "remote:/tmp/input.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+            let mut disabled = profile;
+            disabled.transfer.sftp = false;
+            state.store.lock().unwrap().upsert_profile(disabled);
+            drop(lane_guard);
+
+            let finished = wait_for_transfer_terminal_state(&state, &task.id).await;
+            assert_eq!(finished.status, TransferStatus::Failed);
+            assert!(finished.message.unwrap_or_default().contains("SFTP"));
+            assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn ssh_file_transfer_rejects_non_ssh_profiles_before_queueing() {
+        tauri::async_runtime::block_on(async {
+            let profile = test_shell_profile();
+            let state =
+                test_app_state(profile.clone(), PathBuf::from("transfer-kind-test.sqlite3"));
+            let error = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id,
+                    protocol: TransferProtocol::Scp,
+                    source: "input.bin".to_string(),
+                    destination: "remote:/tmp/input.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.contains("SCP"));
+            assert!(error.contains("仅支持 SSH/Tmux"));
+            assert!(state.store.lock().unwrap().transfers.is_empty());
+        });
+    }
+
+    #[test]
+    fn local_copy_does_not_depend_on_remote_ssh_transfer_flags() {
+        let mut profile = test_shell_profile();
+        profile.transfer.sftp = false;
+        profile.transfer.scp = false;
+
+        for protocol in [TransferProtocol::Sftp, TransferProtocol::Scp] {
+            let request = prepare_transfer_request(
+                &profile,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol,
+                    source: "input.bin".to_string(),
+                    destination: "output.bin".to_string(),
+                },
+            )
+            .unwrap();
+            assert_eq!(request.source, "input.bin");
+            assert_eq!(request.destination, "output.bin");
+        }
+    }
+
+    #[test]
+    fn default_transfer_directory_resolves_only_relative_local_paths() {
+        let mut profile = test_ssh_profile();
+        let default_dir = std::env::temp_dir().join("portmate-transfer-default");
+        profile.transfer.default_local_dir = Some(default_dir.to_string_lossy().into_owned());
+
+        let upload = prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Sftp,
+                source: "input.bin".to_string(),
+                destination: "remote:/tmp/input.bin".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            upload.source,
+            default_dir.join("input.bin").to_string_lossy()
+        );
+        assert_eq!(upload.destination, "remote:/tmp/input.bin");
+
+        let absolute_destination = default_dir.join("download.bin");
+        let download = prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Scp,
+                source: "ssh:/tmp/download.bin".to_string(),
+                destination: absolute_destination.to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(download.source, "ssh:/tmp/download.bin");
+        assert_eq!(download.destination, absolute_destination.to_string_lossy());
+    }
+
+    #[test]
     fn transfer_throttle_delay_respects_rate_limit() {
         assert!(transfer_throttle_delay(None, 1024, Duration::ZERO).is_none());
         assert!(transfer_throttle_delay(Some(0), 1024, Duration::ZERO).is_none());
@@ -34189,7 +34452,9 @@ mod tests {
             let cancel_remote = root.join("sftp-cancel-remote.bin");
             let cancel_remote_part =
                 PathBuf::from(remote_resume_part_path(cancel_remote.to_str().unwrap()));
-            let cancel_payload = (0..256 * 1024)
+            // Keep enough limited payload remaining that a heavily loaded parallel test
+            // runner cannot finish the transfer before the cancellation poll is scheduled.
+            let cancel_payload = (0..2 * 1024 * 1024)
                 .map(|index| (index % 251) as u8)
                 .collect::<Vec<_>>();
             fs::write(&cancel_source, &cancel_payload).unwrap();
@@ -36299,7 +36564,7 @@ mod tests {
             assert_eq!(capture.frames[1].direction, EventDirection::Inbound);
             assert_eq!(capture.frames[1].bytes, peer_reply);
 
-            let disconnected = tokio::time::timeout(Duration::from_secs(5), async {
+            let disconnected = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let summary = state
                         .store
@@ -36369,7 +36634,7 @@ mod tests {
                 dtr: false,
                 rts: false,
                 reconnect: true,
-                reconnect_delay_ms: 2_500,
+                reconnect_delay_ms: 10_000,
                 receive_idle_timeout_enabled: false,
                 receive_idle_timeout_seconds: 60,
             });
@@ -36391,7 +36656,7 @@ mod tests {
 
             socat.stop();
             drop(peer);
-            tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let reconnecting = state
                         .store
@@ -36443,7 +36708,7 @@ mod tests {
                 .open()
                 .unwrap();
 
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
                     let runtime_replaced = state
                         .serial
@@ -36470,7 +36735,7 @@ mod tests {
             .await
             .expect("serial runtime did not reconnect to the replacement PTY");
             assert!(
-                reconnect_profile_updated_at.elapsed() < Duration::from_millis(2_000),
+                reconnect_profile_updated_at.elapsed() < Duration::from_secs(5),
                 "serial reconnect did not adopt the shortened delay"
             );
             let mut inbound = state
@@ -36543,7 +36808,7 @@ mod tests {
             assert!(screen.contains("serial read failed"), "{screen}");
             assert!(screen.contains("serial port reconnected"));
             assert!(screen.contains(&replacement_portmate_pty.display().to_string()));
-            assert_eq!(screen.matches("reconnecting in 2500ms").count(), 1);
+            assert_eq!(screen.matches("reconnecting in 10000ms").count(), 1);
         });
 
         socat.stop();

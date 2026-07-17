@@ -1,0 +1,4 @@
+[env]
+# The desktop integration tests spawn OpenSSH, socat, Stronghold, and SQLite workers.
+# Keep useful parallelism without starving their wall-clock health deadlines on large hosts.
+RUST_TEST_THREADS = { value = "4", force = false }

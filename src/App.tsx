@@ -73,6 +73,8 @@ import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
+import { transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import type { TransferProtocol } from "./transfer-capabilities";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
@@ -117,7 +119,7 @@ const menuGroups = [
   { label: "编辑", items: ["复制", "粘贴", "粘贴确认", "全选", "块选择", "清除选择", "查找", "日志搜索", "在线搜索", "跳转到行"] },
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
   { label: "模式", items: ["远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入"] },
-  { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
+  { label: "传输", items: ["传输任务"] },
   { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "串口分析器", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
   { label: "窗口", items: ["上一个标签", "下一个标签", "水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
@@ -1307,7 +1309,7 @@ function handleMenuAction(item: string) {
       setUtilityDialog("tmux");
       return;
     }
-    if (item === "SFTP/SCP 传输" || item === "X/Y/ZModem") {
+    if (item === "传输任务") {
       if (!active) {
         setNotice({ title: item, message: "请先选择一个会话。" });
         return;
@@ -4766,7 +4768,8 @@ function TransferDialog({
   onTask: (task: TransferTask) => void;
   onNotice: (message: string) => void;
 }) {
-  const [protocol, setProtocol] = useState<TransferTask["protocol"]>("sftp");
+  const protocols = useMemo(() => transferProtocolsForProfile(session.profile), [session.profile]);
+  const [protocol, setProtocol] = useState<TransferProtocol | "">(() => protocols[0] ?? "");
   const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
   const [busy, setBusy] = useState(false);
@@ -4774,10 +4777,25 @@ function TransferDialog({
   const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
   const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
   const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
+  const connected = session.runtime.status === "connected";
+
+  useEffect(() => {
+    if (!protocol || !protocols.includes(protocol)) {
+      setProtocol(protocols[0] ?? "");
+    }
+  }, [protocol, protocols]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    if (!protocol) {
+      setError("当前 Profile 未启用可用的传输协议。");
+      return;
+    }
+    if (!connected) {
+      setError("连接会话后才能开始传输。");
+      return;
+    }
     setBusy(true);
     try {
       const task = await invokeBackend<TransferTask>("start_transfer", {
@@ -4837,12 +4855,9 @@ function TransferDialog({
             <input value={session.profile.name} readOnly />
           </DialogField>
           <DialogField label="协议:">
-            <select value={protocol} onChange={(event) => setProtocol(event.target.value as TransferTask["protocol"])}>
-              <option value="sftp">sftp</option>
-              <option value="scp">scp</option>
-              <option value="xmodem">xmodem</option>
-              <option value="ymodem">ymodem</option>
-              <option value="zmodem">zmodem</option>
+            <select value={protocol} disabled={!protocols.length} onChange={(event) => setProtocol(event.target.value as TransferProtocol)}>
+              {!protocols.length ? <option value="">未启用传输协议</option> : null}
+              {protocols.map((option) => <option key={option} value={option}>{transferProtocolLabel(option)}</option>)}
             </select>
           </DialogField>
           <DialogField label="来源:">
@@ -4861,11 +4876,13 @@ function TransferDialog({
             </header>
             <TransferList transfers={sessionTransfers} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
           </div>
+          {!connected ? <div className="utility-status">当前会话未连接，只能查看和管理已有任务。</div> : null}
+          {connected && !protocols.length ? <div className="utility-status">当前 Profile 未启用适用于此协议的传输方式。</div> : null}
           {error ? <div className="utility-error">{error}</div> : null}
         </section>
         <footer className="utility-actions">
           <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !source || !destination}>{busy ? "执行中" : "开始"}</button>
+          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || !destination.trim()}>{busy ? "执行中" : "开始"}</button>
         </footer>
       </form>
     </div>

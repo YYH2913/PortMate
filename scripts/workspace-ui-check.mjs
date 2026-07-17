@@ -69,8 +69,8 @@ function createSession(id, name, kind, group, tags, connection) {
       },
       triggers: [],
       transfer: {
-        sftp: false,
-        scp: false,
+        sftp: kind === "ssh" || kind === "tmux",
+        scp: kind === "ssh" || kind === "tmux",
         xmodem: true,
         ymodem: true,
         zmodem: true,
@@ -284,6 +284,36 @@ try {
     && !initial.panels.fileManager && !initial.panels.sessions
     && !initial.panels.history && !initial.panels.sender,
   `migrated v2 panel snapshot is wrong: ${JSON.stringify(initial.panels)}`);
+
+  await page.locator(".menu-trigger", { hasText: "传输" }).click();
+  const transferMenuItems = await page.locator(".menu-popover button")
+    .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
+  assert(JSON.stringify(transferMenuItems) === JSON.stringify(["传输任务"]),
+    `transfer menu still exposes duplicate routes: ${JSON.stringify(transferMenuItems)}`);
+  await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
+  await page.locator(".transfer-dialog").waitFor();
+  const sshTransferOptions = await page.locator(".transfer-dialog select").locator("option")
+    .evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent })));
+  assert(JSON.stringify(sshTransferOptions.map((option) => option.value)) === JSON.stringify(["sftp", "scp", "xmodem", "ymodem", "zmodem"]),
+    `SSH transfer capabilities are wrong: ${JSON.stringify(sshTransferOptions)}`);
+  assert(await page.locator(".transfer-dialog select").inputValue() === "sftp",
+    "SSH transfer dialog did not select its first enabled protocol");
+  await page.screenshot({ path: `${screenshotPrefix}-transfer.png`, fullPage: true });
+  await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
+  await page.locator(".transfer-dialog").waitFor({ state: "detached" });
+
+  await page.locator(".left-stack .tree-session", { hasText: "Bench UART" }).click();
+  await page.locator(".menu-trigger", { hasText: "传输" }).click();
+  await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
+  await page.locator(".transfer-dialog").waitFor();
+  const serialTransferOptions = await page.locator(".transfer-dialog select").locator("option")
+    .evaluateAll((options) => options.map((option) => option.value));
+  assert(JSON.stringify(serialTransferOptions) === JSON.stringify(["xmodem", "ymodem", "zmodem"])
+    && await page.locator(".transfer-dialog select").inputValue() === "xmodem",
+  `Serial transfer dialog exposes unsupported protocols: ${JSON.stringify(serialTransferOptions)}`);
+  await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
+  await page.locator(".transfer-dialog").waitFor({ state: "detached" });
+  await page.locator(".left-stack .tree-session", { hasText: "Edge Router" }).click();
 
   await page.evaluate(() => { window.__closeSessionError = true; });
   await page.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
@@ -660,6 +690,10 @@ try {
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "session tag/endpoint", "normalized history"],
     contextMenu: "single synchronized-input, split, and move actions",
+    transferProtocols: {
+      ssh: sshTransferOptions.map((option) => option.value),
+      serial: serialTransferOptions,
+    },
     startupSettings,
     sessionSettings: {
       pages: expectedSessionPages,
@@ -674,6 +708,7 @@ try {
       `${screenshotPrefix}-search.png`,
       `${screenshotPrefix}-search-mobile.png`,
       `${screenshotPrefix}-settings.png`,
+      `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-desktop.png`,
