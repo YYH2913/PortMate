@@ -185,6 +185,10 @@ try {
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await context.route("https://www.google.com/**", (route) => route.fulfill({
+    contentType: "text/html",
+    body: "<!doctype html><title>PortMate online search test</title>",
+  }));
   await context.addInitScript(({ initialWorkspace, initialSessions, initialEvents }) => {
     if (localStorage.getItem("portmate.compat.initialized") !== "1") {
       localStorage.clear();
@@ -358,6 +362,66 @@ try {
   assert(copiedWithPreference, "copy-on-select did not copy a terminal selection");
 
   await clearCalls();
+  await activeScreen.dispatchEvent("contextmenu", {
+    bubbles: true,
+    button: 2,
+    cancelable: true,
+    clientX: 420,
+    clientY: 180,
+  });
+  await page.locator(".terminal-context-menu").waitFor();
+  const selectionPopupPromise = page.waitForEvent("popup");
+  await page.locator(".terminal-context-menu .context-menu-row", { hasText: "在线搜索" }).click();
+  const selectionPopup = await selectionPopupPromise;
+  await selectionPopup.waitForLoadState("domcontentloaded");
+  const onlineSelectionSearch = {
+    url: selectionPopup.url(),
+    hasOpener: await selectionPopup.evaluate(() => window.opener !== null),
+    referrer: await selectionPopup.evaluate(() => document.referrer),
+  };
+  assert(new URL(onlineSelectionSearch.url).searchParams.get("q") === copiedWithPreference.trim(),
+    `online search did not use the exact XTerm selection: ${JSON.stringify(onlineSelectionSearch)}`);
+  assert(!onlineSelectionSearch.hasOpener && !onlineSelectionSearch.referrer,
+    `online search retained opener/referrer access: ${JSON.stringify(onlineSelectionSearch)}`);
+  await selectionPopup.close();
+  const onlineSelectionWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
+  )));
+  assert(onlineSelectionWrites.length === 0,
+    `selection online search wrote terminal input: ${JSON.stringify(onlineSelectionWrites)}`);
+
+  await activeScreen.dispatchEvent("contextmenu", {
+    bubbles: true,
+    button: 2,
+    cancelable: true,
+    clientX: 420,
+    clientY: 180,
+  });
+  await page.locator(".terminal-context-menu .context-menu-row", { hasText: "清除选择" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalHasSelection === "false");
+  await clearCalls();
+  await page.locator(".menu-trigger", { hasText: "搜索" }).click();
+  const fallbackPopupPromise = page.waitForEvent("popup");
+  await page.locator(".menu-popover button", { hasText: "在线搜索" }).click();
+  const fallbackPopup = await fallbackPopupPromise;
+  await fallbackPopup.waitForLoadState("domcontentloaded");
+  const onlineFallbackSearch = {
+    url: fallbackPopup.url(),
+    hasOpener: await fallbackPopup.evaluate(() => window.opener !== null),
+    referrer: await fallbackPopup.evaluate(() => document.referrer),
+  };
+  assert(new URL(onlineFallbackSearch.url).searchParams.get("q") === sessions[0].lastLine,
+    `online search did not fall back to the target session line: ${JSON.stringify(onlineFallbackSearch)}`);
+  assert(!onlineFallbackSearch.hasOpener && !onlineFallbackSearch.referrer,
+    `fallback online search retained opener/referrer access: ${JSON.stringify(onlineFallbackSearch)}`);
+  await fallbackPopup.close();
+  const onlineFallbackWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
+  )));
+  assert(onlineFallbackWrites.length === 0,
+    `fallback online search wrote terminal input: ${JSON.stringify(onlineFallbackWrites)}`);
+
+  await clearCalls();
   await activeScreen.click({ position: { x: 120, y: 80 } });
   await page.waitForFunction(() => window.__invokeCalls.some((call) => (
     call.command === "send_text" && /^\x1b\[<0;\d+;\d+[Mm]$/.test(call.args.text)
@@ -439,6 +503,7 @@ try {
     searches: { ansiSearch, trueColorSearch, wideSearch, restoredSearch },
     selections: { selectedWithPreference, selectedWithoutPreference },
     copiedWithPreference,
+    onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
     mouseTexts,
     leakedMouseTexts,
     disabledClipboardWrites,

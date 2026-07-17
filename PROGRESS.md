@@ -46,7 +46,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - pane 标签与窗口菜单支持关闭活动/其他/右侧 view，以及当前进程内最近 32 条有界关闭历史的重新打开；关闭 view 不断开后端 session，空 group 自动折叠，最后一个工作区 view 受保护，原 group 消失时恢复到活动非满 group。顶层 session 右键菜单已改为明确的“断开会话”语义。
 - WindTerm `Terminal.Save` / `SaveSelectionAs` 对应的终端文本导出已接入会话菜单和 pane 标签右键菜单，并按 session ID + view ID + 焦点状态只读取目标 XTerm。完整 buffer 导出基于 active buffer 的解析后 cell 文本，去除控制序列、拼接 `isWrapped` 物理行、保留中间空逻辑行并移除尾部空行；selection 保留精确空格和换行，空 buffer/selection 会在前端阻断。两条路径按 UTF-8 字节执行 16 MiB 双端上限且不触发任何终端输入。桌面端只允许已保存 session，复验有界且无控制字符的 session/view ID，把文本原子写入 app data 的 `exports/` 并生成 SHA-256 sidecar，Unix 文件权限为 `0600`；浏览器预览按需加载 Blob 下载 helper。导出正文不进入日志、SQLite 或 session event。
 - 编辑/选择菜单的复制、全选和清除已从页面级 `document.execCommand`/DOM selection 改为按 session ID + view ID + 焦点状态路由到唯一 XTerm；空选区复制明确报错，同 session 的 Primary/Mirror 不会混淆。Remote/Local 接入 WindTerm `Ctrl+Shift+C` 复制和 `Ctrl+Shift+A` 全选，Normal/Command 保留本地编辑语义，repeat 不重复写剪贴板。原先只有状态栏提示和边框的“块选择”现在会把左键拖拽转换为 XTerm 原生 Alt 列选择；远端启用 mouse reporting 时同时使用 XTerm force-selection modifier，矩形选择不会生成任何终端鼠标/键盘输入。清除选择只清除 XTerm range，不会意外关闭块选择模式。
-- 终端正文右键菜单已按 WindTerm `terminal/configs/menu.config` 接入复制、粘贴、查找、选择、导出、触发器和三个本地 buffer 动作；菜单按实时 selection/normal/alternate buffer 状态启用，并通过 session ID + view ID + 焦点状态只操作命中的 XTerm。清除回滚使用 `CSI 3 J`，清除屏幕使用 `CSI 2 J` + cursor home，清除全部组合两者；alternate screen 禁用后两项。Remote/Local 的 `Ctrl+L` 和 `Ctrl+Shift+L` 直接走相同本地解析，不向后端调用 `send_text`、`send_bytes` 或 `run_command`。
+- 终端正文右键菜单已按 WindTerm `terminal/configs/menu.config` 接入复制、粘贴、查找、在线搜索、选择、导出、触发器和三个本地 buffer 动作；菜单按实时 selection/normal/alternate buffer 状态启用，并通过 session ID + view ID + 焦点状态只操作命中的 XTerm。在线搜索通过新增的只读 selection 动作优先读取目标 XTerm 精确选区，无选区才回退同一 session 的最近行，按 2,048 Unicode 字符设界并用结构化 Google URL + `noopener,noreferrer` 打开；顶部同名菜单也走该路径，不再误取页面 DOM selection。清除回滚使用 `CSI 3 J`，清除屏幕使用 `CSI 2 J` + cursor home，清除全部组合两者；alternate screen 禁用后两项。Remote/Local 的 `Ctrl+L` 和 `Ctrl+Shift+L` 直接走相同本地解析；这些本地/外链动作均不调用 `send_text`、`send_bytes` 或 `run_command`。
 - WindTerm 锁屏已从占位入口改为真实状态：`模式 -> 锁屏`、状态栏按钮和主/独立终端内的 `Ctrl+Alt+L`/macOS `Meta+Alt+L` 共用从首帧起不透明、焦点封闭的全屏遮罩，不断开会话或停止输出；安全设置可启用启动锁屏和默认 30 分钟、边界 `1..=1440` 分钟的空闲锁屏。只含原因/时间的 v1 本地 marker 让刷新、重启和 detached window 都保持遮罩，存在但损坏的 marker 会保持锁定并由主窗口修复；独立窗口会禁用终端输入并返回主窗口解锁。存在 Portable Vault 时会先锁定 Stronghold、用主密码验证并恢复锁前 provider 状态，当前窗口会话内的刷新也保留该恢复状态；错误消息不暴露后端路径。未配置 vault 或浏览器预览时明确降级为无认证的隐私遮罩。
 - WindTerm FreeType 风格自由输入已接入 `模式 -> 自由输入`：只有焦点 pane 打开本地编辑器，草稿按 Unicode 字符限制为 32,768，Enter 原子提交、Shift+Enter 换行、Escape 取消、Ctrl/Meta+Shift+X 剪切选区；提交时统一终端回车并追加一次执行回车，会话切换会清理未提交草稿。自由输入与终端查找互斥，不触发工作区快捷键，并在启用同步输入时复用目标过滤、协议换行、延迟及批量前后缀。
 - WindTerm Quick Commands 已接入 `工具 -> 快速命令` 管理器与 `查看 -> 快捷栏`：支持最多 64 条命令的增删改、上下排序、插入文本/按目标协议终止符执行两种模式和显式保存/取消；名称与命令正文分别按 Unicode 字符限制为 64/8,192，v1 localStorage 会迁移旧 `{name,text}` 数组并修复非法/重复 ID。调用复用同步输入的原子 FIFO、协议换行、目标、延迟及批量前后缀，执行型命令写入有界历史并走显式 `run_command`；Quick Commands 不进入加密凭据 provider，禁止保存密码、token 或私钥。
@@ -65,7 +65,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - WindTerm 的 view 精确排序/跨 group 定点拖放和完整 group 合并、逐 view 标签颜色、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。上一个/下一个标签会按活动 pane 的独立 view ID 顺序首尾循环，不会跳过绑定同一 session 的 view；Remote 默认 `Alt+[`/`Alt+]`，Local/Normal 默认 `Ctrl+PgUp`/`Ctrl+PgDn`，其余模式保留对应按键语义，切换不跨 pane 或创建后端连接。Remote/Local 的 `Ctrl+Shift+W` 关闭当前 view，全模式 `Ctrl+Shift+T` 恢复最近关闭 view；repeat 不会连续修改历史，Normal/Command 的关闭按键保留给本地编辑，最后一个 workspace view 仍受保护。pane 标签右键菜单已补齐复制 session 名称/URL、保存/重连、水平/垂直分屏、精确 view 移组、关闭其他/右侧、恢复和 session 设置；同 session 多 view 的保存/重连保持原 view ID，全局与 view 右键菜单的分屏方向也已统一为水平向右、垂直向下。
-- 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘。缓存现在区分“事件已排队”和“XTerm 已完成解析”：快速切换/React StrictMode 不再把空或半成品缓冲与已消费事件 ID 组合保存。同一后端 session 出现在多个 pane 时，只有焦点 pane 可上报 PTY resize；焦点转移会强制按新 owner 当前尺寸重新同步，避免非活动小 pane 覆盖 vim/tmux/top 的行列数。仓库内 `npm run test:terminal-compat` Playwright 基线覆盖 alternate screen、cursor addressing、SGR/truecolor、Unicode 宽字符、view 缓存往返、SGR 鼠标、选择复制开关、双 pane resize owner 及桌面/移动截图；仍缺完整 vttest 和真实 vim/tmux/top/less 程序矩阵。
+- 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘。缓存现在区分“事件已排队”和“XTerm 已完成解析”：快速切换/React StrictMode 不再把空或半成品缓冲与已消费事件 ID 组合保存。同一后端 session 出现在多个 pane 时，只有焦点 pane 可上报 PTY resize；焦点转移会强制按新 owner 当前尺寸重新同步，避免非活动小 pane 覆盖 vim/tmux/top 的行列数。仓库内 `npm run test:terminal-compat` Playwright 基线覆盖 alternate screen、cursor addressing、SGR/truecolor、Unicode 宽字符、view 缓存往返、SGR 鼠标、选择复制开关、精确选区/最近行在线搜索、双 pane resize owner 及桌面/移动截图；仍缺完整 vttest 和真实 vim/tmux/top/less 程序矩阵。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
 
 ### 连接与传输
@@ -199,7 +199,7 @@ npm run test:workspace-ui
 npm run build
 ```
 
-`npm run build` 已把应用壳、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 499.0 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.8 kB、终端 CSS 约 3.9 kB；工作区辅助筛选约 3.7 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.5 kB、终端 buffer 与选择事件/执行各约 1.4 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
+`npm run build` 已把应用壳、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 499.3 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.8 kB、终端 CSS 约 3.9 kB；工作区辅助筛选约 3.7 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.6 kB、终端 buffer 约 1.4 kB、选择/在线搜索约 2.2 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
@@ -214,7 +214,7 @@ npm run build
 - 终端序列化缓存的 UTF-8 字节上限、LRU 淘汰、事件 ID 上限、空屏恢复和防御性复制，以及 OSC 52 只写剪贴板、拒绝远端读取、权限 Promise 拒绝/同步异常降级。
 - 当前终端查找的标准/WindTerm 快捷键识别、选中文本单行化和 UTF-16 长度边界、结果/溢出/非法表达式状态，以及菜单到焦点 pane 的事件分发。
 - 终端文本 buffer 的 wrapped row 拼接、中间空行/尾部空行语义、UTF-8 精确字节计数、16 MiB 上限、空 buffer/selection 拒绝，以及 session/view/source 精确请求响应和无监听者超时。
-- 终端复制/全选/清除的精确 session/view/action 请求响应、错配与无监听者拒绝、Remote/Local `Ctrl+Shift+C/A` 模式隔离，以及块选择 Alt/force-selection 鼠标修饰转换。
+- 终端只读选区/复制/全选/清除的精确 session/view/action 请求响应、错配与无监听者拒绝、Remote/Local `Ctrl+Shift+C/A` 模式隔离、块选择 Alt/force-selection 鼠标修饰转换，以及在线搜索选区优先/最近行回退、空值、2,048 Unicode 字符边界和结构化 URL。
 - 终端 clear scrollback/screen/all 的本地控制序列、alternate screen 保护、精确 session/view/action 请求响应、错配与无监听者拒绝，以及 Remote/Local 的 Windows/Linux `Ctrl+L`/`Ctrl+Shift+L` 和 macOS Meta 变体。
 - WindTerm `跳转到行` 的绝对/相对行解析、安全整数/范围边界、目标居中 viewport 计算、状态文案和菜单到唯一焦点 pane 的事件分发。
 - 活动 pane 内按独立 view ID 的前后标签循环、首尾回绕、同 session 多 view 保留，以及 Remote `Alt+[`/`Alt+]`、Local/Normal `Ctrl+PgUp`/`Ctrl+PgDn` 快捷键解析与跨模式阻断；Remote/Local 关闭 view、全模式恢复 view 的默认快捷键及 Normal/Command 模式隔离。
@@ -264,7 +264,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 41 个文件、223 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 41 个文件、226 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 

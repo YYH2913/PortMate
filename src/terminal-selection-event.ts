@@ -2,8 +2,9 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export const TERMINAL_SELECTION_REQUEST_EVENT = "portmate-terminal-selection";
 export const TERMINAL_SELECTION_REQUEST_TIMEOUT_MS = 1_500;
+export const MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS = 2_048;
 
-export type TerminalSelectionAction = "copy" | "select-all" | "clear";
+export type TerminalSelectionAction = "read" | "copy" | "select-all" | "clear";
 
 export type TerminalSelectionPayload = {
   sessionId: string;
@@ -37,6 +38,13 @@ type MouseSelectionLike = Pick<MouseEvent,
 >;
 
 type ClipboardWriter = Pick<Clipboard, "writeText">;
+type OnlineSearchWindow = (url: string, target: string, features: string) => unknown;
+
+export type TerminalOnlineSearchRequest = {
+  sessionId: string;
+  viewId: string;
+  fallback: string | null | undefined;
+};
 
 export function terminalSelectionShortcut(
   event: KeyboardShortcutLike,
@@ -100,7 +108,7 @@ export function requestTerminalSelection(
 export async function executeTerminalSelectionAction(
   request: Omit<TerminalSelectionRequestDetail, "respond">,
   target: Pick<EventTarget, "dispatchEvent"> = window,
-  clipboard: ClipboardWriter | undefined = navigator.clipboard,
+  clipboard: ClipboardWriter | undefined = typeof navigator === "undefined" ? undefined : navigator.clipboard,
 ): Promise<TerminalSelectionPayload> {
   const payload = await requestTerminalSelection(request, target);
   if (payload.sessionId !== request.sessionId || payload.viewId !== request.viewId || payload.action !== request.action) {
@@ -112,4 +120,39 @@ export async function executeTerminalSelectionAction(
     await clipboard.writeText(payload.selection);
   }
   return payload;
+}
+
+export function resolveTerminalOnlineSearchQuery(
+  selection: string | null | undefined,
+  fallback: string | null | undefined,
+): string | null {
+  const query = selection?.trim() || fallback?.trim() || "";
+  if (!query) return null;
+  if (Array.from(query).length > MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS) {
+    throw new Error(`在线搜索内容最多支持 ${MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS} 个 Unicode 字符。`);
+  }
+  return query;
+}
+
+export function terminalOnlineSearchUrl(query: string): string {
+  const url = new URL("https://www.google.com/search");
+  url.searchParams.set("q", query);
+  return url.toString();
+}
+
+export async function executeTerminalOnlineSearch(
+  request: TerminalOnlineSearchRequest,
+  target: Pick<EventTarget, "dispatchEvent"> = window,
+  openWindow: OnlineSearchWindow = window.open.bind(window),
+): Promise<{ query: string; url: string }> {
+  const payload = await executeTerminalSelectionAction({
+    sessionId: request.sessionId,
+    viewId: request.viewId,
+    action: "read",
+  }, target);
+  const query = resolveTerminalOnlineSearchQuery(payload.selection, request.fallback);
+  if (!query) throw new Error("当前终端没有可搜索的文本。");
+  const url = terminalOnlineSearchUrl(query);
+  openWindow(url, "_blank", "noopener,noreferrer");
+  return { query, url };
 }

@@ -955,7 +955,7 @@ export default function TerminalCanvas({
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
       const action = (detail as { action?: unknown }).action;
-      if (action !== "copy" && action !== "select-all" && action !== "clear") {
+      if (action !== "read" && action !== "copy" && action !== "select-all" && action !== "clear") {
         detail.respond({ ok: false, error: "不支持的终端选择命令。" });
         return;
       }
@@ -964,9 +964,9 @@ export default function TerminalCanvas({
         detail.respond({ ok: false, error: "终端尚未完成加载。" });
         return;
       }
-      if (action === "copy") {
-        const selection = term.getSelection();
-        if (!selection) {
+      if (action === "read" || action === "copy") {
+        const selection = term.getSelection() || null;
+        if (action === "copy" && !selection) {
           detail.respond({ ok: false, error: "当前终端没有选中文本。" });
           return;
         }

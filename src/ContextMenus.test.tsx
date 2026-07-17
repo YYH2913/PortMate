@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionSummary } from "./types";
-import { SessionContextMenu } from "./ContextMenus";
+import { SessionContextMenu, TerminalContextMenu } from "./ContextMenus";
 
 const originalWindow = globalThis.window;
 const session = {
@@ -39,6 +39,16 @@ describe("session context menu", () => {
     const html = renderMenu(true);
     expect(html).toContain("关闭同步输入(S)");
     expect(html).not.toContain("开启同步输入(S)");
+  });
+
+  it("exposes online search in the terminal action menu", () => {
+    const html = renderToStaticMarkup(
+      <TerminalContextMenu
+        state={{ x: 100, y: 100, alternate: false, hasSelection: true }}
+        onAction={() => {}}
+      />,
+    );
+    expect(html).toContain("在线搜索");
   });
 });
 

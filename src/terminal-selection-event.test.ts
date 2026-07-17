@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   executeTerminalSelectionAction,
+  executeTerminalOnlineSearch,
+  MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS,
   requestTerminalSelection,
+  resolveTerminalOnlineSearchQuery,
+  terminalOnlineSearchUrl,
   terminalBlockSelectionMouseEventInit,
   terminalSelectionShortcut,
   TERMINAL_SELECTION_REQUEST_EVENT,
@@ -65,6 +69,12 @@ describe("terminal selection events", () => {
       clipboard,
     )).resolves.toMatchObject({ selection: "exact" });
     expect(clipboard.writeText).toHaveBeenCalledWith("exact");
+    await expect(executeTerminalSelectionAction(
+      { sessionId: "session-a", viewId: "view-a", action: "read" },
+      target,
+      clipboard,
+    )).resolves.toMatchObject({ action: "read", selection: "exact" });
+    expect(clipboard.writeText).toHaveBeenCalledOnce();
 
     const mismatched = {
       dispatchEvent(event: Event) {
@@ -108,5 +118,45 @@ describe("terminal selection events", () => {
       clientY: 34,
     });
     expect(terminalBlockSelectionMouseEventInit(mouse, true)).toMatchObject({ altKey: true, shiftKey: true });
+  });
+
+  it("builds bounded online-search queries from the exact selection before session fallback", () => {
+    expect(resolveTerminalOnlineSearchQuery("  selected\ntext  ", "fallback")).toBe("selected\ntext");
+    expect(resolveTerminalOnlineSearchQuery("  ", "  fallback line  ")).toBe("fallback line");
+    expect(resolveTerminalOnlineSearchQuery(null, "  ")).toBeNull();
+    const boundary = "😀".repeat(MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS);
+    expect(resolveTerminalOnlineSearchQuery(boundary, "")).toBe(boundary);
+    expect(() => resolveTerminalOnlineSearchQuery(`${boundary}x`, "")).toThrow("最多支持 2048");
+    const url = new URL(terminalOnlineSearchUrl("selected\ntext & symbols"));
+    expect(url.origin).toBe("https://www.google.com");
+    expect(url.pathname).toBe("/search");
+    expect(url.searchParams.get("q")).toBe("selected\ntext & symbols");
+  });
+
+  it("opens online search from an exact read response without touching the clipboard", async () => {
+    const openWindow = vi.fn();
+    const target = {
+      dispatchEvent(event: Event) {
+        const detail = (event as CustomEvent<TerminalSelectionRequestDetail>).detail;
+        detail.respond({
+          ok: true,
+          payload: {
+            sessionId: detail.sessionId,
+            viewId: detail.viewId,
+            action: detail.action,
+            selection: "exact selection",
+          },
+        });
+        return true;
+      },
+    };
+    await expect(executeTerminalOnlineSearch({
+      sessionId: "session-a",
+      viewId: "view-a",
+      fallback: "fallback",
+    }, target, openWindow)).resolves.toMatchObject({ query: "exact selection" });
+    expect(openWindow).toHaveBeenCalledOnce();
+    expect(new URL(openWindow.mock.calls[0][0]).searchParams.get("q")).toBe("exact selection");
+    expect(openWindow.mock.calls[0].slice(1)).toEqual(["_blank", "noopener,noreferrer"]);
   });
 });

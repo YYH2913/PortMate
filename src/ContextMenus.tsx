@@ -23,6 +23,7 @@ export type TerminalContextAction =
   | "copy"
   | "paste"
   | "find"
+  | "search-online"
   | "clear-scrollback"
   | "clear-screen"
   | "clear-all"
@@ -102,6 +103,7 @@ export function TerminalContextMenu({
       <ContextMenuButton label="复制" shortcut="Ctrl+Shift+C" disabled={!state.hasSelection} onClick={() => onAction("copy")} />
       <ContextMenuButton label="粘贴" shortcut="Ctrl+V" onClick={() => onAction("paste")} />
       <ContextMenuButton label="查找" shortcut="Ctrl+Shift+F" onClick={() => onAction("find")} />
+      <ContextMenuButton label="在线搜索" onClick={() => onAction("search-online")} />
       <ContextDivider />
       <ContextMenuButton label="清除回滚" shortcut="Ctrl+Shift+L" onClick={() => onAction("clear-scrollback")} />
       <ContextMenuButton label="清除屏幕" shortcut="Ctrl+L" disabled={state.alternate} onClick={() => onAction("clear-screen")} />

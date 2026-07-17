@@ -1145,8 +1145,7 @@ function handleMenuAction(item: string) {
       return;
     }
     if (item === "在线搜索") {
-      const selectedText = window.getSelection()?.toString().trim() || active?.lastLine || "";
-      window.open(`https://www.google.com/search?q=${encodeURIComponent(selectedText)}`, "_blank", "noopener,noreferrer");
+      void searchTerminalOnline();
       return;
     }
     if (item === "复制") {
@@ -1509,6 +1508,26 @@ function handleMenuAction(item: string) {
     }
   }
 
+  async function searchTerminalOnline(target?: { sessionId: string; viewId: string }) {
+    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
+    const viewId = target?.viewId ?? activeWorkspaceView?.id;
+    const session = sessions.find((candidate) => candidate.profile.id === sessionId);
+    if (!session || !viewId) {
+      setNotice({ title: "在线搜索", message: "请先打开一个终端视图。" });
+      return;
+    }
+    try {
+      const { executeTerminalOnlineSearch } = await import("./terminal-selection-event");
+      await executeTerminalOnlineSearch({
+        sessionId: session.profile.id,
+        viewId,
+        fallback: session.lastLine,
+      });
+    } catch (error) {
+      setNotice({ title: "在线搜索", message: formatError(error) });
+    }
+  }
+
   async function runTerminalBufferAction(
     action: TerminalBufferAction,
     title: string,
@@ -1639,6 +1658,9 @@ function handleMenuAction(item: string) {
         return;
       case "find":
         window.requestAnimationFrame(() => requestTerminalSearch());
+        return;
+      case "search-online":
+        void searchTerminalOnline(target);
         return;
       case "clear-scrollback":
         void runTerminalBufferAction(action, "清除回滚", target);
