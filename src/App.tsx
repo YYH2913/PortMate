@@ -10,7 +10,6 @@ import {
   ArrowRightLeft,
   ArrowUp,
   Ban,
-  ChevronDown,
   Check,
   CheckCircle2,
   Clock3,
@@ -53,6 +52,8 @@ import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
+import { flattenSessionTree, protocolTabs, sessionSettingTrees } from "./session-settings-state";
+import type { ProtocolTab } from "./session-settings-state";
 import { sessionConnectionAction } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -155,7 +156,6 @@ const terminalSettingPages = [
   "同步输入",
 ] as const;
 
-const protocolTabs = ["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"] as const;
 const sessionKindLabels: Record<SessionKind, string> = {
   ssh: "SSH",
   tmux: "Tmux",
@@ -182,10 +182,7 @@ const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoveryS
 
 type SettingsDialog = "terminal" | "session" | null;
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | null;
-type ProtocolTab = (typeof protocolTabs)[number];
-type SessionTreeNode = { label: string; children?: readonly string[] };
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
-type SessionPrefs = ReturnType<typeof createSessionPrefs>;
 type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; oneKeyId: string | null; savePassword: boolean; savePassphrase: boolean };
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -272,22 +269,6 @@ type CredentialPromptState = {
   hasSavedPassphrase: boolean;
   needsPassword: boolean;
   authOrder: AuthMethod[];
-};
-
-const sharedSessionTree: readonly SessionTreeNode[] = [
-  { label: "会话" },
-  { label: "终端", children: ["Bell", "模式", "键盘", "安全", "日志"] },
-  { label: "窗口", children: ["选择"] },
-  { label: "自动化", children: ["触发器"] },
-];
-
-const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]> = {
-  Shell: [...sharedSessionTree, { label: "Shell", children: ["进程"] }],
-  SSH: [...sharedSessionTree, { label: "SSH", children: ["连接", "代理", "验证", "代理人", "密码", "密钥交换", "MAC 哈希", "公钥", "SFTP", "X11"] }, { label: "X/Y/Z Modem" }],
-  Tmux: [...sharedSessionTree, { label: "Tmux", children: ["连接", "代理", "验证", "代理人", "密码", "密钥交换", "MAC 哈希", "公钥", "SFTP", "X11"] }, { label: "X/Y/Z Modem" }],
-  Telnet: [...sharedSessionTree, { label: "Telnet", children: ["连接", "代理"] }, { label: "X/Y/Z Modem" }],
-  Tcp: [...sharedSessionTree, { label: "Tcp", children: ["连接", "代理"] }, { label: "X/Y/Z Modem" }],
-  Serial: [...sharedSessionTree, { label: "串口", children: ["协议"] }, { label: "X/Y/Z Modem" }],
 };
 
 const tabColorChoices = [
@@ -7735,8 +7716,6 @@ function SessionSettingsDialog({
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
-  const [prefs, setPrefs] = useState<SessionPrefs>(() => loadLocalValue(`portmate.sessionPrefs.${draft.id}`, loadLocalValue("portmate.sessionPrefs.default", createSessionPrefs())));
-  const updatePref = <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
 
@@ -7758,15 +7737,6 @@ function SessionSettingsDialog({
     onDraftChange(convertDraftProtocol(draft, tab));
   }
 
-  function saveSessionPrefs() {
-    saveLocalValue(`portmate.sessionPrefs.${draft.id}`, prefs);
-  }
-
-  function saveDefaultSessionPrefs() {
-    saveSessionPrefs();
-    saveLocalValue("portmate.sessionPrefs.default", prefs);
-  }
-
   return (
     <DialogFrame title="会话设置" className="session-settings-dialog" onClose={onClose}>
       <div className="protocol-tabs">
@@ -7783,7 +7753,6 @@ function SessionSettingsDialog({
             return (
               <div key={item.label} className="settings-tree-group">
                 <button className={`settings-tree-parent ${activeSection === item.label ? "active" : ""}`} onClick={() => setActiveSection(item.label)}>
-                  <ChevronDown size={14} />
                   <span>{item.label}</span>
                 </button>
                 {children.map((child) => (
@@ -7803,18 +7772,11 @@ function SessionSettingsDialog({
         })}
       </aside>
       <section className="session-form">
-        <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={setProxyPasswordUpdate} />
+        <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={setProxyPasswordUpdate} />
       </section>
-      <button className="default-settings" onClick={saveDefaultSessionPrefs}>保存为默认设置...(E)</button>
       <div className="dialog-actions">
-        <button onClick={() => {
-          saveSessionPrefs();
-          onSave(proxyPasswordUpdate);
-        }}>保存</button>
-        <button onClick={() => {
-          saveSessionPrefs();
-          onSaveAndConnect(proxyPasswordUpdate);
-        }}>保存并连接</button>
+        <button onClick={() => onSave(proxyPasswordUpdate)}>保存</button>
+        <button onClick={() => onSaveAndConnect(proxyPasswordUpdate)}>保存并连接</button>
         <button onClick={onClose}>取消</button>
       </div>
     </DialogFrame>
@@ -7827,8 +7789,6 @@ function SessionSettingsContent({
   draft,
   serialPorts,
   onDraftChange,
-  prefs,
-  updatePref,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
 }: {
@@ -7837,13 +7797,11 @@ function SessionSettingsContent({
   draft: SessionProfile;
   serialPorts: string[];
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
   if (activeSection === "会话") {
-    return <SessionConnectionFields activeProtocol={activeProtocol} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
   if (activeSection === "终端") {
@@ -7866,89 +7824,6 @@ function SessionSettingsContent({
         </DialogField>
         <DialogField label="字号:(Z)">
           <input type="number" value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "Bell") {
-    return (
-      <>
-        <DialogField label="铃声:(B)">
-          <select value={prefs.bellMode} onChange={(event) => updatePref("bellMode", event.target.value)}>
-            <option>off</option>
-            <option>visual</option>
-            <option>sound</option>
-          </select>
-        </DialogField>
-        <DialogField label="闪烁:(V)">
-          <select value={prefs.visualBell ? "on" : "off"} onChange={(event) => updatePref("visualBell", event.target.value === "on")}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "模式") {
-    return (
-      <>
-        <DialogField label="回显:(E)">
-          <select value={prefs.localEcho ? "on" : "off"} onChange={(event) => updatePref("localEcho", event.target.value === "on")}>
-            <option value="off">由远端控制</option>
-            <option value="on">本地回显</option>
-          </select>
-        </DialogField>
-        <DialogField label="焦点:(F)">
-          <select value={prefs.focusMode ? "on" : "off"} onChange={(event) => updatePref("focusMode", event.target.value === "on")}>
-            <option value="off">普通模式</option>
-            <option value="on">隐藏侧栏</option>
-          </select>
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "键盘") {
-    return (
-      <>
-        <DialogField label="退格:(B)">
-          <select value={prefs.backspaceMode} onChange={(event) => updatePref("backspaceMode", event.target.value)}>
-            <option>DEL</option>
-            <option>BS</option>
-          </select>
-        </DialogField>
-        <DialogField label="Alt:(A)">
-          <select value={prefs.altSendsEscape ? "escape" : "native"} onChange={(event) => updatePref("altSendsEscape", event.target.value === "escape")}>
-            <option value="escape">发送 ESC 前缀</option>
-            <option value="native">系统快捷键</option>
-          </select>
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "安全") {
-    return (
-      <>
-        <DialogField label="锁屏:(L)">
-          <select value={prefs.focusMode ? "on" : "off"} onChange={(event) => updatePref("focusMode", event.target.value === "on")}>
-            <option value="off">关闭</option>
-            <option value="on">空闲后锁屏</option>
-          </select>
-        </DialogField>
-        <DialogField label="粘贴:(P)">
-          <select value={prefs.confirmPaste ? "confirm" : "direct"} onChange={(event) => updatePref("confirmPaste", event.target.value === "confirm")}>
-            <option value="confirm">确认后粘贴</option>
-            <option value="direct">直接粘贴</option>
-          </select>
-        </DialogField>
-        <DialogField label="记录:(R)">
-          <select value={draft.logging.redactSecrets ? "redact" : "plain"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, redactSecrets: event.target.value === "redact" } })}>
-            <option value="redact">隐藏敏感字段</option>
-            <option value="plain">完整记录</option>
-          </select>
         </DialogField>
       </>
     );
@@ -7981,6 +7856,12 @@ function SessionSettingsContent({
             <option value="off">关闭</option>
           </select>
         </DialogField>
+        <DialogField label="敏感字段:(S)">
+          <select value={draft.logging.redactSecrets ? "redact" : "plain"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, redactSecrets: event.target.value === "redact" } })}>
+            <option value="redact">隐藏</option>
+            <option value="plain">完整记录</option>
+          </select>
+        </DialogField>
         <DialogField label="路径:(P)">
           <input value={draft.logging.pathTemplate} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, pathTemplate: event.target.value } })} />
         </DialogField>
@@ -7991,277 +7872,94 @@ function SessionSettingsContent({
     );
   }
 
-  if (activeSection === "窗口") {
-    return (
-      <>
-        <DialogField label="拆分:(S)">
-          <select value={prefs.splitMode} onChange={(event) => updatePref("splitMode", event.target.value)}>
-            <option>none</option>
-            <option>vertical</option>
-            <option>horizontal</option>
-            <option>grid</option>
-          </select>
-        </DialogField>
-        <DialogField label="标签色:(C)">
-          <input value={prefs.tabColor} onChange={(event) => updatePref("tabColor", event.target.value)} />
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "选择") {
-    return (
-      <>
-        <DialogField label="复制:(C)">
-          <select value={prefs.copyOnSelect ? "select" : "manual"} onChange={(event) => updatePref("copyOnSelect", event.target.value === "select")}>
-            <option value="select">选择即复制</option>
-            <option value="manual">手动复制</option>
-          </select>
-        </DialogField>
-        <DialogField label="右键:(R)">
-          <select value={prefs.rightClickPaste ? "paste" : "menu"} onChange={(event) => updatePref("rightClickPaste", event.target.value === "paste")}>
-            <option value="paste">粘贴</option>
-            <option value="menu">菜单</option>
-          </select>
-        </DialogField>
-      </>
-    );
-  }
-
-  if (activeSection === "自动化" || activeSection === "触发器") {
+  if (activeSection === "触发器") {
     return <TriggerFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
-  if (activeProtocol === "Shell" && activeSection === "进程") {
-    return <ShellProcessFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+  if (activeSection === "传输") {
+    return <SessionTransferFields activeProtocol={activeProtocol} draft={draft} onDraftChange={onDraftChange} />;
   }
 
   if (activeProtocol === "Shell" && activeSection === "Shell") {
-    return <ShellProcessFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
+    return <ShellProcessFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
-  if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["连接", "代理", "验证", "代理人", "密码", "密钥交换", "MAC 哈希", "公钥", "SFTP", "X11"].includes(activeSection)) {
-    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+  if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["代理", "验证", "代理人", "密码", "公钥"].includes(activeSection)) {
+    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
-    return <TcpLikeAdvancedFields protocol="Telnet" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <TcpLikeAdvancedFields protocol="Telnet" section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Tcp" && activeSection === "Tcp") {
-    return <TcpLikeAdvancedFields protocol="Tcp" section="连接" draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <TcpLikeAdvancedFields protocol="Tcp" section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
-  if ((activeProtocol === "Telnet" || activeProtocol === "Tcp") && ["连接", "代理"].includes(activeSection)) {
-    return <TcpLikeAdvancedFields protocol={activeProtocol} section={activeSection} draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+  if ((activeProtocol === "Telnet" || activeProtocol === "Tcp") && activeSection === "代理") {
+    return <TcpLikeAdvancedFields protocol={activeProtocol} section="代理" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Serial" && activeSection === "串口") {
-    return <SerialAdvancedFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
-  }
-
-  if (activeProtocol === "Serial" && activeSection === "协议") {
-    return <SerialAdvancedFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />;
-  }
-
-  if (activeSection === "X/Y/Z Modem") {
-    return (
-      <>
-        <DialogField label="XModem:">
-          <select value={draft.transfer.xmodem ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, xmodem: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
-        </DialogField>
-        <DialogField label="YModem:">
-          <select value={draft.transfer.ymodem ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, ymodem: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
-        </DialogField>
-        <DialogField label="ZModem:">
-          <select value={draft.transfer.zmodem ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, zmodem: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
-          </select>
-        </DialogField>
-        <DialogField label="限速 B/s:">
-          <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null } })} />
-        </DialogField>
-        <DialogField label="目录:(D)">
-          <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, defaultLocalDir: event.target.value || null } })} />
-        </DialogField>
-      </>
-    );
+    return <SerialAdvancedFields draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} />;
   }
 
   return null;
 }
 
-function SessionConnectionFields({
-  activeProtocol,
-  draft,
-  serialPorts,
-  onDraftChange,
-  prefs,
-  updatePref,
-}: {
-  activeProtocol: ProtocolTab;
-  draft: SessionProfile;
-  serialPorts: string[];
-  onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
-}) {
-  if (activeProtocol === "Shell") {
-    const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
-    return (
-      <>
-        <DialogField label="Shell:(S)">
-          <select
-            value={prefs.shellPreset}
-            onChange={(event) => {
-              updatePref("shellPreset", event.target.value);
-              onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } });
-            }}
-          >
-            <option>admin:cmd</option>
-            <option>PowerShell</option>
-            <option>WSL:bash</option>
-          </select>
-        </DialogField>
-        <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />
-        <DialogToggleField label="Sysmon:" checked={prefs.shellSysmon} onChange={(value) => updatePref("shellSysmon", value)} />
-      </>
-    );
-  }
-
-  if (activeProtocol === "SSH" || activeProtocol === "Tmux") {
-    const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
-    const kind = activeProtocol === "Tmux" ? "tmux" : "ssh";
-    return (
-      <>
-        <DialogField label="主机:(H)">
-          <input
-            value={formatSshTarget(ssh)}
-            placeholder="[用户@]主机地址"
-            onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...parseSshTarget(event.target.value, ssh), kind } })}
-          />
-        </DialogField>
-        <DialogField label="端口:(P)">
-          <input type="number" value={ssh.endpoint.port} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, endpoint: { ...ssh.endpoint, port: Number(event.target.value) } } })} />
-        </DialogField>
-        <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />
-        <DialogToggleField label="Sftp:" checked={draft.transfer.sftp} onChange={(value) => onDraftChange({ ...draft, transfer: { ...draft.transfer, sftp: value } })} />
-        <DialogToggleField label="Sysmon:" checked={prefs.sshSysmon} onChange={(value) => updatePref("sshSysmon", value)} />
-      </>
-    );
-  }
-
-  if (activeProtocol === "Telnet") {
-    const telnet = draft.connection.kind === "telnet" ? draft.connection : createTcpConnection("telnet");
-    return (
-      <>
-        <DialogField label="主机:(H)">
-          <input value={telnet.host} onChange={(event) => onDraftChange({ ...draft, kind: "telnet", connection: { ...telnet, kind: "telnet", host: event.target.value } })} />
-        </DialogField>
-        <DialogField label="端口:(P)">
-          <input type="number" value={telnet.port} onChange={(event) => onDraftChange({ ...draft, kind: "telnet", connection: { ...telnet, kind: "telnet", port: Number(event.target.value) } })} />
-        </DialogField>
-        <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} />
-      </>
-    );
-  }
-
-  if (activeProtocol === "Tcp") {
-    const tcp = draft.connection.kind === "tcp" ? draft.connection : createTcpConnection("tcp");
-    return (
-      <>
-        <DialogField label="主机:(H)">
-          <input value={tcp.host} onChange={(event) => onDraftChange({ ...draft, kind: "tcp", connection: { ...tcp, kind: "tcp", host: event.target.value } })} />
-        </DialogField>
-        <DialogField label="端口:(P)">
-          <input type="number" value={tcp.port} onChange={(event) => onDraftChange({ ...draft, kind: "tcp", connection: { ...tcp, kind: "tcp", port: Number(event.target.value) } })} />
-        </DialogField>
-        <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} showData />
-      </>
-    );
-  }
-
-  const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
-  return (
-    <>
-      <DialogField label="串口:(S)">
-        <select value={serial.port} onChange={(event) => onDraftChange({ ...draft, kind: "serial", connection: { ...serial, port: event.target.value } })}>
-          {serialPortOptions(serial.port, serialPorts).map((option) => (
-            <option key={option || "blank"} value={option}>
-              {option || "选择串口"}
-            </option>
-          ))}
-        </select>
-      </DialogField>
-      <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} prefs={prefs} updatePref={updatePref} showData />
-    </>
-  );
-}
-
 function SessionCommonOverviewFields({
   draft,
   onDraftChange,
-  prefs,
-  updatePref,
-  showData = false,
 }: {
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
-  showData?: boolean;
 }) {
   return (
     <>
-      <DialogField label="标签:(L)">
-        <input value={draft.tags.join(", ")} onChange={(event) => onDraftChange({ ...draft, tags: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
+      <DialogField label="名称:(N)">
+        <input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} />
       </DialogField>
       <DialogField label="分组:(G)">
         <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: event.target.value })} placeholder="[嵌套组] a>b>c" />
       </DialogField>
-      {showData ? (
-        <DialogField label="数据:(D)">
-          <select value={prefs.dataMode} onChange={(event) => updatePref("dataMode", event.target.value)}>
-            <option>text</option>
-            <option>binary</option>
-          </select>
-        </DialogField>
-      ) : null}
-      <DialogField label="终端:(T)">
-        <select value={draft.terminal.term} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })}>
-          <option>xterm-256color</option>
-          <option>xterm</option>
-          <option>vt220</option>
-        </select>
+      <DialogField label="标签:(L)">
+        <input value={draft.tags.join(", ")} onChange={(event) => onDraftChange({ ...draft, tags: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
       </DialogField>
-      <DialogField label="系统:(S)">
-        <select value={prefs.system} onChange={(event) => updatePref("system", event.target.value)}>
-          <option>cmd</option>
-          <option>linux</option>
-          <option>powershell</option>
-          <option>bash</option>
-        </select>
+    </>
+  );
+}
+
+function SessionTransferFields({
+  activeProtocol,
+  draft,
+  onDraftChange,
+}: {
+  activeProtocol: ProtocolTab;
+  draft: SessionProfile;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const update = (patch: Partial<SessionProfile["transfer"]>) => onDraftChange({
+    ...draft,
+    transfer: { ...draft.transfer, ...patch },
+  });
+  const sshLike = activeProtocol === "SSH" || activeProtocol === "Tmux";
+
+  return (
+    <>
+      {sshLike ? <DialogToggleField label="SFTP:" checked={draft.transfer.sftp} onChange={(sftp) => update({ sftp })} /> : null}
+      {sshLike ? <DialogToggleField label="SCP:" checked={draft.transfer.scp} onChange={(scp) => update({ scp })} /> : null}
+      <DialogToggleField label="XModem:" checked={draft.transfer.xmodem} onChange={(xmodem) => update({ xmodem })} />
+      <DialogToggleField label="YModem:" checked={draft.transfer.ymodem} onChange={(ymodem) => update({ ymodem })} />
+      <DialogToggleField label="ZModem:" checked={draft.transfer.zmodem} onChange={(zmodem) => update({ zmodem })} />
+      <DialogField label="限速 B/s:">
+        <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => update({ rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null })} />
       </DialogField>
-      <DialogField label="字符集:(C)">
-        <select value={prefs.charset} onChange={(event) => updatePref("charset", event.target.value)}>
-          <option>ISO-8859-1</option>
-          <option>UTF-8</option>
-          <option>GBK</option>
-        </select>
-      </DialogField>
-      <DialogField label="描述:(D)">
-        <textarea value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} />
+      <DialogField label="默认目录:(D)">
+        <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => update({ defaultLocalDir: event.target.value || null })} />
       </DialogField>
     </>
   );
@@ -8270,13 +7968,9 @@ function SessionCommonOverviewFields({
 function ShellProcessFields({
   draft,
   onDraftChange,
-  prefs,
-  updatePref,
 }: {
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
 }) {
   const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
   return (
@@ -8289,18 +7983,6 @@ function ShellProcessFields({
       </DialogField>
       <DialogField label="目录:(W)">
         <input value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
-      </DialogField>
-      <DialogField label="模式:(M)">
-        <select value={prefs.shellLogin ? "login" : "plain"} onChange={(event) => updatePref("shellLogin", event.target.value === "login")}>
-          <option value="plain">普通进程</option>
-          <option value="login">Login shell</option>
-        </select>
-      </DialogField>
-      <DialogField label="权限:(R)">
-        <select value={prefs.shellElevated ? "admin" : "user"} onChange={(event) => updatePref("shellElevated", event.target.value === "admin")}>
-          <option value="user">当前用户</option>
-          <option value="admin">管理员</option>
-        </select>
       </DialogField>
     </>
   );
@@ -8420,16 +8102,12 @@ function SshAdvancedFields({
   section,
   draft,
   onDraftChange,
-  prefs,
-  updatePref,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
 }: {
   section: string;
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
@@ -8499,6 +8177,16 @@ function SshAdvancedFields({
     };
     return (
       <>
+        <DialogField label="主机:(H)">
+          <input
+            value={formatSshTarget(ssh)}
+            placeholder="[用户@]主机地址"
+            onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...parseSshTarget(event.target.value, ssh), kind } })}
+          />
+        </DialogField>
+        <DialogField label="端口:(P)">
+          <input type="number" min={1} max={65535} value={ssh.endpoint.port} onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, port: Number(event.target.value) } })} />
+        </DialogField>
         <DialogField label="别名:(A)">
           <input value={ssh.hostKeyPolicy.alias ?? ""} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, alias: event.target.value || null } } })} />
         </DialogField>
@@ -8609,12 +8297,6 @@ function SshAdvancedFields({
             value={ssh.reconnectDelayMs}
             onChange={(event) => updateSsh({ reconnectDelayMs: Number(event.target.value) })}
           />
-        </DialogField>
-        <DialogField label="压缩:(C)">
-          <select value={prefs.sshCompression ? "on" : "off"} onChange={(event) => updatePref("sshCompression", event.target.value === "on")}>
-            <option value="off">关闭</option>
-            <option value="on">开启</option>
-          </select>
         </DialogField>
       </>
     );
@@ -8734,19 +8416,6 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label="密码:(P)">
-          <select value={prefs.sshPasswordMode} onChange={(event) => updatePref("sshPasswordMode", event.target.value)}>
-            <option>prompt</option>
-            <option>vault</option>
-            <option>disabled</option>
-          </select>
-        </DialogField>
-        <DialogField label="交互:(K)">
-          <select value={prefs.sshKeyboardInteractive ? "on" : "off"} onChange={(event) => updatePref("sshKeyboardInteractive", event.target.value === "on")}>
-            <option value="on">允许</option>
-            <option value="off">禁用</option>
-          </select>
-        </DialogField>
         <DialogField label="密码引用:">
           <div className="inline-actions">
             <input value={ssh.passwordSecretRef ?? ""} readOnly placeholder="未保存" />
@@ -8761,50 +8430,6 @@ function SshAdvancedFields({
         </DialogField>
         <DialogField label="状态:">
           <input value={secretStatus} readOnly placeholder="连接弹窗勾选保存后会生成引用" />
-        </DialogField>
-      </>
-    );
-  }
-
-  if (section === "密钥交换") {
-    return (
-      <>
-        <DialogField label="Kex:(K)">
-          <select value={prefs.sshKexAlgorithm} onChange={(event) => updatePref("sshKexAlgorithm", event.target.value)}>
-            <option>curve25519-sha256</option>
-            <option>ecdh-sha2-nistp256</option>
-            <option>diffie-hellman-group14-sha256</option>
-          </select>
-        </DialogField>
-        <DialogField label="Cipher:(C)">
-          <select value={prefs.sshCipherSuite} onChange={(event) => updatePref("sshCipherSuite", event.target.value)}>
-            <option>chacha20-poly1305</option>
-            <option>aes256-gcm</option>
-            <option>aes128-ctr</option>
-          </select>
-        </DialogField>
-        <DialogField label="Rekey:(R)">
-          <input value={prefs.sshRekeyAfterMb} onChange={(event) => updatePref("sshRekeyAfterMb", event.target.value)} />
-        </DialogField>
-      </>
-    );
-  }
-
-  if (section === "MAC 哈希") {
-    return (
-      <>
-        <DialogField label="MAC:(M)">
-          <select value={prefs.sshMacAlgorithm} onChange={(event) => updatePref("sshMacAlgorithm", event.target.value)}>
-            <option>hmac-sha2-256-etm@openssh.com</option>
-            <option>hmac-sha2-512-etm@openssh.com</option>
-            <option>hmac-sha2-256</option>
-          </select>
-        </DialogField>
-        <DialogField label="ETM:(E)">
-          <select value={prefs.sshMacEtm ? "on" : "off"} onChange={(event) => updatePref("sshMacEtm", event.target.value === "on")}>
-            <option value="on">优先</option>
-            <option value="off">关闭</option>
-          </select>
         </DialogField>
       </>
     );
@@ -8894,35 +8519,7 @@ function SshAdvancedFields({
     );
   }
 
-  if (section === "SFTP") {
-    return (
-      <>
-        <DialogToggleField label="Sftp:" checked={draft.transfer.sftp} onChange={(value) => onDraftChange({ ...draft, transfer: { ...draft.transfer, sftp: value } })} />
-        <DialogToggleField label="Scp:" checked={draft.transfer.scp} onChange={(value) => onDraftChange({ ...draft, transfer: { ...draft.transfer, scp: value } })} />
-        <DialogField label="限速 B/s:">
-          <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null } })} />
-        </DialogField>
-        <DialogField label="目录:(D)">
-          <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => onDraftChange({ ...draft, transfer: { ...draft.transfer, defaultLocalDir: event.target.value || null } })} />
-        </DialogField>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <DialogToggleField label="X11:" checked={prefs.sshX11Enabled} onChange={(value) => updatePref("sshX11Enabled", value)} />
-      <DialogField label="Display:">
-        <input value={prefs.sshX11Display} onChange={(event) => updatePref("sshX11Display", event.target.value)} />
-      </DialogField>
-      <DialogField label="可信:(T)">
-        <select value={prefs.sshX11Trusted ? "on" : "off"} onChange={(event) => updatePref("sshX11Trusted", event.target.value === "on")}>
-          <option value="on">Trusted</option>
-          <option value="off">Untrusted</option>
-        </select>
-      </DialogField>
-    </>
-  );
+  return null;
 }
 
 function ProxyAdvancedFields({
@@ -8993,8 +8590,6 @@ function TcpLikeAdvancedFields({
   section,
   draft,
   onDraftChange,
-  prefs,
-  updatePref,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
 }: {
@@ -9002,8 +8597,6 @@ function TcpLikeAdvancedFields({
   section: string;
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
@@ -9018,6 +8611,12 @@ function TcpLikeAdvancedFields({
     });
     return (
       <>
+        <DialogField label="主机:(H)">
+          <input value={tcp.host} onChange={(event) => updateTcp({ host: event.target.value })} />
+        </DialogField>
+        <DialogField label="端口:(P)">
+          <input type="number" min={1} max={65535} value={tcp.port} onChange={(event) => updateTcp({ port: Number(event.target.value) })} />
+        </DialogField>
         <DialogToggleField label="自动重连:" checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
         <DialogField label="重连延迟(ms):">
           <input
@@ -9066,12 +8665,6 @@ function TcpLikeAdvancedFields({
           <>
             <DialogToggleField label="BINARY:" checked={tcp.telnetBinary} onChange={(telnetBinary) => updateTcp({ telnetBinary })} />
             <DialogToggleField label="NAWS:" checked={tcp.telnetNaws} onChange={(telnetNaws) => updateTcp({ telnetNaws })} />
-            <DialogField label="回显:(E)">
-              <select value={prefs.telnetLocalEcho ? "on" : "off"} onChange={(event) => updatePref("telnetLocalEcho", event.target.value === "on")}>
-                <option value="off">远端控制</option>
-                <option value="on">本地回显</option>
-              </select>
-            </DialogField>
           </>
         ) : null}
       </>
@@ -9083,20 +8676,27 @@ function TcpLikeAdvancedFields({
 
 function SerialAdvancedFields({
   draft,
+  serialPorts,
   onDraftChange,
-  prefs,
-  updatePref,
 }: {
   draft: SessionProfile;
+  serialPorts: string[];
   onDraftChange: (draft: SessionProfile) => void;
-  prefs: SessionPrefs;
-  updatePref: <K extends keyof SessionPrefs>(key: K, value: SessionPrefs[K]) => void;
 }) {
   const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
   const update = (patch: Partial<ReturnType<typeof createSerialConnection>>) => onDraftChange({ ...draft, kind: "serial", connection: { ...serial, ...patch } });
 
   return (
     <>
+      <DialogField label="串口:(S)">
+        <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
+          {serialPortOptions(serial.port, serialPorts).map((option) => (
+            <option key={option || "blank"} value={option}>
+              {option || "选择串口"}
+            </option>
+          ))}
+        </select>
+      </DialogField>
       <DialogField label="波特率:(B)">
         <input type="number" value={serial.baudRate} onChange={(event) => update({ baudRate: Number(event.target.value) })} />
       </DialogField>
@@ -9164,13 +8764,6 @@ function SerialAdvancedFields({
           />
         </DialogField>
       ) : null}
-      <DialogField label="换行:(N)">
-        <select value={prefs.serialNewline} onChange={(event) => updatePref("serialNewline", event.target.value)}>
-          <option>CRLF</option>
-          <option>LF</option>
-          <option>CR</option>
-        </select>
-      </DialogField>
     </>
   );
 }
@@ -9296,45 +8889,6 @@ function createTerminalPrefs() {
     historyLimit: "10000",
     mouseReporting: true,
     mouseCopyOnSelect: true,
-  };
-}
-
-function createSessionPrefs() {
-  return {
-    shellPreset: "admin:cmd",
-    shellSysmon: true,
-    shellLogin: false,
-    shellElevated: false,
-    dataMode: "text",
-    system: "cmd",
-    charset: "ISO-8859-1",
-    bellMode: "visual",
-    visualBell: true,
-    localEcho: false,
-    focusMode: false,
-    backspaceMode: "DEL",
-    altSendsEscape: true,
-    confirmPaste: true,
-    splitMode: "none",
-    tabColor: "#5eead4",
-    copyOnSelect: true,
-    rightClickPaste: false,
-    reconnectPolicy: "on-disconnect",
-    sshSysmon: false,
-    sshCompression: false,
-    sshPasswordMode: "prompt",
-    sshKeyboardInteractive: true,
-    sshKexAlgorithm: "curve25519-sha256",
-    sshCipherSuite: "chacha20-poly1305",
-    sshRekeyAfterMb: "1024 MB",
-    sshMacAlgorithm: "hmac-sha2-256-etm@openssh.com",
-    sshMacEtm: true,
-    sshPublicKeySource: "profile-vault",
-    sshX11Enabled: false,
-    sshX11Display: "localhost:10.0",
-    sshX11Trusted: false,
-    telnetLocalEcho: false,
-    serialNewline: "CRLF",
   };
 }
 
@@ -10003,10 +9557,6 @@ function createMcpGrant(): McpGrant {
     expiresAt: null,
     revokedAt: null,
   };
-}
-
-function flattenSessionTree(tree: readonly SessionTreeNode[]) {
-  return tree.flatMap((item) => (item.children ? [item.label, ...item.children] : [item.label]));
 }
 
 function serialPortOptions(current: string, discovered: string[]) {

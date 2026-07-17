@@ -80,6 +80,8 @@ The browser preview runs at `http://127.0.0.1:1420`. It uses empty local state o
    - Transfer protocols
    - Workbench/global preferences modeled after WindTerm settings
 
+   The session dialog exposes each persisted Profile capability once: common identity, terminal, logging, triggers, transfer, and the selected protocol's connection fields. It does not maintain a parallel frontend-only session preference store, and closing or cancelling the dialog does not write hidden `portmate.sessionPrefs.*` values. On narrow screens, protocol selection remains a two-row tab control while the page list becomes a compact horizontal strip.
+
 6. Click `保存` or `保存并连接`. SSH credentials are requested in a separate connection dialog, so the same saved profile can be reused with a different username/password/passphrase or a bound SSH OneKey on the next connection. SSH private-key paths are configured under `SSH/Tmux -> 公钥`; passphrases are requested only at connect time.
 
 Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend.

@@ -415,6 +415,12 @@ try {
     await page.locator(".terminal-settings-dialog").waitFor();
   }
 
+  async function openNewSessionSettings() {
+    await page.locator(".menu-trigger", { hasText: "会话" }).click();
+    await page.locator(".menu-popover button", { hasText: "新建会话" }).click();
+    await page.locator(".session-settings-dialog").waitFor();
+  }
+
   await openTerminalSettings();
   const settingsPages = await page.locator(".terminal-settings-dialog .settings-tree > button")
     .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
@@ -502,6 +508,71 @@ try {
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
 
+  const expectedSessionPages = {
+    Shell: ["会话", "终端", "日志", "触发器", "传输", "Shell"],
+    SSH: ["会话", "终端", "日志", "触发器", "传输", "SSH", "代理", "验证", "代理人", "密码", "公钥"],
+    Tmux: ["会话", "终端", "日志", "触发器", "传输", "Tmux", "代理", "验证", "代理人", "密码", "公钥"],
+    Telnet: ["会话", "终端", "日志", "触发器", "传输", "Telnet", "代理"],
+    Tcp: ["会话", "终端", "日志", "触发器", "传输", "Tcp", "代理"],
+    Serial: ["会话", "终端", "日志", "触发器", "传输", "串口"],
+  };
+  const protocolPageLabels = {
+    Shell: "Shell",
+    SSH: "SSH",
+    Tmux: "Tmux",
+    Telnet: "Telnet",
+    Tcp: "Tcp",
+    Serial: "串口",
+  };
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("portmate.sessionPrefs.")) localStorage.removeItem(key);
+    }
+  });
+  await openNewSessionSettings();
+  for (const [protocol, expectedPages] of Object.entries(expectedSessionPages)) {
+    await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: protocol }).click();
+    const actualPages = await page.locator(".session-settings-dialog .session-tree-nav button")
+      .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
+    assert(JSON.stringify(actualPages) === JSON.stringify(expectedPages),
+      `${protocol} session settings are redundant: ${JSON.stringify(actualPages)}`);
+    await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: protocolPageLabels[protocol] }).click();
+    assert(await page.locator(".session-settings-dialog .session-form > *").count() > 0,
+      `${protocol} has no real protocol settings`);
+  }
+  await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: "SSH" }).click();
+  await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: "传输" }).click();
+  assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1
+    && await page.locator(".session-settings-dialog .dialog-field", { hasText: "SCP:" }).count() === 1,
+  "SSH transfer capabilities are missing from the consolidated page");
+  await page.locator(".session-settings-dialog .protocol-tabs button", { hasText: "Serial" }).click();
+  await page.locator(".session-settings-dialog .session-tree-nav button", { hasText: "传输" }).click();
+  assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 0
+    && await page.locator(".session-settings-dialog .dialog-field", { hasText: "XModem:" }).count() === 1,
+  "Serial transfer page exposes capabilities from another protocol");
+  const sessionSettingsText = await page.locator(".session-settings-dialog").textContent();
+  assert(!sessionSettingsText.includes("保存为默认设置")
+    && !sessionSettingsText.includes("密钥交换")
+    && !sessionSettingsText.includes("MAC 哈希")
+    && !sessionSettingsText.includes("X11"),
+  `non-runtime session settings are still visible: ${sessionSettingsText}`);
+  const sessionSettingsBounds = await page.locator(".session-settings-dialog").evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return { width: rect.width, height: rect.height, scrollWidth: dialog.scrollWidth, scrollHeight: dialog.scrollHeight };
+  });
+  assert(sessionSettingsBounds.width <= 860 && sessionSettingsBounds.height <= 720
+    && sessionSettingsBounds.scrollWidth <= sessionSettingsBounds.width
+    && sessionSettingsBounds.scrollHeight <= sessionSettingsBounds.height,
+  `session settings dialog is not compact: ${JSON.stringify(sessionSettingsBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-session-settings.png`, fullPage: true });
+  await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
+  const sessionPreferenceKeys = await page.evaluate(() => (
+    Object.keys(localStorage).filter((key) => key.startsWith("portmate.sessionPrefs."))
+  ));
+  assert(sessionPreferenceKeys.length === 0,
+    `closing session settings persisted non-runtime preferences: ${JSON.stringify(sessionPreferenceKeys)}`);
+
   await togglePanel("会话");
   await togglePanel("历史命令");
   await togglePanel("发送");
@@ -565,6 +636,19 @@ try {
   await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).press("Escape");
   await mobileSearch.waitFor({ state: "detached" });
 
+  await openNewSessionSettings();
+  const mobileSessionSettingsBounds = await page.locator(".session-settings-dialog").evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, scrollWidth: dialog.scrollWidth, width: rect.width };
+  });
+  assert(mobileSessionSettingsBounds.left >= 0 && mobileSessionSettingsBounds.right <= mobile.viewportWidth
+    && mobileSessionSettingsBounds.top >= 0 && mobileSessionSettingsBounds.bottom <= mobile.viewportHeight
+    && mobileSessionSettingsBounds.scrollWidth <= mobileSessionSettingsBounds.width,
+  `mobile session settings exceed the viewport: ${JSON.stringify(mobileSessionSettingsBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-session-settings-mobile.png`, fullPage: true });
+  await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
+
   const terminalWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
   )));
@@ -577,6 +661,12 @@ try {
     filters: ["resource tag/endpoint", "session tag/endpoint", "normalized history"],
     contextMenu: "single synchronized-input, split, and move actions",
     startupSettings,
+    sessionSettings: {
+      pages: expectedSessionPages,
+      preferenceKeys: sessionPreferenceKeys,
+      desktop: sessionSettingsBounds,
+      mobile: mobileSessionSettingsBounds,
+    },
     terminalWrites,
     desktop,
     mobile,
@@ -584,6 +674,8 @@ try {
       `${screenshotPrefix}-search.png`,
       `${screenshotPrefix}-search-mobile.png`,
       `${screenshotPrefix}-settings.png`,
+      `${screenshotPrefix}-session-settings.png`,
+      `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],

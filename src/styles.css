@@ -3417,10 +3417,10 @@ button {
 }
 
 .session-settings-dialog {
-  grid-template-columns: 328px minmax(0, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
   grid-template-rows: 43px 38px minmax(0, 1fr) 58px;
-  width: min(962px, calc(100vw - 24px));
-  height: min(956px, calc(100vh - 36px));
+  width: min(860px, calc(100vw - 24px));
+  height: min(720px, calc(100vh - 36px));
 }
 
 .dialog-title {
@@ -3478,16 +3478,11 @@ button {
 .settings-tree-parent {
   display: flex !important;
   align-items: center;
-  gap: 8px;
   color: #d7e1eb !important;
 }
 
 .settings-tree-parent.active {
   color: var(--cyan) !important;
-}
-
-.settings-tree-parent svg {
-  color: var(--muted);
 }
 
 .settings-tree button.child {
@@ -3772,7 +3767,6 @@ fieldset label {
   color: #d7e1eb;
   cursor: pointer;
   font-size: 14px;
-  text-decoration: underline;
 }
 
 .protocol-tabs button:hover {
@@ -3782,17 +3776,22 @@ fieldset label {
 .protocol-tabs button.active {
   color: var(--cyan);
   background: #0f1720;
+  font-weight: 600;
 }
 
 .session-tree-nav {
   grid-row: 3;
 }
 
+.session-tree-nav button.child {
+  padding-left: 42px;
+}
+
 .session-form {
   display: grid;
   align-content: start;
   gap: 11px;
-  padding: 26px 14px 0 30px;
+  padding: 22px 18px;
   overflow: auto;
 }
 
@@ -4072,19 +4071,6 @@ fieldset label {
   transform: translateX(22px);
 }
 
-.default-settings {
-  align-self: end;
-  justify-self: start;
-  margin: 0 0 14px 14px;
-  height: 34px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--control);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 14px;
-}
-
 .dialog-actions {
   grid-column: 1 / -1;
   display: flex;
@@ -4129,7 +4115,6 @@ fieldset label {
 }
 
 .dialog-actions button:hover,
-.default-settings:hover,
 .settings-secondary-button:hover,
 .setting-row input:focus,
 .setting-row select:focus,
@@ -4141,7 +4126,6 @@ fieldset label {
 }
 
 .dialog-actions button:hover,
-.default-settings:hover,
 .settings-secondary-button:hover {
   background: var(--control-hover);
 }
@@ -6035,9 +6019,9 @@ fieldset label {
 
   .session-settings-dialog {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 43px 76px minmax(96px, 140px) minmax(0, 1fr) auto auto;
+    grid-template-rows: 43px 76px 44px minmax(0, 1fr) auto;
     width: calc(100vw - 24px);
-    height: calc(100vh - 24px);
+    height: min(720px, calc(100vh - 24px));
   }
 
   .session-settings-dialog .protocol-tabs {
@@ -6051,7 +6035,22 @@ fieldset label {
   .session-settings-dialog .session-tree-nav {
     grid-column: 1;
     grid-row: 3;
-    margin: 10px 12px 0;
+    display: flex;
+    margin: 8px 12px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .session-settings-dialog .settings-tree-group {
+    display: contents;
+  }
+
+  .session-settings-dialog .session-tree-nav button,
+  .session-settings-dialog .session-tree-nav button.child {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 35px;
+    padding: 0 14px;
   }
 
   .session-settings-dialog .session-form {
@@ -6060,15 +6059,9 @@ fieldset label {
     padding: 16px 12px;
   }
 
-  .session-settings-dialog .default-settings {
-    grid-column: 1;
-    grid-row: 5;
-    margin: 0 12px 10px;
-  }
-
   .session-settings-dialog .dialog-actions {
     grid-column: 1;
-    grid-row: 6;
+    grid-row: 5;
     gap: 6px;
     padding: 0 12px 12px;
   }
