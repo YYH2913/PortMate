@@ -145,8 +145,7 @@ try {
     }));
     window.__invokeCalls = [];
     window.__tmuxState = structuredClone(tmuxState);
-    window.__tmuxControlTarget = "";
-    window.__tmuxControlRuntimeId = "";
+    window.__tmuxControlRuntimes = {};
     window.__tmuxControlSequence = 0;
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
@@ -180,21 +179,21 @@ try {
         if (command === "tail_log") return [];
         if (command === "list_tmux_state") return structuredClone(window.__tmuxState);
         if (command === "start_tmux_control") {
-          window.__tmuxControlTarget = args.target;
           window.__tmuxControlSequence += 1;
-          window.__tmuxControlRuntimeId = `control-${window.__tmuxControlSequence}`;
+          const runtimeId = `control-${window.__tmuxControlSequence}`;
+          window.__tmuxControlRuntimes[args.target] = runtimeId;
           return {
             sessionId: args.sessionId,
             target: args.target,
             active: true,
-            runtimeId: window.__tmuxControlRuntimeId,
+            runtimeId,
           };
         }
         if (command === "stop_tmux_control") {
-          const target = window.__tmuxControlTarget;
-          const runtimeId = window.__tmuxControlRuntimeId;
-          window.__tmuxControlTarget = "";
-          window.__tmuxControlRuntimeId = "";
+          const targets = args.target ? [args.target] : Object.keys(window.__tmuxControlRuntimes);
+          const target = targets.length === 1 ? targets[0] : "";
+          const runtimeId = target ? window.__tmuxControlRuntimes[target] || null : null;
+          for (const item of targets) delete window.__tmuxControlRuntimes[item];
           return { sessionId: args.sessionId, target, active: false, runtimeId };
         }
         if (command === "set_tmux_pane_sync") {
@@ -440,10 +439,22 @@ try {
   await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
   const activeControlButton = page.getByRole("button", { name: "停止实时监听 session lab", exact: true });
   assert(await activeControlButton.getAttribute("aria-pressed") === "true", "control-mode button did not become active");
+  await page.getByRole("button", { name: "实时监听 session build", exact: true }).click();
+  await page.getByText("build 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  const buildControlButton = page.getByRole("button", { name: "停止实时监听 session build", exact: true });
+  assert(await activeControlButton.getAttribute("aria-pressed") === "true"
+    && await buildControlButton.getAttribute("aria-pressed") === "true",
+  "starting build replaced the active lab control runtime");
 
   await page.getByRole("button", { name: "重命名 session build", exact: true }).click();
   const draftSessionName = page.getByRole("textbox", { name: "新名称 build" });
   await draftSessionName.fill("build-draft");
+  await activeControlButton.click();
+  await page.getByText("lab 已停止 control-mode 实时监听", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "实时监听 session lab", exact: true }).click();
+  await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  assert(await draftSessionName.inputValue() === "build-draft",
+    "restarting lab control discarded the independent build editor");
   const listCallsBeforeControlEvent = await page.evaluate(() => (
     window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length
   ));
@@ -459,7 +470,7 @@ try {
       target: "lab",
       kind: "state-changed",
       active: true,
-      runtimeId: window.__tmuxControlRuntimeId,
+      runtimeId: window.__tmuxControlRuntimes.lab,
       protocolEvent: "window-renamed",
       error: null,
     });
@@ -468,7 +479,9 @@ try {
     window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length > previous
   ), listCallsBeforeControlEvent);
   await page.locator('[data-tmux-target="lab:0"] > header small').getByText(/external-editor/).waitFor();
-  assert(await draftSessionName.inputValue() === "build-draft", "control-mode refresh discarded the inline editor");
+  const draftCountAfterRefresh = await draftSessionName.count();
+  assert(draftCountAfterRefresh === 1, "control-mode refresh discarded the inline editor");
+  assert(await draftSessionName.inputValue() === "build-draft", "control-mode refresh changed the inline editor");
   await page.evaluate(() => {
     window.__emitTauriEvent("portmate-tmux-control-event", {
       sessionId: "ssh-tmux",
@@ -480,8 +493,55 @@ try {
       error: null,
     });
   });
-  assert(await activeControlButton.getAttribute("aria-pressed") === "true", "stale watcher stop cleared the active runtime");
   await page.getByRole("button", { name: "取消", exact: true }).click();
+  const activeControlCounts = await page.locator(".tmux-control-active").evaluateAll((buttons) => (
+    buttons.map((button) => button.getAttribute("aria-label"))
+  ));
+  assert(activeControlCounts.includes("停止实时监听 session lab"), "stale watcher stop cleared the active runtime");
+  assert(activeControlCounts.includes("停止实时监听 session build"), "stale lab stop cleared the build runtime");
+  await activeControlButton.click();
+  await page.getByText("lab 已停止 control-mode 实时监听", { exact: true }).waitFor();
+  assert(await buildControlButton.getAttribute("aria-pressed") === "true",
+    "stopping lab also stopped the independent build runtime");
+  await buildControlButton.click();
+  await page.getByText("build 已停止 control-mode 实时监听", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "实时监听 session lab", exact: true }).click();
+  await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "实时监听 session build", exact: true }).click();
+  await page.getByText("build 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "关闭 Tmux", exact: true }).click();
+  await page.locator(".tmux-dialog").waitFor({ state: "detached" });
+  await page.waitForFunction(() => window.__invokeCalls.filter((call) => (
+    call.command === "start_tmux_control" || call.command === "stop_tmux_control"
+  )).length >= 10);
+  await page.getByRole("button", { name: "工具", exact: true }).click();
+  await page.getByRole("button", { name: "Tmux", exact: true }).click();
+  await page.getByRole("heading", { name: "窗口与窗格" }).waitFor();
+  const controlCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "start_tmux_control" || call.command === "stop_tmux_control"
+  )));
+  assert(controlCalls.length === 10
+    && controlCalls[0].args.sessionId === "ssh-tmux"
+    && controlCalls[0].args.target === "lab"
+    && controlCalls[1].args.sessionId === "ssh-tmux"
+    && controlCalls[1].args.target === "build"
+    && controlCalls[2].args.sessionId === "ssh-tmux"
+    && controlCalls[2].args.target === "lab"
+    && controlCalls[3].args.sessionId === "ssh-tmux"
+    && controlCalls[3].args.target === "lab"
+    && controlCalls[4].args.sessionId === "ssh-tmux"
+    && controlCalls[4].args.target === "lab"
+    && controlCalls[5].args.sessionId === "ssh-tmux"
+    && controlCalls[5].args.target === "build"
+    && controlCalls[6].args.sessionId === "ssh-tmux"
+    && controlCalls[6].args.target === "lab"
+    && controlCalls[7].args.sessionId === "ssh-tmux"
+    && controlCalls[7].args.target === "build"
+    && controlCalls[8].args.sessionId === "ssh-tmux"
+    && controlCalls[8].args.target === "lab"
+    && controlCalls[9].args.sessionId === "ssh-tmux"
+    && controlCalls[9].args.target === "build",
+  `invalid control-mode lifecycle: ${JSON.stringify(controlCalls)}`);
 
   await labZeroSwitch.check();
   await page.getByText("lab:0 已开启 pane 同步输入", { exact: true }).waitFor();
@@ -628,17 +688,6 @@ try {
     && mobile.toolbar.left >= mobile.dialog.left && mobile.toolbar.right <= mobile.dialog.right,
   `invalid mobile tmux layout: ${JSON.stringify(mobile)}`);
 
-  await activeControlButton.click();
-  await page.getByText("lab 已停止 control-mode 实时监听", { exact: true }).waitFor();
-  const controlCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => (
-    call.command === "start_tmux_control" || call.command === "stop_tmux_control"
-  )));
-  assert(controlCalls.length === 2
-    && controlCalls[0].args.sessionId === "ssh-tmux"
-    && controlCalls[0].args.target === "lab"
-    && controlCalls[1].args.sessionId === "ssh-tmux",
-  `invalid control-mode lifecycle: ${JSON.stringify(controlCalls)}`);
-
   const targetInput = page.getByPlaceholder("session name");
   await targetInput.fill("new-lab");
   await page.getByRole("button", { name: "附着/新建", exact: true }).click();
@@ -662,8 +711,15 @@ try {
   await new Promise((resolve) => {
     if (vite.exitCode !== null) resolve();
     else {
-      vite.once("exit", resolve);
-      setTimeout(resolve, 2000).unref();
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      vite.once("exit", finish);
+      const timer = setTimeout(finish, 2000);
     }
   });
 }

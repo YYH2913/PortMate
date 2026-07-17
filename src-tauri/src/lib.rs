@@ -288,6 +288,7 @@ $payload = [ordered]@{
 type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
 type ActiveCommandMap = Arc<Mutex<HashMap<String, String>>>;
+type TmuxControlMap = Arc<Mutex<HashMap<(String, String), TmuxControlRuntime>>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
@@ -303,7 +304,7 @@ pub struct AppState {
     credential_lock_path: PathBuf,
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
-    tmux_controls: Arc<Mutex<HashMap<String, TmuxControlRuntime>>>,
+    tmux_controls: TmuxControlMap,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
@@ -3729,7 +3730,7 @@ async fn close_session_inner(
     session_id: String,
 ) -> Result<SessionSummary, String> {
     clear_active_command(&state.session_io(), &session_id);
-    let _ = cancel_tmux_control_runtime(state, &session_id);
+    let _ = cancel_tmux_control_runtimes_for_session(state, &session_id);
     let existing = {
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections.remove(&session_id)
@@ -5133,8 +5134,9 @@ async fn start_tmux_control(
 fn stop_tmux_control(
     state: State<'_, AppState>,
     session_id: String,
+    target: Option<String>,
 ) -> Result<TmuxControlStatus, String> {
-    stop_tmux_control_inner(state.inner(), &session_id)
+    stop_tmux_control_inner(state.inner(), &session_id, target.as_deref())
 }
 
 #[tauri::command]
@@ -11267,14 +11269,15 @@ async fn start_tmux_control_inner(
     target: &str,
 ) -> Result<TmuxControlStatus, String> {
     let target = normalize_tmux_target(target)?.to_string();
+    let control_key = (session_id.to_string(), target.clone());
     {
         let controls = state
             .tmux_controls
             .lock()
             .map_err(|error| error.to_string())?;
         if let Some(runtime) = controls
-            .get(session_id)
-            .filter(|runtime| runtime.target == target && !runtime.cancel.load(Ordering::SeqCst))
+            .get(&control_key)
+            .filter(|runtime| !runtime.cancel.load(Ordering::SeqCst))
         {
             return Ok(TmuxControlStatus {
                 session_id: session_id.to_string(),
@@ -11310,7 +11313,7 @@ async fn start_tmux_control_inner(
             .lock()
             .map_err(|error| error.to_string())?;
         controls.insert(
-            session_id.to_string(),
+            control_key.clone(),
             TmuxControlRuntime {
                 runtime_id: runtime_id.clone(),
                 target: target.clone(),
@@ -11424,10 +11427,10 @@ async fn start_tmux_control_inner(
         let _ = channel.close().await;
         if let Ok(mut controls) = controls.lock() {
             let current = controls
-                .get(&event_context.session_id)
+                .get(&control_key)
                 .is_some_and(|runtime| runtime.runtime_id == event_context.runtime_id);
             if current {
-                controls.remove(&event_context.session_id);
+                controls.remove(&control_key);
             }
         }
         event_context.emit(
@@ -11450,34 +11453,73 @@ async fn start_tmux_control_inner(
 fn stop_tmux_control_inner(
     state: &AppState,
     session_id: &str,
+    target: Option<&str>,
 ) -> Result<TmuxControlStatus, String> {
-    let runtime = cancel_tmux_control_runtime(state, session_id)?;
+    let (target, runtime_id) = if let Some(target) = target {
+        let target = normalize_tmux_target(target)?.to_string();
+        let runtime = cancel_tmux_control_runtime(state, session_id, &target)?;
+        (target, runtime.map(|runtime| runtime.runtime_id))
+    } else {
+        let mut runtimes = cancel_tmux_control_runtimes_for_session(state, session_id)?;
+        let target = if runtimes.len() == 1 {
+            runtimes[0].target.clone()
+        } else {
+            String::new()
+        };
+        let runtime_id = if runtimes.len() == 1 {
+            Some(runtimes.remove(0).runtime_id)
+        } else {
+            None
+        };
+        (target, runtime_id)
+    };
     Ok(TmuxControlStatus {
         session_id: session_id.to_string(),
-        target: runtime
-            .as_ref()
-            .map(|runtime| runtime.target.clone())
-            .unwrap_or_default(),
+        target,
         active: false,
-        runtime_id: runtime.map(|runtime| runtime.runtime_id),
+        runtime_id,
     })
 }
 
 fn cancel_tmux_control_runtime(
     state: &AppState,
     session_id: &str,
+    target: &str,
 ) -> Result<Option<TmuxControlRuntime>, String> {
     let runtime = state
         .tmux_controls
         .lock()
         .map_err(|error| error.to_string())?
-        .remove(session_id);
+        .remove(&(session_id.to_string(), target.to_string()));
     if let Some(runtime) = runtime {
         runtime.cancel.store(true, Ordering::SeqCst);
         Ok(Some(runtime))
     } else {
         Ok(None)
     }
+}
+
+fn cancel_tmux_control_runtimes_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Vec<TmuxControlRuntime>, String> {
+    let mut controls = state
+        .tmux_controls
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let keys = controls
+        .keys()
+        .filter(|(candidate_session_id, _)| candidate_session_id == session_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut runtimes = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Some(runtime) = controls.remove(&key) {
+            runtime.cancel.store(true, Ordering::SeqCst);
+            runtimes.push(runtime);
+        }
+    }
+    Ok(runtimes)
 }
 
 fn shutdown_tmux_controls(state: &AppState) {
@@ -39331,29 +39373,66 @@ mod tests {
     }
 
     #[test]
-    fn tmux_control_runtime_cancel_is_idempotent_and_clears_registry() {
+    fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
         let temp = tempfile::tempdir().unwrap();
         let state = test_app_state(test_ssh_profile(), temp.path().join("store.sqlite3"));
-        let cancel = Arc::new(AtomicBool::new(false));
-        state.tmux_controls.lock().unwrap().insert(
-            "session:1".to_string(),
-            TmuxControlRuntime {
-                runtime_id: "control-1".to_string(),
-                target: "lab".to_string(),
-                cancel: Arc::clone(&cancel),
-            },
-        );
+        let lab_cancel = Arc::new(AtomicBool::new(false));
+        let build_cancel = Arc::new(AtomicBool::new(false));
+        let other_cancel = Arc::new(AtomicBool::new(false));
+        let mut controls = state.tmux_controls.lock().unwrap();
+        for (session_id, target, runtime_id, cancel) in [
+            ("session:1", "lab", "control-1", Arc::clone(&lab_cancel)),
+            ("session:1", "build", "control-2", Arc::clone(&build_cancel)),
+            ("session:2", "lab", "control-3", Arc::clone(&other_cancel)),
+        ] {
+            controls.insert(
+                (session_id.to_string(), target.to_string()),
+                TmuxControlRuntime {
+                    runtime_id: runtime_id.to_string(),
+                    target: target.to_string(),
+                    cancel,
+                },
+            );
+        }
+        drop(controls);
 
-        let cancelled = cancel_tmux_control_runtime(&state, "session:1")
+        let cancelled = cancel_tmux_control_runtime(&state, "session:1", "lab")
             .unwrap()
             .unwrap();
         assert_eq!(cancelled.runtime_id, "control-1");
         assert_eq!(cancelled.target, "lab");
-        assert!(cancel.load(Ordering::SeqCst));
-        assert!(state.tmux_controls.lock().unwrap().is_empty());
-        assert!(cancel_tmux_control_runtime(&state, "session:1")
+        assert!(lab_cancel.load(Ordering::SeqCst));
+        assert!(!build_cancel.load(Ordering::SeqCst));
+        assert!(!other_cancel.load(Ordering::SeqCst));
+        assert_eq!(state.tmux_controls.lock().unwrap().len(), 2);
+        assert!(cancel_tmux_control_runtime(&state, "session:1", "lab")
             .unwrap()
             .is_none());
+
+        let ops_cancel = Arc::new(AtomicBool::new(false));
+        state.tmux_controls.lock().unwrap().insert(
+            ("session:1".to_string(), "ops".to_string()),
+            TmuxControlRuntime {
+                runtime_id: "control-4".to_string(),
+                target: "ops".to_string(),
+                cancel: Arc::clone(&ops_cancel),
+            },
+        );
+        let status = stop_tmux_control_inner(&state, "session:1", None).unwrap();
+        assert!(status.target.is_empty());
+        assert!(status.runtime_id.is_none());
+        assert!(!status.active);
+        assert!(build_cancel.load(Ordering::SeqCst));
+        assert!(ops_cancel.load(Ordering::SeqCst));
+        assert!(!other_cancel.load(Ordering::SeqCst));
+        assert_eq!(state.tmux_controls.lock().unwrap().len(), 1);
+
+        let status = stop_tmux_control_inner(&state, "session:2", Some("lab")).unwrap();
+        assert_eq!(status.target, "lab");
+        assert_eq!(status.runtime_id.as_deref(), Some("control-3"));
+        assert!(!status.active);
+        assert!(other_cancel.load(Ordering::SeqCst));
+        assert!(state.tmux_controls.lock().unwrap().is_empty());
     }
 
     fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {
