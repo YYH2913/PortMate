@@ -6443,8 +6443,8 @@ fieldset label {
 
 .search-dialog {
   grid-template-rows: 46px minmax(0, 1fr);
-  width: min(720px, calc(100vw - 48px));
-  height: min(640px, calc(100vh - 56px));
+  width: min(680px, calc(100vw - 32px));
+  height: min(520px, calc(100vh - 32px));
 }
 
 .search-content {
@@ -6461,7 +6461,7 @@ fieldset label {
 }
 
 .search-tabs button,
-.search-content > input {
+.search-query {
   border: 1px solid var(--line);
   background: var(--control);
   color: var(--text);
@@ -6477,14 +6477,36 @@ fieldset label {
   color: var(--cyan);
 }
 
-.search-content > input {
-  padding: 0 10px;
+.search-query {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.search-query:focus-within {
+  border-color: rgba(94, 234, 212, 0.62);
+}
+
+.search-query svg {
+  color: var(--muted);
+}
+
+.search-query input {
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
 }
 
 .search-results {
   display: grid;
   align-content: start;
-  gap: 6px;
+  border: 1px solid var(--line-soft);
   overflow: auto;
 }
 
@@ -6493,15 +6515,23 @@ fieldset label {
   gap: 4px;
   min-height: 48px;
   padding: 8px 10px;
-  border: 1px solid var(--line-soft);
-  background: rgba(15, 23, 32, 0.42);
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 
-.search-results button:hover {
-  border-color: rgba(94, 234, 212, 0.45);
+.search-results button:last-child {
+  border-bottom: 0;
+}
+
+.search-results button:hover,
+.search-results button.selected {
+  outline: 0;
+  background: rgba(94, 234, 212, 0.08);
+  box-shadow: inset 2px 0 var(--cyan);
 }
 
 .search-results span {

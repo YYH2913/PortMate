@@ -55,7 +55,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。主窗口和独立窗口还会按 WindTerm 默认规则跨分片/ANSI/退格识别当前末行的 username/login/password 提示，过滤密码修改提示，只在聚焦 pane 显示绑定候选确认条；用户输入、提示变化或关闭 `终端设置 -> 自动补全 -> OneKey 终端提示补全` 会撤销。补全请求仅提交 OneKey/会话/字段/提示事件 ID，后端在 Secret 读取前及等待出站 lane 后重新验证提示时效、字段、绑定、用户名和 OneKey 版本，成功只记录关联原提示事件且无正文的 `one-key-completion` control event。OneKeys 与 localStorage Quick Commands 保持独立。
 - `查看` 菜单中的资源管理器、文件管理器、会话、历史命令、发送、快捷栏和状态栏已从无效提示改为带勾选态的真实开关；四个 dock 标题栏和发送面板使用可聚焦的关闭/设置按钮。默认工作区现只保留 240px 资源树、pane 自身的单层 view 标签、终端和精简状态栏；顶层菜单将搜索/选择/转到并入编辑或窗口，收敛为八类。重复的全局 session 标签和中心连接摘要行已删除，连接状态由 pane 标签色点表达，连接/断开及串口 DTR/RTS/BRK 控制归属到对应 pane；connected/connecting/reconnecting 都显示可取消的断开动作，后端拒绝关闭时保留真实 runtime 并展示诊断，批量断开会聚合失败数而不再伪造成功。文件/右侧重复会话/历史/发送按需开启，状态栏只保留 Sysmon、键盘模式、同步状态、块选择和锁屏这些运行时动作。资源树与可选会话栏的筛选会匹配名称、ID、分组、标签、协议、状态和协议端点，历史筛选会折叠显示空白并忽略大小写但点击仍写入原始命令；三个筛选都有真实清除动作和无结果状态。顶部搜索图标会打开会话搜索，右侧筛选后的点击/右键按精确 session ID 路由。发送区已删除无行为的 Shell tab 和停止/增减/关闭装饰符号，只保留发送、模式、次数、间隔、目标、设置和关闭这些真实动作。session 右键菜单把同步输入收敛为单行正/反切换，只保留一组水平/垂直拆分和一个直接移动命令，并删除永久禁用的复制 SSH 通道与重复单项子菜单。v2 pane 快照会把旧版未经修改的六面板全开默认迁移为紧凑布局，同时保留定制过的 v1 组合；session 右键操作已迁到资源树并携带精确 session ID。单侧只剩一个 pane 时自动占满，整侧、发送区或状态栏隐藏后空间会完整归还终端，并与 Quick Bar 正确组合；移动端响应式隐藏不覆盖桌面选择。顶部专注按钮和 WindTerm `Alt+Enter` 会临时隐藏这些区域但不改写持久化选择，退出精确恢复；快捷键只在 XTerm 工作区生效，同步输入开启时强制保留状态栏风险提示。
 - `会话 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按最多四个指定 Profile 顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。指定模式的下拉框现在从已保存 session 生成名称/协议标签并持久化真实、有界且无 NUL 的 Profile ID，已删除目标会明确显示为不可用；旧版“最近使用/活动工作区/默认组”等会被解析器丢弃的占位选项已删除。终端设置收敛为应用、安全、快捷键、自动补全、命令历史、鼠标、同步输入七页；无运行时消费的外观、标签、全局终端/文本、代理、小部件和 X Server 页面不再暴露。
-- 搜索弹窗支持会话和已加载日志搜索。
+- 搜索弹窗可由顶部图标或移动端可达的`会话 -> 会话搜索`打开，支持会话和已加载日志搜索，并与资源树共享 ID、名称、分组、标签、协议、状态及端点匹配；日志还会匹配所属会话上下文、按全局事件时间倒序、限制 80 条结果和 2,048 字符预览。组合框支持 ArrowUp/ArrowDown 选择、Enter 打开精确 workspace view、Escape 关闭，结果使用稳定 event/session key 和 listbox 语义。
 - MCP grant 管理弹窗、Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络/趋势四标签工作窗口，趋势可切换 CPU/内存利用率与 RX/TX 速率，并提供当前会话可启停、立即采样后每 10 秒刷新的紧凑工具栏 applet。
 - 同步输入会把输入按 FIFO 顺序发送到源 pane 和经过协议过滤的已连接 pane；支持按协议换行、0..5000 ms 目标间延迟、显式批量发送各应用一次的受限前后缀、失败/即时取消反馈和明显目标计数。普通 XTerm 键击及原生 bracketed 键盘粘贴保持无前后缀的流式输入，顶部菜单、上下文和中键粘贴走批量路径。源会话始终保留，重复 pane binding 只发送一次；设置持久化但开关每次启动默认关闭。
 - 底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
@@ -199,11 +199,11 @@ npm run test:workspace-ui
 npm run build
 ```
 
-`npm run build` 已把应用壳、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 489.9 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.4 kB、终端 CSS 约 3.9 kB；工作区辅助筛选约 3.7 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.6 kB、终端 buffer 约 1.4 kB、选择/在线搜索约 2.2 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
+`npm run build` 已把应用壳、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 490.0 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 125.8 kB、终端 CSS 约 3.9 kB；共享 session 搜索状态约 1.9 kB、工作区辅助筛选约 3.3 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.6 kB、终端 buffer 约 1.4 kB、选择/在线搜索约 2.2 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
-仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证 v2 终端优先迁移，并覆盖资源/会话/历史真实筛选、清除、筛选后精确点击与右键、同步输入正反切换、唯一拆分/移动入口、顶部会话搜索、发送区无伪控件、真实 Profile 启动目标的禁用/选择/保存/恢复、关闭失败保留连接状态与诊断、面板空间归还，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
+仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证 v2 终端优先迁移，并覆盖资源/会话/历史真实筛选、清除、筛选后精确点击与右键、同步输入正反切换、唯一拆分/移动入口、顶部会话/日志共享搜索与键盘激活、发送区无伪控件、真实 Profile 启动目标的禁用/选择/保存/恢复、关闭失败保留连接状态与诊断、面板空间归还，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
 
 已有单元测试覆盖：
 
@@ -227,6 +227,7 @@ npm run build
 - Quick Commands 的旧数组迁移、Unicode 名称/正文边界、NUL 清理、无效/重复 ID 修复、64 条上限、插入/执行 payload 和不可变上下排序。
 - 工作区 pane/bar 的紧凑默认值、未经修改的 v1 全开布局到 v2 的迁移、定制 v1/旧直存快照恢复、逐字段损坏修复、幂等设置和不可变切换，以及不修改原状态的专注布局派生、同步输入状态栏保留和精确 `Alt+Enter` 识别。
 - 工作区 session 筛选对名称、ID、分组、标签、协议、状态、SSH/Tmux/TCP/Telnet host/port、串口和 Shell 路径的匹配，以及历史命令大小写不敏感、折叠空白显示后的匹配与原始命令保留。
+- 全局搜索与资源树共享会话匹配规则，日志结果覆盖跨 session 时间排序、所属会话上下文/命令 ID 匹配、80 条上限和 Unicode 预览边界。
 - session 右键菜单的单行同步输入正/反动作、唯一拆分/移动入口，以及永久禁用和重复子菜单不会重新出现的结构约束。
 - 终端设置的四槽启动 Profile ID 长度/NUL/类型修复、真实 session 选项去重、名称/协议标签和已删除目标的可见保留。
 - workspace v1/v2/v3→v4 迁移、重复 node/view ID 修复、同 session 多 view、独立别名/颜色/键盘模式、精确激活/复制/关闭/排序/定点移动/拆分/合并、失效 session 收敛和带 view 身份/颜色/模式的 detach route 校验。
@@ -265,7 +266,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 43 个文件、230 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-runtime/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
+当前 Rust workspace 自动化测试总数为 240：`portmate` 177、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 44 个文件、233 个前端 transfer/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history 单元测试。
 
 主要缺口：
 
@@ -298,7 +299,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、streamable-http JSON Accept 兼容回归、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；桌面 UI 可展示配置并轮换 token；客户端矩阵待补。 |
-| 测试体系 | 部分实现 | core/协议集成测试、43 文件前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | core/协议集成测试、44 文件前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

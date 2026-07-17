@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
+import { filterWorkspaceSessions } from "./session-search-state";
 import type { SessionSummary } from "./types";
 
 type UtilityIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: string | number }>;
@@ -107,15 +108,6 @@ export function CommandHistoryList({
   );
 }
 
-export function filterWorkspaceSessions(
-  sessions: readonly SessionSummary[],
-  query: string,
-): SessionSummary[] {
-  const needle = normalizeFilter(query);
-  if (!needle) return [...sessions];
-  return sessions.filter((session) => sessionSearchText(session).includes(needle));
-}
-
 export function filterCommandHistory(history: readonly string[], query: string): string[] {
   const needle = normalizeFilter(query);
   if (!needle) return [...history];
@@ -202,36 +194,6 @@ function groupSessions(
     groups[key].push(session);
     return groups;
   }, {});
-}
-
-function sessionSearchText(session: SessionSummary): string {
-  const connection = session.profile.connection;
-  let endpoint: string;
-  switch (connection.kind) {
-    case "ssh":
-    case "tmux":
-      endpoint = `${connection.username} ${connection.endpoint.host} ${connection.endpoint.port}`;
-      break;
-    case "tcp":
-    case "telnet":
-      endpoint = `${connection.host} ${connection.port}`;
-      break;
-    case "serial":
-      endpoint = `${connection.port} ${connection.baudRate}`;
-      break;
-    case "shell":
-      endpoint = `${connection.program} ${connection.args.join(" ")} ${connection.cwd ?? ""}`;
-      break;
-  }
-  return normalizeFilter([
-    session.profile.id,
-    session.profile.name,
-    session.profile.group,
-    session.profile.kind,
-    session.runtime.status,
-    ...session.profile.tags,
-    endpoint,
-  ].join(" "));
 }
 
 function displayCommand(command: string): string {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "./types";
-import { filterCommandHistory, filterWorkspaceSessions } from "./WorkspaceUtilityPanels";
+import { filterWorkspaceSessions } from "./session-search-state";
+import { filterCommandHistory } from "./WorkspaceUtilityPanels";
 
 const sessions = [
   session("router", "Edge Router", "Network", ["production"], {

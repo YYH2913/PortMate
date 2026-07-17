@@ -1,5 +1,7 @@
-import { X } from "lucide-react";
-import type { SessionEvent, SessionProfile, SessionSummary } from "./types";
+import { useEffect, useMemo, useState } from "react";
+import { Search, X } from "lucide-react";
+import { buildSessionSearchResults } from "./session-search-state";
+import type { SessionEvent, SessionSummary } from "./types";
 
 export type SearchDialogState = { mode: "sessions" | "logs"; query: string };
 
@@ -18,25 +20,24 @@ export default function SearchDialog({
   onSelect: (sessionId: string) => void;
   onClose: () => void;
 }) {
-  const query = state.query.trim().toLowerCase();
-  const results = state.mode === "sessions"
-    ? sessions
-        .filter((session) => !query || `${session.profile.name} ${describeProfileEndpoint(session.profile)} ${session.profile.group}`.toLowerCase().includes(query))
-        .map((session) => ({ id: session.profile.id, title: session.profile.name, detail: describeProfileEndpoint(session.profile) }))
-    : Object.values(logs)
-        .flat()
-        .filter((event) => !query || `${event.text ?? ""} ${event.annotations.commandId ?? ""}`.toLowerCase().includes(query))
-        .slice(-80)
-        .reverse()
-        .map((event) => {
-          const commandId = event.annotations.commandId;
-          const commandLabel = commandId ? `[命令 ${commandId.slice(0, 8)}] ` : "";
-          return {
-            id: event.sessionId,
-            title: sessions.find((session) => session.profile.id === event.sessionId)?.profile.name ?? event.sessionId,
-            detail: `${commandLabel}${event.text ?? ""}`,
-          };
-        });
+  const results = useMemo(
+    () => buildSessionSearchResults(state.mode, state.query, sessions, logs),
+    [logs, sessions, state.mode, state.query],
+  );
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  useEffect(() => setSelectedIndex(0), [state.mode, state.query]);
+  useEffect(() => {
+    setSelectedIndex((current) => Math.min(current, Math.max(0, results.length - 1)));
+  }, [results.length]);
+  useEffect(() => {
+    document.getElementById(`search-result-${selectedIndex}`)?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
+
+  function selectResult(index: number) {
+    const result = results[index];
+    if (result) onSelect(result.sessionId);
+  }
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -47,14 +48,51 @@ export default function SearchDialog({
           <button onClick={onClose}><X size={20} /></button>
         </header>
         <div className="search-content">
-          <div className="search-tabs">
-            <button className={state.mode === "sessions" ? "active" : ""} onClick={() => onChange({ ...state, mode: "sessions" })}>会话</button>
-            <button className={state.mode === "logs" ? "active" : ""} onClick={() => onChange({ ...state, mode: "logs" })}>日志</button>
+          <div className="search-tabs" role="tablist" aria-label="搜索范围">
+            <button role="tab" aria-selected={state.mode === "sessions"} className={state.mode === "sessions" ? "active" : ""} onClick={() => onChange({ ...state, mode: "sessions" })}>会话</button>
+            <button role="tab" aria-selected={state.mode === "logs"} className={state.mode === "logs" ? "active" : ""} onClick={() => onChange({ ...state, mode: "logs" })}>日志</button>
           </div>
-          <input autoFocus value={state.query} onChange={(event) => onChange({ ...state, query: event.target.value })} placeholder="输入关键字" />
-          <div className="search-results">
+          <label className="search-query">
+            <Search size={14} aria-hidden="true" />
+            <input
+              autoFocus
+              role="combobox"
+              aria-label="搜索会话和日志"
+              aria-controls="search-results"
+              aria-expanded="true"
+              aria-activedescendant={results.length ? `search-result-${selectedIndex}` : undefined}
+              value={state.query}
+              onChange={(event) => onChange({ ...state, query: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setSelectedIndex((current) => results.length ? Math.min(results.length - 1, current + 1) : 0);
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSelectedIndex((current) => results.length ? Math.max(0, current - 1) : 0);
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  selectResult(selectedIndex);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  onClose();
+                }
+              }}
+              placeholder="名称、标签、状态或端点"
+            />
+          </label>
+          <div id="search-results" className="search-results" role="listbox" aria-label="搜索结果">
             {results.map((result, index) => (
-              <button key={`${result.id}-${index}`} onClick={() => onSelect(result.id)}>
+              <button
+                id={`search-result-${index}`}
+                key={result.key}
+                type="button"
+                role="option"
+                aria-selected={index === selectedIndex}
+                className={index === selectedIndex ? "selected" : ""}
+                onMouseEnter={() => setSelectedIndex(index)}
+                onClick={() => selectResult(index)}
+              >
                 <strong>{result.title}</strong>
                 <span>{result.detail}</span>
               </button>
@@ -65,20 +103,4 @@ export default function SearchDialog({
       </section>
     </div>
   );
-}
-
-function describeProfileEndpoint(profile: SessionProfile) {
-  const connection = profile.connection;
-  switch (connection.kind) {
-    case "ssh":
-    case "tmux":
-      return connection.username ? `${connection.username}@${connection.endpoint.host}:${connection.endpoint.port}` : `${connection.endpoint.host}:${connection.endpoint.port}`;
-    case "serial":
-      return connection.port || "serial";
-    case "shell":
-      return connection.program || "shell";
-    case "telnet":
-    case "tcp":
-      return `${connection.host}:${connection.port}`;
-  }
 }

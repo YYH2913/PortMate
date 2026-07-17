@@ -378,7 +378,36 @@ try {
   await page.locator(".search-dialog").waitFor();
   assert(await page.locator(".search-dialog .dialog-title", { hasText: "会话搜索" }).count() === 1,
     "top search command did not open session search");
-  await page.locator(".search-dialog .dialog-title button").click();
+  const searchInput = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
+  await searchInput.fill("hardware");
+  assert(await page.getByRole("option", { name: /Bench UART/ }).count() === 1,
+    "global session search did not match a profile tag");
+  await page.screenshot({ path: `${screenshotPrefix}-search.png`, fullPage: true });
+  await searchInput.fill("");
+  await searchInput.press("ArrowDown");
+  assert(await page.getByRole("option", { name: /Bench UART/ }).getAttribute("aria-selected") === "true",
+    "session search ArrowDown did not select the next result");
+  await searchInput.press("Enter");
+  await page.locator(".search-dialog").waitFor({ state: "detached" });
+  assert(await page.locator(".workspace-pane-tab.active", { hasText: "Bench UART" }).count() === 1,
+    "session search Enter did not activate the selected workspace view");
+
+  await page.getByRole("button", { name: "搜索会话", exact: true }).click();
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
+  const logSearchInput = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
+  await logSearchInput.fill("production");
+  assert(await page.getByRole("option", { name: /Edge Router/ }).count() === 1,
+    "global log search did not match its session context");
+  await logSearchInput.press("Escape");
+  await page.locator(".search-dialog").waitFor({ state: "detached" });
+
+  await page.getByRole("button", { name: "搜索会话", exact: true }).click();
+  const restoreSearchInput = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
+  await restoreSearchInput.fill("gateway");
+  await restoreSearchInput.press("Enter");
+  await page.locator(".search-dialog").waitFor({ state: "detached" });
+  assert(await page.locator(".workspace-pane-tab.active", { hasText: /^Edge$/ }).count() === 1,
+    "tag search did not restore the exact Edge workspace view");
 
   async function openTerminalSettings() {
     await page.locator(".menu-trigger", { hasText: "工具" }).click();
@@ -519,6 +548,23 @@ try {
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
 
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "会话搜索" }).click();
+  const mobileSearch = page.locator(".search-dialog");
+  await mobileSearch.waitFor();
+  const mobileSearchBounds = await mobileSearch.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  });
+  assert(mobileSearchBounds.left >= 0 && mobileSearchBounds.right <= mobile.viewportWidth
+    && mobileSearchBounds.top >= 0 && mobileSearchBounds.bottom <= mobile.viewportHeight,
+  `mobile search dialog exceeds the viewport: ${JSON.stringify(mobileSearchBounds)}`);
+  assert(await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).isVisible(),
+    "mobile session search has no reachable input");
+  await page.screenshot({ path: `${screenshotPrefix}-search-mobile.png`, fullPage: true });
+  await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).press("Escape");
+  await mobileSearch.waitFor({ state: "detached" });
+
   const terminalWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
   )));
@@ -535,6 +581,8 @@ try {
     desktop,
     mobile,
     screenshots: [
+      `${screenshotPrefix}-search.png`,
+      `${screenshotPrefix}-search-mobile.png`,
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
