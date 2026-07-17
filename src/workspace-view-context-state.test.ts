@@ -34,11 +34,17 @@ describe("workspace view context capabilities", () => {
       canCloseOther: true,
       canCloseRight: true,
       canMove: false,
+      canMoveToNewGroup: true,
+      canDetach: true,
+      canClosePane: false,
       canReopen: false,
     });
     expect(workspaceViewContextCapabilities(pane(), "view-2", 2, 3, true)).toMatchObject({
       canCloseRight: false,
       canMove: true,
+      canMoveToNewGroup: true,
+      canDetach: true,
+      canClosePane: true,
       canReopen: true,
     });
   });
@@ -49,13 +55,20 @@ describe("workspace view context capabilities", () => {
       canCloseOther: false,
       canCloseRight: false,
       canMove: false,
+      canMoveToNewGroup: false,
+      canDetach: false,
+      canClosePane: false,
     });
     expect(workspaceViewContextCapabilities(pane(), "missing", 2, 3, true))
-      .toEqual({ canDuplicate: false, canClose: false, canCloseOther: false, canCloseRight: false, canMove: false, canReopen: false });
+      .toEqual({ canDuplicate: false, canClose: false, canCloseOther: false, canCloseRight: false, canMove: false, canMoveToNewGroup: false, canDetach: false, canClosePane: false, canReopen: false });
   });
 
   it("disables duplication at the per-group view limit", () => {
     expect(workspaceViewContextCapabilities(pane(MAX_WORKSPACE_GROUP_TABS), "view-0", 1, MAX_WORKSPACE_GROUP_TABS, false).canDuplicate)
       .toBe(false);
+  });
+
+  it("disables creating a group at the workspace structure limit", () => {
+    expect(workspaceViewContextCapabilities(pane(), "view-0", 2, 3, false, false).canMoveToNewGroup).toBe(false);
   });
 });

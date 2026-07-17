@@ -1,4 +1,5 @@
 import { Ban } from "lucide-react";
+import type { ReactNode } from "react";
 import type { WorkspaceView } from "./workspace-state";
 
 export type WorkspaceViewContextAction =
@@ -11,10 +12,22 @@ export type WorkspaceViewContextAction =
   | "split-horizontal"
   | "split-vertical"
   | "move-group"
+  | "move-new-left"
+  | "move-new-right"
+  | "move-new-up"
+  | "move-new-down"
+  | "detach-pane"
+  | "merge-group"
+  | "swap-up"
+  | "swap-down"
+  | "swap-left"
+  | "swap-right"
+  | "toggle-zoom"
   | "close"
   | "close-other"
   | "close-right"
   | "reopen"
+  | "close-pane"
   | "settings";
 
 export default function WorkspaceViewContextMenu({
@@ -27,6 +40,12 @@ export default function WorkspaceViewContextMenu({
   canCloseOther,
   canCloseRight,
   canMove,
+  canMoveToNewGroup,
+  canDetach,
+  canClosePane,
+  canMerge,
+  canSwap,
+  canZoom,
   canReopen,
   onColor,
   onDuplicate,
@@ -42,6 +61,12 @@ export default function WorkspaceViewContextMenu({
   canCloseOther: boolean;
   canCloseRight: boolean;
   canMove: boolean;
+  canMoveToNewGroup: boolean;
+  canDetach: boolean;
+  canClosePane: boolean;
+  canMerge: boolean;
+  canSwap: Readonly<Record<"up" | "down" | "left" | "right", boolean>>;
+  canZoom: boolean;
   canReopen: boolean;
   onColor: (color: string) => void;
   onDuplicate: () => void;
@@ -105,11 +130,28 @@ export default function WorkspaceViewContextMenu({
       <MenuButton label="水平拆分视图" onClick={() => onAction("split-horizontal")} />
       <MenuButton label="垂直拆分视图" onClick={() => onAction("split-vertical")} />
       <MenuButton label="移动视图到分组" disabled={!canMove} onClick={() => onAction("move-group")} />
+      <ContextSubmenu label="移到新分组" disabled={!canMoveToNewGroup}>
+        <MenuButton label="左侧" onClick={() => onAction("move-new-left")} />
+        <MenuButton label="右侧" onClick={() => onAction("move-new-right")} />
+        <MenuButton label="上方" onClick={() => onAction("move-new-up")} />
+        <MenuButton label="下方" onClick={() => onAction("move-new-down")} />
+      </ContextSubmenu>
+      <MenuButton label="移到新窗口" disabled={!canDetach} onClick={() => onAction("detach-pane")} />
       <Divider />
       <MenuButton label="关闭视图" disabled={!canClose} onClick={() => onAction("close")} />
       <MenuButton label="关闭其他视图" disabled={!canCloseOther} onClick={() => onAction("close-other")} />
       <MenuButton label="关闭右侧视图" disabled={!canCloseRight} onClick={() => onAction("close-right")} />
       <MenuButton label="重新打开已关闭视图" disabled={!canReopen} onClick={() => onAction("reopen")} />
+      <MenuButton label="关闭窗格" disabled={!canClosePane} onClick={() => onAction("close-pane")} />
+      <Divider />
+      <MenuButton label="合并当前分组" disabled={!canMerge} onClick={() => onAction("merge-group")} />
+      <ContextSubmenu label="交换窗格" disabled={!Object.values(canSwap).some(Boolean)}>
+        <MenuButton label="向上" disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
+        <MenuButton label="向下" disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
+        <MenuButton label="向左" disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
+        <MenuButton label="向右" disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
+      </ContextSubmenu>
+      <MenuButton label="切换窗格缩放" disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
       <Divider />
       <MenuButton label="会话设置..." onClick={() => onAction("settings")} />
     </div>
@@ -122,6 +164,27 @@ function MenuButton({ label, disabled, onClick }: { label: string; disabled?: bo
       <span className="context-check" />
       <span className="context-label">{label}</span>
     </button>
+  );
+}
+
+function ContextSubmenu({
+  label,
+  disabled,
+  children,
+}: {
+  label: string;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
+      <button type="button" className="context-menu-row" aria-label={label} disabled={disabled}>
+        <span className="context-check" />
+        <span className="context-label">{label}</span>
+        <span className="context-arrow">›</span>
+      </button>
+      {!disabled ? <div className="context-submenu-panel">{children}</div> : null}
+    </div>
   );
 }
 

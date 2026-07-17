@@ -15,7 +15,6 @@ describe("workspace panel state", () => {
     expect(defaultWorkspacePanelVisibility).toEqual({
       explorer: true,
       fileManager: false,
-      sessions: false,
       history: false,
       sender: false,
       statusBar: true,
@@ -40,7 +39,6 @@ describe("workspace panel state", () => {
     })).toEqual({
       explorer: false,
       fileManager: true,
-      sessions: true,
       history: true,
       sender: false,
       statusBar: false,
@@ -53,7 +51,7 @@ describe("workspace panel state", () => {
     expect(shown).not.toBe(initial);
     expect(shown.history).toBe(true);
     expect(setWorkspacePanelVisibility(shown, "history", true)).toBe(shown);
-    expect(toggleWorkspacePanelVisibility(shown, "sessions")).toEqual({ ...shown, sessions: false });
+    expect(toggleWorkspacePanelVisibility(shown, "sender")).toEqual({ ...shown, sender: false });
   });
 
   it("derives focus mode without changing the saved panel choices", () => {
@@ -62,7 +60,6 @@ describe("workspace panel state", () => {
     expect(resolveWorkspacePanelVisibility(current, true)).toEqual({
       explorer: false,
       fileManager: false,
-      sessions: false,
       history: false,
       sender: false,
       statusBar: false,

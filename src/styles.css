@@ -735,6 +735,28 @@ button {
   background: #111820;
 }
 
+.menu-primary {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.menu-brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-right: 1px solid var(--line-soft);
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.menu-brand strong {
+  color: #dce5ee;
+  font-weight: 600;
+}
+
 .menu-row,
 .menu-tools {
   display: flex;
@@ -817,8 +839,14 @@ button {
   font-size: 13px;
 }
 
-.menu-popover button:hover {
+.menu-popover button:hover:not(:disabled) {
   background: var(--panel-3);
+}
+
+.menu-popover button:disabled {
+  color: #657789;
+  cursor: default;
+  opacity: 0.62;
 }
 
 .menu-popover button.menu-toggle {
@@ -2214,6 +2242,19 @@ button {
   overscroll-behavior: contain;
 }
 
+.workspace-view-context-menu .context-submenu-panel {
+  position: static;
+  min-width: 0;
+  margin: 0 4px 4px 22px;
+  border: 0;
+  border-left: 1px solid #464b51;
+  box-shadow: none;
+}
+
+.workspace-view-context-menu .context-submenu:focus-within > .context-submenu-panel {
+  display: grid;
+}
+
 .workspace-view-context-title {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr);
@@ -2341,21 +2382,9 @@ button {
 
 }
 
-@container (max-width: 420px) {
-  .terminal-pane header > .duplicate-view-button {
-    display: none;
-  }
-}
-
 .terminal-pane header > button:hover:not(:disabled) {
   color: var(--red);
   background: rgba(248, 113, 113, 0.1);
-}
-
-.terminal-pane header > .detach-pane-button:hover:not(:disabled),
-.terminal-pane header > .move-view-button:hover:not(:disabled) {
-  color: var(--cyan);
-  background: rgba(94, 234, 212, 0.1);
 }
 
 .workspace-group-move-dialog {
@@ -5901,11 +5930,23 @@ fieldset label {
 
   .wind-menu {
     min-width: 0;
-    overflow-x: auto;
+    overflow: visible;
   }
 
   .menu-row {
-    flex: 0 0 auto;
+    min-width: 0;
+  }
+
+  .menu-brand {
+    padding-inline: 9px;
+  }
+
+  .menu-brand strong {
+    display: none;
+  }
+
+  .menu-trigger {
+    padding-inline: 8px;
   }
 
   .menu-popover {
@@ -5914,12 +5955,18 @@ fieldset label {
     left: 4px;
   }
 
-  .menu-item:nth-child(n + 5) .menu-popover {
+  .menu-item:nth-child(n + 3) .menu-popover {
     right: 4px;
     left: auto;
   }
 
   .menu-tools {
+    display: flex;
+    margin-left: auto;
+    padding-inline: 4px;
+  }
+
+  .menu-tools button:last-child {
     display: none;
   }
 

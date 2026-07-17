@@ -4,7 +4,6 @@ export const LEGACY_WORKSPACE_PANEL_STORAGE_KEY = "portmate.workspacePanels.v1";
 export const workspacePanelIds = [
   "explorer",
   "fileManager",
-  "sessions",
   "history",
   "sender",
   "statusBar",
@@ -16,7 +15,6 @@ export type WorkspacePanelVisibility = Record<WorkspacePanelId, boolean>;
 export const defaultWorkspacePanelVisibility: WorkspacePanelVisibility = {
   explorer: true,
   fileManager: false,
-  sessions: false,
   history: false,
   sender: false,
   statusBar: true,
@@ -25,7 +23,6 @@ export const defaultWorkspacePanelVisibility: WorkspacePanelVisibility = {
 const legacyWorkspacePanelVisibility: WorkspacePanelVisibility = {
   explorer: true,
   fileManager: true,
-  sessions: true,
   history: true,
   sender: true,
   statusBar: true,

@@ -690,6 +690,19 @@ export function splitWorkspacePaneWithView(
   return splitWorkspacePaneWithViewAtDepth(root, paneId, direction, view, newPaneId, splitId, placement, 0);
 }
 
+export function canSplitWorkspacePane(root: WorkspaceNode | null, paneId: string): boolean {
+  if (!root || !paneId) return false;
+  return workspacePaneDepth(root, paneId, 0) < MAX_WORKSPACE_DEPTH;
+}
+
+function workspacePaneDepth(root: WorkspaceNode, paneId: string, depth: number): number {
+  if (root.kind === "pane") return root.id === paneId ? depth : Number.POSITIVE_INFINITY;
+  return Math.min(
+    workspacePaneDepth(root.first, paneId, depth + 1),
+    workspacePaneDepth(root.second, paneId, depth + 1),
+  );
+}
+
 function splitWorkspacePaneWithViewAtDepth(
   root: WorkspaceNode,
   paneId: string,

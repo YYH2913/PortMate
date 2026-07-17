@@ -44,38 +44,6 @@ export function SessionExplorerPanel({
   );
 }
 
-export function SessionListPanel({
-  sessions,
-  activeId,
-  icons,
-  onSelect,
-  onOpenContextMenu,
-}: {
-  sessions: readonly SessionSummary[];
-  activeId: string;
-  icons: UtilityPanelIcons;
-  onSelect: (id: string) => void;
-  onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const visible = useMemo(() => filterWorkspaceSessions(sessions, query), [query, sessions]);
-  const groups = useMemo(() => groupSessions(visible, (session) => session.profile.kind.toUpperCase()), [visible]);
-  return (
-    <>
-      <PanelFilter label="筛选会话列表" value={query} icons={icons} onChange={setQuery} />
-      <SessionTree
-        groups={groups}
-        activeId={activeId}
-        colors={{}}
-        icons={icons}
-        emptyLabel={sessions.length ? "没有匹配的会话" : "没有可用的会话"}
-        onSelect={onSelect}
-        onOpenContextMenu={onOpenContextMenu}
-      />
-    </>
-  );
-}
-
 export function CommandHistoryList({
   history,
   beforeList,

@@ -259,7 +259,10 @@ try {
         .some((node) => node.textContent === "文件管理器"),
       connectionSummaryRows: document.querySelectorAll(".crumb-line").length,
       connectionControls: document.querySelectorAll(".connection-toggle").length,
+      paneHeaderActions: [...document.querySelectorAll(".terminal-pane > header > button")]
+        .map((button) => button.getAttribute("aria-label")),
       topToolsText: document.querySelector(".menu-tools")?.textContent ?? "",
+      brand: document.querySelector(".menu-brand")?.textContent?.trim() ?? "",
       menuLabels: [...document.querySelectorAll(".menu-trigger")].map((button) => button.textContent),
       status: document.querySelector(".status-bar")?.textContent ?? "",
       panels: panels.panels,
@@ -273,23 +276,51 @@ try {
     `resource tree is not using the compact width: ${initial.leftWidth}`);
   assert(initial.connectionSummaryRows === 0 && initial.connectionControls === 1,
     `connection context is still duplicated: ${JSON.stringify(initial)}`);
+  assert(JSON.stringify(initial.paneHeaderActions) === JSON.stringify(["断开 Edge Router"]),
+    `low-frequency pane actions are still permanently visible: ${JSON.stringify(initial.paneHeaderActions)}`);
+  assert(initial.brand === "PortMate", `workspace brand is missing: ${JSON.stringify(initial.brand)}`);
   assert(!initial.topToolsText.includes("隧道"),
     `duplicate tunnel shortcut survived: ${initial.topToolsText}`);
   assert(JSON.stringify(initial.menuLabels) === JSON.stringify([
-    "会话", "编辑", "查看", "模式", "传输", "工具", "窗口", "帮助",
+    "会话", "终端", "工作区", "工具",
   ]), `top menu categories are still redundant: ${JSON.stringify(initial.menuLabels)}`);
   assert(!initial.status.includes("窗口 -1×-1") && !initial.status.includes("PortMate Issues"),
     `placeholder status text survived: ${initial.status}`);
   assert(initial.panels.explorer && initial.panels.statusBar
-    && !initial.panels.fileManager && !initial.panels.sessions
+    && !initial.panels.fileManager && !Object.hasOwn(initial.panels, "sessions")
     && !initial.panels.history && !initial.panels.sender,
   `migrated v2 panel snapshot is wrong: ${JSON.stringify(initial.panels)}`);
 
-  await page.locator(".menu-trigger", { hasText: "传输" }).click();
-  const transferMenuItems = await page.locator(".menu-popover button")
-    .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
-  assert(JSON.stringify(transferMenuItems) === JSON.stringify(["传输任务"]),
-    `transfer menu still exposes duplicate routes: ${JSON.stringify(transferMenuItems)}`);
+  await page.locator('.workspace-pane-tab[data-view-id="view-edge"]').click({ button: "right" });
+  const workspaceViewMenu = page.locator(".workspace-view-context-menu");
+  await workspaceViewMenu.waitFor();
+  assert(await workspaceViewMenu.getByRole("button", { name: "移到新窗口", exact: true }).isDisabled()
+    && await workspaceViewMenu.getByRole("button", { name: "关闭窗格", exact: true }).isDisabled()
+    && await workspaceViewMenu.getByRole("button", { name: "移到新分组", exact: true }).isDisabled()
+    && await workspaceViewMenu.getByRole("button", { name: "合并当前分组", exact: true }).isDisabled()
+    && await workspaceViewMenu.getByRole("button", { name: "交换窗格", exact: true }).isDisabled()
+    && await workspaceViewMenu.getByRole("button", { name: "切换窗格缩放", exact: true }).isDisabled(),
+  "relocated single-pane actions do not preserve their disabled state");
+  assert(await workspaceViewMenu.getByRole("button", { name: "复制视图", exact: true }).isEnabled(),
+    "relocated duplicate-view action is unavailable");
+  await page.locator(".center-workspace").click({ position: { x: 400, y: 160 } });
+  await workspaceViewMenu.waitFor({ state: "detached" });
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  const sessionMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
+    buttons.map((button) => [button.textContent?.trim(), button.disabled]),
+  ));
+  assert(sessionMenuState["启动会话"] && !sessionMenuState["关闭会话"] && !sessionMenuState["会话设置"],
+    `connected session menu capabilities are wrong: ${JSON.stringify(sessionMenuState)}`);
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  const toolMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
+    buttons.map((button) => [button.textContent?.trim(), button.disabled]),
+  ));
+  assert(!toolMenuState["传输任务"] && !toolMenuState["端口转发"] && !toolMenuState.Tmux
+    && toolMenuState["串口分析器"],
+  `SSH tool capabilities are wrong: ${JSON.stringify(toolMenuState)}`);
   await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
   await page.locator(".transfer-dialog").waitFor();
   const sshTransferOptions = await page.locator(".transfer-dialog select").locator("option")
@@ -303,7 +334,13 @@ try {
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
 
   await page.locator(".left-stack .tree-session", { hasText: "Bench UART" }).click();
-  await page.locator(".menu-trigger", { hasText: "传输" }).click();
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  const serialToolState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
+    buttons.map((button) => [button.textContent?.trim(), button.disabled]),
+  ));
+  assert(!serialToolState["传输任务"] && serialToolState["端口转发"] && serialToolState.Tmux
+    && !serialToolState["串口分析器"],
+  `serial tool capabilities are wrong: ${JSON.stringify(serialToolState)}`);
   await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
   await page.locator(".transfer-dialog").waitFor();
   const serialTransferOptions = await page.locator(".transfer-dialog select").locator("option")
@@ -367,28 +404,19 @@ try {
     "resource context menu targeted a different session");
 
   async function togglePanel(label) {
-    await page.locator(".menu-trigger", { hasText: "查看" }).click();
+    await page.locator(".menu-trigger", { hasText: "工作区" }).click();
     await page.locator(".menu-popover button", { hasText: label }).click();
   }
 
-  await togglePanel("会话");
   await togglePanel("历史命令");
   await togglePanel("发送");
-  const sessionFilter = page.getByRole("textbox", { name: "筛选会话列表", exact: true });
-  await sessionFilter.fill("ttyUSB0");
-  const uart = page.locator(".right-stack .tree-session", { hasText: "Bench UART" });
-  assert(await uart.count() === 1, "session endpoint filter missed Bench UART");
+  assert(await page.locator(".right-stack .tree-session").count() === 0,
+    "a second session browser is still rendered in the right dock");
+  const uart = page.locator(".left-stack .tree-session", { hasText: "Bench UART" });
   await uart.click();
-  await page.waitForFunction(() => document.querySelector(".right-stack .tree-session.active")?.textContent?.includes("Bench UART"));
+  await page.waitForFunction(() => document.querySelector(".left-stack .tree-session.active")?.textContent?.includes("Bench UART"));
   assert(await page.locator(".pane-serial-tools").count() === 1,
     "serial line controls were lost while consolidating the workspace toolbar");
-  await sessionFilter.fill("gateway");
-  const filteredEdge = page.locator(".right-stack .tree-session", { hasText: "Edge Router" });
-  assert(await filteredEdge.count() === 1, "session tag filter missed Edge Router");
-  await filteredEdge.click({ button: "right" });
-  await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
-  assert(await page.evaluate(() => window.__clipboardText) === "Edge Router",
-    "filtered session context menu targeted a different session");
 
   const historyFilter = page.getByRole("textbox", { name: "筛选历史命令", exact: true });
   await historyFilter.fill("COMPOSE UP");
@@ -603,7 +631,6 @@ try {
   assert(sessionPreferenceKeys.length === 0,
     `closing session settings persisted non-runtime preferences: ${JSON.stringify(sessionPreferenceKeys)}`);
 
-  await togglePanel("会话");
   await togglePanel("历史命令");
   await togglePanel("发送");
   const desktop = await page.evaluate(() => ({
@@ -621,7 +648,6 @@ try {
     `desktop did not return optional space to the terminal: ${JSON.stringify(desktop)}`);
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
 
-  await togglePanel("会话");
   await togglePanel("历史命令");
   await togglePanel("发送");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -649,8 +675,7 @@ try {
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
 
-  await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "会话搜索" }).click();
+  await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   const mobileSearch = page.locator(".search-dialog");
   await mobileSearch.waitFor();
   const mobileSearchBounds = await mobileSearch.evaluate((dialog) => {
@@ -688,8 +713,8 @@ try {
 
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
-    filters: ["resource tag/endpoint", "session tag/endpoint", "normalized history"],
-    contextMenu: "single synchronized-input, split, and move actions",
+    filters: ["resource tag/endpoint", "normalized history"],
+    contextMenu: "single synchronized-input, split, move, merge, swap, zoom, detach, and close-pane actions",
     transferProtocols: {
       ssh: sshTransferOptions.map((option) => option.value),
       serial: serialTransferOptions,
@@ -722,8 +747,15 @@ try {
   await new Promise((resolve) => {
     if (vite.exitCode !== null) resolve();
     else {
-      vite.once("exit", resolve);
-      setTimeout(resolve, 2000).unref();
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      vite.once("exit", finish);
+      const timer = setTimeout(finish, 2000);
     }
   });
 }

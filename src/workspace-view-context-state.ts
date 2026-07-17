@@ -7,6 +7,9 @@ export type WorkspaceViewContextCapabilities = {
   canCloseOther: boolean;
   canCloseRight: boolean;
   canMove: boolean;
+  canMoveToNewGroup: boolean;
+  canDetach: boolean;
+  canClosePane: boolean;
   canReopen: boolean;
 };
 
@@ -22,6 +25,7 @@ export function workspaceViewContextCapabilities(
   paneCount: number,
   totalViewCount: number,
   canReopen: boolean,
+  canCreatePane = true,
 ): WorkspaceViewContextCapabilities {
   const viewIndex = pane?.views.findIndex((view) => view.id === viewId) ?? -1;
   const hasView = viewIndex >= 0;
@@ -32,6 +36,9 @@ export function workspaceViewContextCapabilities(
     canCloseOther: hasView && viewCount > 1,
     canCloseRight: hasView && viewIndex < viewCount - 1,
     canMove: hasView && paneCount > 1,
+    canMoveToNewGroup: hasView && viewCount > 1 && canCreatePane,
+    canDetach: hasView && (paneCount > 1 || viewCount > 1),
+    canClosePane: hasView && paneCount > 1,
     canReopen: hasView && canReopen,
   };
 }

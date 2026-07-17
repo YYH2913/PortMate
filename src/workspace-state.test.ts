@@ -3,6 +3,8 @@ import {
   activateWorkspacePaneSession,
   activateWorkspacePaneView,
   addWorkspacePaneSession,
+  canSplitWorkspacePane,
+  createWorkspacePane,
   duplicateWorkspacePaneView,
   MAX_WORKSPACE_DEPTH,
   MAX_WORKSPACE_GROUP_TABS,
@@ -34,6 +36,17 @@ import {
 import type { WorkspaceNode, WorkspaceSplitNode } from "./workspace-state";
 
 describe("workspace snapshots", () => {
+  it("reports whether an exact pane remains below the nesting limit", () => {
+    const paneId = "depth-target";
+    let root: WorkspaceNode = createWorkspacePane("session-a", paneId);
+    for (let depth = 0; depth < MAX_WORKSPACE_DEPTH; depth += 1) {
+      expect(canSplitWorkspacePane(root, paneId)).toBe(true);
+      root = splitWorkspacePane(root, paneId, "vertical", "session-b", `pane-${depth}`, `split-${depth}`, "second");
+    }
+    expect(canSplitWorkspacePane(root, paneId)).toBe(false);
+    expect(canSplitWorkspacePane(root, "missing")).toBe(false);
+  });
+
   it("migrates flat v1 layouts into equal recursive splits and preserves duplicate bindings", () => {
     const snapshot = sanitizeWorkspaceSnapshot({
       version: 1,
