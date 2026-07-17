@@ -65,6 +65,7 @@ import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
+import { normalizeTerminalStartupSessionIds, terminalStartupSessionOptions } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
@@ -111,15 +112,12 @@ const workspaceUtilityIcons = { Folder, Search, X };
 
 const menuGroups = [
   { label: "会话", items: ["新建会话", "会话设置", "启动会话", "关闭会话", "导出终端文本", "导出选中文本", "复制会话", "还原布局"] },
-  { label: "编辑", items: ["复制", "粘贴", "粘贴确认", "全选", "查找"] },
-  { label: "搜索", items: ["会话搜索", "日志搜索", "在线搜索"] },
-  { label: "选择", items: ["选择全部", "块选择", "清除选择"] },
-  { label: "转到", items: ["上一个标签", "下一个标签", "跳转到行"] },
+  { label: "编辑", items: ["复制", "粘贴", "粘贴确认", "全选", "块选择", "清除选择", "查找", "日志搜索", "在线搜索", "跳转到行"] },
   { label: "查看", items: ["资源管理器", "文件管理器", "会话", "历史命令", "发送", "快捷栏", "状态栏"] },
-  { label: "模式", items: ["远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入", "专注模式", "锁屏"] },
+  { label: "模式", items: ["远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入"] },
   { label: "传输", items: ["SFTP/SCP 传输", "X/Y/ZModem"] },
   { label: "工具", items: ["终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "串口分析器", "触发器", "日志管理", "密钥管理器", "MCP Bridge"] },
-  { label: "窗口", items: ["水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
+  { label: "窗口", items: ["上一个标签", "下一个标签", "水平拆分", "垂直拆分", "复制视图", "重命名视图", "设置标签页颜色", "视图移到左侧新分组", "视图移到右侧新分组", "视图移到上方新分组", "视图移到下方新分组", "关闭视图", "关闭其他视图", "关闭右侧视图", "重新打开已关闭视图", "关闭窗格", "移动视图到分组", "合并当前分组", "移到新窗口", "向上交换", "向下交换", "向左交换", "向右交换", "切换窗格缩放"] },
   { label: "帮助", items: ["关于 PortMate"] },
 ];
 
@@ -146,16 +144,14 @@ const workspaceViewGroupSplitActions: Record<string, { direction: WorkspaceSplit
   视图移到下方新分组: { direction: "horizontal", placement: "second" },
 };
 
-const terminalSettingTree = [
-  { label: "应用" },
-  { label: "外观" },
-  { label: "代理" },
-  { label: "安全" },
-  { label: "标签" },
-  { label: "终端", children: ["快捷键", "同步输入", "Auto Completion", "命令历史", "鼠标追踪"] },
-  { label: "文本", children: ["二进制", "插入符", "字体", "高亮", "换行"] },
-  { label: "小部件", children: ["文件管理器", "快捷栏"] },
-  { label: "X Server", children: ["扩展"] },
+const terminalSettingPages = [
+  "应用",
+  "安全",
+  "快捷键",
+  "自动补全",
+  "命令历史",
+  "鼠标",
+  "同步输入",
 ] as const;
 
 const protocolTabs = ["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"] as const;
@@ -2728,11 +2724,12 @@ function handleMenuAction(item: string) {
     setCredentialPrompt(null);
   }
 
-  async function setSerialLine(line: "dtr" | "rts", value: boolean) {
-    if (!active || active.profile.connection.kind !== "serial") return;
+  async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
+    const session = sessions.find((item) => item.profile.id === sessionId);
+    if (!session || session.profile.connection.kind !== "serial") return;
     try {
       const saved = await invokeBackend<SessionSummary>("serial_set_lines", {
-        request: { sessionId: active.profile.id, [line]: value },
+        request: { sessionId, [line]: value },
       });
       setSessions((current) => mergeSessionSummaries(current, saved));
     } catch (error) {
@@ -2740,11 +2737,12 @@ function handleMenuAction(item: string) {
     }
   }
 
-  async function sendSerialBreak() {
-    if (!active || active.profile.connection.kind !== "serial") return;
+  async function sendSerialBreak(sessionId: string) {
+    const session = sessions.find((item) => item.profile.id === sessionId);
+    if (!session || session.profile.connection.kind !== "serial") return;
     try {
-      await invokeBackend("serial_send_break", { sessionId: active.profile.id });
-      await refreshActiveLog(active.profile.id);
+      await invokeBackend("serial_send_break", { sessionId });
+      await refreshActiveLog(sessionId);
     } catch (error) {
       setNotice({ title: "Break 失败", message: formatError(error) });
     }
@@ -2792,10 +2790,8 @@ function handleMenuAction(item: string) {
         </div>
         <div className="menu-tools">
           <button type="button" title="搜索会话" aria-label="搜索会话" onClick={() => handleMenuAction("会话搜索")}><Search size={13} /></button>
-          <button type="button" onClick={() => handleMenuAction("端口转发")}>隧道</button>
-          <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
+          <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? "退出专注模式" : "进入专注模式"} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-            <span>{focusMode ? "退出专注" : "专注模式"}</span>
           </button>
         </div>
       </header>
@@ -2837,40 +2833,6 @@ function handleMenuAction(item: string) {
         ) : null}
 
         <section className="center-workspace">
-          <div className="crumb-line">
-            <button onClick={openNewSessionDialog}>
-              <Plus size={14} />
-            </button>
-            <button onClick={() => void refresh()}>
-              <RefreshCw size={14} />
-            </button>
-            {active && active.runtime.status !== "connected" ? (
-              <button onClick={() => void connectSession(active.profile.id)}>
-                <Play size={14} />
-              </button>
-            ) : null}
-            {active && active.runtime.status === "connected" ? (
-              <button onClick={() => void disconnectSession(active.profile.id)}>
-                <Square size={13} />
-              </button>
-            ) : null}
-            <span className="crumb-path">{active ? `${active.profile.kind} > ${describeEndpoint(active)}` : "未打开会话"}</span>
-            {activeSerial && active?.runtime.status === "connected" ? (
-              <div className="serial-line-tools">
-                <button className={activeSerial.dtr ? "active" : ""} onClick={() => void setSerialLine("dtr", !activeSerial.dtr)}>DTR</button>
-                <button className={activeSerial.rts ? "active" : ""} onClick={() => void setSerialLine("rts", !activeSerial.rts)}>RTS</button>
-                <button onClick={() => void sendSerialBreak()}>BRK</button>
-              </div>
-            ) : null}
-            {active ? <span className={`runtime-pill ${active.runtime.status}`}>{active.runtime.status}</span> : null}
-            {active ? <SysmonApplet key={active.profile.id} session={active} onOpen={() => setUtilityDialog("sysmon")} /> : null}
-            {active?.runtime.lastDisconnect ? (
-              <span className="runtime-disconnect" title={active.runtime.lastDisconnectReason ?? undefined}>
-                最近断开 {formatEventClock(active.runtime.lastDisconnect)}
-                {active.runtime.lastDisconnectReason ? ` · ${active.runtime.lastDisconnectReason}` : ""}
-              </span>
-            ) : null}
-          </div>
           <TerminalPaneGrid
             root={workspaceRoot}
             sessions={sessions}
@@ -2889,6 +2851,10 @@ function handleMenuAction(item: string) {
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onOneKeyCompletion={completeOneKeyPrompt}
             onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
+            onConnect={(sessionId) => void connectSession(sessionId)}
+            onDisconnect={(sessionId) => void disconnectSession(sessionId)}
+            onSetSerialLine={(sessionId, line, value) => void setSerialLine(sessionId, line, value)}
+            onSendSerialBreak={(sessionId) => void sendSerialBreak(sessionId)}
             onActivate={activateWorkspacePane}
             onCloseView={closeWorkspaceViews}
             onDuplicateView={duplicateActiveWorkspaceView}
@@ -2990,7 +2956,7 @@ function handleMenuAction(item: string) {
       </section>
 
       {visibleWorkspacePanels.statusBar ? <footer className="status-bar">
-        <span>就绪</span>
+        {active ? <SysmonApplet key={active.profile.id} session={active} onOpen={() => setUtilityDialog("sysmon")} /> : <span />}
         <span />
         <button
           type="button"
@@ -3082,6 +3048,7 @@ function handleMenuAction(item: string) {
       {dialog === "terminal" && (
         <TerminalSettingsDialog
           initialPrefs={terminalPrefs}
+          sessions={sessions}
           syncSettings={syncInputSettings}
           workspaceKeymap={workspaceKeymap}
           onPrefsChange={setTerminalPrefs}
@@ -4248,6 +4215,10 @@ function TerminalPaneGrid({
   onInput,
   onOneKeyCompletion,
   onKeyModeChange,
+  onConnect,
+  onDisconnect,
+  onSetSerialLine,
+  onSendSerialBreak,
   onActivate,
   onCloseView,
   onDuplicateView,
@@ -4281,6 +4252,10 @@ function TerminalPaneGrid({
     promptEventId: string,
   ) => Promise<void>;
   onKeyModeChange: (paneId: string, viewId: string, keyMode: TerminalKeyMode) => void;
+  onConnect: (sessionId: string) => void;
+  onDisconnect: (sessionId: string) => void;
+  onSetSerialLine: (sessionId: string, line: "dtr" | "rts", value: boolean) => void;
+  onSendSerialBreak: (sessionId: string) => void;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -4318,6 +4293,10 @@ function TerminalPaneGrid({
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
+        onConnect={onConnect}
+        onDisconnect={onDisconnect}
+        onSetSerialLine={onSetSerialLine}
+        onSendSerialBreak={onSendSerialBreak}
         onActivate={onActivate}
         onCloseView={onCloseView}
         onDuplicateView={onDuplicateView}
@@ -4357,6 +4336,10 @@ type TerminalWorkspaceNodeProps = {
     promptEventId: string,
   ) => Promise<void>;
   onKeyModeChange: (paneId: string, viewId: string, keyMode: TerminalKeyMode) => void;
+  onConnect: (sessionId: string) => void;
+  onDisconnect: (sessionId: string) => void;
+  onSetSerialLine: (sessionId: string, line: "dtr" | "rts", value: boolean) => void;
+  onSendSerialBreak: (sessionId: string) => void;
   onActivate: (paneId: string, viewId: string) => void;
   onCloseView: (paneId: string, viewIds: string[]) => void;
   onDuplicateView: (paneId: string, viewId?: string) => void;
@@ -4374,6 +4357,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   if (node.kind === "split") return <TerminalSplitNode {...props} node={node} />;
   const activeView = workspacePaneActiveView(node);
   const session = props.sessions.find((item) => item.profile.id === activeView.sessionId);
+  const serialConnection = session?.profile.connection.kind === "serial" ? session.profile.connection : null;
   const groupViews = node.views.map((view) => ({
     view,
     session: props.sessions.find((item) => item.profile.id === view.sessionId),
@@ -4413,7 +4397,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
             const label = view.title || item.profile.name;
             return (
               <div
-                className={`workspace-pane-tab${isActiveView ? " active" : ""}${view.color ? " has-color" : ""}`}
+                className={`workspace-pane-tab status-${item.runtime.status}${isActiveView ? " active" : ""}${view.color ? " has-color" : ""}`}
                 role="presentation"
                 data-view-id={view.id}
                 draggable
@@ -4491,6 +4475,53 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           })}
           {!groupViews.length ? <strong>会话不可用</strong> : null}
         </div>
+        {session && serialConnection && session.runtime.status === "connected" ? (
+          <div className="pane-serial-tools" aria-label="串口线路控制">
+            <button
+              type="button"
+              className={serialConnection.dtr ? "active" : ""}
+              aria-pressed={serialConnection.dtr}
+              title="切换 DTR"
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onSetSerialLine(session.profile.id, "dtr", !serialConnection.dtr);
+              }}
+            >DTR</button>
+            <button
+              type="button"
+              className={serialConnection.rts ? "active" : ""}
+              aria-pressed={serialConnection.rts}
+              title="切换 RTS"
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onSetSerialLine(session.profile.id, "rts", !serialConnection.rts);
+              }}
+            >RTS</button>
+            <button
+              type="button"
+              title="发送 Break"
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onSendSerialBreak(session.profile.id);
+              }}
+            >BRK</button>
+          </div>
+        ) : null}
+        {session ? (
+          <button
+            type="button"
+            className={`connection-toggle ${session.runtime.status}`}
+            title={`${session.runtime.status === "connected" ? "断开" : "连接"} ${session.profile.name}`}
+            aria-label={`${session.runtime.status === "connected" ? "断开" : "连接"} ${session.profile.name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (session.runtime.status === "connected") props.onDisconnect(session.profile.id);
+              else props.onConnect(session.profile.id);
+            }}
+          >
+            {session.runtime.status === "connected" ? <Square size={11} /> : <Play size={12} />}
+          </button>
+        ) : null}
         <button
           type="button"
           className="duplicate-view-button"
@@ -7322,6 +7353,7 @@ function NoticeDialog({ title, message, onClose }: { title: string; message: str
 
 function TerminalSettingsDialog({
   initialPrefs,
+  sessions,
   syncSettings,
   workspaceKeymap,
   onPrefsChange,
@@ -7331,6 +7363,7 @@ function TerminalSettingsDialog({
   onClose,
 }: {
   initialPrefs: TerminalPrefs;
+  sessions: readonly SessionSummary[];
   syncSettings: SyncInputSettings;
   workspaceKeymap: WorkspaceKeymap;
   onPrefsChange: (prefs: TerminalPrefs) => void;
@@ -7344,7 +7377,6 @@ function TerminalSettingsDialog({
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
-  const showRestartNote = ["应用", "外观", "字体", "扩展"].includes(activeItem);
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
 
   function savePrefs() {
@@ -7362,34 +7394,17 @@ function TerminalSettingsDialog({
   return (
     <DialogFrame title="终端设置" className="terminal-settings-dialog" onClose={onClose}>
       <aside className="settings-tree">
-        {terminalSettingTree.map((item) => {
-          if ("children" in item) {
-            return (
-              <div key={item.label} className="settings-tree-group">
-                <button className={`settings-tree-parent ${activeItem === item.label ? "active" : ""}`} onClick={() => setActiveItem(item.label)}>
-                  <ChevronDown size={14} />
-                  <span>{item.label}</span>
-                </button>
-                {item.children.map((child) => (
-                  <button key={child} className={`child ${activeItem === child ? "active" : ""}`} onClick={() => setActiveItem(child)}>
-                    {child}
-                  </button>
-                ))}
-              </div>
-            );
-          }
-
-          return (
-            <button key={item.label} className={activeItem === item.label ? "active" : ""} onClick={() => setActiveItem(item.label)}>
-              {item.label}
+        {terminalSettingPages.map((page) => (
+          <button key={page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
+              {page}
             </button>
-          );
-        })}
+        ))}
       </aside>
       <section className="settings-content">
         <TerminalSettingsContent
           activeItem={activeItem}
           prefs={prefs}
+          sessions={sessions}
           workspaceKeymap={workspaceKeymapDraft}
           updatePref={updatePref}
           onClearCommandHistory={onClearCommandHistory}
@@ -7400,7 +7415,7 @@ function TerminalSettingsDialog({
       </section>
       <div className="dialog-footer">
         <div className={keymapConflictCount ? "dialog-note error" : "dialog-note"}>
-          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : showRestartNote ? "* 需要重启才能生效" : ""}
+          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : ""}
         </div>
         <div className="dialog-actions inline">
           <button onClick={savePrefs} disabled={keymapConflictCount > 0}>保存</button>
@@ -7414,6 +7429,7 @@ function TerminalSettingsDialog({
 function TerminalSettingsContent({
   activeItem,
   prefs,
+  sessions,
   workspaceKeymap,
   updatePref,
   onClearCommandHistory,
@@ -7423,6 +7439,7 @@ function TerminalSettingsContent({
 }: {
   activeItem: string;
   prefs: TerminalPrefs;
+  sessions: readonly SessionSummary[];
   workspaceKeymap: WorkspaceKeymap;
   updatePref: <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => void;
   onClearCommandHistory: () => void;
@@ -7433,60 +7450,24 @@ function TerminalSettingsContent({
   switch (activeItem) {
     case "应用":
       return (
-        <>
-          <SettingsSection title="应用">
-            <SettingSelect label="* 语言:(L)" value={prefs.language} options={["Chinese (Simplified) - 中文（简体）", "English", "日本語"]} onChange={(value) => updatePref("language", value)} />
-            <SettingSelect label="主题:(T)" value={prefs.theme} options={["dige-black", "portmate-dark", "neutral-dark"]} onChange={(value) => updatePref("theme", value)} />
-            <SettingInput label="窗口不透明度:(W)" value={prefs.windowOpacity} onChange={(value) => updatePref("windowOpacity", value)} />
-          </SettingsSection>
-          <SettingsSection title="启动">
-            <SettingRadio label="无会话(N)" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
-            <SettingRadio label="上次会话(L)" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
-            <SettingRadio label="指定一个会话或一组会话(S)" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
-            {[0, 1, 2, 3].map((index) => (
-              <SettingSelect
-                key={index}
-                label={`会话 ${index + 1}:`}
-                value={prefs.startupSessions[index] ?? ""}
-                options={["", "最近使用", "活动工作区", "Serial 默认组", "SSH 默认组"]}
-                onChange={(value) => {
-                  const next = [...prefs.startupSessions];
-                  next[index] = value;
-                  updatePref("startupSessions", next);
-                }}
-              />
-            ))}
-          </SettingsSection>
-          <SettingsSection title="关闭并退出">
-            <SettingCheck label="显示关闭标签页确认对话框(T)" checked={prefs.closeTabConfirm} onChange={(value) => updatePref("closeTabConfirm", value)} />
-            <SettingCheck label="显示关闭窗口确认对话框(W)" checked={prefs.closeWindowConfirm} onChange={(value) => updatePref("closeWindowConfirm", value)} />
-          </SettingsSection>
-        </>
-      );
-    case "外观":
-      return (
-        <>
-          <SettingsSection title="外观">
-            <SettingSelect label="强调色:(A)" value={prefs.accent} options={["teal", "blue", "violet", "amber"]} onChange={(value) => updatePref("accent", value)} />
-            <SettingSelect label="布局密度:(D)" value={prefs.layoutDensity} options={["紧凑", "标准", "宽松"]} onChange={(value) => updatePref("layoutDensity", value)} />
-            <SettingCheck label="紧凑工具栏" checked={prefs.compactChrome} onChange={(value) => updatePref("compactChrome", value)} />
-            <SettingCheck label="显示状态栏" checked={prefs.showStatusBar} onChange={(value) => updatePref("showStatusBar", value)} />
-          </SettingsSection>
-          <SettingsSection title="标签页">
-            <SettingSelect label="位置:(P)" value={prefs.tabPosition} options={["顶部", "底部", "左侧"]} onChange={(value) => updatePref("tabPosition", value)} />
-            <SettingCheck label="显示会话颜色" checked={prefs.tabShowColors} onChange={(value) => updatePref("tabShowColors", value)} />
-            <SettingCheck label="激活标签使用高亮边框" checked={prefs.highlightActiveTab} onChange={(value) => updatePref("highlightActiveTab", value)} />
-          </SettingsSection>
-        </>
-      );
-    case "代理":
-      return (
-        <SettingsSection title="代理">
-          <SettingCheck label="启用代理" checked={prefs.proxyEnabled} onChange={(value) => updatePref("proxyEnabled", value)} />
-          <SettingSelect label="类型:(T)" value={prefs.proxyType} options={["HTTP", "SOCKS5"]} onChange={(value) => updatePref("proxyType", value)} />
-          <SettingInput label="主机:(H)" value={prefs.proxyHost} onChange={(value) => updatePref("proxyHost", value)} />
-          <SettingInput label="端口:(P)" value={prefs.proxyPort} onChange={(value) => updatePref("proxyPort", value)} />
-          <SettingCheck label="代理 DNS 查询" checked={prefs.proxyDns} onChange={(value) => updatePref("proxyDns", value)} />
+        <SettingsSection title="启动">
+          <SettingRadio label="无会话(N)" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
+          <SettingRadio label="上次会话(L)" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
+          <SettingRadio label="指定一个会话或一组会话(S)" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
+          {[0, 1, 2, 3].map((index) => (
+            <SettingSelect
+              key={index}
+              label={`会话 ${index + 1}:`}
+              value={prefs.startupSessions[index] ?? ""}
+              options={terminalStartupSessionOptions(sessions, prefs.startupSessions[index])}
+              disabled={prefs.startupMode !== "specific"}
+              onChange={(value) => {
+                const next = [...prefs.startupSessions];
+                next[index] = value;
+                updatePref("startupSessions", next);
+              }}
+            />
+          ))}
         </SettingsSection>
       );
     case "安全":
@@ -7502,34 +7483,8 @@ function TerminalSettingsContent({
             step={1}
             onChange={(value) => updatePref("lockScreenTimeoutMinutes", normalizeScreenLockTimeoutMinutes(value))}
           />
-          <SettingCheck label="粘贴前确认" checked={prefs.confirmPaste} onChange={(value) => updatePref("confirmPaste", value)} />
-          <SettingCheck label="日志和 MCP 输出中隐藏敏感字段" checked={prefs.maskSecrets} onChange={(value) => updatePref("maskSecrets", value)} />
           <SettingCheck label="启动时锁屏" checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
         </SettingsSection>
-      );
-    case "标签":
-      return (
-        <SettingsSection title="标签">
-          <SettingSelect label="位置:(P)" value={prefs.tabPosition} options={["顶部", "底部", "左侧"]} onChange={(value) => updatePref("tabPosition", value)} />
-          <SettingCheck label="关闭标签前确认" checked={prefs.tabCloseConfirm} onChange={(value) => updatePref("tabCloseConfirm", value)} />
-          <SettingCheck label="显示会话颜色" checked={prefs.tabShowColors} onChange={(value) => updatePref("tabShowColors", value)} />
-          <SettingCheck label="显示分组颜色条" checked={prefs.groupColorBar} onChange={(value) => updatePref("groupColorBar", value)} />
-        </SettingsSection>
-      );
-    case "终端":
-      return (
-        <>
-          <SettingsSection title="终端">
-            <SettingSelect label="默认终端:(T)" value={prefs.defaultTerm} options={["xterm-256color", "xterm", "vt220", "vt420"]} onChange={(value) => updatePref("defaultTerm", value)} />
-            <SettingInput label="滚屏行数:(S)" value={prefs.terminalScrollback} onChange={(value) => updatePref("terminalScrollback", Number(value) || 0)} />
-            <SettingCheck label="启用 bracketed paste" checked={prefs.pasteBracketed} onChange={(value) => updatePref("pasteBracketed", value)} />
-            <SettingCheck label="允许终端鼠标报告" checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
-          </SettingsSection>
-          <SettingsSection title="输入">
-            <SettingCheck label="粘贴前确认" checked={prefs.confirmPaste} onChange={(value) => updatePref("confirmPaste", value)} />
-            <SettingCheck label="右键粘贴" checked={prefs.rightClickPaste} onChange={(value) => updatePref("rightClickPaste", value)} />
-          </SettingsSection>
-        </>
       );
     case "快捷键":
       return <WorkspaceKeymapSettings keymap={workspaceKeymap} onChange={onWorkspaceKeymapChange} />;
@@ -7567,22 +7522,7 @@ function TerminalSettingsContent({
           </SettingsSection>
         </>
       );
-    case "文本":
-      return (
-        <>
-          <SettingsSection title="文本">
-            <SettingSelect label="默认视图:(V)" value={prefs.binaryView} options={["Text", "Hex", "Binary"]} onChange={(value) => updatePref("binaryView", value)} />
-            <SettingSelect label="插入符:(C)" value={prefs.cursorShape} options={["块", "下划线", "竖线"]} onChange={(value) => updatePref("cursorShape", value)} />
-            <SettingCheck label="插入符闪烁" checked={prefs.cursorBlink} onChange={(value) => updatePref("cursorBlink", value)} />
-            <SettingCheck label="软换行" checked={prefs.wrapLines} onChange={(value) => updatePref("wrapLines", value)} />
-          </SettingsSection>
-          <SettingsSection title="字体">
-            <SettingSelect label="字体系列 1:" value={prefs.fontFamily1} options={["Roboto Mono", "JetBrains Mono", "Consolas"]} onChange={(value) => updatePref("fontFamily1", value)} />
-            <SettingSelect label="字体大小:(S)" value={prefs.fontSize} options={["10 像素", "11 像素", "12 像素", "13 像素"]} onChange={(value) => updatePref("fontSize", value)} />
-          </SettingsSection>
-        </>
-      );
-    case "Auto Completion":
+    case "自动补全":
       return (
         <>
           <SettingsSection title="完成">
@@ -7619,111 +7559,15 @@ function TerminalSettingsContent({
           </SettingsSection>
         </>
       );
-    case "鼠标追踪":
+    case "鼠标":
       return (
-        <SettingsSection title="鼠标追踪">
+        <SettingsSection title="鼠标">
           <SettingCheck label="允许终端应用接收鼠标事件" checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
           <SettingCheck label="选择即复制" checked={prefs.mouseCopyOnSelect} onChange={(value) => updatePref("mouseCopyOnSelect", value)} />
-          <SettingCheck label="右键粘贴" checked={prefs.rightClickPaste} onChange={(value) => updatePref("rightClickPaste", value)} />
-        </SettingsSection>
-      );
-    case "二进制":
-      return (
-        <>
-          <SettingsSection title="二进制">
-            <SettingInput label="进制数:(B)" value={prefs.binaryRadix} onChange={(value) => updatePref("binaryRadix", value)} />
-            <SettingInput label="每行列数:(C)" value={prefs.binaryColumns} onChange={(value) => updatePref("binaryColumns", value)} />
-            <SettingInput label="分隔列数:(D)" value={prefs.binaryDividerColumns} onChange={(value) => updatePref("binaryDividerColumns", value)} />
-            <SettingInput label="分组字符:(G)" value={prefs.binaryGroupChars} onChange={(value) => updatePref("binaryGroupChars", value)} />
-          </SettingsSection>
-          <SettingsSection title="">
-            <SettingCheck label="交替列背景色(A)" checked={prefs.binaryAlternateRows} onChange={(value) => updatePref("binaryAlternateRows", value)} />
-          </SettingsSection>
-        </>
-      );
-    case "插入符":
-      return (
-        <SettingsSection title="插入符">
-          <SettingSelect label="形状:(S)" value={prefs.cursorShape} options={["块", "下划线", "竖线"]} onChange={(value) => updatePref("cursorShape", value)} />
-          <SettingSelect label="闪烁:(B)" value={prefs.cursorBlink ? "是" : "否"} options={["否", "是"]} onChange={(value) => updatePref("cursorBlink", value === "是")} />
-          <SettingInput label="周期:(P)" value={prefs.cursorBlinkPeriod} onChange={(value) => updatePref("cursorBlinkPeriod", value)} />
-          <SettingInput label="宽度:(W)" value={prefs.cursorWidth} onChange={(value) => updatePref("cursorWidth", value)} />
-        </SettingsSection>
-      );
-    case "字体":
-      return (
-        <>
-          <SettingsSection title="默认字体">
-            <div className="settings-subtitle">粗体表示固定宽度字体：</div>
-            <SettingSelect label="字体系列 1:" value={prefs.fontFamily1} options={["Roboto Mono", "JetBrains Mono", "Consolas"]} onChange={(value) => updatePref("fontFamily1", value)} />
-            <SettingSelect label="字体系列 2:" value={prefs.fontFamily2} options={["", "Noto Sans Mono", "Fira Code"]} onChange={(value) => updatePref("fontFamily2", value)} />
-            <SettingSelect label="字体系列 3:" value={prefs.fontFamily3} options={["", "Sarasa Mono SC", "Source Code Pro"]} onChange={(value) => updatePref("fontFamily3", value)} />
-            <SettingSelect label="字体系列 4:" value={prefs.fontFamily4} options={["", "monospace"]} onChange={(value) => updatePref("fontFamily4", value)} />
-            <SettingSelect label="字体粗细:(W)" value={prefs.fontWeight} options={["常规", "中等", "粗体"]} onChange={(value) => updatePref("fontWeight", value)} />
-            <SettingSelect label="字体大小:(S)" value={prefs.fontSize} options={["10 像素", "11 像素", "12 像素", "13 像素"]} onChange={(value) => updatePref("fontSize", value)} />
-          </SettingsSection>
-          <SettingsSection title="">
-            <SettingCheck label="首选主题字体(P)" checked={prefs.preferThemeFont} onChange={(value) => updatePref("preferThemeFont", value)} />
-          </SettingsSection>
-        </>
-      );
-    case "高亮":
-      return (
-        <SettingsSection title="高亮">
-          <SettingCheck label="高亮插入符所在行(L)" checked={prefs.highlightCursorLine} onChange={(value) => updatePref("highlightCursorLine", value)} />
-          <SettingCheck label="高亮插入符(W)" checked={prefs.highlightCursor} onChange={(value) => updatePref("highlightCursor", value)} />
-          <SettingCheck label="高亮当前折叠(F)" checked={prefs.highlightFold} onChange={(value) => updatePref("highlightFold", value)} />
-          <SettingCheck label="高亮当前配对(P)" checked={prefs.highlightPairs} onChange={(value) => updatePref("highlightPairs", value)} />
-          <SettingCheck label="高亮增量搜索(S)" checked={prefs.highlightIncrementalSearch} onChange={(value) => updatePref("highlightIncrementalSearch", value)} />
-        </SettingsSection>
-      );
-    case "换行":
-      return (
-        <SettingsSection title="换行">
-          <SettingCheck label="软换行" checked={prefs.wrapLines} onChange={(value) => updatePref("wrapLines", value)} />
-          <SettingSelect label="换行位置:(W)" value={prefs.wrapColumnMode} options={["窗口边界", "80 列", "120 列"]} onChange={(value) => updatePref("wrapColumnMode", value)} />
-        </SettingsSection>
-      );
-    case "小部件":
-      return (
-        <SettingsSection title="小部件">
-          <SettingCheck label="显示侧栏小部件" checked={prefs.fileManagerEnabled || prefs.quickBarEnabled} onChange={(value) => {
-            updatePref("fileManagerEnabled", value);
-            updatePref("quickBarEnabled", value);
-          }} />
-        </SettingsSection>
-      );
-    case "文件管理器":
-      return (
-        <SettingsSection title="文件管理器">
-          <SettingCheck label="启用本地/远端文件管理器" checked={prefs.fileManagerEnabled} onChange={(value) => updatePref("fileManagerEnabled", value)} />
-        </SettingsSection>
-      );
-    case "快捷栏":
-      return (
-        <SettingsSection title="快捷栏">
-          <SettingCheck label="启用快捷命令栏" checked={prefs.quickBarEnabled} onChange={(value) => updatePref("quickBarEnabled", value)} />
-        </SettingsSection>
-      );
-    case "X Server":
-      return (
-        <SettingsSection title="X Server">
-          <SettingCheck label="启用 X11 转发辅助" checked={prefs.xServerEnabled} onChange={(value) => updatePref("xServerEnabled", value)} />
-        </SettingsSection>
-      );
-    case "扩展":
-      return (
-        <SettingsSection title="扩展">
-          <SettingCheck label="启用扩展加载" checked={prefs.extensionsEnabled} onChange={(value) => updatePref("extensionsEnabled", value)} />
-          <SettingCheck label="启用 X11 转发辅助" checked={prefs.xServerEnabled} onChange={(value) => updatePref("xServerEnabled", value)} />
         </SettingsSection>
       );
     default:
-      return (
-        <SettingsSection title={activeItem}>
-          <SettingCheck label="启用" checked={prefs.extensionsEnabled} onChange={(value) => updatePref("extensionsEnabled", value)} />
-        </SettingsSection>
-      );
+      return null;
   }
 }
 
@@ -9398,16 +9242,20 @@ function SettingInput({ label, value, type = "text", placeholder, min, max, step
   );
 }
 
-function SettingSelect({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+type SettingSelectOption = string | { value: string; label: string };
+
+function SettingSelect({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: readonly SettingSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
   return (
     <label className="setting-row">
       <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option || "blank"} value={option}>
-            {option || "未指定"}
+      <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => {
+          const optionValue = typeof option === "string" ? option : option.value;
+          const optionLabel = typeof option === "string" ? option || "未指定" : option.label;
+          return <option key={optionValue || "blank"} value={optionValue}>
+            {optionLabel}
           </option>
-        ))}
+        })}
       </select>
     </label>
   );
@@ -9424,35 +9272,11 @@ function SettingButtonRow({ label, children }: { label: string; children: React.
 
 function createTerminalPrefs() {
   return {
-    language: "Chinese (Simplified) - 中文（简体）",
-    windowOpacity: "1.00",
     startupMode: "last",
     startupSessions: ["", "", "", ""],
-    closeTabConfirm: true,
-    closeWindowConfirm: true,
-    theme: "dige-black",
-    accent: "teal",
-    layoutDensity: "标准",
-    compactChrome: true,
-    showStatusBar: true,
-    highlightActiveTab: true,
-    proxyEnabled: false,
-    proxyType: "SOCKS5",
-    proxyHost: "127.0.0.1",
-    proxyPort: "1080",
-    proxyDns: true,
     lockOnIdle: false,
     lockScreenTimeoutMinutes: 30,
-    confirmPaste: true,
-    maskSecrets: true,
     requireMasterPassword: false,
-    tabPosition: "顶部",
-    tabCloseConfirm: true,
-    tabShowColors: true,
-    groupColorBar: true,
-    defaultTerm: "xterm-256color",
-    terminalScrollback: 200000,
-    pasteBracketed: true,
     completionEnabled: true,
     oneKeyCompletionEnabled: true,
     completionCommandNames: true,
@@ -9468,35 +9292,6 @@ function createTerminalPrefs() {
     historyLimit: "10000",
     mouseReporting: true,
     mouseCopyOnSelect: true,
-    rightClickPaste: true,
-    binaryView: "Hex",
-    binaryRadix: "16",
-    binaryColumns: "16",
-    binaryDividerColumns: "4",
-    binaryGroupChars: "1",
-    binaryAlternateRows: true,
-    cursorShape: "块",
-    cursorBlink: false,
-    cursorBlinkPeriod: "0.5 秒",
-    cursorWidth: "1.5 像素",
-    fontFamily1: "Roboto Mono",
-    fontFamily2: "",
-    fontFamily3: "",
-    fontFamily4: "",
-    fontWeight: "常规",
-    fontSize: "10 像素",
-    preferThemeFont: true,
-    highlightCursorLine: true,
-    highlightCursor: true,
-    highlightFold: true,
-    highlightPairs: true,
-    highlightIncrementalSearch: true,
-    wrapLines: false,
-    wrapColumnMode: "窗口边界",
-    fileManagerEnabled: true,
-    quickBarEnabled: true,
-    xServerEnabled: false,
-    extensionsEnabled: false,
   };
 }
 
@@ -9988,31 +9783,37 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
   const historyLimit = normalizeCommandHistoryInteger(source.historyLimit, 1, MAX_COMMAND_HISTORY_LIMIT, MAX_COMMAND_HISTORY_LIMIT);
   const historyRetentionDays = normalizeCommandHistoryInteger(source.historyRetentionDays, 0, MAX_COMMAND_HISTORY_RETENTION_DAYS, 30);
   return {
-    ...defaults,
-    ...source,
-    lockOnIdle: typeof source.lockOnIdle === "boolean" ? source.lockOnIdle : defaults.lockOnIdle,
+    startupMode: source.startupMode === "none" || source.startupMode === "specific" || source.startupMode === "last"
+      ? source.startupMode
+      : defaults.startupMode,
+    startupSessions: normalizeTerminalStartupSessionIds(source.startupSessions),
+    lockOnIdle: booleanPreference(source.lockOnIdle, defaults.lockOnIdle),
     lockScreenTimeoutMinutes: normalizeScreenLockTimeoutMinutes(source.lockScreenTimeoutMinutes),
-    requireMasterPassword: typeof source.requireMasterPassword === "boolean"
-      ? source.requireMasterPassword
-      : defaults.requireMasterPassword,
-    oneKeyCompletionEnabled: typeof source.oneKeyCompletionEnabled === "boolean"
-      ? source.oneKeyCompletionEnabled
-      : defaults.oneKeyCompletionEnabled,
-    mouseReporting: typeof source.mouseReporting === "boolean"
-      ? source.mouseReporting
-      : defaults.mouseReporting,
-    mouseCopyOnSelect: typeof source.mouseCopyOnSelect === "boolean"
-      ? source.mouseCopyOnSelect
-      : defaults.mouseCopyOnSelect,
-    historyEnabled: typeof source.historyEnabled === "boolean"
-      ? source.historyEnabled
-      : defaults.historyEnabled,
+    requireMasterPassword: booleanPreference(source.requireMasterPassword, defaults.requireMasterPassword),
+    completionEnabled: booleanPreference(source.completionEnabled, defaults.completionEnabled),
+    oneKeyCompletionEnabled: booleanPreference(source.oneKeyCompletionEnabled, defaults.oneKeyCompletionEnabled),
+    completionCommandNames: booleanPreference(source.completionCommandNames, defaults.completionCommandNames),
+    completionCommandOptions: booleanPreference(source.completionCommandOptions, defaults.completionCommandOptions),
+    completionCommandArgs: booleanPreference(source.completionCommandArgs, defaults.completionCommandArgs),
+    completionHistory: booleanPreference(source.completionHistory, defaults.completionHistory),
+    completionQuickCommands: booleanPreference(source.completionQuickCommands, defaults.completionQuickCommands),
+    completionTriggerChars: stringPreference(source.completionTriggerChars, ["1 字符", "2 字符", "3 字符"], defaults.completionTriggerChars),
+    completionListHeight: stringPreference(source.completionListHeight, ["5 行", "7 行", "10 行"], defaults.completionListHeight),
+    completionPreviewMode: stringPreference(source.completionPreviewMode, ["无处", "输入框", "列表顶部"], defaults.completionPreviewMode),
+    historyEnabled: booleanPreference(source.historyEnabled, defaults.historyEnabled),
     historyRetentionDays: String(historyRetentionDays),
     historyLimit: String(historyLimit),
-    startupSessions: Array.isArray(source.startupSessions)
-      ? source.startupSessions.slice(0, 4).map((item) => typeof item === "string" ? item : "")
-      : defaults.startupSessions,
+    mouseReporting: booleanPreference(source.mouseReporting, defaults.mouseReporting),
+    mouseCopyOnSelect: booleanPreference(source.mouseCopyOnSelect, defaults.mouseCopyOnSelect),
   };
+}
+
+function booleanPreference(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function stringPreference(value: unknown, allowed: readonly string[], fallback: string): string {
+  return typeof value === "string" && allowed.includes(value) ? value : fallback;
 }
 
 function normalizeCommandHistoryInteger(
@@ -10257,10 +10058,6 @@ function convertDraftProtocol(draft: SessionProfile, protocol: ProtocolTab): Ses
 function patchDraftSerial(draft: SessionProfile, onDraftChange: (draft: SessionProfile) => void, patch: Record<string, unknown>) {
   if (draft.connection.kind !== "serial") return;
   onDraftChange({ ...draft, connection: { ...draft.connection, ...patch } });
-}
-
-function describeEndpoint(session: SessionSummary) {
-  return describeProfileEndpoint(session.profile);
 }
 
 function describeProfileEndpoint(profile: SessionProfile) {

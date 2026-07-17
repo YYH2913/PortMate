@@ -251,6 +251,10 @@ try {
       sender: document.querySelectorAll(".send-panel").length,
       fileManager: [...document.querySelectorAll(".dock-panel strong")]
         .some((node) => node.textContent === "文件管理器"),
+      connectionSummaryRows: document.querySelectorAll(".crumb-line").length,
+      connectionControls: document.querySelectorAll(".connection-toggle").length,
+      topToolsText: document.querySelector(".menu-tools")?.textContent ?? "",
+      menuLabels: [...document.querySelectorAll(".menu-trigger")].map((button) => button.textContent),
       status: document.querySelector(".status-bar")?.textContent ?? "",
       panels: panels.panels,
     };
@@ -259,8 +263,15 @@ try {
   assert(initial.globalTabs === 0, "redundant global session tabs are visible");
   assert(!initial.fileManager && initial.rightDock === 0 && initial.sender === 0,
     `legacy all-visible default did not migrate: ${JSON.stringify(initial)}`);
-  assert(initial.leftWidth >= 275 && initial.leftWidth <= 285,
+  assert(initial.leftWidth >= 235 && initial.leftWidth <= 245,
     `resource tree is not using the compact width: ${initial.leftWidth}`);
+  assert(initial.connectionSummaryRows === 0 && initial.connectionControls === 1,
+    `connection context is still duplicated: ${JSON.stringify(initial)}`);
+  assert(!initial.topToolsText.includes("隧道"),
+    `duplicate tunnel shortcut survived: ${initial.topToolsText}`);
+  assert(JSON.stringify(initial.menuLabels) === JSON.stringify([
+    "会话", "编辑", "查看", "模式", "传输", "工具", "窗口", "帮助",
+  ]), `top menu categories are still redundant: ${JSON.stringify(initial.menuLabels)}`);
   assert(!initial.status.includes("窗口 -1×-1") && !initial.status.includes("PortMate Issues"),
     `placeholder status text survived: ${initial.status}`);
   assert(initial.panels.explorer && initial.panels.statusBar
@@ -320,6 +331,8 @@ try {
   assert(await uart.count() === 1, "session endpoint filter missed Bench UART");
   await uart.click();
   await page.waitForFunction(() => document.querySelector(".right-stack .tree-session.active")?.textContent?.includes("Bench UART"));
+  assert(await page.locator(".pane-serial-tools").count() === 1,
+    "serial line controls were lost while consolidating the workspace toolbar");
   await sessionFilter.fill("gateway");
   const filteredEdge = page.locator(".right-stack .tree-session", { hasText: "Edge Router" });
   assert(await filteredEdge.count() === 1, "session tag filter missed Edge Router");
@@ -347,6 +360,99 @@ try {
   assert(await page.locator(".search-dialog .dialog-title", { hasText: "会话搜索" }).count() === 1,
     "top search command did not open session search");
   await page.locator(".search-dialog .dialog-title button").click();
+
+  async function openTerminalSettings() {
+    await page.locator(".menu-trigger", { hasText: "工具" }).click();
+    await page.locator(".menu-popover button", { hasText: "终端设置" }).click();
+    await page.locator(".terminal-settings-dialog").waitFor();
+  }
+
+  await openTerminalSettings();
+  const settingsPages = await page.locator(".terminal-settings-dialog .settings-tree > button")
+    .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
+  assert(JSON.stringify(settingsPages) === JSON.stringify([
+    "应用",
+    "安全",
+    "快捷键",
+    "自动补全",
+    "命令历史",
+    "鼠标",
+    "同步输入",
+  ]), `terminal settings navigation is still redundant: ${JSON.stringify(settingsPages)}`);
+  const settingsBounds = await page.locator(".terminal-settings-dialog").evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return { width: rect.width, height: rect.height, scrollWidth: dialog.scrollWidth, scrollHeight: dialog.scrollHeight };
+  });
+  assert(settingsBounds.width <= 760 && settingsBounds.height <= 680
+    && settingsBounds.scrollWidth <= settingsBounds.width
+    && settingsBounds.scrollHeight <= settingsBounds.height,
+  `terminal settings dialog is not compact: ${JSON.stringify(settingsBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-settings.png`, fullPage: true });
+  const startupSelect = (index) => page.locator(".terminal-settings-dialog .setting-row", {
+    hasText: `会话 ${index}:`,
+  }).locator("select");
+  const firstStartup = startupSelect(1);
+  const secondStartup = startupSelect(2);
+  assert(await page.getByRole("combobox", { name: "会话 1:", exact: true }).count() === 1
+    && await page.getByRole("combobox", { name: "会话 2:", exact: true }).count() === 1,
+  "startup session selectors do not expose stable accessible names");
+  assert(await firstStartup.isDisabled() && await secondStartup.isDisabled(),
+    "specific startup selectors are enabled outside specific mode");
+  const settingsText = await page.locator(".terminal-settings-dialog").textContent();
+  assert(!settingsText.includes("语言:")
+    && !settingsText.includes("窗口不透明度")
+    && !settingsText.includes("显示关闭标签页确认")
+    && !settingsText.includes("外观")
+    && !settingsText.includes("小部件")
+    && !settingsText.includes("X Server"),
+  `unimplemented application preferences are still visible: ${settingsText}`);
+  const startupOptions = await firstStartup.locator("option").evaluateAll((options) => options.map((option) => ({
+    value: option.value,
+    label: option.textContent,
+  })));
+  assert(JSON.stringify(startupOptions.map((option) => option.value)) === JSON.stringify([
+    "",
+    "edge-router",
+    "bench-uart",
+    "local-shell",
+  ]), `startup selectors do not use real profile IDs: ${JSON.stringify(startupOptions)}`);
+  assert(!startupOptions.some((option) => ["最近使用", "活动工作区", "Serial 默认组", "SSH 默认组"].includes(option.value)),
+    `placeholder startup values survived: ${JSON.stringify(startupOptions)}`);
+  await page.locator(".terminal-settings-dialog .setting-radio", {
+    hasText: "指定一个会话或一组会话(S)",
+  }).locator("input").check();
+  assert(!await firstStartup.isDisabled() && !await secondStartup.isDisabled(),
+    "specific startup selectors did not become enabled");
+  await firstStartup.selectOption("bench-uart");
+  await secondStartup.selectOption("local-shell");
+  await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "保存" }).click();
+  await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
+  const startupSettings = await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("portmate.terminalPrefs"));
+    const legacyKeys = [
+      "accent",
+      "proxyEnabled",
+      "tabPosition",
+      "terminalScrollback",
+      "binaryView",
+      "fontFamily1",
+      "fileManagerEnabled",
+      "quickBarEnabled",
+      "xServerEnabled",
+      "extensionsEnabled",
+    ].filter((key) => Object.hasOwn(prefs, key));
+    return { mode: prefs.startupMode, sessions: prefs.startupSessions, legacyKeys };
+  });
+  assert(startupSettings.mode === "specific"
+    && JSON.stringify(startupSettings.sessions) === JSON.stringify(["bench-uart", "local-shell", "", ""])
+    && startupSettings.legacyKeys.length === 0,
+  `startup settings did not persist exact profile IDs: ${JSON.stringify(startupSettings)}`);
+  await openTerminalSettings();
+  assert(await startupSelect(1).inputValue() === "bench-uart"
+    && await startupSelect(2).inputValue() === "local-shell",
+  "saved startup profiles did not restore in the settings dialog");
+  await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
 
   await togglePanel("会话");
   await togglePanel("历史命令");
@@ -380,6 +486,7 @@ try {
       leftDisplay: getComputedStyle(document.querySelector(".left-stack")).display,
       rightDisplay: getComputedStyle(document.querySelector(".right-stack")).display,
       senderDisplay: getComputedStyle(document.querySelector(".send-panel")).display,
+      sysmonSummaryDisplay: getComputedStyle(document.querySelector(".sysmon-applet-summary")).display,
       center: center ? { left: center.left, right: center.right, top: center.top, bottom: center.bottom } : null,
     };
   });
@@ -387,6 +494,8 @@ try {
     `mobile workspace overflow: ${JSON.stringify(mobile)}`);
   assert(mobile.leftDisplay === "none" && mobile.rightDisplay === "none" && mobile.senderDisplay === "none",
     `optional panels crowd the mobile terminal: ${JSON.stringify(mobile)}`);
+  assert(mobile.sysmonSummaryDisplay === "none",
+    `mobile Sysmon summary still consumes status-bar width: ${JSON.stringify(mobile)}`);
   assert(mobile.center?.left === 0 && mobile.center?.right === mobile.viewportWidth,
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
@@ -402,10 +511,15 @@ try {
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "session tag/endpoint", "normalized history"],
     contextMenu: "single synchronized-input, split, and move actions",
+    startupSettings,
     terminalWrites,
     desktop,
     mobile,
-    screenshots: [`${screenshotPrefix}-desktop.png`, `${screenshotPrefix}-mobile.png`],
+    screenshots: [
+      `${screenshotPrefix}-settings.png`,
+      `${screenshotPrefix}-desktop.png`,
+      `${screenshotPrefix}-mobile.png`,
+    ],
   }, null, 2));
   await context.close();
 } finally {
