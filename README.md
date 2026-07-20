@@ -171,7 +171,10 @@ The analyzer starts on the bounded live memory source and polls it without touch
 
 Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
 
-Long-running stores bound non-terminal history as well as session events. PortMate retains 5,000
+Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
+needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
+transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
+ID instead of silently orphaning related data. PortMate retains 5,000
 session events per session, 5,000 audit records per session/global scope, 2,000 timeline marks,
 1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for
 frequently appended histories. Queued and running transfers are never evicted. Desktop and

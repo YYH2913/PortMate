@@ -25506,8 +25506,15 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
                 .unwrap_or_else(|| profile.id.clone());
             ssh.host_key_policy.alias = Some(alias);
             for key in &mut ssh.trusted_host_keys {
-                if key.scope == HostKeyScope::Profile && key.profile_id.is_none() {
-                    key.profile_id = Some(profile.id.clone());
+                if key.scope == HostKeyScope::Profile {
+                    key.profile_id = Some(
+                        key.profile_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|profile_id| !profile_id.is_empty())
+                            .unwrap_or(&profile.id)
+                            .to_string(),
+                    );
                 }
                 key.alias = key.alias.trim().to_string();
             }
@@ -25729,15 +25736,74 @@ fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
 
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
+    let mut normalized_profiles = Vec::with_capacity(profiles.len());
+    let mut session_id_remap = HashMap::with_capacity(profiles.len());
+    for profile in profiles {
+        let original_id = profile.id.clone();
+        let profile = normalize_session_profile(profile);
+        session_id_remap.insert(original_id, profile.id.clone());
+        session_id_remap
+            .entry(profile.id.clone())
+            .or_insert_with(|| profile.id.clone());
+        normalized_profiles.push(profile);
+    }
+
     let saved_runtimes = std::mem::take(&mut store.runtimes)
         .into_iter()
         .map(|mut runtime| {
-            runtime.session_id = runtime.session_id.trim().to_string();
+            let original_id = runtime.session_id.clone();
+            runtime.session_id = remap_loaded_session_id(&original_id, &session_id_remap);
+            if runtime.pane_id == format!("{original_id}:main") {
+                runtime.pane_id = format!("{}:main", runtime.session_id);
+            }
             (runtime.session_id.clone(), runtime)
         })
         .collect::<HashMap<_, _>>();
-    for profile in profiles {
-        let _ = store.upsert_profile(normalize_session_profile(profile));
+
+    for event in &mut store.events {
+        let original_id = event.session_id.clone();
+        event.session_id = remap_loaded_session_id(&original_id, &session_id_remap);
+        if event.pane_id == format!("{original_id}:main") {
+            event.pane_id = format!("{}:main", event.session_id);
+        }
+    }
+    for transfer in &mut store.transfers {
+        transfer.session_id = remap_loaded_session_id(&transfer.session_id, &session_id_remap);
+    }
+    for record in &mut store.audit {
+        if let Some(session_id) = &mut record.session_id {
+            *session_id = remap_loaded_session_id(session_id, &session_id_remap);
+        }
+    }
+    for mark in &mut store.timeline {
+        mark.session_id = remap_loaded_session_id(&mark.session_id, &session_id_remap);
+    }
+    for snapshot in &mut store.sysmon {
+        snapshot.session_id = remap_loaded_session_id(&snapshot.session_id, &session_id_remap);
+    }
+    for key in &mut store.host_keys.keys {
+        if let Some(profile_id) = &mut key.profile_id {
+            *profile_id = remap_loaded_session_id(profile_id, &session_id_remap);
+        }
+        key.alias = key.alias.trim().to_string();
+    }
+    for grant in &mut store.grants {
+        for session_id in &mut grant.allowed_sessions {
+            *session_id = remap_loaded_session_id(session_id, &session_id_remap);
+        }
+    }
+    for one_key in &mut store.one_keys {
+        for session_id in &mut one_key.session_ids {
+            *session_id = remap_loaded_session_id(session_id, &session_id_remap);
+        }
+        if let Some(identity) = &mut one_key.identity {
+            identity.source_profile_id =
+                remap_loaded_session_id(&identity.source_profile_id, &session_id_remap);
+        }
+    }
+
+    for profile in normalized_profiles {
+        let _ = store.upsert_profile(profile);
     }
     normalize_loaded_mcp_grants(&mut store);
     normalize_loaded_one_keys(&mut store);
@@ -25755,6 +25821,14 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     }
     store.normalize_bounded_histories();
     store
+}
+
+fn remap_loaded_session_id(session_id: &str, remap: &HashMap<String, String>) -> String {
+    remap
+        .get(session_id)
+        .or_else(|| remap.get(session_id.trim()))
+        .cloned()
+        .unwrap_or_else(|| session_id.to_string())
 }
 
 fn save_store(path: &Path, store: &SessionStore) -> Result<(), String> {
@@ -29595,6 +29669,127 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn normalize_loaded_store_remaps_trimmed_profile_references() {
+        let mut store = SessionStore::default();
+        let mut profile = test_shell_profile();
+        profile.id = " legacy-session ".to_string();
+        let original_id = profile.id.clone();
+        store.upsert_profile(profile);
+        store
+            .record_stream_event(
+                &original_id,
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "legacy event",
+            )
+            .unwrap();
+        store.record_transfer(TransferTask {
+            id: "legacy-transfer".to_string(),
+            session_id: original_id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: "source".to_string(),
+            destination: "destination".to_string(),
+            bytes_total: 1,
+            bytes_done: 1,
+            status: TransferStatus::Completed,
+            message: None,
+            started_at: None,
+            finished_at: Some(Utc::now()),
+            average_bytes_per_second: None,
+        });
+        store.record_audit(AuditRecord {
+            id: "legacy-audit".to_string(),
+            ts: Utc::now(),
+            actor: "test".to_string(),
+            action: "load".to_string(),
+            session_id: Some(original_id.clone()),
+            decision: "recorded".to_string(),
+            details: BTreeMap::new(),
+        });
+        store.record_timeline_mark(TimelineMark {
+            id: "legacy-mark".to_string(),
+            session_id: original_id.clone(),
+            ts: Utc::now(),
+            label: "loaded".to_string(),
+            details: None,
+        });
+        store.record_sysmon_snapshot(SysmonSnapshot {
+            session_id: original_id.clone(),
+            ts: Utc::now(),
+            uptime_seconds: 1,
+            cpu_percent: 2.0,
+            memory_percent: 3.0,
+            rx_kbps: 4.0,
+            tx_kbps: 5.0,
+            load_average: [0.0; 3],
+            memory_total_bytes: 0,
+            memory_available_bytes: 0,
+            processes: Vec::new(),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+        });
+        store.host_keys.keys.push(TrustedHostKey {
+            id: "legacy-host-key".to_string(),
+            profile_id: Some(original_id.clone()),
+            alias: " legacy-session ".to_string(),
+            host: "example.test".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "AAAA".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        });
+        store.grants.push(McpGrant {
+            client_id: "legacy-reader".to_string(),
+            name: "Legacy reader".to_string(),
+            scopes: vec![McpScope::ReadSessions],
+            allowed_sessions: vec![original_id.clone()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        store.one_keys.push(OneKeyCredential {
+            id: "legacy-one-key".to_string(),
+            label: "Legacy".to_string(),
+            kind: OneKeyKind::Account,
+            username: "operator".to_string(),
+            password_secret_ref: Some("keychain:legacy-password".to_string()),
+            passphrase_secret_ref: None,
+            identity: None,
+            session_ids: vec![original_id],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        store.runtimes[0].session_id = "\tlegacy-session\n".to_string();
+        store.runtimes[0].pane_id = "\tlegacy-session\n:main".to_string();
+
+        let normalized = normalize_loaded_store(store);
+        let expected = "legacy-session";
+        let runtime = normalized.runtimes.first().unwrap();
+        assert_eq!(normalized.profiles[0].id, expected);
+        assert_eq!(runtime.session_id, expected);
+        assert_eq!(runtime.pane_id, format!("{expected}:main"));
+        assert_eq!(normalized.events[0].session_id, expected);
+        assert_eq!(normalized.events[0].pane_id, format!("{expected}:main"));
+        assert_eq!(normalized.transfers[0].session_id, expected);
+        assert_eq!(normalized.audit[0].session_id.as_deref(), Some(expected));
+        assert_eq!(normalized.timeline[0].session_id, expected);
+        assert_eq!(normalized.sysmon[0].session_id, expected);
+        assert_eq!(
+            normalized.host_keys.keys[0].profile_id.as_deref(),
+            Some(expected)
+        );
+        assert_eq!(normalized.host_keys.keys[0].alias, expected);
+        assert_eq!(normalized.grants[0].allowed_sessions, [expected]);
+        assert_eq!(normalized.one_keys[0].session_ids, [expected]);
+        assert_eq!(normalized.tail_log(expected, 10).len(), 1);
+        assert!(normalized.sysmon_for(expected).is_some());
     }
 
     #[test]
