@@ -10,6 +10,7 @@ anyhow.workspace = true
 httparse = "1.10.1"
 keyring = "4.0.1"
 keyring-core = "1.0.0"
+percent-encoding = "2.3.2"
 portmate-core = { path = "../portmate-core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true

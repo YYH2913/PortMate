@@ -246,6 +246,10 @@ The stdio transport accepts newline-delimited JSON messages up to 1 MiB, excludi
 delimiter. Oversized input is discarded through its terminating newline, returns a JSON-RPC parse
 error, and does not desynchronize the following request.
 
+Concrete MCP session and transfer resource URIs percent-encode opaque UTF-8 IDs as individual path
+segments, so IDs containing spaces, `%`, `/`, or Unicode remain readable without changing identity.
+Resource reads reject malformed escapes, extra path segments, queries, and fragments.
+
 Both stdio and HTTP preserve an explicit JSON-RPC `null` ID, reject non-string/number/null IDs and
 non-structured `params`, and cap a batch at 128 items before dispatch. This prevents a small request
 from amplifying into an unbounded sequence of tool calls or responses.

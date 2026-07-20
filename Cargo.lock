@@ -5229,6 +5229,7 @@ dependencies = [
  "httparse",
  "keyring",
  "keyring-core",
+ "percent-encoding",
  "portmate-core",
  "rusqlite",
  "serde",

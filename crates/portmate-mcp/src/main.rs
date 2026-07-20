@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use keyring_core::Entry;
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use portmate_core::{
     prompt_templates, redact_secrets, resource_templates, tool_definitions, McpScope, SessionEvent,
     SessionStore, SessionSummary,
@@ -246,9 +247,10 @@ impl PortMateMcp {
             ("tmux", "Tmux", "application/json"),
         ];
         for summary in self.store.summaries() {
+            let encoded_session_id = encode_mcp_uri_segment(&summary.profile.id);
             if self.read_session_allowed(McpScope::ReadSessions, &summary.profile.id) {
                 resources.push(json!({
-                    "uri": format!("portmate://sessions/{}/state", summary.profile.id),
+                    "uri": format!("portmate://sessions/{encoded_session_id}/state"),
                     "name": format!("session_{}_state", summary.profile.id),
                     "title": format!("{} State", summary.profile.name),
                     "mimeType": "application/json"
@@ -257,7 +259,7 @@ impl PortMateMcp {
             if self.read_session_allowed(McpScope::ReadLogs, &summary.profile.id) {
                 for (suffix, label, mime_type) in log_resources {
                     resources.push(json!({
-                        "uri": format!("portmate://sessions/{}/{suffix}", summary.profile.id),
+                        "uri": format!("portmate://sessions/{encoded_session_id}/{suffix}"),
                         "name": format!("session_{}_{}", summary.profile.id, suffix),
                         "title": format!("{} {label}", summary.profile.name),
                         "mimeType": mime_type
@@ -269,8 +271,9 @@ impl PortMateMcp {
             if !self.read_session_allowed(McpScope::ReadLogs, &transfer.session_id) {
                 continue;
             }
+            let encoded_transfer_id = encode_mcp_uri_segment(&transfer.id);
             resources.push(json!({
-                "uri": format!("portmate://transfers/{}", transfer.id),
+                "uri": format!("portmate://transfers/{encoded_transfer_id}"),
                 "name": format!("transfer_{}", transfer.id),
                 "title": format!("Transfer {}", transfer.id),
                 "mimeType": "application/json"
@@ -320,7 +323,7 @@ impl PortMateMcp {
             } else {
                 McpScope::ReadLogs
             };
-            self.guard_read_scope(scope, Some(session_id))?;
+            self.guard_read_scope(scope, Some(&session_id))?;
             match suffix {
                 "state" => serde_json::to_string_pretty(
                     &self
@@ -329,14 +332,14 @@ impl PortMateMcp {
                         .into_iter()
                         .find(|summary| summary.profile.id == session_id),
                 )?,
-                "screen" => redact_secrets(&self.store.screen(session_id).unwrap_or_default()),
-                "log" => redact_events(self.store.tail_log(session_id, 200))
+                "screen" => redact_secrets(&self.store.screen(&session_id).unwrap_or_default()),
+                "log" => redact_events(self.store.tail_log(&session_id, 200))
                     .into_iter()
                     .map(|event| serde_json::to_string(&event).unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("\n"),
-                "timeline" => serde_json::to_string_pretty(&self.store.timeline_for(session_id))?,
-                "sysmon" => serde_json::to_string_pretty(&self.store.sysmon_for(session_id))?,
+                "timeline" => serde_json::to_string_pretty(&self.store.timeline_for(&session_id))?,
+                "sysmon" => serde_json::to_string_pretty(&self.store.sysmon_for(&session_id))?,
                 "tmux" => {
                     if let Some(value) =
                         self.call_ipc_value("list_tmux_state", json!({ "sessionId": session_id }))?
@@ -352,10 +355,10 @@ impl PortMateMcp {
                 }
                 _ => return Err(anyhow!("unknown session resource suffix: {suffix}")),
             }
-        } else if let Some(id) = uri.strip_prefix("portmate://transfers/") {
+        } else if let Some(id) = parse_transfer_uri(uri) {
             let transfer = self
                 .store
-                .transfer_by_id(id)
+                .transfer_by_id(&id)
                 .ok_or_else(|| anyhow!("unknown or unauthorized transfer resource"))?;
             self.guard_read_scope(McpScope::ReadLogs, Some(&transfer.session_id))?;
             serde_json::to_string_pretty(&transfer)?
@@ -1986,12 +1989,77 @@ fn bounded_log_query_limit(limit: Option<u64>) -> usize {
         .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
 }
 
-fn parse_session_uri(uri: &str) -> Option<(&str, &str)> {
+const MCP_URI_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+fn encode_mcp_uri_segment(value: &str) -> String {
+    utf8_percent_encode(value, MCP_URI_SEGMENT_ENCODE_SET).to_string()
+}
+
+fn decode_mcp_uri_segment(value: &str) -> Option<String> {
+    if value.is_empty() || !has_valid_percent_encoding(value) {
+        return None;
+    }
+    percent_decode_str(value)
+        .decode_utf8()
+        .ok()
+        .map(|value| value.into_owned())
+}
+
+fn has_valid_percent_encoding(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+fn parse_session_uri(uri: &str) -> Option<(String, &str)> {
     let path = uri.strip_prefix("portmate://sessions/")?;
+    if path.contains(['?', '#']) {
+        return None;
+    }
     let mut parts = path.split('/');
-    let id = parts.next()?;
-    let suffix = parts.next()?.split('?').next().unwrap_or_default();
+    let id = decode_mcp_uri_segment(parts.next()?)?;
+    let suffix = parts.next()?;
+    if suffix.is_empty() || parts.next().is_some() {
+        return None;
+    }
     Some((id, suffix))
+}
+
+fn parse_transfer_uri(uri: &str) -> Option<String> {
+    let id = uri.strip_prefix("portmate://transfers/")?;
+    if id.contains(['/', '?', '#']) {
+        return None;
+    }
+    decode_mcp_uri_segment(id)
 }
 
 #[cfg(test)]
@@ -2759,6 +2827,95 @@ mod tests {
         assert!(listed
             .iter()
             .all(|resource| resource["uriTemplate"].as_str().unwrap().contains('{')));
+    }
+
+    #[test]
+    fn mcp_resource_uris_round_trip_opaque_session_and_transfer_ids() {
+        let session_id = "serial/rig 1%温度";
+        let transfer_id = "transfer/1 %温度";
+        let mut profile = test_snapshot_store("opaque session").profiles.remove(0);
+        profile.id = session_id.to_string();
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile);
+        store
+            .record_stream_event(
+                session_id,
+                portmate_core::EventDirection::Inbound,
+                portmate_core::EventStream::Stdout,
+                "opaque resource content",
+            )
+            .unwrap();
+        store.record_transfer(portmate_core::TransferTask {
+            id: transfer_id.to_string(),
+            session_id: session_id.to_string(),
+            protocol: portmate_core::TransferProtocol::Xmodem,
+            source: "source".to_string(),
+            destination: "destination".to_string(),
+            bytes_total: 1,
+            bytes_done: 1,
+            status: portmate_core::TransferStatus::Completed,
+            message: None,
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: None,
+        });
+        let server = PortMateMcp {
+            store,
+            store_path: None,
+            ipc: None,
+            client_id: "opaque-reader".to_string(),
+            allow_write: false,
+        };
+
+        let resources = server.resources_list_result();
+        let resources = resources["resources"].as_array().unwrap();
+        let screen_uri = resources
+            .iter()
+            .find(|resource| resource["title"] == "opaque session Screen")
+            .and_then(|resource| resource["uri"].as_str())
+            .unwrap();
+        let transfer_uri = resources
+            .iter()
+            .find(|resource| resource["title"] == format!("Transfer {transfer_id}"))
+            .and_then(|resource| resource["uri"].as_str())
+            .unwrap();
+        assert_eq!(
+            screen_uri,
+            "portmate://sessions/serial%2Frig%201%25%E6%B8%A9%E5%BA%A6/screen"
+        );
+        assert_eq!(
+            transfer_uri,
+            "portmate://transfers/transfer%2F1%20%25%E6%B8%A9%E5%BA%A6"
+        );
+        assert!(
+            server.resource_read(&json!({ "uri": screen_uri })).unwrap()["contents"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("opaque resource content")
+        );
+        assert!(server
+            .resource_read(&json!({ "uri": transfer_uri }))
+            .unwrap()["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(transfer_id));
+
+        for invalid in [
+            "portmate://sessions/a/b/screen",
+            "portmate://sessions/a%2/screen",
+            "portmate://sessions/a/screen?raw=1",
+            "portmate://sessions//screen",
+        ] {
+            assert!(parse_session_uri(invalid).is_none(), "accepted {invalid}");
+        }
+        for invalid in [
+            "portmate://transfers/a/b",
+            "portmate://transfers/a%2",
+            "portmate://transfers/a?raw=1",
+            "portmate://transfers/",
+        ] {
+            assert!(parse_transfer_uri(invalid).is_none(), "accepted {invalid}");
+        }
     }
 
     #[test]
