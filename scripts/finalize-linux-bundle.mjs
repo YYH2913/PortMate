@@ -1,25 +1,22 @@
 import {
   chmodSync,
-  closeSync,
   existsSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
-  openSync,
   readFileSync,
-  readSync,
   readdirSync,
   readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
-  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { cachedAppImagePluginPath, copyAppImageRuntime } from "./appimage-runtime.mjs";
 
 if (process.platform === "linux") finalizeLinuxAppImage();
 
@@ -35,9 +32,7 @@ function finalizeLinuxAppImage() {
     "appimage",
     `PortMate_${version}_${packageArchitecture}.AppImage`,
   );
-  const plugin = process.env.PORTMATE_APPIMAGE_PLUGIN
-    ? resolve(process.env.PORTMATE_APPIMAGE_PLUGIN)
-    : join(homedir(), ".cache", "tauri", "linuxdeploy-plugin-appimage.AppImage");
+  const plugin = cachedAppImagePluginPath(process.env, homedir());
   if (!existsSync(appImage)) throw new Error(`AppImage was not produced: ${appImage}`);
   if (!existsSync(plugin)) throw new Error(`Tauri AppImage plugin is unavailable: ${plugin}`);
 
@@ -61,42 +56,6 @@ function finalizeLinuxAppImage() {
     console.log(`Finalized portable AppImage metadata and permissions: ${appImage}`);
   } finally {
     rmSync(workRoot, { recursive: true, force: true });
-  }
-}
-
-function copyAppImageRuntime(appImage, destination) {
-  const result = spawnSync(appImage, ["--appimage-offset"], {
-    encoding: "utf8",
-    maxBuffer: 1024,
-  });
-  if (result.error) throw result.error;
-  const runtimeBytes = Number(result.stdout?.trim());
-  if (result.status !== 0 || !Number.isSafeInteger(runtimeBytes) || runtimeBytes <= 0) {
-    throw new Error(`Unable to determine AppImage runtime size: ${result.stderr || result.stdout}`);
-  }
-
-  let source;
-  let target;
-  const buffer = Buffer.allocUnsafe(64 * 1024);
-  let offset = 0;
-  try {
-    source = openSync(appImage, "r");
-    target = openSync(destination, "wx", 0o644);
-    while (offset < runtimeBytes) {
-      const requested = Math.min(buffer.length, runtimeBytes - offset);
-      const bytesRead = readSync(source, buffer, 0, requested, offset);
-      if (bytesRead === 0) throw new Error(`AppImage ended before its ${runtimeBytes}-byte runtime`);
-      let written = 0;
-      while (written < bytesRead) {
-        const bytesWritten = writeSync(target, buffer, written, bytesRead - written);
-        if (bytesWritten === 0) throw new Error("Unable to write the copied AppImage runtime");
-        written += bytesWritten;
-      }
-      offset += bytesRead;
-    }
-  } finally {
-    if (source !== undefined) closeSync(source);
-    if (target !== undefined) closeSync(target);
   }
 }
 

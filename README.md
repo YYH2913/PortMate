@@ -198,9 +198,12 @@ The build starts from a clean bundle directory, prepares a target-specific `port
 and packages it with the desktop binary, standard PNG/ICNS/ICO icons, and the Apache-2.0 license.
 Unix package inputs use release-safe `0755`/`0644` modes. Linux builds also normalize the AppImage
 tree and replace LinuxDeploy's machine-local `.DirIcon` symlink with a portable relative link before
-repacking with the original AppImage runtime. DEB, RPM, and AppImage artifacts are written below
-`target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release, signing, migration,
-artifact, and rollback gates.
+repacking with the original AppImage runtime. When Tauri's AppImage plugin is already cached, the
+build reads its type-2 ELF/SquashFS boundary and supplies that runtime to LinuxDeploy, avoiding a
+packaging-time GitHub download. A valid caller-provided `LDAI_RUNTIME_FILE` takes precedence; when
+neither source exists, LinuxDeploy retains its normal download behavior. DEB, RPM, and AppImage
+artifacts are written below `target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release,
+signing, migration, artifact, and rollback gates.
 
 The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
 
