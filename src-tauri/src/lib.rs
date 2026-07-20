@@ -6,7 +6,8 @@ use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
-    compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, resource_templates,
+    compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, redact_session_event,
+    redact_session_events, redact_session_summary, redact_transfer_task, resource_templates,
     tool_definitions, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
     HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential,
@@ -7233,6 +7234,7 @@ async fn execute_ipc_request(
                         Some(&summary.profile.id),
                     )
                 })
+                .map(redact_session_summary)
                 .collect::<Vec<_>>();
             serde_json::to_value(summaries).map_err(|error| error.to_string())
         }
@@ -7252,7 +7254,7 @@ async fn execute_ipc_request(
             let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
             require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
-            serde_json::to_value(redact_mcp_events(store.tail_log(&session_id, limit)))
+            serde_json::to_value(redact_session_events(store.tail_log(&session_id, limit)))
                 .map_err(|error| error.to_string())
         }
         "search_logs" => {
@@ -7279,7 +7281,7 @@ async fn execute_ipc_request(
                     )
                 })
                 .collect();
-            serde_json::to_value(redact_mcp_events(events)).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_events(events)).map_err(|error| error.to_string())
         }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -7288,7 +7290,7 @@ async fn execute_ipc_request(
             let event =
                 send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
                     .await?;
-            serde_json::to_value(event).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "send_key" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -7301,7 +7303,7 @@ async fn execute_ipc_request(
             let event =
                 send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
                     .await?;
-            serde_json::to_value(event).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "run_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -7314,7 +7316,7 @@ async fn execute_ipc_request(
             let event =
                 run_command_inner_with_context(state.session_io(), session_id, text, &actor, None)
                     .await?;
-            serde_json::to_value(event).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "open_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -7338,18 +7340,18 @@ async fn execute_ipc_request(
                 },
             )
             .await?;
-            serde_json::to_value(summary).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
         }
         "close_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let summary = close_session_inner(&state, session_id).await?;
-            serde_json::to_value(summary).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
         }
         "start_transfer" => {
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
             let task = start_transfer_inner(&state, transfer).await?;
-            serde_json::to_value(task).map_err(|error| error.to_string())
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
@@ -7363,7 +7365,7 @@ async fn execute_ipc_request(
                 let store = state.store.lock().map_err(|error| error.to_string())?;
                 require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
             }
-            let tmux = list_tmux_state_inner(&state, &session_id).await?;
+            let tmux = redact_mcp_tmux_state(list_tmux_state_inner(&state, &session_id).await?);
             serde_json::to_value(tmux).map_err(|error| error.to_string())
         }
         "attach_tmux" => {
@@ -7374,7 +7376,7 @@ async fn execute_ipc_request(
             let event =
                 send_text_inner_with_context(state.session_io(), session_id, command, &actor, None)
                     .await?;
-            serde_json::to_value(event).map_err(|error| error.to_string())
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "export_session_bundle" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -8139,17 +8141,20 @@ fn bounded_log_query_limit(limit: Option<u64>) -> usize {
         .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
 }
 
-/// Redacts secrets out of events before they cross the MCP/IPC boundary to an
-/// external client. Not applied inside `SessionStore` itself, so the desktop
-/// UI keeps showing the human operator raw, real terminal output.
-fn redact_mcp_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events
-        .into_iter()
-        .map(|mut event| {
-            event.text = event.text.map(|text| redact_secrets(&text));
-            event
-        })
-        .collect()
+fn redact_mcp_tmux_state(mut state: TmuxState) -> TmuxState {
+    for session in &mut state.sessions {
+        session.name = redact_secrets(&session.name);
+    }
+    for window in &mut state.windows {
+        window.session = redact_secrets(&window.session);
+        window.name = redact_secrets(&window.name);
+    }
+    for pane in &mut state.panes {
+        pane.session = redact_secrets(&pane.session);
+        pane.command = redact_secrets(&pane.command);
+        pane.title = redact_secrets(&pane.title);
+    }
+    state
 }
 
 async fn start_transfer_inner(
@@ -32715,6 +32720,114 @@ mod tests {
             assert!(handle_ipc_request(state.clone(), read_screen())
                 .await
                 .is_ok());
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn mcp_ipc_reads_redact_profiles_and_complete_event_metadata() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("portmate-mcp-read-redaction-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = {
+                let mut store = state.store.lock().unwrap();
+                let session_id = store.profiles[0].id.clone();
+                let ConnectionConfig::Shell(shell) = &mut store.profiles[0].connection else {
+                    panic!("test profile should use a shell connection");
+                };
+                shell.args = vec!["--password".to_string(), "opaque-shell-secret".to_string()];
+                shell.cwd = Some("/home/operator/private-shell-cwd".to_string());
+                store.profiles[0].logging.path_template =
+                    "/home/operator/private-logs/{session}.raw".to_string();
+                store.profiles[0].transfer.default_local_dir =
+                    Some("/home/operator/private-downloads".to_string());
+                store.runtimes[0].cwd = Some("/home/operator/runtime-cwd".to_string());
+                store
+                    .record_event(
+                        &session_id,
+                        EventDirection::Inbound,
+                        EventStream::Stdout,
+                        Some("password=event-secret".to_string()),
+                        Some("v2:/home/operator/private-logs/raw:0:12:digest".to_string()),
+                        BTreeMap::from([(
+                            "diagnostic".to_string(),
+                            "token=annotation-secret".to_string(),
+                        )]),
+                    )
+                    .unwrap();
+                session_id
+            };
+            let raw_store = serde_json::to_string(&*state.store.lock().unwrap()).unwrap();
+            let request = |command: &str, args: serde_json::Value| IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "redaction-reader".to_string(),
+                trusted_write: false,
+                command: command.to_string(),
+                args,
+            };
+
+            let surfaces = [
+                handle_ipc_request(
+                    state.clone(),
+                    request("list_sessions", serde_json::json!({})),
+                )
+                .await
+                .unwrap(),
+                handle_ipc_request(
+                    state.clone(),
+                    request(
+                        "read_screen",
+                        serde_json::json!({ "sessionId": session_id }),
+                    ),
+                )
+                .await
+                .unwrap(),
+                handle_ipc_request(
+                    state.clone(),
+                    request("tail_log", serde_json::json!({ "sessionId": session_id })),
+                )
+                .await
+                .unwrap(),
+                handle_ipc_request(
+                    state.clone(),
+                    request(
+                        "search_logs",
+                        serde_json::json!({
+                            "query": "password",
+                            "sessionId": session_id
+                        }),
+                    ),
+                )
+                .await
+                .unwrap(),
+            ];
+            let encoded = surfaces
+                .iter()
+                .map(serde_json::Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for sensitive in [
+                "opaque-shell-secret",
+                "/home/operator/private-shell-cwd",
+                "/home/operator/private-logs/{session}.raw",
+                "/home/operator/private-downloads",
+                "/home/operator/runtime-cwd",
+                "event-secret",
+                "annotation-secret",
+                "v2:/home/operator/private-logs/raw:0:12:digest",
+            ] {
+                assert!(
+                    !encoded.contains(sensitive),
+                    "IPC response leaked {sensitive}"
+                );
+            }
+            assert!(encoded.contains("<redacted>"));
+            assert!(encoded.contains("Bench/Device"));
+            assert_eq!(
+                serde_json::to_string(&*state.store.lock().unwrap()).unwrap(),
+                raw_store
+            );
             let _ = fs::remove_dir_all(root);
         });
     }

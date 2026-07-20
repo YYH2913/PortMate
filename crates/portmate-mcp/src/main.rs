@@ -2,8 +2,10 @@ use anyhow::{anyhow, Result};
 use keyring_core::Entry;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use portmate_core::{
-    prompt_templates, redact_secrets, resource_templates, tool_definitions, McpScope, SessionEvent,
-    SessionStore, SessionSummary,
+    prompt_templates, redact_secrets, redact_session_event, redact_session_events,
+    redact_session_summary, redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
+    resource_templates, tool_definitions, McpScope, SessionEvent, SessionStore, SessionSummary,
+    TransferTask,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use serde::{Deserialize, Serialize};
@@ -294,7 +296,7 @@ impl PortMateMcp {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("missing prompt sessionId"))?;
         self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-        let screen = self.store.screen(session_id).unwrap_or_default();
+        let screen = redact_secrets(&self.store.screen(session_id).unwrap_or_default());
         let text = match name {
             "diagnose_session" => format!("Diagnose PortMate session `{session_id}` using this terminal snapshot:\n\n{screen}"),
             "compare_serial_and_ssh" => format!("Compare serial and SSH behavior for `{session_id}`. Correlate boot output, SSH state, and timeline marks."),
@@ -330,21 +332,29 @@ impl PortMateMcp {
                         .store
                         .summaries()
                         .into_iter()
-                        .find(|summary| summary.profile.id == session_id),
+                        .find(|summary| summary.profile.id == session_id)
+                        .map(redact_session_summary),
                 )?,
                 "screen" => redact_secrets(&self.store.screen(&session_id).unwrap_or_default()),
-                "log" => redact_events(self.store.tail_log(&session_id, 200))
+                "log" => redact_session_events(self.store.tail_log(&session_id, 200))
                     .into_iter()
                     .map(|event| serde_json::to_string(&event).unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("\n"),
-                "timeline" => serde_json::to_string_pretty(&self.store.timeline_for(&session_id))?,
-                "sysmon" => serde_json::to_string_pretty(&self.store.sysmon_for(&session_id))?,
+                "timeline" => serde_json::to_string_pretty(&redact_timeline_marks(
+                    self.store.timeline_for(&session_id),
+                ))?,
+                "sysmon" => serde_json::to_string_pretty(
+                    &self
+                        .store
+                        .sysmon_for(&session_id)
+                        .map(redact_sysmon_snapshot),
+                )?,
                 "tmux" => {
                     if let Some(value) =
                         self.call_ipc_value("list_tmux_state", json!({ "sessionId": session_id }))?
                     {
-                        ipc_value_to_text(value)?
+                        redact_secrets(&ipc_value_to_text(value)?)
                     } else {
                         serde_json::to_string_pretty(&json!({
                             "sessions": [],
@@ -361,7 +371,7 @@ impl PortMateMcp {
                 .transfer_by_id(&id)
                 .ok_or_else(|| anyhow!("unknown or unauthorized transfer resource"))?;
             self.guard_read_scope(McpScope::ReadLogs, Some(&transfer.session_id))?;
-            serde_json::to_string_pretty(&transfer)?
+            serde_json::to_string_pretty(&redact_transfer_task(transfer))?
         } else {
             return Err(anyhow!("unknown resource uri: {uri}"));
         };
@@ -404,7 +414,7 @@ impl PortMateMcp {
                 let session_id = required_string(&arguments, "sessionId")?;
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 if let Some(value) = self.call_ipc_value("read_screen", arguments.clone())? {
-                    ipc_value_to_text(value)?
+                    redact_secrets(&ipc_value_to_text(value)?)
                 } else {
                     redact_secrets(&self.store.screen(session_id).unwrap_or_default())
                 }
@@ -414,13 +424,14 @@ impl PortMateMcp {
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 let limit = arguments.get("limit").and_then(Value::as_u64);
                 let limit = bounded_log_query_limit(limit);
-                if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
-                    ipc_value_to_text(value)?
-                } else {
-                    serde_json::to_string_pretty(&redact_events(
-                        self.store.tail_log(session_id, limit),
-                    ))?
-                }
+                let events =
+                    if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
+                        serde_json::from_value::<Vec<SessionEvent>>(value)
+                            .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
+                    } else {
+                        self.store.tail_log(session_id, limit)
+                    };
+                serde_json::to_string_pretty(&redact_session_events(events))?
             }
             "search_logs" => {
                 let query = required_string(&arguments, "query")?;
@@ -433,12 +444,12 @@ impl PortMateMcp {
                         serde_json::from_value::<Vec<SessionEvent>>(value)
                             .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
                     } else {
-                        redact_events(self.store.search_logs(query, session_id, limit))
+                        self.store.search_logs(query, session_id, limit)
                     };
                 events.retain(|event| {
                     self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
                 });
-                serde_json::to_string_pretty(&events)?
+                serde_json::to_string_pretty(&redact_session_events(events))?
             }
             "send_text" | "send_key" | "run_command" => {
                 if let Some(output) = self.write_tool(name, &arguments)? {
@@ -454,7 +465,7 @@ impl PortMateMcp {
                 let session_id = required_string(&arguments, "sessionId")?;
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
+                    redact_secrets(&ipc_value_to_text(value)?)
                 } else {
                     serde_json::to_string_pretty(
                         &self.store.export_session_bundle_redacted(session_id),
@@ -463,7 +474,9 @@ impl PortMateMcp {
             }
             "open_session" | "close_session" => {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
+                    let summary = serde_json::from_value::<SessionSummary>(value)
+                        .map_err(|error| anyhow!("invalid desktop session response: {error}"))?;
+                    serde_json::to_string_pretty(&redact_session_summary(summary))?
                 } else {
                     is_error = true;
                     format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
@@ -471,7 +484,9 @@ impl PortMateMcp {
             }
             "start_transfer" => {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
+                    let transfer = serde_json::from_value::<TransferTask>(value)
+                        .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
+                    serde_json::to_string_pretty(&redact_transfer_task(transfer))?
                 } else {
                     is_error = true;
                     "start_transfer was NOT executed: desktop IPC is not available, so no transfer was started."
@@ -501,8 +516,8 @@ impl PortMateMcp {
                 }
             }
             "attach_tmux" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
+                if let Some(output) = self.write_tool(name, &arguments)? {
+                    output
                 } else {
                     is_error = true;
                     "attach_tmux was NOT executed: desktop IPC is not available, so tmux was not attached."
@@ -520,7 +535,11 @@ impl PortMateMcp {
 
     fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
         if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-            return ipc_value_to_text(value).map(Some);
+            let event = serde_json::from_value::<SessionEvent>(value)
+                .map_err(|error| anyhow!("invalid desktop event response: {error}"))?;
+            return serde_json::to_string_pretty(&redact_session_event(event))
+                .map(Some)
+                .map_err(Into::into);
         }
         Ok(None)
     }
@@ -552,6 +571,7 @@ impl PortMateMcp {
         summaries
             .into_iter()
             .filter(|summary| self.read_session_allowed(scope, &summary.profile.id))
+            .map(redact_session_summary)
             .collect()
     }
 
@@ -867,20 +887,6 @@ fn write_secret_to_keyring(secret_ref: &str, secret: &str) -> Result<()> {
     keyring_entry(secret_ref)?
         .set_password(secret)
         .map_err(|error| anyhow!("failed to write keyring secret {secret_ref}: {error:?}"))
-}
-
-/// Redacts secrets out of events read from the local store snapshot fallback
-/// (used when live desktop IPC is unavailable) before they reach an MCP client.
-/// The live-IPC path is redacted on the desktop side (src-tauri) since that is
-/// the same trust boundary crossing — an external MCP client, not the local operator.
-fn redact_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    events
-        .into_iter()
-        .map(|mut event| {
-            event.text = event.text.map(|text| redact_secrets(&text));
-            event
-        })
-        .collect()
 }
 
 fn ipc_value_to_text(value: Value) -> Result<String> {
@@ -2127,6 +2133,150 @@ mod tests {
         store
     }
 
+    fn sensitive_snapshot_store() -> SessionStore {
+        let session_id = "refresh-session";
+        let mut store = SessionStore::default();
+        store.upsert_profile(portmate_core::SessionProfile {
+            id: session_id.to_string(),
+            name: "sensitive snapshot".to_string(),
+            kind: portmate_core::SessionKind::Ssh,
+            group: "tests".to_string(),
+            tags: Vec::new(),
+            connection: portmate_core::ConnectionConfig::Ssh(portmate_core::SshConnection {
+                endpoint: portmate_core::HostEndpoint {
+                    host: "diagnostic.example".to_string(),
+                    port: 22,
+                },
+                username: "operator".to_string(),
+                reconnect: true,
+                reconnect_delay_ms: 1_000,
+                keepalive_enabled: true,
+                keepalive_interval_seconds: 30,
+                keepalive_max_missed: 3,
+                proxy: portmate_core::ProxyConfig {
+                    password_secret_ref: Some("keyring:proxy-credential-ref".to_string()),
+                    ..Default::default()
+                },
+                password_secret_ref: Some("keyring:target-credential-ref".to_string()),
+                passphrase_secret_ref: Some("stronghold:target-passphrase-ref".to_string()),
+                host_key_policy: portmate_core::HostKeyPolicy::profile_alias(session_id),
+                trusted_host_keys: Vec::new(),
+                identity_policy: portmate_core::IdentityPolicy::default(),
+                identity_refs: vec![portmate_core::IdentityRef {
+                    id: "identity-diagnostic-id".to_string(),
+                    label: "diagnostic identity".to_string(),
+                    source: portmate_core::IdentitySource::ProfileVault,
+                    fingerprint_sha256: Some("SHA256:diagnostic-fingerprint".to_string()),
+                    path: Some("/home/operator/.ssh/private-key".to_string()),
+                    secret_ref: Some("stronghold:identity-secret-ref".to_string()),
+                }],
+                agent_policy: portmate_core::AgentPolicy::default(),
+                jumps: vec![portmate_core::JumpHop {
+                    host: "jump.example".to_string(),
+                    port: 22,
+                    username: "jump-operator".to_string(),
+                    password_secret_ref: Some("keyring:jump-credential-ref".to_string()),
+                    passphrase_secret_ref: Some("stronghold:jump-passphrase-ref".to_string()),
+                    identity_ref: Some("identity-diagnostic-id".to_string()),
+                    host_key_policy: None,
+                }],
+                tunnels: Vec::new(),
+            }),
+            terminal: portmate_core::TerminalSettings::default(),
+            logging: portmate_core::LoggingSettings {
+                path_template: "/home/operator/private-logs/{session}.raw".to_string(),
+                ..Default::default()
+            },
+            triggers: vec![portmate_core::TriggerSpec {
+                id: "sensitive-trigger".to_string(),
+                label: "password=trigger-label-secret".to_string(),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "token=trigger-match-secret".to_string(),
+                    case_sensitive: false,
+                },
+                actions: vec![portmate_core::TriggerAction::LocalCommand {
+                    command: "/home/operator/private-scripts/deploy".to_string(),
+                }],
+                enabled: true,
+            }],
+            transfer: portmate_core::TransferSettings {
+                default_local_dir: Some("/home/operator/private-downloads".to_string()),
+                ..Default::default()
+            },
+        });
+        store.runtimes[0].cwd = Some("/home/operator/runtime-cwd".to_string());
+        store.runtimes[0].last_disconnect_reason = Some("password=disconnect-secret".to_string());
+        let diagnostic_ts = store.runtimes[0].last_activity;
+        store
+            .record_event(
+                session_id,
+                portmate_core::EventDirection::Inbound,
+                portmate_core::EventStream::Stdout,
+                Some("password=event-secret".to_string()),
+                Some("v2:/home/operator/private-logs/raw:0:12:digest".to_string()),
+                std::collections::BTreeMap::from([(
+                    "diagnostic".to_string(),
+                    "token=annotation-secret".to_string(),
+                )]),
+            )
+            .unwrap();
+        store.record_timeline_mark(portmate_core::TimelineMark {
+            id: "timeline-diagnostic-id".to_string(),
+            session_id: session_id.to_string(),
+            ts: diagnostic_ts,
+            label: "password=timeline-secret".to_string(),
+            details: Some("token=timeline-details-secret".to_string()),
+        });
+        store.record_sysmon_snapshot(portmate_core::SysmonSnapshot {
+            session_id: session_id.to_string(),
+            ts: diagnostic_ts,
+            uptime_seconds: 123,
+            cpu_percent: 12.5,
+            memory_percent: 34.5,
+            rx_kbps: 56.5,
+            tx_kbps: 78.5,
+            load_average: [0.5, 1.0, 1.5],
+            memory_total_bytes: 1024,
+            memory_available_bytes: 512,
+            processes: vec![portmate_core::SysmonProcess {
+                pid: 4242,
+                name: "password=sysmon-process-secret".to_string(),
+                cpu_percent: 9.5,
+                memory_percent: 8.5,
+                rss_bytes: 256,
+            }],
+            disks: vec![portmate_core::SysmonDisk {
+                filesystem: "/dev/mapper/private-filesystem".to_string(),
+                mount_point: "/srv/private-mount".to_string(),
+                total_bytes: 4096,
+                available_bytes: 2048,
+                used_percent: 50.0,
+            }],
+            network_interfaces: vec![portmate_core::SysmonNetworkInterface {
+                name: "customer-private-interface".to_string(),
+                rx_bytes: 100,
+                tx_bytes: 200,
+                rx_kbps: 3.5,
+                tx_kbps: 4.5,
+            }],
+        });
+        store.record_transfer(portmate_core::TransferTask {
+            id: "transfer-diagnostic-id".to_string(),
+            session_id: session_id.to_string(),
+            protocol: portmate_core::TransferProtocol::Sftp,
+            source: "/home/operator/source-secret.txt".to_string(),
+            destination: "/srv/private/destination-secret.txt".to_string(),
+            bytes_total: 12,
+            bytes_done: 12,
+            status: portmate_core::TransferStatus::Completed,
+            message: Some("token=transfer-message-secret".to_string()),
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: Some(6.0),
+        });
+        store
+    }
+
     fn list_sessions_text(server: &mut PortMateMcp) -> String {
         let response = handle_json_rpc_value(
             server,
@@ -2228,6 +2378,111 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("ReadSessions"));
+    }
+
+    #[test]
+    fn mcp_read_surfaces_redact_sensitive_metadata_without_mutating_the_store() {
+        let store = sensitive_snapshot_store();
+        let raw_store = serde_json::to_string(&store).unwrap();
+        let mut server = PortMateMcp {
+            store,
+            store_path: None,
+            ipc: None,
+            client_id: "redaction-reader".to_string(),
+            allow_write: false,
+        };
+
+        let resource_text = |server: &PortMateMcp, uri: &str| {
+            server.resource_read(&json!({ "uri": uri })).unwrap()["contents"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let tool_text = |server: &mut PortMateMcp, name: &str, arguments: Value| {
+            server
+                .tool_call(&json!({ "name": name, "arguments": arguments }))
+                .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let surfaces = vec![
+            list_sessions_text(&mut server),
+            resource_text(&server, "portmate://sessions"),
+            resource_text(&server, "portmate://sessions/refresh-session/state"),
+            server.sse_state_payload().to_string(),
+            server
+                .prompt_get(&json!({
+                    "name": "diagnose_session",
+                    "arguments": { "sessionId": "refresh-session" }
+                }))
+                .unwrap()
+                .to_string(),
+            resource_text(&server, "portmate://sessions/refresh-session/log"),
+            tool_text(
+                &mut server,
+                "tail_log",
+                json!({ "sessionId": "refresh-session" }),
+            ),
+            tool_text(
+                &mut server,
+                "search_logs",
+                json!({ "query": "password", "sessionId": "refresh-session" }),
+            ),
+            resource_text(&server, "portmate://sessions/refresh-session/timeline"),
+            resource_text(&server, "portmate://sessions/refresh-session/sysmon"),
+            resource_text(&server, "portmate://transfers/transfer-diagnostic-id"),
+        ];
+        let sensitive_values = [
+            "keyring:target-credential-ref",
+            "stronghold:target-passphrase-ref",
+            "keyring:proxy-credential-ref",
+            "/home/operator/.ssh/private-key",
+            "stronghold:identity-secret-ref",
+            "keyring:jump-credential-ref",
+            "stronghold:jump-passphrase-ref",
+            "/home/operator/private-logs/{session}.raw",
+            "/home/operator/private-downloads",
+            "/home/operator/runtime-cwd",
+            "disconnect-secret",
+            "event-secret",
+            "annotation-secret",
+            "timeline-secret",
+            "timeline-details-secret",
+            "/home/operator/source-secret.txt",
+            "/srv/private/destination-secret.txt",
+            "transfer-message-secret",
+            "trigger-label-secret",
+            "trigger-match-secret",
+            "/home/operator/private-scripts/deploy",
+            "v2:/home/operator/private-logs/raw:0:12:digest",
+            "sysmon-process-secret",
+            "/dev/mapper/private-filesystem",
+            "/srv/private-mount",
+            "customer-private-interface",
+        ];
+
+        for (index, surface) in surfaces.iter().enumerate() {
+            for sensitive in sensitive_values {
+                assert!(
+                    !surface.contains(sensitive),
+                    "MCP read surface {index} leaked {sensitive}: {surface}"
+                );
+            }
+        }
+        assert!(surfaces
+            .iter()
+            .any(|surface| surface.contains("diagnostic.example")));
+        assert!(surfaces
+            .iter()
+            .any(|surface| surface.contains("SHA256:diagnostic-fingerprint")));
+        assert!(surfaces.iter().any(|surface| surface.contains("4242")));
+        assert!(surfaces.iter().any(|surface| surface.contains("12.5")));
+        assert!(surfaces
+            .iter()
+            .any(|surface| surface.contains("transfer-diagnostic-id")));
+        assert!(surfaces.iter().any(|surface| surface.contains("completed")));
+        assert_eq!(serde_json::to_string(&server.store).unwrap(), raw_store);
     }
 
     fn test_http_request(mut headers: HashMap<String, String>) -> HttpRequest {
