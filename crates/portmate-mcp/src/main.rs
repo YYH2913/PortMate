@@ -643,14 +643,10 @@ fn valid_inline_ipc_token(token: &str) -> bool {
 }
 
 fn valid_ipc_token_ref(token_ref: &str) -> bool {
-    let Some(account) = token_ref.trim().strip_prefix("keychain:ipc-") else {
+    let Some(account) = token_ref.strip_prefix("keychain:ipc-") else {
         return false;
     };
-    !account.is_empty()
-        && account.len() <= MAX_IPC_TOKEN_BYTES
-        && account
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    Uuid::parse_str(account).is_ok_and(|uuid| uuid.hyphenated().to_string() == account)
 }
 
 fn endpoint_ipc_token(endpoint: &IpcEndpointFile) -> Result<String> {
@@ -2076,6 +2072,19 @@ mod tests {
             .to_string()
             .contains("must be loopback"));
         endpoint.addr = "127.0.0.1:43123".to_string();
+        endpoint.token_ref = Some("keychain:ipc-not-a-uuid".to_string());
+        assert!(validate_ipc_endpoint(&endpoint, &store_path)
+            .unwrap_err()
+            .to_string()
+            .contains("tokenRef is invalid"));
+        endpoint.token_ref = Some(format!(
+            "keychain:ipc-{}",
+            Uuid::new_v4().hyphenated().to_string().to_uppercase()
+        ));
+        assert!(validate_ipc_endpoint(&endpoint, &store_path)
+            .unwrap_err()
+            .to_string()
+            .contains("tokenRef is invalid"));
         endpoint.token_ref = Some("keychain:mcp-http-token".to_string());
         assert!(validate_ipc_endpoint(&endpoint, &store_path)
             .unwrap_err()

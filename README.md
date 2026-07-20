@@ -245,11 +245,14 @@ When the desktop app is running, it writes `portmate-ipc.json` next to the store
 Endpoint publication uses a synced same-directory temporary file and atomic replacement. Unix files
 are forced to mode `0600`, including the plaintext-token fallback used when native keyring storage
 fails; replacement does not follow a pre-existing symlink, and a failed publish keeps the previous
-endpoint intact.
+endpoint intact. Publication and shutdown share a cross-process lock. A successful replacement
+retires the previous private endpoint's matching `keychain:ipc-<uuid>` credential, while normal
+desktop exit removes only the endpoint still owned by that process and always retires its tracked
+credential. This prevents restart leaks without allowing an older instance to remove a newer one.
 
 The bridge only loads a regular endpoint file up to 64 KiB (private owner-only mode on Unix), and
 requires its `storePath` to match `PORTMATE_STORE_PATH`, its address to be loopback, and its keyring
-reference to use the dedicated `keychain:ipc-*` namespace. Desktop IPC requests and responses are
+reference to use the generated `keychain:ipc-<uuid>` form. Desktop IPC requests and responses are
 bounded to 1 MiB and 64 MiB, with 3-second connect, 5-second write, and 180-second total response
 deadlines. The total budget includes an optional 60-second write approval without consuming the
 action's previous runtime budget.

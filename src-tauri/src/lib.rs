@@ -113,6 +113,7 @@ impl russh::Signer for PortMateAgentSigner {
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "4";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -330,7 +331,14 @@ pub struct AppState {
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pending_mcp_approvals: PendingMcpApprovalMap,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
+    ipc_publication: Arc<Mutex<IpcPublicationState>>,
     store_path: PathBuf,
+}
+
+#[derive(Default)]
+struct IpcPublicationState {
+    shutting_down: bool,
+    published: Option<PublishedIpcEndpoint>,
 }
 
 struct CredentialOperationGuard<'a> {
@@ -2270,7 +2278,7 @@ pub struct TrustScannedHostKeyRequest {
     pub decision: HostKeyDecision,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IpcEndpointFile {
     addr: String,
@@ -2279,6 +2287,12 @@ struct IpcEndpointFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token_ref: Option<String>,
     store_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublishedIpcEndpoint {
+    path: PathBuf,
+    endpoint: IpcEndpointFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6348,8 +6362,16 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
             token_ref: endpoint_token_ref,
             store_path: state.store_path.display().to_string(),
         };
-        match write_ipc_endpoint_file(&endpoint_path, &endpoint) {
-            Ok(()) => {}
+        match publish_ipc_endpoint(&state, &endpoint_path, &endpoint) {
+            Ok(previous_token_ref) => {
+                if let Some(previous_token_ref) = previous_token_ref {
+                    if let Err(error) = delete_secret_from_keyring(&previous_token_ref) {
+                        eprintln!(
+                            "PortMate: failed to retire previous MCP IPC token {previous_token_ref}: {error}"
+                        );
+                    }
+                }
+            }
             Err(error) => {
                 if let Some(token_ref) = endpoint.token_ref.as_deref() {
                     if let Err(cleanup_error) = delete_secret_from_keyring(token_ref) {
@@ -6379,6 +6401,219 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
             }
         }
     });
+}
+
+fn ipc_endpoint_lock_path(endpoint_path: &Path) -> PathBuf {
+    let file_name = endpoint_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("portmate-ipc.json");
+    endpoint_path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn lock_ipc_endpoint(endpoint_path: &Path) -> Result<fs::File, String> {
+    if let Some(parent) = endpoint_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create MCP IPC endpoint lock directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let lock_path = ipc_endpoint_lock_path(endpoint_path);
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let lock = options
+        .open(&lock_path)
+        .map_err(|error| format!("failed to open MCP IPC endpoint lock: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("failed to acquire MCP IPC endpoint lock: {error}"))?;
+    Ok(lock)
+}
+
+fn read_private_ipc_endpoint_file(path: &Path) -> Result<Option<IpcEndpointFile>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect MCP IPC endpoint {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("MCP IPC endpoint must be a regular file".to_string());
+    }
+    if metadata.len() > MAX_IPC_ENDPOINT_BYTES as u64 {
+        return Err(format!(
+            "MCP IPC endpoint exceeds the {MAX_IPC_ENDPOINT_BYTES}-byte limit"
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("MCP IPC endpoint must be owner-only".to_string());
+        }
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("failed to open MCP IPC endpoint: {error}"))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("failed to inspect opened MCP IPC endpoint: {error}"))?;
+    if !opened_metadata.is_file() || opened_metadata.len() > MAX_IPC_ENDPOINT_BYTES as u64 {
+        return Err("opened MCP IPC endpoint is not a bounded regular file".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if opened_metadata.permissions().mode() & 0o077 != 0 {
+            return Err("opened MCP IPC endpoint must be owner-only".to_string());
+        }
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_IPC_ENDPOINT_BYTES.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read MCP IPC endpoint: {error}"))?;
+    if bytes.len() > MAX_IPC_ENDPOINT_BYTES {
+        return Err(format!(
+            "MCP IPC endpoint exceeds the {MAX_IPC_ENDPOINT_BYTES}-byte limit"
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("failed to decode MCP IPC endpoint: {error}"))
+}
+
+fn valid_ipc_token_ref(token_ref: &str) -> bool {
+    let Some(account) = token_ref.strip_prefix("keychain:ipc-") else {
+        return false;
+    };
+    Uuid::parse_str(account).is_ok_and(|uuid| uuid.hyphenated().to_string() == account)
+}
+
+fn ipc_endpoint_matches_store(endpoint: &IpcEndpointFile, store_path: &Path) -> bool {
+    let endpoint_store_path = Path::new(&endpoint.store_path);
+    match (
+        fs::canonicalize(endpoint_store_path),
+        fs::canonicalize(store_path),
+    ) {
+        (Ok(endpoint_store_path), Ok(store_path)) => endpoint_store_path == store_path,
+        _ => {
+            endpoint_store_path.is_absolute()
+                && store_path.is_absolute()
+                && endpoint_store_path == store_path
+        }
+    }
+}
+
+fn retirable_ipc_token_ref(endpoint: &IpcEndpointFile, store_path: &Path) -> Option<String> {
+    let address = endpoint.addr.parse::<std::net::SocketAddr>().ok()?;
+    if !address.ip().is_loopback() || !ipc_endpoint_matches_store(endpoint, store_path) {
+        return None;
+    }
+    match (&endpoint.token, &endpoint.token_ref) {
+        (None, Some(token_ref)) if valid_ipc_token_ref(token_ref) => Some(token_ref.clone()),
+        _ => None,
+    }
+}
+
+fn publish_ipc_endpoint(
+    state: &AppState,
+    endpoint_path: &Path,
+    endpoint: &IpcEndpointFile,
+) -> Result<Option<String>, String> {
+    let mut publication = state
+        .ipc_publication
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if publication.shutting_down {
+        return Err("application is shutting down".to_string());
+    }
+    let endpoint_lock = lock_ipc_endpoint(endpoint_path)?;
+    let previous_token_ref = read_private_ipc_endpoint_file(endpoint_path)
+        .ok()
+        .flatten()
+        .and_then(|previous| retirable_ipc_token_ref(&previous, &state.store_path));
+    write_ipc_endpoint_file(endpoint_path, endpoint)?;
+    publication.published = Some(PublishedIpcEndpoint {
+        path: endpoint_path.to_path_buf(),
+        endpoint: endpoint.clone(),
+    });
+    drop(endpoint_lock);
+    Ok(previous_token_ref)
+}
+
+fn retire_ipc_publication_with<DeleteSecret>(
+    state: &AppState,
+    mut delete_secret: DeleteSecret,
+) -> Vec<String>
+where
+    DeleteSecret: FnMut(&str) -> Result<(), String>,
+{
+    let published = match state.ipc_publication.lock() {
+        Ok(mut publication) => {
+            publication.shutting_down = true;
+            publication.published.take()
+        }
+        Err(error) => return vec![format!("failed to lock MCP IPC publication state: {error}")],
+    };
+    let Some(published) = published else {
+        return Vec::new();
+    };
+
+    let mut errors = Vec::new();
+    match lock_ipc_endpoint(&published.path) {
+        Ok(_endpoint_lock) => match read_private_ipc_endpoint_file(&published.path) {
+            Ok(Some(current)) if current == published.endpoint => {
+                if let Err(error) = fs::remove_file(&published.path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        errors.push(format!(
+                            "failed to remove MCP IPC endpoint {}: {error}",
+                            published.path.display()
+                        ));
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(format!(
+                "preserved unrecognized MCP IPC endpoint {}: {error}",
+                published.path.display()
+            )),
+        },
+        Err(error) => errors.push(error),
+    }
+    if let Some(token_ref) = published
+        .endpoint
+        .token_ref
+        .as_deref()
+        .filter(|token_ref| valid_ipc_token_ref(token_ref))
+    {
+        if let Err(error) = delete_secret(token_ref) {
+            errors.push(format!(
+                "failed to retire MCP IPC token {token_ref}: {error}"
+            ));
+        }
+    }
+    errors
+}
+
+fn shutdown_ipc_publication(state: &AppState) {
+    for error in retire_ipc_publication_with(state, delete_secret_from_keyring) {
+        eprintln!("PortMate: {error}");
+    }
 }
 
 fn write_ipc_endpoint_file(path: &Path, endpoint: &IpcEndpointFile) -> Result<(), String> {
@@ -26608,6 +26843,7 @@ pub fn run() {
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
                 pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
+                ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
                 store_path,
             };
             install_system_event_sink(&state).map_err(std::io::Error::other)?;
@@ -26716,11 +26952,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building PortMate")
         .run(|app_handle, event| {
-            if matches!(
-                event,
-                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
-            ) {
+            if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
+                    shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());
                     shutdown_system_event_sink(state.inner());
                 }
@@ -31606,6 +31840,177 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp")
         }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ipc_endpoint_publication_retires_only_valid_previous_token_refs() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-ipc-publication-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let endpoint_path = root.join("portmate-ipc.json");
+        let store_path = root.join("portmate-store.sqlite3");
+        let other_store_path = root.join("other-store.sqlite3");
+        fs::write(&store_path, b"store").unwrap();
+        fs::write(&other_store_path, b"other").unwrap();
+        let state = test_app_state(test_shell_profile(), store_path.clone());
+        let replacement = IpcEndpointFile {
+            addr: "127.0.0.1:43124".to_string(),
+            token: Some("replacement-inline-token".to_string()),
+            token_ref: None,
+            store_path: store_path.display().to_string(),
+        };
+        let previous_token_ref = format!("keychain:ipc-{}", Uuid::new_v4());
+        let previous = IpcEndpointFile {
+            addr: "127.0.0.1:43123".to_string(),
+            token: None,
+            token_ref: Some(previous_token_ref.clone()),
+            store_path: store_path.display().to_string(),
+        };
+
+        write_ipc_endpoint_file(&endpoint_path, &previous).unwrap();
+        assert_eq!(
+            publish_ipc_endpoint(&state, &endpoint_path, &replacement).unwrap(),
+            Some(previous_token_ref.clone())
+        );
+
+        let mut unsafe_previous = previous.clone();
+        unsafe_previous.store_path = other_store_path.display().to_string();
+        write_ipc_endpoint_file(&endpoint_path, &unsafe_previous).unwrap();
+        assert_eq!(
+            publish_ipc_endpoint(&state, &endpoint_path, &replacement).unwrap(),
+            None
+        );
+
+        unsafe_previous.store_path = store_path.display().to_string();
+        unsafe_previous.token_ref = Some("keychain:ipc-not-a-uuid".to_string());
+        write_ipc_endpoint_file(&endpoint_path, &unsafe_previous).unwrap();
+        assert_eq!(
+            publish_ipc_endpoint(&state, &endpoint_path, &replacement).unwrap(),
+            None
+        );
+        assert!(!valid_ipc_token_ref("keychain:ipc-not-a-uuid"));
+        assert!(!valid_ipc_token_ref(&format!(
+            "keychain:ipc-{}",
+            Uuid::new_v4().hyphenated().to_string().to_uppercase()
+        )));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            write_ipc_endpoint_file(&endpoint_path, &previous).unwrap();
+            fs::set_permissions(&endpoint_path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                publish_ipc_endpoint(&state, &endpoint_path, &replacement).unwrap(),
+                None
+            );
+
+            let symlink_target = root.join("symlink-target.json");
+            write_ipc_endpoint_file(&symlink_target, &previous).unwrap();
+            fs::remove_file(&endpoint_path).unwrap();
+            std::os::unix::fs::symlink(&symlink_target, &endpoint_path).unwrap();
+            assert_eq!(
+                publish_ipc_endpoint(&state, &endpoint_path, &replacement).unwrap(),
+                None
+            );
+            assert_eq!(
+                read_private_ipc_endpoint_file(&symlink_target)
+                    .unwrap()
+                    .unwrap(),
+                previous
+            );
+
+            let locked = root.join("locked");
+            fs::create_dir_all(&locked).unwrap();
+            let locked_endpoint = locked.join("portmate-ipc.json");
+            write_ipc_endpoint_file(&locked_endpoint, &previous).unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(publish_ipc_endpoint(&state, &locked_endpoint, &replacement).is_err());
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                read_private_ipc_endpoint_file(&locked_endpoint)
+                    .unwrap()
+                    .unwrap(),
+                previous
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ipc_endpoint_shutdown_removes_only_its_publication_and_own_token() {
+        let root = std::env::temp_dir().join(format!("portmate-ipc-shutdown-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        fs::write(&store_path, b"store").unwrap();
+
+        let matching_path = root.join("matching-ipc.json");
+        let matching_state = test_app_state(test_shell_profile(), store_path.clone());
+        let matching_token_ref = format!("keychain:ipc-{}", Uuid::new_v4());
+        let matching = IpcEndpointFile {
+            addr: "127.0.0.1:43123".to_string(),
+            token: None,
+            token_ref: Some(matching_token_ref.clone()),
+            store_path: store_path.display().to_string(),
+        };
+        publish_ipc_endpoint(&matching_state, &matching_path, &matching).unwrap();
+        let mut deleted = Vec::new();
+        assert!(retire_ipc_publication_with(&matching_state, |token_ref| {
+            deleted.push(token_ref.to_string());
+            Ok(())
+        })
+        .is_empty());
+        assert!(!matching_path.exists());
+        assert_eq!(deleted, vec![matching_token_ref]);
+
+        let replaced_path = root.join("replaced-ipc.json");
+        let replaced_state = test_app_state(test_shell_profile(), store_path.clone());
+        let own_token_ref = format!("keychain:ipc-{}", Uuid::new_v4());
+        let own = IpcEndpointFile {
+            addr: "127.0.0.1:43124".to_string(),
+            token: None,
+            token_ref: Some(own_token_ref.clone()),
+            store_path: store_path.display().to_string(),
+        };
+        publish_ipc_endpoint(&replaced_state, &replaced_path, &own).unwrap();
+        let newer = IpcEndpointFile {
+            addr: "127.0.0.1:43125".to_string(),
+            token: Some("newer-inline-token".to_string()),
+            token_ref: None,
+            store_path: store_path.display().to_string(),
+        };
+        write_ipc_endpoint_file(&replaced_path, &newer).unwrap();
+        let mut deleted = Vec::new();
+        assert!(retire_ipc_publication_with(&replaced_state, |token_ref| {
+            deleted.push(token_ref.to_string());
+            Ok(())
+        })
+        .is_empty());
+        assert_eq!(
+            read_private_ipc_endpoint_file(&replaced_path)
+                .unwrap()
+                .unwrap(),
+            newer
+        );
+        assert_eq!(deleted, vec![own_token_ref]);
+
+        let inline_path = root.join("inline-ipc.json");
+        let inline_state = test_app_state(test_shell_profile(), store_path.clone());
+        let inline = IpcEndpointFile {
+            addr: "127.0.0.1:43126".to_string(),
+            token: Some("inline-token".to_string()),
+            token_ref: None,
+            store_path: store_path.display().to_string(),
+        };
+        publish_ipc_endpoint(&inline_state, &inline_path, &inline).unwrap();
+        assert!(retire_ipc_publication_with(&inline_state, |_| {
+            panic!("inline endpoint must not schedule keyring deletion")
+        })
+        .is_empty());
+        assert!(!inline_path.exists());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -39779,6 +40184,7 @@ mod tests {
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
             pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
+            ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
             store_path,
         }
     }
