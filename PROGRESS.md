@@ -150,7 +150,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 日志管理可全文搜索磁盘 Text/JSONL 分片，包括已从有界 store events 裁剪的历史；支持全部或选中路径，结果带分片、行号、字节偏移和受限上下文，并明确报告命中/单文件/总扫描上限与 warning。Raw 保持 Hex 预览，不伪装成文本搜索。
 - 日志管理可把最多 1,000 个、合计不超过 512 MiB 的选中 raw/txt/jsonl 分片流式归档为原子落盘的 `.tar.gz`，包内 manifest 记录逐文件 SHA-256，并生成 `.sha256` sidecar；源分片保留不删除，路径穿越、symlink、非法扩展和归档过程中截断的文件会被拒绝。
 - 每个 profile 可配置 0..=3650 天自动保留期；旧配置默认关闭。应用启动时后台检查，持续写入时最多每小时复查一次，只按 profile 模板匹配并在删除前二次核对 mtime，随后清理空目录；启用保留期的自定义模板必须含 `{session}` 或 `{profile}`，避免误删共享路径。
-- 日志管理可把选中会话导出为原子落盘的 `.tar.gz`、`.sha256` 和 Ed25519 `.sig.json` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。签名覆盖最终归档名、SHA-256、大小和创建时间组成的版本化 NUL 分隔 payload，sidecar 携带独立验证所需的公钥和精确 payload；长期 seed 只进入系统 keyring 或已解锁 Stronghold，内部固定引用不会被通用 secret/Profile/迁移接口覆盖。默认脱敏会移除 Profile/Jump/Proxy credential ref、identity 路径、已配置的 runtime/logging/transfer/Shell 工作路径、Shell 参数、自动化发送/命令/链接载荷、传输任务路径和 event `bytesRef`/`logShards`，并脱敏 event/annotation/timeline/audit/transfer message/断线原因/`summary.lastLine` 文本，同时保留协议、状态、endpoint 和公钥指纹诊断。脱敏开启时强制排除 raw 并禁止附件；只有显式关闭脱敏后，才可附加当前明确选中的最多 32 个、单个 16 MiB、合计 32 MiB 的受限日志分片，重复文件名会安全编号，读取期间的 symlink、截断和替换会失败。只有另行启用 raw 后才按受限 `bytesRef` 读取片段。
+- 日志管理可把选中会话导出为原子落盘的 `.tar.gz`、`.sha256` 和 Ed25519 `.sig.json` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。签名覆盖最终归档名、SHA-256、大小和创建时间组成的版本化 NUL 分隔 payload，sidecar 携带独立验证所需的公钥和精确 payload；长期 seed 只进入系统 keyring 或已解锁 Stronghold，内部固定引用不会被通用 secret/Profile/迁移接口覆盖。默认脱敏会移除 Profile/Jump/Proxy credential ref、identity 路径、已配置的 runtime/logging/transfer/Shell 工作路径、Shell 参数、自动化发送/命令/链接载荷、传输任务路径、Sysmon 进程/文件系统/挂载点/接口标签和 event `bytesRef`/`logShards`，并脱敏 event/annotation/timeline/audit/transfer message/断线原因/`summary.lastLine` 文本，同时保留 Sysmon 数值指标、协议、状态、endpoint 和公钥指纹诊断。脱敏开启时强制排除 raw 并禁止附件；只有显式关闭脱敏后，才可附加当前明确选中的最多 32 个、单个 16 MiB、合计 32 MiB 的受限日志分片，重复文件名会安全编号，读取期间的 symlink、截断和替换会失败。只有另行启用 raw 后才按受限 `bytesRef` 读取片段。
 - 触发器支持多个 contains/regex 规则和每条规则的有序多动作编辑；动作包括高亮、通知、时间线标记、本地命令、发送文本、自定义链接和 bell/chime/alert 声音。运行时视觉/声音效果通过 Tauri event 立即送达桌面，本地命令与发送文本保留后端 dispatch，并记录 system event/timeline 诊断。
 - secret redaction 有核心测试。
 
@@ -266,7 +266,7 @@ npm run build
 - 解码前非 UTF-8 入站 raw、Telnet IAC/NVT 精确分片、48 线程共享路径追加的无重叠引用、带 SHA-256 的 v2 `bytesRef` 删除重建检测和旧引用兼容。
 - Telnet 用户 text 的 CRLF wire、用户 bytes/modem 的 IAC doubling、协商 reply 的 outbound/control 无文本事件、每会话出站 lane、不可逆二进制结构化摘要、分片失败诊断，以及 transport 成功后 store 保存失败不触发重发且内存事件注解一致。
 - system/control 事件通道覆盖 direct/open/close 生命周期，验证脱敏 Text/JSONL 各恰好一次且 Raw 不变、shutdown drain，并锁定 inbound JSONL 先于由它触发的 system 诊断；Core 回归覆盖 wake 合并、4,096 条 outbox 上限和 worker 断开后的持续显式降级。SQLite mirror 会更新同 ID 事件的后补 annotations，同时不重复插入未变化历史。
-- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、可独立验证的 Ed25519 detached signature、持久签名 seed 格式校验、已选日志附件的命名/哈希/数量/大小/symlink/截断/替换边界、脱敏与 raw/附件互斥和 `bytesRef` 范围读取；回归覆盖 `summary.lastLine`、SSH/Tmux credential metadata、本地路径、自动化载荷、传输路径和 raw shard ref 泄漏，并确认未脱敏导出保持原值。
+- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、可独立验证的 Ed25519 detached signature、持久签名 seed 格式校验、已选日志附件的命名/哈希/数量/大小/symlink/截断/替换边界、脱敏与 raw/附件互斥和 `bytesRef` 范围读取；回归覆盖 `summary.lastLine`、SSH/Tmux credential metadata、本地路径、自动化载荷、传输路径、Sysmon 识别性标签和 raw shard ref 泄漏，并确认未脱敏导出保持原值。
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。

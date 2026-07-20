@@ -1000,6 +1000,7 @@ impl SessionStore {
             .filter(|record| record.session_id.as_deref() == Some(session_id))
             .cloned()
             .collect::<Vec<_>>();
+        let mut sysmon = self.sysmon_for(session_id);
         if redact_bundle {
             if let Some(summary) = &mut summary {
                 redact_session_summary(summary);
@@ -1028,6 +1029,9 @@ impl SessionStore {
                     *value = redact_secrets(value);
                 }
             }
+            if let Some(snapshot) = &mut sysmon {
+                redact_sysmon_snapshot(snapshot);
+            }
         }
         let log_shards = events
             .iter()
@@ -1040,7 +1044,7 @@ impl SessionStore {
             "events": events,
             "logShards": log_shards,
             "timeline": timeline,
-            "sysmon": self.sysmon_for(session_id),
+            "sysmon": sysmon,
             "transfers": transfers,
             "audit": audit,
         })
@@ -1110,6 +1114,19 @@ fn redact_session_summary(summary: &mut SessionSummary) {
             shell.args.clear();
         }
         ConnectionConfig::Serial(_) => {}
+    }
+}
+
+fn redact_sysmon_snapshot(snapshot: &mut SysmonSnapshot) {
+    for process in &mut snapshot.processes {
+        process.name = "<redacted-process>".to_string();
+    }
+    for disk in &mut snapshot.disks {
+        disk.filesystem = "<redacted-filesystem>".to_string();
+        disk.mount_point = "<redacted-mount-point>".to_string();
+    }
+    for interface in &mut snapshot.network_interfaces {
+        interface.name = "<redacted-interface>".to_string();
     }
 }
 
@@ -2082,6 +2099,39 @@ mod tests {
                     "password=audit-secret".to_string(),
                 )]),
             });
+            store.record_sysmon_snapshot(SysmonSnapshot {
+                session_id: "test-session".to_string(),
+                ts: Utc::now(),
+                uptime_seconds: 123,
+                cpu_percent: 12.5,
+                memory_percent: 34.5,
+                rx_kbps: 56.5,
+                tx_kbps: 78.5,
+                load_average: [0.5, 1.0, 1.5],
+                memory_total_bytes: 1024,
+                memory_available_bytes: 512,
+                processes: vec![SysmonProcess {
+                    pid: 4242,
+                    name: "password=sysmon-process-secret".to_string(),
+                    cpu_percent: 9.5,
+                    memory_percent: 8.5,
+                    rss_bytes: 256,
+                }],
+                disks: vec![SysmonDisk {
+                    filesystem: "/dev/mapper/private-filesystem".to_string(),
+                    mount_point: "/srv/private-mount".to_string(),
+                    total_bytes: 4096,
+                    available_bytes: 2048,
+                    used_percent: 50.0,
+                }],
+                network_interfaces: vec![SysmonNetworkInterface {
+                    name: "customer-private-interface".to_string(),
+                    rx_bytes: 100,
+                    tx_bytes: 200,
+                    rx_kbps: 3.5,
+                    tx_kbps: 4.5,
+                }],
+            });
 
             let plain = store.export_session_bundle("test-session");
             let redacted = store.export_session_bundle_redacted("test-session");
@@ -2113,6 +2163,10 @@ mod tests {
                 "/home/operator/private-scripts/deploy",
                 "trigger-url-secret",
                 "v2:/home/operator/private-logs/raw:0:12:digest",
+                "sysmon-process-secret",
+                "/dev/mapper/private-filesystem",
+                "/srv/private-mount",
+                "customer-private-interface",
             ];
 
             for sensitive in sensitive_values {
@@ -2138,6 +2192,23 @@ mod tests {
             );
             assert_eq!(redacted["transfers"][0]["protocol"], "sftp");
             assert_eq!(redacted["transfers"][0]["status"], "completed");
+            assert_eq!(redacted["sysmon"]["processes"][0]["pid"], 4242);
+            assert_eq!(
+                redacted["sysmon"]["processes"][0]["name"],
+                "<redacted-process>"
+            );
+            assert_eq!(
+                redacted["sysmon"]["disks"][0]["filesystem"],
+                "<redacted-filesystem>"
+            );
+            assert_eq!(
+                redacted["sysmon"]["disks"][0]["mountPoint"],
+                "<redacted-mount-point>"
+            );
+            assert_eq!(
+                redacted["sysmon"]["networkInterfaces"][0]["name"],
+                "<redacted-interface>"
+            );
             assert_eq!(
                 redacted["summary"]["profile"]["triggers"][0]["actions"][0]["text"],
                 "<redacted>"
