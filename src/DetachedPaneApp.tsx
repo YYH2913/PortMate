@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { emitTo } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
@@ -8,6 +8,7 @@ import {
   buildDetachedPanePath,
   DETACHED_PANE_EVENT,
   DETACHED_PANE_MESSAGE_TYPE,
+  SESSION_PROFILE_DELETED_EVENT,
 } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
@@ -60,6 +61,25 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         setOneKeys(nextOneKeys);
       }
     }
+  }, [request.sessionId]);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
+      if (disposed || event.payload !== request.sessionId) return;
+      setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
+      setError("会话 Profile 已删除");
+      void getCurrentWebviewWindow().close().catch(() => {});
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten = nextUnlisten;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [request.sessionId]);
 
   useEffect(() => {

@@ -3,6 +3,7 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export const DETACHED_PANE_EVENT = "portmate-detached-pane-command";
 export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
+export const SESSION_PROFILE_DELETED_EVENT = "portmate-session-profile-deleted";
 
 export type DetachedPaneRequest = {
   windowId: string;

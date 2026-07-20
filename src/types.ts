@@ -10,6 +10,14 @@ export interface SessionSummary {
   lastLine?: string | null;
 }
 
+export interface DeleteSessionProfileResponse {
+  deletedProfileId: string;
+  sessions: SessionSummary[];
+  oneKeys: OneKeySummary[];
+  hostKeys: HostKeyStore;
+  grants: McpGrant[];
+}
+
 export interface SessionProfile {
   id: string;
   name: string;

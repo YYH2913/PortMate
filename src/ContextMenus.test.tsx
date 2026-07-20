@@ -29,6 +29,7 @@ describe("session context menu", () => {
     expect(html).toContain("水平拆分视图(H)");
     expect(html).toContain("垂直拆分视图(V)");
     expect(html).toContain("移动视图到分组(M)");
+    expect(html).toContain("删除会话 Profile");
     expect(html).not.toContain("同步输入已开启");
     expect(html).not.toContain("复制SSH通道");
     expect(html).not.toContain("拆分为(S)");

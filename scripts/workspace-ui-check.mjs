@@ -257,6 +257,8 @@ try {
       sessionStorage.setItem("portmate.workspaceUiCheck.initialized", "true");
     }
     window.__invokeCalls = [];
+    window.__sessions = structuredClone(initialSessions);
+    window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__clipboardText = "";
     window.__closeSessionError = false;
     window.__tauriCallbacks = new Map();
@@ -292,9 +294,9 @@ try {
           window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
           return null;
         }
-        if (command === "list_sessions") return initialSessions;
+        if (command === "list_sessions") return window.__sessions;
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
-        if (command === "list_mcp_grants") return initialMcpGrants;
+        if (command === "list_mcp_grants") return window.__mcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") return initialMcpHttpConfig;
         if (command === "list_mcp_approvals") return [];
@@ -315,6 +317,26 @@ try {
           if (window.__closeSessionError) throw new Error("simulated close failure");
           const session = initialSessions.find((item) => item.profile.id === args.sessionId);
           return session ? { ...session, runtime: { ...session.runtime, status: "disconnected" } } : null;
+        }
+        if (command === "delete_session_profile") {
+          const deletedProfileId = args.sessionId;
+          window.__sessions = window.__sessions.filter((session) => session.profile.id !== deletedProfileId);
+          window.__mcpGrants = window.__mcpGrants.map((grant) => {
+            if (!grant.allowedSessions.length || !grant.allowedSessions.includes(deletedProfileId)) return grant;
+            const allowedSessions = grant.allowedSessions.filter((sessionId) => sessionId !== deletedProfileId);
+            return {
+              ...grant,
+              allowedSessions,
+              revokedAt: allowedSessions.length ? grant.revokedAt : grant.revokedAt ?? new Date().toISOString(),
+            };
+          });
+          return {
+            deletedProfileId,
+            sessions: window.__sessions,
+            oneKeys: [],
+            hostKeys: { keys: [] },
+            grants: window.__mcpGrants,
+          };
         }
         if (command === "list_host_keys") return { keys: [] };
         if ([
@@ -1166,6 +1188,35 @@ try {
   await page.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
   await page.locator(".mcp-dialog").waitFor({ state: "detached" });
 
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await togglePanel("资源管理器");
+  const deleteTarget = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
+  await deleteTarget.click();
+  await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
+  await deleteTarget.click({ button: "right" });
+  const deleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
+  await deleteAction.waitFor();
+  await page.screenshot({ path: `${screenshotPrefix}-profile-delete.png`, fullPage: true });
+  let deletionPrompt = "";
+  page.once("dialog", async (dialog) => {
+    deletionPrompt = dialog.message();
+    await dialog.accept();
+  });
+  await deleteAction.click();
+  const deletionNotice = page.locator(".notice-dialog", { hasText: "会话已删除" });
+  await deletionNotice.waitFor();
+  assert(deletionPrompt.includes("Bench UART") && deletionPrompt.includes("磁盘日志分片与安全审计保留"),
+    `profile deletion confirmation omitted its target or retention boundary: ${deletionPrompt}`);
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).count() === 0,
+    "deleted profile remained in the resource explorer");
+  assert(await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).count() === 0,
+    "deleted profile retained a workspace view");
+  await page.waitForFunction(() => !localStorage.getItem("portmate.workspace.v1")?.includes("bench-uart"));
+  const deleteCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_session_profile"));
+  assert(deleteCalls.length === 1 && deleteCalls[0].args.sessionId === "bench-uart",
+    `profile deletion did not reach the backend exactly once: ${JSON.stringify(deleteCalls)}`);
+  await deletionNotice.getByRole("button", { name: "确定", exact: true }).click();
+
   const terminalWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
   )));
@@ -1176,7 +1227,7 @@ try {
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
-    contextMenu: "single synchronized-input, split, move, merge, swap, zoom, detach, and close-pane actions",
+    contextMenu: "single synchronized-input, split, move, merge, swap, zoom, detach, close-pane, and profile-delete actions",
     transferProtocols: {
       ssh: sshTransferOptions.map((option) => option.value),
       serial: serialTransferOptions,
@@ -1218,6 +1269,7 @@ try {
       `${screenshotPrefix}-mcp-audit-mobile.png`,
       `${screenshotPrefix}-mcp-approval.png`,
       `${screenshotPrefix}-mcp-approval-mobile.png`,
+      `${screenshotPrefix}-profile-delete.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],

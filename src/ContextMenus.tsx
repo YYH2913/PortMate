@@ -17,7 +17,8 @@ export type SessionContextAction =
   | "close-all"
   | "close-inactive"
   | "close-side"
-  | "settings";
+  | "settings"
+  | "delete-profile";
 
 export type TerminalContextAction =
   | "copy"
@@ -49,7 +50,7 @@ export function SessionContextMenu({
   onColor: (color: string) => void;
 }) {
   const left = Math.max(8, Math.min(state.x, window.innerWidth - 318));
-  const top = Math.max(8, Math.min(state.y, window.innerHeight - 540));
+  const top = Math.max(8, Math.min(state.y, window.innerHeight - 580));
   const sessionId = active?.profile.id ?? state.sessionId;
   const disabled = !active;
 
@@ -85,6 +86,8 @@ export function SessionContextMenu({
       <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
+      <ContextDivider />
+      <ContextMenuButton label="删除会话 Profile" disabled={disabled} danger onClick={() => onAction("delete-profile", sessionId)} />
     </div>
   );
 }
@@ -125,16 +128,18 @@ function ContextMenuButton({
   shortcut,
   disabled,
   checked,
+  danger,
   onClick,
 }: {
   label: string;
   shortcut?: string;
   disabled?: boolean;
   checked?: boolean;
+  danger?: boolean;
   onClick?: () => void;
 }) {
   return (
-    <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
+    <button type="button" className={danger ? "context-menu-row danger" : "context-menu-row"} disabled={disabled} onClick={onClick}>
       <span className={checked ? "context-check active" : "context-check"}>{checked ? "✓" : ""}</span>
       <span className="context-label">{label}</span>
       {shortcut ? <span className="context-shortcut">{shortcut}</span> : null}

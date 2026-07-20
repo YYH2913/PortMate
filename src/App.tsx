@@ -98,9 +98,10 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
+import { deleteSessionProfileFromClientState } from "./session-profile-delete-state";
 import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
@@ -1537,6 +1538,71 @@ export default function App() {
     }
   }
 
+  function applyDeletedSessionProfile(response: DeleteSessionProfileResponse) {
+    const profileId = response.deletedProfileId;
+    const remainingSessionIds = response.sessions.map((session) => session.profile.id);
+    const reconciled = reconcileWorkspaceSnapshot({
+      version: 4,
+      root: workspaceRoot,
+      activePaneId,
+      activeId,
+      tabColors,
+    }, remainingSessionIds);
+
+    setSessions(response.sessions);
+    saveLocalSessionSummaries(response.sessions);
+    setOneKeys(response.oneKeys);
+    setHostKeys(response.hostKeys);
+    setGrants(response.grants);
+    setLogs((current) => Object.fromEntries(
+      Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
+    ));
+    setTransfers((current) => current.filter((transfer) => transfer.sessionId !== profileId));
+    setSerialCaptures((current) => Object.fromEntries(
+      Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
+    ));
+    setMcpApprovals((current) => current.filter((approval) => approval.sessionId !== profileId));
+    setClosedWorkspaceViews((current) => current.filter((closed) => closed.view.sessionId !== profileId));
+    setTerminalPrefs((current) => ({
+      ...current,
+      startupSessions: current.startupSessions.filter((sessionId) => sessionId !== profileId),
+    }));
+    setWorkspaceRoot(reconciled.root);
+    setActivePaneId(reconciled.activePaneId);
+    setActiveId(reconciled.activeId);
+    setTabColors(reconciled.tabColors);
+    setZoomedPaneId((current) => current && findWorkspacePane(reconciled.root, current) ? current : "");
+    setWorkspaceGroupMove(null);
+    setWorkspaceViewRename(null);
+    setWorkspaceViewContextMenu(null);
+    setDraft((current) => current.id === profileId ? createSessionDraft() : current);
+    setHostKeyPrompt((current) => current?.profile.id === profileId ? null : current);
+    delete serialCapturesRef.current[profileId];
+    delete serialCaptureEpochRef.current[profileId];
+    serialCaptureRefreshesRef.current.delete(profileId);
+    delete logSignatureRef.current[profileId];
+    sessionsSignatureRef.current = "";
+  }
+
+  async function deleteSessionFromContext(sessionId?: string | null) {
+    const target = contextSession(sessionId);
+    if (!target) return;
+    const confirmed = window.confirm(
+      `删除会话 Profile “${target.profile.name}”？\n\n活动连接会先断开；内存历史、传输记录、Profile 级 Host Key 和会话绑定会删除。磁盘日志分片与安全审计保留。`,
+    );
+    if (!confirmed) return;
+
+    try {
+      const response = isBackendAvailable()
+        ? await invokeBackend<DeleteSessionProfileResponse>("delete_session_profile", { sessionId: target.profile.id })
+        : deleteSessionProfileFromClientState(target.profile.id, { sessions, oneKeys, hostKeys, grants });
+      applyDeletedSessionProfile(response);
+      setNotice({ title: "会话已删除", message: `已删除 ${target.profile.name}；磁盘日志仍可在日志管理器中查看或清理。` });
+    } catch (error) {
+      setNotice({ title: "删除会话失败", message: formatError(error) });
+    }
+  }
+
   function closeSideSessionsFromContext(sessionId?: string | null) {
     const target = contextSession(sessionId);
     if (!target) return;
@@ -1597,6 +1663,9 @@ export default function App() {
         return;
       case "settings":
         openSessionSettingsFromContext(sessionId);
+        return;
+      case "delete-profile":
+        void deleteSessionFromContext(sessionId);
         return;
       default:
         return;

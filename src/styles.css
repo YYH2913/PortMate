@@ -900,6 +900,15 @@ button {
   background: #3b3f43;
 }
 
+.context-menu-row.danger:not(:disabled) {
+  color: #f2aaa4;
+}
+
+.context-menu-row.danger:hover:not(:disabled) {
+  background: #4a3031;
+  color: #ffd3ce;
+}
+
 .context-menu-row:disabled,
 .context-submenu.disabled > .context-menu-row {
   color: #737d86;
