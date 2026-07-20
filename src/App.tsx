@@ -61,7 +61,7 @@ import type { QuickCommand } from "./quick-command-state";
 import { normalizeSerialConnectionSettings, serialConnectionBounds, serialConnectionDefaults } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
-import { flattenSessionTree, protocolTabs, sessionSettingTrees } from "./session-settings-state";
+import { flattenSessionTree, MAX_SESSION_PROFILE_GROUP_CHARACTERS, MAX_SESSION_PROFILE_NAME_CHARACTERS, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS, normalizeSessionMetadataText, normalizeSessionProfileMetadata, protocolTabs, sessionSettingTrees } from "./session-settings-state";
 import type { ProtocolTab } from "./session-settings-state";
 import { sessionConnectionAction } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
@@ -8034,16 +8034,24 @@ function SessionCommonOverviewFields({
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  const [tagsText, setTagsText] = useState(() => draft.tags.join(", "));
+  useEffect(() => {
+    setTagsText(draft.tags.join(", "));
+  }, [draft.id]);
   return (
     <>
       <DialogField label="名称:(N)">
-        <input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} />
+        <input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })} />
       </DialogField>
       <DialogField label="分组:(G)">
-        <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: event.target.value })} placeholder="[嵌套组] a>b>c" />
+        <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })} placeholder="[嵌套组] a>b>c" />
       </DialogField>
       <DialogField label="标签:(L)">
-        <input value={draft.tags.join(", ")} onChange={(event) => onDraftChange({ ...draft, tags: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
+        <input value={tagsText} onChange={(event) => {
+          const nextText = normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS);
+          setTagsText(nextText);
+          onDraftChange({ ...draft, tags: nextText.split(",").map((item) => item.trim()).filter(Boolean) });
+        }} />
       </DialogField>
     </>
   );
@@ -9042,15 +9050,16 @@ function createSessionDraft(): SessionProfile {
 function prepareSessionProfile(profile: SessionProfile): SessionProfile {
   const id = profile.id && profile.id !== "draft" ? profile.id : createSessionId();
   const name = profile.name.trim() || defaultSessionName(profile);
+  const metadata = normalizeSessionProfileMetadata({ ...profile, name }, name);
   const connection = normalizeConnectionConfig(profile.connection, id);
   return {
     ...profile,
     id,
-    name,
+    name: metadata.name,
     kind: connection.kind,
     connection,
-    group: profile.group.trim(),
-    tags: profile.tags.map((tag) => tag.trim()).filter(Boolean),
+    group: metadata.group,
+    tags: metadata.tags,
     terminal: {
       ...normalizeTerminalProfileSettings(profile.terminal),
       theme: normalizeTerminalTheme(profile.terminal.theme),

@@ -76,7 +76,10 @@ command backend inside the desktop app.
 
 5. A compact modal settings window opens. `会话 -> 新建会话` and `会话 -> 会话设置` use one session-type selector and one configuration selector instead of stacked protocol tabs and a second navigation tree. `工具 -> 终端设置` uses one horizontal page strip and a full-width settings surface.
 
-   - Session name, group, tags
+   - Session name, group, tags. Names and groups are bounded to 128/256 Unicode characters; a
+     Profile keeps at most 32 unique tags of 64 characters each. Control characters are removed on
+     input and Store load, and the comma-separated tag editor preserves an in-progress delimiter so
+     multiple tags can be entered normally.
    - SSH host, port, username, `HostKeyAlias`, host key policy, trust scope, identity file, auth order, agent and forwarding behavior
    - SSH profile-vault private key import plus optional saved password/passphrase into the system keyring; saved profiles keep only generated `secretRef` values
    - SSH/Tmux/TCP/Telnet profile proxy settings for HTTP CONNECT or SOCKS5, with optional HTTP Basic or SOCKS5 username/password authentication. Proxy passwords are transactionally written to the native keyring or unlocked Stronghold fallback and only `secretRef` metadata is persisted. SSH host-key scans use the same route as the real connection; with Jump Hosts, the proxy carries only the first physical hop and later hops continue through SSH `direct-tcpip` channels.
@@ -220,7 +223,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 487.1 kB of main JS, 466.5 kB of terminal core JS, 120.4 kB of WebGL JS,
+emits approximately 487.8 kB of main JS, 466.5 kB of terminal core JS, 120.4 kB of WebGL JS,
 139.1 kB of main CSS, 12.1 kB for the MCP workspace, 11.7 kB for the OneKeys manager, 4.7 kB for
 session/terminal context menus, 3.7 kB for one-time MCP approval, 2.8 kB for the lazy workspace
 utility panels, and 4.5 kB for the view

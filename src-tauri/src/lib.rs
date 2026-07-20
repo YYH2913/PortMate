@@ -138,6 +138,10 @@ const MAX_ONE_KEY_LABEL_CHARACTERS: usize = 64;
 const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
 const MAX_ONE_KEY_SESSIONS: usize = 64;
 const MAX_ONE_KEY_SECRET_BYTES: usize = 32 * 1024;
+const MAX_SESSION_PROFILE_NAME_CHARACTERS: usize = 128;
+const MAX_SESSION_PROFILE_GROUP_CHARACTERS: usize = 256;
+const MAX_SESSION_PROFILE_TAGS: usize = 32;
+const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
 const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const BUNDLE_SIGNING_KEY_REF: &str = "keychain:bundle-signing-ed25519-v1";
 const BUNDLE_SIGNING_KEY_PORTABLE_REF: &str = "stronghold:bundle-signing-ed25519-v1";
@@ -25350,6 +25354,20 @@ fn normalized_terminal_theme(theme: &str) -> &str {
     }
 }
 
+fn normalized_profile_metadata_text(value: &str, max_characters: usize) -> String {
+    let clean = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    clean
+        .trim()
+        .chars()
+        .take(max_characters)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
     if let Ok(mut store) = state.store.lock() {
         let _ = store.set_runtime_status_with_reason(
@@ -25422,14 +25440,30 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
     if profile.id.is_empty() {
         profile.id = format!("session-{}", Uuid::new_v4());
     }
-    profile.name = profile.name.trim().to_string();
-    profile.group = profile.group.trim().to_string();
-    profile.tags = profile
-        .tags
-        .into_iter()
-        .map(|tag| tag.trim().to_string())
-        .filter(|tag| !tag.is_empty())
-        .collect();
+    profile.name =
+        normalized_profile_metadata_text(&profile.name, MAX_SESSION_PROFILE_NAME_CHARACTERS);
+    if profile.name.is_empty() {
+        profile.name =
+            normalized_profile_metadata_text(&profile.id, MAX_SESSION_PROFILE_NAME_CHARACTERS);
+    }
+    if profile.name.is_empty() {
+        profile.name = "未命名会话".to_string();
+    }
+    profile.group =
+        normalized_profile_metadata_text(&profile.group, MAX_SESSION_PROFILE_GROUP_CHARACTERS);
+    let mut tags = Vec::new();
+    let mut seen_tags = HashSet::new();
+    for tag in profile.tags {
+        let tag = normalized_profile_metadata_text(&tag, MAX_SESSION_PROFILE_TAG_CHARACTERS);
+        if tag.is_empty() || !seen_tags.insert(tag.clone()) {
+            continue;
+        }
+        tags.push(tag);
+        if tags.len() >= MAX_SESSION_PROFILE_TAGS {
+            break;
+        }
+    }
+    profile.tags = tags;
     profile.kind = session_kind_for_connection(&profile.connection);
     profile.terminal.term = normalized_terminal_name(&profile.terminal.term).to_string();
     profile.terminal.rows = profile
@@ -29458,8 +29492,14 @@ mod tests {
     }
 
     #[test]
-    fn session_profile_normalization_bounds_terminal_settings() {
+    fn session_profile_normalization_bounds_metadata_and_terminal_settings() {
         let mut profile = test_shell_profile();
+        profile.name = format!(" \0Router\n{} ", "界".repeat(200));
+        profile.group = format!(" Lab\u{0085}{} ", "g".repeat(300));
+        profile.tags = std::iter::once(" edge ".to_string())
+            .chain(std::iter::once("edge".to_string()))
+            .chain((0..40).map(|index| format!("tag-{index}-{}", "x".repeat(80))))
+            .collect();
         profile.terminal.term = "xterm\nmalformed".to_string();
         profile.terminal.rows = 0;
         profile.terminal.cols = u16::MAX;
@@ -29467,14 +29507,41 @@ mod tests {
         profile.terminal.font_family = "bad\0font".to_string();
         profile.terminal.font_size = 0;
         profile.terminal.theme = " graphite ".to_string();
-        let normalized = normalize_session_profile(profile.clone()).terminal;
-        assert_eq!(normalized.term, DEFAULT_TERMINAL_NAME);
-        assert_eq!(normalized.rows, MIN_TERMINAL_ROWS);
-        assert_eq!(normalized.cols, MAX_TERMINAL_COLS);
-        assert_eq!(normalized.scrollback, MAX_TERMINAL_SCROLLBACK);
-        assert_eq!(normalized.font_family, DEFAULT_TERMINAL_FONT_FAMILY);
-        assert_eq!(normalized.font_size, MIN_TERMINAL_FONT_SIZE);
-        assert_eq!(normalized.theme, "graphite");
+        let normalized = normalize_session_profile(profile.clone());
+        assert_eq!(
+            normalized.name.chars().count(),
+            MAX_SESSION_PROFILE_NAME_CHARACTERS
+        );
+        assert!(normalized.name.starts_with("Router"));
+        assert!(!normalized.name.chars().any(char::is_control));
+        assert_eq!(
+            normalized.group.chars().count(),
+            MAX_SESSION_PROFILE_GROUP_CHARACTERS
+        );
+        assert_eq!(normalized.tags.len(), MAX_SESSION_PROFILE_TAGS);
+        assert_eq!(normalized.tags[0], "edge");
+        assert!(normalized
+            .tags
+            .iter()
+            .all(|tag| tag.chars().count() <= MAX_SESSION_PROFILE_TAG_CHARACTERS));
+        assert_eq!(
+            normalized.tags.iter().collect::<HashSet<_>>().len(),
+            normalized.tags.len()
+        );
+        assert_eq!(normalized.terminal.term, DEFAULT_TERMINAL_NAME);
+        assert_eq!(normalized.terminal.rows, MIN_TERMINAL_ROWS);
+        assert_eq!(normalized.terminal.cols, MAX_TERMINAL_COLS);
+        assert_eq!(normalized.terminal.scrollback, MAX_TERMINAL_SCROLLBACK);
+        assert_eq!(
+            normalized.terminal.font_family,
+            DEFAULT_TERMINAL_FONT_FAMILY
+        );
+        assert_eq!(normalized.terminal.font_size, MIN_TERMINAL_FONT_SIZE);
+        assert_eq!(normalized.terminal.theme, "graphite");
+
+        let mut fallback = profile.clone();
+        fallback.name = "\0\n".to_string();
+        assert_eq!(normalize_session_profile(fallback).name, profile.id);
 
         profile.terminal.theme = "future-or-corrupt-theme".to_string();
         assert_eq!(

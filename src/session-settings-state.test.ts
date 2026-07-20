@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { flattenSessionTree, protocolTabs, sessionSettingTrees } from "./session-settings-state";
+import {
+  flattenSessionTree,
+  MAX_SESSION_PROFILE_GROUP_CHARACTERS,
+  MAX_SESSION_PROFILE_NAME_CHARACTERS,
+  MAX_SESSION_PROFILE_TAG_CHARACTERS,
+  MAX_SESSION_PROFILE_TAGS,
+  normalizeSessionMetadataText,
+  normalizeSessionProfileMetadata,
+  protocolTabs,
+  sessionSettingTrees,
+} from "./session-settings-state";
 
 const sharedPages = ["会话", "终端", "日志", "触发器", "传输"];
 
@@ -54,5 +64,37 @@ describe("session settings navigation", () => {
       expect(new Set(pages).size).toBe(pages.length);
       expect(pages).not.toEqual(expect.arrayContaining(removedPages));
     }
+  });
+
+  it("bounds display metadata by Unicode characters and strips controls", () => {
+    expect(normalizeSessionMetadataText(` ${"😀".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS + 1)}\n`, MAX_SESSION_PROFILE_NAME_CHARACTERS))
+      .toBe(` ${"😀".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS - 1)}`);
+
+    const normalized = normalizeSessionProfileMetadata({
+      name: "  Router\u0000\n  ",
+      group: ` Lab\u0085${"g".repeat(MAX_SESSION_PROFILE_GROUP_CHARACTERS)} `,
+      tags: [
+        " edge ",
+        "edge",
+        ` ${"t".repeat(MAX_SESSION_PROFILE_TAG_CHARACTERS + 2)} `,
+        ...Array.from({ length: MAX_SESSION_PROFILE_TAGS + 4 }, (_, index) => `tag-${index}`),
+      ],
+    });
+
+    expect(normalized.name).toBe("Router");
+    expect(Array.from(normalized.group)).toHaveLength(MAX_SESSION_PROFILE_GROUP_CHARACTERS);
+    expect(normalized.tags).toHaveLength(MAX_SESSION_PROFILE_TAGS);
+    expect(normalized.tags[0]).toBe("edge");
+    expect(normalized.tags[1]).toBe("t".repeat(MAX_SESSION_PROFILE_TAG_CHARACTERS));
+    expect(new Set(normalized.tags).size).toBe(normalized.tags.length);
+  });
+
+  it("uses a bounded fallback for an empty or control-only name", () => {
+    expect(normalizeSessionProfileMetadata({
+      name: "\u0000\n",
+      group: "",
+      tags: [],
+    }, ` ${"界".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS + 2)} `).name)
+      .toBe("界".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS));
   });
 });

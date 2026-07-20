@@ -852,6 +852,18 @@ try {
   await openNewSessionSettings();
   const protocolSelect = page.getByRole("combobox", { name: "会话类型", exact: true });
   const sectionSelect = page.getByRole("combobox", { name: "会话配置项", exact: true });
+  const profileNameInput = page.locator(".session-settings-dialog .dialog-field", { hasText: "名称:" }).locator("input");
+  const profileGroupInput = page.locator(".session-settings-dialog .dialog-field", { hasText: "分组:" }).locator("input");
+  const profileTagsInput = page.locator(".session-settings-dialog .dialog-field", { hasText: "标签:" }).locator("input");
+  await profileNameInput.fill("😀".repeat(129));
+  await profileGroupInput.fill("g".repeat(257));
+  await profileTagsInput.fill("alpha");
+  await profileTagsInput.press("End");
+  await profileTagsInput.pressSequentially(", beta");
+  assert(Array.from(await profileNameInput.inputValue()).length === 128
+    && Array.from(await profileGroupInput.inputValue()).length === 256
+    && await profileTagsInput.inputValue() === "alpha, beta",
+  "session metadata bounds or incremental comma-separated tag editing failed");
   assert(await page.locator(".session-settings-dialog .protocol-tabs").count() === 0
     && await page.locator(".session-settings-dialog .settings-tree").count() === 0,
   "redundant session settings navigation is still rendered");
