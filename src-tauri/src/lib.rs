@@ -22876,11 +22876,15 @@ fn export_session_bundle_archive_inner(
     }
     push_bundle_entry(&mut entries, "events.jsonl", event_bytes)?;
 
-    let shard_inventory = match list_log_shards_inner(store_path) {
-        Ok(shards) => shards,
-        Err(error) => {
-            warnings.push(format!("log shard inventory unavailable: {error}"));
-            Vec::new()
+    let shard_inventory = if redacted {
+        Vec::new()
+    } else {
+        match list_log_shards_inner(store_path) {
+            Ok(shards) => shards,
+            Err(error) => {
+                warnings.push(format!("log shard inventory unavailable: {error}"));
+                Vec::new()
+            }
         }
     };
     let diagnostics = serde_json::json!({
@@ -34251,6 +34255,7 @@ mod tests {
         let session_id = profile.id.clone();
         let secret = b"password=hunter2";
         let bytes_ref = append_log_bytes(&store_path, &profile, "raw", secret).unwrap();
+        let log_relative = parse_log_bytes_ref(&bytes_ref).unwrap().relative;
         let mut store = SessionStore::default();
         store.upsert_profile(profile);
         store
@@ -34310,9 +34315,18 @@ mod tests {
             .any(|path| path.starts_with("log-segments/")));
         let redacted_text = String::from_utf8_lossy(&redacted_entries["bundle.json"]);
         let redacted_events = String::from_utf8_lossy(&redacted_entries["events.jsonl"]);
+        let redacted_diagnostics: serde_json::Value =
+            serde_json::from_slice(&redacted_entries["diagnostics.json"]).unwrap();
         assert!(!redacted_text.contains("hunter2"));
         assert!(!redacted_text.contains(&bytes_ref));
         assert!(!redacted_events.contains(&bytes_ref));
+        assert_eq!(
+            redacted_diagnostics["availableLogShards"],
+            serde_json::json!([])
+        );
+        assert!(
+            !String::from_utf8_lossy(&redacted_entries["diagnostics.json"]).contains(&log_relative)
+        );
         for sensitive in [
             "/home/operator/private-logs/{session}.raw",
             "/home/operator/private-downloads",
@@ -34358,9 +34372,14 @@ mod tests {
         );
         let plain_entries = read_test_bundle_entries(Path::new(&plain.path));
         let plain_bundle = String::from_utf8_lossy(&plain_entries["bundle.json"]);
+        let plain_diagnostics: serde_json::Value =
+            serde_json::from_slice(&plain_entries["diagnostics.json"]).unwrap();
         assert!(plain_bundle.contains(&bytes_ref));
         assert!(plain_bundle.contains("/home/operator/private-shell-cwd"));
         assert!(plain_bundle.contains("opaque-shell-secret"));
+        assert!(plain_diagnostics["availableLogShards"]
+            .as_array()
+            .is_some_and(|shards| shards.iter().any(|shard| shard["path"] == log_relative)));
         let raw_entry = plain_entries
             .iter()
             .find(|(path, _)| path.starts_with("log-segments/"))
