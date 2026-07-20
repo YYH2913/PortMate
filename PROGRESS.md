@@ -69,7 +69,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - WindTerm 的 view 精确排序/跨 group 定点拖放和完整 group 合并、逐 view 标签颜色、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。上一个/下一个标签会按活动 pane 的独立 view ID 顺序首尾循环，不会跳过绑定同一 session 的 view；Remote 默认 `Alt+[`/`Alt+]`，Local/Normal 默认 `Ctrl+PgUp`/`Ctrl+PgDn`，其余模式保留对应按键语义，切换不跨 pane 或创建后端连接。Remote/Local 的 `Ctrl+Shift+W` 关闭当前 view，全模式 `Ctrl+Shift+T` 恢复最近关闭 view；repeat 不会连续修改历史，Normal/Command 的关闭按键保留给本地编辑，最后一个 workspace view 仍受保护。pane 标签右键菜单已补齐复制 session 名称/URL、保存/重连、水平/垂直分屏、精确 view 移组、关闭其他/右侧、恢复和 session 设置；同 session 多 view 的保存/重连保持原 view ID，全局与 view 右键菜单的分屏方向也已统一为水平向右、垂直向下。
-- 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘。缓存现在区分“事件已排队”和“XTerm 已完成解析”：快速切换/React StrictMode 不再把空或半成品缓冲与已消费事件 ID 组合保存。同一后端 session 出现在多个 pane 时，只有焦点 pane 可上报 PTY resize；焦点转移会强制按新 owner 当前尺寸重新同步，避免非活动小 pane 覆盖 vim/tmux/top 的行列数。仓库内 `npm run test:terminal-compat` Playwright 基线覆盖 alternate screen、cursor addressing、SGR/truecolor、Unicode 宽字符、view 缓存往返、SGR 鼠标、选择复制开关、精确选区/最近行在线搜索、双 pane resize owner 及桌面/移动截图；还会从系统 PTY 捕获真实 `vim -Nu NONE` 绘制，验证 alternate buffer 往返隔离，并对有界 6,000 行日志执行渲染和尾标搜索性能回归。仍缺完整 vttest 和真实 tmux/top/less 程序矩阵。
+- 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘。缓存现在区分“事件已排队”和“XTerm 已完成解析”：快速切换/React StrictMode 不再把空或半成品缓冲与已消费事件 ID 组合保存。同一后端 session 出现在多个 pane 时，只有焦点 pane 可上报 PTY resize；焦点转移会强制按新 owner 当前尺寸重新同步，避免非活动小 pane 覆盖 vim/tmux/top 的行列数。仓库内 `npm run test:terminal-compat` Playwright 基线覆盖 alternate screen、cursor addressing、SGR/truecolor、Unicode 宽字符、view 缓存往返、SGR 鼠标、选择复制开关、精确选区/最近行在线搜索、双 pane resize owner 及桌面/移动截图；还会从系统 PTY 捕获真实 `vim -Nu NONE`、`less -R` 和 procps `top` 绘制，验证 alternate buffer 往返隔离、清屏与光标恢复，并对有界 6,000 行日志执行渲染和尾标搜索性能回归。仍缺完整 vttest、真实 tmux 及 top/less 的跨实现和跨平台矩阵。
 - 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
 
 ### 连接与传输
@@ -282,7 +282,7 @@ npm run build
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
 - 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区标签切换、跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、真实筛选、精确上下文动作、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离及桌面/移动截图边界。
-- Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好、缓存恢复、真实 Vim PTY 和 6,000 行长日志已有可重复 Playwright 基线，仍缺完整 vttest 与真实 tmux/top/less 程序矩阵。
+- Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好、缓存恢复、真实 Vim/less/top PTY 和 6,000 行长日志已有可重复 Playwright 基线，仍缺完整 vttest、真实 tmux 及 top/less 的跨实现和跨平台矩阵。
 
 ## 对照最终目标的完成度
 
@@ -305,7 +305,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 252 项 Rust core/协议集成测试、49 文件/256 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux/top/less 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 252 项 Rust core/协议集成测试、49 文件/256 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
@@ -333,7 +333,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP HTTP 模式：官方 TypeScript SDK 1.29.0 的无状态 Streamable HTTP 序列已纳入仓库回归；继续补 Python、其他语言 SDK 和旧版本客户端矩阵。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
-5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复/真实 Vim PTY/6,000 行日志性能，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/三向停靠/标签切换/跨区拖放/三向尺寸调整与复位/持久化/真实筛选/上下文动作/MCP 一次性审批/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实 tmux/top/less 程序矩阵。
+5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复/真实 Vim-less-top PTY/6,000 行日志性能，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/三向停靠/标签切换/跨区拖放/三向尺寸调整与复位/持久化/真实筛选/上下文动作/MCP 一次性审批/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest、真实 tmux 及全屏程序跨平台矩阵。
 
 ### P3：架构整理与发布准备
 
@@ -348,6 +348,6 @@ npm run build
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；durable migration journal、异常提交核对、重载 UX、双向迁移、跨进程 CAS 和 conflict 诊断导出已完成。
 3. 更深连接健康探测和跨平台传输故障矩阵。
-4. 继续把其余 CDP 检查整理为 Playwright UI 回归，并补完整 vttest 与真实 tmux/top/less 程序矩阵；终端鼠标、alternate screen、缓存、resize、真实 Vim PTY、6,000 行日志性能和紧凑 workspace UI 基线已完成。
+4. 继续把其余 CDP 检查整理为 Playwright UI 回归，并补完整 vttest、真实 tmux 及全屏程序跨平台矩阵；终端鼠标、alternate screen、缓存、resize、真实 Vim/less/top PTY、6,000 行日志性能和紧凑 workspace UI 基线已完成。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。

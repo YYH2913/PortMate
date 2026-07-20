@@ -11,34 +11,103 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function captureVimPty() {
+function captureAlternateScreenPty(label, command, input, marker) {
   const result = spawnSync("script", [
     "-qfec",
-    "vim -Nu NONE -n README.md",
+    command,
     "/dev/null",
   ], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color" },
-    input: ":q!\r",
+    env: { ...process.env, TERM: "xterm-256color", LANG: "C", LC_ALL: "C" },
+    input,
     encoding: "utf8",
     timeout: 5_000,
     maxBuffer: 4 * 1024 * 1024,
   });
-  assert(!result.error, `failed to capture Vim PTY output: ${result.error?.message}`);
-  assert(result.status === 0, `Vim PTY capture exited with ${result.status}: ${result.stderr}`);
+  assert(!result.error, `failed to capture ${label} PTY output: ${result.error?.message}`);
+  assert(result.status === 0, `${label} PTY capture exited with ${result.status}: ${result.stderr}`);
 
   const output = result.stdout;
   const alternateStart = output.indexOf("\x1b[?1049h");
   const alternateEnd = output.lastIndexOf("\x1b[?1049l");
-  assert(alternateStart >= 0, "Vim PTY capture did not enter the alternate screen");
-  assert(alternateEnd > alternateStart, "Vim PTY capture did not leave the alternate screen");
+  assert(alternateStart >= 0, `${label} PTY capture did not enter the alternate screen`);
+  assert(alternateEnd > alternateStart, `${label} PTY capture did not leave the alternate screen`);
 
   const alternateFrame = output.slice(alternateStart, alternateEnd);
   const exitFrame = output.slice(alternateEnd);
-  assert(alternateFrame.includes("# PortMate"), "Vim PTY capture did not render README.md");
+  assert(alternateFrame.includes(marker), `${label} PTY capture did not render ${marker}`);
   return {
     alternateFrame,
     exitFrame,
+    bytes: Buffer.byteLength(output),
+  };
+}
+
+async function captureTopPty() {
+  const maxBytes = 4 * 1024 * 1024;
+  const child = spawn("script", ["-qfec", "top -d 0.1", "/dev/null"], {
+    cwd: process.cwd(),
+    env: { ...process.env, TERM: "xterm-256color", LANG: "C", LC_ALL: "C" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const stdout = [];
+  const stderr = [];
+  let capturedBytes = 0;
+  let failure = null;
+
+  const output = await new Promise((resolve, reject) => {
+    const inputTimer = setTimeout(() => {
+      if (!child.killed) child.stdin.end("q");
+    }, 500);
+    const timeout = setTimeout(() => {
+      failure = new Error("top PTY capture exceeded 5 seconds");
+      child.kill("SIGTERM");
+    }, 5_000);
+    const cleanup = () => {
+      clearTimeout(inputTimer);
+      clearTimeout(timeout);
+    };
+    const collect = (chunks, chunk) => {
+      capturedBytes += chunk.length;
+      if (capturedBytes > maxBytes) {
+        failure = new Error("top PTY capture exceeded 4 MiB");
+        child.kill("SIGTERM");
+        return;
+      }
+      chunks.push(chunk);
+    };
+    child.stdin.on("error", () => {});
+    child.stdout.on("data", (chunk) => collect(stdout, chunk));
+    child.stderr.on("data", (chunk) => collect(stderr, chunk));
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (status, signal) => {
+      cleanup();
+      if (failure) {
+        reject(failure);
+        return;
+      }
+      const stderrText = Buffer.concat(stderr).toString("utf8");
+      if (status !== 0) {
+        reject(new Error(`top PTY capture exited with ${status ?? signal}: ${stderrText}`));
+        return;
+      }
+      resolve(Buffer.concat(stdout).toString("utf8"));
+    });
+  });
+
+  assert(output.includes("\x1b[2J"), "top PTY capture did not clear the full screen");
+  assert(output.includes("\x1b[?25l"), "top PTY capture did not hide the cursor");
+  const cursorRestore = output.lastIndexOf("\x1b[?25h");
+  assert(cursorRestore >= 0, "top PTY capture did not restore the cursor");
+  const frame = output.slice(0, cursorRestore);
+  assert(frame.includes("top -"), "top PTY capture did not render its header");
+  assert(frame.includes("Tasks:"), "top PTY capture did not render its process summary");
+  return {
+    frame,
+    exitFrame: output.slice(cursorRestore),
     bytes: Buffer.byteLength(output),
   };
 }
@@ -195,7 +264,14 @@ const workspace = {
   activeId: "session-a",
   tabColors: {},
 };
-const vimPty = captureVimPty();
+const vimPty = captureAlternateScreenPty(
+  "Vim",
+  "vim -Nu NONE -n README.md",
+  ":q!\r",
+  "# PortMate",
+);
+const lessPty = captureAlternateScreenPty("less", "less -R README.md", "q", "# PortMate");
+const topPty = await captureTopPty();
 const longLogLineCount = 6_000;
 const longLogTailMarker = "PORTMATE-LONG-LOG-TAIL-006000";
 const longLogText = `${Array.from({ length: longLogLineCount }, (_, index) => (
@@ -431,6 +507,17 @@ try {
   const normalAfterVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
   const hiddenVimSearch = await openAndAssertMissing("# PortMate");
 
+  await emitSessionEvent(createEvent("a-real-less-frame", "session-a", lessPty.alternateFrame));
+  const lessSearch = await openAndAssertSearch("# PortMate");
+  const hiddenNormalDuringLessSearch = await openAndAssertMissing("NORMAL-PROMPT");
+  await emitSessionEvent(createEvent("a-real-less-exit", "session-a", lessPty.exitFrame));
+  const normalAfterLessSearch = await openAndAssertSearch("NORMAL-PROMPT");
+  const hiddenLessSearch = await openAndAssertMissing("# PortMate");
+
+  await emitSessionEvent(createEvent("a-real-top-frame", "session-a", topPty.frame));
+  const topSearch = await openAndAssertSearch("Tasks:");
+  await emitSessionEvent(createEvent("a-real-top-exit", "session-a", topPty.exitFrame));
+
   const longLogStartedAt = Date.now();
   await emitSessionEvent(createEvent("a-long-log", "session-a", longLogText));
   const longLogSearch = await openAndAssertSearch(longLogTailMarker);
@@ -631,9 +718,16 @@ try {
       hiddenNormalSearch,
       normalAfterVimSearch,
       hiddenVimSearch,
+      lessSearch,
+      hiddenNormalDuringLessSearch,
+      normalAfterLessSearch,
+      hiddenLessSearch,
+      topSearch,
       longLogSearch,
     },
     vimPty: { bytes: vimPty.bytes, alternateScreen: true, restoredNormalScreen: true },
+    lessPty: { bytes: lessPty.bytes, alternateScreen: true, restoredNormalScreen: true },
+    topPty: { bytes: topPty.bytes, clearedScreen: true, restoredCursor: true },
     longLog: { lines: longLogLineCount, bytes: Buffer.byteLength(longLogText), durationMs: longLogDurationMs },
     selections: { selectedWithPreference, selectedWithoutPreference },
     copiedWithPreference,
