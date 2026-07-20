@@ -48,9 +48,11 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+mod app_data_migration;
 mod telnet_protocol;
 mod tmux_protocol;
 
+use app_data_migration::*;
 use telnet_protocol::*;
 use tmux_protocol::*;
 
@@ -108,9 +110,6 @@ impl russh::Signer for PortMateAgentSigner {
     }
 }
 
-const STORE_FILE_NAME: &str = "portmate-store.sqlite3";
-const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
-const LEGACY_APP_IDENTIFIER: &str = "dev.portmate.app";
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "4";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
@@ -143,8 +142,6 @@ const BUNDLE_SIGNING_KEY_REF: &str = "keychain:bundle-signing-ed25519-v1";
 const BUNDLE_SIGNING_KEY_PORTABLE_REF: &str = "stronghold:bundle-signing-ed25519-v1";
 const BUNDLE_SIGNATURE_PAYLOAD_FORMAT: &str = "portmate-session-bundle-signature-v1";
 const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
-const PORTABLE_VAULT_FILE_NAME: &str = "portmate-vault.hold";
-const PORTABLE_VAULT_SALT_FILE_NAME: &str = "portmate-vault.salt";
 const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
@@ -26317,88 +26314,6 @@ fn describe_host_key_rejection(evaluation: &HostKeyEvaluation) -> String {
             )
         }
     }
-}
-
-fn migrate_legacy_app_data_dir(data_root: &Path, current_data_dir: &Path) -> Result<(), String> {
-    let legacy_data_dir = data_root.join(LEGACY_APP_IDENTIFIER);
-    if legacy_data_dir == current_data_dir || !legacy_data_dir.exists() {
-        return Ok(());
-    }
-    validate_app_data_directory(&legacy_data_dir, "legacy")?;
-
-    if current_data_dir.exists() {
-        validate_app_data_directory(current_data_dir, "current")?;
-        if app_data_directory_has_portmate_state(current_data_dir)? {
-            return Err(format!(
-                "both legacy and current PortMate data directories contain PortMate state; refusing to merge {} into {}",
-                legacy_data_dir.display(),
-                current_data_dir.display()
-            ));
-        }
-        fs::remove_dir_all(current_data_dir).map_err(|error| {
-            format!(
-                "failed to remove bootstrap-only current PortMate data directory {}: {error}",
-                current_data_dir.display()
-            )
-        })?;
-    }
-
-    if let Some(parent) = current_data_dir.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create PortMate data directory parent {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::rename(&legacy_data_dir, current_data_dir).map_err(|error| {
-        format!(
-            "failed to migrate PortMate data directory {} to {}: {error}",
-            legacy_data_dir.display(),
-            current_data_dir.display()
-        )
-    })
-}
-
-fn validate_app_data_directory(path: &Path, label: &str) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        format!(
-            "failed to inspect {label} PortMate data directory {}: {error}",
-            path.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!(
-            "{label} PortMate data path must be a real directory: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-fn app_data_directory_has_portmate_state(path: &Path) -> Result<bool, String> {
-    const OWNED_ENTRIES: &[&str] = &[
-        STORE_FILE_NAME,
-        LEGACY_JSON_STORE_FILE_NAME,
-        PORTABLE_VAULT_FILE_NAME,
-        PORTABLE_VAULT_SALT_FILE_NAME,
-        "credentials.lock",
-        "portmate-ipc.json",
-        "logs",
-        "exports",
-    ];
-    for entry in OWNED_ENTRIES {
-        let entry = path.join(entry);
-        if entry.try_exists().map_err(|error| {
-            format!(
-                "failed to inspect current PortMate data entry {}: {error}",
-                entry.display()
-            )
-        })? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
