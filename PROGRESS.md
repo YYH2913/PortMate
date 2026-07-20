@@ -191,7 +191,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - MCP 已区分 `resources/list` 实际资源与 `resources/templates/list` URI 模板，支持 `ping`、有界 JSON-RPC batch/notification 语义；HTTP notification 返回无响应体的 `202 Accepted`。
 - MCP 与桌面 IPC 都执行日志查询 `limit` 的 1..=1000 边界，日志搜索返回最近命中并按时间正序排列。
 - 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
-- MCP 授权、HTTP 配置和审计已经分离为三个任务页；审计联合筛选、详情、刷新和有界 JSONL/SHA-256 导出已完成。仍缺按单次高风险调用进行交互式授权确认的体验。
+- MCP 授权、HTTP 配置和审计已经分离为三个任务页；审计联合筛选、详情、刷新和有界 JSONL/SHA-256 导出已完成。`confirmWrites` 的逐次高风险调用审批也已覆盖全部写 scope，并具备 32 项队列上限、60 秒超时、锁屏 fail-closed 和 one-shot 决策语义。
 
 ### 测试与验证
 
@@ -273,7 +273,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 252：`portmate` 189、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 49 个文件、256 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 256：`portmate` 190、`portmate-kdf` 1、`portmate-core` 38、`portmate-mcp` 27；`npm test` 另有 51 个文件、263 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
