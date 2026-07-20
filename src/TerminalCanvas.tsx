@@ -46,6 +46,7 @@ import type { TerminalSearchResult } from "./terminal-search";
 import { terminalStateCache } from "./terminal-state-cache";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
+import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
@@ -99,32 +100,6 @@ const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   activeMatchColorOverviewRuler: "#f4b860",
 };
 
-const portmateTerminalTheme = {
-  background: "#0d1117",
-  foreground: "#d7e1eb",
-  cursor: "#5eead4",
-  cursorAccent: "#0d1117",
-  selectionBackground: "#284457",
-  selectionForeground: "#f8fafc",
-  black: "#0d1117",
-  red: "#f87171",
-  green: "#37d67a",
-  yellow: "#f4b860",
-  blue: "#68a7ff",
-  magenta: "#c084fc",
-  cyan: "#5eead4",
-  white: "#d7e1eb",
-  brightBlack: "#6b7280",
-  brightRed: "#ff8a8a",
-  brightGreen: "#86efac",
-  brightYellow: "#fde047",
-  brightBlue: "#93c5fd",
-  brightMagenta: "#d8b4fe",
-  brightCyan: "#67e8f9",
-  brightWhite: "#ffffff",
-  extendedAnsi: createXterm256Palette(),
-};
-
 export default function TerminalCanvas({
   viewId = "",
   active,
@@ -143,6 +118,8 @@ export default function TerminalCanvas({
   onInput,
   onOneKeyCompletion,
 }: TerminalCanvasProps) {
+  const themeId = normalizeTerminalTheme(active?.profile.terminal.theme);
+  const activeTerminalTheme = terminalTheme(themeId);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
@@ -545,7 +522,7 @@ export default function TerminalCanvas({
       fontSize: active.profile.terminal.fontSize,
       minimumContrastRatio: 1,
       scrollback: active.profile.terminal.scrollback,
-      theme: portmateTerminalTheme,
+      theme: terminalTheme(active.profile.terminal.theme),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -824,6 +801,23 @@ export default function TerminalCanvas({
       termRef.current = null;
     };
   }, [active?.profile.id]);
+
+  useEffect(() => {
+    if (!active) return;
+    const term = termRef.current;
+    const host = hostRef.current;
+    if (!term || !host) return;
+    const appliedTheme = applyTerminalPresentation(term, active.profile.terminal);
+    host.dataset.terminalTheme = appliedTheme;
+    const frame = window.requestAnimationFrame(() => fitAndReportRef.current());
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    active?.profile.id,
+    active?.profile.terminal.fontFamily,
+    active?.profile.terminal.fontSize,
+    active?.profile.terminal.scrollback,
+    active?.profile.terminal.theme,
+  ]);
 
   useEffect(() => {
     const sessionId = active?.profile.id ?? "";
@@ -1106,7 +1100,10 @@ export default function TerminalCanvas({
   }, [events, active?.profile.id]);
 
   return (
-    <div className="terminal-canvas">
+    <div
+      className="terminal-canvas"
+      style={{ "--terminal-background": activeTerminalTheme.background ?? "#0d1117" } as CSSProperties}
+    >
       {active ? (
         <>
           <div ref={hostRef} className="terminal-host" inert={freeInputOpen || gotoLineOpen} />
@@ -1498,23 +1495,4 @@ function formatTerminalCanvasError(error: unknown): string {
   } catch {
     return String(error);
   }
-}
-
-function createXterm256Palette() {
-  const toHex = (value: number) => value.toString(16).padStart(2, "0");
-  const rgb = (red: number, green: number, blue: number) => `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
-  const palette: string[] = [];
-  const steps = [0, 95, 135, 175, 215, 255];
-  for (const red of steps) {
-    for (const green of steps) {
-      for (const blue of steps) {
-        palette.push(rgb(red, green, blue));
-      }
-    }
-  }
-  for (let index = 0; index < 24; index += 1) {
-    const level = 8 + index * 10;
-    palette.push(rgb(level, level, level));
-  }
-  return palette;
 }

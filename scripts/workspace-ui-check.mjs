@@ -295,6 +295,16 @@ try {
           return null;
         }
         if (command === "list_sessions") return window.__sessions;
+        if (command === "save_session_profile") {
+          const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
+          if (index < 0) throw new Error(`unknown test session: ${args.profile.id}`);
+          const saved = {
+            ...window.__sessions[index],
+            profile: structuredClone(args.profile),
+          };
+          window.__sessions[index] = saved;
+          return saved;
+        }
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
         if (command === "list_mcp_grants") return window.__mcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
@@ -890,6 +900,48 @@ try {
   assert(sessionPreferenceKeys.length === 0,
     `closing session settings persisted non-runtime preferences: ${JSON.stringify(sessionPreferenceKeys)}`);
 
+  async function setActiveSessionTheme(theme) {
+    await page.locator(".menu-trigger", { hasText: "会话" }).click();
+    await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
+    const dialog = page.locator(".session-settings-dialog");
+    await dialog.waitFor();
+    await dialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("终端");
+    const themeSelect = dialog.locator(".dialog-field", { hasText: "主题:" }).locator("select");
+    const options = await themeSelect.locator("option").evaluateAll((items) => items.map((item) => item.value));
+    assert(JSON.stringify(options) === JSON.stringify([
+      "portmate-dark",
+      "graphite",
+      "solarized-dark",
+      "portmate-light",
+    ]), `terminal theme choices are incomplete: ${JSON.stringify(options)}`);
+    await themeSelect.selectOption(theme);
+    if (theme === "portmate-light") {
+      await page.screenshot({ path: `${screenshotPrefix}-terminal-theme-settings.png`, fullPage: true });
+    }
+    await dialog.getByRole("button", { name: "保存", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  }
+
+  const localShell = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Local Shell" });
+  await localShell.click();
+  await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Local Shell"));
+  const activeXterm = page.locator(".terminal-pane.active .xterm");
+  await activeXterm.evaluate((element) => { element.dataset.themeTestIdentity = "retained"; });
+  await setActiveSessionTheme("portmate-light");
+  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-light"]').waitFor();
+  const lightThemeState = await page.locator(".terminal-pane.active .terminal-canvas").evaluate((canvas) => ({
+    background: getComputedStyle(canvas).backgroundColor,
+    retained: canvas.querySelector(".xterm")?.dataset.themeTestIdentity ?? "",
+  }));
+  assert(lightThemeState.background === "rgb(247, 248, 250)" && lightThemeState.retained === "retained",
+    `terminal theme did not update in place: ${JSON.stringify(lightThemeState)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-terminal-light-theme.png`, fullPage: true });
+  await setActiveSessionTheme("portmate-dark");
+  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"]').waitFor();
+  assert(await activeXterm.getAttribute("data-theme-test-identity") === "retained",
+    "restoring the terminal theme replaced the live XTerm instance");
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
+
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
   const mcpDialog = page.locator(".mcp-dialog");
@@ -1268,6 +1320,7 @@ try {
       desktop: sessionSettingsBounds,
       mobile: mobileSessionSettingsBounds,
     },
+    terminalTheme: lightThemeState,
     mcp: {
       tabs: mcpTabs,
       exportedRecordIds: exportCall.args.request.recordIds,
@@ -1293,6 +1346,8 @@ try {
       `${screenshotPrefix}-sender.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
+      `${screenshotPrefix}-terminal-theme-settings.png`,
+      `${screenshotPrefix}-terminal-light-theme.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-audit.png`,
       `${screenshotPrefix}-mcp-audit-mobile.png`,

@@ -81,6 +81,7 @@ import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
+import { normalizeTerminalTheme, TERMINAL_THEME_OPTIONS } from "./terminal-theme";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import { transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
@@ -7935,6 +7936,11 @@ function SessionSettingsContent({
         <DialogField label="字号:(Z)">
           <input type="number" value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
         </DialogField>
+        <DialogField label="主题:(M)">
+          <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
+            {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </DialogField>
       </>
     );
   }
@@ -9048,6 +9054,7 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
     terminal: {
       ...profile.terminal,
       term: profile.terminal.term.trim() || "xterm-256color",
+      theme: normalizeTerminalTheme(profile.terminal.theme),
     },
     logging: {
       ...profile.logging,

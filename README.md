@@ -85,7 +85,9 @@ command backend inside the desktop app.
    - Telnet BINARY and NAWS negotiation switches. Both default on for legacy and new profiles; accepted BINARY directions independently control inbound NVT CR decoding and outbound newline conversion, while NAWS sends the latest terminal dimensions after negotiation and every later resize. TERMINAL-TYPE replies use the profile's configured terminal type.
    - SSH/TCP/Telnet/Serial reconnect keeps a disconnected runtime in `Reconnecting` and retries in the background until the user closes or manually reconnects the session. SSH/Tmux, TCP/Telnet, and Serial reload and normalize the latest saved profile before every retry; SSH endpoint/authentication/health edits, TCP/Telnet host/port or protocol edits, and Serial port/line/health edits are not frozen at disconnect time. A connection-setting change during an in-flight attempt invalidates that result, while disabling reconnect or changing the transport stops the pending worker. All three transports read the latest reconnect flag and 100-60,000 ms delay while waiting, so disabling reconnect or changing the delay affects the pending worker without waiting for an old deadline. SSH/Tmux profiles also persist a protocol KeepAlive toggle, 1-3,600 second interval, and 1-20 unanswered-message limit, defaulting to a 1,000 ms reconnect delay and 30/3 KeepAlive thresholds. TCP/Telnet profiles persist an OS keepalive toggle, idle time, probe interval, and retry count, defaulting to a 1,000 ms reconnect delay and 30/10/3 keepalive values. Serial profiles persist an optional 1-86,400 second receive-idle timeout, defaulting to a 1,000 ms reconnect delay and disabled/60 seconds. Serial idle monitoring observes incoming bytes without writing protocol-agnostic heartbeat data to the device. Legacy profiles receive all defaults automatically.
    - Trigger matching and actions for timeline marks, notifications, highlights, local commands, send-text automation, custom links, and sound
-   - Terminal type, font, rows, cols, scrollback, theme
+   - Terminal type, font, rows, cols, scrollback, and four validated Profile themes. Font, size,
+     scrollback, and theme changes apply to every mounted view of the saved Profile without
+     recreating XTerm or discarding its buffer.
    - Synchronized-input protocol filters, newline mode, inter-target delay, and explicit batch-send prefix/suffix
    - Logging formats, redaction, path template
    - Transfer protocols
@@ -213,8 +215,8 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 477.8 kB of main JS, 466.7 kB of terminal core JS, 120.4 kB of WebGL JS,
-136.8 kB of main CSS, 11.9 kB for the MCP workspace, 11.7 kB for the OneKeys manager, 4.6 kB for
+emits approximately 486.0 kB of main JS, 466.5 kB of terminal core JS, 120.4 kB of WebGL JS,
+139.1 kB of main CSS, 12.1 kB for the MCP workspace, 11.7 kB for the OneKeys manager, 4.7 kB for
 session/terminal context menus, 3.7 kB for one-time MCP approval, 2.8 kB for the lazy workspace
 utility panels, and 4.5 kB for the view
 context menu, and a 0.5 kB browser export helper, with xterm CSS split alongside them. The 1.8 kB

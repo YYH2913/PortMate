@@ -178,6 +178,13 @@ const MAX_BUNDLE_ATTACHMENTS: usize = 32;
 const MAX_BUNDLE_ATTACHMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERMINAL_TEXT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_TERMINAL_THEME: &str = "portmate-dark";
+const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
+    DEFAULT_TERMINAL_THEME,
+    "graphite",
+    "solarized-dark",
+    "portmate-light",
+];
 const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
 const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
@@ -25298,6 +25305,15 @@ fn normalized_terminal_name(term: &str) -> &str {
     }
 }
 
+fn normalized_terminal_theme(theme: &str) -> &str {
+    let theme = theme.trim();
+    if SUPPORTED_TERMINAL_THEMES.contains(&theme) {
+        theme
+    } else {
+        DEFAULT_TERMINAL_THEME
+    }
+}
+
 fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
     if let Ok(mut store) = state.store.lock() {
         let _ = store.set_runtime_status_with_reason(
@@ -25380,6 +25396,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         .collect();
     profile.kind = session_kind_for_connection(&profile.connection);
     profile.terminal.term = normalized_terminal_name(&profile.terminal.term).to_string();
+    profile.terminal.theme = normalized_terminal_theme(&profile.terminal.theme).to_string();
     profile.logging.retention_days = profile.logging.retention_days.min(MAX_LOG_RETENTION_DAYS);
 
     match &mut profile.connection {
@@ -29388,6 +29405,22 @@ mod tests {
         assert!(!snapshot.processes.is_empty());
         assert!(!snapshot.disks.is_empty());
         assert!(!snapshot.network_interfaces.is_empty());
+    }
+
+    #[test]
+    fn session_profile_normalization_accepts_only_supported_terminal_themes() {
+        let mut profile = test_shell_profile();
+        profile.terminal.theme = " graphite ".to_string();
+        assert_eq!(
+            normalize_session_profile(profile.clone()).terminal.theme,
+            "graphite"
+        );
+
+        profile.terminal.theme = "future-or-corrupt-theme".to_string();
+        assert_eq!(
+            normalize_session_profile(profile).terminal.theme,
+            DEFAULT_TERMINAL_THEME
+        );
     }
 
     #[test]
