@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
@@ -12,12 +15,15 @@
     "test:workspace-ui": "node scripts/workspace-ui-check.mjs",
     "test:mcp-http-client": "cargo build -p portmate-mcp && node scripts/mcp-http-client-check.mjs",
     "test:mcp-stdio-client": "cargo build -p portmate-mcp && node scripts/mcp-stdio-client-check.mjs",
+    "test:linux-package": "node scripts/linux-package-check.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "desktop": "tauri dev",
     "desktop:clean": "node scripts/desktop-clean.mjs",
-    "desktop:build": "tauri build",
-    "icon": "node scripts/generate-icon.mjs"
+    "desktop:build": "tauri build --config src-tauri/tauri.bundle.conf.json",
+    "sidecar:dev": "node scripts/prepare-sidecar.mjs",
+    "sidecar:build": "node scripts/prepare-sidecar.mjs --release",
+    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/icons/icon.png --output src-tauri/icons"
   },
   "dependencies": {
     "@serialpilot/cobs": "^0.1.0",

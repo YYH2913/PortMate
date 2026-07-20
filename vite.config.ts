@@ -8,6 +8,10 @@ export default defineConfig({
     strictPort: true,
     port: 1420,
     host: "127.0.0.1",
+    watch: {
+      ignored: ["**/target/**", "**/ref/**", "**/dist/**"],
+      usePolling: true,
+      interval: 250,
+    },
   },
 });
-

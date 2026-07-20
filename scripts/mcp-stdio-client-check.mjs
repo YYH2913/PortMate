@@ -9,15 +9,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const binary = path.resolve(
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = process.env.PORTMATE_MCP_BINARY
+  ? path.resolve(process.env.PORTMATE_MCP_BINARY)
+  : path.resolve(
+    "target",
+    "debug",
+    process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
+  );
 const transport = new StdioClientTransport({
   command: binary,
   cwd: process.cwd(),
   env: {
+    ...process.env,
     PORTMATE_MCP_HTTP: "0",
     PORTMATE_MCP_CLIENT_ID: "official-sdk-stdio-check",
   },

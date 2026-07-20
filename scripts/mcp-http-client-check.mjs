@@ -49,11 +49,13 @@ function requestMethod(entry) {
 
 const port = await reservePort();
 const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
-const binary = path.resolve(
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = process.env.PORTMATE_MCP_BINARY
+  ? path.resolve(process.env.PORTMATE_MCP_BINARY)
+  : path.resolve(
+    "target",
+    "debug",
+    process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
+  );
 let serverOutput = "";
 const server = spawn(binary, ["--http"], {
   cwd: process.cwd(),
