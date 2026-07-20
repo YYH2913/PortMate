@@ -853,6 +853,8 @@ pub struct McpGrant {
     pub name: String,
     pub scopes: Vec<McpScope>,
     pub allowed_sessions: Vec<String>,
+    #[serde(default)]
+    pub confirm_writes: bool,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }

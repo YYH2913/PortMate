@@ -36,7 +36,7 @@ const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_TOKEN_BYTES: usize = 4096;
 const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const IPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+const IPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 

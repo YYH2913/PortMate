@@ -48,6 +48,10 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+mod tmux_protocol;
+
+use tmux_protocol::*;
+
 #[derive(Clone)]
 struct AgentIdentityFilter {
     label: String,
@@ -104,6 +108,7 @@ impl russh::Signer for PortMateAgentSigner {
 
 const STORE_FILE_NAME: &str = "portmate-store.sqlite3";
 const LEGACY_JSON_STORE_FILE_NAME: &str = "portmate-store.json";
+const LEGACY_APP_IDENTIFIER: &str = "dev.portmate.app";
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "4";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
@@ -151,6 +156,8 @@ const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
 const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
 const MAX_MCP_GRANT_SESSIONS: usize = 1_024;
 const MAX_MCP_GRANT_SESSION_ID_BYTES: usize = 128;
+const MAX_PENDING_MCP_APPROVALS: usize = 32;
+const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
 const MAX_MCP_AUDIT_EXPORT_RECORD_BYTES: usize = 64 * 1024;
 const MAX_MCP_AUDIT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
@@ -197,7 +204,6 @@ const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
-const MAX_TMUX_CONTROL_LINE_BYTES: usize = 64 * 1024;
 const MAX_TMUX_CONTROL_STDERR_BYTES: usize = 64 * 1024;
 const TMUX_CONTROL_EVENT_DEBOUNCE: Duration = Duration::from_millis(120);
 const TMUX_CONTROL_EVENT_MAX_LATENCY: Duration = Duration::from_secs(1);
@@ -298,6 +304,7 @@ type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
 type ActiveCommandMap = Arc<Mutex<HashMap<String, String>>>;
 type TmuxControlMap = Arc<Mutex<HashMap<(String, String), TmuxControlRuntime>>>;
+type PendingMcpApprovalMap = Arc<Mutex<HashMap<String, PendingMcpApproval>>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
@@ -322,6 +329,7 @@ pub struct AppState {
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    pending_mcp_approvals: PendingMcpApprovalMap,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     store_path: PathBuf,
 }
@@ -1566,6 +1574,30 @@ pub struct ExportMcpAuditResult {
     pub records: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpApprovalRequest {
+    pub id: String,
+    pub client_id: String,
+    pub action: String,
+    pub session_id: String,
+    pub scope: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+struct PendingMcpApproval {
+    request: McpApprovalRequest,
+    response: tokio::sync::oneshot::Sender<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpApprovalOutcome {
+    Approved,
+    Denied,
+    TimedOut,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalTextExportSource {
@@ -2066,6 +2098,8 @@ pub struct McpHttpConfig {
     pub token_ref: String,
     pub token_available: bool,
     pub default_origin: String,
+    pub executable: String,
+    pub store_path: String,
     pub start_command: String,
 }
 
@@ -4098,6 +4132,38 @@ fn list_mcp_grants(state: State<'_, AppState>) -> Result<Vec<McpGrant>, String> 
 }
 
 #[tauri::command]
+fn list_mcp_approvals(state: State<'_, AppState>) -> Result<Vec<McpApprovalRequest>, String> {
+    list_mcp_approvals_inner(state.inner())
+}
+
+fn list_mcp_approvals_inner(state: &AppState) -> Result<Vec<McpApprovalRequest>, String> {
+    let now = Utc::now();
+    let mut requests = state
+        .pending_mcp_approvals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .filter(|pending| pending.request.expires_at > now)
+        .map(|pending| pending.request.clone())
+        .collect::<Vec<_>>();
+    requests.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(requests)
+}
+
+#[tauri::command]
+fn respond_mcp_approval(
+    state: State<'_, AppState>,
+    approval_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    respond_mcp_approval_inner(state.inner(), &approval_id, approved)
+}
+
+#[tauri::command]
 fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<McpGrant>, String> {
     let grant = normalize_mcp_grant(grant)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -4186,17 +4252,41 @@ fn normalize_mcp_client_id(client_id: &str) -> Result<String, String> {
     Ok(client_id.to_string())
 }
 
-#[tauri::command]
-fn mcp_http_config() -> McpHttpConfig {
-    build_mcp_http_config(has_secret_ref(MCP_HTTP_TOKEN_REF))
+fn respond_mcp_approval_inner(
+    state: &AppState,
+    approval_id: &str,
+    approved: bool,
+) -> Result<(), String> {
+    let approval_id = Uuid::parse_str(approval_id)
+        .map_err(|_| "invalid MCP approval ID".to_string())?
+        .to_string();
+    let pending = state
+        .pending_mcp_approvals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&approval_id)
+        .ok_or_else(|| "MCP approval is no longer pending".to_string())?;
+    pending
+        .response
+        .send(approved)
+        .map_err(|_| "MCP approval requester is no longer waiting".to_string())
 }
 
 #[tauri::command]
-fn rotate_mcp_http_token() -> Result<McpHttpTokenResponse, String> {
+fn mcp_http_config(state: State<'_, AppState>) -> McpHttpConfig {
+    build_mcp_http_config(
+        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+    )
+}
+
+#[tauri::command]
+fn rotate_mcp_http_token(state: State<'_, AppState>) -> Result<McpHttpTokenResponse, String> {
     let token = Uuid::new_v4().to_string();
     write_secret_to_keyring(MCP_HTTP_TOKEN_REF, &token)?;
     Ok(McpHttpTokenResponse {
-        config: build_mcp_http_config(true),
+        config: build_mcp_http_config(true, &mcp_sidecar_executable_path(), &state.store_path),
         token,
     })
 }
@@ -6213,9 +6303,27 @@ fn mcp_scope_allowed(
             || (trusted_write && store.grants.is_empty()))
 }
 
+fn mcp_write_confirmation_required(
+    store: &SessionStore,
+    client_id: &str,
+    scope: McpScope,
+    session_id: &str,
+) -> bool {
+    let client_id = client_id.trim();
+    !client_id.is_empty()
+        && store.grants.iter().any(|grant| {
+            grant.client_id == client_id
+                && grant.confirm_writes
+                && grant.allows(scope, Some(session_id), Utc::now())
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum McpWriteAuditStart {
-    Authorized(String),
+    Authorized {
+        audit_id: String,
+        approval_required: bool,
+    },
     Denied(String),
 }
 
@@ -6244,17 +6352,41 @@ fn mcp_audit_actor(client_id: &str) -> String {
     let client_id = client_id.trim();
     if client_id.is_empty() {
         "<missing-client-id>".to_string()
+    } else if client_id.len() > MAX_MCP_GRANT_CLIENT_ID_BYTES
+        || client_id.chars().any(char::is_control)
+    {
+        "<invalid-client-id>".to_string()
     } else {
         client_id.to_string()
     }
 }
 
-fn mcp_audit_details(scope: McpScope, trusted_bootstrap: bool) -> BTreeMap<String, String> {
+fn validate_mcp_session_id(session_id: &str) -> Result<(), String> {
+    if session_id.is_empty()
+        || session_id.len() > MAX_MCP_GRANT_SESSION_ID_BYTES
+        || session_id.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "MCP session ID must be non-empty, printable, and at most {MAX_MCP_GRANT_SESSION_ID_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn mcp_audit_details(
+    scope: McpScope,
+    trusted_bootstrap: bool,
+    approval_required: bool,
+) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("scope".to_string(), mcp_scope_label(scope).to_string()),
         (
             "trustedBootstrap".to_string(),
             trusted_bootstrap.to_string(),
+        ),
+        (
+            "approvalRequired".to_string(),
+            approval_required.to_string(),
         ),
     ])
 }
@@ -6321,7 +6453,7 @@ fn record_invalid_mcp_write(
         action: request.command.clone(),
         session_id: session_id.map(str::to_string),
         decision: "invalid".to_string(),
-        details: mcp_audit_details(scope, trusted_bootstrap),
+        details: mcp_audit_details(scope, trusted_bootstrap, false),
     };
     append_and_save_mcp_audit(&state.store_path, &mut store, record)
 }
@@ -6341,6 +6473,8 @@ fn begin_mcp_write_audit(
         scope,
         session_id,
     );
+    let approval_required =
+        allowed && mcp_write_confirmation_required(&store, &request.client_id, scope, session_id);
     let id = Uuid::new_v4().to_string();
     let record = AuditRecord {
         id: id.clone(),
@@ -6348,14 +6482,24 @@ fn begin_mcp_write_audit(
         actor: mcp_audit_actor(&request.client_id),
         action: request.command.clone(),
         session_id: Some(session_id.to_string()),
-        decision: if allowed { "authorized" } else { "denied" }.to_string(),
-        details: mcp_audit_details(scope, trusted_bootstrap),
+        decision: if approval_required {
+            "pending-approval"
+        } else if allowed {
+            "authorized"
+        } else {
+            "denied"
+        }
+        .to_string(),
+        details: mcp_audit_details(scope, trusted_bootstrap, approval_required),
     };
     append_and_save_mcp_audit(&state.store_path, &mut store, record).map_err(|error| {
         format!("MCP write was not executed because its audit record could not be saved: {error}")
     })?;
     if allowed {
-        Ok(McpWriteAuditStart::Authorized(id))
+        Ok(McpWriteAuditStart::Authorized {
+            audit_id: id,
+            approval_required,
+        })
     } else {
         Ok(McpWriteAuditStart::Denied(format!(
             "MCP grant does not permit {scope:?} for client `{}` on session `{session_id}`",
@@ -6364,7 +6508,12 @@ fn begin_mcp_write_audit(
     }
 }
 
-fn finish_mcp_write_audit(state: &AppState, audit_id: &str, decision: &str) -> Result<(), String> {
+fn finish_mcp_write_audit(
+    state: &AppState,
+    audit_id: &str,
+    decision: &str,
+    approval: Option<&str>,
+) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let index = store
         .audit
@@ -6373,11 +6522,108 @@ fn finish_mcp_write_audit(state: &AppState, audit_id: &str, decision: &str) -> R
         .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
     let previous = store.audit[index].clone();
     store.audit[index].decision = decision.to_string();
+    if let Some(approval) = approval {
+        store.audit[index]
+            .details
+            .insert("approval".to_string(), approval.to_string());
+    }
     if let Err(error) = save_store(&state.store_path, &store) {
         store.audit[index] = previous;
         return Err(error);
     }
     Ok(())
+}
+
+async fn await_mcp_approval_with_emitter<F>(
+    state: &AppState,
+    request: McpApprovalRequest,
+    timeout: Duration,
+    emit: F,
+) -> Result<McpApprovalOutcome, String>
+where
+    F: FnOnce(&McpApprovalRequest) -> Result<(), String>,
+{
+    let (response, receiver) = tokio::sync::oneshot::channel();
+    {
+        let mut pending = state
+            .pending_mcp_approvals
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if pending.len() >= MAX_PENDING_MCP_APPROVALS {
+            return Err(format!(
+                "MCP approval queue limit exceeded ({MAX_PENDING_MCP_APPROVALS})"
+            ));
+        }
+        pending.insert(
+            request.id.clone(),
+            PendingMcpApproval {
+                request: request.clone(),
+                response,
+            },
+        );
+    }
+    if let Err(error) = emit(&request) {
+        state
+            .pending_mcp_approvals
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?
+            .remove(&request.id);
+        return Err(error);
+    }
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(true)) => Ok(McpApprovalOutcome::Approved),
+        Ok(Ok(false)) => Ok(McpApprovalOutcome::Denied),
+        Ok(Err(_)) => Err("MCP approval response channel closed".to_string()),
+        Err(_) => {
+            state
+                .pending_mcp_approvals
+                .lock()
+                .map_err(|error| error.to_string())?
+                .remove(&request.id);
+            Ok(McpApprovalOutcome::TimedOut)
+        }
+    }
+}
+
+async fn request_mcp_approval(
+    state: &AppState,
+    client_id: &str,
+    action: &str,
+    session_id: &str,
+    scope: McpScope,
+) -> Result<McpApprovalOutcome, String> {
+    let app_handle = state
+        .app_handle
+        .as_ref()
+        .ok_or_else(|| "MCP approval UI is unavailable".to_string())?;
+    let request = build_mcp_approval_request(client_id, action, session_id, scope)?;
+    await_mcp_approval_with_emitter(state, request, MCP_APPROVAL_TIMEOUT, |request| {
+        app_handle
+            .emit("portmate-mcp-approval", request)
+            .map_err(|error| format!("failed to show MCP approval: {error}"))
+    })
+    .await
+}
+
+fn build_mcp_approval_request(
+    client_id: &str,
+    action: &str,
+    session_id: &str,
+    scope: McpScope,
+) -> Result<McpApprovalRequest, String> {
+    validate_mcp_session_id(session_id)?;
+    let created_at = Utc::now();
+    Ok(McpApprovalRequest {
+        id: Uuid::new_v4().to_string(),
+        client_id: mcp_audit_actor(client_id),
+        action: action.to_string(),
+        session_id: session_id.to_string(),
+        scope: mcp_scope_label(scope).to_string(),
+        created_at,
+        expires_at: created_at
+            + chrono::Duration::from_std(MCP_APPROVAL_TIMEOUT)
+                .map_err(|error| format!("invalid MCP approval timeout: {error}"))?,
+    })
 }
 
 async fn handle_ipc_request(
@@ -6388,7 +6634,15 @@ async fn handle_ipc_request(
         return execute_ipc_request(state, request).await;
     };
     let session_id = match ipc_string_arg(&request.args, "sessionId") {
-        Ok(session_id) => session_id.to_string(),
+        Ok(session_id) => {
+            if let Err(error) = validate_mcp_session_id(session_id) {
+                record_invalid_mcp_write(&state, &request, scope, None).map_err(|audit_error| {
+                    format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
+                })?;
+                return Err(error);
+            }
+            session_id.to_string()
+        }
         Err(error) => {
             record_invalid_mcp_write(&state, &request, scope, None).map_err(|audit_error| {
                 format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
@@ -6404,9 +6658,65 @@ async fn handle_ipc_request(
         )?;
         return Err(error);
     }
-    let audit_id = match begin_mcp_write_audit(&state, &request, scope, &session_id)? {
-        McpWriteAuditStart::Authorized(id) => id,
-        McpWriteAuditStart::Denied(error) => return Err(error),
+    let (audit_id, approval_required) =
+        match begin_mcp_write_audit(&state, &request, scope, &session_id)? {
+            McpWriteAuditStart::Authorized {
+                audit_id,
+                approval_required,
+            } => (audit_id, approval_required),
+            McpWriteAuditStart::Denied(error) => return Err(error),
+        };
+    let approval = if approval_required {
+        match request_mcp_approval(
+            &state,
+            &request.client_id,
+            &request.command,
+            &session_id,
+            scope,
+        )
+        .await
+        {
+            Ok(McpApprovalOutcome::Approved) => {
+                finish_mcp_write_audit(&state, &audit_id, "authorized", Some("approved"))
+                    .map_err(|error| {
+                        format!(
+                            "MCP write was approved but not executed because its approval audit could not be saved: {error}"
+                        )
+                    })?;
+                Some("approved")
+            }
+            Ok(McpApprovalOutcome::Denied) => {
+                finish_mcp_write_audit(&state, &audit_id, "denied", Some("user-denied"))
+                    .map_err(|error| {
+                        format!(
+                            "MCP write was not executed and its denial audit could not be saved: {error}"
+                        )
+                    })?;
+                return Err("MCP write was denied by the desktop user".to_string());
+            }
+            Ok(McpApprovalOutcome::TimedOut) => {
+                finish_mcp_write_audit(&state, &audit_id, "denied", Some("timed-out"))
+                    .map_err(|error| {
+                        format!(
+                            "MCP write timed out without execution and its audit could not be saved: {error}"
+                        )
+                    })?;
+                return Err("MCP write approval timed out without execution".to_string());
+            }
+            Err(approval_error) => {
+                finish_mcp_write_audit(&state, &audit_id, "denied", Some("unavailable"))
+                    .map_err(|audit_error| {
+                        format!(
+                            "MCP write was not executed because approval was unavailable: {approval_error}; failed to save denial audit: {audit_error}"
+                        )
+                    })?;
+                return Err(format!(
+                    "MCP write was not executed because approval was unavailable: {approval_error}"
+                ));
+            }
+        }
+    } else {
+        None
     };
     let result = execute_ipc_request(state.clone(), request).await;
     let decision = if result.is_ok() {
@@ -6414,7 +6724,7 @@ async fn handle_ipc_request(
     } else {
         "failed"
     };
-    if let Err(error) = finish_mcp_write_audit(&state, &audit_id, decision) {
+    if let Err(error) = finish_mcp_write_audit(&state, &audit_id, decision, approval) {
         eprintln!("PortMate: failed to finalize MCP audit {audit_id} as {decision}: {error}");
     }
     result
@@ -11728,87 +12038,6 @@ fn shutdown_tmux_controls(state: &AppState) {
     }
 }
 
-fn bounded_tmux_control_error(error: &str) -> String {
-    const MAX_ERROR_CHARS: usize = 512;
-    let mut value = error.chars().take(MAX_ERROR_CHARS).collect::<String>();
-    if error.chars().count() > MAX_ERROR_CHARS {
-        value.push_str("...");
-    }
-    value
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct TmuxControlParseResult {
-    changed: bool,
-    last_event: Option<&'static str>,
-}
-
-#[derive(Debug, Default)]
-struct TmuxControlLineParser {
-    partial: Vec<u8>,
-}
-
-impl TmuxControlLineParser {
-    fn push(&mut self, data: &[u8]) -> Result<TmuxControlParseResult, String> {
-        let mut parsed = TmuxControlParseResult::default();
-        let mut start = 0;
-        for (index, byte) in data.iter().enumerate() {
-            if *byte != b'\n' {
-                continue;
-            }
-            self.append_partial(&data[start..index])?;
-            if let Some(kind) = tmux_control_event_kind(&self.partial) {
-                parsed.changed = true;
-                parsed.last_event = Some(kind);
-            }
-            self.partial.clear();
-            start = index + 1;
-        }
-        self.append_partial(&data[start..])?;
-        Ok(parsed)
-    }
-
-    fn append_partial(&mut self, data: &[u8]) -> Result<(), String> {
-        let next_len = self
-            .partial
-            .len()
-            .checked_add(data.len())
-            .ok_or_else(|| "Tmux control-mode 行长度溢出".to_string())?;
-        if next_len > MAX_TMUX_CONTROL_LINE_BYTES {
-            return Err(format!(
-                "Tmux control-mode 单行超过 {MAX_TMUX_CONTROL_LINE_BYTES} 字节上限"
-            ));
-        }
-        self.partial.extend_from_slice(data);
-        Ok(())
-    }
-}
-
-fn tmux_control_event_kind(line: &[u8]) -> Option<&'static str> {
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
-    let name = line.split(|byte| *byte == b' ').next().unwrap_or_default();
-    match name {
-        b"%client-active-pane" => Some("client-active-pane"),
-        b"%client-session-changed" => Some("client-session-changed"),
-        b"%layout-change" => Some("layout-change"),
-        b"%pane-exited" => Some("pane-exited"),
-        b"%pane-mode-changed" => Some("pane-mode-changed"),
-        b"%session-changed" => Some("session-changed"),
-        b"%session-renamed" => Some("session-renamed"),
-        b"%session-window-changed" => Some("session-window-changed"),
-        b"%sessions-changed" => Some("sessions-changed"),
-        b"%subscription-changed" => Some("subscription-changed"),
-        b"%unlinked-window-add" => Some("unlinked-window-add"),
-        b"%unlinked-window-close" => Some("unlinked-window-close"),
-        b"%unlinked-window-renamed" => Some("unlinked-window-renamed"),
-        b"%window-add" => Some("window-add"),
-        b"%window-close" => Some("window-close"),
-        b"%window-pane-changed" => Some("window-pane-changed"),
-        b"%window-renamed" => Some("window-renamed"),
-        _ => None,
-    }
-}
-
 async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<TmuxState, String> {
     let handle = ssh_handle_for_transfer(state, session_id)?;
     let sessions_output = exec_ssh_command_capture(
@@ -11898,257 +12127,6 @@ async fn mutate_tmux_inner(
         );
     }
     list_tmux_state_inner(state, &request.session_id).await
-}
-
-fn normalize_tmux_target(target: &str) -> Result<&str, String> {
-    let target = target.trim();
-    if target.is_empty() {
-        return Err("Tmux target 不能为空".to_string());
-    }
-    if target.chars().count() > 256 {
-        return Err("Tmux target 不能超过 256 个字符".to_string());
-    }
-    if target.chars().any(char::is_control) {
-        return Err("Tmux target 不能包含控制字符".to_string());
-    }
-    Ok(target)
-}
-
-fn normalize_tmux_name(name: &str) -> Result<&str, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("Tmux 名称不能为空".to_string());
-    }
-    if name.chars().count() > 128 {
-        return Err("Tmux 名称不能超过 128 个字符".to_string());
-    }
-    if name.chars().any(char::is_control) {
-        return Err("Tmux 名称不能包含控制字符".to_string());
-    }
-    Ok(name)
-}
-
-fn tmux_attach_command(target: &str) -> Result<String, String> {
-    let target = normalize_tmux_target(target)?;
-    let target = shell_quote(target);
-    Ok(format!(
-        "tmux switch-client -t {target} || tmux attach -t {target} || tmux new-session -A -s {target}\r"
-    ))
-}
-
-fn tmux_pane_sync_command(target: &str, enabled: bool) -> Result<String, String> {
-    let target = normalize_tmux_target(target)?;
-    Ok(format!(
-        "tmux set-option -w -t {} synchronize-panes {}",
-        shell_quote(target),
-        if enabled { "on" } else { "off" }
-    ))
-}
-
-fn tmux_mutation_command(request: &TmuxMutationRequest) -> Result<String, String> {
-    let target = shell_quote(normalize_tmux_target(&request.target)?);
-    let name = request
-        .name
-        .as_deref()
-        .map(normalize_tmux_name)
-        .transpose()?;
-    match request.action {
-        TmuxMutationAction::RenameSession => Ok(format!(
-            "tmux rename-session -t {target} {}",
-            shell_quote(name.ok_or_else(|| "重命名 session 需要新名称".to_string())?)
-        )),
-        TmuxMutationAction::KillSession => Ok(format!("tmux kill-session -t {target}")),
-        TmuxMutationAction::NewWindow => Ok(match name {
-            Some(name) => format!("tmux new-window -t {target} -n {}", shell_quote(name)),
-            None => format!("tmux new-window -t {target}"),
-        }),
-        TmuxMutationAction::RenameWindow => Ok(format!(
-            "tmux rename-window -t {target} {}",
-            shell_quote(name.ok_or_else(|| "重命名 window 需要新名称".to_string())?)
-        )),
-        TmuxMutationAction::KillWindow => Ok(format!("tmux kill-window -t {target}")),
-        TmuxMutationAction::KillPane => Ok(format!("tmux kill-pane -t {target}")),
-        TmuxMutationAction::SelectPane => Ok(format!("tmux select-pane -t {target}")),
-        TmuxMutationAction::BreakPane => Ok(format!("tmux break-pane -d -s {target}")),
-        TmuxMutationAction::MovePaneHorizontal | TmuxMutationAction::MovePaneVertical => {
-            let destination = shell_quote(normalize_tmux_target(
-                request
-                    .destination
-                    .as_deref()
-                    .ok_or_else(|| "跨 window 移动 pane 需要目标 window".to_string())?,
-            )?);
-            Ok(format!(
-                "tmux move-pane -d {} -s {target} -t {destination}",
-                if request.action == TmuxMutationAction::MovePaneHorizontal {
-                    "-h"
-                } else {
-                    "-v"
-                }
-            ))
-        }
-        TmuxMutationAction::SplitPaneHorizontal => Ok(format!("tmux split-window -h -t {target}")),
-        TmuxMutationAction::SplitPaneVertical => Ok(format!("tmux split-window -v -t {target}")),
-        TmuxMutationAction::SwapPanePrevious => Ok(format!("tmux swap-pane -t {target} -U")),
-        TmuxMutationAction::SwapPaneNext => Ok(format!("tmux swap-pane -t {target} -D")),
-        TmuxMutationAction::ResizePaneLeft => Ok(format!(
-            "tmux resize-pane -t {target} -L {}",
-            normalize_tmux_resize_amount(request.amount)?
-        )),
-        TmuxMutationAction::ResizePaneRight => Ok(format!(
-            "tmux resize-pane -t {target} -R {}",
-            normalize_tmux_resize_amount(request.amount)?
-        )),
-        TmuxMutationAction::ResizePaneUp => Ok(format!(
-            "tmux resize-pane -t {target} -U {}",
-            normalize_tmux_resize_amount(request.amount)?
-        )),
-        TmuxMutationAction::ResizePaneDown => Ok(format!(
-            "tmux resize-pane -t {target} -D {}",
-            normalize_tmux_resize_amount(request.amount)?
-        )),
-        TmuxMutationAction::SelectLayout => Ok(format!(
-            "tmux select-layout -t {target} {}",
-            tmux_window_layout_argument(
-                request
-                    .layout
-                    .ok_or_else(|| "切换 window 布局需要 layout".to_string())?
-            )
-        )),
-    }
-}
-
-fn tmux_mutation_event_scope(request: &TmuxMutationRequest) -> Result<String, String> {
-    let target = normalize_tmux_target(&request.target)?;
-    match request.action {
-        TmuxMutationAction::MovePaneHorizontal | TmuxMutationAction::MovePaneVertical => {
-            Ok(format!(
-                "{target} -> {}",
-                normalize_tmux_target(
-                    request
-                        .destination
-                        .as_deref()
-                        .ok_or_else(|| "跨 window 移动 pane 需要目标 window".to_string())?
-                )?
-            ))
-        }
-        _ => Ok(target.to_string()),
-    }
-}
-
-fn normalize_tmux_resize_amount(amount: Option<u16>) -> Result<u16, String> {
-    let amount = amount.unwrap_or(5);
-    if !(1..=100).contains(&amount) {
-        return Err("Tmux pane 调整步长必须在 1..=100 之间".to_string());
-    }
-    Ok(amount)
-}
-
-fn tmux_window_layout_argument(layout: TmuxWindowLayout) -> &'static str {
-    match layout {
-        TmuxWindowLayout::EvenHorizontal => "even-horizontal",
-        TmuxWindowLayout::EvenVertical => "even-vertical",
-        TmuxWindowLayout::MainHorizontal => "main-horizontal",
-        TmuxWindowLayout::MainVertical => "main-vertical",
-        TmuxWindowLayout::Tiled => "tiled",
-    }
-}
-
-fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
-    match action {
-        TmuxMutationAction::RenameSession => "session renamed",
-        TmuxMutationAction::KillSession => "session closed",
-        TmuxMutationAction::NewWindow => "window created",
-        TmuxMutationAction::RenameWindow => "window renamed",
-        TmuxMutationAction::KillWindow => "window closed",
-        TmuxMutationAction::KillPane => "pane closed",
-        TmuxMutationAction::SelectPane => "pane selected",
-        TmuxMutationAction::BreakPane => "pane broken into window",
-        TmuxMutationAction::MovePaneHorizontal => "pane moved horizontally",
-        TmuxMutationAction::MovePaneVertical => "pane moved vertically",
-        TmuxMutationAction::SplitPaneHorizontal => "pane split horizontally",
-        TmuxMutationAction::SplitPaneVertical => "pane split vertically",
-        TmuxMutationAction::SwapPanePrevious => "pane swapped with previous",
-        TmuxMutationAction::SwapPaneNext => "pane swapped with next",
-        TmuxMutationAction::ResizePaneLeft => "pane resized left",
-        TmuxMutationAction::ResizePaneRight => "pane resized right",
-        TmuxMutationAction::ResizePaneUp => "pane resized up",
-        TmuxMutationAction::ResizePaneDown => "pane resized down",
-        TmuxMutationAction::SelectLayout => "window layout selected",
-    }
-}
-
-fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
-    let mut parts = line.split('\t');
-    let name = parts.next()?.to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let windows = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or_default();
-    let attached = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or_default();
-    let created = parts
-        .next()
-        .and_then(|value| value.parse::<i64>().ok())
-        .and_then(|timestamp| chrono::DateTime::<Utc>::from_timestamp(timestamp, 0))
-        .map(|value| value.to_rfc3339());
-    Some(TmuxSessionInfo {
-        name,
-        windows,
-        attached,
-        created,
-    })
-}
-
-fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
-    let mut parts = line.split('\t');
-    let session = parts.next()?.to_string();
-    if session.is_empty() {
-        return None;
-    }
-    Some(TmuxWindowInfo {
-        session,
-        window_index: parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or_default(),
-        window_id: parts.next().unwrap_or_default().to_string(),
-        name: parts.next().unwrap_or_default().to_string(),
-        panes: parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or_default(),
-        active: parts.next().unwrap_or_default() == "1",
-        synchronized: false,
-    })
-}
-
-fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
-    let mut parts = line.split('\t');
-    let session = parts.next()?.to_string();
-    if session.is_empty() {
-        return None;
-    }
-    Some(TmuxPaneInfo {
-        session,
-        window_index: parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or_default(),
-        pane_index: parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or_default(),
-        pane_id: parts.next().unwrap_or_default().to_string(),
-        active: parts.next().unwrap_or_default() == "1",
-        command: parts.next().unwrap_or_default().to_string(),
-        title: parts.next().unwrap_or_default().to_string(),
-        synchronized: parts.next().unwrap_or_default() == "1",
-    })
 }
 
 fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
@@ -18615,15 +18593,67 @@ fn has_secret_ref(secret_ref: &str) -> bool {
     read_secret_from_store(secret_ref).is_ok()
 }
 
-fn build_mcp_http_config(token_available: bool) -> McpHttpConfig {
+fn mcp_sidecar_executable_path() -> PathBuf {
+    let file_name = if cfg!(windows) {
+        "portmate-mcp.exe"
+    } else {
+        "portmate-mcp"
+    };
+    if let Ok(current_exe) = std::env::current_exe() {
+        let mut directories = current_exe
+            .parent()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>();
+        if let Some(parent) = current_exe.parent().and_then(Path::parent) {
+            directories.push(parent.to_path_buf());
+        }
+        if let Some(candidate) = directories
+            .into_iter()
+            .map(|directory| directory.join(file_name))
+            .find(|candidate| candidate.is_file())
+        {
+            return candidate;
+        }
+    }
+    PathBuf::from(file_name)
+}
+
+fn shell_command_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if cfg!(windows) {
+        format!("'{}'", value.replace('\'', "''"))
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn build_mcp_http_config(
+    token_available: bool,
+    executable: &Path,
+    store_path: &Path,
+) -> McpHttpConfig {
+    let executable_text = executable.to_string_lossy().to_string();
+    let store_path_text = store_path.to_string_lossy().to_string();
+    let executable_command = shell_command_path(executable);
+    let store_path_command = shell_command_path(store_path);
+    let start_command = if cfg!(windows) {
+        format!(
+            "$env:PORTMATE_STORE_PATH={store_path_command}; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='{MCP_HTTP_DEFAULT_ADDR}'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://{MCP_HTTP_DEFAULT_ADDR}'; & {executable_command} --http"
+        )
+    } else {
+        format!(
+            "PORTMATE_STORE_PATH={store_path_command} PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR={MCP_HTTP_DEFAULT_ADDR} PORTMATE_MCP_HTTP_ORIGINS=http://{MCP_HTTP_DEFAULT_ADDR} {executable_command} --http"
+        )
+    };
     McpHttpConfig {
         endpoint: format!("http://{MCP_HTTP_DEFAULT_ADDR}/mcp"),
         token_ref: MCP_HTTP_TOKEN_REF.to_string(),
         token_available,
         default_origin: format!("http://{MCP_HTTP_DEFAULT_ADDR}"),
-        start_command: format!(
-            "PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR={MCP_HTTP_DEFAULT_ADDR} PORTMATE_MCP_HTTP_ORIGINS=http://{MCP_HTTP_DEFAULT_ADDR} cargo run -p portmate-mcp -- --http"
-        ),
+        executable: executable_text,
+        store_path: store_path_text,
+        start_command,
     }
 }
 
@@ -26585,11 +26615,95 @@ fn describe_host_key_rejection(evaluation: &HostKeyEvaluation) -> String {
     }
 }
 
+fn migrate_legacy_app_data_dir(data_root: &Path, current_data_dir: &Path) -> Result<(), String> {
+    let legacy_data_dir = data_root.join(LEGACY_APP_IDENTIFIER);
+    if legacy_data_dir == current_data_dir || !legacy_data_dir.exists() {
+        return Ok(());
+    }
+    validate_app_data_directory(&legacy_data_dir, "legacy")?;
+
+    if current_data_dir.exists() {
+        validate_app_data_directory(current_data_dir, "current")?;
+        if app_data_directory_has_portmate_state(current_data_dir)? {
+            return Err(format!(
+                "both legacy and current PortMate data directories contain PortMate state; refusing to merge {} into {}",
+                legacy_data_dir.display(),
+                current_data_dir.display()
+            ));
+        }
+        fs::remove_dir_all(current_data_dir).map_err(|error| {
+            format!(
+                "failed to remove bootstrap-only current PortMate data directory {}: {error}",
+                current_data_dir.display()
+            )
+        })?;
+    }
+
+    if let Some(parent) = current_data_dir.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create PortMate data directory parent {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::rename(&legacy_data_dir, current_data_dir).map_err(|error| {
+        format!(
+            "failed to migrate PortMate data directory {} to {}: {error}",
+            legacy_data_dir.display(),
+            current_data_dir.display()
+        )
+    })
+}
+
+fn validate_app_data_directory(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "failed to inspect {label} PortMate data directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{label} PortMate data path must be a real directory: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn app_data_directory_has_portmate_state(path: &Path) -> Result<bool, String> {
+    const OWNED_ENTRIES: &[&str] = &[
+        STORE_FILE_NAME,
+        LEGACY_JSON_STORE_FILE_NAME,
+        PORTABLE_VAULT_FILE_NAME,
+        PORTABLE_VAULT_SALT_FILE_NAME,
+        "credentials.lock",
+        "portmate-ipc.json",
+        "logs",
+        "exports",
+    ];
+    for entry in OWNED_ENTRIES {
+        let entry = path.join(entry);
+        if entry.try_exists().map_err(|error| {
+            format!(
+                "failed to inspect current PortMate data entry {}: {error}",
+                entry.display()
+            )
+        })? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            let data_root = app.path().data_dir()?;
             let data_dir = app.path().app_data_dir()?;
+            migrate_legacy_app_data_dir(&data_root, &data_dir).map_err(std::io::Error::other)?;
             PORTABLE_VAULT
                 .set(PortableVaultContext {
                     snapshot_path: data_dir.join(PORTABLE_VAULT_FILE_NAME),
@@ -26629,6 +26743,7 @@ pub fn run() {
                 tunnels: Arc::new(Mutex::new(HashMap::new())),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+                pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 store_path,
             };
@@ -26676,6 +26791,8 @@ pub fn run() {
             list_mcp_audit,
             export_mcp_audit,
             list_mcp_grants,
+            list_mcp_approvals,
+            respond_mcp_approval,
             save_mcp_grant,
             revoke_mcp_grant,
             mcp_http_config,
@@ -26766,6 +26883,41 @@ mod tests {
         fn drop(&mut self) {
             self.stop();
         }
+    }
+
+    #[test]
+    fn legacy_app_identifier_data_directory_migrates_atomically() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
+        let current = root.path().join("dev.portmate.desktop");
+        fs::create_dir_all(legacy.join("logs")).unwrap();
+        fs::write(legacy.join(STORE_FILE_NAME), b"store").unwrap();
+        fs::write(legacy.join("logs/session.txt"), b"log").unwrap();
+        fs::create_dir_all(current.join("mediakeys/v1")).unwrap();
+        fs::write(current.join("mediakeys/v1/salt"), b"bootstrap").unwrap();
+
+        migrate_legacy_app_data_dir(root.path(), &current).unwrap();
+
+        assert!(!legacy.exists());
+        assert_eq!(fs::read(current.join(STORE_FILE_NAME)).unwrap(), b"store");
+        assert_eq!(fs::read(current.join("logs/session.txt")).unwrap(), b"log");
+    }
+
+    #[test]
+    fn legacy_app_identifier_migration_refuses_to_merge_two_live_stores() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
+        let current = root.path().join("dev.portmate.desktop");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(legacy.join(STORE_FILE_NAME), b"legacy").unwrap();
+        fs::write(current.join(STORE_FILE_NAME), b"current").unwrap();
+
+        let error = migrate_legacy_app_data_dir(root.path(), &current).unwrap_err();
+
+        assert!(error.contains("refusing to merge"), "{error}");
+        assert_eq!(fs::read(legacy.join(STORE_FILE_NAME)).unwrap(), b"legacy");
+        assert_eq!(fs::read(current.join(STORE_FILE_NAME)).unwrap(), b"current");
     }
 
     #[cfg(unix)]
@@ -31176,6 +31328,7 @@ mod tests {
             name: "Granted client".to_string(),
             scopes: vec![McpScope::WriteInput],
             allowed_sessions: vec!["session-1".to_string()],
+            confirm_writes: false,
             expires_at: None,
             revoked_at: None,
         });
@@ -31193,6 +31346,31 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+        assert!(!mcp_write_confirmation_required(
+            &store,
+            "granted-client",
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        store.grants[0].confirm_writes = true;
+        assert!(mcp_write_confirmation_required(
+            &store,
+            " granted-client ",
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        assert!(!mcp_write_confirmation_required(
+            &store,
+            "granted-client",
+            McpScope::ReadLogs,
+            "session-1",
+        ));
+        assert!(!mcp_write_confirmation_required(
+            &store,
+            "granted-client",
+            McpScope::WriteInput,
+            "other-session",
+        ));
     }
 
     #[test]
@@ -31202,6 +31380,7 @@ mod tests {
             name: "  Operations  ".to_string(),
             scopes: vec![McpScope::ReadSessions, McpScope::WriteInput],
             allowed_sessions: vec!["  edge  ".to_string(), "lab".to_string()],
+            confirm_writes: true,
             expires_at: None,
             revoked_at: None,
         };
@@ -31227,6 +31406,204 @@ mod tests {
         assert!(normalize_mcp_grant(invalid)
             .unwrap_err()
             .contains("duplicate session IDs"));
+    }
+
+    #[test]
+    fn mcp_approval_queue_is_bounded_one_shot_and_times_out_closed() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("portmate-mcp-approval-queue-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+            let request = build_mcp_approval_request(
+                "approval-client",
+                "run_command",
+                &session_id,
+                McpScope::WriteInput,
+            )
+            .unwrap();
+            let (event_tx, event_rx) = tokio::sync::oneshot::channel();
+            let waiter_state = state.clone();
+            let waiter = tokio::spawn(async move {
+                await_mcp_approval_with_emitter(
+                    &waiter_state,
+                    request,
+                    Duration::from_secs(1),
+                    move |event| {
+                        event_tx
+                            .send(event.clone())
+                            .map_err(|_| "approval event receiver closed".to_string())
+                    },
+                )
+                .await
+            });
+            let emitted = event_rx.await.unwrap();
+            let encoded = serde_json::to_value(&emitted).unwrap();
+            assert_eq!(encoded.as_object().unwrap().len(), 7);
+            assert_eq!(
+                list_mcp_approvals_inner(&state).unwrap(),
+                std::slice::from_ref(&emitted)
+            );
+            respond_mcp_approval_inner(&state, &emitted.id, true).unwrap();
+            assert_eq!(waiter.await.unwrap().unwrap(), McpApprovalOutcome::Approved);
+            assert!(list_mcp_approvals_inner(&state).unwrap().is_empty());
+            assert!(respond_mcp_approval_inner(&state, &emitted.id, true)
+                .unwrap_err()
+                .contains("no longer pending"));
+
+            let timed_out = build_mcp_approval_request(
+                "approval-client",
+                "create_tunnel",
+                &session_id,
+                McpScope::Tunnel,
+            )
+            .unwrap();
+            let timed_out_id = timed_out.id.clone();
+            assert_eq!(
+                await_mcp_approval_with_emitter(
+                    &state,
+                    timed_out,
+                    Duration::from_millis(10),
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap(),
+                McpApprovalOutcome::TimedOut
+            );
+            assert!(list_mcp_approvals_inner(&state).unwrap().is_empty());
+            assert!(respond_mcp_approval_inner(&state, &timed_out_id, false).is_err());
+
+            {
+                let mut pending = state.pending_mcp_approvals.lock().unwrap();
+                for _ in 0..MAX_PENDING_MCP_APPROVALS {
+                    let request = build_mcp_approval_request(
+                        "capacity-client",
+                        "start_transfer",
+                        &session_id,
+                        McpScope::Transfer,
+                    )
+                    .unwrap();
+                    let (response, _receiver) = tokio::sync::oneshot::channel();
+                    pending.insert(request.id.clone(), PendingMcpApproval { request, response });
+                }
+            }
+            let overflow = build_mcp_approval_request(
+                "capacity-client",
+                "start_transfer",
+                &session_id,
+                McpScope::Transfer,
+            )
+            .unwrap();
+            let emitted_overflow = Arc::new(AtomicBool::new(false));
+            let emitted_flag = Arc::clone(&emitted_overflow);
+            let error = await_mcp_approval_with_emitter(
+                &state,
+                overflow,
+                Duration::from_millis(10),
+                move |_| {
+                    emitted_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("queue limit"));
+            assert!(!emitted_overflow.load(Ordering::SeqCst));
+            state.pending_mcp_approvals.lock().unwrap().clear();
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn confirming_mcp_grant_fails_closed_before_execution_without_ui() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-mcp-approval-unavailable-{}",
+                Uuid::new_v4()
+            ));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+            state.store.lock().unwrap().grants.push(McpGrant {
+                client_id: "confirming-client".to_string(),
+                name: "Confirming client".to_string(),
+                scopes: vec![McpScope::ManageSessions],
+                allowed_sessions: vec![session_id.clone()],
+                confirm_writes: true,
+                expires_at: None,
+                revoked_at: None,
+            });
+
+            let error = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "confirming-client".to_string(),
+                    trusted_write: false,
+                    command: "open_session".to_string(),
+                    args: serde_json::json!({
+                        "sessionId": session_id,
+                        "password": "must-not-enter-approval-or-audit"
+                    }),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("approval was unavailable"));
+            assert!(state.shell.lock().unwrap().is_empty());
+            let store = state.store.lock().unwrap();
+            assert_eq!(store.runtimes[0].status, SessionStatus::Disconnected);
+            assert_eq!(store.audit.len(), 1);
+            assert_eq!(store.audit[0].decision, "denied");
+            assert_eq!(
+                store.audit[0].details.get("approval").map(String::as_str),
+                Some("unavailable")
+            );
+            assert_eq!(
+                store.audit[0]
+                    .details
+                    .get("approvalRequired")
+                    .map(String::as_str),
+                Some("true")
+            );
+            assert!(!serde_json::to_string(&store.audit)
+                .unwrap()
+                .contains("must-not-enter-approval-or-audit"));
+            drop(store);
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn invalid_mcp_identifiers_are_bounded_before_audit() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-mcp-invalid-identifiers-{}",
+                Uuid::new_v4()
+            ));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let invalid_client = format!("{}\nsecret-client", "x".repeat(1024));
+            let error = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: invalid_client.clone(),
+                    trusted_write: true,
+                    command: "open_session".to_string(),
+                    args: serde_json::json!({ "sessionId": "bad\nsession" }),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("session ID"));
+            let audit = state.store.lock().unwrap().audit.clone();
+            assert_eq!(audit.len(), 1);
+            assert_eq!(audit[0].actor, "<invalid-client-id>");
+            assert_eq!(audit[0].session_id, None);
+            let encoded = serde_json::to_string(&audit).unwrap();
+            assert!(!encoded.contains("secret-client"));
+            assert!(!encoded.contains("bad\\nsession"));
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     async fn exchange_test_ipc(state: AppState, token: &str, raw: Vec<u8>) -> IpcResponse {
@@ -33729,11 +34106,22 @@ mod tests {
 
     #[test]
     fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
-        let config = build_mcp_http_config(true);
+        let executable = Path::new("/opt/PortMate/bin/portmate-mcp");
+        let store_path = Path::new("/home/operator/PortMate Data/portmate-store.sqlite3");
+        let config = build_mcp_http_config(true, executable, store_path);
         assert_eq!(config.token_ref, MCP_HTTP_TOKEN_REF);
         assert_eq!(config.endpoint, "http://127.0.0.1:8787/mcp");
         assert!(config.token_available);
         assert!(config.start_command.contains("PORTMATE_MCP_HTTP=1"));
+        assert_eq!(config.executable, executable.to_string_lossy());
+        assert_eq!(config.store_path, store_path.to_string_lossy());
+        assert!(config
+            .start_command
+            .contains("/opt/PortMate/bin/portmate-mcp"));
+        assert!(config
+            .start_command
+            .contains("'/home/operator/PortMate Data/portmate-store.sqlite3'"));
+        assert!(!config.start_command.contains("cargo run"));
     }
 
     #[test]
@@ -39391,6 +39779,7 @@ mod tests {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+            pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
             store_path,
         }
