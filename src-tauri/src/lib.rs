@@ -1832,6 +1832,16 @@ pub struct OneKeyMutationResponse {
     pub saved_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSessionProfileResponse {
+    pub deleted_profile_id: String,
+    pub sessions: Vec<SessionSummary>,
+    pub one_keys: Vec<OneKeySummary>,
+    pub host_keys: HostKeyStore,
+    pub grants: Vec<McpGrant>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum OneKeySecretUpdate {
@@ -3455,6 +3465,125 @@ fn save_session_profile(
     Ok(summary)
 }
 
+#[tauri::command]
+async fn delete_session_profile(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<DeleteSessionProfileResponse, String> {
+    delete_session_profile_inner(state.inner(), session_id).await
+}
+
+async fn delete_session_profile_inner(
+    state: &AppState,
+    session_id: String,
+) -> Result<DeleteSessionProfileResponse, String> {
+    let (status, has_active_transfer) = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        let status = store
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == profile.id)
+            .map(|runtime| runtime.status)
+            .unwrap_or(SessionStatus::Disconnected);
+        let has_active_transfer = store.transfers.iter().any(|transfer| {
+            transfer.session_id == profile.id
+                && matches!(
+                    transfer.status,
+                    TransferStatus::Queued | TransferStatus::Running
+                )
+        });
+        (status, has_active_transfer)
+    };
+    if has_active_transfer {
+        return Err("会话存在排队中或运行中的传输任务，取消或等待任务结束后才能删除".to_string());
+    }
+
+    if !matches!(
+        status,
+        SessionStatus::Disconnected | SessionStatus::Blocked | SessionStatus::Error
+    ) || session_has_registered_runtime(state, &session_id)?
+    {
+        close_session_inner(state, session_id.clone()).await?;
+    }
+
+    let _credential_guard = lock_credential_operations(state)?;
+    ensure_no_pending_profile_secret_migration(&state.store_path)?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(&session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    let mut orphan_secret_candidates = profile_secret_refs(&profile);
+    for one_key in &store.one_keys {
+        let Some(identity) = one_key
+            .identity
+            .as_ref()
+            .filter(|identity| identity.source_profile_id == session_id)
+        else {
+            continue;
+        };
+        if let Some(secret_ref) = identity
+            .identity
+            .secret_ref
+            .as_deref()
+            .and_then(canonical_secret_ref)
+        {
+            orphan_secret_candidates.insert(secret_ref);
+        }
+    }
+    let transfer_ids = store
+        .transfers
+        .iter()
+        .filter(|transfer| transfer.session_id == session_id)
+        .map(|transfer| transfer.id.clone())
+        .collect::<Vec<_>>();
+
+    let mut next_store = store.clone();
+    let deleted = next_store.delete_profile(&session_id)?;
+    next_store.record_audit(AuditRecord {
+        id: Uuid::new_v4().to_string(),
+        ts: Utc::now(),
+        actor: "desktop-user".to_string(),
+        action: "delete_session_profile".to_string(),
+        session_id: Some(session_id.clone()),
+        decision: "recorded".to_string(),
+        details: BTreeMap::from([
+            ("profileName".to_string(), deleted.name),
+            ("diskLogs".to_string(), "retained".to_string()),
+        ]),
+    });
+    save_store(&state.store_path, &next_store)?;
+    *store = next_store;
+
+    for secret_ref in orphan_secret_candidates {
+        if secret_ref_usage_count(&store, &secret_ref) == 0 {
+            if let Err(error) = delete_secret_from_store(&secret_ref) {
+                eprintln!(
+                    "PortMate: profile deleted but orphan secret cleanup failed ({secret_ref}): {error}"
+                );
+            }
+        }
+    }
+    let response = DeleteSessionProfileResponse {
+        deleted_profile_id: session_id.clone(),
+        sessions: store.summaries(),
+        one_keys: one_key_summaries(&store),
+        host_keys: store.host_keys.clone(),
+        grants: store.grants.clone(),
+    };
+    drop(store);
+
+    cleanup_deleted_session_runtime_state(state, &session_id, &transfer_ids);
+    if let Some(app_handle) = &state.app_handle {
+        let _ = app_handle.emit("portmate-session-profile-deleted", session_id);
+    }
+    Ok(response)
+}
+
 fn validate_proxy_credentials(
     kind: ProxyKind,
     username: &str,
@@ -3737,6 +3866,121 @@ async fn open_session_inner(
         let summary = store.open_session(&session_id)?;
         save_store(&state.store_path, &store)?;
         Ok(summary)
+    }
+}
+
+fn session_has_registered_runtime(state: &AppState, session_id: &str) -> Result<bool, String> {
+    if state
+        .ssh
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .shell
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .tcp
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .serial
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .active_commands
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .tmux_controls
+        .lock()
+        .map_err(|error| error.to_string())?
+        .keys()
+        .any(|(runtime_session_id, _)| runtime_session_id == session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .tunnels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .any(|runtime| runtime.session_id == session_id)
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn cleanup_deleted_session_runtime_state(
+    state: &AppState,
+    session_id: &str,
+    transfer_ids: &[String],
+) {
+    clear_active_command(&state.session_io(), session_id);
+    state
+        .serial_captures
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    state
+        .transfer_lanes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    let transfer_ids = transfer_ids.iter().collect::<HashSet<_>>();
+    state
+        .transfer_cancellations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|transfer_id, _| !transfer_ids.contains(transfer_id));
+    state
+        .one_time_host_keys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    if let Some(lanes) = OUTBOUND_LANES.get() {
+        lanes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(store_path, lane_session_id), _| {
+                store_path != &state.store_path || lane_session_id != session_id
+            });
+    }
+
+    let mut approvals = state
+        .pending_mcp_approvals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let approval_ids = approvals
+        .iter()
+        .filter_map(|(id, pending)| {
+            (pending.request.session_id == session_id).then_some(id.clone())
+        })
+        .collect::<Vec<_>>();
+    for approval_id in approval_ids {
+        if let Some(pending) = approvals.remove(&approval_id) {
+            let _ = pending.response.send(false);
+        }
     }
 }
 
@@ -26392,6 +26636,7 @@ pub fn run() {
             run_command,
             resize_session,
             save_session_profile,
+            delete_session_profile,
             open_session,
             open_session_with_one_key,
             close_session,
@@ -39358,6 +39603,104 @@ mod tests {
         assert!(error.contains("salt 文件缺失"));
         assert!(!salt_path.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_session_profile_persists_and_cleans_runtime_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("portmate-store.sqlite3");
+        let state = test_app_state(test_shell_profile(), store_path.clone());
+        let transfer_id = "completed-transfer".to_string();
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .record_stream_event(
+                    "session:1",
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    "ephemeral output",
+                )
+                .unwrap();
+            store.record_transfer(TransferTask {
+                id: transfer_id.clone(),
+                session_id: "session:1".to_string(),
+                protocol: TransferProtocol::Sftp,
+                source: "source".to_string(),
+                destination: "destination".to_string(),
+                bytes_total: 1,
+                bytes_done: 1,
+                status: TransferStatus::Completed,
+                message: None,
+                started_at: Some(Utc::now()),
+                finished_at: Some(Utc::now()),
+                average_bytes_per_second: None,
+            });
+        }
+        state.transfer_lanes.lock().unwrap().insert(
+            "session:1".to_string(),
+            Arc::new(tokio::sync::Mutex::new(())),
+        );
+        state
+            .transfer_cancellations
+            .lock()
+            .unwrap()
+            .insert(transfer_id.clone(), Arc::new(AtomicBool::new(false)));
+        state
+            .one_time_host_keys
+            .lock()
+            .unwrap()
+            .insert("session:1".to_string(), Vec::new());
+        let (approval_sender, approval_receiver) = tokio::sync::oneshot::channel();
+        let approval_id = Uuid::new_v4().to_string();
+        state.pending_mcp_approvals.lock().unwrap().insert(
+            approval_id.clone(),
+            PendingMcpApproval {
+                request: McpApprovalRequest {
+                    id: approval_id,
+                    client_id: "test-client".to_string(),
+                    action: "close_session".to_string(),
+                    session_id: "session:1".to_string(),
+                    scope: "manage-sessions".to_string(),
+                    created_at: Utc::now(),
+                    expires_at: Utc::now() + chrono::Duration::seconds(60),
+                },
+                response: approval_sender,
+            },
+        );
+
+        let response = delete_session_profile_inner(&state, "session:1".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(response.deleted_profile_id, "session:1");
+        assert!(response.sessions.is_empty());
+        assert!(!approval_receiver.await.unwrap());
+        assert!(!state
+            .transfer_lanes
+            .lock()
+            .unwrap()
+            .contains_key("session:1"));
+        assert!(!state
+            .transfer_cancellations
+            .lock()
+            .unwrap()
+            .contains_key(&transfer_id));
+        assert!(!state
+            .one_time_host_keys
+            .lock()
+            .unwrap()
+            .contains_key("session:1"));
+        assert!(state.pending_mcp_approvals.lock().unwrap().is_empty());
+
+        let stored = load_store(&store_path).unwrap();
+        assert!(stored.profile("session:1").is_none());
+        assert!(stored.events.is_empty());
+        assert!(stored.transfers.is_empty());
+        assert!(stored.audit.iter().any(|record| {
+            record.action == "delete_session_profile"
+                && record.session_id.as_deref() == Some("session:1")
+                && record.details.get("diskLogs").map(String::as_str) == Some("retained")
+        }));
     }
 
     fn test_shell_profile() -> SessionProfile {

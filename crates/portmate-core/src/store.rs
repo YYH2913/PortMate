@@ -94,6 +94,17 @@ impl SystemEventSinkRuntime {
             .map(|mut state| state.outbox.drain(..).collect())
             .unwrap_or_default()
     }
+
+    fn discard_session(&self, session_id: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "system event sink state poisoned".to_string())?;
+        state
+            .outbox
+            .retain(|(event, _)| event.session_id != session_id);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -289,6 +300,89 @@ impl SessionStore {
 
         self.push_system_event(session_id, "PortMate: session disconnected".to_string());
         self.summary_for(session_id)
+    }
+
+    pub fn delete_profile(&mut self, session_id: &str) -> Result<SessionProfile, String> {
+        let profile_index = self
+            .profiles
+            .iter()
+            .position(|profile| profile.id == session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        if self.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id
+                && !matches!(
+                    runtime.status,
+                    SessionStatus::Disconnected | SessionStatus::Blocked | SessionStatus::Error
+                )
+        }) {
+            return Err("session must be disconnected before deleting its profile".to_string());
+        }
+        if self.transfers.iter().any(|transfer| {
+            transfer.session_id == session_id
+                && matches!(
+                    transfer.status,
+                    TransferStatus::Queued | TransferStatus::Running
+                )
+        }) {
+            return Err("session has an active transfer and cannot be deleted".to_string());
+        }
+
+        self.system_event_sink.discard_session(session_id)?;
+        let now = Utc::now();
+        let profile = self.profiles.remove(profile_index);
+        self.runtimes
+            .retain(|runtime| runtime.session_id != session_id);
+        self.events.retain(|event| event.session_id != session_id);
+        self.event_counts.remove(session_id);
+        self.transfers
+            .retain(|transfer| transfer.session_id != session_id);
+        self.timeline.retain(|mark| mark.session_id != session_id);
+        self.sysmon
+            .retain(|snapshot| snapshot.session_id != session_id);
+
+        self.host_keys.keys.retain(|key| {
+            !(key.scope == HostKeyScope::Profile && key.profile_id.as_deref() == Some(session_id))
+        });
+        for key in &mut self.host_keys.keys {
+            if key.profile_id.as_deref() == Some(session_id) {
+                key.profile_id = None;
+            }
+        }
+
+        for one_key in &mut self.one_keys {
+            let previous_session_count = one_key.session_ids.len();
+            one_key
+                .session_ids
+                .retain(|bound_session_id| bound_session_id != session_id);
+            let removed_identity = one_key
+                .identity
+                .as_ref()
+                .is_some_and(|identity| identity.source_profile_id == session_id);
+            if removed_identity {
+                one_key.identity = None;
+            }
+            if previous_session_count != one_key.session_ids.len() || removed_identity {
+                one_key.updated_at = now;
+            }
+        }
+
+        for grant in &mut self.grants {
+            if grant.allowed_sessions.is_empty() {
+                continue;
+            }
+            let previous_session_count = grant.allowed_sessions.len();
+            grant
+                .allowed_sessions
+                .retain(|allowed_session_id| allowed_session_id != session_id);
+            if previous_session_count != grant.allowed_sessions.len()
+                && grant.allowed_sessions.is_empty()
+                && grant.revoked_at.is_none()
+            {
+                grant.revoked_at = Some(now);
+            }
+        }
+
+        Ok(profile)
     }
 
     pub fn record_system_event(&mut self, session_id: &str, text: impl Into<String>) {
@@ -1129,6 +1223,204 @@ mod tests {
             .screen("test-session")
             .unwrap()
             .contains("disconnected"));
+    }
+
+    #[test]
+    fn delete_profile_rejects_live_sessions_and_active_transfers() {
+        let mut store = test_store();
+        let live_error = store.delete_profile("test-session").unwrap_err();
+        assert!(live_error.contains("must be disconnected"));
+        assert!(store.profile("test-session").is_some());
+
+        store.runtimes[0].status = SessionStatus::Disconnected;
+        store.record_transfer(test_transfer("queued".to_string(), TransferStatus::Queued));
+        let transfer_error = store.delete_profile("test-session").unwrap_err();
+        assert!(transfer_error.contains("active transfer"));
+        assert!(store.profile("test-session").is_some());
+    }
+
+    #[test]
+    fn delete_profile_cascades_without_widening_grants_or_project_trust() {
+        let mut store = test_store();
+        store.runtimes[0].status = SessionStatus::Disconnected;
+        let (event_sender, _event_receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(event_sender).unwrap();
+        store.record_system_event("test-session", "queued deletion event");
+        let mut other_profile = store.profiles[0].clone();
+        other_profile.id = "other-session".to_string();
+        other_profile.name = "other session".to_string();
+        store.upsert_profile(other_profile);
+        store
+            .record_stream_event(
+                "test-session",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "deleted event",
+            )
+            .unwrap();
+        store
+            .record_stream_event(
+                "other-session",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "retained event",
+            )
+            .unwrap();
+        store.record_transfer(test_transfer(
+            "completed".to_string(),
+            TransferStatus::Completed,
+        ));
+        let now = Utc::now();
+        store.record_timeline_mark(TimelineMark {
+            id: "timeline-delete".to_string(),
+            session_id: "test-session".to_string(),
+            ts: now,
+            label: "delete me".to_string(),
+            details: None,
+        });
+        store.record_sysmon_snapshot(SysmonSnapshot {
+            session_id: "test-session".to_string(),
+            ts: now,
+            uptime_seconds: 1,
+            cpu_percent: 0.0,
+            memory_percent: 0.0,
+            rx_kbps: 0.0,
+            tx_kbps: 0.0,
+            load_average: [0.0; 3],
+            memory_total_bytes: 0,
+            memory_available_bytes: 0,
+            processes: Vec::new(),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+        });
+        store.record_audit(AuditRecord {
+            id: "audit-delete".to_string(),
+            ts: now,
+            actor: "desktop-user".to_string(),
+            action: "profile-test".to_string(),
+            session_id: Some("test-session".to_string()),
+            decision: "recorded".to_string(),
+            details: BTreeMap::new(),
+        });
+        store.host_keys.keys.extend([
+            TrustedHostKey {
+                id: "profile-key".to_string(),
+                profile_id: Some("test-session".to_string()),
+                alias: "device".to_string(),
+                host: "device".to_string(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint_sha256: "SHA256:profile".to_string(),
+                public_key_base64: "AAAAC3NzaC1lZDI1NTE5AAAAIA==".to_string(),
+                scope: HostKeyScope::Profile,
+                label: None,
+                first_seen: now,
+                last_seen: now,
+            },
+            TrustedHostKey {
+                id: "project-key".to_string(),
+                profile_id: Some("test-session".to_string()),
+                alias: "shared".to_string(),
+                host: "shared".to_string(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint_sha256: "SHA256:project".to_string(),
+                public_key_base64: "AAAAC3NzaC1lZDI1NTE5AAAAIA==".to_string(),
+                scope: HostKeyScope::Project,
+                label: None,
+                first_seen: now,
+                last_seen: now,
+            },
+        ]);
+        store.one_keys.push(OneKeyCredential {
+            id: "one-key".to_string(),
+            label: "shared login".to_string(),
+            kind: OneKeyKind::Ssh,
+            username: "operator".to_string(),
+            password_secret_ref: Some("keyring:one-key".to_string()),
+            passphrase_secret_ref: None,
+            identity: Some(OneKeyIdentity {
+                source_profile_id: "test-session".to_string(),
+                identity: IdentityRef {
+                    id: "identity".to_string(),
+                    label: "identity".to_string(),
+                    source: IdentitySource::Agent,
+                    fingerprint_sha256: Some("SHA256:identity".to_string()),
+                    path: None,
+                    secret_ref: None,
+                },
+            }),
+            session_ids: vec!["test-session".to_string(), "other-session".to_string()],
+            created_at: now,
+            updated_at: now,
+        });
+        store.grants.push(McpGrant {
+            client_id: "mixed".to_string(),
+            name: "mixed".to_string(),
+            scopes: vec![McpScope::ReadLogs],
+            allowed_sessions: vec!["test-session".to_string(), "other-session".to_string()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let deleted = store.delete_profile("test-session").unwrap();
+
+        assert_eq!(deleted.id, "test-session");
+        assert!(store.profile("test-session").is_none());
+        assert!(store.profile("other-session").is_some());
+        assert!(store
+            .events
+            .iter()
+            .all(|event| event.session_id != "test-session"));
+        assert!(store.drain_system_event_outbox().is_empty());
+        assert!(store
+            .events
+            .iter()
+            .any(|event| event.session_id == "other-session"));
+        assert!(store
+            .transfers
+            .iter()
+            .all(|transfer| transfer.session_id != "test-session"));
+        assert!(store.timeline.is_empty());
+        assert!(store.sysmon.is_empty());
+        assert!(store.audit.iter().any(|record| record.id == "audit-delete"));
+        assert!(!store
+            .host_keys
+            .keys
+            .iter()
+            .any(|key| key.id == "profile-key"));
+        assert!(store
+            .host_keys
+            .keys
+            .iter()
+            .any(|key| key.id == "project-key" && key.profile_id.is_none()));
+        assert_eq!(store.one_keys[0].session_ids, ["other-session"]);
+        assert!(store.one_keys[0].identity.is_none());
+        assert!(store.one_keys[0].updated_at >= now);
+
+        let scoped = store
+            .grants
+            .iter()
+            .find(|grant| grant.client_id == "test-client")
+            .unwrap();
+        assert!(scoped.allowed_sessions.is_empty());
+        assert!(scoped.revoked_at.is_some());
+        assert!(!scoped.allows(McpScope::ReadLogs, Some("other-session"), Utc::now()));
+        let mixed = store
+            .grants
+            .iter()
+            .find(|grant| grant.client_id == "mixed")
+            .unwrap();
+        assert_eq!(mixed.allowed_sessions, ["other-session"]);
+        assert!(mixed.revoked_at.is_none());
+        let global = store
+            .grants
+            .iter()
+            .find(|grant| grant.client_id == "readonly")
+            .unwrap();
+        assert!(global.allowed_sessions.is_empty());
+        assert!(global.revoked_at.is_none());
     }
 
     #[test]
