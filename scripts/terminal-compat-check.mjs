@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
@@ -9,6 +9,38 @@ const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function captureVimPty() {
+  const result = spawnSync("script", [
+    "-qfec",
+    "vim -Nu NONE -n README.md",
+    "/dev/null",
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, TERM: "xterm-256color" },
+    input: ":q!\r",
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  assert(!result.error, `failed to capture Vim PTY output: ${result.error?.message}`);
+  assert(result.status === 0, `Vim PTY capture exited with ${result.status}: ${result.stderr}`);
+
+  const output = result.stdout;
+  const alternateStart = output.indexOf("\x1b[?1049h");
+  const alternateEnd = output.lastIndexOf("\x1b[?1049l");
+  assert(alternateStart >= 0, "Vim PTY capture did not enter the alternate screen");
+  assert(alternateEnd > alternateStart, "Vim PTY capture did not leave the alternate screen");
+
+  const alternateFrame = output.slice(alternateStart, alternateEnd);
+  const exitFrame = output.slice(alternateEnd);
+  assert(alternateFrame.includes("# PortMate"), "Vim PTY capture did not render README.md");
+  return {
+    alternateFrame,
+    exitFrame,
+    bytes: Buffer.byteLength(output),
+  };
 }
 
 async function reservePort() {
@@ -163,6 +195,12 @@ const workspace = {
   activeId: "session-a",
   tabColors: {},
 };
+const vimPty = captureVimPty();
+const longLogLineCount = 6_000;
+const longLogTailMarker = "PORTMATE-LONG-LOG-TAIL-006000";
+const longLogText = `${Array.from({ length: longLogLineCount }, (_, index) => (
+  `2026-07-15T00:00:00.000Z INFO compatibility line ${String(index + 1).padStart(6, "0")} ${"x".repeat(48)}`
+)).join("\r\n")}\r\n${longLogTailMarker}\r\n`;
 
 const port = await reservePort();
 const appUrl = `http://127.0.0.1:${port}/`;
@@ -206,6 +244,13 @@ try {
     }
     window.__invokeCalls = [];
     window.__clipboardWrites = [];
+    window.__tauriCallbacks = new Map();
+    window.__tauriEventListeners = new Map();
+    window.__tauriCallbackId = 0;
+    window.__emitTauriEvent = (event, payload) => {
+      const listeners = window.__tauriEventListeners.get(event) || [];
+      for (const id of listeners) window.__tauriCallbacks.get(id)?.({ event, id, payload });
+    };
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -213,10 +258,25 @@ try {
         writeText: async (text) => { window.__clipboardWrites.push(String(text)); },
       },
     });
-    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (event, id) => {
+        const listeners = window.__tauriEventListeners.get(event) || [];
+        window.__tauriEventListeners.set(event, listeners.filter((listenerId) => listenerId !== id));
+        window.__tauriCallbacks.delete(id);
+      },
+    };
     window.__TAURI_INTERNALS__ = {
       invoke: async (command, args = {}) => {
         window.__invokeCalls.push({ command, args });
+        if (command === "plugin:event|listen") {
+          const listeners = window.__tauriEventListeners.get(args.event) || [];
+          window.__tauriEventListeners.set(args.event, [...listeners, args.handler]);
+          return args.handler;
+        }
+        if (command === "plugin:event|unlisten") {
+          window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
+          return null;
+        }
         if (command === "list_sessions") return initialSessions;
         if (command === "tail_log") return initialEvents[args.sessionId] ?? [];
         if (command === "list_host_keys") return { keys: [] };
@@ -228,12 +288,16 @@ try {
           "list_serial_ports",
           "list_one_keys",
         ].includes(command)) return [];
-        if (command.startsWith("plugin:event|")) return 1;
+        if (command.startsWith("plugin:event|")) return null;
         return null;
       },
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
-      transformCallback: () => 1,
-      unregisterCallback: () => {},
+      transformCallback: (callback) => {
+        window.__tauriCallbackId += 1;
+        window.__tauriCallbacks.set(window.__tauriCallbackId, callback);
+        return window.__tauriCallbackId;
+      },
+      unregisterCallback: (id) => window.__tauriCallbacks.delete(id),
       convertFileSrc: (path) => path,
     };
   }, { initialWorkspace: workspace, initialSessions: sessions, initialEvents: eventsBySession });
@@ -269,6 +333,9 @@ try {
     .filter((call) => call.command === "resize_session")
     .map((call) => call.args));
   const clearCalls = () => page.evaluate(() => { window.__invokeCalls = []; });
+  const emitSessionEvent = (event) => page.evaluate((payload) => {
+    window.__emitTauriEvent("portmate-session-event", payload);
+  }, event);
   const expectedResize = (size) => {
     const [cols, rows] = size.split("x").map(Number);
     return { cols, rows };
@@ -330,6 +397,18 @@ try {
     await page.locator('[data-pane-id="pane-a"] [aria-label="关闭查找"]').click();
     return status;
   };
+  const openAndAssertMissing = async (query) => {
+    await page.evaluate(() => window.dispatchEvent(new Event("portmate-terminal-search")));
+    const input = page.locator('[data-pane-id="pane-a"] .terminal-search-bar input');
+    await input.fill(query);
+    await input.press("Enter");
+    await page.waitForTimeout(100);
+    const status = await page.locator('[data-pane-id="pane-a"] .terminal-search-status').textContent() ?? "0/0";
+    if (status !== "0/0") throw new Error(`terminal buffer unexpectedly contains ${query}: ${status}`);
+    await input.fill("");
+    await page.locator('[data-pane-id="pane-a"] [aria-label="关闭查找"]').click();
+    return status;
+  };
   const ansiSearch = await openAndAssertSearch("PORTMATE VTT BASELINE");
   const trueColorSearch = await openAndAssertSearch("TRUECOLOR RGB-OK");
   const wideSearch = await openAndAssertSearch("宽字符界面");
@@ -339,6 +418,25 @@ try {
   await page.locator('[data-pane-id="pane-a"] [data-view-id="view-a"] [role="tab"]').click();
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalRestored === "true");
   const restoredSearch = await openAndAssertSearch("PORTMATE VTT BASELINE");
+
+  await page.waitForFunction(() => (
+    (window.__tauriEventListeners.get("portmate-session-event") || []).length >= 2
+  ));
+  await emitSessionEvent(createEvent("a-baseline-alt-exit", "session-a", "\x1b[?1049l"));
+  const normalBeforeVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
+  await emitSessionEvent(createEvent("a-real-vim-frame", "session-a", vimPty.alternateFrame));
+  const vimSearch = await openAndAssertSearch("# PortMate");
+  const hiddenNormalSearch = await openAndAssertMissing("NORMAL-PROMPT");
+  await emitSessionEvent(createEvent("a-real-vim-exit", "session-a", vimPty.exitFrame));
+  const normalAfterVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
+  const hiddenVimSearch = await openAndAssertMissing("# PortMate");
+
+  const longLogStartedAt = Date.now();
+  await emitSessionEvent(createEvent("a-long-log", "session-a", longLogText));
+  const longLogSearch = await openAndAssertSearch(longLogTailMarker);
+  const longLogDurationMs = Date.now() - longLogStartedAt;
+  assert(longLogDurationMs < 15_000,
+    `${longLogLineCount}-line terminal render/search took ${longLogDurationMs} ms`);
 
   const activeScreen = page.locator('[data-pane-id="pane-a"] .xterm-screen');
   const selectTerminalText = async () => {
@@ -395,6 +493,17 @@ try {
   assert(onlineSelectionWrites.length === 0,
     `selection online search wrote terminal input: ${JSON.stringify(onlineSelectionWrites)}`);
 
+  await activeScreen.dispatchEvent("contextmenu", {
+    bubbles: true,
+    button: 2,
+    cancelable: true,
+    clientX: 420,
+    clientY: 180,
+  });
+  await page.locator(".terminal-context-menu .context-menu-row", { hasText: "选择全部" }).click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalHasSelection === "true"
+  ));
   await activeScreen.dispatchEvent("contextmenu", {
     bubbles: true,
     button: 2,
@@ -512,7 +621,20 @@ try {
     viewportResizeCalls: resized.calls,
     paneBActivationCalls: paneBActivation.calls,
     paneAReactivationCalls: paneAReactivation.calls,
-    searches: { ansiSearch, trueColorSearch, wideSearch, restoredSearch },
+    searches: {
+      ansiSearch,
+      trueColorSearch,
+      wideSearch,
+      restoredSearch,
+      normalBeforeVimSearch,
+      vimSearch,
+      hiddenNormalSearch,
+      normalAfterVimSearch,
+      hiddenVimSearch,
+      longLogSearch,
+    },
+    vimPty: { bytes: vimPty.bytes, alternateScreen: true, restoredNormalScreen: true },
+    longLog: { lines: longLogLineCount, bytes: Buffer.byteLength(longLogText), durationMs: longLogDurationMs },
     selections: { selectedWithPreference, selectedWithoutPreference },
     copiedWithPreference,
     onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
