@@ -18,7 +18,7 @@ This repository currently contains the active desktop implementation slice:
 - Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
 - Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
 - SSH `profile-vault` private keys, optional saved passwords/passphrases, and the live MCP IPC token stored in a persistent OS keyring with only `secretRef` metadata persisted in files/SQLite
-- SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a JSON compatibility export
+- SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a private atomic JSON compatibility export
 - Standalone `portmate-mcp` stdio bridge exposing MCP resources, tools, prompts, and local IPC control over JSON-RPC
 
 ## Workspace

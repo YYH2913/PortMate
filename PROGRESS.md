@@ -137,7 +137,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 已实现：
 
-- SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出。
+- SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出；兼容文件使用同目录随机临时文件同步后原子替换，Unix 权限固定为 `0600`，预置的固定临时路径或目标 symlink 不能把快照写入其他文件。
 - SessionStore 保存使用跨进程 sidecar 文件锁和绑定 `storeRevision + kv` 内容的 CAS；stale 实例、旧 writer 直接修改 kv、提交后无法验证以及损坏 SQLite 均拒绝继续覆盖。首次创建/旧 JSON 迁移在同一锁内完成，单纯启动第二实例不会旋转 revision。
 - SQLite v4 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、带结构化 `details_json` 的 sysmon_snapshots，以及独立的 profile credential migration journal；v3 Sysmon 表会原位增加默认空 details 列。
 - SQLite mirror 在同一事务内更新完整 kv 快照；profiles/runtimes/transfers/keys/grants 等小型可变表重建，events/audit/timeline/sysmon 按主键增量插入并清理已裁剪项，避免日志增长后每次保存重复重写全部大表。
@@ -273,7 +273,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 262：`portmate` 193、`portmate-kdf` 1、`portmate-core` 40、`portmate-mcp` 28；`npm test` 另有 51 个文件、266 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 263：`portmate` 194、`portmate-kdf` 1、`portmate-core` 40、`portmate-mcp` 28；`npm test` 另有 51 个文件、266 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
@@ -306,7 +306,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 262 项 Rust core/协议集成测试、51 文件/266 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 263 项 Rust core/协议集成测试、51 文件/266 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

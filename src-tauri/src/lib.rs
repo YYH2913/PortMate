@@ -26727,44 +26727,9 @@ fn enum_text<T: Serialize>(value: &T) -> Result<String, String> {
 }
 
 fn save_store_json(path: &Path, store: &SessionStore) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create PortMate data directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    let tmp_path = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(LEGACY_JSON_STORE_FILE_NAME)
-    ));
     let bytes = serde_json::to_vec_pretty(store)
         .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
-    fs::write(&tmp_path, bytes).map_err(|error| {
-        format!(
-            "failed to write PortMate store {}: {error}",
-            tmp_path.display()
-        )
-    })?;
-
-    if cfg!(windows) && path.exists() {
-        fs::remove_file(path).map_err(|error| {
-            format!(
-                "failed to replace existing PortMate store {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-    fs::rename(&tmp_path, path).map_err(|error| {
-        format!(
-            "failed to commit PortMate store {} -> {}: {error}",
-            tmp_path.display(),
-            path.display()
-        )
-    })
+    write_private_atomic_file(path, &bytes, "PortMate JSON compatibility store")
 }
 
 fn persist_store_arc(path: &Path, store: &Arc<Mutex<SessionStore>>) -> Result<(), String> {
@@ -29410,6 +29375,67 @@ mod tests {
         )
         .unwrap();
         validate_profile_transport_change(None, &next, None).unwrap();
+    }
+
+    #[test]
+    fn json_compatibility_store_is_private_atomic_and_symlink_safe() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join(LEGACY_JSON_STORE_FILE_NAME);
+        let protected_path = temp.path().join("protected.txt");
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_shell_profile());
+        fs::write(&store_path, b"old snapshot").unwrap();
+
+        save_store_json(&store_path, &store).unwrap();
+
+        assert_eq!(
+            load_store_json(&store_path).unwrap().profiles[0].name,
+            "Bench/Device"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{symlink, PermissionsExt};
+
+            assert_eq!(
+                fs::metadata(&store_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+
+            fs::write(&protected_path, b"must remain unchanged").unwrap();
+            let predictable_temp_path = store_path.with_file_name(format!(
+                "{}.tmp",
+                store_path.file_name().unwrap().to_string_lossy()
+            ));
+            symlink(&protected_path, &predictable_temp_path).unwrap();
+            store.profiles[0].name = "Updated profile".to_string();
+
+            save_store_json(&store_path, &store).unwrap();
+
+            assert_eq!(fs::read(&protected_path).unwrap(), b"must remain unchanged");
+            assert!(fs::symlink_metadata(&predictable_temp_path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                load_store_json(&store_path).unwrap().profiles[0].name,
+                "Updated profile"
+            );
+
+            fs::remove_file(&store_path).unwrap();
+            symlink(&protected_path, &store_path).unwrap();
+            save_store_json(&store_path, &store).unwrap();
+
+            assert_eq!(fs::read(&protected_path).unwrap(), b"must remain unchanged");
+            assert!(!fs::symlink_metadata(&store_path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                fs::metadata(&store_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
