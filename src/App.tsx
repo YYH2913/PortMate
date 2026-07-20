@@ -17,6 +17,7 @@ import {
   Download,
   File,
   FileText,
+  Files,
   Folder,
   KeyRound,
   Lock,
@@ -24,12 +25,16 @@ import {
   Maximize2,
   Minimize2,
   Package,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
+  SendHorizontal,
   Settings,
   Square,
   SquareTerminal,
@@ -38,11 +43,13 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
 import { filterLogShards, selectVisibleLogShards, summarizeBundleAttachmentSelection } from "./log-shard-state";
+import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
@@ -84,14 +91,14 @@ import type { SysmonTrendMode } from "./sysmon-history";
 import { defaultWorkspaceKeymap, formatWorkspaceKeyBinding, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY, workspaceHotkeyCommands, workspaceKeyBindingFromEvent, workspaceKeymapConflicts } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
-import { isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspacePanelVisibility, toggleWorkspacePanelVisibility, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
-import type { WorkspacePanelId } from "./workspace-panel-state";
+import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
+import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
 import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
@@ -102,6 +109,7 @@ const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 const LazyMcpDialog = lazy(() => import("./McpDialog"));
+const LazyMcpApprovalDialog = lazy(() => import("./McpApprovalDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -114,7 +122,19 @@ const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
+const MAX_RESOLVED_MCP_APPROVAL_IDS = 256;
 const workspaceUtilityIcons = { Folder, Search, X };
+const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon: LucideIcon }> = {
+  explorer: { label: "资源管理器", icon: Folder },
+  fileManager: { label: "文件管理器", icon: Files },
+  history: { label: "历史命令", icon: Clock3 },
+  sender: { label: "发送", icon: SendHorizontal },
+};
+const workspaceDockMeta: Record<WorkspaceDockId, { label: string; icon: LucideIcon }> = {
+  left: { label: "左侧", icon: PanelLeft },
+  right: { label: "右侧", icon: PanelRight },
+  bottom: { label: "底部", icon: PanelBottom },
+};
 
 const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
   资源管理器: "explorer",
@@ -123,6 +143,15 @@ const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
   发送: "sender",
   状态栏: "statusBar",
 };
+
+function rememberResolvedMcpApproval(resolved: Set<string>, approvalId: string) {
+  resolved.add(approvalId);
+  while (resolved.size > MAX_RESOLVED_MCP_APPROVAL_IDS) {
+    const oldest = resolved.values().next().value;
+    if (!oldest) break;
+    resolved.delete(oldest);
+  }
+}
 
 const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
   远程模式: "remote",
@@ -280,6 +309,7 @@ export default function App() {
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
   const [audit, setAudit] = useState<AuditRecord[]>(emptyAudit);
   const [grants, setGrants] = useState<McpGrant[]>(emptyGrants);
+  const [mcpApprovals, setMcpApprovals] = useState<McpApprovalRequest[]>([]);
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
@@ -322,6 +352,13 @@ export default function App() {
       loadLocalValue<unknown>(LEGACY_WORKSPACE_PANEL_STORAGE_KEY, null),
     ))
   ));
+  const [workspaceDockLayout, setWorkspaceDockLayout] = useState<WorkspaceDockLayout>(() => (
+    normalizeWorkspaceDockLayout(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
+  ));
+  const [workspaceDockSizes, setWorkspaceDockSizes] = useState<WorkspaceDockSizes>(() => (
+    normalizeWorkspaceDockSizes(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
+  ));
+  const [draggedWorkspacePanel, setDraggedWorkspacePanel] = useState<WorkspaceDockPanelId | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
@@ -352,11 +389,14 @@ export default function App() {
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
+  const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
   const screenLockRef = useRef<ScreenLockState>(screenLock);
   const restoredScreenLockPreparedRef = useRef(false);
 
   const active = sessions.find((session) => session.profile.id === activeId);
+  const activeMcpApproval = mcpApprovals[0];
+  const approvalSessionName = sessions.find((session) => session.profile.id === activeMcpApproval?.sessionId)?.profile.name ?? activeMcpApproval?.sessionId ?? "";
   const activeWorkspacePane = findWorkspacePane(workspaceRoot, activePaneId);
   const activeWorkspaceView = activeWorkspacePane ? workspacePaneActiveView(activeWorkspacePane) : undefined;
   const activeTerminalKeyMode = activeWorkspaceView?.keyMode ?? "remote";
@@ -787,8 +827,13 @@ export default function App() {
   }, [quickBarVisible]);
 
   useEffect(() => {
-    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, { version: 2, panels: workspacePanels });
-  }, [workspacePanels]);
+    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, {
+      version: 5,
+      panels: workspacePanels,
+      docks: workspaceDockLayout,
+      sizes: workspaceDockSizes,
+    });
+  }, [workspaceDockLayout, workspaceDockSizes, workspacePanels]);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
@@ -863,6 +908,36 @@ export default function App() {
     if (!isBackendAvailable()) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    const pruneTimer = window.setInterval(() => {
+      setMcpApprovals((current) => mergeMcpApprovals(current, [], Date.now(), resolvedMcpApprovalsRef.current));
+    }, 1000);
+    void listen<unknown>(MCP_APPROVAL_EVENT, (event) => {
+      if (disposed) return;
+      setMcpApprovals((current) => mergeMcpApprovals(current, [event.payload], Date.now(), resolvedMcpApprovalsRef.current));
+    }).then(async (nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlisten = nextUnlisten;
+      try {
+        const pending = await invokeBackend<unknown[]>("list_mcp_approvals", {});
+        if (!disposed) setMcpApprovals((current) => mergeMcpApprovals(current, pending, Date.now(), resolvedMcpApprovalsRef.current));
+      } catch {
+        // A later approval event can still populate the queue.
+      }
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      window.clearInterval(pruneTimer);
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
     void listen<TriggerEffect>("portmate-trigger-effect", (event) => {
       if (disposed) return;
       const effect = event.payload;
@@ -916,6 +991,27 @@ export default function App() {
       window.removeEventListener("message", handleBrowserMessage);
     };
   }, []);
+
+  async function respondMcpApproval(approvalId: string, approved: boolean) {
+    await invokeBackend<void>("respond_mcp_approval", { approvalId, approved });
+    rememberResolvedMcpApproval(resolvedMcpApprovalsRef.current, approvalId);
+    setMcpApprovals((current) => mergeMcpApprovals(
+      current.filter((request) => request.id !== approvalId),
+      [],
+      Date.now(),
+      resolvedMcpApprovalsRef.current,
+    ));
+  }
+
+  function expireMcpApproval(approvalId: string) {
+    rememberResolvedMcpApproval(resolvedMcpApprovalsRef.current, approvalId);
+    setMcpApprovals((current) => mergeMcpApprovals(
+      current.filter((request) => request.id !== approvalId),
+      [],
+      Date.now(),
+      resolvedMcpApprovalsRef.current,
+    ));
+  }
 
   async function refresh() {
     const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
@@ -1060,12 +1156,9 @@ export default function App() {
   function handleMenuAction(item: MenuItem | "会话搜索") {
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) {
-      if (focusMode) {
-        setFocusMode(false);
-        setWorkspacePanels((current) => setWorkspacePanelVisibility(current, workspacePanel, true));
-      } else {
-        setWorkspacePanels((current) => toggleWorkspacePanelVisibility(current, workspacePanel));
-      }
+      const visible = focusMode || !workspacePanels[workspacePanel];
+      if (focusMode) setFocusMode(false);
+      setWorkspacePanelVisible(workspacePanel, visible);
       return;
     }
     if (item === "终端设置") {
@@ -2596,6 +2689,35 @@ export default function App() {
 
   function setWorkspacePanelVisible(panel: WorkspacePanelId, visible: boolean) {
     setWorkspacePanels((current) => setWorkspacePanelVisibility(current, panel, visible));
+    if (visible && workspaceDockPanelIds.includes(panel as WorkspaceDockPanelId)) {
+      setWorkspaceDockLayout((current) => activateWorkspaceDockPanel(current, panel as WorkspaceDockPanelId));
+    }
+  }
+
+  function startWorkspacePanelDrag(event: ReactDragEvent<HTMLElement>, panel: WorkspaceDockPanelId) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-portmate-workspace-panel", panel);
+    event.dataTransfer.setData("text/plain", panel);
+    setDraggedWorkspacePanel(panel);
+  }
+
+  function allowWorkspacePanelDrop(event: ReactDragEvent<HTMLElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }
+
+  function dropWorkspacePanel(event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) {
+    event.preventDefault();
+    event.stopPropagation();
+    const transferred = event.dataTransfer.getData("application/x-portmate-workspace-panel")
+      || event.dataTransfer.getData("text/plain")
+      || draggedWorkspacePanel
+      || "";
+    if (!workspaceDockPanelIds.includes(transferred as WorkspaceDockPanelId)) return;
+    const panel = transferred as WorkspaceDockPanelId;
+    setWorkspacePanels((current) => setWorkspacePanelVisibility(current, panel, true));
+    setWorkspaceDockLayout((current) => moveWorkspacePanelToDock(current, panel, dock, index));
+    setDraggedWorkspacePanel(null);
   }
 
   function menuToggleState(item: string): boolean | undefined {
@@ -2665,8 +2787,112 @@ export default function App() {
     }
   }
 
+  function renderWorkspaceDockPanel(panel: WorkspaceDockPanelId) {
+    if (panel === "explorer") {
+      return (
+        <Suspense fallback={null}>
+          <LazySessionExplorerPanel
+            sessions={sessions}
+            activeId={activeId}
+            colors={tabColors}
+            icons={workspaceUtilityIcons}
+            onSelect={activateSession}
+            onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
+          />
+        </Suspense>
+      );
+    }
+    if (panel === "fileManager") {
+      return <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />;
+    }
+    if (panel === "history") {
+      return (
+        <Suspense fallback={null}>
+          <LazyCommandHistoryList
+            history={commandHistory}
+            icons={workspaceUtilityIcons}
+            onPick={setSendText}
+            beforeList={activeSerial && active ? (
+              <SerialMonitorPanel
+                key={active.profile.id}
+                frames={serialCaptures[active.profile.id] ?? []}
+                onOpen={() => void openSerialAnalyzer(active)}
+                onClear={() => void clearSerialCapture(active.profile.id)}
+                onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
+                canExport={isBackendAvailable()}
+              />
+            ) : null}
+          />
+        </Suspense>
+      );
+    }
+    return (
+      <>
+        <div className="send-toolbar">
+          <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
+            <Play size={14} className="green" />
+          </button>
+          <label>
+            <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
+          </label>
+          <label>
+            <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
+          </label>
+          <label>
+            计数:
+            <input className="number-input" value={sendCount} onChange={(event) => setSendCount(Math.max(1, Number(event.target.value) || 1))} />
+          </label>
+          <label>
+            间隔:
+            <input className="number-input" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
+          </label>
+          <label>
+            目标:
+            <select className="target-input" value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
+              <option value="active">当前会话</option>
+              <option value="panes">打开窗格</option>
+              <option value="connected">全部已连接</option>
+            </select>
+          </label>
+          {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
+        </div>
+        <textarea
+          className="send-textarea"
+          aria-label="send text"
+          value={sendText}
+          onChange={(event) => setSendText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.ctrlKey && event.key === "Enter" && active) {
+              event.preventDefault();
+              void runSendPanel();
+            }
+          }}
+        />
+      </>
+    );
+  }
+
   const visibleWorkspacePanels = resolveWorkspacePanelVisibility(workspacePanels, focusMode, syncInput);
+  const visibleDockPanels = Object.fromEntries(workspaceDockIds.map((dock) => [
+    dock,
+    visibleWorkspaceDockPanels(workspaceDockLayout, visibleWorkspacePanels, dock),
+  ])) as Record<WorkspaceDockId, WorkspaceDockPanelId[]>;
+  const activeDockPanels = Object.fromEntries(workspaceDockIds.map((dock) => [
+    dock,
+    activeWorkspaceDockPanel(workspaceDockLayout, visibleWorkspacePanels, dock),
+  ])) as Record<WorkspaceDockId, WorkspaceDockPanelId | null>;
   const visibleQuickBar = quickBarVisible && !focusMode;
+  const workspaceLayoutStyle = {
+    ...(activeDockPanels.left && workspaceDockSizes.left !== null
+      ? { "--workspace-left-size": `min(${workspaceDockSizes.left}px, 38vw)` }
+      : {}),
+    ...(activeDockPanels.right && workspaceDockSizes.right !== null
+      ? { "--workspace-right-size": `min(${workspaceDockSizes.right}px, 38vw)` }
+      : {}),
+    ...(activeDockPanels.bottom && workspaceDockSizes.bottom !== null
+      ? { "--workspace-bottom-size": `min(${workspaceDockSizes.bottom}px, 45vh)` }
+      : {}),
+  } as CSSProperties;
 
   return (
     <main className={["wind-root", visibleQuickBar ? "quick-bar-visible" : "", visibleWorkspacePanels.statusBar ? "" : "status-bar-hidden", focusMode ? "focus-mode" : ""].filter(Boolean).join(" ")} onContextMenu={openAppContextMenu} onClick={() => {
@@ -2734,29 +2960,49 @@ export default function App() {
 
       <section className={[
         "wind-layout",
-        visibleWorkspacePanels.explorer || visibleWorkspacePanels.fileManager ? "" : "left-dock-hidden",
-        visibleWorkspacePanels.history ? "" : "right-dock-hidden",
-        visibleWorkspacePanels.sender ? "" : "sender-hidden",
-      ].filter(Boolean).join(" ")}>
-        {visibleWorkspacePanels.explorer || visibleWorkspacePanels.fileManager ? (
-        <aside className={`left-stack ${visibleWorkspacePanels.explorer && visibleWorkspacePanels.fileManager ? "" : "single-panel"}`}>
-          {visibleWorkspacePanels.explorer ? <DockPanel title="资源管理器" accent="#5eead4" onClose={() => setWorkspacePanelVisible("explorer", false)}>
-            <Suspense fallback={null}>
-              <LazySessionExplorerPanel
-                sessions={sessions}
-                activeId={activeId}
-                colors={tabColors}
-                icons={workspaceUtilityIcons}
-                onSelect={activateSession}
-                onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
-              />
-            </Suspense>
-          </DockPanel> : null}
-          {visibleWorkspacePanels.fileManager ? <DockPanel title="文件管理器" accent="#8b5cf6" onClose={() => setWorkspacePanelVisible("fileManager", false)}>
-            <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
-          </DockPanel> : null}
-        </aside>
-        ) : null}
+        activeDockPanels.left ? "dock-left-visible" : "",
+        activeDockPanels.right ? "dock-right-visible" : "",
+        activeDockPanels.bottom ? "dock-bottom-visible" : "",
+        draggedWorkspacePanel ? "workspace-panel-dragging" : "",
+      ].filter(Boolean).join(" ")} style={workspaceLayoutStyle}>
+        {workspaceDockIds.map((dock) => {
+          const activePanel = activeDockPanels[dock];
+          return activePanel ? (
+            <WorkspaceDock
+              key={dock}
+              dock={dock}
+              panels={visibleDockPanels[dock]}
+              activePanel={activePanel}
+              effectiveSize={workspaceDockEffectiveSize(workspaceDockSizes, dock, activePanel)}
+              onActivate={(panel) => setWorkspaceDockLayout((current) => activateWorkspaceDockPanel(current, panel))}
+              onClose={(panel) => setWorkspacePanelVisible(panel, false)}
+              onResize={(size) => setWorkspaceDockSizes((current) => setWorkspaceDockSize(current, dock, size))}
+              onDragStart={startWorkspacePanelDrag}
+              onDragEnd={() => setDraggedWorkspacePanel(null)}
+              onDragOver={allowWorkspacePanelDrop}
+              onDrop={dropWorkspacePanel}
+            >
+              {renderWorkspaceDockPanel(activePanel)}
+            </WorkspaceDock>
+          ) : null;
+        })}
+
+        {draggedWorkspacePanel ? workspaceDockIds.map((dock) => {
+          const DockIcon = workspaceDockMeta[dock].icon;
+          return (
+            <div
+              key={dock}
+              className={`workspace-dock-drop-target target-${dock}`}
+              data-dock-target={dock}
+              title={`停靠到${workspaceDockMeta[dock].label}`}
+              aria-label={`停靠到${workspaceDockMeta[dock].label}`}
+              onDragOver={allowWorkspacePanelDrop}
+              onDrop={(event) => dropWorkspacePanel(event, dock)}
+            >
+              <DockIcon size={18} />
+            </div>
+          );
+        }) : null}
 
         <section className="center-workspace">
           <TerminalPaneGrid
@@ -2791,79 +3037,6 @@ export default function App() {
             }}
           />
         </section>
-
-        {visibleWorkspacePanels.history ? (
-        <aside className="right-stack single-panel">
-          <DockPanel title="历史命令" accent="#f4b860" onClose={() => setWorkspacePanelVisible("history", false)}>
-            <Suspense fallback={null}>
-              <LazyCommandHistoryList
-                history={commandHistory}
-                icons={workspaceUtilityIcons}
-                onPick={setSendText}
-                beforeList={activeSerial && active ? (
-                  <SerialMonitorPanel
-                    key={active.profile.id}
-                    frames={serialCaptures[active.profile.id] ?? []}
-                    onOpen={() => void openSerialAnalyzer(active)}
-                    onClear={() => void clearSerialCapture(active.profile.id)}
-                    onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
-                    canExport={isBackendAvailable()}
-                  />
-                ) : null}
-              />
-            </Suspense>
-          </DockPanel>
-        </aside>
-        ) : null}
-
-        {visibleWorkspacePanels.sender ? <section className="send-panel">
-          <div className="send-tabs">
-            <strong className="send-panel-title">发送</strong>
-            <span />
-            <button type="button" className="send-panel-tool" title="发送设置" aria-label="发送设置" onClick={() => setDialog("terminal")}><Settings size={14} /></button>
-            <button type="button" className="send-panel-tool" title="隐藏发送面板" aria-label="隐藏发送面板" onClick={() => setWorkspacePanelVisible("sender", false)}><X size={14} /></button>
-          </div>
-          <div className="send-toolbar">
-            <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
-              <Play size={14} className="green" />
-            </button>
-            <label>
-              <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
-            </label>
-            <label>
-              <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
-            </label>
-            <label>
-              计数:
-              <input className="number-input" value={sendCount} onChange={(event) => setSendCount(Math.max(1, Number(event.target.value) || 1))} />
-            </label>
-            <label>
-              间隔:
-              <input className="number-input" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
-            </label>
-            <label>
-              目标:
-              <select className="target-input" value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
-                <option value="active">当前会话</option>
-                <option value="panes">打开窗格</option>
-                <option value="connected">全部已连接</option>
-              </select>
-            </label>
-            {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
-          </div>
-          <textarea
-            className="send-textarea"
-            aria-label="send text"
-            value={sendText}
-            onChange={(event) => setSendText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.ctrlKey && event.key === "Enter" && active) {
-                event.preventDefault();
-                void runSendPanel();
-              }
-            }}
-          />
-        </section> : null}
       </section>
 
       {visibleWorkspacePanels.statusBar ? <footer className="status-bar">
@@ -3044,6 +3217,18 @@ export default function App() {
         />
       )}
       {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
+      {!screenLock && activeMcpApproval && (
+        <Suspense fallback={null}>
+          <LazyMcpApprovalDialog
+            key={activeMcpApproval.id}
+            request={activeMcpApproval}
+            sessionName={approvalSessionName}
+            queueCount={mcpApprovals.length}
+            onDecision={respondMcpApproval}
+            onExpired={expireMcpApproval}
+          />
+        </Suspense>
+      )}
       {screenLock && (
         <ScreenLockOverlay
           state={screenLock}
@@ -3213,18 +3398,151 @@ function ScreenLockOverlay({
   );
 }
 
-function DockPanel({ title, accent, onClose, children }: { title: string; accent: string; onClose: () => void; children: React.ReactNode }) {
+function WorkspaceDock({
+  dock,
+  panels,
+  activePanel,
+  effectiveSize,
+  onActivate,
+  onClose,
+  onResize,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
+  children,
+}: {
+  dock: WorkspaceDockId;
+  panels: WorkspaceDockPanelId[];
+  activePanel: WorkspaceDockPanelId;
+  effectiveSize: number;
+  onActivate: (panel: WorkspaceDockPanelId) => void;
+  onClose: (panel: WorkspaceDockPanelId) => void;
+  onResize: (size: number | null) => void;
+  onDragStart: (event: ReactDragEvent<HTMLElement>, panel: WorkspaceDockPanelId) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
+  onDrop: (event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) => void;
+  children: React.ReactNode;
+}) {
+  const limits = workspaceDockSizeLimits[dock];
+  const resizeLabel = dock === "bottom" ? "调整底部停靠区高度" : `调整${dock === "left" ? "左侧" : "右侧"}停靠区宽度`;
+
+  function updateDockSizeFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
+    const layout = event.currentTarget.closest(".wind-layout")?.getBoundingClientRect();
+    if (!layout) return;
+    const requested = dock === "left"
+      ? event.clientX - layout.left
+      : dock === "right"
+        ? layout.right - event.clientX
+        : layout.bottom - event.clientY;
+    const viewportLimit = dock === "bottom" ? layout.height * 0.45 : layout.width * 0.38;
+    onResize(clampWorkspaceDockSize(dock, Math.min(requested, viewportLimit)));
+  }
+
+  function handleDockSizeKey(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const decrease = dock === "left"
+      ? event.key === "ArrowLeft"
+      : dock === "right"
+        ? event.key === "ArrowRight"
+        : event.key === "ArrowDown";
+    const increase = dock === "left"
+      ? event.key === "ArrowRight"
+      : dock === "right"
+        ? event.key === "ArrowLeft"
+        : event.key === "ArrowUp";
+    let nextSize: number | null = decrease ? effectiveSize - 16 : increase ? effectiveSize + 16 : null;
+    if (event.key === "Home") nextSize = limits.min;
+    if (event.key === "End") nextSize = limits.max;
+    if (nextSize === null) return;
+    event.preventDefault();
+    onResize(nextSize);
+  }
+
   return (
-    <section className="dock-panel">
-      <header>
-        <span className="panel-accent" style={{ background: accent }} />
-        <strong>{title}</strong>
-        <div className="panel-actions">
-          <button type="button" title={`隐藏${title}`} aria-label={`隐藏${title}`} onClick={onClose}><X size={13} /></button>
-        </div>
-      </header>
-      {children}
-    </section>
+    <aside className={`workspace-dock workspace-dock-${dock}`} data-dock={dock} data-active-panel={activePanel}>
+      <div
+        className="workspace-dock-tabs"
+        role="tablist"
+        aria-label={`${workspaceDockMeta[dock].label}停靠区`}
+        onDragOver={onDragOver}
+        onDrop={(event) => onDrop(event, dock, panels.length)}
+      >
+        {panels.map((panel, index) => {
+          const metadata = workspaceDockPanelMeta[panel];
+          const PanelIcon = metadata.icon;
+          const active = panel === activePanel;
+          return (
+            <div
+              key={panel}
+              className={active ? "workspace-dock-tab active" : "workspace-dock-tab"}
+              data-panel={panel}
+              draggable
+              onDragStart={(event) => onDragStart(event, panel)}
+              onDragEnd={onDragEnd}
+              onDragOver={(event) => {
+                event.stopPropagation();
+                onDragOver(event);
+              }}
+              onDrop={(event) => onDrop(event, dock, index)}
+            >
+              <button
+                type="button"
+                className="workspace-dock-tab-label"
+                role="tab"
+                aria-selected={active}
+                title={metadata.label}
+                onClick={() => onActivate(panel)}
+              >
+                <PanelIcon size={13} />
+                <span>{metadata.label}</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-dock-tab-close"
+                title={`隐藏${metadata.label}`}
+                aria-label={`隐藏${metadata.label}`}
+                onClick={() => onClose(panel)}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <section className={`workspace-dock-content panel-${activePanel}`} data-panel={activePanel}>
+        {children}
+      </section>
+      <button
+        type="button"
+        className="workspace-dock-resizer"
+        role="separator"
+        aria-label={resizeLabel}
+        aria-orientation={dock === "bottom" ? "horizontal" : "vertical"}
+        aria-valuemin={limits.min}
+        aria-valuemax={limits.max}
+        aria-valuenow={effectiveSize}
+        title={`${resizeLabel}，双击复位`}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) updateDockSizeFromPointer(event);
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onDoubleClick={() => onResize(null)}
+        onKeyDown={handleDockSizeKey}
+      />
+    </aside>
   );
 }
 

@@ -188,6 +188,7 @@ export default function McpDialog({
             <section className="mcp-editor">
               <McpField label="Client ID:"><input value={draft.clientId} readOnly={editingClientId !== null} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
               <McpField label="名称:"><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+              <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
               <fieldset className="mcp-check-grid">
                 <legend>权限范围</legend>
                 {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
@@ -212,8 +213,10 @@ export default function McpDialog({
               <div className="mcp-http-row"><span>Endpoint</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
               <div className="mcp-http-row"><span>Origin</span><code>{httpConfig?.defaultOrigin ?? "http://127.0.0.1:8787"}</code></div>
               <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
+              <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
+              <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>
               {httpToken ? <div className="mcp-http-token"><span>新 Token</span><code>{httpToken}</code></div> : null}
-              <textarea readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? "PORTMATE_MCP_HTTP=1 cargo run -p portmate-mcp -- --http"} />
+              <textarea readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? "portmate-mcp --http"} />
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
                 <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
@@ -278,7 +281,7 @@ function McpField({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function createMcpGrant(): McpGrant {
-  return { clientId: "portmate-local", name: "Local MCP Client", scopes: ["read-sessions", "read-logs"], allowedSessions: [], expiresAt: null, revokedAt: null };
+  return { clientId: "portmate-local", name: "Local MCP Client", scopes: ["read-sessions", "read-logs"], allowedSessions: [], confirmWrites: true, expiresAt: null, revokedAt: null };
 }
 
 function formatDateTime(value: string) {

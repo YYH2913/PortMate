@@ -242,12 +242,17 @@ try {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(appUrl);
-  await page.waitForFunction(() => {
-    const hosts = [...document.querySelectorAll(".terminal-host")];
-    return hosts.length === 2
-      && hosts.every((host) => /^\d+x\d+$/.test(host.dataset.terminalSize ?? ""))
-      && document.querySelectorAll('[data-terminal-resize-owner="active"]').length === 1;
-  });
+  try {
+    await page.waitForFunction(() => {
+      const hosts = [...document.querySelectorAll(".terminal-host")];
+      return hosts.length === 2
+        && hosts.every((host) => /^\d+x\d+$/.test(host.dataset.terminalSize ?? ""))
+        && document.querySelectorAll('[data-terminal-resize-owner="active"]').length === 1;
+    });
+  } catch (error) {
+    const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
+    throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
+  }
 
   const terminalState = () => page.evaluate(() => [...document.querySelectorAll("[data-pane-id]")].map((pane) => {
     const host = pane.querySelector(".terminal-host");
@@ -400,9 +405,16 @@ try {
   await page.locator(".terminal-context-menu .context-menu-row", { hasText: "清除选择" }).click();
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalHasSelection === "false");
   await clearCalls();
-  await page.locator(".menu-trigger", { hasText: "搜索" }).click();
+  await activeScreen.dispatchEvent("contextmenu", {
+    bubbles: true,
+    button: 2,
+    cancelable: true,
+    clientX: 420,
+    clientY: 180,
+  });
+  await page.locator(".terminal-context-menu").waitFor();
   const fallbackPopupPromise = page.waitForEvent("popup");
-  await page.locator(".menu-popover button", { hasText: "在线搜索" }).click();
+  await page.locator(".terminal-context-menu .context-menu-row", { hasText: "在线搜索" }).click();
   const fallbackPopup = await fallbackPopupPromise;
   await fallbackPopup.waitForLoadState("domcontentloaded");
   const onlineFallbackSearch = {

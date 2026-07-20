@@ -479,8 +479,19 @@ export interface McpGrant {
   name: string;
   scopes: McpScope[];
   allowedSessions: string[];
+  confirmWrites: boolean;
   expiresAt?: string | null;
   revokedAt?: string | null;
+}
+
+export interface McpApprovalRequest {
+  id: string;
+  clientId: string;
+  action: string;
+  sessionId: string;
+  scope: McpScope;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface McpHttpConfig {
@@ -488,6 +499,8 @@ export interface McpHttpConfig {
   tokenRef: string;
   tokenAvailable: boolean;
   defaultOrigin: string;
+  executable: string;
+  storePath: string;
   startCommand: string;
 }
 

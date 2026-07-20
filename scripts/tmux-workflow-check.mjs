@@ -421,7 +421,14 @@ try {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(appUrl);
-  await page.getByRole("button", { name: "工具", exact: true }).click();
+  const toolsMenu = page.getByRole("button", { name: "工具", exact: true });
+  try {
+    await toolsMenu.waitFor({ state: "visible" });
+  } catch (error) {
+    const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
+    throw new Error(`tmux workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
+  }
+  await toolsMenu.click();
   await page.getByRole("button", { name: "Tmux", exact: true }).click();
   await page.getByRole("heading", { name: "窗口与窗格" }).waitFor();
 

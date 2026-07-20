@@ -9,8 +9,35 @@ export const workspacePanelIds = [
   "statusBar",
 ] as const;
 
+export const workspaceDockPanelIds = [
+  "explorer",
+  "fileManager",
+  "history",
+  "sender",
+] as const;
+
+export const workspaceDockIds = ["left", "right", "bottom"] as const;
+
 export type WorkspacePanelId = (typeof workspacePanelIds)[number];
+export type WorkspaceDockPanelId = (typeof workspaceDockPanelIds)[number];
+export type WorkspaceDockId = (typeof workspaceDockIds)[number];
 export type WorkspacePanelVisibility = Record<WorkspacePanelId, boolean>;
+export type WorkspaceDockLayout = Record<WorkspaceDockId, WorkspaceDockPanelId[]> & {
+  active: Record<WorkspaceDockId, WorkspaceDockPanelId | null>;
+};
+export type WorkspaceDockSizes = Record<WorkspaceDockId, number | null>;
+
+export const workspaceDockSizeLimits: Record<WorkspaceDockId, { min: number; max: number; default: number }> = {
+  left: { min: 200, max: 720, default: 256 },
+  right: { min: 200, max: 720, default: 280 },
+  bottom: { min: 120, max: 600, default: 210 },
+};
+
+export const defaultWorkspaceDockSizes: WorkspaceDockSizes = {
+  left: null,
+  right: null,
+  bottom: null,
+};
 
 export const defaultWorkspacePanelVisibility: WorkspacePanelVisibility = {
   explorer: true,
@@ -18,6 +45,17 @@ export const defaultWorkspacePanelVisibility: WorkspacePanelVisibility = {
   history: false,
   sender: false,
   statusBar: true,
+};
+
+export const defaultWorkspaceDockLayout: WorkspaceDockLayout = {
+  left: ["explorer", "fileManager"],
+  right: ["history"],
+  bottom: ["sender"],
+  active: {
+    left: "explorer",
+    right: "history",
+    bottom: "sender",
+  },
 };
 
 const legacyWorkspacePanelVisibility: WorkspacePanelVisibility = {
@@ -29,13 +67,11 @@ const legacyWorkspacePanelVisibility: WorkspacePanelVisibility = {
 };
 
 export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePanelVisibility {
-  const root = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  const root = recordValue(value);
   if (!root) return { ...defaultWorkspacePanelVisibility };
-  const version = root?.version;
-  const source = (version === 1 || version === 2) && root.panels && typeof root.panels === "object" && !Array.isArray(root.panels)
-    ? root.panels as Record<string, unknown>
+  const version = root.version;
+  const source = [1, 2, 3, 4, 5].includes(Number(version))
+    ? recordValue(root.panels)
     : version === undefined ? root : null;
   const fallback = version === 1 || version === undefined
     ? legacyWorkspacePanelVisibility
@@ -49,13 +85,80 @@ export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePane
   return untouchedLegacyDefault ? { ...defaultWorkspacePanelVisibility } : normalized;
 }
 
+export function normalizeWorkspaceDockLayout(value: unknown): WorkspaceDockLayout {
+  const root = recordValue(value);
+  const source = root && [4, 5].includes(Number(root.version)) ? recordValue(root.docks) : null;
+  const seen = new Set<WorkspaceDockPanelId>();
+  const order = Object.fromEntries(workspaceDockIds.map((dock) => {
+    const candidate = Array.isArray(source?.[dock]) ? source[dock] : defaultWorkspaceDockLayout[dock];
+    const panels: WorkspaceDockPanelId[] = [];
+    for (const value of candidate) {
+      if (typeof value !== "string" || !workspaceDockPanelIds.includes(value as WorkspaceDockPanelId)) continue;
+      const panel = value as WorkspaceDockPanelId;
+      if (seen.has(panel)) continue;
+      seen.add(panel);
+      panels.push(panel);
+    }
+    return [dock, panels];
+  })) as Record<WorkspaceDockId, WorkspaceDockPanelId[]>;
+
+  for (const panel of workspaceDockPanelIds) {
+    if (seen.has(panel)) continue;
+    const fallbackDock = workspaceDockForPanel(defaultWorkspaceDockLayout, panel);
+    order[fallbackDock].push(panel);
+    seen.add(panel);
+  }
+
+  const activeSource = recordValue(source?.active);
+  const active = Object.fromEntries(workspaceDockIds.map((dock) => {
+    const candidate = activeSource?.[dock];
+    return [dock, typeof candidate === "string" && order[dock].includes(candidate as WorkspaceDockPanelId)
+      ? candidate as WorkspaceDockPanelId
+      : order[dock][0] ?? null];
+  })) as Record<WorkspaceDockId, WorkspaceDockPanelId | null>;
+  return { ...order, active };
+}
+
+export function normalizeWorkspaceDockSizes(value: unknown): WorkspaceDockSizes {
+  const root = recordValue(value);
+  const source = root?.version === 5 ? recordValue(root.sizes) : null;
+  return Object.fromEntries(workspaceDockIds.map((dock) => [
+    dock,
+    normalizeWorkspaceDockSize(dock, source?.[dock]),
+  ])) as WorkspaceDockSizes;
+}
+
+export function setWorkspaceDockSize(
+  current: WorkspaceDockSizes,
+  dock: WorkspaceDockId,
+  size: number | null,
+): WorkspaceDockSizes {
+  const normalized = normalizeWorkspaceDockSize(dock, size);
+  return current[dock] === normalized ? current : { ...current, [dock]: normalized };
+}
+
+export function clampWorkspaceDockSize(dock: WorkspaceDockId, size: number): number {
+  const limits = workspaceDockSizeLimits[dock];
+  return Math.max(limits.min, Math.min(limits.max, Math.round(size)));
+}
+
+export function workspaceDockEffectiveSize(
+  sizes: WorkspaceDockSizes,
+  dock: WorkspaceDockId,
+  activePanel: WorkspaceDockPanelId | null,
+): number {
+  const configured = sizes[dock];
+  if (configured !== null) return configured;
+  if (dock !== "bottom" && activePanel === "fileManager") return 360;
+  return workspaceDockSizeLimits[dock].default;
+}
+
 export function setWorkspacePanelVisibility(
   current: WorkspacePanelVisibility,
   panel: WorkspacePanelId,
   visible: boolean,
 ): WorkspacePanelVisibility {
-  if (current[panel] === visible) return current;
-  return { ...current, [panel]: visible };
+  return current[panel] === visible ? current : { ...current, [panel]: visible };
 }
 
 export function toggleWorkspacePanelVisibility(
@@ -63,6 +166,61 @@ export function toggleWorkspacePanelVisibility(
   panel: WorkspacePanelId,
 ): WorkspacePanelVisibility {
   return setWorkspacePanelVisibility(current, panel, !current[panel]);
+}
+
+export function activateWorkspaceDockPanel(
+  current: WorkspaceDockLayout,
+  panel: WorkspaceDockPanelId,
+): WorkspaceDockLayout {
+  const dock = workspaceDockForPanel(current, panel);
+  if (current.active[dock] === panel) return current;
+  return { ...current, active: { ...current.active, [dock]: panel } };
+}
+
+export function moveWorkspacePanelToDock(
+  current: WorkspaceDockLayout,
+  panel: WorkspaceDockPanelId,
+  targetDock: WorkspaceDockId,
+  targetIndex = current[targetDock].length,
+): WorkspaceDockLayout {
+  const nextOrder = Object.fromEntries(workspaceDockIds.map((dock) => [
+    dock,
+    current[dock].filter((item) => item !== panel),
+  ])) as Record<WorkspaceDockId, WorkspaceDockPanelId[]>;
+  const insertAt = Math.max(0, Math.min(Math.trunc(targetIndex), nextOrder[targetDock].length));
+  nextOrder[targetDock].splice(insertAt, 0, panel);
+
+  const active = { ...current.active, [targetDock]: panel };
+  for (const dock of workspaceDockIds) {
+    if (dock !== targetDock && active[dock] === panel) active[dock] = nextOrder[dock][0] ?? null;
+    if (active[dock] && !nextOrder[dock].includes(active[dock])) active[dock] = nextOrder[dock][0] ?? null;
+  }
+  return { ...nextOrder, active };
+}
+
+export function workspaceDockForPanel(
+  layout: WorkspaceDockLayout,
+  panel: WorkspaceDockPanelId,
+): WorkspaceDockId {
+  return workspaceDockIds.find((dock) => layout[dock].includes(panel)) ?? "left";
+}
+
+export function visibleWorkspaceDockPanels(
+  layout: WorkspaceDockLayout,
+  visibility: WorkspacePanelVisibility,
+  dock: WorkspaceDockId,
+): WorkspaceDockPanelId[] {
+  return layout[dock].filter((panel) => visibility[panel]);
+}
+
+export function activeWorkspaceDockPanel(
+  layout: WorkspaceDockLayout,
+  visibility: WorkspacePanelVisibility,
+  dock: WorkspaceDockId,
+): WorkspaceDockPanelId | null {
+  const visible = visibleWorkspaceDockPanels(layout, visibility, dock);
+  const active = layout.active[dock];
+  return active && visible.includes(active) ? active : visible[0] ?? null;
 }
 
 export function resolveWorkspacePanelVisibility(
@@ -79,4 +237,16 @@ export function resolveWorkspacePanelVisibility(
 
 export function isWorkspaceFocusModeShortcut(event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "metaKey" | "shiftKey">): boolean {
   return event.code === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function normalizeWorkspaceDockSize(dock: WorkspaceDockId, value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clampWorkspaceDockSize(dock, value)
+    : null;
 }

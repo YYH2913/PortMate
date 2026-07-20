@@ -133,6 +133,7 @@ const mcpGrants = [
     name: "Operations Console",
     scopes: ["read-sessions", "read-logs", "write-input"],
     allowedSessions: ["edge-router"],
+    confirmWrites: true,
     expiresAt: null,
     revokedAt: null,
   },
@@ -141,6 +142,7 @@ const mcpGrants = [
     name: "Audit Reader",
     scopes: ["read-logs"],
     allowedSessions: [],
+    confirmWrites: false,
     expiresAt: null,
     revokedAt: null,
   },
@@ -181,7 +183,9 @@ const mcpHttpConfig = {
   tokenRef: "keychain:mcp-http-token",
   tokenAvailable: true,
   defaultOrigin: "http://127.0.0.1:8787",
-  startCommand: "PORTMATE_MCP_HTTP=1 cargo run -p portmate-mcp -- --http",
+  executable: "/usr/bin/portmate-mcp",
+  storePath: "/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3",
+  startCommand: "PORTMATE_STORE_PATH='/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 /usr/bin/portmate-mcp --http",
 };
 
 const workspace = {
@@ -219,39 +223,49 @@ try {
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
-    localStorage.clear();
-    localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
-    localStorage.setItem("portmate.workspacePanels.v1", JSON.stringify({
-      version: 1,
-      panels: {
-        explorer: true,
-        fileManager: true,
-        sessions: true,
-        history: true,
-        sender: true,
-        statusBar: true,
-      },
-    }));
-    localStorage.setItem("portmate.commandHistory", JSON.stringify({
-      version: 2,
-      entries: [
-        { command: "git status --short", recordedAt: historyTimestamp },
-        { command: "docker compose\nup -d", recordedAt: historyTimestamp - 1 },
-      ],
-    }));
-    localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
-      historyEnabled: true,
-      historyLimit: "100",
-      historyRetentionDays: "30",
-      startupMode: "none",
-      startupSessions: [],
-      lockOnIdle: false,
-      requireMasterPassword: false,
-      oneKeyCompletionEnabled: false,
-    }));
+    if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
+      localStorage.clear();
+      localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
+      localStorage.setItem("portmate.workspacePanels.v1", JSON.stringify({
+        version: 1,
+        panels: {
+          explorer: true,
+          fileManager: true,
+          sessions: true,
+          history: true,
+          sender: true,
+          statusBar: true,
+        },
+      }));
+      localStorage.setItem("portmate.commandHistory", JSON.stringify({
+        version: 2,
+        entries: [
+          { command: "git status --short", recordedAt: historyTimestamp },
+          { command: "docker compose\nup -d", recordedAt: historyTimestamp - 1 },
+        ],
+      }));
+      localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
+        historyEnabled: true,
+        historyLimit: "100",
+        historyRetentionDays: "30",
+        startupMode: "none",
+        startupSessions: [],
+        lockOnIdle: false,
+        requireMasterPassword: false,
+        oneKeyCompletionEnabled: false,
+      }));
+      sessionStorage.setItem("portmate.workspaceUiCheck.initialized", "true");
+    }
     window.__invokeCalls = [];
     window.__clipboardText = "";
     window.__closeSessionError = false;
+    window.__tauriCallbacks = new Map();
+    window.__tauriEventListeners = new Map();
+    window.__tauriCallbackId = 0;
+    window.__emitTauriEvent = (event, payload) => {
+      const listeners = window.__tauriEventListeners.get(event) || [];
+      for (const id of listeners) window.__tauriCallbacks.get(id)?.({ event, id, payload });
+    };
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -259,15 +273,32 @@ try {
         writeText: async (value) => { window.__clipboardText = String(value); },
       },
     });
-    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (event, id) => {
+        const listeners = window.__tauriEventListeners.get(event) || [];
+        window.__tauriEventListeners.set(event, listeners.filter((listenerId) => listenerId !== id));
+        window.__tauriCallbacks.delete(id);
+      },
+    };
     window.__TAURI_INTERNALS__ = {
       invoke: async (command, args = {}) => {
         window.__invokeCalls.push({ command, args });
+        if (command === "plugin:event|listen") {
+          const listeners = window.__tauriEventListeners.get(args.event) || [];
+          window.__tauriEventListeners.set(args.event, [...listeners, args.handler]);
+          return args.handler;
+        }
+        if (command === "plugin:event|unlisten") {
+          window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
+          return null;
+        }
         if (command === "list_sessions") return initialSessions;
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
         if (command === "list_mcp_grants") return initialMcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") return initialMcpHttpConfig;
+        if (command === "list_mcp_approvals") return [];
+        if (command === "respond_mcp_approval") return null;
         if (command === "save_mcp_grant") return initialMcpGrants;
         if (command === "revoke_mcp_grant") return initialMcpGrants.filter((grant) => grant.clientId !== args.clientId);
         if (command === "rotate_mcp_http_token") return { config: initialMcpHttpConfig, token: "portmate-test-token" };
@@ -292,11 +323,15 @@ try {
           "list_serial_ports",
           "list_one_keys",
         ].includes(command)) return [];
-        if (command.startsWith("plugin:event|")) return 1;
+        if (command.startsWith("plugin:event|")) return null;
         return null;
       },
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
-      transformCallback: () => 1,
+      transformCallback: (callback) => {
+        window.__tauriCallbackId += 1;
+        window.__tauriCallbacks.set(window.__tauriCallbackId, callback);
+        return window.__tauriCallbackId;
+      },
       unregisterCallback: () => {},
       convertFileSrc: (path) => path,
     };
@@ -320,16 +355,16 @@ try {
 
   const initial = await page.evaluate(() => {
     const panels = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2"));
-    const left = document.querySelector(".left-stack")?.getBoundingClientRect();
+    const leftDock = document.querySelector('.workspace-dock[data-dock="left"]')?.getBoundingClientRect();
     return {
+      snapshotVersion: panels.version,
       viewportWidth: innerWidth,
       documentWidth: document.documentElement.scrollWidth,
-      leftWidth: left?.width ?? 0,
+      leftDockWidth: leftDock?.width ?? 0,
+      activePanel: document.querySelector('.workspace-dock[data-dock="left"]')?.getAttribute("data-active-panel") ?? "",
+      dockCount: document.querySelectorAll(".workspace-dock").length,
       globalTabs: document.querySelectorAll(".tab-line").length,
-      rightDock: document.querySelectorAll(".right-stack").length,
-      sender: document.querySelectorAll(".send-panel").length,
-      fileManager: [...document.querySelectorAll(".dock-panel strong")]
-        .some((node) => node.textContent === "文件管理器"),
+      fileManager: document.querySelector('.workspace-dock-content[data-panel="fileManager"]') !== null,
       connectionSummaryRows: document.querySelectorAll(".crumb-line").length,
       connectionControls: document.querySelectorAll(".connection-toggle").length,
       paneHeaderActions: [...document.querySelectorAll(".terminal-pane > header > button")]
@@ -339,14 +374,24 @@ try {
       menuLabels: [...document.querySelectorAll(".menu-trigger")].map((button) => button.textContent),
       status: document.querySelector(".status-bar")?.textContent ?? "",
       panels: panels.panels,
+      docks: panels.docks,
+      sizes: panels.sizes,
     };
   });
   assert(initial.documentWidth <= initial.viewportWidth, `initial workspace overflow: ${JSON.stringify(initial)}`);
   assert(initial.globalTabs === 0, "redundant global session tabs are visible");
-  assert(!initial.fileManager && initial.rightDock === 0 && initial.sender === 0,
+  assert(!initial.fileManager && initial.dockCount === 1 && initial.activePanel === "explorer",
     `legacy all-visible default did not migrate: ${JSON.stringify(initial)}`);
-  assert(initial.leftWidth >= 235 && initial.leftWidth <= 245,
-    `resource tree is not using the compact width: ${initial.leftWidth}`);
+  assert(initial.leftDockWidth >= 252 && initial.leftDockWidth <= 260,
+    `resource dock is not using the compact width: ${initial.leftDockWidth}`);
+  assert(initial.docks.active.left === "explorer"
+    && JSON.stringify(initial.docks.left) === JSON.stringify(["explorer", "fileManager"])
+    && JSON.stringify(initial.docks.right) === JSON.stringify(["history"])
+    && JSON.stringify(initial.docks.bottom) === JSON.stringify(["sender"]),
+  `default dock layout is wrong: ${JSON.stringify(initial.docks)}`);
+  assert(initial.snapshotVersion === 5
+    && initial.sizes.left === null && initial.sizes.right === null && initial.sizes.bottom === null,
+  `legacy panel snapshot did not migrate to bounded v5 sizes: ${JSON.stringify(initial)}`);
   assert(initial.connectionSummaryRows === 0 && initial.connectionControls === 1,
     `connection context is still duplicated: ${JSON.stringify(initial)}`);
   assert(JSON.stringify(initial.paneHeaderActions) === JSON.stringify(["断开 Edge Router"]),
@@ -406,7 +451,7 @@ try {
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
 
-  await page.locator(".left-stack .tree-session", { hasText: "Bench UART" }).click();
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   const serialToolState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),
@@ -423,7 +468,7 @@ try {
   `Serial transfer dialog exposes unsupported protocols: ${JSON.stringify(serialTransferOptions)}`);
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
-  await page.locator(".left-stack .tree-session", { hasText: "Edge Router" }).click();
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.evaluate(() => { window.__closeSessionError = true; });
   await page.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
@@ -440,20 +485,20 @@ try {
 
   const explorerFilter = page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true });
   await explorerFilter.fill("production");
-  assert(await page.locator(".left-stack .tree-session").count() === 1,
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session").count() === 1,
     "resource tag filter did not remove unrelated sessions");
-  assert(await page.locator(".left-stack .tree-session", { hasText: "Edge Router" }).count() === 1,
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource tag filter missed Edge Router");
   await explorerFilter.fill("10.0.0.1");
-  assert(await page.locator(".left-stack .tree-session", { hasText: "Edge Router" }).count() === 1,
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource endpoint filter missed Edge Router");
   await page.getByRole("button", { name: "清除筛选资源管理器会话", exact: true }).click();
-  assert(await page.locator(".left-stack .tree-session").count() === sessions.length,
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session").count() === sessions.length,
     "clearing the resource filter did not restore all sessions");
-  assert(await page.locator(".left-stack .tree-folder svg").count() === 3,
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-folder svg").count() === 3,
     "resource group headings contain non-semantic controls");
 
-  const edge = page.locator(".left-stack .tree-session", { hasText: "Edge Router" });
+  const edge = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" });
   await edge.click({ button: "right" });
   const firstMenuText = await page.locator(".portmate-context-menu").textContent();
   assert(!firstMenuText.includes("复制SSH通道")
@@ -481,29 +526,115 @@ try {
     await page.locator(".menu-popover button", { hasText: label }).click();
   }
 
+  await togglePanel("文件管理器");
+  const leftDock = page.locator('.workspace-dock[data-dock="left"]');
+  await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').waitFor();
+  const fileDockLayout = await leftDock.evaluate((dock) => ({
+    width: dock.getBoundingClientRect().width,
+    active: dock.getAttribute("data-active-panel"),
+    tabs: [...dock.querySelectorAll(".workspace-dock-tab")].map((tab) => tab.getAttribute("data-panel")),
+    panes: [...dock.querySelectorAll(".file-browser-pane")].map((pane) => {
+      const rect = pane.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+    }),
+  }));
+  assert(fileDockLayout.width >= 350 && fileDockLayout.width <= 366
+    && fileDockLayout.active === "fileManager"
+    && JSON.stringify(fileDockLayout.tabs) === JSON.stringify(["explorer", "fileManager"])
+    && fileDockLayout.panes.length === 2
+    && fileDockLayout.panes[1].top >= fileDockLayout.panes[0].bottom - 1,
+  `file manager did not become a stacked tab in the left dock: ${JSON.stringify(fileDockLayout)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
+
   await togglePanel("历史命令");
-  await togglePanel("发送");
-  assert(await page.locator(".right-stack .tree-session").count() === 0,
-    "a second session browser is still rendered in the right dock");
-  const uart = page.locator(".left-stack .tree-session", { hasText: "Bench UART" });
-  await uart.click();
-  await page.waitForFunction(() => document.querySelector(".left-stack .tree-session.active")?.textContent?.includes("Bench UART"));
-  assert(await page.locator(".pane-serial-tools").count() === 1,
-    "serial line controls were lost while consolidating the workspace toolbar");
+  assert(await page.locator('.workspace-dock[data-dock="right"][data-active-panel="history"]').count() === 1
+    && await page.locator(".workspace-dock").count() === 2
+    && await leftDock.getAttribute("data-active-panel") === "fileManager",
+  "history did not open independently in the right dock");
 
   const historyFilter = page.getByRole("textbox", { name: "筛选历史命令", exact: true });
   await historyFilter.fill("COMPOSE UP");
   assert(await page.locator(".history-list button").count() === 1,
     "history filter did not normalize case and multiline whitespace");
   await page.locator(".history-list button").click();
+
+  await togglePanel("发送");
+  const bottomDock = page.locator('.workspace-dock[data-dock="bottom"][data-active-panel="sender"]');
+  await bottomDock.waitFor();
+  const multiDockLayout = await page.evaluate(() => {
+    const center = document.querySelector(".center-workspace")?.getBoundingClientRect();
+    return {
+      docks: [...document.querySelectorAll(".workspace-dock")].map((dock) => ({
+        dock: dock.getAttribute("data-dock"),
+        panel: dock.getAttribute("data-active-panel"),
+      })),
+      center: center ? { width: center.width, height: center.height } : null,
+    };
+  });
+  assert(JSON.stringify(multiDockLayout.docks) === JSON.stringify([
+    { dock: "left", panel: "fileManager" },
+    { dock: "right", panel: "history" },
+    { dock: "bottom", panel: "sender" },
+  ]) && multiDockLayout.center?.width > 700 && multiDockLayout.center?.height > 550,
+  `left, right and bottom docks are not simultaneously usable: ${JSON.stringify(multiDockLayout)}`);
+
+  const leftResizer = page.getByRole("separator", { name: "调整左侧停靠区宽度", exact: true });
+  const rightResizer = page.getByRole("separator", { name: "调整右侧停靠区宽度", exact: true });
+  const bottomResizer = page.getByRole("separator", { name: "调整底部停靠区高度", exact: true });
+  assert(await page.getByRole("separator", { name: /调整.*停靠区/ }).count() === 3,
+    "visible docks do not expose one resize separator each");
+  const layoutBox = await page.locator(".wind-layout").boundingBox();
+  const leftResizerBox = await leftResizer.boundingBox();
+  assert(layoutBox && leftResizerBox, "left dock resize geometry is unavailable");
+  await page.mouse.move(leftResizerBox.x + leftResizerBox.width / 2, leftResizerBox.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(layoutBox.x + 420, leftResizerBox.y + 80, { steps: 4 });
+  await page.mouse.up();
+  await rightResizer.focus();
+  await rightResizer.press("ArrowLeft");
+  await bottomResizer.focus();
+  await bottomResizer.press("ArrowUp");
+  await page.waitForFunction(() => {
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
+    return snapshot?.version === 5
+      && snapshot.sizes?.left === 420
+      && snapshot.sizes?.right === 296
+      && snapshot.sizes?.bottom === 226;
+  });
+  const resizedDockLayout = await page.evaluate(() => {
+    const rect = (dock) => document.querySelector(`.workspace-dock[data-dock="${dock}"]`)?.getBoundingClientRect();
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2"));
+    return {
+      left: rect("left")?.width ?? 0,
+      right: rect("right")?.width ?? 0,
+      bottom: rect("bottom")?.height ?? 0,
+      sizes: snapshot.sizes,
+    };
+  });
+  assert(resizedDockLayout.left >= 419 && resizedDockLayout.left <= 421
+    && resizedDockLayout.right >= 295 && resizedDockLayout.right <= 297
+    && resizedDockLayout.bottom >= 225 && resizedDockLayout.bottom <= 227,
+  `dock resize did not update all three grid tracks: ${JSON.stringify(resizedDockLayout)}`);
   assert(await page.locator(".send-textarea").inputValue() === "docker compose\nup -d",
     "history selection changed the stored command before insertion");
 
-  const sender = page.locator(".send-panel");
+  const sender = bottomDock;
   assert(!(await sender.textContent()).includes("Shell"), "unused Shell sender tab is visible");
   assert(await sender.locator(".send-toolbar > button").count() === 1
     && await sender.locator(".send-toolbar > svg").count() === 0,
   "sender toolbar contains decorative controls");
+  await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
+
+  await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
+  await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').waitFor();
+  assert(await leftDock.getAttribute("data-active-panel") === "explorer"
+    && await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').count() === 0,
+  "left-dock tabs did not switch their active panel");
+  const uart = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
+  await uart.click();
+  await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART"));
+  assert(await page.locator(".pane-serial-tools").count() === 1,
+    "serial line controls were lost while consolidating the workspace toolbar");
 
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   await page.locator(".search-dialog").waitFor();
@@ -724,6 +855,8 @@ try {
   "MCP grant page renders inactive task content");
   assert(await mcpDialog.locator(".mcp-grants > button").count() === mcpGrants.length + 1,
     "MCP grants did not load into the compact grant workspace");
+  assert(await mcpDialog.getByRole("checkbox", { name: "写操作每次确认", exact: true }).isChecked(),
+    "MCP write confirmation setting did not load for the selected grant");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
@@ -731,8 +864,13 @@ try {
   assert(await mcpDialog.locator(".mcp-content").count() === 0
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP HTTP page renders inactive task content");
-  assert((await mcpDialog.locator(".mcp-http-panel").textContent()).includes(mcpHttpConfig.endpoint),
-    "MCP HTTP configuration did not load");
+  const mcpHttpText = await mcpDialog.locator(".mcp-http-panel").textContent();
+  assert(mcpHttpText.includes(mcpHttpConfig.endpoint)
+    && mcpHttpText.includes(mcpHttpConfig.executable)
+    && mcpHttpText.includes(mcpHttpConfig.storePath)
+    && await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue() === mcpHttpConfig.startCommand
+    && !mcpHttpText.includes("cargo run"),
+  "MCP HTTP packaged executable/store configuration did not load");
 
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   const auditView = mcpDialog.locator(".mcp-audit-view");
@@ -774,25 +912,142 @@ try {
   await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
   await mcpDialog.waitFor({ state: "detached" });
 
+  await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-mcp-approval") || []).length > 0);
+  const approvalIds = await page.evaluate(() => {
+    const now = Date.now();
+    const approval = (id, clientId, action, sessionId, scope, offset = 0) => ({
+      id,
+      clientId,
+      action,
+      sessionId,
+      scope,
+      createdAt: new Date(now + offset).toISOString(),
+      expiresAt: new Date(now + offset + 60_000).toISOString(),
+    });
+    const first = approval("11111111-1111-4111-8111-111111111111", "ops-console", "run_command", "edge-router", "write-input");
+    const second = approval("22222222-2222-4222-8222-222222222222", "session-manager", "close_session", "bench-uart", "manage-sessions", 1);
+    window.__emitTauriEvent("portmate-mcp-approval", { ...first, scope: "tunnel" });
+    window.__emitTauriEvent("portmate-mcp-approval", first);
+    window.__emitTauriEvent("portmate-mcp-approval", first);
+    window.__emitTauriEvent("portmate-mcp-approval", second);
+    return [first.id, second.id];
+  });
+  const approvalDialog = page.getByRole("alertdialog", { name: "MCP 写操作审批", exact: true });
+  await approvalDialog.waitFor();
+  await page.waitForTimeout(180);
+  assert((await approvalDialog.textContent()).includes("待处理 2 项")
+    && (await approvalDialog.textContent()).includes("Operations Console") === false
+    && (await approvalDialog.textContent()).includes("ops-console"),
+  "MCP approval queue did not deduplicate or expose the exact client ID");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
+  const desktopApprovalBounds = await approvalDialog.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  });
+  assert(desktopApprovalBounds.left >= 0 && desktopApprovalBounds.right <= 1440
+    && desktopApprovalBounds.top >= 0 && desktopApprovalBounds.bottom <= 900,
+  `desktop MCP approval exceeds the viewport: ${JSON.stringify(desktopApprovalBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-approval.png`, fullPage: true });
+  await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("断开会话"));
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
+  await page.keyboard.press("Escape");
+  await approvalDialog.waitFor({ state: "detached" });
+  const approvalCalls = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "respond_mcp_approval")
+    .map((call) => call.args));
+  assert(JSON.stringify(approvalCalls) === JSON.stringify([
+    { approvalId: approvalIds[0], approved: true },
+    { approvalId: approvalIds[1], approved: false },
+  ]), `MCP approval responses are wrong: ${JSON.stringify(approvalCalls)}`);
+
+  const senderTab = page.locator('.workspace-dock[data-dock="bottom"] .workspace-dock-tab[data-panel="sender"]');
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await senderTab.dispatchEvent("dragstart", { dataTransfer });
+  const rightDropTarget = page.locator('[data-dock-target="right"]');
+  await rightDropTarget.waitFor();
+  await rightDropTarget.dispatchEvent("dragover", { dataTransfer });
+  await rightDropTarget.dispatchEvent("drop", { dataTransfer });
+  await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="right"]')?.getAttribute("data-active-panel") === "sender");
+  await page.waitForFunction(() => {
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
+    return snapshot?.version === 5
+      && JSON.stringify(snapshot.docks?.right) === JSON.stringify(["history", "sender"])
+      && snapshot.docks?.bottom?.length === 0;
+  });
+  await dataTransfer.dispose();
+  const movedDockLayout = await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2"));
+    return {
+      dockCount: document.querySelectorAll(".workspace-dock").length,
+      rightTabs: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-tab')]
+        .map((tab) => tab.getAttribute("data-panel")),
+      bottomDock: document.querySelector('.workspace-dock[data-dock="bottom"]') !== null,
+      docks: snapshot.docks,
+    };
+  });
+  assert(movedDockLayout.dockCount === 2
+    && JSON.stringify(movedDockLayout.rightTabs) === JSON.stringify(["history", "sender"])
+    && !movedDockLayout.bottomDock
+    && movedDockLayout.docks.active.right === "sender",
+  `cross-dock drag did not merge the sender into right-side tabs: ${JSON.stringify(movedDockLayout)}`);
+
+  await page.reload();
+  await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
+  await page.locator('.workspace-dock[data-dock="right"][data-active-panel="sender"]').waitFor();
+  const restoredLayout = await page.evaluate(() => ({
+    rightTabs: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-tab')]
+      .map((tab) => tab.getAttribute("data-panel")),
+    bottomDock: document.querySelector('.workspace-dock[data-dock="bottom"]') !== null,
+    leftWidth: document.querySelector('.workspace-dock[data-dock="left"]')?.getBoundingClientRect().width ?? 0,
+    rightWidth: document.querySelector('.workspace-dock[data-dock="right"]')?.getBoundingClientRect().width ?? 0,
+    sizes: JSON.parse(localStorage.getItem("portmate.workspacePanels.v2")).sizes,
+  }));
+  assert(JSON.stringify(restoredLayout.rightTabs) === JSON.stringify(["history", "sender"])
+    && !restoredLayout.bottomDock
+    && restoredLayout.leftWidth >= 419 && restoredLayout.leftWidth <= 421
+    && restoredLayout.rightWidth >= 295 && restoredLayout.rightWidth <= 297
+    && JSON.stringify(restoredLayout.sizes) === JSON.stringify({ left: 420, right: 296, bottom: 226 }),
+  `dragged dock layout did not survive reload: ${JSON.stringify(restoredLayout)}`);
+
+  await page.getByRole("separator", { name: "调整左侧停靠区宽度", exact: true }).dblclick();
+  await page.waitForFunction(() => JSON.parse(
+    localStorage.getItem("portmate.workspacePanels.v2") || "null",
+  )?.sizes?.left === null);
+  const resetDockLayout = await page.evaluate(() => {
+    const layout = document.querySelector(".wind-layout");
+    const dock = document.querySelector('.workspace-dock[data-dock="left"]');
+    return {
+      active: dock?.getAttribute("data-active-panel"),
+      inlineSize: layout?.style.getPropertyValue("--workspace-left-size"),
+      width: dock?.getBoundingClientRect().width ?? 0,
+    };
+  });
+  assert(resetDockLayout.active === "explorer"
+    && resetDockLayout.inlineSize === ""
+    && resetDockLayout.width >= 255 && resetDockLayout.width <= 257,
+  `double-click did not restore the default left dock size: ${JSON.stringify(resetDockLayout)}`);
+
+  await togglePanel("资源管理器");
+  await togglePanel("文件管理器");
   await togglePanel("历史命令");
   await togglePanel("发送");
+  await page.waitForFunction(() => document.querySelectorAll(".workspace-dock").length === 0);
   const desktop = await page.evaluate(() => ({
     viewportWidth: innerWidth,
     documentWidth: document.documentElement.scrollWidth,
     viewportHeight: innerHeight,
     documentHeight: document.documentElement.scrollHeight,
     terminalWidth: document.querySelector(".center-workspace")?.getBoundingClientRect().width ?? 0,
-    rightDock: document.querySelectorAll(".right-stack").length,
-    sender: document.querySelectorAll(".send-panel").length,
+    docks: document.querySelectorAll(".workspace-dock").length,
   }));
   assert(desktop.documentWidth <= desktop.viewportWidth && desktop.documentHeight <= desktop.viewportHeight,
     `desktop workspace overflow: ${JSON.stringify(desktop)}`);
-  assert(desktop.terminalWidth > 1100 && desktop.rightDock === 0 && desktop.sender === 0,
+  assert(desktop.terminalWidth > 1400 && desktop.docks === 0,
     `desktop did not return optional space to the terminal: ${JSON.stringify(desktop)}`);
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
 
   await togglePanel("历史命令");
-  await togglePanel("发送");
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await page.evaluate(() => {
     const center = document.querySelector(".center-workspace")?.getBoundingClientRect();
@@ -801,22 +1056,57 @@ try {
       documentWidth: document.documentElement.scrollWidth,
       viewportHeight: innerHeight,
       documentHeight: document.documentElement.scrollHeight,
-      leftDisplay: getComputedStyle(document.querySelector(".left-stack")).display,
-      rightDisplay: getComputedStyle(document.querySelector(".right-stack")).display,
-      senderDisplay: getComputedStyle(document.querySelector(".send-panel")).display,
+      dockDisplay: getComputedStyle(document.querySelector(".workspace-dock")).display,
       sysmonSummaryDisplay: getComputedStyle(document.querySelector(".sysmon-applet-summary")).display,
       center: center ? { left: center.left, right: center.right, top: center.top, bottom: center.bottom } : null,
     };
   });
   assert(mobile.documentWidth <= mobile.viewportWidth && mobile.documentHeight <= mobile.viewportHeight,
     `mobile workspace overflow: ${JSON.stringify(mobile)}`);
-  assert(mobile.leftDisplay === "none" && mobile.rightDisplay === "none" && mobile.senderDisplay === "none",
+  assert(mobile.dockDisplay === "none",
     `optional panels crowd the mobile terminal: ${JSON.stringify(mobile)}`);
   assert(mobile.sysmonSummaryDisplay === "none",
     `mobile Sysmon summary still consumes status-bar width: ${JSON.stringify(mobile)}`);
   assert(mobile.center?.left === 0 && mobile.center?.right === mobile.viewportWidth,
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
+
+  await page.evaluate(() => {
+    const now = Date.now();
+    window.__emitTauriEvent("portmate-mcp-approval", {
+      id: "33333333-3333-4333-8333-333333333333",
+      clientId: "mobile-ops",
+      action: "create_tunnel",
+      sessionId: "edge-router",
+      scope: "tunnel",
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+    });
+  });
+  const mobileApproval = page.getByRole("alertdialog", { name: "MCP 写操作审批", exact: true });
+  await mobileApproval.waitFor();
+  await page.waitForTimeout(180);
+  const mobileApprovalBounds = await mobileApproval.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: dialog.scrollWidth,
+      width: rect.width,
+    };
+  });
+  assert(mobileApprovalBounds.left >= 0 && mobileApprovalBounds.right <= mobile.viewportWidth
+    && mobileApprovalBounds.top >= 0 && mobileApprovalBounds.bottom <= mobile.viewportHeight
+    && mobileApprovalBounds.scrollWidth <= mobileApprovalBounds.width,
+  `mobile MCP approval exceeds the viewport: ${JSON.stringify(mobileApprovalBounds)}`);
+  assert(await mobileApproval.getByRole("button", { name: "拒绝", exact: true }).isVisible()
+    && await mobileApproval.getByRole("button", { name: "本次允许", exact: true }).isVisible(),
+  "mobile MCP approval actions are unreachable");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-approval-mobile.png`, fullPage: true });
+  await mobileApproval.getByRole("button", { name: "拒绝", exact: true }).click();
+  await mobileApproval.waitFor({ state: "detached" });
 
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   const mobileSearch = page.locator(".search-dialog");
@@ -901,7 +1191,15 @@ try {
     mcp: {
       tabs: mcpTabs,
       exportedRecordIds: exportCall.args.request.recordIds,
+      approvalResponses: approvalCalls,
+      approvalDesktop: desktopApprovalBounds,
+      approvalMobile: mobileApprovalBounds,
       mobile: mobileMcpBounds,
+    },
+    dockResize: {
+      resized: resizedDockLayout,
+      restored: restoredLayout,
+      reset: resetDockLayout,
     },
     terminalWrites,
     desktop,
@@ -911,11 +1209,15 @@ try {
       `${screenshotPrefix}-search-mobile.png`,
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-transfer.png`,
+      `${screenshotPrefix}-file-manager.png`,
+      `${screenshotPrefix}-sender.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-audit.png`,
       `${screenshotPrefix}-mcp-audit-mobile.png`,
+      `${screenshotPrefix}-mcp-approval.png`,
+      `${screenshotPrefix}-mcp-approval-mobile.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],
