@@ -95,15 +95,14 @@ impl SystemEventSinkRuntime {
             .unwrap_or_default()
     }
 
-    fn discard_session(&self, session_id: &str) -> Result<(), String> {
+    fn discard_session(&self, session_id: &str) {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "system event sink state poisoned".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .outbox
             .retain(|(event, _)| event.session_id != session_id);
-        Ok(())
     }
 }
 
@@ -144,6 +143,10 @@ impl SessionStore {
 
     pub fn drain_system_event_outbox(&mut self) -> Vec<(SessionEvent, Option<SessionProfile>)> {
         self.system_event_sink.drain()
+    }
+
+    pub fn discard_system_events_for_session(&mut self, session_id: &str) {
+        self.system_event_sink.discard_session(session_id);
     }
 
     pub fn profile(&self, session_id: &str) -> Option<SessionProfile> {
@@ -303,6 +306,18 @@ impl SessionStore {
     }
 
     pub fn delete_profile(&mut self, session_id: &str) -> Result<SessionProfile, String> {
+        let profile = self.delete_profile_deferred_system_event_cleanup(session_id)?;
+        self.discard_system_events_for_session(session_id);
+        Ok(profile)
+    }
+
+    /// Deletes persisted profile state without touching the runtime system-event outbox.
+    /// Clone-then-persist callers must discard that session's queued events only after
+    /// the new snapshot commits, because cloned stores share the same outbox.
+    pub fn delete_profile_deferred_system_event_cleanup(
+        &mut self,
+        session_id: &str,
+    ) -> Result<SessionProfile, String> {
         let profile_index = self
             .profiles
             .iter()
@@ -327,7 +342,6 @@ impl SessionStore {
             return Err("session has an active transfer and cannot be deleted".to_string());
         }
 
-        self.system_event_sink.discard_session(session_id)?;
         let now = Utc::now();
         let profile = self.profiles.remove(profile_index);
         self.runtimes
@@ -521,6 +535,9 @@ impl SessionStore {
     }
 
     fn push_system_event(&mut self, session_id: &str, text: String) {
+        let Some(profile) = self.profile(session_id) else {
+            return;
+        };
         let mut event = SessionEvent {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
@@ -532,8 +549,7 @@ impl SessionStore {
             text: Some(text),
             annotations: BTreeMap::new(),
         };
-        let profile = self.profile(session_id);
-        if let Err(error) = self.system_event_sink.enqueue(event.clone(), profile) {
+        if let Err(error) = self.system_event_sink.enqueue(event.clone(), Some(profile)) {
             event.annotations.insert("loggingError".to_string(), error);
         }
         self.events.push(event);
@@ -1499,6 +1515,46 @@ mod tests {
             .unwrap();
         assert!(global.allowed_sessions.is_empty());
         assert!(global.revoked_at.is_none());
+    }
+
+    #[test]
+    fn deferred_profile_delete_keeps_shared_outbox_until_commit() {
+        let mut store = test_store();
+        store.runtimes[0].status = SessionStatus::Disconnected;
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+        store.record_system_event("test-session", "queued before transaction");
+
+        let mut next_store = store.clone();
+        next_store
+            .delete_profile_deferred_system_event_cleanup("test-session")
+            .unwrap();
+
+        let queued_after_rollback = store.drain_system_event_outbox();
+        assert_eq!(queued_after_rollback.len(), 1);
+        assert_eq!(
+            queued_after_rollback[0].0.text.as_deref(),
+            Some("queued before transaction")
+        );
+
+        store.record_system_event("test-session", "queued before commit");
+        next_store.discard_system_events_for_session("test-session");
+        assert!(store.drain_system_event_outbox().is_empty());
+    }
+
+    #[test]
+    fn system_events_cannot_recreate_deleted_profile_history() {
+        let mut store = test_store();
+        store.runtimes[0].status = SessionStatus::Disconnected;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+        store.delete_profile("test-session").unwrap();
+
+        store.record_system_event("test-session", "late worker diagnostic");
+
+        assert!(store.events.is_empty());
+        assert!(store.drain_system_event_outbox().is_empty());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

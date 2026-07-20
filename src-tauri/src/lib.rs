@@ -3557,7 +3557,7 @@ async fn delete_session_profile_inner(
         .collect::<Vec<_>>();
 
     let mut next_store = store.clone();
-    let deleted = next_store.delete_profile(&session_id)?;
+    let deleted = next_store.delete_profile_deferred_system_event_cleanup(&session_id)?;
     next_store.record_audit(AuditRecord {
         id: Uuid::new_v4().to_string(),
         ts: Utc::now(),
@@ -3572,6 +3572,7 @@ async fn delete_session_profile_inner(
     });
     save_store(&state.store_path, &next_store)?;
     *store = next_store;
+    store.discard_system_events_for_session(&session_id);
 
     for secret_ref in orphan_secret_candidates {
         if secret_ref_usage_count(&store, &secret_ref) == 0 {
