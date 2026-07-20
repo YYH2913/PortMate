@@ -906,6 +906,23 @@ try {
     const dialog = page.locator(".session-settings-dialog");
     await dialog.waitFor();
     await dialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("终端");
+    const terminalBounds = await dialog.locator(".dialog-field").evaluateAll((fields) => Object.fromEntries(fields.flatMap((field) => {
+      const label = field.querySelector(":scope > span")?.textContent?.trim() ?? "";
+      const input = field.querySelector("input");
+      return input ? [[label, {
+        min: input.getAttribute("min"),
+        max: input.getAttribute("max"),
+        maxLength: input.getAttribute("maxlength"),
+      }]] : [];
+    })));
+    assert(JSON.stringify(terminalBounds) === JSON.stringify({
+      "终端:(T)": { min: null, max: null, maxLength: "64" },
+      "行:(R)": { min: "1", max: "512", maxLength: null },
+      "列:(C)": { min: "1", max: "1024", maxLength: null },
+      "滚屏:(S)": { min: "0", max: "10000000", maxLength: null },
+      "字体:(F)": { min: null, max: null, maxLength: "256" },
+      "字号:(Z)": { min: "6", max: "72", maxLength: null },
+    }), `terminal input bounds are missing or inconsistent: ${JSON.stringify(terminalBounds)}`);
     const themeSelect = dialog.locator(".dialog-field", { hasText: "主题:" }).locator("select");
     const options = await themeSelect.locator("option").evaluateAll((items) => items.map((item) => item.value));
     assert(JSON.stringify(options) === JSON.stringify([

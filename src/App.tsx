@@ -76,7 +76,7 @@ import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
-import { normalizeTerminalStartupSessionIds, terminalStartupSessionOptions } from "./terminal-settings-state";
+import { MAX_TERMINAL_FONT_FAMILY_CHARACTERS, MAX_TERMINAL_NAME_BYTES, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds, TERMINAL_PROFILE_BOUNDS, terminalStartupSessionOptions } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
@@ -7919,22 +7919,22 @@ function SessionSettingsContent({
     return (
       <>
         <DialogField label="终端:(T)">
-          <input value={draft.terminal.term} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
+          <input value={draft.terminal.term} maxLength={MAX_TERMINAL_NAME_BYTES} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
         </DialogField>
         <DialogField label="行:(R)">
-          <input type="number" value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.rows.min} max={TERMINAL_PROFILE_BOUNDS.rows.max} step={1} value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
         </DialogField>
         <DialogField label="列:(C)">
-          <input type="number" value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
         </DialogField>
         <DialogField label="滚屏:(S)">
-          <input type="number" value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
         </DialogField>
         <DialogField label="字体:(F)">
-          <input value={draft.terminal.fontFamily} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontFamily: event.target.value } })} />
+          <input value={draft.terminal.fontFamily} maxLength={MAX_TERMINAL_FONT_FAMILY_CHARACTERS} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontFamily: event.target.value } })} />
         </DialogField>
         <DialogField label="字号:(Z)">
-          <input type="number" value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.fontSize.min} max={TERMINAL_PROFILE_BOUNDS.fontSize.max} step={1} value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
         </DialogField>
         <DialogField label="主题:(M)">
           <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
@@ -9052,8 +9052,7 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
     group: profile.group.trim(),
     tags: profile.tags.map((tag) => tag.trim()).filter(Boolean),
     terminal: {
-      ...profile.terminal,
-      term: profile.terminal.term.trim() || "xterm-256color",
+      ...normalizeTerminalProfileSettings(profile.terminal),
       theme: normalizeTerminalTheme(profile.terminal.theme),
     },
     logging: {

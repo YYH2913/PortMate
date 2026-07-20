@@ -30,6 +30,9 @@ describe("terminal themes", () => {
   it("updates an existing terminal without replacing its instance", () => {
     const target = { options: {} };
     const themeId = applyTerminalPresentation(target, {
+      term: "xterm-256color",
+      rows: 32,
+      cols: 120,
       fontFamily: "Roboto Mono, monospace",
       fontSize: 15,
       scrollback: 50_000,

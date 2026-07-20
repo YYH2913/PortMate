@@ -43,6 +43,7 @@ import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./te
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
+import { normalizeTerminalProfileSettings } from "./terminal-settings-state";
 import { terminalStateCache } from "./terminal-state-cache";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
@@ -508,20 +509,21 @@ export default function TerminalCanvas({
 
     const host = hostRef.current;
     const cachedState = terminalStateCache.get(active.profile.id);
+    const terminalSettings = normalizeTerminalProfileSettings(active.profile.terminal);
     seenEventsRef.current = new Set(cachedState?.seenEventIds ?? []);
     lastSizeRef.current = "";
     lastCopiedSelectionRef.current = "";
     const term = new XTerm({
       allowProposedApi: true,
-      cols: cachedState?.cols ?? active.profile.terminal.cols,
-      rows: cachedState?.rows ?? active.profile.terminal.rows,
+      cols: cachedState?.cols ?? terminalSettings.cols,
+      rows: cachedState?.rows ?? terminalSettings.rows,
       cursorBlink: true,
       convertEol: false,
       drawBoldTextInBrightColors: true,
-      fontFamily: active.profile.terminal.fontFamily,
-      fontSize: active.profile.terminal.fontSize,
+      fontFamily: terminalSettings.fontFamily,
+      fontSize: terminalSettings.fontSize,
       minimumContrastRatio: 1,
-      scrollback: active.profile.terminal.scrollback,
+      scrollback: terminalSettings.scrollback,
       theme: terminalTheme(active.profile.terminal.theme),
     });
     const fit = new FitAddon();

@@ -179,6 +179,17 @@ const MAX_BUNDLE_ATTACHMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TERMINAL_TEXT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TERMINAL_THEME: &str = "portmate-dark";
+const DEFAULT_TERMINAL_NAME: &str = "xterm-256color";
+const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Roboto Mono, JetBrains Mono, monospace";
+const MIN_TERMINAL_ROWS: u16 = 1;
+const MAX_TERMINAL_ROWS: u16 = 512;
+const MIN_TERMINAL_COLS: u16 = 1;
+const MAX_TERMINAL_COLS: u16 = 1024;
+const MAX_TERMINAL_SCROLLBACK: u32 = 10_000_000;
+const MIN_TERMINAL_FONT_SIZE: u8 = 6;
+const MAX_TERMINAL_FONT_SIZE: u8 = 72;
+const MAX_TERMINAL_NAME_BYTES: usize = 64;
+const MAX_TERMINAL_FONT_FAMILY_CHARACTERS: usize = 256;
 const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
     DEFAULT_TERMINAL_THEME,
     "graphite",
@@ -25302,10 +25313,31 @@ async fn apply_ssh_terminal_color_env(channel: &Channel<client::Msg>) {
 
 fn normalized_terminal_name(term: &str) -> &str {
     let term = term.trim();
-    if term.is_empty() {
-        "xterm-256color"
-    } else {
+    if term.len() <= MAX_TERMINAL_NAME_BYTES
+        && term
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && term
+            .bytes()
+            .skip(1)
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+    {
         term
+    } else {
+        DEFAULT_TERMINAL_NAME
+    }
+}
+
+fn normalized_terminal_font_family(font_family: &str) -> String {
+    let font_family = font_family.trim();
+    if !font_family.is_empty()
+        && font_family.chars().count() <= MAX_TERMINAL_FONT_FAMILY_CHARACTERS
+        && !font_family.chars().any(char::is_control)
+    {
+        font_family.to_string()
+    } else {
+        DEFAULT_TERMINAL_FONT_FAMILY.to_string()
     }
 }
 
@@ -25400,6 +25432,20 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         .collect();
     profile.kind = session_kind_for_connection(&profile.connection);
     profile.terminal.term = normalized_terminal_name(&profile.terminal.term).to_string();
+    profile.terminal.rows = profile
+        .terminal
+        .rows
+        .clamp(MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS);
+    profile.terminal.cols = profile
+        .terminal
+        .cols
+        .clamp(MIN_TERMINAL_COLS, MAX_TERMINAL_COLS);
+    profile.terminal.scrollback = profile.terminal.scrollback.min(MAX_TERMINAL_SCROLLBACK);
+    profile.terminal.font_family = normalized_terminal_font_family(&profile.terminal.font_family);
+    profile.terminal.font_size = profile
+        .terminal
+        .font_size
+        .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
     profile.terminal.theme = normalized_terminal_theme(&profile.terminal.theme).to_string();
     profile.logging.retention_days = profile.logging.retention_days.min(MAX_LOG_RETENTION_DAYS);
 
@@ -29412,13 +29458,23 @@ mod tests {
     }
 
     #[test]
-    fn session_profile_normalization_accepts_only_supported_terminal_themes() {
+    fn session_profile_normalization_bounds_terminal_settings() {
         let mut profile = test_shell_profile();
+        profile.terminal.term = "xterm\nmalformed".to_string();
+        profile.terminal.rows = 0;
+        profile.terminal.cols = u16::MAX;
+        profile.terminal.scrollback = u32::MAX;
+        profile.terminal.font_family = "bad\0font".to_string();
+        profile.terminal.font_size = 0;
         profile.terminal.theme = " graphite ".to_string();
-        assert_eq!(
-            normalize_session_profile(profile.clone()).terminal.theme,
-            "graphite"
-        );
+        let normalized = normalize_session_profile(profile.clone()).terminal;
+        assert_eq!(normalized.term, DEFAULT_TERMINAL_NAME);
+        assert_eq!(normalized.rows, MIN_TERMINAL_ROWS);
+        assert_eq!(normalized.cols, MAX_TERMINAL_COLS);
+        assert_eq!(normalized.scrollback, MAX_TERMINAL_SCROLLBACK);
+        assert_eq!(normalized.font_family, DEFAULT_TERMINAL_FONT_FAMILY);
+        assert_eq!(normalized.font_size, MIN_TERMINAL_FONT_SIZE);
+        assert_eq!(normalized.theme, "graphite");
 
         profile.terminal.theme = "future-or-corrupt-theme".to_string();
         assert_eq!(

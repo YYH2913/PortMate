@@ -1,4 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
+import { normalizeTerminalProfileSettings } from "./terminal-settings-state";
+import type { SessionProfile } from "./types";
 
 export const DEFAULT_TERMINAL_THEME = "portmate-dark";
 
@@ -10,13 +12,6 @@ export const TERMINAL_THEME_OPTIONS = [
 ] as const;
 
 export type TerminalThemeId = typeof TERMINAL_THEME_OPTIONS[number]["value"];
-
-type TerminalPresentation = {
-  fontFamily: string;
-  fontSize: number;
-  scrollback: number;
-  theme: string;
-};
 
 type TerminalPresentationTarget = {
   options: {
@@ -145,12 +140,13 @@ export function terminalTheme(value: unknown): ITheme {
 
 export function applyTerminalPresentation(
   target: TerminalPresentationTarget,
-  presentation: TerminalPresentation,
+  presentation: SessionProfile["terminal"],
 ): TerminalThemeId {
-  const themeId = normalizeTerminalTheme(presentation.theme);
-  target.options.fontFamily = presentation.fontFamily;
-  target.options.fontSize = presentation.fontSize;
-  target.options.scrollback = presentation.scrollback;
+  const normalized = normalizeTerminalProfileSettings(presentation);
+  const themeId = normalizeTerminalTheme(normalized.theme);
+  target.options.fontFamily = normalized.fontFamily;
+  target.options.fontSize = normalized.fontSize;
+  target.options.scrollback = normalized.scrollback;
   target.options.theme = terminalThemes[themeId];
   return themeId;
 }
