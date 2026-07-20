@@ -411,9 +411,9 @@ try {
     && JSON.stringify(initial.docks.right) === JSON.stringify(["history"])
     && JSON.stringify(initial.docks.bottom) === JSON.stringify(["sender"]),
   `default dock layout is wrong: ${JSON.stringify(initial.docks)}`);
-  assert(initial.snapshotVersion === 5
+  assert(initial.snapshotVersion === 6
     && initial.sizes.left === null && initial.sizes.right === null && initial.sizes.bottom === null,
-  `legacy panel snapshot did not migrate to bounded v5 sizes: ${JSON.stringify(initial)}`);
+  `legacy panel snapshot did not migrate to bounded v6 sizes: ${JSON.stringify(initial)}`);
   assert(initial.connectionSummaryRows === 0 && initial.connectionControls === 1,
     `connection context is still duplicated: ${JSON.stringify(initial)}`);
   assert(JSON.stringify(initial.paneHeaderActions) === JSON.stringify(["断开 Edge Router"]),
@@ -555,6 +555,7 @@ try {
     width: dock.getBoundingClientRect().width,
     active: dock.getAttribute("data-active-panel"),
     tabs: [...dock.querySelectorAll(".workspace-dock-tab")].map((tab) => tab.getAttribute("data-panel")),
+    panels: [...dock.querySelectorAll(".workspace-dock-content")].map((panel) => panel.getAttribute("data-panel")),
     panes: [...dock.querySelectorAll(".file-browser-pane")].map((pane) => {
       const rect = pane.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
@@ -563,10 +564,34 @@ try {
   assert(fileDockLayout.width >= 350 && fileDockLayout.width <= 366
     && fileDockLayout.active === "fileManager"
     && JSON.stringify(fileDockLayout.tabs) === JSON.stringify(["explorer", "fileManager"])
+    && JSON.stringify(fileDockLayout.panels) === JSON.stringify(["explorer", "fileManager"])
     && fileDockLayout.panes.length === 2
     && fileDockLayout.panes[1].top >= fileDockLayout.panes[0].bottom - 1,
-  `file manager did not become a stacked tab in the left dock: ${JSON.stringify(fileDockLayout)}`);
+  `file manager and explorer are not simultaneously visible in the left dock: ${JSON.stringify(fileDockLayout)}`);
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
+
+  const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');
+  const explorerTitle = leftDock.locator('.workspace-dock-tab[data-panel="explorer"]');
+  const explorerTitleBox = await explorerTitle.boundingBox();
+  assert(explorerTitleBox, "explorer title geometry is unavailable for same-dock reorder");
+  const reorderTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await fileTitle.dispatchEvent("dragstart", { dataTransfer: reorderTransfer });
+  await explorerTitle.dispatchEvent("dragover", {
+    dataTransfer: reorderTransfer,
+    clientY: explorerTitleBox.y + 2,
+  });
+  await explorerTitle.dispatchEvent("drop", {
+    dataTransfer: reorderTransfer,
+    clientY: explorerTitleBox.y + 2,
+  });
+  await page.waitForFunction(() => {
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
+    return JSON.stringify(snapshot?.docks?.left) === JSON.stringify(["fileManager", "explorer"]);
+  });
+  assert(JSON.stringify(await leftDock.locator(".workspace-panel-window").evaluateAll(
+    (panels) => panels.map((panel) => panel.getAttribute("data-panel")),
+  )) === JSON.stringify(["fileManager", "explorer"]), "same-dock title drag did not reorder visible windows");
+  await reorderTransfer.dispose();
 
   await togglePanel("历史命令");
   assert(await page.locator('.workspace-dock[data-dock="right"][data-active-panel="history"]').count() === 1
@@ -618,7 +643,7 @@ try {
   await bottomResizer.press("ArrowUp");
   await page.waitForFunction(() => {
     const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
-    return snapshot?.version === 5
+    return snapshot?.version === 6
       && snapshot.sizes?.left === 420
       && snapshot.sizes?.right === 296
       && snapshot.sizes?.bottom === 226;
@@ -650,8 +675,9 @@ try {
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
   await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').waitFor();
   assert(await leftDock.getAttribute("data-active-panel") === "explorer"
-    && await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').count() === 0,
-  "left-dock tabs did not switch their active panel");
+    && await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').count() === 1
+    && await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').count() === 1,
+  "focusing one dock window hid another visible dock window");
   const uart = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
   await uart.click();
   await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART"));
@@ -993,7 +1019,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="right"]')?.getAttribute("data-active-panel") === "sender");
   await page.waitForFunction(() => {
     const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
-    return snapshot?.version === 5
+    return snapshot?.version === 6
       && JSON.stringify(snapshot.docks?.right) === JSON.stringify(["history", "sender"])
       && snapshot.docks?.bottom?.length === 0;
   });
@@ -1004,15 +1030,18 @@ try {
       dockCount: document.querySelectorAll(".workspace-dock").length,
       rightTabs: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-tab')]
         .map((tab) => tab.getAttribute("data-panel")),
+      rightPanels: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-content')]
+        .map((panel) => panel.getAttribute("data-panel")),
       bottomDock: document.querySelector('.workspace-dock[data-dock="bottom"]') !== null,
       docks: snapshot.docks,
     };
   });
   assert(movedDockLayout.dockCount === 2
     && JSON.stringify(movedDockLayout.rightTabs) === JSON.stringify(["history", "sender"])
+    && JSON.stringify(movedDockLayout.rightPanels) === JSON.stringify(["history", "sender"])
     && !movedDockLayout.bottomDock
     && movedDockLayout.docks.active.right === "sender",
-  `cross-dock drag did not merge the sender into right-side tabs: ${JSON.stringify(movedDockLayout)}`);
+  `cross-dock drag did not keep both right-side windows visible: ${JSON.stringify(movedDockLayout)}`);
 
   await page.reload();
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
@@ -1047,7 +1076,7 @@ try {
   });
   assert(resetDockLayout.active === "explorer"
     && resetDockLayout.inlineSize === ""
-    && resetDockLayout.width >= 255 && resetDockLayout.width <= 257,
+    && resetDockLayout.width >= 359 && resetDockLayout.width <= 361,
   `double-click did not restore the default left dock size: ${JSON.stringify(resetDockLayout)}`);
 
   await togglePanel("资源管理器");

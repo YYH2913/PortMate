@@ -70,7 +70,7 @@ export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePane
   const root = recordValue(value);
   if (!root) return { ...defaultWorkspacePanelVisibility };
   const version = root.version;
-  const source = [1, 2, 3, 4, 5].includes(Number(version))
+  const source = [1, 2, 3, 4, 5, 6].includes(Number(version))
     ? recordValue(root.panels)
     : version === undefined ? root : null;
   const fallback = version === 1 || version === undefined
@@ -87,7 +87,7 @@ export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePane
 
 export function normalizeWorkspaceDockLayout(value: unknown): WorkspaceDockLayout {
   const root = recordValue(value);
-  const source = root && [4, 5].includes(Number(root.version)) ? recordValue(root.docks) : null;
+  const source = root && [4, 5, 6].includes(Number(root.version)) ? recordValue(root.docks) : null;
   const seen = new Set<WorkspaceDockPanelId>();
   const order = Object.fromEntries(workspaceDockIds.map((dock) => {
     const candidate = Array.isArray(source?.[dock]) ? source[dock] : defaultWorkspaceDockLayout[dock];
@@ -121,7 +121,7 @@ export function normalizeWorkspaceDockLayout(value: unknown): WorkspaceDockLayou
 
 export function normalizeWorkspaceDockSizes(value: unknown): WorkspaceDockSizes {
   const root = recordValue(value);
-  const source = root?.version === 5 ? recordValue(root.sizes) : null;
+  const source = root && [5, 6].includes(Number(root.version)) ? recordValue(root.sizes) : null;
   return Object.fromEntries(workspaceDockIds.map((dock) => [
     dock,
     normalizeWorkspaceDockSize(dock, source?.[dock]),
@@ -145,11 +145,11 @@ export function clampWorkspaceDockSize(dock: WorkspaceDockId, size: number): num
 export function workspaceDockEffectiveSize(
   sizes: WorkspaceDockSizes,
   dock: WorkspaceDockId,
-  activePanel: WorkspaceDockPanelId | null,
+  visiblePanels: readonly WorkspaceDockPanelId[],
 ): number {
   const configured = sizes[dock];
   if (configured !== null) return configured;
-  if (dock !== "bottom" && activePanel === "fileManager") return 360;
+  if (dock !== "bottom" && visiblePanels.includes("fileManager")) return 360;
   return workspaceDockSizeLimits[dock].default;
 }
 
@@ -183,11 +183,16 @@ export function moveWorkspacePanelToDock(
   targetDock: WorkspaceDockId,
   targetIndex = current[targetDock].length,
 ): WorkspaceDockLayout {
+  const sourceDock = workspaceDockForPanel(current, panel);
+  const sourceIndex = current[sourceDock].indexOf(panel);
   const nextOrder = Object.fromEntries(workspaceDockIds.map((dock) => [
     dock,
     current[dock].filter((item) => item !== panel),
   ])) as Record<WorkspaceDockId, WorkspaceDockPanelId[]>;
-  const insertAt = Math.max(0, Math.min(Math.trunc(targetIndex), nextOrder[targetDock].length));
+  const requestedIndex = sourceDock === targetDock && sourceIndex >= 0 && sourceIndex < targetIndex
+    ? targetIndex - 1
+    : targetIndex;
+  const insertAt = Math.max(0, Math.min(Math.trunc(requestedIndex), nextOrder[targetDock].length));
   nextOrder[targetDock].splice(insertAt, 0, panel);
 
   const active = { ...current.active, [targetDock]: panel };

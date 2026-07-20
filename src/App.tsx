@@ -829,7 +829,7 @@ export default function App() {
 
   useEffect(() => {
     saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, {
-      version: 5,
+      version: 6,
       panels: workspacePanels,
       docks: workspaceDockLayout,
       sizes: workspaceDockSizes,
@@ -3042,7 +3042,7 @@ export default function App() {
               dock={dock}
               panels={visibleDockPanels[dock]}
               activePanel={activePanel}
-              effectiveSize={workspaceDockEffectiveSize(workspaceDockSizes, dock, activePanel)}
+              effectiveSize={workspaceDockEffectiveSize(workspaceDockSizes, dock, visibleDockPanels[dock])}
               onActivate={(panel) => setWorkspaceDockLayout((current) => activateWorkspaceDockPanel(current, panel))}
               onClose={(panel) => setWorkspacePanelVisible(panel, false)}
               onResize={(size) => setWorkspaceDockSizes((current) => setWorkspaceDockSize(current, dock, size))}
@@ -3050,9 +3050,8 @@ export default function App() {
               onDragEnd={() => setDraggedWorkspacePanel(null)}
               onDragOver={allowWorkspacePanelDrop}
               onDrop={dropWorkspacePanel}
-            >
-              {renderWorkspaceDockPanel(activePanel)}
-            </WorkspaceDock>
+              renderPanel={renderWorkspaceDockPanel}
+            />
           ) : null;
         })}
 
@@ -3479,7 +3478,7 @@ function WorkspaceDock({
   onDragEnd,
   onDragOver,
   onDrop,
-  children,
+  renderPanel,
 }: {
   dock: WorkspaceDockId;
   panels: WorkspaceDockPanelId[];
@@ -3492,7 +3491,7 @@ function WorkspaceDock({
   onDragEnd: () => void;
   onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
   onDrop: (event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) => void;
-  children: React.ReactNode;
+  renderPanel: (panel: WorkspaceDockPanelId) => React.ReactNode;
 }) {
   const limits = workspaceDockSizeLimits[dock];
   const resizeLabel = dock === "bottom" ? "调整底部停靠区高度" : `调整${dock === "left" ? "左侧" : "右侧"}停靠区宽度`;
@@ -3531,57 +3530,88 @@ function WorkspaceDock({
   return (
     <aside className={`workspace-dock workspace-dock-${dock}`} data-dock={dock} data-active-panel={activePanel}>
       <div
-        className="workspace-dock-tabs"
-        role="tablist"
+        className="workspace-dock-windows"
         aria-label={`${workspaceDockMeta[dock].label}停靠区`}
-        onDragOver={onDragOver}
-        onDrop={(event) => onDrop(event, dock, panels.length)}
+        data-panel-count={panels.length}
+        onDragOver={(event) => {
+          if (event.target === event.currentTarget) onDragOver(event);
+        }}
+        onDrop={(event) => {
+          if (event.target === event.currentTarget) onDrop(event, dock, panels.length);
+        }}
       >
         {panels.map((panel, index) => {
           const metadata = workspaceDockPanelMeta[panel];
           const PanelIcon = metadata.icon;
           const active = panel === activePanel;
           return (
-            <div
+            <section
               key={panel}
-              className={active ? "workspace-dock-tab active" : "workspace-dock-tab"}
+              className={active ? "workspace-panel-window active" : "workspace-panel-window"}
               data-panel={panel}
-              draggable
-              onDragStart={(event) => onDragStart(event, panel)}
-              onDragEnd={onDragEnd}
-              onDragOver={(event) => {
-                event.stopPropagation();
-                onDragOver(event);
-              }}
-              onDrop={(event) => onDrop(event, dock, index)}
+              onPointerDownCapture={() => onActivate(panel)}
             >
-              <button
-                type="button"
-                className="workspace-dock-tab-label"
-                role="tab"
-                aria-selected={active}
-                title={metadata.label}
-                onClick={() => onActivate(panel)}
+              <header
+                className="workspace-dock-tab"
+                draggable
+                data-panel={panel}
+                onDragStart={(event) => onDragStart(event, panel)}
+                onDragEnd={(event) => {
+                  delete event.currentTarget.dataset.panelDropPosition;
+                  onDragEnd();
+                }}
+                onDragOver={(event) => {
+                  event.stopPropagation();
+                  onDragOver(event);
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  const after = dock === "bottom"
+                    ? event.clientX >= bounds.left + bounds.width / 2
+                    : event.clientY >= bounds.top + bounds.height / 2;
+                  event.currentTarget.dataset.panelDropPosition = after ? "after" : "before";
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    delete event.currentTarget.dataset.panelDropPosition;
+                  }
+                }}
+                onDrop={(event) => {
+                  const after = event.currentTarget.dataset.panelDropPosition === "after";
+                  delete event.currentTarget.dataset.panelDropPosition;
+                  onDrop(event, dock, index + (after ? 1 : 0));
+                }}
               >
-                <PanelIcon size={13} />
-                <span>{metadata.label}</span>
-              </button>
-              <button
-                type="button"
-                className="workspace-dock-tab-close"
-                title={`隐藏${metadata.label}`}
-                aria-label={`隐藏${metadata.label}`}
-                onClick={() => onClose(panel)}
+                <button
+                  type="button"
+                  className="workspace-dock-tab-label"
+                  aria-pressed={active}
+                  title={`聚焦${metadata.label}`}
+                  onClick={() => onActivate(panel)}
+                >
+                  <PanelIcon size={13} />
+                  <span>{metadata.label}</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-dock-tab-close"
+                  title={`隐藏${metadata.label}`}
+                  aria-label={`隐藏${metadata.label}`}
+                  onClick={() => onClose(panel)}
+                >
+                  <X size={12} />
+                </button>
+              </header>
+              <section
+                className={`workspace-dock-content panel-${panel}`}
+                data-panel={panel}
+                role="region"
+                aria-label={metadata.label}
               >
-                <X size={12} />
-              </button>
-            </div>
+                {renderPanel(panel)}
+              </section>
+            </section>
           );
         })}
       </div>
-      <section className={`workspace-dock-content panel-${activePanel}`} data-panel={activePanel}>
-        {children}
-      </section>
       <button
         type="button"
         className="workspace-dock-resizer"

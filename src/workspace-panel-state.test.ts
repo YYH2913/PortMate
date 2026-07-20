@@ -22,7 +22,7 @@ import {
 describe("workspace panel state", () => {
   it("uses compact defaults for missing or invalid state", () => {
     expect(normalizeWorkspacePanelVisibility(null)).toEqual(defaultWorkspacePanelVisibility);
-    expect(normalizeWorkspacePanelVisibility({ version: 6, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
+    expect(normalizeWorkspacePanelVisibility({ version: 7, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
     expect(normalizeWorkspaceDockLayout(null)).toEqual(defaultWorkspaceDockLayout);
     expect(normalizeWorkspaceDockSizes(null)).toEqual(defaultWorkspaceDockSizes);
     expect(defaultWorkspacePanelVisibility).toEqual({
@@ -59,7 +59,7 @@ describe("workspace panel state", () => {
     expect(setWorkspacePanelVisibility(shown, "history", true)).toBe(shown);
   });
 
-  it("repairs dock order, duplicates, missing panels and invalid active tabs", () => {
+  it("repairs dock order, duplicates, missing panels and invalid focused views", () => {
     expect(normalizeWorkspaceDockLayout({
       version: 4,
       docks: {
@@ -76,7 +76,7 @@ describe("workspace panel state", () => {
     });
   });
 
-  it("migrates v4 dock layouts and bounds v5 dock sizes", () => {
+  it("migrates v4/v5 dock layouts and bounds v6 dock sizes", () => {
     expect(normalizeWorkspaceDockSizes({
       version: 4,
       sizes: { left: 400, right: 400, bottom: 400 },
@@ -89,6 +89,10 @@ describe("workspace panel state", () => {
       version: 5,
       sizes: { left: "320", right: Number.NaN, bottom: null },
     })).toEqual(defaultWorkspaceDockSizes);
+    expect(normalizeWorkspaceDockSizes({
+      version: 6,
+      sizes: { left: 360, right: 280, bottom: 210 },
+    })).toEqual({ left: 360, right: 280, bottom: 210 });
   });
 
   it("updates dock sizes immutably and restores content-aware defaults", () => {
@@ -97,9 +101,9 @@ describe("workspace panel state", () => {
     expect(resized.left).toBe(412);
     expect(setWorkspaceDockSize(resized, "left", 412)).toBe(resized);
     expect(setWorkspaceDockSize(resized, "left", null).left).toBeNull();
-    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "left", "explorer")).toBe(256);
-    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "left", "fileManager")).toBe(360);
-    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "bottom", "fileManager")).toBe(210);
+    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "left", ["explorer"])).toBe(256);
+    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "left", ["explorer", "fileManager"])).toBe(360);
+    expect(workspaceDockEffectiveSize(defaultWorkspaceDockSizes, "bottom", ["fileManager"])).toBe(210);
   });
 
   it("opens panels independently and derives visible tabs per dock", () => {
@@ -121,6 +125,11 @@ describe("workspace panel state", () => {
     expect(activateWorkspaceDockPanel(moved, "history").active.right).toBe("history");
     expect(moveWorkspacePanelToDock(defaultWorkspaceDockLayout, "fileManager", "left", 0).left)
       .toEqual(["fileManager", "explorer"]);
+    expect(moveWorkspacePanelToDock(defaultWorkspaceDockLayout, "explorer", "left", 2).left)
+      .toEqual(["fileManager", "explorer"]);
+    const reverse = moveWorkspacePanelToDock(defaultWorkspaceDockLayout, "fileManager", "left", 0);
+    expect(moveWorkspacePanelToDock(reverse, "fileManager", "left", 2).left)
+      .toEqual(["explorer", "fileManager"]);
   });
 
   it("falls back to another visible tab when the configured tab is hidden", () => {
