@@ -9,7 +9,7 @@
 本次审查覆盖当前仓库内的桌面端、共享核心库、MCP bridge 和项目说明：
 
 - 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`、`src/sync-input-state.ts`。
-- Tauri 后端：`src-tauri/src/lib.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
+- Tauri 后端：`src-tauri/src/lib.rs`、`src-tauri/src/telnet_protocol.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
 - 共享核心：`crates/portmate-core/src/models.rs`、`store.rs`、`host_keys.rs`、`mcp.rs`、`triggers.rs`、`redaction.rs`。
 - MCP stdio bridge：`crates/portmate-mcp/src/main.rs`。
 - 项目目标和使用说明：`PLAN.md`、`README.md`、`package.json`、workspace `Cargo.toml`。
@@ -337,7 +337,7 @@ npm run build
 
 ### P3：架构整理与发布准备
 
-1. Tmux control-mode 增量解析、事件分类、命令构造/转义和 session/window/pane 行解析已从 `src-tauri/src/lib.rs` 提取到独立 `tmux_protocol.rs`，运行时 orchestration 保持原位并通过全 workspace 回归；继续按 transport、transfer、mcp、storage、security、terminal 边界拆分其余后端。
+1. Tmux control-mode 增量解析、事件分类、命令构造/转义和 session/window/pane 行解析已提取到独立 `tmux_protocol.rs`；Telnet 的 NVT/IAC 出站编码、分片协商状态机、BINARY/NAWS/TTYPE 状态与消息构造已完整提取到 `telnet_protocol.rs`。TCP/Telnet 生命周期、日志、代理和重连 orchestration 保持在 `lib.rs`，并通过 11 项 Telnet 专项、Clippy 和全 workspace 回归；继续按 transport、transfer、mcp、storage、security、terminal 边界拆分其余后端。
 2. SQLite 大型追加表已改为增量写入并有 INSERT/DELETE 触发器回归；继续拆分存储模块并评估 kv/JSON 兼容快照的异步化。
 3. Stronghold portable vault 已覆盖 OS keyring 不可用/禁用场景、主密码轮换、SSH/Tmux 凭据批量迁移和保守的跨重启恢复；继续把 journal/recovery 与 provider 适配从 `src-tauri/src/lib.rs` 拆为独立 security/storage 模块。
 4. Linux DEB/RPM/AppImage 打包、标准图标、MCP sidecar、产物协议检查和权限说明已完成；继续增加真实 Windows/macOS runner 的 MSI/NSIS/app/DMG 验证与签名。
