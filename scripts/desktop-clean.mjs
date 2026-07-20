@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
+import { isProjectViteCommand, parseWindowsListeningPids } from "./desktop-clean-process.mjs";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
 if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) {
@@ -73,6 +74,13 @@ function listeningPids(port) {
     const result = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" });
     return parsePids(result.stdout ?? "");
   }
+  if (process.platform === "win32") {
+    const result = spawnSync("netstat", ["-ano", "-p", "tcp"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return parseWindowsListeningPids(result.stdout ?? "", port);
+  }
   return [];
 }
 
@@ -81,6 +89,10 @@ function parsePids(value) {
 }
 
 function isProjectVite(pid) {
+  if (process.platform === "win32") {
+    const command = windowsProcessCommand(pid);
+    return isProjectViteCommand(command, projectRoot, process.platform);
+  }
   if (process.platform === "darwin") {
     const cwdResult = spawnSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" });
     const cwd = cwdResult.stdout?.split("\n").find((line) => line.startsWith("n"))?.slice(1);
@@ -98,6 +110,18 @@ function isProjectVite(pid) {
   } catch {
     return false;
   }
+}
+
+function windowsProcessCommand(pid) {
+  const command = `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`;
+  for (const shell of ["powershell.exe", "pwsh.exe"]) {
+    const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", command], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status === 0 && result.stdout?.trim()) return result.stdout.trim();
+  }
+  return "";
 }
 
 function portAvailable(host, port) {

@@ -50,9 +50,11 @@ command backend inside the desktop app.
    npm run desktop:clean
    ```
 
-   This launcher sanitizes snap-injected GTK/WebKit paths and releases a stale Vite listener only
-   when its process belongs to this PortMate checkout. A different process on port `1420` is
-   reported by PID and left untouched. Use `npm run desktop` when neither cleanup is needed.
+   This launcher sanitizes snap-injected GTK/WebKit paths while preserving the Windows build and
+   signing environment. On Linux, macOS, and Windows it releases a stale Vite listener only when
+   OS process metadata proves that its command belongs to this PortMate checkout. A different
+   process on port `1420` is reported by PID and left untouched. Use `npm run desktop` when neither
+   cleanup is needed.
 
 2. The app starts empty. No sample sessions, logs, transfers, host keys, or MCP audit rows are injected.
 
