@@ -25571,6 +25571,57 @@ fn normalize_loaded_one_keys(store: &mut SessionStore) {
     }
 }
 
+fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
+    let grants = std::mem::take(&mut store.grants);
+    let mut normalized = Vec::<McpGrant>::new();
+    let mut indices = HashMap::<String, usize>::new();
+    let mut needs_review = false;
+
+    for grant in grants {
+        let Ok(grant) = normalize_mcp_grant(grant) else {
+            needs_review = true;
+            continue;
+        };
+        if let Some(index) = indices.get(&grant.client_id).copied() {
+            if normalized[index] != grant {
+                needs_review = true;
+            }
+            continue;
+        }
+        if normalized.len() >= MAX_MCP_GRANTS {
+            needs_review = true;
+            continue;
+        }
+        indices.insert(grant.client_id.clone(), normalized.len());
+        normalized.push(grant);
+    }
+
+    if needs_review {
+        if normalized.len() >= MAX_MCP_GRANTS {
+            normalized.truncate(MAX_MCP_GRANTS - 1);
+        }
+        let mut suffix = 1_usize;
+        let client_id = loop {
+            let candidate = format!("portmate:invalid-loaded-grant:{suffix}");
+            if !normalized.iter().any(|grant| grant.client_id == candidate) {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        normalized.push(McpGrant {
+            client_id,
+            name: "Invalid loaded grant - review required".to_string(),
+            scopes: Vec::new(),
+            allowed_sessions: Vec::new(),
+            confirm_writes: true,
+            expires_at: None,
+            revoked_at: Some(Utc::now()),
+        });
+    }
+
+    store.grants = normalized;
+}
+
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
     let saved_runtimes = std::mem::take(&mut store.runtimes)
@@ -25583,6 +25634,7 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     for profile in profiles {
         let _ = store.upsert_profile(normalize_session_profile(profile));
     }
+    normalize_loaded_mcp_grants(&mut store);
     normalize_loaded_one_keys(&mut store);
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
@@ -29379,6 +29431,83 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn normalize_loaded_store_quarantines_conflicting_mcp_grants_before_mirroring() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let valid = McpGrant {
+            client_id: " reader ".to_string(),
+            name: " Reader ".to_string(),
+            scopes: vec![McpScope::ReadLogs],
+            allowed_sessions: vec![format!(" {session_id} ")],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        };
+        store.grants.push(valid.clone());
+        store.grants.push(valid);
+        store.grants.push(McpGrant {
+            client_id: "reader".to_string(),
+            name: "Conflicting reader".to_string(),
+            scopes: vec![McpScope::ReadSessions],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        store.grants.push(McpGrant {
+            client_id: "bad\nclient".to_string(),
+            name: "Invalid".to_string(),
+            scopes: vec![McpScope::ReadSessions],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let normalized = normalize_loaded_store(store);
+        assert_eq!(normalized.grants.len(), 2);
+        let reader = normalized
+            .grants
+            .iter()
+            .find(|grant| grant.client_id == "reader")
+            .unwrap();
+        assert_eq!(reader.name, "Reader");
+        assert_eq!(reader.scopes, [McpScope::ReadLogs]);
+        assert_eq!(
+            reader.allowed_sessions.as_slice(),
+            std::slice::from_ref(&session_id)
+        );
+        let quarantine = normalized
+            .grants
+            .iter()
+            .find(|grant| {
+                grant
+                    .client_id
+                    .starts_with("portmate:invalid-loaded-grant:")
+            })
+            .unwrap();
+        assert!(quarantine.scopes.is_empty());
+        assert!(quarantine.revoked_at.is_some());
+        assert!(normalized.mcp_can_read("reader", McpScope::ReadLogs, Some(&session_id)));
+        assert!(!normalized.mcp_can_read("reader", McpScope::ReadSessions, None));
+        assert!(!normalized.mcp_can_read("unknown", McpScope::ReadSessions, None));
+
+        let root = std::env::temp_dir().join(format!("portmate-grant-load-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &normalized).unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        let mirrored: usize = connection
+            .query_row("select count(*) from mcp_grants", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mirrored, 2);
+        drop(connection);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
