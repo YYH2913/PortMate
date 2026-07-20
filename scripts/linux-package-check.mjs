@@ -1,6 +1,17 @@
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +21,14 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
+const tauriConfig = readJson(join(projectRoot, "src-tauri", "tauri.conf.json"));
+const defaultCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "default.json"));
+const detachedCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "detached-pane.json"));
+const productionCsp = verifyTauriSecurityConfiguration(
+  tauriConfig,
+  defaultCapability,
+  detachedCapability,
+);
 const architecture = process.arch === "x64" ? "amd64" : process.arch;
 const rpmArchitecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
 const bundleRoot = join(projectRoot, "target", "release", "bundle");
@@ -21,32 +40,42 @@ const auditRoot = mkdtempSync(join(tmpdir(), "portmate-package-check-"));
 try {
   const debRoot = join(auditRoot, "deb");
   run("dpkg-deb", ["-x", deb, debRoot]);
-  assertExecutable(join(debRoot, "usr", "bin", "portmate"));
+  const debMain = join(debRoot, "usr", "bin", "portmate");
+  assertPackagedMain("DEB", debMain, tauriConfig.identifier, productionCsp);
   const debBridge = join(debRoot, "usr", "bin", "portmate-mcp");
   assertExecutable(debBridge);
-  assertFile(join(debRoot, "usr", "share", "applications", "PortMate.desktop"));
-  assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"));
-  assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"));
-  assertSameFile(join(projectRoot, "LICENSE"), join(debRoot, "usr", "lib", "PortMate", "LICENSE"));
+  assertDesktopEntry(join(debRoot, "usr", "share", "applications", "PortMate.desktop"));
+  assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"), 0o644);
+  assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"), 0o644);
+  assertSameFile(join(projectRoot, "LICENSE"), join(debRoot, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertPortableTree(debRoot);
 
   const rpmRoot = join(auditRoot, "rpm");
   extractRpm(rpm, rpmRoot);
-  assertExecutable(join(rpmRoot, "usr", "bin", "portmate"));
+  const rpmMain = join(rpmRoot, "usr", "bin", "portmate");
+  assertPackagedMain("RPM", rpmMain, tauriConfig.identifier, productionCsp);
   const rpmBridge = join(rpmRoot, "usr", "bin", "portmate-mcp");
   assertExecutable(rpmBridge);
-  assertFile(join(rpmRoot, "usr", "share", "applications", "PortMate.desktop"));
-  assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"));
-  assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"));
-  assertSameFile(join(projectRoot, "LICENSE"), join(rpmRoot, "usr", "lib", "PortMate", "LICENSE"));
+  assertDesktopEntry(join(rpmRoot, "usr", "share", "applications", "PortMate.desktop"));
+  assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"), 0o644);
+  assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"), 0o644);
+  assertSameFile(join(projectRoot, "LICENSE"), join(rpmRoot, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertPortableTree(rpmRoot);
 
   const appImageRoot = join(auditRoot, "appimage");
   run(appImage, ["--appimage-extract"], { cwd: appImageRoot, quiet: true, createCwd: true });
   const extracted = join(appImageRoot, "squashfs-root");
-  assertExecutable(join(extracted, "usr", "bin", "portmate"));
+  const appImageMain = join(extracted, "usr", "bin", "portmate");
+  assertPackagedMain("AppImage", appImageMain, tauriConfig.identifier, productionCsp);
   const appImageBridge = join(extracted, "usr", "bin", "portmate-mcp");
   assertExecutable(appImageBridge);
-  assertFile(join(extracted, "PortMate.png"));
-  assertSameFile(join(projectRoot, "LICENSE"), join(extracted, "usr", "lib", "PortMate", "LICENSE"));
+  assertFile(join(extracted, "PortMate.png"), 0o644);
+  assertDesktopEntry(join(extracted, "usr", "share", "applications", "PortMate.desktop"));
+  assertSymlink(join(extracted, ".DirIcon"), "PortMate.png");
+  assertSymlink(join(extracted, "PortMate.desktop"), "usr/share/applications/PortMate.desktop");
+  assertSymlink(join(extracted, "portmate.png"), "usr/share/icons/hicolor/256x256@2/apps/portmate.png");
+  assertSameFile(join(projectRoot, "LICENSE"), join(extracted, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertPortableTree(extracted);
 
   for (const [kind, bridge] of [["DEB", debBridge], ["RPM", rpmBridge], ["AppImage", appImageBridge]]) {
     checkPackagedBridge(kind, bridge);
@@ -57,28 +86,187 @@ try {
     rpm,
     appImage,
     verifiedPackages: ["DEB", "RPM", "AppImage"],
-    verified: ["main binary", "MCP sidecar", "desktop entry", "icons", "license", "stdio SDK per package", "HTTP SDK per package"],
+    verified: [
+      "main binary",
+      "MCP sidecar",
+      "desktop entry",
+      "icons",
+      "license",
+      "production CSP",
+      "main/detached capabilities",
+      "portable symlinks and permissions",
+      "stdio SDK per package",
+      "HTTP SDK per package",
+    ],
   }, null, 2));
 } finally {
   rmSync(auditRoot, { recursive: true, force: true });
 }
 
-function assertFile(path) {
+function assertFile(path, expectedMode) {
   accessSync(path, constants.R_OK);
-  if (!statSync(path).isFile()) throw new Error(`Expected a regular package file: ${path}`);
+  const metadata = lstatSync(path);
+  if (!metadata.isFile()) throw new Error(`Expected a regular package file: ${path}`);
+  if (expectedMode !== undefined) assertMode(path, metadata, expectedMode);
 }
 
 function assertExecutable(path) {
-  assertFile(path);
+  assertFile(path, 0o755);
   accessSync(path, constants.X_OK);
 }
 
-function assertSameFile(expected, actual) {
+function assertSameFile(expected, actual, expectedMode) {
   assertFile(expected);
-  assertFile(actual);
+  assertFile(actual, expectedMode);
   if (!readFileSync(expected).equals(readFileSync(actual))) {
     throw new Error(`Package file does not match ${expected}: ${actual}`);
   }
+}
+
+function assertMode(path, metadata, expectedMode) {
+  const actual = metadata.mode & 0o777;
+  if (actual !== expectedMode) {
+    throw new Error(`Expected mode ${expectedMode.toString(8)} for ${path}, found ${actual.toString(8)}`);
+  }
+}
+
+function assertSymlink(path, expectedTarget) {
+  const metadata = lstatSync(path);
+  if (!metadata.isSymbolicLink()) throw new Error(`Expected a symbolic link: ${path}`);
+  const target = readlinkSync(path);
+  if (target !== expectedTarget) {
+    throw new Error(`Expected ${path} -> ${expectedTarget}, found ${target}`);
+  }
+}
+
+function assertDesktopEntry(path) {
+  assertFile(path, 0o644);
+  const fields = new Map();
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    if (!line || line.startsWith("[") || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) throw new Error(`Invalid desktop entry line in ${path}: ${line}`);
+    const key = line.slice(0, separator);
+    if (fields.has(key)) throw new Error(`Duplicate desktop entry field ${key}: ${path}`);
+    fields.set(key, line.slice(separator + 1));
+  }
+  const expected = {
+    Categories: "Development;",
+    Exec: "portmate",
+    Icon: "portmate",
+    Name: "PortMate",
+    StartupWMClass: "portmate",
+    Terminal: "false",
+    Type: "Application",
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (fields.get(key) !== value) {
+      throw new Error(`Expected ${key}=${value} in ${path}, found ${fields.get(key)}`);
+    }
+  }
+}
+
+function assertPackagedMain(kind, path, identifier, csp) {
+  assertExecutable(path);
+  const binary = readFileSync(path);
+  for (const marker of [identifier, csp, "pane-*", "allow-create-webview-window"]) {
+    if (!binary.includes(Buffer.from(marker))) {
+      throw new Error(`${kind} main binary does not embed required Tauri metadata: ${marker}`);
+    }
+  }
+}
+
+function assertPortableTree(root) {
+  for (const entry of readdirSync(root)) visit(join(root, entry));
+
+  function visit(path) {
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink()) {
+      const target = readlinkSync(path);
+      if (isAbsolute(target)) throw new Error(`Package contains an absolute symlink: ${path} -> ${target}`);
+      const resolvedTarget = resolve(dirname(path), target);
+      const fromRoot = relative(root, resolvedTarget);
+      if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+        throw new Error(`Package symlink escapes its root: ${path} -> ${target}`);
+      }
+      statSync(path);
+      return;
+    }
+    if (metadata.isDirectory()) {
+      for (const entry of readdirSync(path)) visit(join(path, entry));
+      return;
+    }
+    if (metadata.isFile()) {
+      const mode = metadata.mode & 0o777;
+      if ((mode & 0o022) !== 0) {
+        throw new Error(`Package file is group/world writable (${mode.toString(8)}): ${path}`);
+      }
+    }
+  }
+}
+
+function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability) {
+  if (config.identifier !== "dev.portmate.desktop") {
+    throw new Error(`Unexpected Tauri identifier: ${config.identifier}`);
+  }
+  if (config.app?.security?.devCsp !== null) {
+    throw new Error("Tauri devCsp must remain null so it cannot replace the production policy");
+  }
+  const csp = config.app?.security?.csp;
+  if (typeof csp !== "string") throw new Error("Tauri production CSP is missing");
+  const expectedDirectives = {
+    "base-uri": ["'none'"],
+    "connect-src": ["ipc:", "http://ipc.localhost"],
+    "default-src": ["'self'", "customprotocol:", "asset:"],
+    "font-src": ["'self'", "data:"],
+    "form-action": ["'none'"],
+    "frame-src": ["'none'"],
+    "img-src": ["'self'", "asset:", "http://asset.localhost", "data:", "blob:"],
+    "object-src": ["'none'"],
+    "script-src": ["'self'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+  };
+  const directives = parseCsp(csp);
+  if (directives.size !== Object.keys(expectedDirectives).length) {
+    throw new Error(`Unexpected production CSP directive count: ${directives.size}`);
+  }
+  for (const [directive, expectedValues] of Object.entries(expectedDirectives)) {
+    assertExactArray(`CSP ${directive}`, directives.get(directive), expectedValues);
+  }
+  assertExactArray("main capability windows", mainCapability.windows, ["main"]);
+  assertExactArray("main capability permissions", mainCapability.permissions, [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+  ]);
+  assertExactArray("detached capability windows", paneCapability.windows, ["pane-*"]);
+  assertExactArray("detached capability permissions", paneCapability.permissions, [
+    "core:default",
+    "core:window:allow-close",
+  ]);
+  return csp;
+}
+
+function parseCsp(csp) {
+  const directives = new Map();
+  for (const part of csp.split(";")) {
+    const fields = part.trim().split(/\s+/).filter(Boolean);
+    if (!fields.length) continue;
+    const [name, ...values] = fields;
+    if (directives.has(name)) throw new Error(`Duplicate CSP directive: ${name}`);
+    directives.set(name, values);
+  }
+  return directives;
+}
+
+function assertExactArray(label, actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length
+    || actual.some((value, index) => value !== expected[index])) {
+    throw new Error(`${label} does not match the release policy: ${JSON.stringify(actual)}`);
+  }
+}
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function extractRpm(archive, destination) {

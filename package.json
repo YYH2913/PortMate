@@ -20,7 +20,7 @@
     "tauri": "tauri",
     "desktop": "tauri dev",
     "desktop:clean": "node scripts/desktop-clean.mjs",
-    "desktop:build": "tauri build --config src-tauri/tauri.bundle.conf.json",
+    "desktop:build": "node scripts/build-desktop.mjs",
     "sidecar:dev": "node scripts/prepare-sidecar.mjs",
     "sidecar:build": "node scripts/prepare-sidecar.mjs --release",
     "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/icons/icon.png --output src-tauri/icons"

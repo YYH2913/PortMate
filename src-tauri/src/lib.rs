@@ -34008,6 +34008,20 @@ mod tests {
             .start_command
             .contains("'/home/operator/PortMate Data/portmate-store.sqlite3'"));
         assert!(!config.start_command.contains("cargo run"));
+        assert!(!config.start_command.contains(MCP_HTTP_TOKEN_REF));
+        assert!(!config.start_command.contains("keychain:"));
+        assert!(!config.start_command.contains("PORTMATE_MCP_HTTP_TOKEN"));
+        assert!(!config.start_command.contains("example-token-body"));
+        #[cfg(not(windows))]
+        assert_eq!(
+            config.start_command,
+            "PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787 '/opt/PortMate/bin/portmate-mcp' --http"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            config.start_command,
+            "$env:PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3'; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787'; & '/opt/PortMate/bin/portmate-mcp' --http"
+        );
     }
 
     #[test]

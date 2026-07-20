@@ -25,10 +25,10 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 - [ ] `npm run desktop:build` succeeds on clean Linux, Windows, and macOS runners.
 - [ ] Linux produces DEB, RPM, and AppImage; Windows produces signed MSI/NSIS; macOS produces signed and notarized app/DMG.
 - [ ] Every package contains the main executable, target-specific `portmate-mcp` sidecar, standard icons, and license metadata.
-- [ ] On Linux, `npm run test:linux-package` passes against the freshly built DEB, RPM, and AppImage.
+- [ ] On Linux, `npm run test:linux-package` passes against the freshly built DEB, RPM, and AppImage, including full file/symlink permission checks.
 - [ ] Run both official MCP SDK checks with `PORTMATE_MCP_BINARY` set to the bridge extracted from each package.
 - [ ] Launch the installed application, create a disposable session, restart it, and verify the same Store is loaded.
-- [ ] Verify main and detached-window Tauri capabilities and the production CSP against the packaged application.
+- [ ] Verify main and detached-window Tauri capabilities and the production CSP against the packaged application (automated for all three Linux packages by `npm run test:linux-package`).
 
 ## Security And Signing
 

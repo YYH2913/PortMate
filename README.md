@@ -194,10 +194,13 @@ Build desktop bundles:
 npm run desktop:build
 ```
 
-The build prepares a target-specific `portmate-mcp` sidecar and packages it with the desktop binary,
-standard PNG/ICNS/ICO icons, and the Apache-2.0 license. Linux release builds produce DEB, RPM, and
-AppImage artifacts under `target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release,
-signing, migration, artifact, and rollback gates.
+The build starts from a clean bundle directory, prepares a target-specific `portmate-mcp` sidecar,
+and packages it with the desktop binary, standard PNG/ICNS/ICO icons, and the Apache-2.0 license.
+Unix package inputs use release-safe `0755`/`0644` modes. Linux builds also normalize the AppImage
+tree and replace LinuxDeploy's machine-local `.DirIcon` symlink with a portable relative link before
+repacking with the original AppImage runtime. DEB, RPM, and AppImage artifacts are written below
+`target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release, signing, migration,
+artifact, and rollback gates.
 
 The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
 
@@ -323,7 +326,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The terminal compatibility, Tmux workflow, and workspace UI checks use the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The terminal suite also requires the system `script`, `vim`, `less`, and procps `top` commands: it captures real PTY sessions, verifies alternate-screen isolation for Vim/less and clear-screen/cursor restoration for top, then renders and searches a bounded 6,000-line log under a 15-second regression limit. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, verifies simultaneous left/right/bottom docks, same-dock tab switching, cross-dock drag placement, reload persistence, full-width terminal recovery, and transactional Profile deletion, exercises real filters, compact top-menu capability states, exact contextual view actions, protocol-filtered transfers, Profile-backed startup selectors, and queued one-time MCP approvals, confirms that non-input UI operations produce no terminal writes, and captures focused desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix. Repository Cargo configuration defaults libtest to four threads because the desktop matrix concurrently launches OpenSSH, socat, Stronghold, and SQLite workers; an explicit `RUST_TEST_THREADS` environment value still overrides it.
 
-`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage, verifies each main executable, sidecar, desktop entry, standard icon, and exact license contents, then runs both official MCP SDK protocol checks against the bridge extracted from every package. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
+`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact license, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs both official MCP SDK protocol checks against the bridge extracted from every package. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 
