@@ -9,7 +9,7 @@
 本次审查覆盖当前仓库内的桌面端、共享核心库、MCP bridge 和项目说明：
 
 - 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`、`src/sync-input-state.ts`。
-- Tauri 后端：`src-tauri/src/lib.rs`、`src-tauri/Cargo.toml`。
+- Tauri 后端：`src-tauri/src/lib.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
 - 共享核心：`crates/portmate-core/src/models.rs`、`store.rs`、`host_keys.rs`、`mcp.rs`、`triggers.rs`、`redaction.rs`。
 - MCP stdio bridge：`crates/portmate-mcp/src/main.rs`。
 - 项目目标和使用说明：`PLAN.md`、`README.md`、`package.json`、workspace `Cargo.toml`。
@@ -36,7 +36,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 已实现：
 
-- WindTerm 风格主界面：四组任务菜单、唯一会话资源树、标签页、按需文件/历史/发送面板和精简状态栏。
+- 终端优先主界面：四组任务菜单、单层 view 标签和精简状态栏；资源、文件、历史、发送按左/右/底部区域停靠，区域可同时显示，同区面板使用标签切换并可跨区拖放，三向边界支持拖动/键盘调整、双击复位和尺寸持久化，关闭全部可选面板后终端恢复全宽。
 - 所有主要设置入口使用弹窗，而不是右侧抽屉。
 - 新建会话、保存、保存并连接、关闭连接、重连入口已接通。
 - 不同协议有不同设置分组：Shell、SSH、Tmux、Telnet、Tcp、Serial。
@@ -53,13 +53,16 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - `终端设置 -> 命令历史` 已从空表单补为真实策略：旧字符串数组迁移为带毫秒时间戳的 v2 快照，保存开关、`1..10,000` 条容量、`0..3,650` 天保留期和清除按钮共同驱动主窗口历史面板及主/独立窗口补全。重复命令更新到首位，单项限制 8,192 Unicode 字符，持久化 UTF-8 总量限制 2 MiB；关闭磁盘保存会删除快照但保留当前进程历史，清除同时清空两者。历史引擎按需加载，避免重新推高主包。
 - WindTerm scheme 风格命令补全已接入焦点 Remote 模式的 Shell/SSH/Tmux/Telnet/Raw TCP 主窗口与独立窗口。候选在本地合并常用命令名、选项、子命令、显式历史和 Quick Commands，不探测远端或调用外部服务；`自动补全`设置会独立控制来源、1/2/3 字符触发、5/7/10 行列表和预览方式。方向键选择、Tab 只经现有交互/同步输入 lane 追加尚未输入的后缀、Escape 关闭，绝不自动执行命令。跟踪器支持纯追加输入、Backspace、Ctrl+U/Ctrl+W；粘贴、光标/未知控制序列、引号、重定向和 shell 运算符会保守暂停到下一行，OneKey 敏感提示出现时也会先抑制候选，避免伪造远端行编辑状态。
 - WindTerm OneKeys 已接入 `工具 -> OneKeys` 和 `Ctrl+T Ctrl+K`/macOS `Meta+T Meta+K`：Account/SSH 凭据按最多 64 条管理，支持用户名、密码、私钥口令、自动/native/Portable Stronghold Secret 存储、兼容会话绑定、显式保存/删除，以及向当前已连接且已绑定的会话手动发送用户名/密码/口令。SSH OneKey 还可从已绑定 SSH/Tmux Profile 选择可认证的 Profile Vault/System File/Agent 公钥身份，排除 public-key-only；前端只提交来源 Profile ID 与 identity ID，后端重新查找、规范化并克隆身份。持久化摘要只暴露 Secret 是否存在以及身份标签/来源/指纹，不返回 Secret 引用、私钥路径或正文；身份 Secret 纳入全局引用计数。发送走每会话出站 lane，并记录无可读正文的 `one-key` control event。SSH 连接弹窗只列出绑定当前 Profile 的 SSH OneKey，选择后前端仅提交 OneKey ID；后端重新验证类型/绑定并解密用户名、密码和私钥口令，运行时清除 Profile 的旧密码/口令引用，避免两个来源混用；OneKey 自有身份会替换运行时身份列表、启用 identities-only 并确保 public-key 进入认证顺序。未选择自有身份时口令仍可接入 Profile 已配置私钥，密码接入 password/keyboard-interactive。主窗口和独立窗口还会按 WindTerm 默认规则跨分片/ANSI/退格识别当前末行的 username/login/password 提示，过滤密码修改提示，只在聚焦 pane 显示绑定候选确认条；用户输入、提示变化或关闭 `终端设置 -> 自动补全 -> OneKey 终端提示补全` 会撤销。补全请求仅提交 OneKey/会话/字段/提示事件 ID，后端在 Secret 读取前及等待出站 lane 后重新验证提示时效、字段、绑定、用户名和 OneKey 版本，成功只记录关联原提示事件且无正文的 `one-key-completion` control event。OneKeys 与 localStorage Quick Commands 保持独立。
-- `工作区` 菜单中的资源管理器、文件管理器、历史命令、发送、快捷栏和状态栏均为带勾选态的真实开关；重复展示同一批 Profile 的右侧会话栏已删除，资源树成为唯一会话浏览面。默认工作区只保留 240px 资源树、pane 单层 view 标签、终端和精简状态栏；顶层从八类菜单收敛为会话、终端、工作区、工具四类，搜索保持为桌面/移动端均可达的图标。重复的全局 session 标签、中心连接摘要和 pane 常驻复制/移动/弹出/关闭按钮已删除；连接状态由标签色点表达，标题栏只保留连接/断开及串口 DTR/RTS/BRK，低频 view 操作进入标签右键菜单并按真实结构禁用。文件、历史和发送按需开启，状态栏只保留 Sysmon、键盘模式、同步状态、块选择和锁屏。资源树筛选匹配名称、ID、分组、标签、协议、状态和协议端点，历史筛选折叠空白并忽略大小写但仍插入原始命令；筛选都有清除和无结果状态。发送区只保留发送、模式、次数、间隔、目标、设置和关闭这些真实动作。v2 快照会把旧版未经修改的六面板全开默认迁移为紧凑布局，并丢弃退休的 sessions 字段；单侧只剩一个 pane 时自动占满，隐藏区域完整归还终端。专注按钮和 `Alt+Enter` 临时隐藏这些区域但不改写持久化选择；同步输入开启时强制保留状态栏风险提示。
+- `工作区` 菜单中的资源管理器、文件管理器、历史命令、发送、快捷栏和状态栏均为带勾选态的真实开关；重复展示同一批 Profile 的右侧会话栏已删除，资源树成为唯一会话浏览面。资源、文件、历史和发送现在使用左/右/底部三处停靠区：不同区域可同时显示，同区面板合并为紧凑标签，标签可重排或拖到其他区域，空区域也提供边缘落点；三条边界支持 pointer/touch 拖动、方向键 16px 微调、Home/End 和双击内容感知复位。侧栏尺寸限制在 200..720px 且渲染时不超过 38vw，底栏限制在 120..600px 且不超过 45vh，损坏快照不能挤走终端；可见性、顺序、激活标签、停靠位置和自定义尺寸使用 v5 面板快照持久化，v1-v4 自动迁移。默认工作区只保留 256px 左侧资源区、pane 单层 view 标签、终端和精简状态栏；侧边文件管理器扩至 360px 并把本地/远端改为上下布局，底部发送区保持横向工具条，关闭全部可选区域后终端恢复全宽。顶层从八类菜单收敛为会话、终端、工作区、工具四类，搜索保持为桌面/移动端均可达的图标。重复的全局 session 标签、中心连接摘要和 pane 常驻复制/移动/弹出/关闭按钮已删除；连接状态由标签色点表达，标题栏只保留连接/断开及串口 DTR/RTS/BRK，低频 view 操作进入标签右键菜单并按真实结构禁用。状态栏只保留 Sysmon、键盘模式、同步状态、块选择和锁屏。资源树筛选匹配名称、ID、分组、标签、协议、状态和协议端点，历史筛选折叠空白并忽略大小写但仍插入原始命令；筛选都有清除和无结果状态。发送区只保留发送、模式、次数、间隔和目标。旧版全开默认会迁移为精简布局并丢弃退休的 sessions 字段；隐藏区域完整归还终端。专注按钮和 `Alt+Enter` 临时隐藏停靠区但不改写持久化选择；同步输入开启时强制保留状态栏风险提示。
+- `npm run desktop:clean` 除清理 snap 注入的 GTK/WebKit 环境外，会读取 Tauri 的实际 dev URL，识别并终止工作目录和命令行都属于当前仓库的旧 Vite 监听者；端口属于其他程序或无法验证时只报告 PID 并拒绝误杀。`1420` 旧进程阻断已用真实 Tauri 启动链路复现，修复后 Vite 启动、Rust `951/951` 编译和 `target/debug/portmate` 运行均通过。
+- Vite 开发服务明确忽略 Rust `target/`、参考程序 `ref/` 和构建输出 `dist/`，并对剩余源码使用 250 ms polling；当前 `target/` 超过 7 万文件或 VS Code 等进程已占满 Linux `max_user_instances` 时，不会再因 inotify `ENOSPC` 崩溃并留下空白工作区。项目通过 `.nvmrc` 和 `engines.node` 固定已验证的 Node 22.20.0/最低 22.12.0，错误 Node 版本会在桌面启动前给出明确诊断。
+- 发布构建会先生成目标三元组对应的 `portmate-mcp` sidecar，并把主程序、bridge、PNG/ICNS/ICO 标准图标和 Apache-2.0 许可证纳入 Tauri bundle；Linux 已真实产出并由仓库脚本解包核对 DEB、RPM、AppImage，每个包内置的 bridge 都分别通过官方 SDK 的 stdio 8 消息和 HTTP 9 请求序列。MCP HTTP 页返回已安装 bridge 的真实路径、精确 Store 路径和平台 shell 启动命令，不再要求最终用户在源码目录执行 `cargo run`，也不会再因缺少 `PORTMATE_STORE_PATH` 启动一个无法连接桌面的 bridge。bundle identifier 已从与 macOS `.app` 扩展冲突的 `dev.portmate.app` 改为 `dev.portmate.desktop`；首次启动只会把旧数据目录原子迁移到不存在或空的新目录，两个非空目录并存时拒绝猜测合并。生产 WebView 已启用限制 script/connect/frame/object/base/form 的 CSP，开发 HMR 继续使用独立 dev CSP。
 - `工作区 -> 还原布局` 会重新读取并应用 snapshot；启动模式支持不连接、按上次 pane 或按最多四个指定 Profile 顺序连接，自动去重/过滤失效会话并避免凭据弹窗并发覆盖。指定模式的下拉框现在从已保存 session 生成名称/协议标签并持久化真实、有界且无 NUL 的 Profile ID，已删除目标会明确显示为不可用；旧版“最近使用/活动工作区/默认组”等会被解析器丢弃的占位选项已删除。终端设置收敛为应用、安全、快捷键、自动补全、命令历史、鼠标、同步输入七页；无运行时消费的外观、标签、全局终端/文本、代理、小部件和 X Server 页面不再暴露。
 - 搜索弹窗由桌面/移动端均可达的顶部图标打开，支持会话和已加载日志搜索，并与资源树共享 ID、名称、分组、标签、协议、状态及端点匹配；日志还会匹配所属会话上下文、按全局事件时间倒序、限制 80 条结果和 2,048 字符预览。组合框支持 ArrowUp/ArrowDown 选择、Enter 打开精确 workspace view、Escape 关闭，结果使用稳定 event/session key 和 listbox 语义。
 - 会话设置已从照搬 WindTerm 层级的多层大表单收敛为通用身份、终端/日志、触发器、协议感知传输和当前协议连接页：Shell/SSH/Tmux/Telnet/Tcp/Serial 的主连接字段分别只出现一次，SFTP/SCP 与 X/Y/ZModem 共用一页限速/默认目录，SSH/Tmux 只保留已接入 Profile/runtime 的代理、Host Key 验证、Agent、密码引用和公钥能力。协议标签加树形侧栏的双层导航已替换为会话类型和配置项两个紧凑选择器；终端设置也改为单层顶部标签和全宽内容。`工具 -> 传输任务` 是唯一顶层传输入口，选择器按 Profile 类型/五个协议开关过滤；后端在排队前和 worker 真正启动前复核同一能力，非 SSH/Tmux 的远端 SFTP/SCP 被拒绝但保留内部纯本地复制兼容，相对本地路径会真正以默认目录解析。Bell、模式、键盘、安全、窗口、选择、数据模式、系统、字符集、Shell 提权、SSH 压缩/算法/MAC/X11、Telnet 本地回显和串口换行等仅写 localStorage 却不生效的伪设置已删除；`portmate.sessionPrefs.*` 状态和“保存为默认设置”入口也已移除。会话设置桌面上限为 760×640，移动端在同一行展示两个选择器并限制内部滚动。
-- MCP Bridge 已拆为互斥的授权、HTTP、审计三个任务页，低频页不会再与授权表单纵向堆叠。授权 Client ID 编辑后保持只读，后端会再次规范化并校验 ID/name、重复 scope、重复/非法 session ID、会话数和 grant 总量。审计页支持文本、decision、session/global 和 scope 联合筛选，使用时间倒序列表与详情检查器；刷新会重新读取 Store，导出则按当前筛选 ID 从 Store 复取并整批拒绝重复、非法或已消失记录。JSONL 最多 5,000 条、单条 64 KiB、总计 16 MiB，原子落盘并生成 SHA-256 sidecar，Unix 权限为 `0600`。Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络/趋势四标签工作窗口，趋势可切换 CPU/内存利用率与 RX/TX 速率，并提供当前会话可启停、立即采样后每 10 秒刷新的紧凑工具栏 applet。
+- MCP Bridge 已拆为互斥的授权、HTTP、审计三个任务页，低频页不会再与授权表单纵向堆叠。授权 Client ID 编辑后保持只读，后端会再次规范化并校验 ID/name、重复 scope、重复/非法 session ID、会话数和 grant 总量。grant 可启用 `confirmWrites`，覆盖 `write-input`、`manage-sessions`、`transfer`、`tunnel` 全部写 scope；新建授权默认开启，旧数据缺失字段时兼容为关闭。桌面使用懒加载 alertdialog 做一次性决定，拒绝按钮默认焦点，Escape 拒绝，锁屏期间不能批准；队列按创建时间排序、去重并最多保留 32 项，60 秒超时 fail-closed，已响应 ID 的有界 tombstone 防止迟到 snapshot 复活。UI 事件只携带 approval/client/action/session/scope/时间戳，不含命令、路径、密码、Secret 或原始参数。审计先持久化 `pending-approval`，允许后在副作用前持久化 approved authorization，最后收敛为 succeeded/failed；拒绝、超时和 UI 不可用均明确记为 denied。审计页支持文本、decision、session/global 和 scope 联合筛选，使用时间倒序列表与详情检查器；刷新会重新读取 Store，导出则按当前筛选 ID 从 Store 复取并整批拒绝重复、非法或已消失记录。JSONL 最多 5,000 条、单条 64 KiB、总计 16 MiB，原子落盘并生成 SHA-256 sidecar，Unix 权限为 `0600`。Transfer/Tunnel/Tmux/Trigger 相关入口已存在；Sysmon 已从单行通知升级为 CPU/内存/负载/吞吐概览与进程/磁盘/网络/趋势四标签工作窗口，趋势可切换 CPU/内存利用率与 RX/TX 速率，并提供当前会话可启停、立即采样后每 10 秒刷新的紧凑工具栏 applet。
 - 同步输入会把输入按 FIFO 顺序发送到源 pane 和经过协议过滤的已连接 pane；支持按协议换行、0..5000 ms 目标间延迟、显式批量发送各应用一次的受限前后缀、失败/即时取消反馈和明显目标计数。普通 XTerm 键击及原生 bracketed 键盘粘贴保持无前后缀的流式输入，终端菜单、上下文和中键粘贴走批量路径。源会话始终保留，重复 pane binding 只发送一次；设置持久化但开关每次启动默认关闭。
-- 底部发送区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
+- 发送停靠区、发送次数/间隔/目标、命令历史、Hex 字节发送已接通真实后端。
 - 终端交互支持选择即复制、右键/中键粘贴；`mouseReporting` 和 `mouseCopyOnSelect` 设置已真实驱动主窗口与独立窗口。关闭鼠标报告时只阻断完整 SGR/URXVT/X10/DEC locator 协议帧，不吞普通 CSI 键盘或 focus 序列；选择仍可用 Shift 强制进入。终端缓存额外保存 SerializeAddon 未覆盖的 1005/1006/1015/1016 鼠标编码，恢复全屏 view 后不会从 SGR/pixel 模式退回 X10。
 - WindTerm Remote/Local/Normal/Command 键盘模式已按 workspace view 独立持久化：`Ctrl+Enter` 切换 Remote/Local，Local 的 `i` 返回 Remote，Normal 的 `Esc`/`Ctrl+Enter` 进入 Command，Command 的 `i` 返回保留草稿的 Normal 本地编辑器。Local/Command 支持计数前缀、`h/j/k/l`/方向键、行首尾、word/page/half-page、`gg`/`G`、滚行、查找、字符/整行可视选择和 `y` 复制；所有未映射键、IME 数据及中键粘贴在非 Remote 模式都由 `onData` 二次阻断，不会误发远端。模式菜单为单选态，状态栏可快速切换 Remote/Local；独立窗口路由和返回主窗口保留模式。
 
@@ -169,11 +172,11 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - Tools：`list_sessions`、`read_screen`、`tail_log`、`search_logs`、`send_text`、`send_key`、`run_command`、`open_session`、`close_session`、`start_transfer`、`create_tunnel`、`list_tmux_state`、`attach_tmux`、`export_session_bundle`。
 - Resources：sessions、state、screen、log、timeline、sysmon、tmux、transfer。
 - Prompts：diagnose、serial/SSH compare、repro report。
-- 默认只读，写操作通过 MCP grant scope 控制。
+- 默认只读，写操作通过 MCP grant scope 控制；可选 `confirmWrites` 会在每次写入前请求一次性桌面批准，最多 32 个 pending、60 秒超时并 fail-closed，批准 ID 只可消费一次。
 - live desktop Store 是写授权的最终来源；bridge 不再用可能陈旧的本地快照提前拒绝。通过 IPC token 认证的写尝试会按 client ID、真实 tool、session、scope 和 `invalid`/`denied`/`authorized`/`succeeded`/`failed` 结果持久化审计，授权记录在副作用发生前先提交；审计不复制原始参数、命令文本、密码、passphrase 或路径正文。MCP 出站事件的 actor 也使用真实 client ID，不再误记为 `desktop-user` 或额外生成 `send_text` 审计。显式 grant 按配置 scope 生效，`PORTMATE_MCP_TRUSTED=1` 仅额外允许空 grant Store 的本地开发 bootstrap。
 - 桌面 MCP IPC 请求体上限为 1 MiB，完整读取和响应写出各有 5 秒超时；超限、慢速未完成、JSON 无效和 token 无效的请求都在命令分发前拒绝，不进入审计，避免未认证本地进程无限占用任务或内存。
 - `portmate-ipc.json` 通过同目录私有临时文件同步落盘后原子替换；Unix 最终权限强制为 `0600`，包括 keyring 不可用时含明文 token 的 fallback。替换不会跟随既有 symlink，失败会保留上一个完整 endpoint，并回收本次未发布的 keyring token。
-- bridge 仅加载普通、≤64 KiB 且 Unix 无 group/world 权限的 endpoint 文件；`storePath` 必须匹配当前 Store，地址必须是 loopback `SocketAddr`，keyring 引用必须属于 `keychain:ipc-*` 专用命名空间且不能与 inline token 并存。bridge 到桌面的请求/响应分别限制为 1 MiB/64 MiB，并设置 3 秒连接、5 秒写入和 120 秒总响应 deadline，避免篡改 endpoint 触发任意远端连接、读取其他 keyring 记录或无界等待/分配。
+- bridge 仅加载普通、≤64 KiB 且 Unix 无 group/world 权限的 endpoint 文件；`storePath` 必须匹配当前 Store，地址必须是 loopback `SocketAddr`，keyring 引用必须属于 `keychain:ipc-*` 专用命名空间且不能与 inline token 并存。bridge 到桌面的请求/响应分别限制为 1 MiB/64 MiB，并设置 3 秒连接、5 秒写入和 180 秒总响应 deadline；新增总预算容纳 60 秒审批且不侵占原动作执行预算，避免篡改 endpoint 触发任意远端连接、读取其他 keyring 记录或无界等待/分配。
 - 长运行 stdio bridge 会在每个 JSON-RPC envelope 前重新加载最新有效 Store 快照和原子发布的 endpoint；桌面重启、IPC token/address 轮换无需重启 bridge，endpoint 删除会立即清空 live forwarding，Store 暂时不可读时则保留最后一次有效只读快照。endpoint 正常缺失不会反复输出错误日志。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。POST 必须使用 `application/json`（允许 charset 参数），显式 `MCP-Protocol-Version` 必须匹配 `2025-06-18`，该版本头已加入 CORS preflight allow-list。
@@ -206,7 +209,7 @@ npm run build
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
-仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证 v2 终端优先迁移，并覆盖唯一资源树/历史筛选、四组顶层菜单及 SSH/Serial 精确禁用态、低频 pane 动作从标题栏迁到 view 右键菜单、四方向新分组子菜单、同步输入正反切换、顶部会话/日志共享搜索与键盘激活、发送区无伪控件、真实 Profile 启动目标的禁用/选择/保存/恢复、终端设置单层标签、六协议会话设置双选择器/协议感知传输/无伪偏好写入、MCP 三任务页互斥/联合审计筛选/详情/精确导出、关闭失败保留连接状态与诊断、面板空间归还，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
+仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证终端优先迁移，并覆盖左/右/底部停靠区同时显示、同区标签切换、跨区拖放、三向 pointer/键盘尺寸调整、双击复位、刷新持久化、关闭后空间归还、唯一资源树/历史筛选、四组顶层菜单及 SSH/Serial 精确禁用态、低频 pane 动作从标题栏迁到 view 右键菜单、四方向新分组子菜单、同步输入正反切换、顶部会话/日志共享搜索与键盘激活、发送区无伪控件、真实 Profile 启动目标的禁用/选择/保存/恢复、终端设置单层标签、六协议会话设置双选择器/协议感知传输/无伪偏好写入、MCP 三任务页互斥/联合审计筛选/详情/精确导出、关闭失败保留连接状态与诊断，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
 
 已有单元测试覆盖：
 
@@ -269,7 +272,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 247：`portmate` 184、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 48 个文件、247 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 252：`portmate` 189、`portmate-kdf` 1、`portmate-core` 35、`portmate-mcp` 27；`npm test` 另有 49 个文件、256 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
@@ -278,7 +281,7 @@ npm run build
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
-- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧面板迁移、真实筛选、精确上下文动作、无终端误写和桌面/移动布局；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离及桌面/移动截图边界。
+- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区标签切换、跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、真实筛选、精确上下文动作、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离及桌面/移动截图边界。
 - Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好和缓存恢复已有可重复 Playwright 基线，仍缺完整 vttest 与真实全屏程序矩阵。
 
 ## 对照最终目标的完成度
@@ -287,7 +290,7 @@ npm run build
 | --- | --- | --- |
 | 跨平台桌面框架 | 已实现 | Tauri v2 + React/TS + Rust 已成型。 |
 | xterm 6 | 已实现 | `@xterm/xterm` 固定 `6.0.0`；当前焦点 pane 增量查找、绝对/相对 buffer 行跳转、精确 buffer/selection 文本导出、WindTerm clear scrollback/screen/all 与 alternate screen 保护、Unicode 11、write-only OSC 52、进程内有界 Serialize/鼠标编码恢复、单一 PTY resize owner 及 WebGL→DOM fallback 已接入。 |
-| WindTerm 风格工作台 | 大部分实现 | 紧凑的单层 view 标签/资源树默认布局、可选 dock/sender、主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个独立 ID view、v1/v2/v3→v4 迁移、同 session view 复制/独立重命名/逐 view 着色、同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、按 pane/view/session 精确路由的标签/终端右键菜单和终端文本/选区导出、活动 pane 内按 view ID 首尾循环标签、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom/Remote 与 Local/Normal 标签循环/视图关闭恢复快捷键、方向 pane 交换、保留 view 身份/颜色的 Tauri 独立窗口/返回、主密码/隐私降级锁屏、启动/空闲锁屏、启动会话策略、本地命令/选项/子命令/历史/Quick 补全及 xterm/CSS lazy chunk 已有。 |
+| WindTerm 风格工作台 | 大部分实现 | 终端优先的单层 view 标签/资源树默认布局、资源/文件/历史/发送左/右/底部多区停靠/同区标签/跨区拖放/v5 布局和有界尺寸持久化、三向 pointer/键盘边界调整与双击复位、主布局和菜单、最多 16 pane/8 层的递归水平/垂直分屏、每组最多 32 个独立 ID view、v1/v2/v3→v4 迁移、同 session view 复制/独立重命名/逐 view 着色、同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、按 pane/view/session 精确路由的标签/终端右键菜单和终端文本/选区导出、活动 pane 内按 view ID 首尾循环标签、可调且持久化的比例、pane/active/tab color 恢复、可配置且支持最多两段 chord/冲突校验的 WindTerm 分屏/方向焦点/关闭/zoom/Remote 与 Local/Normal 标签循环/视图关闭恢复快捷键、方向 pane 交换、保留 view 身份/颜色的 Tauri 独立窗口/返回、主密码/隐私降级锁屏、启动/空闲锁屏、启动会话策略、本地命令/选项/子命令/历史/Quick 补全及 xterm/CSS lazy chunk 已有。 |
 | 同步输入 | 已实现 | 多 pane 去重广播、额外目标协议过滤、协议感知换行、目标间延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈、明显目标计数和启动默认关闭均已接入，并有前端状态回归。 |
 | SSH | 部分实现 | PTY、密码、公钥、keyboard-interactive、ssh-agent、Profile 级协议 KeepAlive 阈值、带可选认证的 HTTP CONNECT/SOCKS5、多跳 Jump Host 后端连接链路、每跳独立 secretRef/identityRef 和基础编辑可用；代理与 host-key 扫描路径一致且只作用于第一物理跳。两跳 OpenSSH direct-tcpip、三端独立 identity、逐跳 TOFU、第一/二跳连接拒绝、第一/二跳及目标握手超时、逐端认证失败聚合、第二跳 key mismatch、password/keyboard-interactive 混合链，以及真实 ssh-agent 启用/禁用/过滤矩阵已端到端覆盖；健康故障矩阵和 GSSAPI 未完成。 |
 | Host key 隔离 | 大部分实现 | profile alias、TOFU、mismatch block、known_hosts 导入导出、连接失败确认弹窗、一次性信任、多跳 Jump Host 目标扫描、多跳连接时逐跳验证、逐跳确认 UX、每跳自定义 host-key 策略已有；高级管理待补。 |
@@ -300,9 +303,9 @@ npm run build
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、聚合吞吐、Top 进程、磁盘和每接口速率/累计量已进入有界快照、SQLite details、MCP resource 和可刷新四标签工作窗口，Unix 额外提供 load average；本机 macOS/Windows 使用带超时和输出边界的异步平台命令，Windows 远端在 `uname` 失败后使用固定编码 PowerShell/CIM 脚本和二次校验的 marker JSON，不读取进程命令行；历史趋势支持 CPU/内存利用率与 RX/TX 速率、有界查询、去重排序及刷新即时归并；当前会话工具栏 applet 支持立即/10 秒采样、请求去重、断线停止和失败保留旧值；真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏待补。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；官方 TypeScript SDK 1.29.0 的真实 8 消息生命周期和子进程退出已通过。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 247 项 Rust core/协议集成测试、48 文件/247 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 252 项 Rust core/协议集成测试、49 文件/256 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；其他 UI 检查迁移、完整 vttest、真实全屏程序和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
@@ -317,7 +320,7 @@ npm run build
 ### P1：补齐 WindTerm/Bitvise 级工作流
 
 1. 文件管理器多选、可配置冲突策略和远端目录递归下载已完成；继续扩展 SFTP/SCP 服务故障矩阵和跨平台路径边界。
-2. pane view group、启动自动连接、session/逐 view 标签颜色、workspace restore、v1/v2/v3→v4 自动迁移、同 session view duplicate/独立 rename、view 同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、按 pane/view/session 精确路由的完整标签右键菜单、活动 pane 内不跳过同 session view 的前后标签循环、任意递归嵌套分屏、保留 view 身份/颜色的独立 Tauri 窗口/返回、跨主/独立窗口锁屏、可持久化的 dock/sender/status 显示开关、可逆专注模式，以及支持最多两段 chord 的可配置 WindTerm 分屏创建/方向焦点/关闭/zoom/Remote 与 Local/Normal 标签循环/视图关闭恢复快捷键和方向 pane 交换已完成。
+2. pane view group、启动自动连接、session/逐 view 标签颜色、workspace restore、v1/v2/v3→v4 自动迁移、同 session view duplicate/独立 rename、view 同组排序/跨组定点拖放/整组合并/四方向新分组/关闭与恢复、按 pane/view/session 精确路由的完整标签右键菜单、活动 pane 内不跳过同 session view 的前后标签循环、任意递归嵌套分屏、保留 view 身份/颜色的独立 Tauri 窗口/返回、跨主/独立窗口锁屏、可持久化的多区域工作停靠/status 显示开关、可逆专注模式，以及支持最多两段 chord 的可配置 WindTerm 分屏创建/方向焦点/关闭/zoom/Remote 与 Local/Normal 标签循环/视图关闭恢复快捷键和方向 pane 交换已完成。
 3. 同步输入正式化已完成：多 pane 去重广播、协议过滤、换行策略、延迟、显式批量发送前后缀、FIFO、失败/即时取消反馈和明显目标计数均已接入；为避免误广播，开关不跨启动保留。
 4. FreeType 风格自由输入、按 view 持久化的 Remote/Local/Normal/Command 键盘模式、scheme 风格本地命令补全、Quick Commands 和独立 OneKeys 凭据管理已完成：焦点 pane 本地有界多行编辑、Vim 风格 scrollback 导航/选择/复制、绝对/相对 buffer 行跳转、非 Remote 输入阻断、终端换行、查找互斥、同步输入复用、本地命令/选项/子命令/历史/Quick 后缀补全、有界命令管理/排序/持久化、Quick Bar 插入或执行，以及加密 OneKey Secret、会话绑定、自有公钥身份、手动敏感字段发送、仅传 ID 的 SSH 登录弹窗选择和经后端重验证的终端用户名/密码提示补全均已接入。
 5. 串口工具增强：精确有界 Hex/ASCII viewer、收发过滤、JSONL + SHA-256 导出、独立 Tauri 分析窗口、capture/delimiter/fixed/gap framing、RFC 1055 SLIP/COBS/Modbus RTU 解码、解码/线上证据切换、协议错误、分页、书签、重连状态，以及显式 Raw 日志支撑的 4,096 帧/8 MiB 持久历史均已完成；下一步补更广物理设备和跨平台矩阵。
@@ -330,15 +333,15 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP HTTP 模式：官方 TypeScript SDK 1.29.0 的无状态 Streamable HTTP 序列已纳入仓库回归；继续补 Python、其他语言 SDK 和旧版本客户端矩阵。
 4. Sysmon 的进程、磁盘、网络接口、本机 Linux/macOS/Windows、Linux/macOS/FreeBSD/Windows 远端采样、四标签工作窗口、CPU/内存/RX/TX 历史趋势、10 秒工具栏 applet 和结构化持久化已完成；继续补真实 macOS/Windows 桌面构建、macOS/FreeBSD/Windows SSH 主机矩阵、其他 BSD 与独立常驻侧栏。
-5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/真实筛选/上下文动作/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
+5. 终端兼容、Tmux workflow 和紧凑 workspace UI 已整理为仓库内 Playwright 回归，分别覆盖 alternate screen/ANSI/truecolor/宽字符/双 pane resize/SGR mouse/缓存恢复，同步开关/失败回滚/attach/session-window lifecycle/pane-layout/跨 window move/control 推送 mutation，以及旧面板迁移/三向停靠/标签切换/跨区拖放/三向尺寸调整与复位/持久化/真实筛选/上下文动作/MCP 一次性审批/无误写/桌面移动布局；继续迁移其他 CDP 截图检查，并补完整 vttest 与真实全屏程序矩阵。
 
 ### P3：架构整理与发布准备
 
-1. 拆分当前 `src-tauri/src/lib.rs`：transport、transfer、mcp、storage、security、terminal 模块化。
+1. Tmux control-mode 增量解析、事件分类、命令构造/转义和 session/window/pane 行解析已从 `src-tauri/src/lib.rs` 提取到独立 `tmux_protocol.rs`，运行时 orchestration 保持原位并通过全 workspace 回归；继续按 transport、transfer、mcp、storage、security、terminal 边界拆分其余后端。
 2. SQLite 大型追加表已改为增量写入并有 INSERT/DELETE 触发器回归；继续拆分存储模块并评估 kv/JSON 兼容快照的异步化。
 3. Stronghold portable vault 已覆盖 OS keyring 不可用/禁用场景、主密码轮换、SSH/Tmux 凭据批量迁移和保守的跨重启恢复；继续把 journal/recovery 与 provider 适配从 `src-tauri/src/lib.rs` 拆为独立 security/storage 模块。
-4. 增加 Windows/macOS/Linux 打包验证和权限说明。
-5. 建立 release checklist：签名、更新日志、迁移测试、回滚策略。
+4. Linux DEB/RPM/AppImage 打包、标准图标、MCP sidecar、产物协议检查和权限说明已完成；继续增加真实 Windows/macOS runner 的 MSI/NSIS/app/DMG 验证与签名。
+5. `RELEASE.md` 已建立版本、测试、签名、权限、迁移、产物校验、发布和回滚 gate；正式发布前仍需在三平台逐项执行并记录证据。
 
 ## 建议的近期执行顺序
 
