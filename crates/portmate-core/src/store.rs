@@ -956,19 +956,53 @@ impl SessionStore {
     fn export_session_bundle_with_redaction(
         &self,
         session_id: &str,
-        redact_text: bool,
+        redact_bundle: bool,
     ) -> serde_json::Value {
         let mut summary = self
             .summaries()
             .into_iter()
             .find(|summary| summary.profile.id == session_id);
         let mut events = self.tail_log(session_id, 500);
-        if redact_text {
+        let mut timeline = self.timeline_for(session_id);
+        let mut transfers = self
+            .transfers
+            .iter()
+            .filter(|transfer| transfer.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut audit = self
+            .audit
+            .iter()
+            .filter(|record| record.session_id.as_deref() == Some(session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if redact_bundle {
             if let Some(summary) = &mut summary {
-                summary.last_line = summary.last_line.take().map(|text| redact_secrets(&text));
+                redact_session_summary(summary);
             }
             for event in &mut events {
                 event.text = event.text.take().map(|text| redact_secrets(&text));
+                event.bytes_ref = None;
+                for value in event.annotations.values_mut() {
+                    *value = redact_secrets(value);
+                }
+            }
+            for mark in &mut timeline {
+                mark.label = redact_secrets(&mark.label);
+                mark.details = mark.details.take().map(|details| redact_secrets(&details));
+            }
+            for transfer in &mut transfers {
+                transfer.source = "<redacted-path>".to_string();
+                transfer.destination = "<redacted-path>".to_string();
+                transfer.message = transfer
+                    .message
+                    .take()
+                    .map(|message| redact_secrets(&message));
+            }
+            for record in &mut audit {
+                for value in record.details.values_mut() {
+                    *value = redact_secrets(value);
+                }
             }
         }
         let log_shards = events
@@ -976,24 +1010,12 @@ impl SessionStore {
             .filter_map(|event| event.bytes_ref.as_ref())
             .cloned()
             .collect::<Vec<_>>();
-        let transfers = self
-            .transfers
-            .iter()
-            .filter(|transfer| transfer.session_id == session_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let audit = self
-            .audit
-            .iter()
-            .filter(|record| record.session_id.as_deref() == Some(session_id))
-            .cloned()
-            .collect::<Vec<_>>();
 
         serde_json::json!({
             "summary": summary,
             "events": events,
             "logShards": log_shards,
-            "timeline": self.timeline_for(session_id),
+            "timeline": timeline,
             "sysmon": self.sysmon_for(session_id),
             "transfers": transfers,
             "audit": audit,
@@ -1008,6 +1030,62 @@ impl SessionStore {
                 ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(ssh),
                 _ => None,
             })
+    }
+}
+
+fn redact_session_summary(summary: &mut SessionSummary) {
+    summary.last_line = summary.last_line.take().map(|text| redact_secrets(&text));
+    summary.runtime.cwd = None;
+    summary.runtime.last_disconnect_reason = summary
+        .runtime
+        .last_disconnect_reason
+        .take()
+        .map(|reason| redact_secrets(&reason));
+    summary.profile.logging.path_template = "<redacted-path-template>".to_string();
+    summary.profile.transfer.default_local_dir = None;
+    for trigger in &mut summary.profile.triggers {
+        trigger.label = redact_secrets(&trigger.label);
+        match &mut trigger.matcher {
+            TriggerMatcher::Contains { text, .. } => *text = redact_secrets(text),
+            TriggerMatcher::Regex { pattern } => *pattern = redact_secrets(pattern),
+        }
+        for action in &mut trigger.actions {
+            match action {
+                TriggerAction::SendText { text } => *text = "<redacted>".to_string(),
+                TriggerAction::LocalCommand { command } => *command = "<redacted>".to_string(),
+                TriggerAction::CustomLink { url_template } => {
+                    *url_template = "<redacted-url-template>".to_string();
+                }
+                TriggerAction::Notification { message } => {
+                    *message = redact_secrets(message);
+                }
+                TriggerAction::TimelineMark { label } => *label = redact_secrets(label),
+                TriggerAction::Highlight { .. } | TriggerAction::Sound { .. } => {}
+            }
+        }
+    }
+    match &mut summary.profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            ssh.password_secret_ref = None;
+            ssh.passphrase_secret_ref = None;
+            ssh.proxy.password_secret_ref = None;
+            for identity in &mut ssh.identity_refs {
+                identity.path = None;
+                identity.secret_ref = None;
+            }
+            for jump in &mut ssh.jumps {
+                jump.password_secret_ref = None;
+                jump.passphrase_secret_ref = None;
+            }
+        }
+        ConnectionConfig::Telnet(tcp) | ConnectionConfig::Tcp(tcp) => {
+            tcp.proxy.password_secret_ref = None;
+        }
+        ConnectionConfig::Shell(shell) => {
+            shell.cwd = None;
+            shell.args.clear();
+        }
+        ConnectionConfig::Serial(_) => {}
     }
 }
 
@@ -1752,6 +1830,11 @@ mod tests {
     #[test]
     fn export_bundle_includes_diagnostics_and_redacts_text() {
         let mut store = test_store();
+        let ConnectionConfig::Shell(shell) = &mut store.profiles[0].connection else {
+            unreachable!("test store should use a shell profile");
+        };
+        shell.args = vec!["--password".to_string(), "opaque-shell-secret".to_string()];
+        shell.cwd = Some("/home/operator/private-shell-cwd".to_string());
         store
             .record_stream_event_with_bytes_ref(
                 "test-session",
@@ -1782,11 +1865,176 @@ mod tests {
         let bundle = store.export_session_bundle_redacted("test-session");
         let rendered = serde_json::to_string(&bundle).unwrap();
 
-        assert!(rendered.contains("test.raw:0:16"));
+        assert!(!rendered.contains("test.raw:0:16"));
         assert!(rendered.contains("transfer-1"));
         assert!(rendered.contains("send_text"));
         assert!(!rendered.contains("hunter2"));
         assert!(!rendered.contains("abc123"));
+        assert!(!rendered.contains("opaque-shell-secret"));
+        assert!(!rendered.contains("/home/operator/private-shell-cwd"));
+        assert!(bundle["summary"]["profile"]["connection"]["args"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(bundle["logShards"].as_array().unwrap().is_empty());
+        assert!(bundle["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["bytesRef"].is_null()));
+    }
+
+    #[test]
+    fn redacted_bundle_removes_ssh_and_tmux_credentials_and_local_paths() {
+        for (kind, connection) in [
+            (
+                SessionKind::Ssh,
+                ConnectionConfig::Ssh(sensitive_ssh_connection()),
+            ),
+            (
+                SessionKind::Tmux,
+                ConnectionConfig::Tmux(sensitive_ssh_connection()),
+            ),
+        ] {
+            let mut store = test_store();
+            store.profiles[0].kind = kind;
+            store.profiles[0].connection = connection;
+            store.profiles[0].logging.path_template =
+                "/home/operator/private-logs/{session}.raw".to_string();
+            store.profiles[0].transfer.default_local_dir =
+                Some("/home/operator/private-downloads".to_string());
+            store.profiles[0].triggers = vec![TriggerSpec {
+                id: "sensitive-trigger".to_string(),
+                label: "password=trigger-label-secret".to_string(),
+                matcher: TriggerMatcher::Contains {
+                    text: "token=trigger-match-secret".to_string(),
+                    case_sensitive: false,
+                },
+                actions: vec![
+                    TriggerAction::SendText {
+                        text: "opaque-send-secret".to_string(),
+                    },
+                    TriggerAction::LocalCommand {
+                        command: "/home/operator/private-scripts/deploy".to_string(),
+                    },
+                    TriggerAction::CustomLink {
+                        url_template: "https://internal.invalid/?token=trigger-url-secret"
+                            .to_string(),
+                    },
+                ],
+                enabled: true,
+            }];
+            store.runtimes[0].active_transport = kind;
+            store.runtimes[0].cwd = Some("/home/operator/runtime-cwd".to_string());
+            store.runtimes[0].last_disconnect_reason =
+                Some("password=disconnect-secret".to_string());
+            store
+                .record_event(
+                    "test-session",
+                    EventDirection::Inbound,
+                    EventStream::Stdout,
+                    Some("password=event-secret".to_string()),
+                    Some("v2:/home/operator/private-logs/raw:0:12:digest".to_string()),
+                    BTreeMap::from([(
+                        "diagnostic".to_string(),
+                        "token=annotation-secret".to_string(),
+                    )]),
+                )
+                .unwrap();
+            store.record_timeline_mark(TimelineMark {
+                id: "timeline-sensitive".to_string(),
+                session_id: "test-session".to_string(),
+                ts: Utc::now(),
+                label: "password=timeline-secret".to_string(),
+                details: Some("token=timeline-details-secret".to_string()),
+            });
+            store.record_transfer(TransferTask {
+                id: "transfer-sensitive".to_string(),
+                session_id: "test-session".to_string(),
+                protocol: TransferProtocol::Sftp,
+                source: "/home/operator/source-secret.txt".to_string(),
+                destination: "/srv/private/destination-secret.txt".to_string(),
+                bytes_total: 12,
+                bytes_done: 12,
+                status: TransferStatus::Completed,
+                message: Some("token=transfer-message-secret".to_string()),
+                started_at: None,
+                finished_at: None,
+                average_bytes_per_second: None,
+            });
+            store.record_audit(AuditRecord {
+                id: "audit-sensitive".to_string(),
+                ts: Utc::now(),
+                actor: "desktop-user".to_string(),
+                action: "export-test".to_string(),
+                session_id: Some("test-session".to_string()),
+                decision: "recorded".to_string(),
+                details: BTreeMap::from([(
+                    "diagnostic".to_string(),
+                    "password=audit-secret".to_string(),
+                )]),
+            });
+
+            let plain = store.export_session_bundle("test-session");
+            let redacted = store.export_session_bundle_redacted("test-session");
+            let plain_json = serde_json::to_string(&plain).unwrap();
+            let redacted_json = serde_json::to_string(&redacted).unwrap();
+            let sensitive_values = [
+                "keyring:target-password-ref",
+                "stronghold:target-passphrase-ref",
+                "keyring:proxy-password-ref",
+                "/home/operator/.ssh/private-key",
+                "stronghold:identity-secret-ref",
+                "keyring:jump-password-ref",
+                "stronghold:jump-passphrase-ref",
+                "/home/operator/private-logs/{session}.raw",
+                "/home/operator/private-downloads",
+                "/home/operator/runtime-cwd",
+                "disconnect-secret",
+                "event-secret",
+                "annotation-secret",
+                "timeline-secret",
+                "timeline-details-secret",
+                "/home/operator/source-secret.txt",
+                "/srv/private/destination-secret.txt",
+                "transfer-message-secret",
+                "audit-secret",
+                "trigger-label-secret",
+                "trigger-match-secret",
+                "opaque-send-secret",
+                "/home/operator/private-scripts/deploy",
+                "trigger-url-secret",
+                "v2:/home/operator/private-logs/raw:0:12:digest",
+            ];
+
+            for sensitive in sensitive_values {
+                assert!(
+                    plain_json.contains(sensitive),
+                    "plain {kind:?} bundle should retain {sensitive}"
+                );
+                assert!(
+                    !redacted_json.contains(sensitive),
+                    "redacted {kind:?} bundle leaked {sensitive}"
+                );
+            }
+            assert!(redacted["logShards"].as_array().unwrap().is_empty());
+            assert!(redacted["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event["bytesRef"].is_null()));
+            assert_eq!(
+                redacted["summary"]["profile"]["connection"]["identityRefs"][0]
+                    ["fingerprintSha256"],
+                "SHA256:diagnostic-fingerprint"
+            );
+            assert_eq!(redacted["transfers"][0]["protocol"], "sftp");
+            assert_eq!(redacted["transfers"][0]["status"], "completed");
+            assert_eq!(
+                redacted["summary"]["profile"]["triggers"][0]["actions"][0]["text"],
+                "<redacted>"
+            );
+        }
     }
 
     fn test_store() -> SessionStore {
@@ -1841,6 +2089,50 @@ mod tests {
                 },
             ],
             ..SessionStore::default()
+        }
+    }
+
+    fn sensitive_ssh_connection() -> SshConnection {
+        SshConnection {
+            endpoint: HostEndpoint {
+                host: "diagnostic.example".to_string(),
+                port: 22,
+            },
+            username: "operator".to_string(),
+            reconnect: true,
+            reconnect_delay_ms: DEFAULT_SSH_RECONNECT_DELAY_MS,
+            keepalive_enabled: true,
+            keepalive_interval_seconds: DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
+            keepalive_max_missed: DEFAULT_SSH_KEEPALIVE_MAX_MISSED,
+            proxy: ProxyConfig {
+                enabled: true,
+                password_secret_ref: Some("keyring:proxy-password-ref".to_string()),
+                ..ProxyConfig::default()
+            },
+            password_secret_ref: Some("keyring:target-password-ref".to_string()),
+            passphrase_secret_ref: Some("stronghold:target-passphrase-ref".to_string()),
+            host_key_policy: HostKeyPolicy::profile_alias("test-session"),
+            trusted_host_keys: Vec::new(),
+            identity_policy: IdentityPolicy::default(),
+            identity_refs: vec![IdentityRef {
+                id: "identity-diagnostic-id".to_string(),
+                label: "diagnostic identity".to_string(),
+                source: IdentitySource::ProfileVault,
+                fingerprint_sha256: Some("SHA256:diagnostic-fingerprint".to_string()),
+                path: Some("/home/operator/.ssh/private-key".to_string()),
+                secret_ref: Some("stronghold:identity-secret-ref".to_string()),
+            }],
+            agent_policy: AgentPolicy::default(),
+            jumps: vec![JumpHop {
+                host: "jump.example".to_string(),
+                port: 22,
+                username: "jump-operator".to_string(),
+                password_secret_ref: Some("keyring:jump-password-ref".to_string()),
+                passphrase_secret_ref: Some("stronghold:jump-passphrase-ref".to_string()),
+                identity_ref: Some("identity-diagnostic-id".to_string()),
+                host_key_policy: None,
+            }],
+            tunnels: Vec::new(),
         }
     }
 

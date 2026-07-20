@@ -150,7 +150,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 日志管理可全文搜索磁盘 Text/JSONL 分片，包括已从有界 store events 裁剪的历史；支持全部或选中路径，结果带分片、行号、字节偏移和受限上下文，并明确报告命中/单文件/总扫描上限与 warning。Raw 保持 Hex 预览，不伪装成文本搜索。
 - 日志管理可把最多 1,000 个、合计不超过 512 MiB 的选中 raw/txt/jsonl 分片流式归档为原子落盘的 `.tar.gz`，包内 manifest 记录逐文件 SHA-256，并生成 `.sha256` sidecar；源分片保留不删除，路径穿越、symlink、非法扩展和归档过程中截断的文件会被拒绝。
 - 每个 profile 可配置 0..=3650 天自动保留期；旧配置默认关闭。应用启动时后台检查，持续写入时最多每小时复查一次，只按 profile 模板匹配并在删除前二次核对 mtime，随后清理空目录；启用保留期的自定义模板必须含 `{session}` 或 `{profile}`，避免误删共享路径。
-- 日志管理可把选中会话导出为原子落盘的 `.tar.gz`、`.sha256` 和 Ed25519 `.sig.json` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。签名覆盖最终归档名、SHA-256、大小和创建时间组成的版本化 NUL 分隔 payload，sidecar 携带独立验证所需的公钥和精确 payload；长期 seed 只进入系统 keyring 或已解锁 Stronghold，内部固定引用不会被通用 secret/Profile/迁移接口覆盖。默认脱敏同时覆盖 event text 与 `summary.lastLine`，脱敏开启时强制排除 raw 并禁止附件；只有显式关闭脱敏后，才可附加当前明确选中的最多 32 个、单个 16 MiB、合计 32 MiB 的受限日志分片，重复文件名会安全编号，读取期间的 symlink、截断和替换会失败。只有另行启用 raw 后才按受限 `bytesRef` 读取片段。
+- 日志管理可把选中会话导出为原子落盘的 `.tar.gz`、`.sha256` 和 Ed25519 `.sig.json` sidecar；包内含 bundle JSON、events JSONL、平台/store 诊断和逐文件 SHA-256 manifest。签名覆盖最终归档名、SHA-256、大小和创建时间组成的版本化 NUL 分隔 payload，sidecar 携带独立验证所需的公钥和精确 payload；长期 seed 只进入系统 keyring 或已解锁 Stronghold，内部固定引用不会被通用 secret/Profile/迁移接口覆盖。默认脱敏会移除 Profile/Jump/Proxy credential ref、identity 路径、已配置的 runtime/logging/transfer/Shell 工作路径、Shell 参数、自动化发送/命令/链接载荷、传输任务路径和 event `bytesRef`/`logShards`，并脱敏 event/annotation/timeline/audit/transfer message/断线原因/`summary.lastLine` 文本，同时保留协议、状态、endpoint 和公钥指纹诊断。脱敏开启时强制排除 raw 并禁止附件；只有显式关闭脱敏后，才可附加当前明确选中的最多 32 个、单个 16 MiB、合计 32 MiB 的受限日志分片，重复文件名会安全编号，读取期间的 symlink、截断和替换会失败。只有另行启用 raw 后才按受限 `bytesRef` 读取片段。
 - 触发器支持多个 contains/regex 规则和每条规则的有序多动作编辑；动作包括高亮、通知、时间线标记、本地命令、发送文本、自定义链接和 bell/chime/alert 声音。运行时视觉/声音效果通过 Tauri event 立即送达桌面，本地命令与发送文本保留后端 dispatch，并记录 system event/timeline 诊断。
 - secret redaction 有核心测试。
 
@@ -240,7 +240,7 @@ npm run build
 - workspace v1/v2/v3→v4 迁移、重复 node/view ID 修复、同 session 多 view、独立别名/颜色/键盘模式、精确激活/复制/关闭/排序/定点移动/拆分/合并、失效 session 收敛和带 view 身份/颜色/模式的 detach route 校验。
 - 锁屏超时 `1..=1440` 归一化、绝对空闲 deadline、精确 WindTerm/Linux/macOS 快捷键，以及版本化跨窗口 marker 对损坏值的保守锁定与修复。
 - Secret redaction。
-- JSON 风格凭据、完整 Bearer token 脱敏，以及 redacted session bundle。
+- JSON 风格凭据、完整 Bearer token 脱敏，以及覆盖 SSH/Tmux credential metadata、本地路径、自动化载荷、传输路径和 raw shard ref 的 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
 - MCP resource/template、ping、batch、notification、HTTP `202`、日志 limit、stdio 超限恢复、慢请求总 deadline、连接限额拒绝/permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限；官方 TypeScript SDK 1.29.0 另以真实子进程覆盖 stdio 8 消息生命周期，并以真实 loopback bridge 覆盖 HTTP 9 请求序列。
@@ -266,7 +266,7 @@ npm run build
 - 解码前非 UTF-8 入站 raw、Telnet IAC/NVT 精确分片、48 线程共享路径追加的无重叠引用、带 SHA-256 的 v2 `bytesRef` 删除重建检测和旧引用兼容。
 - Telnet 用户 text 的 CRLF wire、用户 bytes/modem 的 IAC doubling、协商 reply 的 outbound/control 无文本事件、每会话出站 lane、不可逆二进制结构化摘要、分片失败诊断，以及 transport 成功后 store 保存失败不触发重发且内存事件注解一致。
 - system/control 事件通道覆盖 direct/open/close 生命周期，验证脱敏 Text/JSONL 各恰好一次且 Raw 不变、shutdown drain，并锁定 inbound JSONL 先于由它触发的 system 诊断；Core 回归覆盖 wake 合并、4,096 条 outbox 上限和 worker 断开后的持续显式降级。SQLite mirror 会更新同 ID 事件的后补 annotations，同时不重复插入未变化历史。
-- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、可独立验证的 Ed25519 detached signature、持久签名 seed 格式校验、已选日志附件的命名/哈希/数量/大小/symlink/截断/替换边界、脱敏与 raw/附件互斥和 `bytesRef` 范围读取；回归同时覆盖此前遗漏的 `summary.lastLine` 敏感信息泄漏。
+- `.tar.gz` session bundle 的原子落盘、逐文件 manifest SHA-256、archive sidecar 校验、可独立验证的 Ed25519 detached signature、持久签名 seed 格式校验、已选日志附件的命名/哈希/数量/大小/symlink/截断/替换边界、脱敏与 raw/附件互斥和 `bytesRef` 范围读取；回归覆盖 `summary.lastLine`、SSH/Tmux credential metadata、本地路径、自动化载荷、传输路径和 raw shard ref 泄漏，并确认未脱敏导出保持原值。
 - 历史 Text/JSONL 分片全文搜索的大小写不敏感匹配、路径/行号/byte offset、全部/选中范围、raw 排除、查询长度、命中上限和路径穿越边界。
 - 通用日志分片归档的流式读取、源文件保留、逐文件 manifest SHA-256、archive sidecar 校验、重复路径去重和路径穿越拒绝。
 - profile 日志自动保留的旧配置兼容、模板归属约束、过期 mtime 删除、新分片和其他 profile 隔离，以及空日志根目录边界。
@@ -306,7 +306,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 255 项 Rust core/协议集成测试、51 文件/263 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 256 项 Rust core/协议集成测试、51 文件/263 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

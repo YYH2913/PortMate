@@ -33330,7 +33330,14 @@ mod tests {
     fn session_bundle_archive_enforces_redaction_and_verifies_checksums() {
         let root = std::env::temp_dir().join(format!("portmate-bundle-test-{}", Uuid::new_v4()));
         let store_path = root.join("portmate-store.sqlite3");
-        let profile = test_shell_profile();
+        let mut profile = test_shell_profile();
+        profile.logging.path_template = "/home/operator/private-logs/{session}.raw".to_string();
+        profile.transfer.default_local_dir = Some("/home/operator/private-downloads".to_string());
+        let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+            unreachable!("test profile should use a shell connection");
+        };
+        shell.cwd = Some("/home/operator/private-shell-cwd".to_string());
+        shell.args = vec!["--password".to_string(), "opaque-shell-secret".to_string()];
         let session_id = profile.id.clone();
         let secret = b"password=hunter2";
         let bytes_ref = append_log_bytes(&store_path, &profile, "raw", secret).unwrap();
@@ -33342,7 +33349,7 @@ mod tests {
                 EventDirection::Inbound,
                 EventStream::Stdout,
                 String::from_utf8_lossy(secret),
-                Some(bytes_ref),
+                Some(bytes_ref.clone()),
             )
             .unwrap();
         let attachment_root = log_root(&store_path).join("attachments");
@@ -33392,7 +33399,18 @@ mod tests {
             .keys()
             .any(|path| path.starts_with("log-segments/")));
         let redacted_text = String::from_utf8_lossy(&redacted_entries["bundle.json"]);
+        let redacted_events = String::from_utf8_lossy(&redacted_entries["events.jsonl"]);
         assert!(!redacted_text.contains("hunter2"));
+        assert!(!redacted_text.contains(&bytes_ref));
+        assert!(!redacted_events.contains(&bytes_ref));
+        for sensitive in [
+            "/home/operator/private-logs/{session}.raw",
+            "/home/operator/private-downloads",
+            "/home/operator/private-shell-cwd",
+            "opaque-shell-secret",
+        ] {
+            assert!(!redacted_text.contains(sensitive));
+        }
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&redacted_entries["manifest.json"]).unwrap();
@@ -33429,6 +33447,10 @@ mod tests {
             BASE64_STANDARD.encode(signing_key.verifying_key().to_bytes())
         );
         let plain_entries = read_test_bundle_entries(Path::new(&plain.path));
+        let plain_bundle = String::from_utf8_lossy(&plain_entries["bundle.json"]);
+        assert!(plain_bundle.contains(&bytes_ref));
+        assert!(plain_bundle.contains("/home/operator/private-shell-cwd"));
+        assert!(plain_bundle.contains("opaque-shell-secret"));
         let raw_entry = plain_entries
             .iter()
             .find(|(path, _)| path.starts_with("log-segments/"))
