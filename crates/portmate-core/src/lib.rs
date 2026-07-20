@@ -11,5 +11,8 @@ pub use host_keys::{
 };
 pub use mcp::{prompt_templates, resource_templates, tool_definitions};
 pub use models::*;
-pub use redaction::redact_secrets;
+pub use redaction::{
+    redact_audit_records, redact_secrets, redact_session_event, redact_session_events,
+    redact_session_summary, redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
+};
 pub use store::SessionStore;

@@ -1,6 +1,9 @@
 use crate::host_keys::{HostKeyEvaluation, HostKeyObservation, HostKeyStore};
 use crate::models::*;
-use crate::redaction::redact_secrets;
+use crate::redaction::{
+    redact_audit_records, redact_secrets, redact_session_events, redact_session_summary,
+    redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1002,36 +1005,12 @@ impl SessionStore {
             .collect::<Vec<_>>();
         let mut sysmon = self.sysmon_for(session_id);
         if redact_bundle {
-            if let Some(summary) = &mut summary {
-                redact_session_summary(summary);
-            }
-            for event in &mut events {
-                event.text = event.text.take().map(|text| redact_secrets(&text));
-                event.bytes_ref = None;
-                for value in event.annotations.values_mut() {
-                    *value = redact_secrets(value);
-                }
-            }
-            for mark in &mut timeline {
-                mark.label = redact_secrets(&mark.label);
-                mark.details = mark.details.take().map(|details| redact_secrets(&details));
-            }
-            for transfer in &mut transfers {
-                transfer.source = "<redacted-path>".to_string();
-                transfer.destination = "<redacted-path>".to_string();
-                transfer.message = transfer
-                    .message
-                    .take()
-                    .map(|message| redact_secrets(&message));
-            }
-            for record in &mut audit {
-                for value in record.details.values_mut() {
-                    *value = redact_secrets(value);
-                }
-            }
-            if let Some(snapshot) = &mut sysmon {
-                redact_sysmon_snapshot(snapshot);
-            }
+            summary = summary.map(redact_session_summary);
+            events = redact_session_events(events);
+            timeline = redact_timeline_marks(timeline);
+            transfers = transfers.into_iter().map(redact_transfer_task).collect();
+            audit = redact_audit_records(audit);
+            sysmon = sysmon.map(redact_sysmon_snapshot);
         }
         let log_shards = events
             .iter()
@@ -1058,75 +1037,6 @@ impl SessionStore {
                 ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(ssh),
                 _ => None,
             })
-    }
-}
-
-fn redact_session_summary(summary: &mut SessionSummary) {
-    summary.last_line = summary.last_line.take().map(|text| redact_secrets(&text));
-    summary.runtime.cwd = None;
-    summary.runtime.last_disconnect_reason = summary
-        .runtime
-        .last_disconnect_reason
-        .take()
-        .map(|reason| redact_secrets(&reason));
-    summary.profile.logging.path_template = "<redacted-path-template>".to_string();
-    summary.profile.transfer.default_local_dir = None;
-    for trigger in &mut summary.profile.triggers {
-        trigger.label = redact_secrets(&trigger.label);
-        match &mut trigger.matcher {
-            TriggerMatcher::Contains { text, .. } => *text = redact_secrets(text),
-            TriggerMatcher::Regex { pattern } => *pattern = redact_secrets(pattern),
-        }
-        for action in &mut trigger.actions {
-            match action {
-                TriggerAction::SendText { text } => *text = "<redacted>".to_string(),
-                TriggerAction::LocalCommand { command } => *command = "<redacted>".to_string(),
-                TriggerAction::CustomLink { url_template } => {
-                    *url_template = "<redacted-url-template>".to_string();
-                }
-                TriggerAction::Notification { message } => {
-                    *message = redact_secrets(message);
-                }
-                TriggerAction::TimelineMark { label } => *label = redact_secrets(label),
-                TriggerAction::Highlight { .. } | TriggerAction::Sound { .. } => {}
-            }
-        }
-    }
-    match &mut summary.profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-            ssh.password_secret_ref = None;
-            ssh.passphrase_secret_ref = None;
-            ssh.proxy.password_secret_ref = None;
-            for identity in &mut ssh.identity_refs {
-                identity.path = None;
-                identity.secret_ref = None;
-            }
-            for jump in &mut ssh.jumps {
-                jump.password_secret_ref = None;
-                jump.passphrase_secret_ref = None;
-            }
-        }
-        ConnectionConfig::Telnet(tcp) | ConnectionConfig::Tcp(tcp) => {
-            tcp.proxy.password_secret_ref = None;
-        }
-        ConnectionConfig::Shell(shell) => {
-            shell.cwd = None;
-            shell.args.clear();
-        }
-        ConnectionConfig::Serial(_) => {}
-    }
-}
-
-fn redact_sysmon_snapshot(snapshot: &mut SysmonSnapshot) {
-    for process in &mut snapshot.processes {
-        process.name = "<redacted-process>".to_string();
-    }
-    for disk in &mut snapshot.disks {
-        disk.filesystem = "<redacted-filesystem>".to_string();
-        disk.mount_point = "<redacted-mount-point>".to_string();
-    }
-    for interface in &mut snapshot.network_interfaces {
-        interface.name = "<redacted-interface>".to_string();
     }
 }
 
