@@ -13,7 +13,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -707,15 +707,44 @@ fn read_ipc_response_with_limits(
 }
 
 fn ensure_keyring_store() -> Result<()> {
-    static KEYRING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    KEYRING_INIT
-        .get_or_init(|| {
-            keyring::use_native_store(true)
-                .or_else(|_| keyring::use_native_store(false))
-                .map_err(|error| format!("system keyring initialization failed: {error}"))
-        })
-        .clone()
-        .map_err(|error| anyhow!(error))
+    static KEYRING_INITIALIZED: OnceLock<Mutex<bool>> = OnceLock::new();
+    ensure_keyring_store_with(
+        KEYRING_INITIALIZED.get_or_init(|| Mutex::new(false)),
+        initialize_persistent_native_keyring,
+    )
+}
+
+fn ensure_keyring_store_with<Initialize>(
+    initialized: &Mutex<bool>,
+    initialize: Initialize,
+) -> Result<()>
+where
+    Initialize: FnOnce() -> Result<()>,
+{
+    let mut initialized = initialized
+        .lock()
+        .map_err(|error| anyhow!(error.to_string()))?;
+    if *initialized {
+        return Ok(());
+    }
+    initialize()?;
+    *initialized = true;
+    Ok(())
+}
+
+fn initialize_persistent_native_keyring() -> Result<()> {
+    initialize_persistent_native_keyring_with(|not_keyutils| {
+        keyring::use_native_store(not_keyutils)
+            .map_err(|error| anyhow!("system keyring initialization failed: {error}"))
+    })
+}
+
+fn initialize_persistent_native_keyring_with<UseNative>(use_native: UseNative) -> Result<()>
+where
+    UseNative: FnOnce(bool) -> Result<()>,
+{
+    // On Linux, true selects persistent Secret Service instead of reboot-volatile keyutils.
+    use_native(true)
 }
 
 fn keyring_entry(secret_ref: &str) -> Result<Entry> {
@@ -1883,6 +1912,38 @@ fn parse_session_uri(uri: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
+        let initialized = Mutex::new(false);
+        let attempts = std::cell::Cell::new(0_u32);
+        let first = ensure_keyring_store_with(&initialized, || {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow!("secret service offline"))
+        });
+        assert_eq!(first.unwrap_err().to_string(), "secret service offline");
+        assert!(!*initialized.lock().unwrap());
+
+        ensure_keyring_store_with(&initialized, || {
+            attempts.set(attempts.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        ensure_keyring_store_with(&initialized, || {
+            panic!("successful initialization must be cached")
+        })
+        .unwrap();
+
+        let selectors = std::cell::RefCell::new(Vec::new());
+        let error = initialize_persistent_native_keyring_with(|not_keyutils| {
+            selectors.borrow_mut().push(not_keyutils);
+            Err(anyhow!("persistent store unavailable"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "persistent store unavailable");
+        assert_eq!(selectors.into_inner(), vec![true]);
+    }
 
     fn test_http_config() -> HttpConfig {
         HttpConfig {

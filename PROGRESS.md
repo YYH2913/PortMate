@@ -117,7 +117,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - client identity 默认按 `IdentitiesOnly` 思路，只尝试 profile/keyring 指定 key，不遍历系统 agent。
 - 当 profile 配置 `Profile + Agent` 或显式 agent identity 时，后端会读取本机 ssh-agent 并按 `offerMode` 顺序尝试认证；未关闭 `IdentitiesOnly` 时不会无界遍历全部 agent key。
 - 认证成功方法会记录到 `lastSuccessful`。
-- 私钥、密码、passphrase、MCP IPC token 进入 OS keyring，SQLite 只保存引用。
+- 私钥、密码、passphrase、MCP IPC token 进入持久 OS keyring，SQLite 只保存引用。Linux 只使用 Secret Service，不再把重启即丢的 kernel keyutils 当作持久 provider；初始化瞬时失败不会永久缓存，后续操作会重试，并让自动存储按既定规则进入已解锁 Stronghold fallback 或返回明确错误。
 - OpenSSH `known_hosts` 导入/导出已接入 Tauri command 和密钥管理器弹窗。
 - 密钥管理器可以查看 PortMate host key trust store、按 scope/profile 过滤分组、导入/导出 known_hosts、删除 host key、批量删除/复制 host key 到选中 profile、编辑 host key 的 alias/host/port/scope/profile/label；Client Key 区域可搜索并按 profile/source 筛选分组全部 SSH/Tmux profile identity，批量复制到目标 profile、在各自 profile 中置顶或移除引用，被 Jump Host 使用的引用会标记并阻止移除；可从本地文件或粘贴内容导入 OpenSSH 私钥到 profile-vault，并单条或批量添加当前 ssh-agent identity；紧凑 identity inspector 可编辑 label/source/path/fingerprint，展示不可变 ID、Jump Host 和共享 secret 影响，并安全轮换 Vault 私钥或区分“只移除引用/同时清理未共享 secret”。
 - 首次连接/host key 变更失败后会弹出专门确认窗口，展示 SHA-256 指纹/已保存指纹，并支持仅本次、加入 Profile、加入 Project、替换 Profile、拒绝和确认后重连。
@@ -273,7 +273,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 258：`portmate` 192、`portmate-kdf` 1、`portmate-core` 38、`portmate-mcp` 27；`npm test` 另有 51 个文件、266 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 260：`portmate` 193、`portmate-kdf` 1、`portmate-core` 38、`portmate-mcp` 28；`npm test` 另有 51 个文件、266 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
@@ -306,7 +306,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、grant scope、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、live IPC、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 258 项 Rust core/协议集成测试、51 文件/266 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 260 项 Rust core/协议集成测试、51 文件/266 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

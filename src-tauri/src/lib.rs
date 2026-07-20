@@ -18407,14 +18407,42 @@ where
 }
 
 fn ensure_keyring_store() -> Result<(), String> {
-    static KEYRING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    KEYRING_INIT
-        .get_or_init(|| {
-            keyring::use_native_store(true)
-                .or_else(|_| keyring::use_native_store(false))
-                .map_err(|error| format!("系统密钥库初始化失败: {error}"))
-        })
-        .clone()
+    static KEYRING_INITIALIZED: OnceLock<Mutex<bool>> = OnceLock::new();
+    ensure_keyring_store_with(
+        KEYRING_INITIALIZED.get_or_init(|| Mutex::new(false)),
+        initialize_persistent_native_keyring,
+    )
+}
+
+fn ensure_keyring_store_with<Initialize>(
+    initialized: &Mutex<bool>,
+    initialize: Initialize,
+) -> Result<(), String>
+where
+    Initialize: FnOnce() -> Result<(), String>,
+{
+    let mut initialized = initialized.lock().map_err(|error| error.to_string())?;
+    if *initialized {
+        return Ok(());
+    }
+    initialize()?;
+    *initialized = true;
+    Ok(())
+}
+
+fn initialize_persistent_native_keyring() -> Result<(), String> {
+    initialize_persistent_native_keyring_with(|not_keyutils| {
+        keyring::use_native_store(not_keyutils)
+            .map_err(|error| format!("系统密钥库初始化失败: {error}"))
+    })
+}
+
+fn initialize_persistent_native_keyring_with<UseNative>(use_native: UseNative) -> Result<(), String>
+where
+    UseNative: FnOnce(bool) -> Result<(), String>,
+{
+    // On Linux, true selects persistent Secret Service instead of reboot-volatile keyutils.
+    use_native(true)
 }
 
 fn decode_bundle_signing_key(encoded: &str) -> Result<SigningKey, String> {
@@ -37935,6 +37963,38 @@ mod tests {
         };
         assert_eq!(saved.len(), 1);
         assert!(!saved[0].enabled);
+    }
+
+    #[test]
+    fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
+        let initialized = Mutex::new(false);
+        let attempts = std::cell::Cell::new(0_u32);
+        let first = ensure_keyring_store_with(&initialized, || {
+            attempts.set(attempts.get() + 1);
+            Err("secret service offline".to_string())
+        });
+        assert_eq!(first.unwrap_err(), "secret service offline");
+        assert!(!*initialized.lock().unwrap());
+
+        ensure_keyring_store_with(&initialized, || {
+            attempts.set(attempts.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        ensure_keyring_store_with(&initialized, || {
+            panic!("successful initialization must be cached")
+        })
+        .unwrap();
+
+        let selectors = std::cell::RefCell::new(Vec::new());
+        let error = initialize_persistent_native_keyring_with(|not_keyutils| {
+            selectors.borrow_mut().push(not_keyutils);
+            Err("persistent store unavailable".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "persistent store unavailable");
+        assert_eq!(selectors.into_inner(), vec![true]);
     }
 
     fn vault_identity(id: &str, secret_ref: &str) -> IdentityRef {
