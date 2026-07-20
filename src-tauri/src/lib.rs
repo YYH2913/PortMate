@@ -3483,6 +3483,10 @@ fn save_session_profile(
             }
         }
     }
+    drop(store);
+    if let Some(app_handle) = &state.app_handle {
+        let _ = app_handle.emit("portmate-session-profile-updated", summary.clone());
+    }
     Ok(summary)
 }
 

@@ -9,6 +9,8 @@ import {
   DETACHED_PANE_EVENT,
   DETACHED_PANE_MESSAGE_TYPE,
   SESSION_PROFILE_DELETED_EVENT,
+  SESSION_PROFILE_UPDATED_EVENT,
+  upsertDetachedSessionSummary,
 } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
@@ -66,7 +68,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     if (!isBackendAvailable()) return;
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const unlisten = new Set<() => void>();
     void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
       if (disposed || event.payload !== request.sessionId) return;
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
@@ -74,11 +76,19 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       void getCurrentWebviewWindow().close().catch(() => {});
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
-      else unlisten = nextUnlisten;
+      else unlisten.add(nextUnlisten);
+    }).catch(() => {});
+    void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
+      if (disposed || event.payload?.profile?.id !== request.sessionId) return;
+      setSessions((current) => upsertDetachedSessionSummary(current, event.payload));
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten.add(nextUnlisten);
     }).catch(() => {});
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const stopListening of unlisten) stopListening();
+      unlisten.clear();
     };
   }, [request.sessionId]);
 
@@ -100,6 +110,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
+      if (event.key === "portmate.sessions" || event.key === null) {
+        setSessions(loadLocalSessions());
+      }
       if (["portmate.terminalPrefs", COMMAND_HISTORY_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
         setTerminalInteractionPrefs(readTerminalInteractionPrefs());
       }

@@ -5,7 +5,9 @@ import {
   normalizeDetachedPaneCommand,
   normalizeDetachedPaneMessage,
   parseDetachedPaneRequest,
+  upsertDetachedSessionSummary,
 } from "./detached-pane-state";
+import type { SessionSummary } from "./types";
 
 describe("detached pane state", () => {
   it("round-trips an encoded detached pane route", () => {
@@ -54,5 +56,19 @@ describe("detached pane state", () => {
       type: DETACHED_PANE_MESSAGE_TYPE,
       payload,
     });
+  });
+
+  it("upserts a detached session after a profile update", () => {
+    const first = { profile: { id: "session-a", name: "Before" } } as SessionSummary;
+    const second = { profile: { id: "session-b", name: "Other" } } as SessionSummary;
+    const updated = { profile: { id: "session-a", name: "After" } } as SessionSummary;
+    const sessions = [first, second];
+
+    const next = upsertDetachedSessionSummary(sessions, updated);
+    expect(next).toEqual([updated, second]);
+    expect(next).not.toBe(sessions);
+
+    const unknown = { profile: { id: "session-c", name: "Unknown" } } as SessionSummary;
+    expect(upsertDetachedSessionSummary(sessions, unknown)).toEqual([first, second, unknown]);
   });
 });

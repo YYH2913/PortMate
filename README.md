@@ -87,7 +87,9 @@ command backend inside the desktop app.
    - Trigger matching and actions for timeline marks, notifications, highlights, local commands, send-text automation, custom links, and sound
    - Terminal type, font, rows, cols, scrollback, and four validated Profile themes. Font, size,
      scrollback, and theme changes apply to every mounted view of the saved Profile without
-     recreating XTerm or discarding its buffer.
+     recreating XTerm or discarding its buffer. A successful desktop save broadcasts the committed
+     session summary to detached Tauri windows; browser preview windows consume the shared session
+     cache storage event, with periodic refresh retained as a runtime-state fallback.
    - Synchronized-input protocol filters, newline mode, inter-target delay, and explicit batch-send prefix/suffix
    - Logging formats, redaction, path template
    - Transfer protocols
@@ -215,7 +217,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 486.0 kB of main JS, 466.5 kB of terminal core JS, 120.4 kB of WebGL JS,
+emits approximately 486.2 kB of main JS, 466.5 kB of terminal core JS, 120.4 kB of WebGL JS,
 139.1 kB of main CSS, 12.1 kB for the MCP workspace, 11.7 kB for the OneKeys manager, 4.7 kB for
 session/terminal context menus, 3.7 kB for one-time MCP approval, 2.8 kB for the lazy workspace
 utility panels, and 4.5 kB for the view

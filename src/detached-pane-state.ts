@@ -1,9 +1,11 @@
 import { normalizeTerminalKeyMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
+import type { SessionSummary } from "./types";
 
 export const DETACHED_PANE_EVENT = "portmate-detached-pane-command";
 export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
 export const SESSION_PROFILE_DELETED_EVENT = "portmate-session-profile-deleted";
+export const SESSION_PROFILE_UPDATED_EVENT = "portmate-session-profile-updated";
 
 export type DetachedPaneRequest = {
   windowId: string;
@@ -77,6 +79,17 @@ export function normalizeDetachedPaneMessage(value: unknown): DetachedPaneMessag
   if (source.type !== DETACHED_PANE_MESSAGE_TYPE) return null;
   const payload = normalizeDetachedPaneCommand(source.payload);
   return payload ? { type: DETACHED_PANE_MESSAGE_TYPE, payload } : null;
+}
+
+export function upsertDetachedSessionSummary(
+  sessions: readonly SessionSummary[],
+  updated: SessionSummary,
+): SessionSummary[] {
+  const index = sessions.findIndex((session) => session.profile.id === updated.profile.id);
+  if (index < 0) return [...sessions, updated];
+  const next = [...sessions];
+  next[index] = updated;
+  return next;
 }
 
 function cleanRouteId(value: string | null): string {

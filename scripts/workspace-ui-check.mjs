@@ -940,6 +940,41 @@ try {
   await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"]').waitFor();
   assert(await activeXterm.getAttribute("data-theme-test-identity") === "retained",
     "restoring the terminal theme replaced the live XTerm instance");
+
+  const detachedUrl = new URL(appUrl);
+  detachedUrl.searchParams.set("detachedPane", "1");
+  detachedUrl.searchParams.set("windowId", "theme-check-window");
+  detachedUrl.searchParams.set("paneId", "theme-check-pane");
+  detachedUrl.searchParams.set("viewId", "theme-check-view");
+  detachedUrl.searchParams.set("sessionId", "local-shell");
+  detachedUrl.searchParams.set("title", "Local Shell");
+  detachedUrl.searchParams.set("color", "");
+  detachedUrl.searchParams.set("keyMode", "remote");
+  const detachedPage = await context.newPage();
+  const detachedPageErrors = [];
+  detachedPage.on("pageerror", (error) => detachedPageErrors.push(error.message));
+  await detachedPage.goto(detachedUrl.toString());
+  const detachedXterm = detachedPage.locator(".detached-pane-terminal .xterm");
+  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-dark"]').waitFor();
+  await detachedXterm.evaluate((element) => { element.dataset.profileUpdateIdentity = "retained"; });
+  await detachedPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.terminal.theme = "portmate-light";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-light"]').waitFor();
+  const detachedThemeState = await detachedPage.locator(".detached-pane-terminal .terminal-canvas").evaluate((canvas) => ({
+    background: getComputedStyle(canvas).backgroundColor,
+    retained: canvas.querySelector(".xterm")?.dataset.profileUpdateIdentity ?? "",
+  }));
+  assert(detachedThemeState.background === "rgb(247, 248, 250)"
+    && detachedThemeState.retained === "retained"
+    && detachedPageErrors.length === 0,
+  `detached profile update did not apply in place: ${JSON.stringify({ detachedThemeState, detachedPageErrors })}`);
+  await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
+  await detachedPage.close();
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
@@ -1321,6 +1356,7 @@ try {
       mobile: mobileSessionSettingsBounds,
     },
     terminalTheme: lightThemeState,
+    detachedTheme: detachedThemeState,
     mcp: {
       tabs: mcpTabs,
       exportedRecordIds: exportCall.args.request.recordIds,
@@ -1348,6 +1384,7 @@ try {
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-terminal-theme-settings.png`,
       `${screenshotPrefix}-terminal-light-theme.png`,
+      `${screenshotPrefix}-detached-theme.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-audit.png`,
       `${screenshotPrefix}-mcp-audit-mobile.png`,
