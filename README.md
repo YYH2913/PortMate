@@ -265,6 +265,13 @@ server's `2025-06-18` protocol version, completes initialize/initialized, ping, 
 templates, prompts, and a resource read, then verifies that closing the client also terminates the
 bridge process.
 
+Read tools remain available by default while the grant store is empty. After any grant is saved,
+the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`
+scope for the requested operation. An empty allowed-session list means all sessions; otherwise
+session lists, resources, global log search, prompts, transfer resources, and HTTP SSE state are
+filtered to the configured IDs. The live desktop IPC rechecks the same policy before returning
+data. Revoked or expired grants stay closed and cannot restore default read access.
+
 Write tools are denied by default. For a trusted local development run with an empty grant store:
 
 ```bash

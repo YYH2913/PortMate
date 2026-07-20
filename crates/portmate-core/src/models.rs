@@ -861,7 +861,7 @@ pub struct McpGrant {
 
 impl McpGrant {
     pub fn allows(&self, scope: McpScope, session_id: Option<&str>, now: DateTime<Utc>) -> bool {
-        if self.revoked_at.is_some() || self.expires_at.is_some_and(|expires| expires < now) {
+        if self.revoked_at.is_some() || self.expires_at.is_some_and(|expires| expires <= now) {
             return false;
         }
         if !self.scopes.contains(&scope) {

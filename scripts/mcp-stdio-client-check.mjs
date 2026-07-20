@@ -23,6 +23,7 @@ const transport = new StdioClientTransport({
     ...process.env,
     PORTMATE_MCP_HTTP: "0",
     PORTMATE_MCP_CLIENT_ID: "official-sdk-stdio-check",
+    PORTMATE_STORE_PATH: "",
   },
   stderr: "pipe",
 });

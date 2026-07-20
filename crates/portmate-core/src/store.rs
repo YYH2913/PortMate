@@ -961,6 +961,14 @@ impl SessionStore {
             .any(|grant| grant.allows(scope, session_id, now))
     }
 
+    pub fn mcp_can_read(&self, client_id: &str, scope: McpScope, session_id: Option<&str>) -> bool {
+        let client_id = client_id.trim();
+        !client_id.is_empty()
+            && client_id.len() <= 128
+            && !client_id.chars().any(char::is_control)
+            && (self.grants.is_empty() || self.mcp_can(client_id, scope, session_id))
+    }
+
     pub fn export_session_bundle(&self, session_id: &str) -> serde_json::Value {
         self.export_session_bundle_with_redaction(session_id, false)
     }
@@ -1163,6 +1171,50 @@ mod tests {
         assert!(store.mcp_can("test-client", McpScope::ReadLogs, Some("test-session")));
         assert!(store.mcp_can("test-client", McpScope::WriteInput, Some("test-session")));
         assert!(!store.mcp_can("readonly", McpScope::WriteInput, Some("test-session")));
+    }
+
+    #[test]
+    fn read_scopes_default_open_then_follow_explicit_grants() {
+        let mut store = test_store();
+        store.grants.clear();
+        assert!(store.mcp_can_read("reader", McpScope::ReadSessions, None));
+        assert!(store.mcp_can_read("reader", McpScope::ReadLogs, Some("test-session")));
+        assert!(!store.mcp_can_read("  ", McpScope::ReadSessions, None));
+        assert!(!store.mcp_can_read("bad\nreader", McpScope::ReadSessions, None));
+        assert!(!store.mcp_can_read(&"x".repeat(129), McpScope::ReadSessions, None));
+
+        store.grants.push(McpGrant {
+            client_id: "scoped-reader".to_string(),
+            name: "Scoped reader".to_string(),
+            scopes: vec![McpScope::ReadLogs],
+            allowed_sessions: vec!["test-session".to_string()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        assert!(!store.mcp_can_read("unknown", McpScope::ReadLogs, Some("test-session")));
+        assert!(!store.mcp_can_read("scoped-reader", McpScope::ReadSessions, None));
+        assert!(store.mcp_can_read(" scoped-reader ", McpScope::ReadLogs, Some("test-session")));
+        assert!(!store.mcp_can_read("scoped-reader", McpScope::ReadLogs, Some("other-session")));
+
+        store.grants[0].revoked_at = Some(Utc::now());
+        assert!(!store.mcp_can_read("scoped-reader", McpScope::ReadLogs, Some("test-session")));
+    }
+
+    #[test]
+    fn grant_is_expired_at_its_exact_deadline() {
+        let now = Utc::now();
+        let grant = McpGrant {
+            client_id: "reader".to_string(),
+            name: "Reader".to_string(),
+            scopes: vec![McpScope::ReadLogs],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: Some(now),
+            revoked_at: None,
+        };
+
+        assert!(!grant.allows(McpScope::ReadLogs, Some("test-session"), now));
     }
 
     #[test]

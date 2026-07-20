@@ -64,6 +64,7 @@ const server = spawn(binary, ["--http"], {
     PORTMATE_MCP_HTTP_ADDR: `127.0.0.1:${port}`,
     PORTMATE_MCP_HTTP_TOKEN: token,
     PORTMATE_MCP_CLIENT_ID: "official-sdk-http-check",
+    PORTMATE_STORE_PATH: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

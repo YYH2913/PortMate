@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use keyring_core::Entry;
 use portmate_core::{
-    prompt_templates, redact_secrets, resource_templates, tool_definitions, SessionEvent,
-    SessionStore,
+    prompt_templates, redact_secrets, resource_templates, tool_definitions, McpScope, SessionEvent,
+    SessionStore, SessionSummary,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use serde::{Deserialize, Serialize};
@@ -138,7 +138,10 @@ impl PortMateMcp {
             store_path,
             ipc,
             client_id: std::env::var("PORTMATE_MCP_CLIENT_ID")
-                .unwrap_or_else(|_| "portmate-local".to_string()),
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "portmate-local".to_string()),
             allow_write: std::env::var("PORTMATE_MCP_TRUSTED").ok().as_deref() == Some("1"),
         }
     }
@@ -225,15 +228,17 @@ impl PortMateMcp {
     }
 
     fn resources_list_result(&self) -> Value {
-        let mut resources = vec![json!({
-            "uri": "portmate://sessions",
-            "name": "sessions",
-            "title": "Sessions",
-            "description": "All visible session summaries",
-            "mimeType": "application/json"
-        })];
-        let session_resources = [
-            ("state", "State", "application/json"),
+        let mut resources = Vec::new();
+        if self.read_scope_enabled(McpScope::ReadSessions) {
+            resources.push(json!({
+                "uri": "portmate://sessions",
+                "name": "sessions",
+                "title": "Sessions",
+                "description": "All visible session summaries",
+                "mimeType": "application/json"
+            }));
+        }
+        let log_resources = [
             ("screen", "Screen", "text/plain"),
             ("log", "Log", "application/jsonl"),
             ("timeline", "Timeline", "application/json"),
@@ -241,16 +246,29 @@ impl PortMateMcp {
             ("tmux", "Tmux", "application/json"),
         ];
         for summary in self.store.summaries() {
-            for (suffix, label, mime_type) in session_resources {
+            if self.read_session_allowed(McpScope::ReadSessions, &summary.profile.id) {
                 resources.push(json!({
-                    "uri": format!("portmate://sessions/{}/{suffix}", summary.profile.id),
-                    "name": format!("session_{}_{}", summary.profile.id, suffix),
-                    "title": format!("{} {label}", summary.profile.name),
-                    "mimeType": mime_type
+                    "uri": format!("portmate://sessions/{}/state", summary.profile.id),
+                    "name": format!("session_{}_state", summary.profile.id),
+                    "title": format!("{} State", summary.profile.name),
+                    "mimeType": "application/json"
                 }));
+            }
+            if self.read_session_allowed(McpScope::ReadLogs, &summary.profile.id) {
+                for (suffix, label, mime_type) in log_resources {
+                    resources.push(json!({
+                        "uri": format!("portmate://sessions/{}/{suffix}", summary.profile.id),
+                        "name": format!("session_{}_{}", summary.profile.id, suffix),
+                        "title": format!("{} {label}", summary.profile.name),
+                        "mimeType": mime_type
+                    }));
+                }
             }
         }
         for transfer in &self.store.transfers {
+            if !self.read_session_allowed(McpScope::ReadLogs, &transfer.session_id) {
+                continue;
+            }
             resources.push(json!({
                 "uri": format!("portmate://transfers/{}", transfer.id),
                 "name": format!("transfer_{}", transfer.id),
@@ -270,7 +288,9 @@ impl PortMateMcp {
             .get("arguments")
             .and_then(|args| args.get("sessionId"))
             .and_then(Value::as_str)
-            .unwrap_or_default();
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("missing prompt sessionId"))?;
+        self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
         let screen = self.store.screen(session_id).unwrap_or_default();
         let text = match name {
             "diagnose_session" => format!("Diagnose PortMate session `{session_id}` using this terminal snapshot:\n\n{screen}"),
@@ -290,8 +310,17 @@ impl PortMateMcp {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("missing resource uri"))?;
         let content = if uri == "portmate://sessions" {
-            serde_json::to_string_pretty(&self.store.summaries())?
+            self.guard_read_scope(McpScope::ReadSessions, None)?;
+            serde_json::to_string_pretty(
+                &self.visible_summaries(self.store.summaries(), McpScope::ReadSessions),
+            )?
         } else if let Some((session_id, suffix)) = parse_session_uri(uri) {
+            let scope = if suffix == "state" {
+                McpScope::ReadSessions
+            } else {
+                McpScope::ReadLogs
+            };
+            self.guard_read_scope(scope, Some(session_id))?;
             match suffix {
                 "state" => serde_json::to_string_pretty(
                     &self
@@ -324,7 +353,12 @@ impl PortMateMcp {
                 _ => return Err(anyhow!("unknown session resource suffix: {suffix}")),
             }
         } else if let Some(id) = uri.strip_prefix("portmate://transfers/") {
-            serde_json::to_string_pretty(&self.store.transfer_by_id(id))?
+            let transfer = self
+                .store
+                .transfer_by_id(id)
+                .ok_or_else(|| anyhow!("unknown or unauthorized transfer resource"))?;
+            self.guard_read_scope(McpScope::ReadLogs, Some(&transfer.session_id))?;
+            serde_json::to_string_pretty(&transfer)?
         } else {
             return Err(anyhow!("unknown resource uri: {uri}"));
         };
@@ -351,14 +385,21 @@ impl PortMateMcp {
 
         let output = match name {
             "list_sessions" => {
-                if let Some(value) = self.call_ipc_value("list_sessions", json!({}))? {
-                    ipc_value_to_text(value)?
-                } else {
-                    serde_json::to_string_pretty(&self.store.summaries())?
-                }
+                self.guard_read_scope(McpScope::ReadSessions, None)?;
+                let summaries =
+                    if let Some(value) = self.call_ipc_value("list_sessions", json!({}))? {
+                        serde_json::from_value::<Vec<SessionSummary>>(value)
+                            .map_err(|error| anyhow!("invalid desktop session response: {error}"))?
+                    } else {
+                        self.store.summaries()
+                    };
+                serde_json::to_string_pretty(
+                    &self.visible_summaries(summaries, McpScope::ReadSessions),
+                )?
             }
             "read_screen" => {
                 let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 if let Some(value) = self.call_ipc_value("read_screen", arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -367,6 +408,7 @@ impl PortMateMcp {
             }
             "tail_log" => {
                 let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 let limit = arguments.get("limit").and_then(Value::as_u64);
                 let limit = bounded_log_query_limit(limit);
                 if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
@@ -380,15 +422,20 @@ impl PortMateMcp {
             "search_logs" => {
                 let query = required_string(&arguments, "query")?;
                 let session_id = arguments.get("sessionId").and_then(Value::as_str);
+                self.guard_read_scope(McpScope::ReadLogs, session_id)?;
                 let limit = arguments.get("limit").and_then(Value::as_u64);
                 let limit = bounded_log_query_limit(limit);
-                if let Some(value) = self.call_ipc_value("search_logs", arguments.clone())? {
-                    ipc_value_to_text(value)?
-                } else {
-                    serde_json::to_string_pretty(&redact_events(
-                        self.store.search_logs(query, session_id, limit),
-                    ))?
-                }
+                let mut events =
+                    if let Some(value) = self.call_ipc_value("search_logs", arguments.clone())? {
+                        serde_json::from_value::<Vec<SessionEvent>>(value)
+                            .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
+                    } else {
+                        redact_events(self.store.search_logs(query, session_id, limit))
+                    };
+                events.retain(|event| {
+                    self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
+                });
+                serde_json::to_string_pretty(&events)?
             }
             "send_text" | "send_key" | "run_command" => {
                 if let Some(output) = self.write_tool(name, &arguments)? {
@@ -402,6 +449,7 @@ impl PortMateMcp {
             }
             "export_session_bundle" => {
                 let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -437,7 +485,8 @@ impl PortMateMcp {
                 }
             }
             "list_tmux_state" => {
-                let _ = required_string(&arguments, "sessionId")?;
+                let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
@@ -471,6 +520,51 @@ impl PortMateMcp {
             return ipc_value_to_text(value).map(Some);
         }
         Ok(None)
+    }
+
+    fn read_scope_enabled(&self, scope: McpScope) -> bool {
+        self.store.mcp_can_read(&self.client_id, scope, None)
+    }
+
+    fn read_session_allowed(&self, scope: McpScope, session_id: &str) -> bool {
+        self.store
+            .mcp_can_read(&self.client_id, scope, Some(session_id))
+    }
+
+    fn guard_read_scope(&self, scope: McpScope, session_id: Option<&str>) -> Result<()> {
+        if self.store.mcp_can_read(&self.client_id, scope, session_id) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "MCP read grant does not permit {scope:?} for the requested session"
+            ))
+        }
+    }
+
+    fn visible_summaries(
+        &self,
+        summaries: Vec<SessionSummary>,
+        scope: McpScope,
+    ) -> Vec<SessionSummary> {
+        summaries
+            .into_iter()
+            .filter(|summary| self.read_session_allowed(scope, &summary.profile.id))
+            .collect()
+    }
+
+    fn sse_state_payload(&self) -> Value {
+        json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverInfo": {
+                "name": "portmate-mcp",
+                "title": "PortMate MCP Bridge",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "sessions": self.visible_summaries(
+                self.store.summaries(),
+                McpScope::ReadSessions,
+            )
+        })
     }
 
     fn call_ipc_value(&self, command: &str, args: Value) -> Result<Option<Value>> {
@@ -1863,16 +1957,7 @@ fn sse_event_with_limit(event: &str, data: &Value, max_data_bytes: usize) -> Str
 }
 
 fn mcp_sse_state_payload() -> Value {
-    let server = PortMateMcp::new();
-    json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
-        "serverInfo": {
-            "name": "portmate-mcp",
-            "title": "PortMate MCP Bridge",
-            "version": env!("CARGO_PKG_VERSION")
-        },
-        "sessions": server.store.summaries()
-    })
+    PortMateMcp::new().sse_state_payload()
 }
 
 fn error(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse {
@@ -1990,6 +2075,91 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn explicit_read_grants_filter_sessions_resources_and_global_logs() {
+        let mut store = test_snapshot_store("visible snapshot");
+        let mut hidden = store.profiles[0].clone();
+        hidden.id = "hidden-session".to_string();
+        hidden.name = "hidden snapshot".to_string();
+        store.upsert_profile(hidden);
+        store
+            .record_stream_event(
+                "refresh-session",
+                portmate_core::EventDirection::Inbound,
+                portmate_core::EventStream::Stdout,
+                "shared-query visible-marker",
+            )
+            .unwrap();
+        store
+            .record_stream_event(
+                "hidden-session",
+                portmate_core::EventDirection::Inbound,
+                portmate_core::EventStream::Stdout,
+                "shared-query hidden-marker",
+            )
+            .unwrap();
+        store.grants.push(portmate_core::McpGrant {
+            client_id: "scoped-reader".to_string(),
+            name: "Scoped reader".to_string(),
+            scopes: vec![McpScope::ReadSessions, McpScope::ReadLogs],
+            allowed_sessions: vec!["refresh-session".to_string()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        let mut server = PortMateMcp {
+            store,
+            store_path: None,
+            ipc: None,
+            client_id: "scoped-reader".to_string(),
+            allow_write: false,
+        };
+
+        let sessions = list_sessions_text(&mut server);
+        assert!(sessions.contains("visible snapshot"));
+        assert!(!sessions.contains("hidden snapshot"));
+        let resources = server.resources_list_result().to_string();
+        assert!(resources.contains("refresh-session"));
+        assert!(!resources.contains("hidden-session"));
+        let sse_state = server.sse_state_payload().to_string();
+        assert!(sse_state.contains("visible snapshot"));
+        assert!(!sse_state.contains("hidden snapshot"));
+
+        let search = server
+            .tool_call(&json!({
+                "name": "search_logs",
+                "arguments": { "query": "shared-query" }
+            }))
+            .unwrap();
+        let search = search["content"][0]["text"].as_str().unwrap();
+        assert!(search.contains("visible-marker"));
+        assert!(!search.contains("hidden-marker"));
+        assert!(server
+            .tool_call(&json!({
+                "name": "read_screen",
+                "arguments": { "sessionId": "hidden-session" }
+            }))
+            .unwrap_err()
+            .to_string()
+            .contains("does not permit"));
+
+        server.store.grants[0].scopes = vec![McpScope::ReadSessions];
+        assert!(server
+            .tool_call(&json!({
+                "name": "search_logs",
+                "arguments": { "query": "shared-query" }
+            }))
+            .unwrap_err()
+            .to_string()
+            .contains("ReadLogs"));
+        server.store.grants[0].scopes.clear();
+        assert!(server
+            .tool_call(&json!({ "name": "list_sessions", "arguments": {} }))
+            .unwrap_err()
+            .to_string()
+            .contains("ReadSessions"));
     }
 
     fn test_http_request(mut headers: HashMap<String, String>) -> HttpRequest {

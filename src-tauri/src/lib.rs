@@ -6741,10 +6741,10 @@ fn mcp_scope_allowed(
     scope: McpScope,
     session_id: &str,
 ) -> bool {
-    let client_id = client_id.trim();
-    !client_id.is_empty()
-        && (store.mcp_can(client_id, scope, Some(session_id))
-            || (trusted_write && store.grants.is_empty()))
+    let Ok(client_id) = normalize_mcp_client_id(client_id) else {
+        return false;
+    };
+    store.mcp_can(&client_id, scope, Some(session_id)) || (trusted_write && store.grants.is_empty())
 }
 
 fn mcp_write_confirmation_required(
@@ -6777,6 +6777,18 @@ fn ipc_write_scope(command: &str) -> Option<McpScope> {
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
         "start_transfer" => Some(McpScope::Transfer),
         "create_tunnel" => Some(McpScope::Tunnel),
+        _ => None,
+    }
+}
+
+fn ipc_read_scope(command: &str) -> Option<McpScope> {
+    match command {
+        "list_sessions" => Some(McpScope::ReadSessions),
+        "read_screen"
+        | "tail_log"
+        | "search_logs"
+        | "list_tmux_state"
+        | "export_session_bundle" => Some(McpScope::ReadLogs),
         _ => None,
     }
 }
@@ -7075,7 +7087,10 @@ async fn handle_ipc_request(
     request: IpcRequest,
 ) -> Result<serde_json::Value, String> {
     let Some(scope) = ipc_write_scope(&request.command) else {
-        return execute_ipc_request(state, request).await;
+        if ipc_read_scope(&request.command).is_some() {
+            return execute_ipc_request(state, request).await;
+        }
+        return Err(format!("unsupported IPC command: {}", request.command));
     };
     let session_id = match ipc_string_arg(&request.args, "sessionId") {
         Ok(session_id) => {
@@ -7181,11 +7196,24 @@ async fn execute_ipc_request(
     match request.command.as_str() {
         "list_sessions" => {
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            serde_json::to_value(store.summaries()).map_err(|error| error.to_string())
+            require_mcp_read_scope(&store, &request, McpScope::ReadSessions, None)?;
+            let summaries = store
+                .summaries()
+                .into_iter()
+                .filter(|summary| {
+                    store.mcp_can_read(
+                        &request.client_id,
+                        McpScope::ReadSessions,
+                        Some(&summary.profile.id),
+                    )
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_value(summaries).map_err(|error| error.to_string())
         }
         "read_screen" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
             let screen = redact_secrets(&store.screen(&session_id).unwrap_or_default());
             Ok(serde_json::json!(screen))
         }
@@ -7197,6 +7225,7 @@ async fn execute_ipc_request(
                 .and_then(serde_json::Value::as_u64);
             let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
             serde_json::to_value(redact_mcp_events(store.tail_log(&session_id, limit)))
                 .map_err(|error| error.to_string())
         }
@@ -7212,10 +7241,19 @@ async fn execute_ipc_request(
                 .and_then(serde_json::Value::as_u64);
             let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            serde_json::to_value(redact_mcp_events(
-                store.search_logs(&query, session_id, limit),
-            ))
-            .map_err(|error| error.to_string())
+            require_mcp_read_scope(&store, &request, McpScope::ReadLogs, session_id)?;
+            let events = store
+                .search_logs(&query, session_id, limit)
+                .into_iter()
+                .filter(|event| {
+                    store.mcp_can_read(
+                        &request.client_id,
+                        McpScope::ReadLogs,
+                        Some(&event.session_id),
+                    )
+                })
+                .collect();
+            serde_json::to_value(redact_mcp_events(events)).map_err(|error| error.to_string())
         }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -7293,14 +7331,12 @@ async fn execute_ipc_request(
             let spec = create_tunnel_inner(&state, tunnel).await?;
             serde_json::to_value(spec).map_err(|error| error.to_string())
         }
-        "list_files" => {
-            let request = serde_json::from_value::<ListFilesRequest>(request.args)
-                .map_err(|error| format!("invalid list files request: {error}"))?;
-            let entries = list_files_inner(&state, request).await?;
-            serde_json::to_value(entries).map_err(|error| error.to_string())
-        }
         "list_tmux_state" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            {
+                let store = state.store.lock().map_err(|error| error.to_string())?;
+                require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
+            }
             let tmux = list_tmux_state_inner(&state, &session_id).await?;
             serde_json::to_value(tmux).map_err(|error| error.to_string())
         }
@@ -7317,9 +7353,28 @@ async fn execute_ipc_request(
         "export_session_bundle" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(&store, &request, McpScope::ReadLogs, Some(&session_id))?;
             Ok(store.export_session_bundle_redacted(&session_id))
         }
         other => Err(format!("unsupported IPC command: {other}")),
+    }
+}
+
+fn require_mcp_read_scope(
+    store: &SessionStore,
+    request: &IpcRequest,
+    scope: McpScope,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(session_id) = session_id {
+        validate_mcp_session_id(session_id)?;
+    }
+    if store.mcp_can_read(&request.client_id, scope, session_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "MCP read grant does not permit {scope:?} for the requested session"
+        ))
     }
 }
 
@@ -31475,6 +31530,20 @@ mod tests {
             McpScope::WriteInput,
             "session-1",
         ));
+        assert!(!mcp_scope_allowed(
+            &store,
+            "bad\nclient",
+            true,
+            McpScope::WriteInput,
+            "session-1",
+        ));
+        assert!(!mcp_scope_allowed(
+            &store,
+            &"x".repeat(MAX_MCP_GRANT_CLIENT_ID_BYTES + 1),
+            true,
+            McpScope::WriteInput,
+            "session-1",
+        ));
 
         store.grants.push(McpGrant {
             client_id: "granted-client".to_string(),
@@ -32068,6 +32137,98 @@ mod tests {
         assert!(!inline_path.exists());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mcp_ipc_reads_enforce_grants_and_reject_unlisted_commands() {
+        tauri::async_runtime::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("portmate-mcp-read-scope-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+            state.store.lock().unwrap().grants.push(McpGrant {
+                client_id: "scoped-reader".to_string(),
+                name: "Scoped reader".to_string(),
+                scopes: vec![McpScope::ReadSessions],
+                allowed_sessions: vec![session_id.clone()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            });
+
+            let sessions = handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "scoped-reader".to_string(),
+                    trusted_write: false,
+                    command: "list_sessions".to_string(),
+                    args: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(sessions.as_array().unwrap().len(), 1);
+
+            let read_screen = || IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "scoped-reader".to_string(),
+                trusted_write: false,
+                command: "read_screen".to_string(),
+                args: serde_json::json!({ "sessionId": session_id }),
+            };
+            assert!(handle_ipc_request(state.clone(), read_screen())
+                .await
+                .unwrap_err()
+                .contains("ReadLogs"));
+            assert!(handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "unknown-reader".to_string(),
+                    trusted_write: false,
+                    command: "list_sessions".to_string(),
+                    args: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err()
+            .contains("ReadSessions"));
+            assert!(handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "bad\nreader".to_string(),
+                    trusted_write: false,
+                    command: "list_sessions".to_string(),
+                    args: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err()
+            .contains("ReadSessions"));
+            assert!(handle_ipc_request(
+                state.clone(),
+                IpcRequest {
+                    token: "authenticated-token".to_string(),
+                    client_id: "scoped-reader".to_string(),
+                    trusted_write: false,
+                    command: "list_files".to_string(),
+                    args: serde_json::json!({ "path": "/" }),
+                },
+            )
+            .await
+            .unwrap_err()
+            .contains("unsupported IPC command"));
+
+            state.store.lock().unwrap().grants[0]
+                .scopes
+                .push(McpScope::ReadLogs);
+            assert!(handle_ipc_request(state.clone(), read_screen())
+                .await
+                .is_ok());
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
