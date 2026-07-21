@@ -20728,7 +20728,9 @@ fn read_ssh_channel(
                                 "PortMate: SSH remote process exited with status {exit_status}"
                             ),
                         );
-                        if let Err(error) = save_store(&io.store_path, &store) {
+                        if let Err(error) =
+                            persist_applied_store(&store, &io.store_path, "SSH exit status event")
+                        {
                             eprintln!("PortMate: failed to persist SSH exit status: {error}");
                         }
                     }
@@ -20745,7 +20747,9 @@ fn read_ssh_channel(
                                 "PortMate: SSH remote process exited by signal {signal_name:?} {error_message}"
                             ),
                         );
-                        if let Err(error) = save_store(&io.store_path, &store) {
+                        if let Err(error) =
+                            persist_applied_store(&store, &io.store_path, "SSH exit signal event")
+                        {
                             eprintln!("PortMate: failed to persist SSH exit signal: {error}");
                         }
                     }
@@ -21476,7 +21480,11 @@ fn read_tcp_stream(
                                     &session_id,
                                     format!("PortMate: Telnet negotiation reply failed: {error}"),
                                 );
-                                if let Err(error) = save_store(&io.store_path, &store) {
+                                if let Err(error) = persist_applied_store(
+                                    &store,
+                                    &io.store_path,
+                                    "Telnet negotiation failure event",
+                                ) {
                                     eprintln!(
                                         "PortMate: failed to persist Telnet negotiation error: {error}"
                                     );
@@ -21503,7 +21511,11 @@ fn read_tcp_stream(
                             &session_id,
                             format!("PortMate: {label} read failed: {error}"),
                         );
-                        if let Err(error) = save_store(&io.store_path, &store) {
+                        if let Err(error) = persist_applied_store(
+                            &store,
+                            &io.store_path,
+                            "TCP/Telnet read failure event",
+                        ) {
                             eprintln!("PortMate: failed to persist {label} read error: {error}");
                         }
                     }
@@ -22094,7 +22106,11 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                             &session_id,
                             format!("PortMate: shell read failed on {program}: {error}"),
                         );
-                        if let Err(error) = save_store(&io.store_path, &store) {
+                        if let Err(error) = persist_applied_store(
+                            &store,
+                            &io.store_path,
+                            "shell read failure event",
+                        ) {
                             eprintln!("PortMate: failed to persist shell read error: {error}");
                         }
                     }
@@ -22145,7 +22161,9 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                     &session_id,
                     format!("PortMate: shell closed ({program})"),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "shell disconnect state")
+                {
                     eprintln!("PortMate: failed to persist shell close event: {error}");
                 }
             }
@@ -24952,7 +24970,9 @@ fn spawn_trigger_command(
         };
         if let Ok(mut store) = store.lock() {
             store.record_system_event(&session_id, message);
-            if let Err(error) = save_store(&store_path, &store) {
+            if let Err(error) =
+                persist_applied_store(&store, &store_path, "trigger command result event")
+            {
                 eprintln!("PortMate: failed to persist trigger command output: {error}");
             }
         }
@@ -24969,7 +24989,9 @@ fn spawn_trigger_send_text(io: SessionIo, session_id: String, text: String) {
                     &session_id,
                     format!("PortMate: trigger send_text failed: {error}"),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "trigger send failure event")
+                {
                     eprintln!("PortMate: failed to persist trigger send_text error: {error}");
                 }
             }
@@ -26467,7 +26489,9 @@ fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
             Some(error.to_string()),
         );
         store.record_system_event(session_id, format!("PortMate: connection failed: {error}"));
-        if let Err(error) = save_store(&state.store_path, &store) {
+        if let Err(error) =
+            persist_applied_store(&store, &state.store_path, "connection failure state")
+        {
             eprintln!("PortMate: failed to persist connection failure: {error}");
         }
     }
