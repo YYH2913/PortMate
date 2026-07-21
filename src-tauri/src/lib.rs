@@ -5701,15 +5701,15 @@ fn update_client_identity(
     )?;
     let new_secret_ref = identity.secret_ref.clone();
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let mut next_store = store.clone();
-    let (summary, old_secret_ref) = replace_client_identity(
-        &mut next_store,
-        &request.profile_id,
-        &request.identity_id,
-        identity,
-    )?;
-    save_store(&state.store_path, &next_store)?;
-    *store = next_store;
+    let (summary, old_secret_ref) =
+        commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            replace_client_identity(
+                next_store,
+                &request.profile_id,
+                &request.identity_id,
+                identity,
+            )
+        })?;
     let cleanup_secret_ref = old_secret_ref.filter(|old_secret_ref| {
         new_secret_ref.as_deref().map(str::trim) != Some(old_secret_ref.trim())
     });
@@ -5780,25 +5780,26 @@ fn rotate_client_identity(
 
     let result = (|| {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        let mut next_store = store.clone();
-        let current = find_client_identity(&next_store, &request.profile_id, &request.identity_id)?;
-        if current.source != IdentitySource::ProfileVault {
-            return Err("只有 Profile Vault identity 可以轮换私钥".to_string());
-        }
-        let identity = IdentityRef {
-            fingerprint_sha256: Some(fingerprint_sha256),
-            secret_ref: Some(new_secret_ref.clone()),
-            path: None,
-            ..current
-        };
-        let (summary, old_secret_ref) = replace_client_identity(
-            &mut next_store,
-            &request.profile_id,
-            &request.identity_id,
-            identity,
-        )?;
-        save_store(&state.store_path, &next_store)?;
-        *store = next_store;
+        let (summary, old_secret_ref) =
+            commit_store_mutation(&mut store, &state.store_path, |next_store| {
+                let current =
+                    find_client_identity(next_store, &request.profile_id, &request.identity_id)?;
+                if current.source != IdentitySource::ProfileVault {
+                    return Err("只有 Profile Vault identity 可以轮换私钥".to_string());
+                }
+                let identity = IdentityRef {
+                    fingerprint_sha256: Some(fingerprint_sha256),
+                    secret_ref: Some(new_secret_ref.clone()),
+                    path: None,
+                    ..current
+                };
+                replace_client_identity(
+                    next_store,
+                    &request.profile_id,
+                    &request.identity_id,
+                    identity,
+                )
+            })?;
         Ok(client_identity_mutation_response(
             &store,
             summary,
@@ -5822,11 +5823,10 @@ fn delete_client_identity(
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let mut next_store = store.clone();
     let (summary, old_secret_ref) =
-        remove_client_identity(&mut next_store, &request.profile_id, &request.identity_id)?;
-    save_store(&state.store_path, &next_store)?;
-    *store = next_store;
+        commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            remove_client_identity(next_store, &request.profile_id, &request.identity_id)
+        })?;
     Ok(client_identity_mutation_response(
         &store,
         summary,
