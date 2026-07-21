@@ -3523,12 +3523,11 @@ fn save_session_profile(
                 format!("新增 Profile secretRef 无法读取 ({secret_ref}): {error}")
             })?;
         }
-        let mut next_store = store.clone();
-        let summary = next_store.upsert_profile(profile);
-        save_store(&state.store_path, &next_store)?;
-        Ok((summary, next_store))
+        commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            Ok(next_store.upsert_profile(profile))
+        })
     })();
-    let (summary, next_store) = match save_result {
+    let summary = match save_result {
         Ok(saved) => saved,
         Err(error) => {
             if let Some(secret_ref) = generated_proxy_secret_ref.as_deref() {
@@ -3541,7 +3540,6 @@ fn save_session_profile(
             return Err(error);
         }
     };
-    *store = next_store;
     for secret_ref in old_secret_refs {
         if secret_ref_usage_count(&store, &secret_ref) == 0 {
             if let Err(error) = delete_secret_from_store(&secret_ref) {
@@ -3643,22 +3641,22 @@ async fn delete_session_profile_under_lifecycle_lock(
         .map(|transfer| transfer.id.clone())
         .collect::<Vec<_>>();
 
-    let mut next_store = store.clone();
-    let deleted = next_store.delete_profile_deferred_system_event_cleanup(&session_id)?;
-    next_store.record_audit(AuditRecord {
-        id: Uuid::new_v4().to_string(),
-        ts: Utc::now(),
-        actor: "desktop-user".to_string(),
-        action: "delete_session_profile".to_string(),
-        session_id: Some(session_id.clone()),
-        decision: "recorded".to_string(),
-        details: BTreeMap::from([
-            ("profileName".to_string(), deleted.name),
-            ("diskLogs".to_string(), "retained".to_string()),
-        ]),
-    });
-    save_store(&state.store_path, &next_store)?;
-    *store = next_store;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        let deleted = next_store.delete_profile_deferred_system_event_cleanup(&session_id)?;
+        next_store.record_audit(AuditRecord {
+            id: Uuid::new_v4().to_string(),
+            ts: Utc::now(),
+            actor: "desktop-user".to_string(),
+            action: "delete_session_profile".to_string(),
+            session_id: Some(session_id.clone()),
+            decision: "recorded".to_string(),
+            details: BTreeMap::from([
+                ("profileName".to_string(), deleted.name),
+                ("diskLogs".to_string(), "retained".to_string()),
+            ]),
+        });
+        Ok(())
+    })?;
     store.discard_system_events_for_session(&session_id);
 
     for secret_ref in orphan_secret_candidates {
@@ -5367,21 +5365,21 @@ fn save_one_key(
     let retained_refs = one_key_secret_refs(&one_key)
         .into_iter()
         .collect::<HashSet<_>>();
-    let mut next_store = store.clone();
-    if let Some(index) = next_store
-        .one_keys
-        .iter()
-        .position(|candidate| candidate.id == one_key.id)
-    {
-        next_store.one_keys[index] = one_key;
-    } else {
-        next_store.one_keys.push(one_key);
-    }
-    if let Err(error) = save_store(&state.store_path, &next_store) {
+    if let Err(error) = commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        if let Some(index) = next_store
+            .one_keys
+            .iter()
+            .position(|candidate| candidate.id == one_key.id)
+        {
+            next_store.one_keys[index] = one_key;
+        } else {
+            next_store.one_keys.push(one_key);
+        }
+        Ok(())
+    }) {
         cleanup_generated_one_key_secrets(&generated);
         return Err(error);
     }
-    *store = next_store;
     cleanup_replaced_one_key_secrets(&store, old_refs, &retained_refs);
     Ok(OneKeyMutationResponse {
         items: one_key_summaries(&store),
@@ -5403,12 +5401,12 @@ fn delete_one_key(
         .find(|one_key| one_key.id == request.id)
         .cloned()
         .ok_or_else(|| "OneKey 已被删除，请刷新后重试".to_string())?;
-    let mut next_store = store.clone();
-    next_store
-        .one_keys
-        .retain(|one_key| one_key.id != request.id);
-    save_store(&state.store_path, &next_store)?;
-    *store = next_store;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        next_store
+            .one_keys
+            .retain(|one_key| one_key.id != request.id);
+        Ok(())
+    })?;
     let retained = HashSet::new();
     cleanup_replaced_one_key_secrets(&store, one_key_secret_refs(&one_key), &retained);
     Ok(one_key_summaries(&store))
