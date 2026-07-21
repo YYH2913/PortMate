@@ -120,6 +120,7 @@ const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 const LazyMcpDialog = lazy(() => import("./McpDialog"));
 const LazyMcpApprovalDialog = lazy(() => import("./McpApprovalDialog"));
 const LazyCredentialDialog = lazy(() => import("./CredentialDialog"));
+const LazyNoticeDialog = lazy(() => import("./NoticeDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -2621,29 +2622,21 @@ export default function App() {
     focusWorkspacePaneInput(paneId);
   }
 
-  async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
+  async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null): Promise<SessionSummary | null> {
     const profile = prepareSessionProfile(draft);
     try {
       const saved = await saveProfile(profile, proxyPasswordUpdate);
       applySavedSession(saved);
       setDraft(saved.profile);
-      setDialog(null);
+      return saved;
     } catch (error) {
       setNotice({ title: "保存会话失败", message: formatError(error) });
+      return null;
     }
   }
 
-  async function saveDraftAndConnect(proxyPasswordUpdate: ProxyPasswordUpdate = null) {
-    const profile = prepareSessionProfile(draft);
-    try {
-      const saved = await saveProfile(profile, proxyPasswordUpdate);
-      applySavedSession(saved);
-      setDraft(saved.profile);
-      setDialog(null);
-      await connectSession(saved.profile.id, saved);
-    } catch (error) {
-      setNotice({ title: "保存会话失败", message: formatError(error) });
-    }
+  function connectSavedDraft(saved: SessionSummary) {
+    void connectSession(saved.profile.id, saved);
   }
 
   async function saveProfile(profile: SessionProfile, proxyPasswordUpdate: ProxyPasswordUpdate = null) {
@@ -3453,7 +3446,7 @@ export default function App() {
           initialSection={sessionSettingsSection}
           onDraftChange={setDraft}
           onSave={saveDraft}
-          onSaveAndConnect={saveDraftAndConnect}
+          onConnect={connectSavedDraft}
           onClose={() => setDialog(null)}
         />
       )}
@@ -3556,7 +3549,11 @@ export default function App() {
           onClose={() => setHostKeyPrompt(null)}
         />
       )}
-      {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
+      {notice && (
+        <Suspense fallback={null}>
+          <LazyNoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />
+        </Suspense>
+      )}
       {!screenLock && activeMcpApproval && (
         <Suspense fallback={null}>
           <LazyMcpApprovalDialog
@@ -7965,28 +7962,6 @@ function HostKeyConfirmDialog({
   );
 }
 
-function NoticeDialog({ title, message, onClose }: { title: string; message: string; onClose: () => void }) {
-  return (
-    <div className="dialog-backdrop notice-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) {
-        onClose();
-      }
-    }}>
-      <section className="wind-dialog notice-dialog">
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>{title}</strong>
-          <button onClick={onClose}><X size={20} /></button>
-        </header>
-        <div className="notice-content">{message}</div>
-        <footer className="notice-actions">
-          <button onClick={onClose}>确定</button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
 function TerminalSettingsDialog({
   initialPrefs,
   sessions,
@@ -8353,22 +8328,27 @@ function SessionSettingsDialog({
   initialSection,
   onDraftChange,
   onSave,
-  onSaveAndConnect,
+  onConnect,
   onClose,
 }: {
   draft: SessionProfile;
   serialPorts: string[];
   initialSection: string;
   onDraftChange: (draft: SessionProfile) => void;
-  onSave: (proxyPasswordUpdate: ProxyPasswordUpdate) => void;
-  onSaveAndConnect: (proxyPasswordUpdate: ProxyPasswordUpdate) => void;
+  onSave: (proxyPasswordUpdate: ProxyPasswordUpdate) => Promise<SessionSummary | null>;
+  onConnect: (saved: SessionSummary) => void;
   onClose: () => void;
 }) {
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
+  const [secretWriteCount, setSecretWriteCount] = useState(0);
+  const [submitBusy, setSubmitBusy] = useState(false);
+  const [secretCleanupError, setSecretCleanupError] = useState("");
+  const stagedSecretRefs = useRef(new Set<string>());
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
+  const busy = submitBusy || secretWriteCount > 0;
 
   useEffect(() => {
     if (!allowedSections.includes(activeSection)) {
@@ -8382,39 +8362,95 @@ function SessionSettingsDialog({
   }, [draft.id, draft.kind, initialSection]);
 
   function changeProtocol(tab: ProtocolTab) {
+    if (busy) return;
     setActiveProtocol(tab);
     setActiveSection("会话");
     setProxyPasswordUpdate(null);
     onDraftChange(convertDraftProtocol(draft, tab));
   }
 
+  async function cleanupStagedSecrets(retained = new Set<string>()) {
+    for (const secretRef of retained) stagedSecretRefs.current.delete(secretRef);
+    const failures: string[] = [];
+    for (const secretRef of [...stagedSecretRefs.current]) {
+      try {
+        await invokeBackend("delete_secret", { secretRef });
+        stagedSecretRefs.current.delete(secretRef);
+      } catch (error) {
+        failures.push(formatError(error));
+      }
+    }
+    setSecretCleanupError(failures.length ? `暂存凭据清理失败: ${failures.join("；")}` : "");
+    return failures.length === 0;
+  }
+
+  async function submit(connectAfterSave: boolean) {
+    if (busy) return;
+    setSubmitBusy(true);
+    setSecretCleanupError("");
+    const saved = await onSave(proxyPasswordUpdate);
+    if (!saved) {
+      setSubmitBusy(false);
+      return;
+    }
+    const cleaned = await cleanupStagedSecrets(profileCredentialSecretRefs(saved.profile));
+    if (!cleaned) {
+      setSubmitBusy(false);
+      return;
+    }
+    onClose();
+    if (connectAfterSave) onConnect(saved);
+  }
+
+  async function cancel() {
+    if (busy) return;
+    setSubmitBusy(true);
+    setSecretCleanupError("");
+    if (await cleanupStagedSecrets()) onClose();
+    else setSubmitBusy(false);
+  }
+
   return (
     <DialogFrame
       title="会话设置"
       className={`session-settings-dialog ${activeSection === "会话" ? "compact" : activeSection === "传输" ? "medium" : ""}`}
-      onClose={onClose}
+      onClose={() => void cancel()}
+      closeDisabled={busy}
     >
       <div className="session-settings-nav">
         <label>
           <span>会话类型</span>
-          <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)}>
+          <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
             {protocolTabs.map((tab) => <option key={tab} value={tab}>{tab}</option>)}
           </select>
         </label>
         <label>
           <span>配置项</span>
-          <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)}>
+          <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
             {allowedSections.map((section) => <option key={section} value={section}>{section}</option>)}
           </select>
         </label>
       </div>
       <section className="session-form">
-        <SessionSettingsContent activeProtocol={activeProtocol} activeSection={activeSection} draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={setProxyPasswordUpdate} />
+        <SessionSettingsContent
+          activeProtocol={activeProtocol}
+          activeSection={activeSection}
+          draft={draft}
+          serialPorts={serialPorts}
+          onDraftChange={onDraftChange}
+          proxyPasswordUpdate={proxyPasswordUpdate}
+          onProxyPasswordUpdateChange={setProxyPasswordUpdate}
+          secretWriteBusy={secretWriteCount > 0}
+          onSecretWriteStart={() => setSecretWriteCount((current) => current + 1)}
+          onSecretCreated={(secretRef) => stagedSecretRefs.current.add(secretRef)}
+          onSecretWriteFinish={() => setSecretWriteCount((current) => Math.max(0, current - 1))}
+        />
       </section>
+      {secretCleanupError ? <div className="utility-error">{secretCleanupError}</div> : null}
       <div className="dialog-actions">
-        <button onClick={() => onSave(proxyPasswordUpdate)}>保存</button>
-        <button onClick={() => onSaveAndConnect(proxyPasswordUpdate)}>保存并连接</button>
-        <button onClick={onClose}>取消</button>
+        <button onClick={() => void submit(false)} disabled={busy}>保存</button>
+        <button onClick={() => void submit(true)} disabled={busy}>保存并连接</button>
+        <button onClick={() => void cancel()} disabled={busy}>取消</button>
       </div>
     </DialogFrame>
   );
@@ -8428,6 +8464,10 @@ function SessionSettingsContent({
   onDraftChange,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
+  secretWriteBusy,
+  onSecretWriteStart,
+  onSecretCreated,
+  onSecretWriteFinish,
 }: {
   activeProtocol: ProtocolTab;
   activeSection: string;
@@ -8436,6 +8476,10 @@ function SessionSettingsContent({
   onDraftChange: (draft: SessionProfile) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
+  secretWriteBusy: boolean;
+  onSecretWriteStart: () => void;
+  onSecretCreated: (secretRef: string) => void;
+  onSecretWriteFinish: () => void;
 }) {
   if (activeSection === "会话") {
     return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
@@ -8540,11 +8584,11 @@ function SessionSettingsContent({
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <SshAdvancedFields section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} secretWriteBusy={secretWriteBusy} onSecretWriteStart={onSecretWriteStart} onSecretCreated={onSecretCreated} onSecretWriteFinish={onSecretWriteFinish} />;
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["代理", "验证", "代理人", "密码", "公钥"].includes(activeSection)) {
-    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <SshAdvancedFields section={activeSection} draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} secretWriteBusy={secretWriteBusy} onSecretWriteStart={onSecretWriteStart} onSecretCreated={onSecretCreated} onSecretWriteFinish={onSecretWriteFinish} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
@@ -8767,12 +8811,20 @@ function SshAdvancedFields({
   onDraftChange,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
+  secretWriteBusy,
+  onSecretWriteStart,
+  onSecretCreated,
+  onSecretWriteFinish,
 }: {
   section: string;
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
+  secretWriteBusy: boolean;
+  onSecretWriteStart: () => void;
+  onSecretCreated: (secretRef: string) => void;
+  onSecretWriteFinish: () => void;
 }) {
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
   const kind = draft.connection.kind === "tmux" ? "tmux" : "ssh";
@@ -8812,21 +8864,26 @@ function SshAdvancedFields({
       setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: value }));
     };
     const saveJumpSecret = async (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
+      if (secretWriteBusy) return;
       const jump = ssh.jumps[index];
       if (!jump) return;
       const secret = jumpSecretDrafts[jumpSecretKey(index, field)] ?? "";
       if (!secret.trim()) return;
+      onSecretWriteStart();
       setJumpStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
           request: { secretRef: null, secret },
         });
+        onSecretCreated(response.secretRef);
         const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
         updateJump(index, patch);
         setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: "" }));
         setJumpStatus("已保存跳板凭据");
       } catch (error) {
         setJumpStatus(formatError(error));
+      } finally {
+        onSecretWriteFinish();
       }
     };
     const deleteJumpSecret = (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
@@ -8871,12 +8928,12 @@ function SshAdvancedFields({
                   </div>
                   <div className="jump-hop-extra">
                     <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passwordSecretRef", event.target.value)} placeholder="password" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码">
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码" disabled={secretWriteBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
                     <input value={jump.passwordSecretRef ?? ""} onChange={(event) => updateJump(index, { passwordSecretRef: event.target.value || null })} placeholder="password secretRef" />
                     <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passphraseSecretRef", event.target.value)} placeholder="passphrase" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令">
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令" disabled={secretWriteBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
                     <input value={jump.passphraseSecretRef ?? ""} onChange={(event) => updateJump(index, { passphraseSecretRef: event.target.value || null })} placeholder="passphrase secretRef" />
@@ -9105,13 +9162,15 @@ function SshAdvancedFields({
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...ssh.identityRefs.slice(1)] } });
     };
     const saveVaultPrivateKey = async () => {
-      if (!vaultPrivateKey.trim()) return;
+      if (secretWriteBusy || !vaultPrivateKey.trim()) return;
+      onSecretWriteStart();
       setVaultBusy(true);
       setVaultStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
           request: { secretRef: null, secret: vaultPrivateKey },
         });
+        onSecretCreated(response.secretRef);
         updateIdentity({ source: "profile-vault", secretRef: response.secretRef, path: null });
         setVaultPrivateKey("");
         setVaultStatus("已保存到系统密钥库");
@@ -9119,6 +9178,7 @@ function SshAdvancedFields({
         setVaultStatus(formatError(error));
       } finally {
         setVaultBusy(false);
+        onSecretWriteFinish();
       }
     };
     const deleteVaultPrivateKey = () => {
@@ -9169,7 +9229,7 @@ function SshAdvancedFields({
         {firstIdentity.source === "profile-vault" ? (
           <DialogField label="密钥库:">
             <div className="inline-actions">
-              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || !vaultPrivateKey.trim()}>保存到系统密钥库</button>
+              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || secretWriteBusy || !vaultPrivateKey.trim()}>保存到系统密钥库</button>
               <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !firstIdentity.secretRef}>删除</button>
               <span>{vaultStatus}</span>
             </div>
@@ -9431,14 +9491,26 @@ function SerialAdvancedFields({
   );
 }
 
-function DialogFrame({ title, className, onClose, children }: { title: string; className: string; onClose: () => void; children: React.ReactNode }) {
+function DialogFrame({
+  title,
+  className,
+  onClose,
+  closeDisabled = false,
+  children,
+}: {
+  title: string;
+  className: string;
+  onClose: () => void;
+  closeDisabled?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="dialog-backdrop">
       <section className={`wind-dialog ${className}`}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button onClick={onClose}><X size={22} /></button>
+          <button onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
         </header>
         {children}
       </section>
@@ -9872,6 +9944,27 @@ async function deleteUnreferencedSecrets(secretRefs: readonly string[]): Promise
     }
   }
   return errors;
+}
+
+function profileCredentialSecretRefs(profile: SessionProfile): Set<string> {
+  const refs = new Set<string>();
+  const add = (secretRef?: string | null) => {
+    if (secretRef) refs.add(secretRef);
+  };
+  const connection = profile.connection;
+  if (connection.kind === "ssh" || connection.kind === "tmux") {
+    add(connection.proxy.passwordSecretRef);
+    add(connection.passwordSecretRef);
+    add(connection.passphraseSecretRef);
+    for (const identity of connection.identityRefs) add(identity.secretRef);
+    for (const jump of connection.jumps) {
+      add(jump.passwordSecretRef);
+      add(jump.passphraseSecretRef);
+    }
+  } else if (connection.kind === "tcp" || connection.kind === "telnet") {
+    add(connection.proxy.passwordSecretRef);
+  }
+  return refs;
 }
 
 function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & { connection: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> } {

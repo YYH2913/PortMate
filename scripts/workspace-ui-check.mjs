@@ -2632,6 +2632,95 @@ try {
     `failed Profile credential browser exceptions: ${JSON.stringify(failedProfileCredentialErrors)}`);
   await failedProfileCredentialPage.close();
 
+  const cancelledDraftSecretPage = await context.newPage();
+  const cancelledDraftSecretErrors = [];
+  cancelledDraftSecretPage.on("pageerror", (error) => cancelledDraftSecretErrors.push(error.message));
+  await cancelledDraftSecretPage.goto(appUrl);
+  await cancelledDraftSecretPage.getByRole("button", { name: "会话", exact: true }).click();
+  await cancelledDraftSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
+  const cancelledDraftSecretDialog = cancelledDraftSecretPage.locator(".session-settings-dialog");
+  await cancelledDraftSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await cancelledDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
+  const cancelledDraftSecretText = cancelledDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
+  await cancelledDraftSecretText.fill("staged private key");
+  const cancelledDraftSecretSave = cancelledDraftSecretDialog.locator("button", { hasText: "保存到系统密钥库" });
+  const cancelledDraftSecretControls = {
+    value: await cancelledDraftSecretText.inputValue(),
+    disabled: await cancelledDraftSecretSave.isDisabled(),
+    errors: [...cancelledDraftSecretErrors],
+  };
+  assert(cancelledDraftSecretControls.value === "staged private key" && !cancelledDraftSecretControls.disabled,
+    `staged Secret controls did not become actionable: ${JSON.stringify(cancelledDraftSecretControls)}`);
+  await cancelledDraftSecretPage.evaluate(() => { window.__deferSecretWrites = true; });
+  await cancelledDraftSecretSave.click();
+  await cancelledDraftSecretPage.waitForFunction(() => window.__pendingSecretWrites.length === 1);
+  assert(await cancelledDraftSecretDialog.locator(".dialog-title button").isDisabled()
+    && await cancelledDraftSecretDialog.getByRole("button", { name: "保存", exact: true }).isDisabled()
+    && await cancelledDraftSecretDialog.getByRole("button", { name: "保存并连接", exact: true }).isDisabled()
+    && await cancelledDraftSecretDialog.getByRole("button", { name: "取消", exact: true }).isDisabled(),
+  "Session Settings allowed close or submit while a staged Secret write was pending");
+  await cancelledDraftSecretPage.evaluate(() => {
+    window.__deferSecretWrites = false;
+    window.__pendingSecretWrites.shift().resolve();
+  });
+  const cancelDraftSecret = cancelledDraftSecretDialog.getByRole("button", { name: "取消", exact: true });
+  await cancelDraftSecret.waitFor({ state: "visible" });
+  await cancelledDraftSecretPage.waitForFunction(() => !document.querySelector(".session-settings-dialog .dialog-actions button:last-child")?.disabled);
+  await cancelDraftSecret.click();
+  await cancelledDraftSecretDialog.waitFor({ state: "detached" });
+  const cancelledDraftSecretState = await cancelledDraftSecretPage.evaluate(() => ({
+    retainedSecrets: Object.keys(window.__secrets),
+    secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+    secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+    profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+  }));
+  assert(cancelledDraftSecretState.retainedSecrets.length === 0
+    && cancelledDraftSecretState.secretSaveCalls === 1
+    && cancelledDraftSecretState.secretDeleteCalls === 1
+    && cancelledDraftSecretState.profileSaveCalls === 0,
+  `cancelling Session Settings leaked a staged Secret: ${JSON.stringify(cancelledDraftSecretState)}`);
+  assert(cancelledDraftSecretErrors.length === 0,
+    `cancelled staged Secret browser exceptions: ${JSON.stringify(cancelledDraftSecretErrors)}`);
+  await cancelledDraftSecretPage.close();
+
+  const committedDraftSecretPage = await context.newPage();
+  const committedDraftSecretErrors = [];
+  committedDraftSecretPage.on("pageerror", (error) => committedDraftSecretErrors.push(error.message));
+  await committedDraftSecretPage.goto(appUrl);
+  await committedDraftSecretPage.getByRole("button", { name: "会话", exact: true }).click();
+  await committedDraftSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
+  const committedDraftSecretDialog = committedDraftSecretPage.locator(".session-settings-dialog");
+  await committedDraftSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await committedDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
+  const committedDraftSecretText = committedDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
+  await committedDraftSecretText.fill("committed private key");
+  const committedDraftSecretSave = committedDraftSecretDialog.locator("button", { hasText: "保存到系统密钥库" });
+  assert(!await committedDraftSecretSave.isDisabled(), "committed staged Secret control remained disabled after input");
+  await committedDraftSecretSave.click();
+  await committedDraftSecretPage.waitForFunction(() => Object.keys(window.__secrets).length === 1);
+  await committedDraftSecretDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await committedDraftSecretDialog.waitFor({ state: "detached" });
+  const committedDraftSecretState = await committedDraftSecretPage.evaluate(() => {
+    const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    return {
+      backendSecretRef: edge.profile.connection.identityRefs[0]?.secretRef ?? null,
+      retainedSecrets: Object.keys(window.__secrets),
+      secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+      secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+      profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+    };
+  });
+  assert(committedDraftSecretState.backendSecretRef !== null
+    && committedDraftSecretState.retainedSecrets.includes(committedDraftSecretState.backendSecretRef)
+    && committedDraftSecretState.retainedSecrets.length === 1
+    && committedDraftSecretState.secretSaveCalls === 1
+    && committedDraftSecretState.secretDeleteCalls === 0
+    && committedDraftSecretState.profileSaveCalls === 1,
+  `saving Session Settings deleted or lost its staged Secret: ${JSON.stringify(committedDraftSecretState)}`);
+  assert(committedDraftSecretErrors.length === 0,
+    `committed staged Secret browser exceptions: ${JSON.stringify(committedDraftSecretErrors)}`);
+  await committedDraftSecretPage.close();
+
   const vaultLifecyclePage = await context.newPage();
   const vaultLifecycleErrors = [];
   vaultLifecyclePage.on("pageerror", (error) => vaultLifecycleErrors.push(error.message));
@@ -2780,6 +2869,10 @@ try {
     connectionCredentialLifecycle: {
       partialWrite: partialCredentialState,
       failedProfileSave: failedProfileCredentialState,
+    },
+    sessionDraftSecretLifecycle: {
+      cancelled: cancelledDraftSecretState,
+      committed: committedDraftSecretState,
     },
     vaultLifecycle: vaultLifecycleState,
     profileRecovery: {
