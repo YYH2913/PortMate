@@ -4306,6 +4306,63 @@ fn verify_persisted_store_commit(path: &Path, expected: &SessionStore) -> Result
     Ok(true)
 }
 
+fn commit_tracked_store_mutation<ResultValue, Mutate>(
+    store: &mut SessionStore,
+    store_path: &Path,
+    mutate: Mutate,
+) -> Result<ResultValue, String>
+where
+    Mutate: FnOnce(&mut SessionStore) -> Result<(ResultValue, Vec<String>), String>,
+{
+    commit_tracked_store_mutation_with(
+        store,
+        mutate,
+        |next_store| save_store(store_path, next_store),
+        |next_store| verify_persisted_store_commit(store_path, next_store),
+    )
+}
+
+fn commit_tracked_store_mutation_with<ResultValue, Mutate, Persist, VerifyAfterError>(
+    store: &mut SessionStore,
+    mutate: Mutate,
+    persist: Persist,
+    verify_after_error: VerifyAfterError,
+) -> Result<ResultValue, String>
+where
+    Mutate: FnOnce(&mut SessionStore) -> Result<(ResultValue, Vec<String>), String>,
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
+{
+    let before = store.clone();
+    let (result, event_ids) = mutate(store)?;
+    if let Err(save_error) = persist(store) {
+        match verify_after_error(store) {
+            Ok(true) => {
+                eprintln!(
+                    "PortMate: tracked Store save returned an error, but the intended snapshot was verified on disk: {save_error}"
+                );
+            }
+            Ok(false) => {
+                for event_id in &event_ids {
+                    store.discard_queued_system_event(event_id);
+                }
+                *store = before;
+                return Err(save_error);
+            }
+            Err(verify_error) => {
+                for event_id in &event_ids {
+                    store.discard_queued_system_event(event_id);
+                }
+                *store = before;
+                return Err(format!(
+                    "{save_error}; 无法判定 Store 提交是否生效，请重启应用: {verify_error}"
+                ));
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
     store
         .host_keys
@@ -14752,6 +14809,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
 
     persist_observed_host_key(
         &state.store,
+        &state.store_path,
         HostKeyPersistenceGuard {
             profile_id: &profile.id,
             expected_profile: enforce_profile_snapshot.then_some(profile),
@@ -14759,7 +14817,6 @@ async fn establish_ssh_runtime_with_timeout_mode(
         &observed_key,
         &one_time_host_keys,
     )?;
-    persist_store_arc(&state.store_path, &state.store)?;
 
     let channel = session
         .channel_open_session()
@@ -19508,6 +19565,7 @@ fn expand_identity_path(path: &str) -> PathBuf {
 
 fn persist_observed_host_key(
     store: &Arc<Mutex<SessionStore>>,
+    store_path: &Path,
     guard: HostKeyPersistenceGuard<'_>,
     observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
     one_time_host_keys: &[TrustedHostKey],
@@ -19533,75 +19591,62 @@ fn persist_observed_host_key(
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
         _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
     };
-
-    if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation) {
-        let fingerprint = observation
-            .fingerprint_sha256()
-            .map_err(|error| error.to_string())?;
-        store.record_system_event(
-            profile_id,
-            format!(
-                "PortMate: SSH host key trusted for this connection only ({}, {})",
-                observation.algorithm, fingerprint
-            ),
-        );
-        return Ok(());
-    }
-
-    if profile_trusts_observation(&store, profile_id, &observation) {
-        let fingerprint = observation
-            .fingerprint_sha256()
-            .map_err(|error| error.to_string())?;
-        store.record_system_event(
-            profile_id,
-            format!(
-                "PortMate: SSH host key verified by profile trust ({}, {})",
-                observation.algorithm, fingerprint
-            ),
-        );
-        return Ok(());
-    }
-
-    match store.evaluate_host_key(profile_id, &observation)? {
-        HostKeyEvaluation::Trusted {
-            fingerprint_sha256, ..
-        } => {
-            store.record_system_event(
-                profile_id,
+    commit_tracked_store_mutation(&mut store, store_path, |next_store| {
+        let message =
+            if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation) {
+                let fingerprint = observation
+                    .fingerprint_sha256()
+                    .map_err(|error| error.to_string())?;
                 format!(
-                    "PortMate: SSH host key verified ({}, {})",
-                    observation.algorithm, fingerprint_sha256
-                ),
-            );
-            Ok(())
-        }
-        HostKeyEvaluation::Unknown {
-            fingerprint_sha256, ..
-        } => {
-            if policy.mode != HostKeyMode::TrustOnFirstUse {
-                return Err(format!(
-                    "SSH host key 未受信任: {} {}",
-                    observation.algorithm, fingerprint_sha256
-                ));
-            }
-            store.apply_host_key_decision(
-                profile_id,
-                &observation,
-                HostKeyDecision::AppendToProfile,
-            )?;
-            store.record_system_event(
-                profile_id,
+                    "PortMate: SSH host key trusted for this connection only ({}, {})",
+                    observation.algorithm, fingerprint
+                )
+            } else if profile_trusts_observation(next_store, profile_id, &observation) {
+                let fingerprint = observation
+                    .fingerprint_sha256()
+                    .map_err(|error| error.to_string())?;
                 format!(
-                    "PortMate: SSH host key trusted for this profile ({}, {})",
-                    observation.algorithm, fingerprint_sha256
-                ),
-            );
-            Ok(())
-        }
-        mismatch @ HostKeyEvaluation::Mismatch { .. } => {
-            Err(describe_host_key_rejection(&mismatch))
-        }
-    }
+                    "PortMate: SSH host key verified by profile trust ({}, {})",
+                    observation.algorithm, fingerprint
+                )
+            } else {
+                match next_store.evaluate_host_key(profile_id, &observation)? {
+                    HostKeyEvaluation::Trusted {
+                        fingerprint_sha256, ..
+                    } => format!(
+                        "PortMate: SSH host key verified ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    ),
+                    HostKeyEvaluation::Unknown {
+                        fingerprint_sha256, ..
+                    } => {
+                        if policy.mode != HostKeyMode::TrustOnFirstUse {
+                            return Err(format!(
+                                "SSH host key 未受信任: {} {}",
+                                observation.algorithm, fingerprint_sha256
+                            ));
+                        }
+                        next_store.apply_host_key_decision(
+                            profile_id,
+                            &observation,
+                            HostKeyDecision::AppendToProfile,
+                        )?;
+                        format!(
+                            "PortMate: SSH host key trusted for this profile ({}, {})",
+                            observation.algorithm, fingerprint_sha256
+                        )
+                    }
+                    mismatch @ HostKeyEvaluation::Mismatch { .. } => {
+                        return Err(describe_host_key_rejection(&mismatch));
+                    }
+                }
+            };
+        let event_ids = next_store
+            .record_system_event_tracked(profile_id, message)
+            .into_iter()
+            .collect();
+        Ok(((), event_ids))
+    })
 }
 
 fn temporary_trusted_host_key(
@@ -19719,55 +19764,54 @@ fn persist_observed_host_key_with_policy(
             ));
         }
     }
-    if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
-        let fingerprint = observation
-            .fingerprint_sha256()
-            .map_err(|error| error.to_string())?;
-        store.record_system_event(
-            profile_id,
-            format!(
-                "PortMate: {label} host key trusted for this connection only ({}, {})",
-                observation.algorithm, fingerprint
-            ),
-        );
-        return save_store(store_path, &store);
-    }
-    match store.host_keys.evaluate(profile_id, policy, &observation) {
-        Ok(HostKeyEvaluation::Trusted {
-            fingerprint_sha256, ..
-        }) => {
-            store.record_system_event(
-                profile_id,
+    commit_tracked_store_mutation(&mut store, store_path, |next_store| {
+        let message =
+            if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
+                let fingerprint = observation
+                    .fingerprint_sha256()
+                    .map_err(|error| error.to_string())?;
                 format!(
-                    "PortMate: {label} host key verified ({}, {})",
-                    observation.algorithm, fingerprint_sha256
-                ),
-            );
-        }
-        Ok(HostKeyEvaluation::Unknown {
-            fingerprint_sha256, ..
-        }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
-            store
-                .host_keys
-                .apply_decision(
-                    profile_id,
-                    policy,
-                    &observation,
-                    HostKeyDecision::AppendToProfile,
+                    "PortMate: {label} host key trusted for this connection only ({}, {})",
+                    observation.algorithm, fingerprint
                 )
-                .map_err(|error| error.to_string())?;
-            store.record_system_event(
-                profile_id,
-                format!(
-                    "PortMate: {label} host key trusted for this profile ({}, {})",
-                    observation.algorithm, fingerprint_sha256
-                ),
-            );
-        }
-        Ok(other) => return Err(describe_host_key_rejection(&other)),
-        Err(error) => return Err(error.to_string()),
-    }
-    save_store(store_path, &store)
+            } else {
+                match next_store
+                    .host_keys
+                    .evaluate(profile_id, policy, &observation)
+                {
+                    Ok(HostKeyEvaluation::Trusted {
+                        fingerprint_sha256, ..
+                    }) => format!(
+                        "PortMate: {label} host key verified ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    ),
+                    Ok(HostKeyEvaluation::Unknown {
+                        fingerprint_sha256, ..
+                    }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
+                        next_store
+                            .host_keys
+                            .apply_decision(
+                                profile_id,
+                                policy,
+                                &observation,
+                                HostKeyDecision::AppendToProfile,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        format!(
+                            "PortMate: {label} host key trusted for this profile ({}, {})",
+                            observation.algorithm, fingerprint_sha256
+                        )
+                    }
+                    Ok(other) => return Err(describe_host_key_rejection(&other)),
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+        let event_ids = next_store
+            .record_system_event_tracked(profile_id, message)
+            .into_iter()
+            .collect();
+        Ok(((), event_ids))
+    })
 }
 
 fn one_time_trusts_observation(
@@ -35290,6 +35334,66 @@ mod tests {
             _ => panic!("expected SSH profile"),
         };
         assert!(trusted_host_keys.is_empty());
+    }
+
+    #[test]
+    fn tracked_store_mutation_rolls_back_state_events_and_outbox_together() {
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_ssh_profile());
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+        let retained_event_id = store
+            .record_system_event_tracked("ssh-session-1", "retained before transaction")
+            .unwrap();
+        let before = serde_json::to_value(&store).unwrap();
+
+        let error = commit_tracked_store_mutation_with(
+            &mut store,
+            |next_store| {
+                next_store.host_keys.keys.push(TrustedHostKey {
+                    id: "rolled-back-key".to_string(),
+                    profile_id: Some("ssh-session-1".to_string()),
+                    alias: "bench-device".to_string(),
+                    host: "192.0.2.10".to_string(),
+                    port: 22,
+                    algorithm: "ssh-ed25519".to_string(),
+                    fingerprint_sha256: "SHA256:test".to_string(),
+                    public_key_base64: "YWJj".to_string(),
+                    scope: HostKeyScope::Profile,
+                    label: None,
+                    first_seen: Utc::now(),
+                    last_seen: Utc::now(),
+                });
+                let event_id = next_store
+                    .record_system_event_tracked("ssh-session-1", "rolled back transaction")
+                    .unwrap();
+                Ok(((), vec![event_id]))
+            },
+            |_| Err("disk full".to_string()),
+            |_| Ok(false),
+        )
+        .unwrap_err();
+        assert_eq!(error, "disk full");
+        assert_eq!(serde_json::to_value(&store).unwrap(), before);
+        let queued = store.drain_system_event_outbox();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0.id, retained_event_id);
+
+        commit_tracked_store_mutation_with(
+            &mut store,
+            |next_store| {
+                let event_id = next_store
+                    .record_system_event_tracked("ssh-session-1", "committed transaction")
+                    .unwrap();
+                Ok(((), vec![event_id]))
+            },
+            |_| Err("post-commit verification failed".to_string()),
+            |_| Ok(true),
+        )
+        .unwrap();
+        let queued = store.drain_system_event_outbox();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0.text.as_deref(), Some("committed transaction"));
     }
 
     #[test]
