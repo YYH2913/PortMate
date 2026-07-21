@@ -115,6 +115,8 @@ Automatic SSH target and Jump Host verification commits each observed TOFU trust
 
 Session open persists both the initial `Connecting` state and the final `Connected` state with their system events through the same tracked transaction boundary. If final persistence cannot be confirmed after SSH, Shell, TCP/Telnet, or Serial has installed a runtime, PortMate closes and removes only that exact runtime ID, rolls back the uncommitted lifecycle events, and reports the connection failure instead of leaving an invisible live transport. Failed SSH finalization also restores consumed one-time host-key records without duplicating a concurrently re-added key.
 
+A newly opened Serial reader waits behind a condition-variable gate until the `Connected` snapshot commits, so receive-idle timing cannot expire while SQLite is still busy finalizing the connection. Commit failure cancels the gate without publishing a disconnect, while reconnect readers start immediately after their runtime ownership check succeeds.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
