@@ -3421,6 +3421,17 @@ async fn resize_session_inner(
     }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        resize_session_profile_in_store(next_store, &session_id, cols, rows)
+    })
+}
+
+fn resize_session_profile_in_store(
+    store: &mut SessionStore,
+    session_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<SessionSummary, String> {
     let profile = store
         .profiles
         .iter_mut()
@@ -3433,7 +3444,6 @@ async fn resize_session_inner(
         .into_iter()
         .find(|summary| summary.profile.id == session_id)
         .ok_or_else(|| format!("session summary is missing: {session_id}"))?;
-    save_store(&state.store_path, &store)?;
     Ok(summary)
 }
 
@@ -28168,6 +28178,45 @@ mod tests {
             assert_eq!(control_bytes, vec![option_reply.to_vec(), terminal_reply]);
             let _ = fs::remove_dir_all(root);
         });
+    }
+
+    #[test]
+    fn terminal_resize_metadata_changes_memory_only_after_persistence_succeeds() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        let original_size = (profile.terminal.cols, profile.terminal.rows);
+        store.upsert_profile(profile);
+
+        let error = commit_store_mutation_with(
+            &mut store,
+            |next_store| resize_session_profile_in_store(next_store, &session_id, 132, 43),
+            |next_store| {
+                let profile = next_store.profile(&session_id).unwrap();
+                assert_eq!((profile.terminal.cols, profile.terminal.rows), (132, 43));
+                Err("store conflict".to_string())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "store conflict");
+        let profile = store.profile(&session_id).unwrap();
+        assert_eq!(
+            (profile.terminal.cols, profile.terminal.rows),
+            original_size
+        );
+
+        let summary = commit_store_mutation_with(
+            &mut store,
+            |next_store| resize_session_profile_in_store(next_store, &session_id, 132, 43),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            (summary.profile.terminal.cols, summary.profile.terminal.rows),
+            (132, 43)
+        );
+        let profile = store.profile(&session_id).unwrap();
+        assert_eq!((profile.terminal.cols, profile.terminal.rows), (132, 43));
     }
 
     #[test]
