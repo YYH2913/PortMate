@@ -5739,39 +5739,55 @@ function SysmonDialog({ session, onClose }: { session: SessionSummary; onClose: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [historyError, setHistoryError] = useState("");
+  const requestGate = useRef(new KeyedRequestGate<"history" | "snapshot">());
 
   useEffect(() => {
+    requestGate.current.invalidateAll();
     setSnapshot(null);
     setHistory([]);
+    setError("");
     setHistoryError("");
     void loadSysmonHistory();
     void refreshSysmon();
+    return () => requestGate.current.invalidateAll();
   }, [session.profile.id]);
 
   async function loadSysmonHistory() {
+    const gate = requestGate.current;
+    const token = gate.begin("history");
+    if (token === null) return;
     try {
       const loaded = await invokeBackend<SysmonSnapshot[]>("list_sysmon_history", {
         sessionId: session.profile.id,
         limit: 120,
       });
+      if (!gate.isCurrent("history", token)) return;
       setHistory((current) => normalizeSysmonHistory([...current, ...loaded], session.profile.id, 120));
       setHistoryError("");
     } catch (error) {
-      setHistoryError(formatError(error));
+      if (gate.isCurrent("history", token)) setHistoryError(formatError(error));
+    } finally {
+      gate.finish("history", token);
     }
   }
 
   async function refreshSysmon() {
+    const gate = requestGate.current;
+    const token = gate.begin("snapshot");
+    if (token === null) return;
     setBusy(true);
     setError("");
     try {
       const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id });
+      if (!gate.isCurrent("snapshot", token)) return;
       setSnapshot(next);
       setHistory((current) => mergeSysmonHistory(current, next, 120));
     } catch (error) {
-      setError(formatError(error));
+      if (gate.isCurrent("snapshot", token)) setError(formatError(error));
     } finally {
-      setBusy(false);
+      const current = gate.isCurrent("snapshot", token);
+      gate.finish("snapshot", token);
+      if (current) setBusy(false);
     }
   }
 

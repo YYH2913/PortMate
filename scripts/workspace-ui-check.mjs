@@ -270,6 +270,8 @@ try {
     window.__pendingTailLogs = [];
     window.__deferTunnelRefresh = false;
     window.__pendingTunnelRefresh = [];
+    window.__deferSysmon = false;
+    window.__pendingSysmon = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -339,6 +341,12 @@ try {
           if (!window.__deferTunnelRefresh) return [];
           return new Promise((resolve) => {
             window.__pendingTunnelRefresh.push({ args: structuredClone(args), resolve });
+          });
+        }
+        if (command === "list_sysmon_history" || command === "refresh_sysmon") {
+          if (!window.__deferSysmon) return command === "list_sysmon_history" ? [] : null;
+          return new Promise((resolve) => {
+            window.__pendingSysmon.push({ command, args: structuredClone(args), resolve });
           });
         }
         if (command === "list_mcp_grants") return window.__mcpGrants;
@@ -538,6 +546,57 @@ try {
   });
   await tunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
   await tunnelDialog.waitFor({ state: "detached" });
+
+  await page.evaluate(() => {
+    window.__deferSysmon = true;
+    window.__pendingSysmon = [];
+  });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "Sysmon" }).click();
+  const sysmonDialog = page.locator(".sysmon-dialog");
+  await sysmonDialog.waitFor();
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "edge-router"));
+  await page.evaluate(() => {
+    const bench = [...document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session")]
+      .find((button) => button.textContent?.includes("Bench UART"));
+    bench.click();
+  });
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "bench-uart"));
+  const sysmonSnapshot = (sessionId, cpuPercent) => ({
+    sessionId,
+    ts: new Date().toISOString(),
+    uptimeSeconds: 60,
+    cpuPercent,
+    memoryPercent: 25,
+    rxKbps: 1,
+    txKbps: 2,
+    loadAverage: [0.1, 0.2, 0.3],
+    memoryTotalBytes: 1024,
+    memoryAvailableBytes: 768,
+    processes: [],
+    disks: [],
+    networkInterfaces: [],
+  });
+  await page.evaluate(({ bench }) => {
+    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
+    }
+  }, { bench: sysmonSnapshot("bench-uart", 22.2) });
+  await page.waitForFunction(() => document.querySelector(".sysmon-dialog")?.textContent?.includes("22.2%"));
+  await page.evaluate(({ edge }) => {
+    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [edge] : edge);
+    }
+    window.__pendingSysmon = [];
+    window.__deferSysmon = false;
+  }, { edge: sysmonSnapshot("edge-router", 99.9) });
+  await page.waitForTimeout(100);
+  const sysmonText = await sysmonDialog.textContent();
+  assert(sysmonText.includes("Bench UART") && sysmonText.includes("22.2%") && !sysmonText.includes("99.9%"),
+    `a stale Sysmon response crossed active sessions: ${sysmonText}`);
+  await sysmonDialog.getByRole("button", { name: "关闭 Sysmon", exact: true }).click();
+  await sysmonDialog.waitFor({ state: "detached" });
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
