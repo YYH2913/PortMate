@@ -4131,7 +4131,7 @@ fn apply_host_key_decision(
         remember_one_time_host_key(state.inner(), &request.profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         next_store.apply_host_key_decision(
             &request.profile_id,
             &request.observation,
@@ -4173,7 +4173,7 @@ fn trust_scanned_host_key(
         remember_one_time_host_key(state.inner(), &profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         next_store
             .host_keys
             .apply_decision(&profile_id, &policy, &request.observation, request.decision)
@@ -4187,7 +4187,7 @@ fn import_known_hosts(
     request: KnownHostsImportRequest,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         if next_store.profile(&request.profile_id).is_none() {
             return Err(format!("unknown session: {}", request.profile_id));
         }
@@ -4207,7 +4207,7 @@ fn export_known_hosts(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 fn delete_host_key(state: State<'_, AppState>, key_id: String) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         Ok(delete_host_keys_from_store(next_store, &[key_id]))
     })
 }
@@ -4218,12 +4218,15 @@ fn delete_host_keys(
     key_ids: Vec<String>,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         Ok(delete_host_keys_from_store(next_store, &key_ids))
     })
 }
 
-fn commit_host_key_mutation<ResultValue, Mutate>(
+/// Runs copy-on-write mutations that do not enqueue system events. SessionStore
+/// clones share the event sink, so event-producing transactions need a dedicated
+/// commit path that cannot publish rolled-back events.
+fn commit_store_mutation<ResultValue, Mutate>(
     store: &mut SessionStore,
     store_path: &Path,
     mutate: Mutate,
@@ -4231,12 +4234,12 @@ fn commit_host_key_mutation<ResultValue, Mutate>(
 where
     Mutate: FnOnce(&mut SessionStore) -> Result<ResultValue, String>,
 {
-    commit_host_key_mutation_with(store, mutate, |next_store| {
+    commit_store_mutation_with(store, mutate, |next_store| {
         save_store(store_path, next_store)
     })
 }
 
-fn commit_host_key_mutation_with<ResultValue, Mutate, Persist>(
+fn commit_store_mutation_with<ResultValue, Mutate, Persist>(
     store: &mut SessionStore,
     mutate: Mutate,
     persist: Persist,
@@ -4272,7 +4275,7 @@ fn update_host_key(
     request: HostKeyUpdateRequest,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
         update_host_key_in_store(next_store, request)
     })
 }
@@ -4448,6 +4451,15 @@ fn respond_mcp_approval(
 fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<McpGrant>, String> {
     let grant = normalize_mcp_grant(grant)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        upsert_mcp_grant_in_store(next_store, grant)
+    })
+}
+
+fn upsert_mcp_grant_in_store(
+    store: &mut SessionStore,
+    grant: McpGrant,
+) -> Result<Vec<McpGrant>, String> {
     if let Some(existing) = store
         .grants
         .iter_mut()
@@ -4460,7 +4472,6 @@ fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<Mcp
         }
         store.grants.push(grant);
     }
-    save_store(&state.store_path, &store)?;
     Ok(store.grants.clone())
 }
 
@@ -4471,9 +4482,14 @@ fn revoke_mcp_grant(
 ) -> Result<Vec<McpGrant>, String> {
     let client_id = normalize_mcp_client_id(&client_id)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        Ok(revoke_mcp_grant_from_store(next_store, &client_id))
+    })
+}
+
+fn revoke_mcp_grant_from_store(store: &mut SessionStore, client_id: &str) -> Vec<McpGrant> {
     store.grants.retain(|grant| grant.client_id != client_id);
-    save_store(&state.store_path, &store)?;
-    Ok(store.grants.clone())
+    store.grants.clone()
 }
 
 fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, String> {
@@ -32164,6 +32180,59 @@ mod tests {
     }
 
     #[test]
+    fn mcp_grant_mutations_change_memory_only_after_persistence_succeeds() {
+        let mut store = SessionStore::default();
+        store.grants.push(McpGrant {
+            client_id: "ops-client".to_string(),
+            name: "Old grant".to_string(),
+            scopes: vec![McpScope::ReadSessions],
+            allowed_sessions: Vec::new(),
+            confirm_writes: true,
+            expires_at: None,
+            revoked_at: None,
+        });
+        let updated = McpGrant {
+            client_id: "ops-client".to_string(),
+            name: "Updated grant".to_string(),
+            scopes: vec![McpScope::ReadSessions, McpScope::WriteInput],
+            allowed_sessions: vec!["edge".to_string()],
+            confirm_writes: true,
+            expires_at: None,
+            revoked_at: None,
+        };
+        let before = serde_json::to_value(&store).unwrap();
+
+        let error = commit_store_mutation_with(
+            &mut store,
+            |next_store| upsert_mcp_grant_in_store(next_store, updated.clone()),
+            |next_store| {
+                assert_eq!(next_store.grants[0].name, "Updated grant");
+                Err("store conflict".to_string())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "store conflict");
+        assert_eq!(serde_json::to_value(&store).unwrap(), before);
+
+        commit_store_mutation_with(
+            &mut store,
+            |next_store| upsert_mcp_grant_in_store(next_store, updated),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(store.grants[0].name, "Updated grant");
+
+        let error = commit_store_mutation_with(
+            &mut store,
+            |next_store| Ok(revoke_mcp_grant_from_store(next_store, "ops-client")),
+            |_| Err("disk full".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "disk full");
+        assert_eq!(store.grants[0].client_id, "ops-client");
+    }
+
+    #[test]
     fn mcp_approval_queue_is_bounded_one_shot_and_times_out_closed() {
         tauri::async_runtime::block_on(async {
             let root = std::env::temp_dir()
@@ -35059,7 +35128,7 @@ mod tests {
         store.host_keys.keys.push(key);
         let before = serde_json::to_value(&store).unwrap();
 
-        let error = commit_host_key_mutation_with(
+        let error = commit_store_mutation_with(
             &mut store,
             |next_store| {
                 Ok(delete_host_keys_from_store(
@@ -35076,7 +35145,7 @@ mod tests {
         assert_eq!(error, "disk full");
         assert_eq!(serde_json::to_value(&store).unwrap(), before);
 
-        let saved = commit_host_key_mutation_with(
+        let saved = commit_store_mutation_with(
             &mut store,
             |next_store| {
                 Ok(delete_host_keys_from_store(
