@@ -3068,6 +3068,7 @@ export default function App() {
       setSessions((current) => mergeSessionSummaries(current, saved));
     } catch (error) {
       setNotice({ title: "串口控制失败", message: formatError(error) });
+      void refreshSessionSummaries();
     }
   }
 
@@ -3079,6 +3080,7 @@ export default function App() {
       await refreshActiveLog(sessionId);
     } catch (error) {
       setNotice({ title: "Break 失败", message: formatError(error) });
+      void refreshActiveLog(sessionId);
     }
   }
 

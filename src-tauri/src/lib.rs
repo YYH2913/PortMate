@@ -5783,43 +5783,128 @@ fn serial_set_lines(
     state: State<'_, AppState>,
     request: SerialLineRequest,
 ) -> Result<SessionSummary, String> {
-    let writer = {
-        let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        match connections.get(&request.session_id) {
-            Some(runtime) => runtime
-                .writer
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| "串口正在重连".to_string()),
-            None => Err("串口会话尚未连接".to_string()),
+    if request.dtr.is_none() && request.rts.is_none() {
+        return Err("串口线路请求必须包含 DTR 或 RTS".to_string());
+    }
+    let connections = state.serial.lock().map_err(|error| error.to_string())?;
+    let writer = connections
+        .get(&request.session_id)
+        .ok_or_else(|| "串口会话尚未连接".to_string())?
+        .writer
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "串口正在重连".to_string())?;
+    let mut port = writer.lock().map_err(|error| error.to_string())?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let (old_dtr, old_rts) = match store.profile(&request.session_id) {
+        Some(SessionProfile {
+            connection: ConnectionConfig::Serial(serial),
+            ..
+        }) => (serial.dtr, serial.rts),
+        Some(_) => {
+            return Err(format!(
+                "session is not serial-backed: {}",
+                request.session_id
+            ))
         }
-    }?;
+        None => return Err(format!("unknown session: {}", request.session_id)),
+    };
+    apply_serial_line_updates_with(old_dtr, old_rts, request.dtr, request.rts, |line, value| {
+        match line {
+            SerialControlLine::Dtr => port
+                .write_data_terminal_ready(value)
+                .map_err(|error| error.to_string()),
+            SerialControlLine::Rts => port
+                .write_request_to_send(value)
+                .map_err(|error| error.to_string()),
+        }
+    })?;
+    record_applied_serial_line_state(&mut store, &state.store_path, &request)
+}
 
-    {
-        let mut port = writer.lock().map_err(|error| error.to_string())?;
-        if let Some(dtr) = request.dtr {
-            port.write_data_terminal_ready(dtr)
-                .map_err(|error| format!("设置 DTR 失败: {error}"))?;
-        }
-        if let Some(rts) = request.rts {
-            port.write_request_to_send(rts)
-                .map_err(|error| format!("设置 RTS 失败: {error}"))?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SerialControlLine {
+    Dtr,
+    Rts,
+}
+
+impl SerialControlLine {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Dtr => "DTR",
+            Self::Rts => "RTS",
         }
     }
+}
 
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+fn apply_serial_line_updates_with<WriteLine>(
+    old_dtr: bool,
+    old_rts: bool,
+    dtr: Option<bool>,
+    rts: Option<bool>,
+    mut write_line: WriteLine,
+) -> Result<(), String>
+where
+    WriteLine: FnMut(SerialControlLine, bool) -> Result<(), String>,
+{
+    let requested = [
+        (SerialControlLine::Dtr, dtr, old_dtr),
+        (SerialControlLine::Rts, rts, old_rts),
+    ];
+    let mut applied = Vec::new();
+    for (line, value, previous) in requested {
+        let Some(value) = value else {
+            continue;
+        };
+        if let Err(error) = write_line(line, value) {
+            let mut rollback_errors = Vec::new();
+            if let Err(rollback_error) = write_line(line, previous) {
+                rollback_errors.push(format!("恢复 {} 失败: {rollback_error}", line.label()));
+            }
+            for (applied_line, applied_previous) in applied.into_iter().rev() {
+                if let Err(rollback_error) = write_line(applied_line, applied_previous) {
+                    rollback_errors.push(format!(
+                        "恢复 {} 失败: {rollback_error}",
+                        applied_line.label()
+                    ));
+                }
+            }
+            let error = format!("设置 {} 失败: {error}", line.label());
+            return Err(if rollback_errors.is_empty() {
+                error
+            } else {
+                format!("{error}; {}", rollback_errors.join("; "))
+            });
+        }
+        applied.push((line, previous));
+    }
+    Ok(())
+}
+
+fn record_applied_serial_line_state(
+    store: &mut SessionStore,
+    store_path: &Path,
+    request: &SerialLineRequest,
+) -> Result<SessionSummary, String> {
+    if request.dtr.is_none() && request.rts.is_none() {
+        return Err("串口线路请求必须包含 DTR 或 RTS".to_string());
+    }
     let profile = store
         .profiles
         .iter_mut()
         .find(|profile| profile.id == request.session_id)
         .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
-    if let ConnectionConfig::Serial(serial) = &mut profile.connection {
-        if let Some(dtr) = request.dtr {
-            serial.dtr = dtr;
-        }
-        if let Some(rts) = request.rts {
-            serial.rts = rts;
-        }
+    let ConnectionConfig::Serial(serial) = &mut profile.connection else {
+        return Err(format!(
+            "session is not serial-backed: {}",
+            request.session_id
+        ));
+    };
+    if let Some(dtr) = request.dtr {
+        serial.dtr = dtr;
+    }
+    if let Some(rts) = request.rts {
+        serial.rts = rts;
     }
     store.record_system_event(&request.session_id, "PortMate: serial line state updated");
     let summary = store
@@ -5827,37 +5912,67 @@ fn serial_set_lines(
         .into_iter()
         .find(|summary| summary.profile.id == request.session_id)
         .ok_or_else(|| format!("session summary is missing: {}", request.session_id))?;
-    save_store(&state.store_path, &store)?;
+    save_store(store_path, store)
+        .map_err(|error| format!("串口线路已在设备上更新，但 Profile 状态无法持久化: {error}"))?;
     Ok(summary)
 }
 
 #[tauri::command]
 fn serial_send_break(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    let writer = {
-        let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        match connections.get(&session_id) {
-            Some(runtime) => runtime
-                .writer
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| "串口正在重连".to_string()),
-            None => Err("串口会话尚未连接".to_string()),
-        }
-    }?;
-
-    {
-        let port = writer.lock().map_err(|error| error.to_string())?;
-        port.set_break()
-            .map_err(|error| format!("发送 Break 失败: {error}"))?;
-        std::thread::sleep(Duration::from_millis(250));
-        port.clear_break()
-            .map_err(|error| format!("清除 Break 失败: {error}"))?;
+    let connections = state.serial.lock().map_err(|error| error.to_string())?;
+    let writer = connections
+        .get(&session_id)
+        .ok_or_else(|| "串口会话尚未连接".to_string())?
+        .writer
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "串口正在重连".to_string())?;
+    let port = writer.lock().map_err(|error| error.to_string())?;
+    let clear_retried = pulse_serial_break_with(
+        || port.set_break().map_err(|error| error.to_string()),
+        || port.clear_break().map_err(|error| error.to_string()),
+        || std::thread::sleep(Duration::from_millis(250)),
+    )?;
+    if clear_retried {
+        eprintln!("PortMate: serial Break clear succeeded on retry");
     }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     store.record_system_event(&session_id, "PortMate: serial Break sent");
-    save_store(&state.store_path, &store)?;
+    save_store(&state.store_path, &store)
+        .map_err(|error| format!("Break 已发送并清除，但系统事件无法持久化: {error}"))?;
     Ok(())
+}
+
+fn pulse_serial_break_with<SetBreak, ClearBreak, Wait>(
+    mut set_break: SetBreak,
+    mut clear_break: ClearBreak,
+    wait: Wait,
+) -> Result<bool, String>
+where
+    SetBreak: FnMut() -> Result<(), String>,
+    ClearBreak: FnMut() -> Result<(), String>,
+    Wait: FnOnce(),
+{
+    if let Err(error) = set_break() {
+        return Err(match clear_break() {
+            Ok(()) => format!("发送 Break 失败并已尝试清除线路: {error}"),
+            Err(clear_error) => {
+                format!("发送 Break 失败: {error}; 清除 Break 也失败: {clear_error}")
+            }
+        });
+    }
+    wait();
+    let first_error = match clear_break() {
+        Ok(()) => return Ok(false),
+        Err(error) => error,
+    };
+    match clear_break() {
+        Ok(()) => Ok(true),
+        Err(retry_error) => Err(format!(
+            "清除 Break 失败: {first_error}; 重试清除 Break 仍失败: {retry_error}"
+        )),
+    }
 }
 
 fn ensure_serial_profile(store: &Arc<Mutex<SessionStore>>, session_id: &str) -> Result<(), String> {
@@ -31827,6 +31942,111 @@ mod tests {
             .unwrap_err()
             .contains("串口不能为空"));
         assert!(!serial_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn serial_line_updates_compensate_prior_writes_after_partial_failure() {
+        let mut calls = Vec::new();
+        let error =
+            apply_serial_line_updates_with(false, false, Some(true), Some(true), |line, value| {
+                calls.push((line, value));
+                if line == SerialControlLine::Rts && value {
+                    Err("device rejected RTS".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+
+        assert!(error.contains("设置 RTS 失败"), "{error}");
+        assert_eq!(
+            calls,
+            [
+                (SerialControlLine::Dtr, true),
+                (SerialControlLine::Rts, true),
+                (SerialControlLine::Rts, false),
+                (SerialControlLine::Dtr, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn serial_break_retries_a_transient_clear_failure() {
+        let clear_attempts = std::cell::Cell::new(0_u8);
+        let waited = std::cell::Cell::new(false);
+
+        let retried = pulse_serial_break_with(
+            || Ok(()),
+            || {
+                let attempt = clear_attempts.get() + 1;
+                clear_attempts.set(attempt);
+                if attempt == 1 {
+                    Err("transient clear failure".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            || waited.set(true),
+        )
+        .unwrap();
+
+        assert!(retried);
+        assert!(waited.get());
+        assert_eq!(clear_attempts.get(), 2);
+    }
+
+    #[test]
+    fn serial_line_persistence_failure_keeps_applied_device_truth_in_memory() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-serial-line-persistence-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_serial_profile(portmate_core::SerialConnection {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: true,
+            reconnect_delay_ms: 1_000,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: 60,
+        });
+        let mut store = SessionStore::default();
+        store.upsert_profile(profile.clone());
+        let request = SerialLineRequest {
+            session_id: profile.id.clone(),
+            dtr: Some(true),
+            rts: None,
+        };
+
+        let error = record_applied_serial_line_state(
+            &mut store,
+            &blocked_parent.join("store.sqlite3"),
+            &request,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("已在设备上更新"), "{error}");
+        let saved = store.profile(&profile.id).unwrap();
+        let ConnectionConfig::Serial(serial) = saved.connection else {
+            panic!("expected Serial profile");
+        };
+        assert!(serial.dtr);
+        assert!(store.events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("serial line state updated"))
+        }));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
