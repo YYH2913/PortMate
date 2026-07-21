@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SERIALIZED_TERMINAL_EVENTS, TerminalStateCache } from "./terminal-state-cache";
+import {
+  MAX_SERIALIZED_TERMINAL_EVENTS,
+  rememberTerminalEventId,
+  settleTerminalEventId,
+  TerminalStateCache,
+} from "./terminal-state-cache";
 
 describe("terminal state cache", () => {
   it("evicts the least recently used terminal", () => {
@@ -44,6 +49,42 @@ describe("terminal state cache", () => {
     const cache = new TerminalStateCache();
     expect(cache.save("blank", state(""))).toBe(true);
     expect(cache.get("blank")).toMatchObject({ serialized: "", cols: 80, rows: 24, mouseEncoding: "default" });
+  });
+
+  it("evicts event ids in order without replaying the recent polling window", () => {
+    const seen = new Set<string>();
+    const pending = new Set<string>();
+    for (let index = 0; index < MAX_SERIALIZED_TERMINAL_EVENTS + 100; index += 1) {
+      const eventId = `event-${index}`;
+      expect(rememberTerminalEventId(seen, pending, eventId)).toBe(true);
+      settleTerminalEventId(seen, pending, eventId);
+    }
+
+    expect(seen.size).toBe(MAX_SERIALIZED_TERMINAL_EVENTS);
+    expect(seen.has("event-0")).toBe(false);
+    expect(seen.has("event-99")).toBe(false);
+    expect(seen.has("event-100")).toBe(true);
+    for (let index = 3500; index < 4100; index += 1) {
+      expect(rememberTerminalEventId(seen, pending, `event-${index}`)).toBe(false);
+    }
+    expect(pending.size).toBe(0);
+    expect(seen.size).toBe(MAX_SERIALIZED_TERMINAL_EVENTS);
+  });
+
+  it("does not evict terminal events while their XTerm writes are pending", () => {
+    const seen = new Set<string>();
+    const pending = new Set<string>();
+    for (const eventId of ["a", "b", "c"]) {
+      expect(rememberTerminalEventId(seen, pending, eventId, 2)).toBe(true);
+    }
+    expect([...seen]).toEqual(["a", "b", "c"]);
+
+    settleTerminalEventId(seen, pending, "a", 2);
+    expect([...seen]).toEqual(["b", "c"]);
+    settleTerminalEventId(seen, pending, "b", 2);
+    settleTerminalEventId(seen, pending, "c", 2);
+    expect(pending.size).toBe(0);
+    expect(rememberTerminalEventId(seen, pending, "c", 2)).toBe(false);
   });
 });
 

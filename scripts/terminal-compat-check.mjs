@@ -498,6 +498,30 @@ try {
   await page.waitForFunction(() => (
     (window.__tauriEventListeners.get("portmate-session-event") || []).length >= 2
   ));
+  const replayProbeEventCount = 4_100;
+  const replayProbeWindow = 600;
+  const replayProbeMarker = "PORTMATE-DEDUPE-ROLLOVER-REPLAY";
+  await page.evaluate(({ eventCount, replayWindow, marker }) => {
+    const sessionId = "session-a";
+    const emit = (index, text = "") => window.__emitTauriEvent("portmate-session-event", {
+      id: `a-rollover-${index}`,
+      sessionId,
+      paneId: `${sessionId}:main`,
+      ts: "2026-07-15T00:00:00.000Z",
+      direction: "inbound",
+      stream: "stdout",
+      bytesRef: null,
+      text,
+      annotations: {},
+    });
+    for (let index = 0; index < eventCount; index += 1) emit(index);
+    for (let index = eventCount - replayWindow; index < eventCount; index += 1) {
+      emit(index, index === eventCount - replayWindow ? `${marker}\r\n` : "");
+    }
+  }, { eventCount: replayProbeEventCount, replayWindow: replayProbeWindow, marker: replayProbeMarker });
+  await page.waitForTimeout(150);
+  const replayProbeSearch = await openAndAssertMissing(replayProbeMarker);
+
   await emitSessionEvent(createEvent("a-baseline-alt-exit", "session-a", "\x1b[?1049l"));
   const normalBeforeVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
   await emitSessionEvent(createEvent("a-real-vim-frame", "session-a", vimPty.alternateFrame));
@@ -713,6 +737,7 @@ try {
       trueColorSearch,
       wideSearch,
       restoredSearch,
+      replayProbeSearch,
       normalBeforeVimSearch,
       vimSearch,
       hiddenNormalSearch,

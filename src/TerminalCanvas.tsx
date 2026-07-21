@@ -44,7 +44,7 @@ import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } 
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { normalizeTerminalProfileSettings } from "./terminal-settings-state";
-import { terminalStateCache } from "./terminal-state-cache";
+import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
@@ -646,11 +646,10 @@ export default function TerminalCanvas({
     let terminalDisposed = false;
     const pendingEventIds = new Set<string>();
     const writeEvent = (event: SessionEvent) => {
-      if (seenEventsRef.current.size > 4000) seenEventsRef.current.clear();
-      if (seenEventsRef.current.has(event.id)) return false;
-      seenEventsRef.current.add(event.id);
-      pendingEventIds.add(event.id);
-      writeTerminalEvent(term, event, () => { pendingEventIds.delete(event.id); });
+      if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, event.id)) return false;
+      writeTerminalEvent(term, event, () => {
+        settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
+      });
       return true;
     };
     writeEventRef.current = writeEvent;

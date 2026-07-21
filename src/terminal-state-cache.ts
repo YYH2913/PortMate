@@ -12,6 +12,38 @@ export const MAX_SERIALIZED_TERMINALS = 32;
 export const MAX_SERIALIZED_TERMINAL_BYTES = 2 * 1024 * 1024;
 export const MAX_SERIALIZED_TERMINAL_EVENTS = 4000;
 
+export function rememberTerminalEventId(
+  seen: Set<string>,
+  pending: Set<string>,
+  eventId: string,
+  maxEvents = MAX_SERIALIZED_TERMINAL_EVENTS,
+): boolean {
+  if (seen.has(eventId)) return false;
+  seen.add(eventId);
+  pending.add(eventId);
+  trimTerminalEventIds(seen, pending, maxEvents);
+  return true;
+}
+
+export function settleTerminalEventId(
+  seen: Set<string>,
+  pending: Set<string>,
+  eventId: string,
+  maxEvents = MAX_SERIALIZED_TERMINAL_EVENTS,
+) {
+  pending.delete(eventId);
+  trimTerminalEventIds(seen, pending, maxEvents);
+}
+
+function trimTerminalEventIds(seen: Set<string>, pending: ReadonlySet<string>, maxEvents: number) {
+  const limit = Math.max(1, Math.trunc(maxEvents));
+  if (seen.size <= limit) return;
+  for (const eventId of seen) {
+    if (seen.size <= limit) break;
+    if (!pending.has(eventId)) seen.delete(eventId);
+  }
+}
+
 export class TerminalStateCache {
   private readonly states = new Map<string, SerializedTerminalState>();
 
