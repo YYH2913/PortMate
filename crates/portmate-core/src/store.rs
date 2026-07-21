@@ -107,6 +107,14 @@ impl SystemEventSinkRuntime {
             .outbox
             .retain(|(event, _)| event.session_id != session_id);
     }
+
+    fn discard_event(&self, event_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.outbox.retain(|(event, _)| event.id != event_id);
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -150,6 +158,10 @@ impl SessionStore {
 
     pub fn discard_system_events_for_session(&mut self, session_id: &str) {
         self.system_event_sink.discard_session(session_id);
+    }
+
+    pub fn discard_queued_system_event(&mut self, event_id: &str) {
+        self.system_event_sink.discard_event(event_id);
     }
 
     pub fn profile(&self, session_id: &str) -> Option<SessionProfile> {
@@ -218,7 +230,7 @@ impl SessionStore {
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         self.set_runtime_status(session_id, SessionStatus::Connected)?;
 
-        self.push_system_event(
+        let _ = self.push_system_event(
             session_id,
             format!(
                 "PortMate: connected to {} ({:?})",
@@ -304,7 +316,7 @@ impl SessionStore {
             runtime.last_disconnect_reason = Some("user closed session".to_string());
         }
 
-        self.push_system_event(session_id, "PortMate: session disconnected".to_string());
+        let _ = self.push_system_event(session_id, "PortMate: session disconnected".to_string());
         self.summary_for(session_id)
     }
 
@@ -403,7 +415,15 @@ impl SessionStore {
     }
 
     pub fn record_system_event(&mut self, session_id: &str, text: impl Into<String>) {
-        self.push_system_event(session_id, text.into());
+        let _ = self.record_system_event_tracked(session_id, text);
+    }
+
+    pub fn record_system_event_tracked(
+        &mut self,
+        session_id: &str,
+        text: impl Into<String>,
+    ) -> Option<String> {
+        self.push_system_event(session_id, text.into())
     }
 
     pub fn record_stream_event(
@@ -537,10 +557,8 @@ impl SessionStore {
             .ok_or_else(|| format!("session summary is missing: {session_id}"))
     }
 
-    fn push_system_event(&mut self, session_id: &str, text: String) {
-        let Some(profile) = self.profile(session_id) else {
-            return;
-        };
+    fn push_system_event(&mut self, session_id: &str, text: String) -> Option<String> {
+        let profile = self.profile(session_id)?;
         let mut event = SessionEvent {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
@@ -552,11 +570,13 @@ impl SessionStore {
             text: Some(text),
             annotations: BTreeMap::new(),
         };
+        let event_id = event.id.clone();
         if let Err(error) = self.system_event_sink.enqueue(event.clone(), Some(profile)) {
             event.annotations.insert("loggingError".to_string(), error);
         }
         self.events.push(event);
         self.trim_events_if_needed(session_id);
+        Some(event_id)
     }
 
     fn trim_events_if_needed(&mut self, session_id: &str) {
@@ -1578,6 +1598,27 @@ mod tests {
             .text
             .as_deref()
             .is_some_and(|text| text.contains("disconnected")));
+    }
+
+    #[test]
+    fn tracked_system_event_can_be_removed_from_the_outbox_exactly() {
+        let mut store = test_store();
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        store.set_system_event_notifier(sender).unwrap();
+
+        let rolled_back = store
+            .record_system_event_tracked("test-session", "rolled back event")
+            .unwrap();
+        let retained = store
+            .record_system_event_tracked("test-session", "retained event")
+            .unwrap();
+        store.discard_queued_system_event(&rolled_back);
+
+        let queued = store.drain_system_event_outbox();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0.id, retained);
+        assert!(store.events.iter().any(|event| event.id == rolled_back));
+        assert!(store.events.iter().any(|event| event.id == retained));
     }
 
     #[test]
