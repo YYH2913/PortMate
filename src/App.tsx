@@ -399,6 +399,7 @@ export default function App() {
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
+  const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
@@ -500,8 +501,23 @@ export default function App() {
   }
 
   function updateHostKeys(next: HostKeyStore) {
+    hostKeyMutationGateRef.current.invalidate("host-keys");
     startupHydrationGateRef.current.invalidate("host-keys");
     setHostKeys(next);
+  }
+
+  function beginHostKeyMutation() {
+    return hostKeyMutationGateRef.current.replace("host-keys");
+  }
+
+  function commitHostKeyMutation(next: HostKeyStore, token: number) {
+    if (!hostKeyMutationGateRef.current.isCurrent("host-keys", token)) return false;
+    updateHostKeys(next);
+    return true;
+  }
+
+  function finishHostKeyMutation(token: number) {
+    hostKeyMutationGateRef.current.finish("host-keys", token);
   }
 
   function updateOneKeys(next: OneKeySummary[]) {
@@ -3434,7 +3450,18 @@ export default function App() {
         </Suspense>
       )}
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
-      {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={updateHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "keys" && (
+        <KeyManagerDialog
+          hostKeys={hostKeys}
+          sessions={sessions}
+          onHostKeyMutationStart={beginHostKeyMutation}
+          onChange={commitHostKeyMutation}
+          onHostKeyMutationFinish={finishHostKeyMutation}
+          onProfileChange={applySavedSession}
+          onProfilesChange={applySavedSessions}
+          onClose={() => setUtilityDialog(null)}
+        />
+      )}
       {utilityDialog === "mcp" && (
         <Suspense fallback={null}>
           <LazyMcpDialog
@@ -6338,14 +6365,18 @@ function LogManagerDialog({
 function KeyManagerDialog({
   hostKeys,
   sessions,
+  onHostKeyMutationStart,
   onChange,
+  onHostKeyMutationFinish,
   onProfileChange,
   onProfilesChange,
   onClose,
 }: {
   hostKeys: HostKeyStore;
   sessions: SessionSummary[];
-  onChange: (store: HostKeyStore) => void;
+  onHostKeyMutationStart: () => number;
+  onChange: (store: HostKeyStore, token: number) => boolean;
+  onHostKeyMutationFinish: (token: number) => void;
   onProfileChange: (summary: SessionSummary) => void;
   onProfilesChange: (summaries: SessionSummary[]) => void;
   onClose: () => void;
@@ -6407,6 +6438,7 @@ function KeyManagerDialog({
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery">());
+  const mountedRef = useRef(true);
 
   const selectedProfile = sshSessions.find((session) => session.profile.id === profileId)?.profile ?? null;
   const editingKey = hostKeys.keys.find((key) => key.id === editingKeyId) ?? null;
@@ -6446,9 +6478,14 @@ function KeyManagerDialog({
   const migrationCleanupSummary = migrationResult ? summarizeProfileSecretCleanup(migrationResult.items) : null;
 
   useEffect(() => {
+    mountedRef.current = true;
     void refreshAgentKeys();
     void refreshPortableVault();
     void refreshMigrationRecovery();
+    return () => {
+      mountedRef.current = false;
+      refreshGate.current.invalidateAll();
+    };
   }, []);
 
   useEffect(() => {
@@ -6774,17 +6811,21 @@ function KeyManagerDialog({
 
   async function importKnownHostsText() {
     if (!profileId || !knownHostsText.trim()) return;
+    const mutationToken = onHostKeyMutationStart();
     setError("");
     setStatus("");
     try {
       const nextStore = await invokeBackend<HostKeyStore>("import_known_hosts", {
         request: { profileId, contents: knownHostsText },
       });
-      onChange(nextStore);
+      const accepted = onChange(nextStore, mutationToken);
+      if (!accepted || !mountedRef.current) return;
       setKnownHostsText("");
       setStatus("known_hosts 已导入到选中的 Profile scope");
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      onHostKeyMutationFinish(mutationToken);
     }
   }
 
@@ -6799,34 +6840,42 @@ function KeyManagerDialog({
   }
 
   async function deleteKey(keyId: string) {
+    const mutationToken = onHostKeyMutationStart();
     setError("");
     setStatus("");
     try {
       const nextStore = await invokeBackend<HostKeyStore>("delete_host_key", { keyId });
-      onChange(nextStore);
+      const accepted = onChange(nextStore, mutationToken);
+      if (!accepted || !mountedRef.current) return;
       if (editingKeyId === keyId) {
         setEditingKeyId("");
         setEditDraft(null);
       }
       setStatus("Host key 已删除");
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      onHostKeyMutationFinish(mutationToken);
     }
   }
 
   async function deleteSelectedHostKeys() {
     if (!selectedHostKeyIds.length) return;
+    const mutationToken = onHostKeyMutationStart();
     setError("");
     setStatus("");
     try {
       const nextStore = await invokeBackend<HostKeyStore>("delete_host_keys", { keyIds: selectedHostKeyIds });
-      onChange(nextStore);
+      const accepted = onChange(nextStore, mutationToken);
+      if (!accepted || !mountedRef.current) return;
       setSelectedHostKeyIds([]);
       setEditingKeyId("");
       setEditDraft(null);
       setStatus(`已删除 ${selectedHostKeyIds.length} 个 host key`);
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      onHostKeyMutationFinish(mutationToken);
     }
   }
 
@@ -6859,6 +6908,7 @@ function KeyManagerDialog({
 
   async function saveEditedHostKey() {
     if (!editDraft) return;
+    const mutationToken = onHostKeyMutationStart();
     setError("");
     setStatus("");
     try {
@@ -6873,11 +6923,14 @@ function KeyManagerDialog({
           label: editDraft.label || null,
         },
       });
-      onChange(nextStore);
+      const accepted = onChange(nextStore, mutationToken);
+      if (!accepted || !mountedRef.current) return;
       setEditingKeyId(editDraft.keyId);
       setStatus("Host key 已更新");
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      onHostKeyMutationFinish(mutationToken);
     }
   }
 
@@ -7296,7 +7349,7 @@ function KeyManagerDialog({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>密钥管理器</strong>
-          <button onClick={onClose}><X size={20} /></button>
+          <button type="button" title="关闭" aria-label="关闭密钥管理器" onClick={onClose}><X size={20} /></button>
         </header>
         <div className="key-content">
           <section className="key-list">

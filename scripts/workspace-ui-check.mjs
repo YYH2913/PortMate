@@ -292,6 +292,10 @@ try {
     window.__sessions = structuredClone(initialSessions);
     window.__events = structuredClone(initialEvents);
     window.__oneKeys = [];
+    window.__hostKeys = [];
+    window.__hostKeySequence = 0;
+    window.__deferHostKeyMutations = false;
+    window.__pendingHostKeyMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__transfers = [];
     window.__clipboardText = "";
@@ -496,6 +500,34 @@ try {
           if (!window.__deferOneKeyMutations) return result;
           return new Promise((resolve) => window.__pendingOneKeyMutations.push({ result, resolve }));
         }
+        if (command === "list_host_keys") return { keys: structuredClone(window.__hostKeys) };
+        if (command === "list_ssh_agent_identities") return [];
+        if (command === "portable_vault_status") {
+          return { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
+        }
+        if (command === "get_profile_secret_migration_recovery") return null;
+        if (command === "import_known_hosts") {
+          const [alias = `host-${window.__hostKeySequence + 1}`, algorithm = "ssh-ed25519", publicKeyBase64 = "AAAA"] = args.request.contents.trim().split(/\s+/);
+          const id = `host-key-${++window.__hostKeySequence}`;
+          const now = new Date().toISOString();
+          window.__hostKeys.push({
+            id,
+            profileId: args.request.profileId,
+            alias,
+            host: alias,
+            port: 22,
+            algorithm,
+            fingerprintSha256: `SHA256:${id}`,
+            publicKeyBase64,
+            scope: "profile",
+            label: null,
+            firstSeen: now,
+            lastSeen: now,
+          });
+          const result = { keys: structuredClone(window.__hostKeys) };
+          if (!window.__deferHostKeyMutations) return result;
+          return new Promise((resolve) => window.__pendingHostKeyMutations.push({ result, resolve }));
+        }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") {
           if (!window.__deferMcpHttpConfig) return initialMcpHttpConfig;
@@ -552,7 +584,6 @@ try {
             grants: window.__mcpGrants,
           };
         }
-        if (command === "list_host_keys") return { keys: [] };
         if (command === "list_serial_ports") return [];
         if (command.startsWith("plugin:event|")) return null;
         return null;
@@ -2190,6 +2221,68 @@ try {
     `OneKey lifecycle browser exceptions: ${JSON.stringify(oneKeyLifecycleErrors)}`);
   await oneKeyLifecyclePage.close();
 
+  const hostKeyLifecyclePage = await context.newPage();
+  const hostKeyLifecycleErrors = [];
+  hostKeyLifecyclePage.on("pageerror", (error) => hostKeyLifecycleErrors.push(error.message));
+  await hostKeyLifecyclePage.goto(appUrl);
+  await hostKeyLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await hostKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await hostKeyLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const firstKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
+  await firstKeyManager.waitFor();
+  await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("first.example ssh-ed25519 AAAAFIRST");
+  await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = true; });
+  await firstKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
+  await firstKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await firstKeyManager.waitFor({ state: "detached" });
+  await hostKeyLifecyclePage.evaluate(() => {
+    const pending = window.__pendingHostKeyMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await hostKeyLifecyclePage.waitForTimeout(100);
+
+  await hostKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await hostKeyLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const secondKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
+  await secondKeyManager.waitFor();
+  await secondKeyManager.locator(".key-row", { hasText: "first.example:22" }).waitFor();
+  await secondKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("second.example ssh-ed25519 AAAASECOND");
+  await secondKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
+  await secondKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await secondKeyManager.waitFor({ state: "detached" });
+
+  await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = false; });
+  await hostKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await hostKeyLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const thirdKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
+  await thirdKeyManager.waitFor();
+  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("third.example ssh-ed25519 AAAATHIRD");
+  await thirdKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
+  await thirdKeyManager.locator(".key-row", { hasText: "first.example:22" }).waitFor();
+  await thirdKeyManager.locator(".key-row", { hasText: "second.example:22" }).waitFor();
+  await thirdKeyManager.locator(".key-row", { hasText: "third.example:22" }).waitFor();
+  await hostKeyLifecyclePage.evaluate(() => {
+    const pending = window.__pendingHostKeyMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await hostKeyLifecyclePage.waitForTimeout(100);
+  const hostKeyLifecycleState = await hostKeyLifecyclePage.evaluate(() => ({
+    backend: window.__hostKeys.map((key) => key.alias),
+    visible: [...document.querySelectorAll(".key-row > strong")].map((item) => item.textContent),
+    pending: window.__pendingHostKeyMutations.length,
+    importCalls: window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length,
+  }));
+  assert(JSON.stringify(hostKeyLifecycleState.backend) === JSON.stringify(["first.example", "second.example", "third.example"])
+    && JSON.stringify(hostKeyLifecycleState.visible) === JSON.stringify(["first.example:22", "second.example:22", "third.example:22"])
+    && hostKeyLifecycleState.pending === 0
+    && hostKeyLifecycleState.importCalls === 3,
+  `a stale host-key mutation replaced the latest manager state: ${JSON.stringify(hostKeyLifecycleState)}`);
+  assert(hostKeyLifecycleErrors.length === 0,
+    `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);
+  await hostKeyLifecyclePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2224,6 +2317,7 @@ try {
     startupDomainHydration: startupDomainState,
     grantLifecycle: grantLifecycleState,
     oneKeyLifecycle: oneKeyLifecycleState,
+    hostKeyLifecycle: hostKeyLifecycleState,
     terminalWrites,
     desktop,
     mobile,
