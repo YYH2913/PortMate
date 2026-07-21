@@ -23316,14 +23316,16 @@ fn append_log_bytes(
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create log dir {}: {error}", parent.display()))?;
     }
+    validate_log_shard_write_path(store_path, &path)?;
     let path_lock = log_shard_lock(&path)?;
     let _guard = path_lock
         .lock()
         .map_err(|_| format!("log shard lock poisoned: {}", path.display()))?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(true)
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options
         .open(&path)
         .map_err(|error| format!("failed to open log shard {}: {error}", path.display()))?;
     let offset = file
@@ -23343,6 +23345,42 @@ fn append_log_bytes(
         bytes.len(),
         sha256_hex(bytes)
     ))
+}
+
+fn validate_log_shard_write_path(store_path: &Path, path: &Path) -> Result<(), String> {
+    let root = log_root(store_path);
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve log root {}: {error}", root.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("log shard has no parent directory: {}", path.display()))?;
+    let canonical_parent = parent.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve log shard parent {}: {error}",
+            parent.display()
+        )
+    })?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(format!("log shard escaped log root: {}", path.display()));
+    }
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "log shard target is a symbolic link: {}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "log shard target is not a regular file: {}",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed to inspect log shard {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn log_shard_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
@@ -35562,6 +35600,26 @@ mod tests {
         assert!(first_ref.sha256.is_some());
         assert!(second_ref.sha256.is_some());
         assert!(raw_path.starts_with(log_root(&store_path)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_log_bytes_rejects_symlink_targets() {
+        let root = std::env::temp_dir().join(format!("portmate-log-symlink-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let profile = test_shell_profile();
+        let raw_path = log_shard_path(&store_path, &profile, "raw").unwrap();
+        fs::create_dir_all(raw_path.parent().unwrap()).unwrap();
+        let protected = root.join("protected.raw");
+        fs::write(&protected, b"protected").unwrap();
+        std::os::unix::fs::symlink(&protected, &raw_path).unwrap();
+
+        let error =
+            append_log_bytes(&store_path, &profile, "raw", b"should not write").unwrap_err();
+        assert!(error.contains("symbolic link"), "unexpected error: {error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
 
         let _ = fs::remove_dir_all(root);
     }
