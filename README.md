@@ -196,7 +196,11 @@ Changing a saved profile from one protocol to another is rejected while the sess
 Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
 needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
 transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
-ID instead of silently orphaning related data. Loaded runtime, event, transfer, timeline, Sysmon,
+ID instead of silently orphaning related data. Profile IDs are bounded to 256 Unicode characters
+and stripped of control characters. If two distinct loaded IDs normalize to the same value, both
+Profiles remain separate: later collisions receive a stable bounded `:loaded:N` suffix, exact
+original references follow their Profile, and a non-exact normalized reference is used only when
+it identifies one Profile unambiguously. Loaded runtime, event, transfer, timeline, Sysmon,
 and Profile-scoped Host Key records whose Profile no longer exists are removed before the Store is
 exposed, while audit records remain available for accountability and project/user Host Keys only
 lose a stale source-Profile reference. This prevents a later Profile from inheriting old state or
