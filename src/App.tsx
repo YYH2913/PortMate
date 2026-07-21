@@ -2795,6 +2795,7 @@ export default function App() {
       return true;
     } catch (error) {
       if (reportError) setNotice({ title: "断开会话失败", message: formatError(error) });
+      void refreshSessionSummaries();
       return false;
     }
   }

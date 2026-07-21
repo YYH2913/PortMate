@@ -334,10 +334,46 @@ type TmuxControlMap = Arc<Mutex<HashMap<(String, String), TmuxControlRuntime>>>;
 type PendingMcpApprovalMap = Arc<Mutex<HashMap<String, PendingMcpApproval>>>;
 type LogShardLocks = Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
+type SessionLifecycleLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
+type SessionOpenCancellations =
+    Mutex<HashMap<(PathBuf, String), Vec<Weak<SessionOpenCancellation>>>>;
 
 static LOG_RETENTION_CHECKS: OnceLock<LogRetentionChecks> = OnceLock::new();
 static LOG_SHARD_LOCKS: OnceLock<LogShardLocks> = OnceLock::new();
 static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
+static SESSION_LIFECYCLE_LANES: OnceLock<SessionLifecycleLanes> = OnceLock::new();
+static SESSION_OPEN_CANCELLATIONS: OnceLock<SessionOpenCancellations> = OnceLock::new();
+
+struct SessionOpenCancellation {
+    cancelled: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl SessionOpenCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.changed.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn wait(&self) {
+        let changed = self.changed.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        changed.await;
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -3532,6 +3568,16 @@ async fn delete_session_profile_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<DeleteSessionProfileResponse, String> {
+    cancel_pending_session_opens(state, &session_id)?;
+    let lifecycle_lane = session_lifecycle_lane(state, &session_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    delete_session_profile_under_lifecycle_lock(state, session_id).await
+}
+
+async fn delete_session_profile_under_lifecycle_lock(
+    state: &AppState,
+    session_id: String,
+) -> Result<DeleteSessionProfileResponse, String> {
     let (status, has_active_transfer) = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         let profile = store
@@ -3563,7 +3609,7 @@ async fn delete_session_profile_inner(
         SessionStatus::Disconnected | SessionStatus::Blocked | SessionStatus::Error
     ) || session_has_registered_runtime(state, &session_id)?
     {
-        close_session_inner(state, session_id.clone()).await?;
+        close_session_under_lifecycle_lock(state, session_id.clone()).await?;
     }
 
     let _credential_guard = lock_credential_operations(state)?;
@@ -3752,6 +3798,66 @@ fn validate_expected_profile_credentials(
     Ok(())
 }
 
+fn session_lifecycle_lane(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let key = (state.store_path.clone(), session_id.to_string());
+    let mut lanes = SESSION_LIFECYCLE_LANES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "session lifecycle lane registry poisoned".to_string())?;
+    lanes.retain(|_, lane| lane.strong_count() > 0);
+    if let Some(lane) = lanes.get(&key).and_then(Weak::upgrade) {
+        return Ok(lane);
+    }
+    let lane = Arc::new(tokio::sync::Mutex::new(()));
+    lanes.insert(key, Arc::downgrade(&lane));
+    Ok(lane)
+}
+
+fn register_session_open_cancellation(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Arc<SessionOpenCancellation>, String> {
+    let key = (state.store_path.clone(), session_id.to_string());
+    let cancellation = Arc::new(SessionOpenCancellation::new());
+    let mut cancellations = SESSION_OPEN_CANCELLATIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "session open cancellation registry poisoned".to_string())?;
+    cancellations.retain(|_, pending| {
+        pending.retain(|cancellation| cancellation.strong_count() > 0);
+        !pending.is_empty()
+    });
+    cancellations
+        .entry(key)
+        .or_default()
+        .push(Arc::downgrade(&cancellation));
+    Ok(cancellation)
+}
+
+fn cancel_pending_session_opens(state: &AppState, session_id: &str) -> Result<usize, String> {
+    let key = (state.store_path.clone(), session_id.to_string());
+    let mut cancellations = SESSION_OPEN_CANCELLATIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "session open cancellation registry poisoned".to_string())?;
+    let Some(pending) = cancellations.get_mut(&key) else {
+        return Ok(0);
+    };
+    let mut cancelled = 0;
+    pending.retain(|cancellation| {
+        let Some(cancellation) = cancellation.upgrade() else {
+            return false;
+        };
+        cancellation.cancel();
+        cancelled += 1;
+        true
+    });
+    Ok(cancelled)
+}
+
 #[tauri::command]
 async fn open_session(
     state: State<'_, AppState>,
@@ -3841,6 +3947,21 @@ async fn open_session_inner(
     session_id: String,
     credentials: SessionOpenCredentials,
 ) -> Result<SessionSummary, String> {
+    let cancellation = register_session_open_cancellation(&state, &session_id)?;
+    let lifecycle_lane = session_lifecycle_lane(&state, &session_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    if cancellation.is_cancelled() {
+        return Err("session connection was cancelled before it started".to_string());
+    }
+    open_session_under_lifecycle_lock(state, session_id, credentials, cancellation).await
+}
+
+async fn open_session_under_lifecycle_lock(
+    state: AppState,
+    session_id: String,
+    credentials: SessionOpenCredentials,
+    cancellation: Arc<SessionOpenCancellation>,
+) -> Result<SessionSummary, String> {
     clear_active_command(&state.session_io(), &session_id);
     let SessionOpenCredentials {
         username,
@@ -3875,11 +3996,22 @@ async fn open_session_inner(
         })?
     };
 
+    if cancellation.is_cancelled() {
+        return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+    }
+
     if matches!(
         profile.connection,
         ConnectionConfig::Ssh(_) | ConnectionConfig::Tmux(_)
     ) {
-        return match open_ssh_session(&state, profile, password, passphrase).await {
+        let open = open_ssh_session(&state, profile, password, passphrase);
+        let result = tokio::select! {
+            result = open => result,
+            () = cancellation.wait() => {
+                return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+            }
+        };
+        return match result {
             Ok(summary) => Ok(summary),
             Err(error) => {
                 record_connection_failure(&state, &session_id, &error);
@@ -3892,7 +4024,14 @@ async fn open_session_inner(
         profile.connection,
         ConnectionConfig::Tcp(_) | ConnectionConfig::Telnet(_)
     ) {
-        return match open_tcp_session(&state, profile).await {
+        let open = open_tcp_session(&state, profile);
+        let result = tokio::select! {
+            result = open => result,
+            () = cancellation.wait() => {
+                return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+            }
+        };
+        return match result {
             Ok(summary) => Ok(summary),
             Err(error) => {
                 record_connection_failure(&state, &session_id, &error);
@@ -3902,7 +4041,11 @@ async fn open_session_inner(
     }
 
     if matches!(profile.connection, ConnectionConfig::Serial(_)) {
-        return match open_serial_session(&state, profile) {
+        let result = open_serial_session(&state, profile);
+        if cancellation.is_cancelled() {
+            return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+        }
+        return match result {
             Ok(summary) => Ok(summary),
             Err(error) => {
                 record_connection_failure(&state, &session_id, &error);
@@ -3912,7 +4055,11 @@ async fn open_session_inner(
     }
 
     if matches!(profile.connection, ConnectionConfig::Shell(_)) {
-        return match open_shell_session(&state, profile) {
+        let result = open_shell_session(&state, profile);
+        if cancellation.is_cancelled() {
+            return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+        }
+        return match result {
             Ok(summary) => Ok(summary),
             Err(error) => {
                 record_connection_failure(&state, &session_id, &error);
@@ -3926,6 +4073,14 @@ async fn open_session_inner(
         commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
             mark_session_connected_with_events(next_store, &profile, [])
         })
+    }
+}
+
+async fn cancel_session_open_under_lifecycle_lock(state: &AppState, session_id: &str) -> String {
+    let message = "session connection was cancelled";
+    match close_session_under_lifecycle_lock(state, session_id.to_string()).await {
+        Ok(_) => message.to_string(),
+        Err(error) => format!("{message}; cancellation cleanup failed: {error}"),
     }
 }
 
@@ -4056,6 +4211,16 @@ async fn close_session_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    cancel_pending_session_opens(state, &session_id)?;
+    let lifecycle_lane = session_lifecycle_lane(state, &session_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    close_session_under_lifecycle_lock(state, session_id).await
+}
+
+async fn close_session_under_lifecycle_lock(
+    state: &AppState,
+    session_id: String,
+) -> Result<SessionSummary, String> {
     clear_active_command(&state.session_io(), &session_id);
     let _ = cancel_tmux_control_runtimes_for_session(state, &session_id);
     let existing = {
@@ -4120,7 +4285,8 @@ async fn close_session_inner(
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let summary = store.close_session(&session_id)?;
-    save_store(&state.store_path, &store)?;
+    save_store(&state.store_path, &store)
+        .map_err(|error| format!("会话传输已在本地关闭，但断开状态无法持久化: {error}"))?;
     Ok(summary)
 }
 
@@ -42494,6 +42660,185 @@ mod tests {
                 && record.session_id.as_deref() == Some("session:1")
                 && record.details.get("diskLogs").map(String::as_str) == Some("retained")
         }));
+    }
+
+    #[test]
+    fn session_lifecycle_lane_serializes_open_and_close() {
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+            let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
+            let guard = lane.lock().await;
+            let opening_state = state.clone();
+            let opening_session_id = profile.id.clone();
+            let mut opening = tokio::spawn(async move {
+                open_session_inner(
+                    opening_state,
+                    opening_session_id,
+                    SessionOpenCredentials::default(),
+                )
+                .await
+            });
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut opening)
+                    .await
+                    .is_err(),
+                "open_session crossed an occupied lifecycle lane"
+            );
+            assert!(state.shell.lock().unwrap().is_empty());
+            assert_eq!(
+                state.store.lock().unwrap().summaries()[0].runtime.status,
+                SessionStatus::Disconnected
+            );
+            drop(guard);
+            let opened = tokio::time::timeout(Duration::from_secs(5), opening)
+                .await
+                .expect("open_session did not resume after lifecycle lane release")
+                .unwrap()
+                .unwrap();
+            assert_eq!(opened.runtime.status, SessionStatus::Connected);
+
+            let guard = lane.lock().await;
+            let closing_state = state.clone();
+            let closing_session_id = profile.id.clone();
+            let mut closing = tokio::spawn(async move {
+                close_session_inner(&closing_state, closing_session_id).await
+            });
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut closing)
+                    .await
+                    .is_err(),
+                "close_session crossed an occupied lifecycle lane"
+            );
+            assert!(state.shell.lock().unwrap().contains_key(&profile.id));
+            assert_eq!(
+                state.store.lock().unwrap().summaries()[0].runtime.status,
+                SessionStatus::Connected
+            );
+            drop(guard);
+            let closed = tokio::time::timeout(Duration::from_secs(5), closing)
+                .await
+                .expect("close_session did not resume after lifecycle lane release")
+                .unwrap()
+                .unwrap();
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+            assert!(state.shell.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn session_close_cancels_a_stalled_ssh_open_before_waiting_for_the_lane() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = tokio::spawn(async move {
+                let (_stream, _) = listener.accept().await.unwrap();
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            });
+            let temp = tempfile::tempdir().unwrap();
+            let mut profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+                panic!("expected SSH profile");
+            };
+            ssh.endpoint.host = "127.0.0.1".to_string();
+            ssh.endpoint.port = address.port();
+            ssh.reconnect = false;
+            let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+            let opening_state = state.clone();
+            let opening_session_id = profile.id.clone();
+            let opening = tokio::spawn(async move {
+                open_session_inner(
+                    opening_state,
+                    opening_session_id,
+                    SessionOpenCredentials::default(),
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if state.store.lock().unwrap().summaries()[0].runtime.status
+                        == SessionStatus::Connecting
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SSH open did not reach Connecting");
+
+            let closed = tokio::time::timeout(
+                Duration::from_secs(2),
+                close_session_inner(&state, profile.id.clone()),
+            )
+            .await
+            .expect("close_session waited for the stalled SSH handshake")
+            .unwrap();
+            let open_error = tokio::time::timeout(Duration::from_secs(2), opening)
+                .await
+                .expect("cancelled SSH open did not finish")
+                .unwrap()
+                .unwrap_err();
+
+            assert!(
+                open_error.contains("connection was cancelled"),
+                "{open_error}"
+            );
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+            assert!(state.ssh.lock().unwrap().is_empty());
+            assert_eq!(
+                state.store.lock().unwrap().summaries()[0].runtime.status,
+                SessionStatus::Disconnected
+            );
+            peer.abort();
+        });
+    }
+
+    #[test]
+    fn session_close_persistence_failure_keeps_local_disconnect_truth() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-session-close-persistence-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(
+                profile.clone(),
+                blocked_parent.join("portmate-store.sqlite3"),
+            );
+            state
+                .store
+                .lock()
+                .unwrap()
+                .open_session(&profile.id)
+                .unwrap();
+
+            let error = close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("已在本地关闭"), "{error}");
+            let store = state.store.lock().unwrap();
+            let summary = store
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == profile.id)
+                .unwrap();
+            assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+            assert!(store.events.iter().any(|event| {
+                event
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("session disconnected"))
+            }));
+
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
