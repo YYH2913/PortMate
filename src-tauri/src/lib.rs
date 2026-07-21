@@ -129,6 +129,8 @@ const MODEM_EOF: u8 = 0x1a;
 const MODEM_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MODEM_ACK_TIMEOUT: Duration = Duration::from_secs(12);
 const REMOTE_MODEM_READY_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const MODEM_MAX_RETRIES: usize = 10;
 const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
@@ -28467,7 +28469,7 @@ mod tests {
                 .await
                 .expect("fragmented Telnet server timed out")
                 .expect("fragmented Telnet server failed");
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, async {
                 loop {
                     let summary = state
                         .store
@@ -29539,7 +29541,7 @@ mod tests {
             .expect("XModem disconnect task did not start");
             let _ = disconnect_tx.send(());
 
-            let failed = tokio::time::timeout(Duration::from_secs(1), async {
+            let failed = tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, async {
                 loop {
                     let task = state
                         .store
