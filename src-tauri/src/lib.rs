@@ -11859,13 +11859,7 @@ fn remote_parent_path(path: &str) -> Option<String> {
 }
 
 fn remote_file_name(path: &str) -> String {
-    path.trim()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .unwrap_or("portmate-file.bin")
-        .to_string()
+    portable_file_name(path).unwrap_or_else(|| "portmate-file.bin".to_string())
 }
 
 fn remote_join_path(parent: &str, name: &str) -> String {
@@ -35433,6 +35427,24 @@ mod tests {
             zmodem_local_target_path(root.to_str().unwrap(), r"C:\Users\operator\report.bin", 0)
                 .unwrap();
         assert_eq!(target, root.join("report.bin"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_file_names_are_safe_for_local_directory_targets() {
+        assert_eq!(remote_file_name("/var/tmp/report.bin"), "report.bin");
+        assert_eq!(
+            remote_file_name(r"C:\Users\operator\report.bin"),
+            "report.bin"
+        );
+        assert_eq!(remote_file_name("../"), "portmate-file.bin");
+        assert_eq!(remote_file_name("."), "portmate-file.bin");
+
+        let root = std::env::temp_dir().join(format!("portmate-remote-name-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target =
+            local_destination_file_path(&format!("{}/", root.display()), "../outside.bin").unwrap();
+        assert_eq!(target, root.join("outside.bin"));
         let _ = fs::remove_dir_all(root);
     }
 
