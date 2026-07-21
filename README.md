@@ -113,6 +113,8 @@ Copy-on-write Store mutations distinguish a definite failed write from a post-co
 
 Automatic SSH target and Jump Host verification commits each observed TOFU trust record together with its matching system event while holding the Store lock. A definite persistence failure removes only that transaction's queued event and restores the prior trust state before the event worker can publish it; an already committed snapshot is accepted only after exact disk verification.
 
+Session open persists both the initial `Connecting` state and the final `Connected` state with their system events through the same tracked transaction boundary. If final persistence cannot be confirmed after SSH, Shell, TCP/Telnet, or Serial has installed a runtime, PortMate closes and removes only that exact runtime ID, rolls back the uncommitted lifecycle events, and reports the connection failure instead of leaving an invisible live transport. Failed SSH finalization also restores consumed one-time host-key records without duplicating a concurrently re-added key.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
