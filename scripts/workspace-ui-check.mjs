@@ -307,6 +307,9 @@ try {
     window.__pendingHostKeyMutations = [];
     window.__deferProfileMutations = false;
     window.__pendingProfileMutations = [];
+    window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
+    window.__deferVaultMutations = false;
+    window.__pendingVaultMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__transfers = [];
     window.__clipboardText = "";
@@ -535,8 +538,32 @@ try {
         }
         if (command === "list_host_keys") return { keys: structuredClone(window.__hostKeys) };
         if (command === "list_ssh_agent_identities") return [];
-        if (command === "portable_vault_status") {
-          return { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
+        if (command === "portable_vault_status") return structuredClone(window.__portableVault);
+        if (command === "unlock_portable_vault") {
+          const result = { ...window.__portableVault, exists: true, unlocked: true };
+          if (!window.__deferVaultMutations) {
+            window.__portableVault = result;
+            return structuredClone(result);
+          }
+          return new Promise((resolve) => window.__pendingVaultMutations.push({
+            resolve: () => {
+              window.__portableVault = result;
+              resolve(structuredClone(result));
+            },
+          }));
+        }
+        if (command === "lock_portable_vault") {
+          const result = { ...window.__portableVault, unlocked: false };
+          if (!window.__deferVaultMutations) {
+            window.__portableVault = result;
+            return structuredClone(result);
+          }
+          return new Promise((resolve) => window.__pendingVaultMutations.push({
+            resolve: () => {
+              window.__portableVault = result;
+              resolve(structuredClone(result));
+            },
+          }));
         }
         if (command === "get_profile_secret_migration_recovery") return null;
         if (command === "import_known_hosts") {
@@ -2381,6 +2408,58 @@ try {
     `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
   await profileLifecyclePage.close();
 
+  const vaultLifecyclePage = await context.newPage();
+  const vaultLifecycleErrors = [];
+  vaultLifecyclePage.on("pageerror", (error) => vaultLifecycleErrors.push(error.message));
+  await vaultLifecyclePage.goto(appUrl);
+  await vaultLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await vaultLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await vaultLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const firstVaultManager = vaultLifecyclePage.locator(".key-dialog");
+  await firstVaultManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("correct horse battery staple");
+  await vaultLifecyclePage.evaluate(() => { window.__deferVaultMutations = true; });
+  await firstVaultManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await vaultLifecyclePage.waitForFunction(() => window.__pendingVaultMutations.length === 1);
+  await firstVaultManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await firstVaultManager.waitFor({ state: "detached" });
+
+  await vaultLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await vaultLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const secondVaultManager = vaultLifecyclePage.locator(".key-dialog");
+  const blockedUnlock = secondVaultManager.getByRole("button", { name: "解锁 portable vault", exact: true });
+  await blockedUnlock.waitFor();
+  assert(await blockedUnlock.isDisabled(), "a reopened key manager bypassed the in-flight vault operation");
+  const vaultStateBeforeRelease = await vaultLifecyclePage.evaluate(() => ({
+    backend: structuredClone(window.__portableVault),
+    unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length,
+  }));
+  assert(!vaultStateBeforeRelease.backend.exists && !vaultStateBeforeRelease.backend.unlocked
+    && vaultStateBeforeRelease.unlockCalls === 1,
+  `the reopened manager started another vault mutation: ${JSON.stringify(vaultStateBeforeRelease)}`);
+
+  await vaultLifecyclePage.evaluate(() => {
+    window.__deferVaultMutations = false;
+    window.__pendingVaultMutations.shift().resolve();
+  });
+  const lockVault = secondVaultManager.getByRole("button", { name: "锁定 portable vault", exact: true });
+  await lockVault.waitFor();
+  await lockVault.click();
+  await secondVaultManager.locator(".portable-vault-bar small", { hasText: "Locked" }).waitFor();
+  const vaultLifecycleState = await vaultLifecyclePage.evaluate(() => ({
+    backend: structuredClone(window.__portableVault),
+    pending: window.__pendingVaultMutations.length,
+    unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length,
+    lockCalls: window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length,
+  }));
+  assert(vaultLifecycleState.backend.exists && !vaultLifecycleState.backend.unlocked
+    && vaultLifecycleState.pending === 0
+    && vaultLifecycleState.unlockCalls === 1
+    && vaultLifecycleState.lockCalls === 1,
+  `the reopened manager did not converge after the vault mutation: ${JSON.stringify(vaultLifecycleState)}`);
+  assert(vaultLifecycleErrors.length === 0,
+    `vault lifecycle browser exceptions: ${JSON.stringify(vaultLifecycleErrors)}`);
+  await vaultLifecyclePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2417,6 +2496,7 @@ try {
     oneKeyLifecycle: oneKeyLifecycleState,
     hostKeyLifecycle: hostKeyLifecycleState,
     profileLifecycle: profileLifecycleState,
+    vaultLifecycle: vaultLifecycleState,
     terminalWrites,
     desktop,
     mobile,

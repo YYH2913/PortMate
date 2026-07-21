@@ -317,6 +317,8 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
   const [utilityDialog, setUtilityDialog] = useState<UtilityDialog>(null);
+  const [keyManagerCredentialOperationToken, setKeyManagerCredentialOperationToken] = useState<number | null>(null);
+  const [keyManagerCredentialSyncRevision, setKeyManagerCredentialSyncRevision] = useState(0);
   const [searchDialog, setSearchDialog] = useState<SearchDialogState>({ mode: "sessions", query: "" });
   const [draft, setDraft] = useState<SessionProfile>(() => createSessionDraft());
   const [sendText, setSendText] = useState("");
@@ -390,6 +392,7 @@ export default function App() {
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
+  const keyManagerCredentialOperationGateRef = useRef(new KeyedRequestGate<"credentials">());
   const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
@@ -530,6 +533,18 @@ export default function App() {
     const gate = keyManagerProfileMutationGateRef.current;
     if (!committed && gate.isCurrent(profileId, token)) void refreshSessionSummaries();
     gate.finish(profileId, token);
+  }
+
+  function beginKeyManagerCredentialOperation() {
+    const token = keyManagerCredentialOperationGateRef.current.begin("credentials");
+    if (token !== null) setKeyManagerCredentialOperationToken(token);
+    return token;
+  }
+
+  function finishKeyManagerCredentialOperation(token: number) {
+    if (!keyManagerCredentialOperationGateRef.current.finish("credentials", token)) return;
+    setKeyManagerCredentialOperationToken((current) => current === token ? null : current);
+    setKeyManagerCredentialSyncRevision((current) => current + 1);
   }
 
   function updateOneKeys(next: OneKeySummary[]) {
@@ -3468,6 +3483,10 @@ export default function App() {
           onProfileChange={commitKeyManagerProfileMutation}
           onProfileMutationCurrent={isKeyManagerProfileMutationCurrent}
           onProfileMutationFinish={finishKeyManagerProfileMutation}
+          credentialOperationBusy={keyManagerCredentialOperationToken !== null}
+          credentialSyncRevision={keyManagerCredentialSyncRevision}
+          onCredentialOperationStart={beginKeyManagerCredentialOperation}
+          onCredentialOperationFinish={finishKeyManagerCredentialOperation}
           onClose={() => setUtilityDialog(null)}
         />
       )}
@@ -6385,6 +6404,10 @@ function KeyManagerDialog({
   onProfileChange,
   onProfileMutationCurrent,
   onProfileMutationFinish,
+  credentialOperationBusy,
+  credentialSyncRevision,
+  onCredentialOperationStart,
+  onCredentialOperationFinish,
   onClose,
 }: {
   hostKeys: HostKeyStore;
@@ -6396,6 +6419,10 @@ function KeyManagerDialog({
   onProfileChange: (summary: SessionSummary, token: number, activateWorkspace?: boolean) => boolean;
   onProfileMutationCurrent: (profileId: string, token: number) => boolean;
   onProfileMutationFinish: (profileId: string, token: number, committed: boolean) => void;
+  credentialOperationBusy: boolean;
+  credentialSyncRevision: number;
+  onCredentialOperationStart: () => number | null;
+  onCredentialOperationFinish: (token: number) => void;
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
@@ -6456,6 +6483,7 @@ function KeyManagerDialog({
   const [status, setStatus] = useState("");
   const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery">());
   const mountedRef = useRef(true);
+  const credentialSyncRevisionRef = useRef(credentialSyncRevision);
 
   const selectedProfile = sshSessions.find((session) => session.profile.id === profileId)?.profile ?? null;
   const editingKey = hostKeys.keys.find((key) => key.id === editingKeyId) ?? null;
@@ -6488,7 +6516,7 @@ function KeyManagerDialog({
     ? clientIdentityItems.filter((item) => item.identity.secretRef === editingClientIdentityItem.identity.secretRef).length
     : 0;
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
-  const vaultOperationBusy = portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy || migrationDiagnosticBusy;
+  const vaultOperationBusy = credentialOperationBusy || portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy || migrationDiagnosticBusy;
   const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
   const credentialMutationControlsDisabled = vaultOperationBusy || credentialMutationsFrozen;
   const migrationControlsDisabled = credentialMutationControlsDisabled || migrationRequiresRestart;
@@ -6504,6 +6532,13 @@ function KeyManagerDialog({
       refreshGate.current.invalidateAll();
     };
   }, []);
+
+  useEffect(() => {
+    if (credentialSyncRevisionRef.current === credentialSyncRevision) return;
+    credentialSyncRevisionRef.current = credentialSyncRevision;
+    void refreshPortableVault(true);
+    void refreshMigrationRecovery(true, true);
+  }, [credentialSyncRevision]);
 
   useEffect(() => {
     if (!sshSessions.some((session) => session.profile.id === profileId)) {
@@ -6581,8 +6616,9 @@ function KeyManagerDialog({
     }
   }
 
-  async function refreshPortableVault() {
+  async function refreshPortableVault(replace = false) {
     if (!isBackendAvailable()) return;
+    if (replace) refreshGate.current.invalidate("vault");
     const token = refreshGate.current.begin("vault");
     if (token === null) return;
     try {
@@ -6623,6 +6659,8 @@ function KeyManagerDialog({
 
   async function unlockPortableVault() {
     if (!portableVaultPassword) return;
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
     refreshGate.current.invalidate("vault");
     const existed = portableVault?.exists ?? false;
     setPortableVaultBusy(true);
@@ -6633,19 +6671,24 @@ function KeyManagerDialog({
       const next = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
         request: { password: portableVaultPassword },
       });
+      if (!mountedRef.current) return;
       setPortableVault(next);
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
-      await refreshMigrationRecovery(true, true);
     } catch (error) {
-      setPortableVaultPassword("");
-      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      if (mountedRef.current) {
+        setPortableVaultPassword("");
+        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      }
     } finally {
-      setPortableVaultBusy(false);
+      onCredentialOperationFinish(operationToken);
+      if (mountedRef.current) setPortableVaultBusy(false);
     }
   }
 
   async function lockPortableVault() {
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
     refreshGate.current.invalidate("vault");
     setPortableVaultBusy(true);
     clearPortableVaultRotation();
@@ -6653,14 +6696,16 @@ function KeyManagerDialog({
     setError("");
     setStatus("");
     try {
-      setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
+      const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+      if (!mountedRef.current) return;
+      setPortableVault(next);
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
-      await refreshMigrationRecovery(true, true);
     } catch (error) {
-      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
-      setPortableVaultBusy(false);
+      onCredentialOperationFinish(operationToken);
+      if (mountedRef.current) setPortableVaultBusy(false);
     }
   }
 
@@ -6684,6 +6729,8 @@ function KeyManagerDialog({
       setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码必须与当前密码不同" });
       return;
     }
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
     refreshGate.current.invalidate("vault");
     setPortableVaultBusy(true);
     try {
@@ -6693,14 +6740,18 @@ function KeyManagerDialog({
           newPassword: portableVaultNewPassword,
         },
       });
+      if (!mountedRef.current) return;
       setPortableVault(next);
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 主密码已更换" });
     } catch (error) {
-      clearPortableVaultRotation();
-      setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      if (mountedRef.current) {
+        clearPortableVaultRotation();
+        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      }
     } finally {
-      setPortableVaultBusy(false);
+      onCredentialOperationFinish(operationToken);
+      if (mountedRef.current) setPortableVaultBusy(false);
     }
   }
 
@@ -6712,15 +6763,18 @@ function KeyManagerDialog({
     try {
       const request = currentMigrationRequest();
       const preview = await invokeBackend<ProfileSecretMigrationPreview>("preview_profile_secret_migration", { request });
+      if (!mountedRef.current) return;
       setMigrationPreviewState({ request, preview });
       setMigrationRequiresRestart(false);
     } catch (error) {
-      const message = formatError(error);
-      setMigrationPreviewState(null);
-      setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
-      setMigrationError(profileSecretMigrationErrorMessage(message));
+      if (mountedRef.current) {
+        const message = formatError(error);
+        setMigrationPreviewState(null);
+        setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
+        setMigrationError(profileSecretMigrationErrorMessage(message));
+      }
     } finally {
-      setMigrationBusy(null);
+      if (mountedRef.current) setMigrationBusy(null);
     }
   }
 
@@ -6739,6 +6793,8 @@ function KeyManagerDialog({
       return;
     }
     if (!canExecuteProfileSecretMigration(migrationPreviewState.preview, true, false, Boolean(migrationRecovery))) return;
+    const credentialOperationToken = onCredentialOperationStart();
+    if (credentialOperationToken === null) return;
     const mutationTokens = new Map(request.profileIds.map((targetProfileId) => [
       targetProfileId,
       onProfileMutationStart(targetProfileId),
@@ -6757,20 +6813,24 @@ function KeyManagerDialog({
         return mutationToken !== undefined
           && onProfileChange(summary, mutationToken, false);
       }).every(Boolean);
-      if (!accepted || !mountedRef.current) return;
-      setMigrationPreviewState(null);
-      setMigrationResult(result);
-      setMigrationRequiresRestart(false);
-      setEditingClientKeyId("");
-      setClientKeyEditDraft(null);
-      setClientKeyPrivateKey("");
-      setClientKeyPassphrase("");
+      if (accepted && mountedRef.current) {
+        setMigrationPreviewState(null);
+        setMigrationResult(result);
+        setMigrationRequiresRestart(false);
+        setEditingClientKeyId("");
+        setClientKeyEditDraft(null);
+        setClientKeyPrivateKey("");
+        setClientKeyPassphrase("");
+      }
       if (result.portableVaultRequiresReunlock) {
         try {
-          setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
-          setPortableVaultFeedback({ kind: "status", message: `已迁移 ${result.migratedSecretCount} 个 Secret；请重新解锁 Stronghold` });
+          const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          if (mountedRef.current) {
+            setPortableVault(next);
+            setPortableVaultFeedback({ kind: "status", message: `已迁移 ${result.migratedSecretCount} 个 Secret；请重新解锁 Stronghold` });
+          }
         } catch (lockError) {
-          setPortableVaultFeedback({ kind: "error", message: `凭据迁移已提交，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
+          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: `凭据迁移已提交，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
         }
       }
     } catch (error) {
@@ -6784,47 +6844,52 @@ function KeyManagerDialog({
       for (const [targetProfileId, mutationToken] of mutationTokens) {
         onProfileMutationFinish(targetProfileId, mutationToken, backendSucceeded);
       }
-      if (mountedRef.current) {
-        await refreshMigrationRecovery(true, true);
-        setMigrationBusy(null);
-      }
+      onCredentialOperationFinish(credentialOperationToken);
+      if (mountedRef.current) setMigrationBusy(null);
     }
   }
 
   async function recoverPendingProfileSecretMigration() {
     if (!migrationRecovery || migrationRecoveryChecking || migrationRecoveryStatusError || migrationRequiresRestart || !isBackendAvailable()) return;
     if (!canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy)) return;
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
     setMigrationRecoveryBusy(true);
     setMigrationRecoveryError("");
     setMigrationRecoveryWarnings([]);
     try {
       const result = await recoverProfileSecretMigration(migrationRecovery.migrationId);
-      setMigrationRecovery(result.pending);
-      setMigrationRecoveryWarnings(
-        result.warnings.length || !result.resolved
-          ? result.warnings
-          : ["恢复记录已核对并清除"],
-      );
-      setMigrationRequiresRestart(false);
-      setMigrationPreviewState(null);
-      if (result.resolved) {
-        setMigrationRecoveryError("");
+      if (mountedRef.current) {
+        setMigrationRecovery(result.pending);
+        setMigrationRecoveryWarnings(
+          result.warnings.length || !result.resolved
+            ? result.warnings
+            : ["恢复记录已核对并清除"],
+        );
+        setMigrationRequiresRestart(false);
+        setMigrationPreviewState(null);
+        if (result.resolved) setMigrationRecoveryError("");
       }
       if (result.pending?.requiresPortableVaultUnlock && portableVault?.unlocked) {
         try {
-          setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
-          setPortableVaultFeedback({ kind: "status", message: "恢复 checkpoint 待核对；Stronghold 已锁定，请重新解锁" });
+          const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          if (mountedRef.current) {
+            setPortableVault(next);
+            setPortableVaultFeedback({ kind: "status", message: "恢复 checkpoint 待核对；Stronghold 已锁定，请重新解锁" });
+          }
         } catch (lockError) {
-          setPortableVaultFeedback({ kind: "error", message: `恢复记录已保留，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
+          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: `恢复记录已保留，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
         }
       }
     } catch (error) {
-      const message = formatError(error);
-      setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
-      setMigrationRecoveryError(profileSecretMigrationErrorMessage(message));
+      if (mountedRef.current) {
+        const message = formatError(error);
+        setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
+        setMigrationRecoveryError(profileSecretMigrationErrorMessage(message));
+      }
     } finally {
-      await refreshMigrationRecovery(false, true);
-      setMigrationRecoveryBusy(false);
+      onCredentialOperationFinish(operationToken);
+      if (mountedRef.current) setMigrationRecoveryBusy(false);
     }
   }
 
@@ -6835,12 +6900,13 @@ function KeyManagerDialog({
     setMigrationRecoveryError("");
     try {
       const result = await exportProfileSecretMigrationDiagnostics();
+      if (!mountedRef.current) return;
       setMigrationDiagnosticResult(result);
       setMigrationRecoveryWarnings(result.warnings);
     } catch (error) {
-      setMigrationRecoveryError(formatError(error));
+      if (mountedRef.current) setMigrationRecoveryError(formatError(error));
     } finally {
-      setMigrationDiagnosticBusy(false);
+      if (mountedRef.current) setMigrationDiagnosticBusy(false);
     }
   }
 
