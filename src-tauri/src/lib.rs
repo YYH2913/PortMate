@@ -1325,6 +1325,17 @@ struct HostKeyScanHandler {
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
 }
 
+fn lock_ssh_handler_state<'a, T>(
+    state: &'a Mutex<T>,
+    label: &str,
+) -> Result<MutexGuard<'a, T>, russh::Error> {
+    state.lock().map_err(|_| {
+        russh::Error::IO(std::io::Error::other(format!(
+            "PortMate SSH {label} lock is poisoned"
+        )))
+    })
+}
+
 impl client::Handler for PortMateSshHandler {
     type Error = russh::Error;
 
@@ -1339,10 +1350,8 @@ impl client::Handler for PortMateSshHandler {
             algorithm: server_public_key.algorithm().to_string(),
             public_key_base64: server_public_key.public_key_base64(),
         };
-        *self
-            .observed_key
-            .lock()
-            .expect("host key observation lock poisoned") = Some(observation.clone());
+        *lock_ssh_handler_state(&self.observed_key, "host key observation")? =
+            Some(observation.clone());
 
         let evaluation = self
             .host_keys
@@ -1357,20 +1366,14 @@ impl client::Handler for PortMateSshHandler {
                 &self.one_time_host_key_ids,
             ) =>
             {
-                *self
-                    .host_key_error
-                    .lock()
-                    .expect("host key error lock poisoned") = None;
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
                 let _ = fingerprint_sha256;
                 true
             }
             Ok(HostKeyEvaluation::Trusted {
                 fingerprint_sha256, ..
             }) => {
-                *self
-                    .host_key_error
-                    .lock()
-                    .expect("host key error lock poisoned") = Some(format!(
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some(format!(
                     "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
                 ));
                 false
@@ -1380,26 +1383,17 @@ impl client::Handler for PortMateSshHandler {
                 fingerprint_sha256,
                 ..
             }) if self.policy.mode == HostKeyMode::TrustOnFirstUse => {
-                *self
-                    .host_key_error
-                    .lock()
-                    .expect("host key error lock poisoned") = None;
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
                 let _ = (alias, fingerprint_sha256);
                 true
             }
             Ok(other) => {
-                *self
-                    .host_key_error
-                    .lock()
-                    .expect("host key error lock poisoned") =
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
                     Some(describe_host_key_rejection(&other));
                 false
             }
             Err(error) => {
-                *self
-                    .host_key_error
-                    .lock()
-                    .expect("host key error lock poisoned") =
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
                     Some(format!("host key fingerprint 计算失败: {error}"));
                 false
             }
@@ -1422,9 +1416,7 @@ impl client::Handler for PortMateSshHandler {
         let originator_address = originator_address.to_string();
         async move {
             let target = {
-                let forwards = forwards
-                    .lock()
-                    .expect("remote forward target map lock poisoned");
+                let forwards = lock_ssh_handler_state(&forwards, "remote forward targets")?;
                 let key = remote_forward_key(&connected_address, connected_port as u16);
                 forwards
                     .get(&key)
@@ -1464,16 +1456,14 @@ impl client::Handler for HostKeyScanHandler {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        *self
-            .observed_key
-            .lock()
-            .expect("host key scan observation lock poisoned") = Some(HostKeyObservation {
-            host: self.host.clone(),
-            port: self.port,
-            alias: self.alias.clone(),
-            algorithm: server_public_key.algorithm().to_string(),
-            public_key_base64: server_public_key.public_key_base64(),
-        });
+        *lock_ssh_handler_state(&self.observed_key, "host key scan observation")? =
+            Some(HostKeyObservation {
+                host: self.host.clone(),
+                port: self.port,
+                alias: self.alias.clone(),
+                algorithm: server_public_key.algorithm().to_string(),
+                public_key_base64: server_public_key.public_key_base64(),
+            });
         Ok(true)
     }
 }
@@ -33234,6 +33224,21 @@ mod tests {
             "one-time-key",
             &["one-time-key".to_string()]
         ));
+    }
+
+    #[test]
+    fn ssh_handler_lock_poisoning_returns_a_protocol_error() {
+        let state = Mutex::new(());
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = state.lock().unwrap();
+            panic!("poison SSH handler state for the regression check");
+        });
+
+        let error = lock_ssh_handler_state(&state, "host key observation").unwrap_err();
+        assert!(matches!(error, russh::Error::IO(_)));
+        assert!(error
+            .to_string()
+            .contains("PortMate SSH host key observation lock is poisoned"));
     }
 
     #[test]
