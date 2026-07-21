@@ -106,7 +106,8 @@ import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnaps
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
 import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
-import { selectedSshOneKey, sshOneKeysForSession } from "./one-key-login-state";
+import { sshOneKeysForSession } from "./one-key-login-state";
+import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import { deleteSessionProfileFromClientState } from "./session-profile-delete-state";
 import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
@@ -118,6 +119,7 @@ const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
 const LazyMcpDialog = lazy(() => import("./McpDialog"));
 const LazyMcpApprovalDialog = lazy(() => import("./McpApprovalDialog"));
+const LazyCredentialDialog = lazy(() => import("./CredentialDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -206,7 +208,6 @@ const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoveryS
 type SettingsDialog = "terminal" | "session" | null;
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
-type ConnectionCredentials = { username: string | null; password: string | null; passphrase: string | null; oneKeyId: string | null; savePassword: boolean; savePassphrase: boolean };
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
@@ -283,17 +284,6 @@ type ContextMenuState = {
   alternate: boolean;
   hasSelection: boolean;
 } | null;
-type CredentialPromptState = {
-  target: string;
-  initialUsername: string;
-  oneKeys: OneKeySummary[];
-  hasIdentityFiles: boolean;
-  hasSavedPassword: boolean;
-  hasSavedPassphrase: boolean;
-  needsPassword: boolean;
-  authOrder: AuthMethod[];
-};
-
 const tabColorChoices = [
   { label: "深青", value: "#008B8B" },
   { label: "深粉", value: "#FF1493" },
@@ -400,6 +390,7 @@ export default function App() {
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
+  const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
@@ -518,6 +509,27 @@ export default function App() {
 
   function finishHostKeyMutation(token: number) {
     hostKeyMutationGateRef.current.finish("host-keys", token);
+  }
+
+  function beginKeyManagerProfileMutation(profileId: string) {
+    return keyManagerProfileMutationGateRef.current.replace(profileId);
+  }
+
+  function commitKeyManagerProfileMutation(saved: SessionSummary, token: number, activateWorkspace = true) {
+    const profileId = saved.profile.id;
+    if (!keyManagerProfileMutationGateRef.current.isCurrent(profileId, token)) return false;
+    applySavedSessionState(saved, activateWorkspace);
+    return true;
+  }
+
+  function isKeyManagerProfileMutationCurrent(profileId: string, token: number) {
+    return keyManagerProfileMutationGateRef.current.isCurrent(profileId, token);
+  }
+
+  function finishKeyManagerProfileMutation(profileId: string, token: number, committed: boolean) {
+    const gate = keyManagerProfileMutationGateRef.current;
+    if (!committed && gate.isCurrent(profileId, token)) void refreshSessionSummaries();
+    gate.finish(profileId, token);
   }
 
   function updateOneKeys(next: OneKeySummary[]) {
@@ -2627,7 +2639,7 @@ export default function App() {
     return createSessionSummary(profile);
   }
 
-  function applySavedSession(saved: SessionSummary, activateWorkspace = true) {
+  function applySavedSessionState(saved: SessionSummary, activateWorkspace = true) {
     if (activateWorkspace) activateSession(saved.profile.id);
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions((current) => {
@@ -2637,14 +2649,9 @@ export default function App() {
     });
   }
 
-  function applySavedSessions(saved: SessionSummary[]) {
-    if (!saved.length) return;
-    sessionSummaryRefreshGateRef.current.invalidate("summaries");
-    setSessions((current) => {
-      const nextSessions = saved.reduce(mergeSessionSummaries, current);
-      saveLocalSessionSummaries(nextSessions);
-      return nextSessions;
-    });
+  function applySavedSession(saved: SessionSummary, activateWorkspace = true) {
+    keyManagerProfileMutationGateRef.current.invalidate(saved.profile.id);
+    applySavedSessionState(saved, activateWorkspace);
   }
 
   async function connectSession(sessionId = activeId, sessionOverride?: SessionSummary, activateWorkspace = true) {
@@ -3457,8 +3464,10 @@ export default function App() {
           onHostKeyMutationStart={beginHostKeyMutation}
           onChange={commitHostKeyMutation}
           onHostKeyMutationFinish={finishHostKeyMutation}
-          onProfileChange={applySavedSession}
-          onProfilesChange={applySavedSessions}
+          onProfileMutationStart={beginKeyManagerProfileMutation}
+          onProfileChange={commitKeyManagerProfileMutation}
+          onProfileMutationCurrent={isKeyManagerProfileMutationCurrent}
+          onProfileMutationFinish={finishKeyManagerProfileMutation}
           onClose={() => setUtilityDialog(null)}
         />
       )}
@@ -3502,7 +3511,11 @@ export default function App() {
           />
         </Suspense>
       )}
-      {credentialPrompt && <CredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />}
+      {credentialPrompt && (
+        <Suspense fallback={null}>
+          <LazyCredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />
+        </Suspense>
+      )}
       {hostKeyPrompt && (
         <HostKeyConfirmDialog
           state={hostKeyPrompt}
@@ -6368,8 +6381,10 @@ function KeyManagerDialog({
   onHostKeyMutationStart,
   onChange,
   onHostKeyMutationFinish,
+  onProfileMutationStart,
   onProfileChange,
-  onProfilesChange,
+  onProfileMutationCurrent,
+  onProfileMutationFinish,
   onClose,
 }: {
   hostKeys: HostKeyStore;
@@ -6377,8 +6392,10 @@ function KeyManagerDialog({
   onHostKeyMutationStart: () => number;
   onChange: (store: HostKeyStore, token: number) => boolean;
   onHostKeyMutationFinish: (token: number) => void;
-  onProfileChange: (summary: SessionSummary) => void;
-  onProfilesChange: (summaries: SessionSummary[]) => void;
+  onProfileMutationStart: (profileId: string) => number;
+  onProfileChange: (summary: SessionSummary, token: number, activateWorkspace?: boolean) => boolean;
+  onProfileMutationCurrent: (profileId: string, token: number) => boolean;
+  onProfileMutationFinish: (profileId: string, token: number, committed: boolean) => void;
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
@@ -6722,6 +6739,11 @@ function KeyManagerDialog({
       return;
     }
     if (!canExecuteProfileSecretMigration(migrationPreviewState.preview, true, false, Boolean(migrationRecovery))) return;
+    const mutationTokens = new Map(request.profileIds.map((targetProfileId) => [
+      targetProfileId,
+      onProfileMutationStart(targetProfileId),
+    ]));
+    let backendSucceeded = false;
     setMigrationBusy("migrate");
     setMigrationError("");
     try {
@@ -6729,7 +6751,13 @@ function KeyManagerDialog({
         request,
         expectedPlanToken: migrationPreviewState.preview.planToken,
       });
-      onProfilesChange(result.summaries);
+      backendSucceeded = true;
+      const accepted = result.summaries.map((summary) => {
+        const mutationToken = mutationTokens.get(summary.profile.id);
+        return mutationToken !== undefined
+          && onProfileChange(summary, mutationToken, false);
+      }).every(Boolean);
+      if (!accepted || !mountedRef.current) return;
       setMigrationPreviewState(null);
       setMigrationResult(result);
       setMigrationRequiresRestart(false);
@@ -6747,12 +6775,19 @@ function KeyManagerDialog({
       }
     } catch (error) {
       const message = formatError(error);
-      setMigrationPreviewState(null);
-      setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
-      setMigrationError(profileSecretMigrationErrorMessage(message));
+      if (mountedRef.current) {
+        setMigrationPreviewState(null);
+        setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
+        setMigrationError(profileSecretMigrationErrorMessage(message));
+      }
     } finally {
-      await refreshMigrationRecovery(true, true);
-      setMigrationBusy(null);
+      for (const [targetProfileId, mutationToken] of mutationTokens) {
+        onProfileMutationFinish(targetProfileId, mutationToken, backendSucceeded);
+      }
+      if (mountedRef.current) {
+        await refreshMigrationRecovery(true, true);
+        setMigrationBusy(null);
+      }
     }
   }
 
@@ -6934,18 +6969,26 @@ function KeyManagerDialog({
     }
   }
 
-  async function saveProfileFromManager(profile: SessionProfile, message: string): Promise<boolean> {
+  async function saveProfileFromManager(
+    profile: SessionProfile,
+    message: string,
+  ): Promise<{ persisted: boolean; accepted: boolean }> {
+    const mutationToken = onProfileMutationStart(profile.id);
+    let backendSucceeded = false;
     setError("");
     setStatus("");
     try {
       const expectedProfile = sessions.find((session) => session.profile.id === profile.id)?.profile ?? null;
       const saved = await invokeBackend<SessionSummary>("save_session_profile", { profile: prepareSessionProfile(profile), expectedProfile });
-      onProfileChange(saved);
-      setStatus(message);
-      return true;
+      backendSucceeded = true;
+      const accepted = onProfileChange(saved, mutationToken);
+      if (accepted && mountedRef.current) setStatus(message);
+      return { persisted: true, accepted };
     } catch (error) {
-      setError(formatError(error));
-      return false;
+      if (mountedRef.current) setError(formatError(error));
+      return { persisted: false, accepted: false };
+    } finally {
+      onProfileMutationFinish(profile.id, mutationToken, backendSucceeded);
     }
   }
 
@@ -6987,7 +7030,7 @@ function KeyManagerDialog({
         path: null,
         secretRef: response.secretRef,
       };
-      const saved = await saveProfileFromManager({
+      const saveResult = await saveProfileFromManager({
         ...selectedProfile,
         connection: {
           ...selectedProfile.connection,
@@ -6998,8 +7041,8 @@ function KeyManagerDialog({
           },
         },
       }, `已导入私钥到 ${selectedProfile.name}`);
-      if (saved) {
-        setPrivateKeyText("");
+      if (saveResult.persisted) {
+        if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
       } else {
         try {
           await invokeBackend("delete_secret", { secretRef: response.secretRef });
@@ -7081,7 +7124,7 @@ function KeyManagerDialog({
       }
     }
     if (!added && !updated) return;
-    const saved = await saveProfileFromManager({
+    const saveResult = await saveProfileFromManager({
       ...selectedProfile,
       connection: {
         ...selectedProfile.connection,
@@ -7093,7 +7136,7 @@ function KeyManagerDialog({
         },
       },
     }, `Agent keys: ${added} added, ${updated} updated · ${selectedProfile.name}`);
-    if (saved) setSelectedAgentKeyIds([]);
+    if (saveResult.accepted && mountedRef.current) setSelectedAgentKeyIds([]);
   }
 
   async function copyAgentIdentityToProfile(identity: IdentityRef) {
@@ -7124,7 +7167,7 @@ function KeyManagerDialog({
       setStatus(`${selectedProfile.name} 已包含选中的 client keys`);
       return;
     }
-    const saved = await saveProfileFromManager({
+    const saveResult = await saveProfileFromManager({
       ...selectedProfile,
       connection: {
         ...selectedProfile.connection,
@@ -7140,69 +7183,119 @@ function KeyManagerDialog({
         } : selectedProfile.connection.agentPolicy,
       },
     }, `已复制 ${copied} 个 client key 到 ${selectedProfile.name}`);
-    if (saved) setSelectedClientKeyIds([]);
+    if (saveResult.accepted && mountedRef.current) setSelectedClientKeyIds([]);
   }
 
   async function moveSelectedClientIdentitiesFirst() {
     if (!selectedClientIdentityItems.length) return;
+    const selectedIds = new Set(selectedClientIdentityItems.map((item) => item.selectionId));
+    const targets = sshSessions.flatMap((session) => {
+      const profile = session.profile;
+      if (!isSshLikeProfile(profile)) return [];
+      const selected = profile.connection.identityRefs.filter((identity, index) => (
+        selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
+      ));
+      if (!selected.length) return [];
+      const remaining = profile.connection.identityRefs.filter((identity, index) => (
+        !selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
+      ));
+      return [{ profile, identityRefs: [...selected, ...remaining] }];
+    });
+    const mutationTokens = new Map(targets.map(({ profile }) => [
+      profile.id,
+      onProfileMutationStart(profile.id),
+    ]));
+    const completedProfiles = new Set<string>();
+    let superseded = false;
     setError("");
     setStatus("");
     let updatedProfiles = 0;
     try {
-      for (const session of sshSessions) {
-        const profile = session.profile;
-        if (!isSshLikeProfile(profile)) continue;
-        const selectedIds = new Set(selectedClientIdentityItems.map((item) => item.selectionId));
-        const selected = profile.connection.identityRefs.filter((identity, index) => (
-          selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
-        ));
-        if (!selected.length) continue;
-        const remaining = profile.connection.identityRefs.filter((identity, index) => (
-          !selectedIds.has(clientIdentitySelectionId(profile.id, identity, index))
-        ));
+      for (const { profile, identityRefs } of targets) {
+        const mutationToken = mutationTokens.get(profile.id)!;
+        if (!onProfileMutationCurrent(profile.id, mutationToken)) {
+          superseded = true;
+          continue;
+        }
         const saved = await invokeBackend<SessionSummary>("save_session_profile", {
           profile: prepareSessionProfile({
             ...profile,
-            connection: { ...profile.connection, identityRefs: [...selected, ...remaining] },
+            connection: { ...profile.connection, identityRefs },
           }),
           expectedProfile: profile,
         });
-        onProfileChange(saved);
+        completedProfiles.add(profile.id);
+        if (!onProfileChange(saved, mutationToken)) superseded = true;
         updatedProfiles += 1;
       }
-      setSelectedClientKeyIds([]);
-      setStatus(`已在 ${updatedProfiles} 个 Profile 中置顶所选 client keys`);
+      if (mountedRef.current && !superseded) {
+        setSelectedClientKeyIds([]);
+        setStatus(`已在 ${updatedProfiles} 个 Profile 中置顶所选 client keys`);
+      }
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      for (const [targetProfileId, mutationToken] of mutationTokens) {
+        onProfileMutationFinish(
+          targetProfileId,
+          mutationToken,
+          completedProfiles.has(targetProfileId),
+        );
+      }
     }
   }
 
   async function removeSelectedClientIdentities() {
     if (!selectedClientIdentityItems.length) return;
+    const targets = sshSessions.flatMap((session) => {
+      const profile = session.profile;
+      if (!isSshLikeProfile(profile)) return [];
+      const selected = selectedClientIdentityItems.filter((item) => item.profileId === profile.id);
+      const removableItems = selected.filter((item) => !item.jumpInUse);
+      return removableItems.length ? [{ profile, removableItems }] : [];
+    });
+    const mutationTokens = new Map(targets.map(({ profile }) => [
+      profile.id,
+      onProfileMutationStart(profile.id),
+    ]));
+    const completedProfiles = new Set<string>();
+    let superseded = false;
     setError("");
     setStatus("");
     let removed = 0;
-    let skipped = 0;
+    const skipped = selectedClientIdentityItems.filter((item) => item.jumpInUse).length;
     try {
-      for (const session of sshSessions) {
-        const profile = session.profile;
-        if (!isSshLikeProfile(profile)) continue;
-        const selected = selectedClientIdentityItems.filter((item) => item.profileId === profile.id);
-        if (!selected.length) continue;
-        const removableItems = selected.filter((item) => !item.jumpInUse);
-        skipped += selected.filter((item) => item.jumpInUse).length;
+      for (const { profile, removableItems } of targets) {
+        const mutationToken = mutationTokens.get(profile.id)!;
+        let profileCompleted = true;
         for (const item of removableItems) {
+          if (!onProfileMutationCurrent(profile.id, mutationToken)) {
+            superseded = true;
+            profileCompleted = false;
+            break;
+          }
           const response = await invokeBackend<ClientIdentityMutationResponse>("delete_client_identity", {
             request: { profileId: profile.id, identityId: item.identity.id, deleteSecret: false },
           });
-          onProfileChange(response.summary);
+          if (!onProfileChange(response.summary, mutationToken)) superseded = true;
           removed += 1;
         }
+        if (profileCompleted) completedProfiles.add(profile.id);
       }
-      setSelectedClientKeyIds([]);
-      setStatus(`已移除 ${removed} 个 client key 引用${skipped ? `，跳过 ${skipped} 个 Jump Host 使用中的 key` : ""}`);
+      if (mountedRef.current && !superseded) {
+        setSelectedClientKeyIds([]);
+        setStatus(`已移除 ${removed} 个 client key 引用${skipped ? `，跳过 ${skipped} 个 Jump Host 使用中的 key` : ""}`);
+      }
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      for (const [targetProfileId, mutationToken] of mutationTokens) {
+        onProfileMutationFinish(
+          targetProfileId,
+          mutationToken,
+          completedProfiles.has(targetProfileId),
+        );
+      }
     }
   }
 
@@ -7230,8 +7323,9 @@ function KeyManagerDialog({
     setStatus("");
   }
 
-  function applyClientIdentityMutation(response: ClientIdentityMutationResponse, message: string) {
-    onProfileChange(response.summary);
+  function applyClientIdentityMutation(response: ClientIdentityMutationResponse, message: string, token: number) {
+    const accepted = onProfileChange(response.summary, token);
+    if (!accepted || !mountedRef.current) return false;
     if (clientKeyEditDraft) {
       const connection = response.summary.profile.connection;
       if (connection.kind === "ssh" || connection.kind === "tmux") {
@@ -7257,10 +7351,14 @@ function KeyManagerDialog({
           ? " · 旧 secret 仍被共享，已保留"
           : "";
     setStatus(`${message}${suffix}`);
+    return true;
   }
 
   async function saveClientIdentity() {
     if (!clientKeyEditDraft) return;
+    const mutationProfileId = clientKeyEditDraft.profileId;
+    const mutationToken = onProfileMutationStart(mutationProfileId);
+    let backendSucceeded = false;
     setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
@@ -7276,16 +7374,21 @@ function KeyManagerDialog({
           secretRef: clientKeyEditDraft.secretRef || null,
         },
       });
-      applyClientIdentityMutation(response, "Client identity 已更新");
+      backendSucceeded = true;
+      applyClientIdentityMutation(response, "Client identity 已更新", mutationToken);
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
     } finally {
-      setClientKeyMutationBusy(false);
+      onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
+      if (mountedRef.current) setClientKeyMutationBusy(false);
     }
   }
 
   async function rotateClientIdentity() {
     if (!clientKeyEditDraft || !clientKeyPrivateKey.trim()) return;
+    const mutationProfileId = clientKeyEditDraft.profileId;
+    const mutationToken = onProfileMutationStart(mutationProfileId);
+    let backendSucceeded = false;
     setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
@@ -7299,13 +7402,16 @@ function KeyManagerDialog({
           storage: clientKeyStorage === "auto" ? null : clientKeyStorage,
         },
       });
-      applyClientIdentityMutation(response, "Vault 私钥已轮换");
-      setClientKeyPrivateKey("");
-      setClientKeyPassphrase("");
+      backendSucceeded = true;
+      if (applyClientIdentityMutation(response, "Vault 私钥已轮换", mutationToken)) {
+        setClientKeyPrivateKey("");
+        setClientKeyPassphrase("");
+      }
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
     } finally {
-      setClientKeyMutationBusy(false);
+      onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
+      if (mountedRef.current) setClientKeyMutationBusy(false);
     }
   }
 
@@ -7313,6 +7419,9 @@ function KeyManagerDialog({
     if (!clientKeyEditDraft || editingClientIdentityItem?.jumpInUse) return;
     const action = deleteSecret ? "移除该引用并清理未共享 secret" : "移除该 identity 引用";
     if (!window.confirm(`${action}？`)) return;
+    const mutationProfileId = clientKeyEditDraft.profileId;
+    const mutationToken = onProfileMutationStart(mutationProfileId);
+    let backendSucceeded = false;
     setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
@@ -7324,15 +7433,18 @@ function KeyManagerDialog({
           deleteSecret,
         },
       });
-      applyClientIdentityMutation(response, "Client identity 引用已移除");
-      setEditingClientKeyId("");
-      setClientKeyEditDraft(null);
-      setClientKeyPrivateKey("");
-      setClientKeyPassphrase("");
+      backendSucceeded = true;
+      if (applyClientIdentityMutation(response, "Client identity 引用已移除", mutationToken)) {
+        setEditingClientKeyId("");
+        setClientKeyEditDraft(null);
+        setClientKeyPrivateKey("");
+        setClientKeyPassphrase("");
+      }
     } catch (error) {
-      setError(formatError(error));
+      if (mountedRef.current) setError(formatError(error));
     } finally {
-      setClientKeyMutationBusy(false);
+      onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
+      if (mountedRef.current) setClientKeyMutationBusy(false);
     }
   }
 
@@ -7676,138 +7788,6 @@ function KeyManagerDialog({
           </section>
         </div>
       </section>
-    </div>
-  );
-}
-
-function CredentialDialog({
-  request,
-  onCancel,
-  onSubmit,
-}: {
-  request: CredentialPromptState;
-  onCancel: () => void;
-  onSubmit: (credentials: ConnectionCredentials) => void;
-}) {
-  const [username, setUsername] = useState(request.initialUsername);
-  const [password, setPassword] = useState("");
-  const [passphrase, setPassphrase] = useState("");
-  const [oneKeyId, setOneKeyId] = useState("");
-  const [savePassword, setSavePassword] = useState(false);
-  const [savePassphrase, setSavePassphrase] = useState(false);
-  const usernameRef = useRef<HTMLInputElement | null>(null);
-  const selectedOneKey = selectedSshOneKey(request.oneKeys, oneKeyId);
-
-  useEffect(() => {
-    usernameRef.current?.focus();
-    usernameRef.current?.select();
-  }, []);
-
-  function selectOneKey(nextOneKeyId: string) {
-    const oneKey = selectedSshOneKey(request.oneKeys, nextOneKeyId);
-    setOneKeyId(oneKey?.id ?? "");
-    if (oneKey) {
-      setUsername(oneKey.username);
-      setPassword("");
-      setPassphrase("");
-      setSavePassword(false);
-      setSavePassphrase(false);
-    }
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const nextUsername = (selectedOneKey?.username ?? username).trim();
-    if (!nextUsername) {
-      usernameRef.current?.focus();
-      return;
-    }
-    onSubmit({
-      username: nextUsername,
-      password: !selectedOneKey && request.needsPassword ? password : null,
-      passphrase: !selectedOneKey && request.hasIdentityFiles ? passphrase : null,
-      oneKeyId: selectedOneKey?.id ?? null,
-      savePassword: !selectedOneKey && request.needsPassword && savePassword,
-      savePassphrase: !selectedOneKey && request.hasIdentityFiles && savePassphrase,
-    });
-  }
-
-  return (
-    <div className="dialog-backdrop credential-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) {
-        onCancel();
-      }
-    }}>
-      <form className="wind-dialog credential-dialog" onSubmit={submit}>
-        <header className="dialog-title credential-title">
-          <span className="app-icon" />
-          <div>
-            <strong>SSH 连接</strong>
-            <small>{request.target}</small>
-          </div>
-          <button type="button" onClick={onCancel}><X size={20} /></button>
-        </header>
-        <section className="credential-content">
-          <label className="credential-field">
-            <span>OneKey</span>
-            <select value={oneKeyId} onChange={(event) => selectOneKey(event.target.value)} disabled={!request.oneKeys.length}>
-              <option value="">{request.oneKeys.length ? "手动输入" : "没有绑定 OneKey"}</option>
-              {request.oneKeys.map((oneKey) => (
-                <option key={oneKey.id} value={oneKey.id}>{oneKey.label}</option>
-              ))}
-            </select>
-          </label>
-          {selectedOneKey ? (
-            <div className="credential-one-key-meta">
-              <KeyRound size={14} />
-              <span>
-                <strong>{selectedOneKey.label}</strong>
-                <small>{[
-                  selectedOneKey.hasPassword ? "密码" : "",
-                  selectedOneKey.hasPassphrase ? "私钥口令" : "",
-                  selectedOneKey.identity ? `公钥身份 · ${selectedOneKey.identity.label}` : "",
-                ].filter(Boolean).join(" / ")}</small>
-              </span>
-            </div>
-          ) : null}
-          <label className="credential-field">
-            <span>用户名</span>
-            <input ref={usernameRef} value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={Boolean(selectedOneKey)} />
-          </label>
-          {request.needsPassword ? (
-            <label className="credential-field">
-              <span>{selectedOneKey ? "OneKey 密码" : request.hasSavedPassword ? "登录密码(已存)" : "登录密码"}</span>
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassword ? "已安全保存" : "未保存" : ""} />
-            </label>
-          ) : null}
-          {request.needsPassword && !selectedOneKey ? (
-            <label className="credential-check">
-              <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password} />
-              <span>保存登录密码到系统密钥库</span>
-            </label>
-          ) : null}
-          {request.hasIdentityFiles ? (
-            <label className="credential-field">
-              <span>{selectedOneKey ? "OneKey 私钥口令" : request.hasSavedPassphrase ? "私钥口令(已存)" : "私钥口令"}</span>
-              <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" autoComplete="off" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassphrase ? "已安全保存" : "未保存" : "没有可留空"} />
-            </label>
-          ) : null}
-          {request.hasIdentityFiles && !selectedOneKey ? (
-            <label className="credential-check">
-              <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase} />
-              <span>保存私钥口令到系统密钥库</span>
-            </label>
-          ) : null}
-          <div className="credential-meta">
-            <span>本次连接</span>
-            <span>{request.authOrder.join(" / ")}</span>
-          </div>
-        </section>
-        <footer className="credential-actions">
-          <button type="button" onClick={onCancel}>取消</button>
-          <button type="submit">连接</button>
-        </footer>
-      </form>
     </div>
   );
 }

@@ -124,6 +124,15 @@ const sessions = [
     kind: "ssh",
     endpoint: { host: "10.0.0.1", port: 2222 },
     username: "admin",
+    jumps: [],
+    identityRefs: [{
+      id: "edge-system-key",
+      label: "Initial identity",
+      source: "system-file",
+      fingerprintSha256: "SHA256:edge-system-key",
+      path: "/home/operator/.ssh/id_ed25519",
+      secretRef: null,
+    }],
   }),
   createSession("bench-uart", "Bench UART", "serial", "Lab", ["hardware"], {
     kind: "serial",
@@ -296,6 +305,8 @@ try {
     window.__hostKeySequence = 0;
     window.__deferHostKeyMutations = false;
     window.__pendingHostKeyMutations = [];
+    window.__deferProfileMutations = false;
+    window.__pendingProfileMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__transfers = [];
     window.__clipboardText = "";
@@ -397,6 +408,28 @@ try {
           if (index >= 0) window.__sessions[index] = saved;
           else window.__sessions.push(saved);
           return saved;
+        }
+        if (command === "update_client_identity") {
+          const index = window.__sessions.findIndex((session) => session.profile.id === args.request.profileId);
+          const summary = structuredClone(window.__sessions[index]);
+          const identityIndex = summary.profile.connection.identityRefs.findIndex((identity) => identity.id === args.request.identityId);
+          summary.profile.connection.identityRefs[identityIndex] = {
+            ...summary.profile.connection.identityRefs[identityIndex],
+            label: args.request.label,
+            source: args.request.source,
+            fingerprintSha256: args.request.fingerprintSha256,
+            path: args.request.path,
+            secretRef: args.request.secretRef,
+          };
+          window.__sessions[index] = summary;
+          const result = {
+            summary: structuredClone(summary),
+            oldSecretDeleted: false,
+            oldSecretShared: false,
+            cleanupWarning: null,
+          };
+          if (!window.__deferProfileMutations) return result;
+          return new Promise((resolve) => window.__pendingProfileMutations.push({ result, resolve }));
         }
         if (command === "tail_log") {
           if (window.__failTailLogs > 0) {
@@ -2283,6 +2316,71 @@ try {
     `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);
   await hostKeyLifecyclePage.close();
 
+  const profileLifecyclePage = await context.newPage();
+  const profileLifecycleErrors = [];
+  profileLifecyclePage.on("pageerror", (error) => profileLifecycleErrors.push(error.message));
+  await profileLifecyclePage.goto(appUrl);
+  await profileLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await profileLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await profileLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const firstProfileManager = profileLifecyclePage.locator(".key-dialog");
+  await firstProfileManager.waitFor();
+  await firstProfileManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
+  await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Closed identity");
+  await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = true; });
+  await firstProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
+  await firstProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await firstProfileManager.waitFor({ state: "detached" });
+  await profileLifecyclePage.evaluate(() => {
+    const pending = window.__pendingProfileMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await profileLifecyclePage.waitForTimeout(100);
+
+  await profileLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await profileLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const secondProfileManager = profileLifecyclePage.locator(".key-dialog");
+  await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
+  await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
+  await secondProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deferred identity");
+  await secondProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
+  await secondProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await secondProfileManager.waitFor({ state: "detached" });
+
+  await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = false; });
+  await profileLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await profileLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const thirdProfileManager = profileLifecyclePage.locator(".key-dialog");
+  await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
+  await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
+  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Current identity");
+  await thirdProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await thirdProfileManager.getByRole("button", { name: "编辑 Current identity", exact: true }).waitFor();
+  await profileLifecyclePage.evaluate(() => {
+    const pending = window.__pendingProfileMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await profileLifecyclePage.waitForTimeout(100);
+  const profileLifecycleState = await profileLifecyclePage.evaluate(() => {
+    const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    return {
+      backend: edge.profile.connection.identityRefs.map((identity) => identity.label),
+      visible: [...document.querySelectorAll(".client-key-row .client-key-main > strong")].map((item) => item.textContent),
+      pending: window.__pendingProfileMutations.length,
+      updateCalls: window.__invokeCalls.filter((call) => call.command === "update_client_identity").length,
+    };
+  });
+  assert(JSON.stringify(profileLifecycleState.backend) === JSON.stringify(["Current identity"])
+    && JSON.stringify(profileLifecycleState.visible) === JSON.stringify(["Current identity"])
+    && profileLifecycleState.pending === 0
+    && profileLifecycleState.updateCalls === 3,
+  `a stale Profile mutation replaced the latest identity state: ${JSON.stringify(profileLifecycleState)}`);
+  assert(profileLifecycleErrors.length === 0,
+    `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
+  await profileLifecyclePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2318,6 +2416,7 @@ try {
     grantLifecycle: grantLifecycleState,
     oneKeyLifecycle: oneKeyLifecycleState,
     hostKeyLifecycle: hostKeyLifecycleState,
+    profileLifecycle: profileLifecycleState,
     terminalWrites,
     desktop,
     mobile,
