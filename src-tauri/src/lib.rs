@@ -11911,10 +11911,48 @@ async fn sftp_create_dir_all(sftp: &SftpSession, path: &str) -> Result<(), Strin
         current = remote_join_path(&current, part);
         match sftp.create_dir(current.clone()).await {
             Ok(()) => {}
-            Err(error) => match sftp.metadata(current.clone()).await {
-                Ok(metadata) if metadata.is_dir() => {}
+            Err(error) => match sftp.symlink_metadata(current.clone()).await {
+                Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => {}
                 _ => return Err(format!("SFTP 创建远端目录失败 {current}: {error}")),
             },
+        }
+    }
+    Ok(())
+}
+
+async fn reject_remote_symlink_components(
+    sftp: &SftpSession,
+    path: &str,
+    allow_final_symlink: bool,
+    label: &str,
+) -> Result<(), String> {
+    let parts = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let mut current = if path.starts_with('/') {
+        "/".to_string()
+    } else {
+        String::new()
+    };
+    for (index, part) in parts.iter().enumerate() {
+        current = remote_join_path(&current, part);
+        let metadata = match sftp.symlink_metadata(current.clone()).await {
+            Ok(metadata) => metadata,
+            Err(error) => match sftp.try_exists(current.clone()).await {
+                Ok(false) => break,
+                Ok(true) => {
+                    return Err(format!("无法检查{label} {current}: {error}"));
+                }
+                Err(exists_error) => {
+                    return Err(format!(
+                        "无法检查{label} {current}: {error}; existence check failed: {exists_error}"
+                    ));
+                }
+            },
+        };
+        if metadata.is_symlink() && !(allow_final_symlink && index + 1 == parts.len()) {
+            return Err(format!("{label}不能经过符号链接: {current}"));
         }
     }
     Ok(())
@@ -13117,21 +13155,33 @@ async fn file_operation_inner(
         let path = validate_remote_mutating_path(&request.path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
-        let result = match operation {
-            FileOperation::CreateDirectory => sftp_create_dir_all(&sftp, &path).await,
-            FileOperation::Delete => sftp_remove_recursive(&sftp, &path).await,
-        };
+        let result = async {
+            match operation {
+                FileOperation::CreateDirectory => {
+                    reject_remote_symlink_components(&sftp, &path, false, "远端目录创建路径")
+                        .await?;
+                    sftp_create_dir_all(&sftp, &path).await
+                }
+                FileOperation::Delete => {
+                    reject_remote_symlink_components(&sftp, &path, true, "远端删除路径").await?;
+                    sftp_remove_recursive(&sftp, &path).await
+                }
+            }
+        }
+        .await;
         let _ = sftp.close().await;
         result
     } else {
         match operation {
             FileOperation::CreateDirectory => {
                 let path = validate_local_mutating_path(&request.path)?;
+                reject_local_symlink_components(&path, false, "本地目录创建路径")?;
                 fs::create_dir_all(&path)
                     .map_err(|error| format!("创建本地目录失败 {}: {error}", path.display()))
             }
             FileOperation::Delete => {
                 let path = validate_local_mutating_path(&request.path)?;
+                reject_local_symlink_components(&path, true, "本地删除路径")?;
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|error| format!("读取本地路径失败 {}: {error}", path.display()))?;
                 if metadata.is_dir() {
@@ -13159,15 +13209,21 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
         let new_path = validate_remote_mutating_path(&request.new_path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
-        let result = sftp
-            .rename(old_path.clone(), new_path.clone())
-            .await
-            .map_err(|error| format!("SFTP 重命名失败 {} -> {}: {error}", old_path, new_path));
+        let result = async {
+            reject_remote_symlink_components(&sftp, &old_path, true, "远端重命名源路径").await?;
+            reject_remote_symlink_components(&sftp, &new_path, true, "远端重命名目标路径").await?;
+            sftp.rename(old_path.clone(), new_path.clone())
+                .await
+                .map_err(|error| format!("SFTP 重命名失败 {} -> {}: {error}", old_path, new_path))
+        }
+        .await;
         let _ = sftp.close().await;
         result
     } else {
         let old_path = validate_local_mutating_path(&request.old_path)?;
         let new_path = validate_local_mutating_path(&request.new_path)?;
+        reject_local_symlink_components(&old_path, true, "本地重命名源路径")?;
+        reject_local_symlink_components(&new_path, true, "本地重命名目标路径")?;
         fs::rename(&old_path, &new_path).map_err(|error| {
             format!(
                 "本地重命名失败 {} -> {}: {error}",
@@ -13194,6 +13250,7 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
         let result = async {
+            reject_remote_symlink_components(&sftp, &path, false, "远端 chmod 路径").await?;
             let mut metadata = sftp
                 .symlink_metadata(path.clone())
                 .await
@@ -13215,6 +13272,7 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
         {
             use std::os::unix::fs::PermissionsExt;
             let path = validate_local_mutating_path(&request.path)?;
+            reject_local_symlink_components(&path, false, "本地 chmod 路径")?;
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|error| format!("读取本地权限失败 {}: {error}", path.display()))?;
             if metadata.file_type().is_symlink() {
@@ -13854,6 +13912,32 @@ fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(candidate)
+}
+
+fn reject_local_symlink_components(
+    path: &Path,
+    allow_final_symlink: bool,
+    label: &str,
+) -> Result<(), String> {
+    let component_count = path.components().count();
+    let mut current = PathBuf::new();
+    for (index, component) in path.components().enumerate() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && !(allow_final_symlink && index + 1 == component_count) =>
+            {
+                return Err(format!("{label}不能经过符号链接: {}", current.display()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!("检查{label}失败 {}: {error}", current.display()));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_native_local_path(path: &str) -> Result<PathBuf, String> {
@@ -35533,6 +35617,23 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn local_directory_creation_rejects_symlink_components() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        let link = root.path().join("link");
+        fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let nested = link.join("nested");
+        let error = reject_local_symlink_components(&nested, false, "test path").unwrap_err();
+
+        assert!(error.contains("符号链接"), "{error}");
+        assert!(!target.join("nested").exists());
+        assert!(reject_local_symlink_components(&link, true, "final link").is_ok());
+    }
+
     #[test]
     fn modem_file_names_normalize_windows_and_unix_separators() {
         assert_eq!(
@@ -38910,6 +39011,74 @@ mod tests {
             .await
             .unwrap();
             assert!(sftp_nested.is_dir());
+
+            let sftp_link_target = root.join("sftp-link-target");
+            let sftp_directory_link = root.join("sftp-directory-link");
+            fs::create_dir(&sftp_link_target).unwrap();
+            std::os::unix::fs::symlink(&sftp_link_target, &sftp_directory_link).unwrap();
+            let error = file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_directory_link.join("nested").display().to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateDirectory,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            assert!(!sftp_link_target.join("nested").exists());
+            let linked_file = sftp_link_target.join("protected.bin");
+            fs::write(&linked_file, b"protected").unwrap();
+            let linked_path = sftp_directory_link.join("protected.bin");
+            let original_mode = fs::metadata(&linked_file).unwrap().permissions().mode() & 0o777;
+            let error = chmod_path_inner(
+                &state,
+                ChmodPathRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: linked_path.display().to_string(),
+                    mode: 0o600,
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            assert_eq!(
+                fs::metadata(&linked_file).unwrap().permissions().mode() & 0o777,
+                original_mode
+            );
+            let error = rename_path_inner(
+                &state,
+                RenamePathRequest {
+                    session_id: Some(profile.id.clone()),
+                    old_path: linked_path.display().to_string(),
+                    new_path: sftp_directory_link
+                        .join("renamed.bin")
+                        .display()
+                        .to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            let error = file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: linked_path.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::Delete,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
+            fs::remove_file(&sftp_directory_link).unwrap();
+            fs::remove_dir_all(&sftp_link_target).unwrap();
 
             let drop_source = root.join("external-drop-source");
             let drop_source_nested = drop_source.join("nested");
