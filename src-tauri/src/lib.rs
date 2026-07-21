@@ -3510,6 +3510,7 @@ fn save_session_profile(
     let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
+    validate_transfer_default_local_dir(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let current_profile = store.profile(&profile.id);
     validate_expected_profile_credentials(current_profile.as_ref(), expected_profile.as_ref())?;
@@ -8853,19 +8854,17 @@ fn prepare_transfer_request(
     let accesses_remote = has_remote_transfer_prefix(&request.source)
         || has_remote_transfer_prefix(&request.destination);
     validate_transfer_protocol(profile, &request.protocol, accesses_remote)?;
-    let Some(default_local_dir) = profile
+    let default_local_dir = profile
         .transfer
         .default_local_dir
         .as_deref()
         .map(str::trim)
-        .filter(|path| !path.is_empty())
-    else {
-        return Ok(request);
-    };
+        .filter(|path| !path.is_empty());
+    validate_transfer_default_local_dir(profile)?;
 
-    request.source = resolve_default_local_transfer_path(&request.source, default_local_dir);
+    request.source = resolve_default_local_transfer_path(&request.source, default_local_dir)?;
     request.destination =
-        resolve_default_local_transfer_path(&request.destination, default_local_dir);
+        resolve_default_local_transfer_path(&request.destination, default_local_dir)?;
     Ok(request)
 }
 
@@ -8915,14 +8914,118 @@ fn transfer_protocol_label(protocol: &TransferProtocol) -> &'static str {
     }
 }
 
-fn resolve_default_local_transfer_path(value: &str, default_local_dir: &str) -> String {
-    if has_remote_transfer_prefix(value) || Path::new(value).is_absolute() {
-        return value.to_string();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTransferPathPlatform {
+    Unix,
+    Windows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTransferPathKind {
+    Relative,
+    Absolute,
+    RootedWithoutDrive,
+    DriveRelative,
+    ForeignAnchored,
+}
+
+fn current_local_transfer_path_platform() -> LocalTransferPathPlatform {
+    if cfg!(windows) {
+        LocalTransferPathPlatform::Windows
+    } else {
+        LocalTransferPathPlatform::Unix
     }
-    Path::new(default_local_dir)
-        .join(value)
-        .to_string_lossy()
-        .into_owned()
+}
+
+fn classify_local_transfer_path(
+    value: &str,
+    platform: LocalTransferPathPlatform,
+) -> LocalTransferPathKind {
+    let bytes = value.as_bytes();
+    let first_is_forward = bytes.first() == Some(&b'/');
+    let first_is_backward = bytes.first() == Some(&b'\\');
+    let first_is_separator = first_is_forward || first_is_backward;
+    let second_is_separator = bytes
+        .get(1)
+        .is_some_and(|byte| *byte == b'/' || *byte == b'\\');
+    let has_drive_prefix = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+
+    match platform {
+        LocalTransferPathPlatform::Unix => {
+            if first_is_forward {
+                LocalTransferPathKind::Absolute
+            } else if first_is_backward || has_drive_prefix {
+                LocalTransferPathKind::ForeignAnchored
+            } else {
+                LocalTransferPathKind::Relative
+            }
+        }
+        LocalTransferPathPlatform::Windows => {
+            if has_drive_prefix {
+                if bytes
+                    .get(2)
+                    .is_some_and(|byte| *byte == b'/' || *byte == b'\\')
+                {
+                    LocalTransferPathKind::Absolute
+                } else {
+                    LocalTransferPathKind::DriveRelative
+                }
+            } else if first_is_separator && second_is_separator {
+                LocalTransferPathKind::Absolute
+            } else if first_is_separator {
+                LocalTransferPathKind::RootedWithoutDrive
+            } else {
+                LocalTransferPathKind::Relative
+            }
+        }
+    }
+}
+
+fn validate_transfer_default_local_dir(profile: &SessionProfile) -> Result<(), String> {
+    let Some(default_local_dir) = profile
+        .transfer
+        .default_local_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(());
+    };
+    if classify_local_transfer_path(default_local_dir, current_local_transfer_path_platform())
+        != LocalTransferPathKind::Absolute
+    {
+        return Err("Profile 默认本地目录必须是当前平台的完整绝对路径".to_string());
+    }
+    Ok(())
+}
+
+fn resolve_default_local_transfer_path(
+    value: &str,
+    default_local_dir: Option<&str>,
+) -> Result<String, String> {
+    if has_remote_transfer_prefix(value) {
+        return Ok(value.to_string());
+    }
+    match classify_local_transfer_path(value, current_local_transfer_path_platform()) {
+        LocalTransferPathKind::Absolute => Ok(value.to_string()),
+        LocalTransferPathKind::Relative => Ok(default_local_dir
+            .map(|directory| {
+                Path::new(directory)
+                    .join(value)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| value.to_string())),
+        LocalTransferPathKind::RootedWithoutDrive => {
+            Err("Windows 本地传输路径必须包含盘符或完整 UNC 前缀".to_string())
+        }
+        LocalTransferPathKind::DriveRelative => {
+            Err("Windows 本地传输路径不能使用 drive-relative 形式".to_string())
+        }
+        LocalTransferPathKind::ForeignAnchored => {
+            Err("本地传输路径与当前操作系统不兼容".to_string())
+        }
+    }
 }
 
 fn has_remote_transfer_prefix(value: &str) -> bool {
@@ -35018,6 +35121,105 @@ mod tests {
         .unwrap();
         assert_eq!(download.source, "ssh:/tmp/download.bin");
         assert_eq!(download.destination, absolute_destination.to_string_lossy());
+    }
+
+    #[test]
+    fn local_transfer_path_classification_covers_unix_windows_and_unc_forms() {
+        for path in ["/tmp/input.bin", "//server/share/input.bin"] {
+            assert_eq!(
+                classify_local_transfer_path(path, LocalTransferPathPlatform::Unix),
+                LocalTransferPathKind::Absolute
+            );
+        }
+        for path in ["input.bin", "nested/input.bin", r"nested\input.bin"] {
+            assert_eq!(
+                classify_local_transfer_path(path, LocalTransferPathPlatform::Unix),
+                LocalTransferPathKind::Relative
+            );
+        }
+        for path in [
+            r"C:\Users\operator\input.bin",
+            "D:/data/input.bin",
+            r"C:input.bin",
+            r"\input.bin",
+            r"\\server\share\input.bin",
+        ] {
+            assert_eq!(
+                classify_local_transfer_path(path, LocalTransferPathPlatform::Unix),
+                LocalTransferPathKind::ForeignAnchored
+            );
+        }
+
+        for path in [
+            r"C:\Users\operator\input.bin",
+            "D:/data/input.bin",
+            r"\\server\share\input.bin",
+            "//server/share/input.bin",
+        ] {
+            assert_eq!(
+                classify_local_transfer_path(path, LocalTransferPathPlatform::Windows),
+                LocalTransferPathKind::Absolute
+            );
+        }
+        for path in [r"\input.bin", "/input.bin"] {
+            assert_eq!(
+                classify_local_transfer_path(path, LocalTransferPathPlatform::Windows),
+                LocalTransferPathKind::RootedWithoutDrive
+            );
+        }
+        assert_eq!(
+            classify_local_transfer_path(r"C:input.bin", LocalTransferPathPlatform::Windows),
+            LocalTransferPathKind::DriveRelative
+        );
+        assert_eq!(
+            classify_local_transfer_path("nested/input.bin", LocalTransferPathPlatform::Windows),
+            LocalTransferPathKind::Relative
+        );
+    }
+
+    #[test]
+    fn transfer_paths_reject_non_native_or_ambiguous_local_roots() {
+        let mut profile = test_ssh_profile();
+        profile.transfer.default_local_dir = Some("relative/default".to_string());
+        let error = validate_transfer_default_local_dir(&profile).unwrap_err();
+        assert!(error.contains("完整绝对路径"), "{error}");
+
+        profile.transfer.default_local_dir = None;
+        let foreign_local_path = if cfg!(windows) {
+            "C:input.bin"
+        } else {
+            r"C:\Users\operator\input.bin"
+        };
+        let error = prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Sftp,
+                source: foreign_local_path.to_string(),
+                destination: "remote:/tmp/input.bin".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("不兼容") || error.contains("drive-relative"),
+            "{error}"
+        );
+
+        let remote_windows_path = r"remote:C:\Users\operator\input.bin";
+        let request = prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Sftp,
+                source: remote_windows_path.to_string(),
+                destination: std::env::temp_dir()
+                    .join("input.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(request.source, remote_windows_path);
     }
 
     #[test]
