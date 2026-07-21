@@ -395,6 +395,7 @@ export default function App() {
   const logSignatureRef = useRef<Record<string, string>>({});
   const activeLogRefreshGateRef = useRef(new KeyedRequestGate<string>());
   const sessionsSignatureRef = useRef("");
+  const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
@@ -1024,6 +1025,8 @@ export default function App() {
 
   async function refresh() {
     const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
+    sessionSummaryRefreshGateRef.current.invalidate("summaries");
+    sessionsSignatureRef.current = sessionsSignature(nextSessions);
     setSessions(nextSessions);
     setTransfers(await callBackend("list_transfers", {}, emptyTransfers));
     setAudit(await callBackend("list_mcp_audit", {}, emptyAudit));
@@ -1151,15 +1154,21 @@ export default function App() {
   }
 
   async function refreshSessionSummaries() {
-    const nextSessions = await callBackend("list_sessions", {}, []);
-    if (nextSessions.length) {
+    const gate = sessionSummaryRefreshGateRef.current;
+    const token = gate.begin("summaries");
+    if (token === null) return;
+    try {
+      const nextSessions = await invokeBackend<SessionSummary[]>("list_sessions", {});
+      if (!gate.isCurrent("summaries", token) || !nextSessions.length) return;
       const signature = sessionsSignature(nextSessions);
-      if (sessionsSignatureRef.current === signature) {
-        return;
-      }
+      if (sessionsSignatureRef.current === signature) return;
       sessionsSignatureRef.current = signature;
       setSessions(nextSessions);
       saveLocalSessionSummaries(nextSessions);
+    } catch {
+      // Polling failures retain the last valid session snapshot.
+    } finally {
+      gate.finish("summaries", token);
     }
   }
   const paneSessions = useMemo(() => {
@@ -1575,6 +1584,7 @@ export default function App() {
       tabColors,
     }, remainingSessionIds);
 
+    sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions(response.sessions);
     saveLocalSessionSummaries(response.sessions);
     setOneKeys(response.oneKeys);
@@ -2508,6 +2518,7 @@ export default function App() {
 
   function applySavedSession(saved: SessionSummary, activateWorkspace = true) {
     if (activateWorkspace) activateSession(saved.profile.id);
+    sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions((current) => {
       const nextSessions = mergeSessionSummaries(current, saved);
       saveLocalSessionSummaries(nextSessions);
@@ -2517,6 +2528,7 @@ export default function App() {
 
   function applySavedSessions(saved: SessionSummary[]) {
     if (!saved.length) return;
+    sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions((current) => {
       const nextSessions = saved.reduce(mergeSessionSummaries, current);
       saveLocalSessionSummaries(nextSessions);
@@ -2539,6 +2551,7 @@ export default function App() {
     }
 
     const connecting = setSessionStatus({ ...session, profile: profileForConnect }, "connecting");
+    sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions((current) => mergeSessionSummaries(current, connecting));
     if (activateWorkspace) activateSession(profileForConnect.id);
 
@@ -2554,6 +2567,7 @@ export default function App() {
       const nextLog = await callBackend("tail_log", { sessionId: persisted.profile.id, limit: 600 }, fallbackLog);
 
       replaceSessionLog(persisted.profile.id, nextLog);
+      sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => {
         const nextSessions = mergeSessionSummaries(current, saved);
         saveLocalSessionSummaries(nextSessions);
@@ -2566,6 +2580,7 @@ export default function App() {
       const errorText = `PortMate: connection failed: ${message}`;
       const nextLog = backendLog.length ? backendLog : [...(logs[profileForConnect.id] ?? []), createLocalSystemEvent(profileForConnect, errorText)];
       replaceSessionLog(profileForConnect.id, nextLog);
+      sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => mergeSessionSummaries(current, failed));
       if (isSshLikeProfile(profileForConnect) && isHostKeyFailure(message)) {
         void openHostKeyPrompt(profileForConnect, message, credentials);
@@ -2632,6 +2647,7 @@ export default function App() {
 
       replaceSessionLog(sessionId, nextLog);
       if (activateWorkspace) activateSession(sessionId);
+      sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => {
         const nextSessions = mergeSessionSummaries(current, saved);
         saveLocalSessionSummaries(nextSessions);
@@ -2909,6 +2925,7 @@ export default function App() {
       const saved = await invokeBackend<SessionSummary>("serial_set_lines", {
         request: { sessionId, [line]: value },
       });
+      sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => mergeSessionSummaries(current, saved));
     } catch (error) {
       setNotice({ title: "串口控制失败", message: formatError(error) });

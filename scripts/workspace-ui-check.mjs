@@ -272,6 +272,8 @@ try {
     window.__pendingTunnelRefresh = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
+    window.__deferSessionLists = false;
+    window.__pendingSessionLists = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -305,7 +307,12 @@ try {
           window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
           return null;
         }
-        if (command === "list_sessions") return window.__sessions;
+        if (command === "list_sessions") {
+          if (!window.__deferSessionLists) return window.__sessions;
+          return new Promise((resolve) => {
+            window.__pendingSessionLists.push({ result: structuredClone(window.__sessions), resolve });
+          });
+        }
         if (command === "save_session_profile") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
           if (index < 0) throw new Error(`unknown test session: ${args.profile.id}`);
@@ -1615,10 +1622,13 @@ try {
   await page.evaluate(() => {
     window.__deferTailLogs = true;
     window.__pendingTailLogs = [];
+    window.__deferSessionLists = true;
+    window.__pendingSessionLists = [];
   });
   await deleteTarget.click();
   await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
   await page.waitForFunction(() => window.__pendingTailLogs.some((request) => request.args.sessionId === "bench-uart"));
+  await page.waitForFunction(() => window.__pendingSessionLists.length >= 1);
   await deleteTarget.click({ button: "right" });
   const deleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
   await deleteAction.waitFor();
@@ -1664,8 +1674,13 @@ try {
     }
     window.__pendingTailLogs = [];
     window.__deferTailLogs = false;
+    for (const pending of window.__pendingSessionLists) pending.resolve(pending.result);
+    window.__pendingSessionLists = [];
+    window.__deferSessionLists = false;
   }, staleDeletedLogMarker);
   await page.waitForTimeout(100);
+  assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).count() === 0,
+    "a list_sessions response that completed after Profile deletion restored the deleted Profile");
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   await page.getByRole("tab", { name: "日志", exact: true }).click();
   const deletedLogSearch = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
