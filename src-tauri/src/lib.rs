@@ -24820,6 +24820,21 @@ fn finalize_archive_with_checksum(
     final_path: &Path,
     label: &str,
 ) -> Result<FinalizedArchive, String> {
+    let checksum_path = path_with_appended_suffix(final_path, ".sha256")?;
+    let checksum_temp_path = path_with_appended_suffix(final_path, ".sha256.part")?;
+    for artifact in [
+        final_path,
+        checksum_path.as_path(),
+        checksum_temp_path.as_path(),
+    ] {
+        if fs::symlink_metadata(artifact).is_ok() {
+            let _ = fs::remove_file(temp_path);
+            return Err(format!(
+                "refusing to overwrite existing {label} artifact {}",
+                artifact.display()
+            ));
+        }
+    }
     fs::rename(temp_path, final_path).map_err(|error| {
         let _ = fs::remove_file(temp_path);
         format!(
@@ -24841,13 +24856,15 @@ fn finalize_archive_with_checksum(
             return Err(format!("failed to read {label} metadata: {error}"));
         }
     };
-    let checksum_path = path_with_appended_suffix(final_path, ".sha256")?;
-    let checksum_temp_path = path_with_appended_suffix(final_path, ".sha256.part")?;
     let archive_name = final_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("portmate-archive.tar.gz");
-    if let Err(error) = fs::write(&checksum_temp_path, format!("{sha256}  {archive_name}\n")) {
+    if let Err(error) = write_new_synced_file(
+        &checksum_temp_path,
+        format!("{sha256}  {archive_name}\n").as_bytes(),
+        &format!("{label} checksum"),
+    ) {
         let _ = fs::remove_file(final_path);
         let _ = fs::remove_file(&checksum_temp_path);
         return Err(format!(
@@ -24905,13 +24922,12 @@ fn write_log_shard_archive(
     modified_at: u64,
     created_at: &str,
 ) -> Result<(), String> {
-    let file = fs::File::create(path)
-        .map_err(|error| format!("failed to create log archive {}: {error}", path.display()))?;
+    let file = create_new_archive_file(path, "log archive")?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut archive = TarBuilder::new(encoder);
     let mut manifest_files = Vec::new();
     for (relative, source, size) in shards {
-        let file = fs::File::open(source)
+        let file = open_bundle_attachment_file(source)
             .map_err(|error| format!("failed to open log shard {relative}: {error}"))?;
         let mut reader = HashingReader::new(file.take(*size));
         let archive_path = format!("logs/{relative}");
@@ -24971,12 +24987,7 @@ fn write_bundle_archive(
     entries: &[BundleArchiveEntry],
     modified_at: u64,
 ) -> Result<(), String> {
-    let file = fs::File::create(path).map_err(|error| {
-        format!(
-            "failed to create session bundle {}: {error}",
-            path.display()
-        )
-    })?;
+    let file = create_new_archive_file(path, "session bundle")?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut archive = TarBuilder::new(encoder);
     for entry in entries {
@@ -25004,6 +25015,16 @@ fn write_bundle_archive(
         .map_err(|error| format!("failed to flush session bundle: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("failed to sync session bundle: {error}"))
+}
+
+fn create_new_archive_file(path: &Path, label: &str) -> Result<fs::File, String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options
+        .open(path)
+        .map_err(|error| format!("failed to create {label} {}: {error}", path.display()))
 }
 
 fn sanitize_log_path_segment(segment: &str) -> String {
@@ -36620,6 +36641,46 @@ mod tests {
             },
         )
         .is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_writes_reject_symlink_sources_outputs_and_existing_artifacts() {
+        let root = std::env::temp_dir().join(format!("portmate-archive-paths-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let protected = root.join("protected.bin");
+        fs::write(&protected, b"protected").unwrap();
+        let source_link = root.join("source.txt");
+        std::os::unix::fs::symlink(&protected, &source_link).unwrap();
+        let archive_path = root.join("logs.tar.gz.part");
+        let source_error = write_log_shard_archive(
+            &archive_path,
+            &[("source.txt".to_string(), source_link, 9)],
+            0,
+            "2026-07-22T00:00:00Z",
+        )
+        .unwrap_err();
+        assert!(source_error.contains("not a regular file"));
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+        let output_link = root.join("bundle.tar.gz.part");
+        std::os::unix::fs::symlink(&protected, &output_link).unwrap();
+        let output_error = write_bundle_archive(&output_link, &[], 0).unwrap_err();
+        assert!(output_error.contains("failed to create session bundle"));
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+        let final_path = root.join("existing.tar.gz");
+        let temp_path = root.join("existing.tar.gz.part");
+        fs::write(&final_path, b"existing").unwrap();
+        fs::write(&temp_path, b"new archive").unwrap();
+        let final_error = finalize_archive_with_checksum(&temp_path, &final_path, "log archive")
+            .err()
+            .expect("existing archive artifact must be rejected");
+        assert!(final_error.contains("refusing to overwrite"));
+        assert_eq!(fs::read(&final_path).unwrap(), b"existing");
+        assert!(!temp_path.exists());
 
         let _ = fs::remove_dir_all(root);
     }
