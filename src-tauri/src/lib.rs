@@ -6425,11 +6425,29 @@ async fn refresh_sysmon(
         collect_local_sysmon(&session_id).await?
     };
 
+    commit_sysmon_snapshot(state.inner(), &session_id, snapshot)
+}
+
+fn commit_sysmon_snapshot(
+    state: &AppState,
+    session_id: &str,
+    snapshot: SysmonSnapshot,
+) -> Result<SysmonSnapshot, String> {
+    if snapshot.session_id != session_id {
+        return Err("Sysmon snapshot session does not match the requested session".to_string());
+    }
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.record_sysmon_snapshot(snapshot.clone());
-    store.record_system_event(&session_id, "PortMate: sysmon snapshot refreshed");
-    save_store(&state.store_path, &store)?;
-    Ok(snapshot)
+    commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+        if next_store.profile(session_id).is_none() {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        next_store.record_sysmon_snapshot(snapshot.clone());
+        let event_ids = next_store
+            .record_system_event_tracked(session_id, "PortMate: sysmon snapshot refreshed")
+            .into_iter()
+            .collect();
+        Ok((snapshot, event_ids))
+    })
 }
 
 #[tauri::command]
@@ -29922,6 +29940,52 @@ mod tests {
     }
 
     #[test]
+    fn sysmon_commit_failure_rolls_back_snapshot_and_success_event() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-sysmon-commit-failure-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(
+            profile.clone(),
+            blocked_parent.join("portmate-store.sqlite3"),
+        );
+
+        let error = commit_sysmon_snapshot(&state, &profile.id, test_sysmon_snapshot(&profile.id))
+            .unwrap_err();
+
+        assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+        let store = state.store.lock().unwrap();
+        assert!(store.sysmon.is_empty());
+        assert!(store.events.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sysmon_commit_rejects_a_profile_deleted_during_collection() {
+        let profile = test_shell_profile();
+        let state = test_app_state(
+            profile.clone(),
+            PathBuf::from("sysmon-deleted-profile-test.sqlite3"),
+        );
+        {
+            let mut store = state.store.lock().unwrap();
+            store.profiles.clear();
+            store.runtimes.clear();
+        }
+
+        let error = commit_sysmon_snapshot(&state, &profile.id, test_sysmon_snapshot(&profile.id))
+            .unwrap_err();
+
+        assert!(error.contains("unknown session"));
+        let store = state.store.lock().unwrap();
+        assert!(store.sysmon.is_empty());
+        assert!(store.events.is_empty());
+    }
+
+    #[test]
     fn remote_sysmon_output_parses_summary_and_structured_details() {
         let output = "123.4 1.0\n\
             __PORTMATE_MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 250 kB\n\
@@ -42351,6 +42415,24 @@ mod tests {
             logging: portmate_core::LoggingSettings::default(),
             triggers: Vec::new(),
             transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_sysmon_snapshot(session_id: &str) -> SysmonSnapshot {
+        SysmonSnapshot {
+            session_id: session_id.to_string(),
+            ts: Utc::now(),
+            uptime_seconds: 60,
+            cpu_percent: 12.5,
+            memory_percent: 25.0,
+            rx_kbps: 1.0,
+            tx_kbps: 2.0,
+            load_average: [0.1, 0.2, 0.3],
+            memory_total_bytes: 1_024,
+            memory_available_bytes: 768,
+            processes: Vec::new(),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
         }
     }
 
