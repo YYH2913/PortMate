@@ -111,6 +111,8 @@ Live terminal resize requests reach SSH, Shell PTY, or negotiated Telnet NAWS fi
 
 Copy-on-write Store mutations distinguish a definite failed write from a post-commit verification error. After a reported save failure, PortMate compares the complete intended Store with the authoritative disk snapshot; an exact match accepts the commit and repairs the cached snapshot version, a mismatch keeps the previous live state, and unreadable evidence freezes further writes until restart instead of guessing which state won.
 
+Automatic SSH target and Jump Host verification commits each observed TOFU trust record together with its matching system event while holding the Store lock. A definite persistence failure removes only that transaction's queued event and restores the prior trust state before the event worker can publish it; an already committed snapshot is accepted only after exact disk verification.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
