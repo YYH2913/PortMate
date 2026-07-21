@@ -53,6 +53,7 @@ import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySe
 import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { updateFileSelection } from "./file-selection";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterLogShards, selectVisibleLogShards, summarizeBundleAttachmentSelection } from "./log-shard-state";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
@@ -392,6 +393,7 @@ export default function App() {
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const syncInputRef = useRef(false);
   const logSignatureRef = useRef<Record<string, string>>({});
+  const activeLogRefreshGateRef = useRef(new KeyedRequestGate<string>());
   const sessionsSignatureRef = useRef("");
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
@@ -1045,16 +1047,34 @@ export default function App() {
     for (const session of nextSessions) {
       nextLogs[session.profile.id] = await callBackend("tail_log", { sessionId: session.profile.id, limit: 160 }, []);
     }
+    activeLogRefreshGateRef.current.invalidateAll();
+    logSignatureRef.current = Object.fromEntries(
+      Object.entries(nextLogs).map(([sessionId, events]) => [sessionId, logSignature(events)]),
+    );
     setLogs(nextLogs);
   }
 
   async function refreshActiveLog(sessionId: string) {
-    const nextLog = await callBackend("tail_log", { sessionId, limit: 600 }, []);
-    const signature = logSignature(nextLog);
-    if (logSignatureRef.current[sessionId] === signature) {
-      return;
+    const gate = activeLogRefreshGateRef.current;
+    const token = gate.begin(sessionId);
+    if (token === null) return;
+    try {
+      const nextLog = await invokeBackend<SessionEvent[]>("tail_log", { sessionId, limit: 600 });
+      if (!gate.isCurrent(sessionId, token)) return;
+      const signature = logSignature(nextLog);
+      if (logSignatureRef.current[sessionId] === signature) return;
+      logSignatureRef.current[sessionId] = signature;
+      setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+    } catch {
+      // Polling failures retain the last valid log snapshot.
+    } finally {
+      gate.finish(sessionId, token);
     }
-    logSignatureRef.current[sessionId] = signature;
+  }
+
+  function replaceSessionLog(sessionId: string, nextLog: SessionEvent[]) {
+    activeLogRefreshGateRef.current.invalidate(sessionId);
+    logSignatureRef.current[sessionId] = logSignature(nextLog);
     setLogs((current) => ({ ...current, [sessionId]: nextLog }));
   }
 
@@ -1586,6 +1606,7 @@ export default function App() {
     delete serialCapturesRef.current[profileId];
     delete serialCaptureEpochRef.current[profileId];
     serialCaptureRefreshesRef.current.delete(profileId);
+    activeLogRefreshGateRef.current.invalidate(profileId);
     delete logSignatureRef.current[profileId];
     sessionsSignatureRef.current = "";
   }
@@ -2532,7 +2553,7 @@ export default function App() {
       const fallbackLog = [...(logs[persisted.profile.id] ?? []), createLocalSystemEvent(saved.profile, `PortMate: connected to ${describeProfileEndpoint(saved.profile)}`)];
       const nextLog = await callBackend("tail_log", { sessionId: persisted.profile.id, limit: 600 }, fallbackLog);
 
-      setLogs((current) => ({ ...current, [persisted.profile.id]: nextLog }));
+      replaceSessionLog(persisted.profile.id, nextLog);
       setSessions((current) => {
         const nextSessions = mergeSessionSummaries(current, saved);
         saveLocalSessionSummaries(nextSessions);
@@ -2544,7 +2565,7 @@ export default function App() {
       const backendLog = await callBackend("tail_log", { sessionId: profileForConnect.id, limit: 600 }, []);
       const errorText = `PortMate: connection failed: ${message}`;
       const nextLog = backendLog.length ? backendLog : [...(logs[profileForConnect.id] ?? []), createLocalSystemEvent(profileForConnect, errorText)];
-      setLogs((current) => ({ ...current, [profileForConnect.id]: nextLog }));
+      replaceSessionLog(profileForConnect.id, nextLog);
       setSessions((current) => mergeSessionSummaries(current, failed));
       if (isSshLikeProfile(profileForConnect) && isHostKeyFailure(message)) {
         void openHostKeyPrompt(profileForConnect, message, credentials);
@@ -2609,7 +2630,7 @@ export default function App() {
       const fallbackLog = [...(logs[sessionId] ?? []), createLocalSystemEvent(saved.profile, "PortMate: session disconnected")];
       const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
 
-      setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+      replaceSessionLog(sessionId, nextLog);
       if (activateWorkspace) activateSession(sessionId);
       setSessions((current) => {
         const nextSessions = mergeSessionSummaries(current, saved);

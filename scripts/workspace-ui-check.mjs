@@ -264,6 +264,8 @@ try {
     window.__closeSessionError = false;
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
+    window.__deferTailLogs = false;
+    window.__pendingTailLogs = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -308,7 +310,12 @@ try {
           window.__sessions[index] = saved;
           return saved;
         }
-        if (command === "tail_log") return window.__events.filter((event) => event.sessionId === args.sessionId);
+        if (command === "tail_log") {
+          if (!window.__deferTailLogs) return window.__events.filter((event) => event.sessionId === args.sessionId);
+          return new Promise((resolve) => {
+            window.__pendingTailLogs.push({ args: structuredClone(args), resolve });
+          });
+        }
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
           return new Promise((resolve) => {
@@ -1458,8 +1465,13 @@ try {
   await page.setViewportSize({ width: 1440, height: 900 });
   await togglePanel("资源管理器");
   const deleteTarget = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
+  await page.evaluate(() => {
+    window.__deferTailLogs = true;
+    window.__pendingTailLogs = [];
+  });
   await deleteTarget.click();
   await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
+  await page.waitForFunction(() => window.__pendingTailLogs.some((request) => request.args.sessionId === "bench-uart"));
   await deleteTarget.click({ button: "right" });
   const deleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
   await deleteAction.waitFor();
@@ -1483,6 +1495,38 @@ try {
   assert(deleteCalls.length === 1 && deleteCalls[0].args.sessionId === "bench-uart",
     `profile deletion did not reach the backend exactly once: ${JSON.stringify(deleteCalls)}`);
   await deletionNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  const staleDeletedLogMarker = "STALE-DELETED-PROFILE-LOG";
+  await page.evaluate((marker) => {
+    for (const pending of window.__pendingTailLogs) {
+      if (pending.args.sessionId === "bench-uart") {
+        pending.resolve([{
+          id: "stale-deleted-profile-log",
+          sessionId: "bench-uart",
+          paneId: "bench-uart:main",
+          ts: new Date().toISOString(),
+          direction: "inbound",
+          stream: "stdout",
+          bytesRef: null,
+          text: marker,
+          annotations: {},
+        }]);
+      } else {
+        pending.resolve(window.__events.filter((event) => event.sessionId === pending.args.sessionId));
+      }
+    }
+    window.__pendingTailLogs = [];
+    window.__deferTailLogs = false;
+  }, staleDeletedLogMarker);
+  await page.waitForTimeout(100);
+  await page.getByRole("button", { name: "搜索会话", exact: true }).click();
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
+  const deletedLogSearch = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
+  await deletedLogSearch.fill(staleDeletedLogMarker);
+  assert(await page.getByRole("option").count() === 0,
+    "a tail_log response that completed after Profile deletion restored the deleted log state");
+  await deletedLogSearch.press("Escape");
+  await page.locator(".search-dialog").waitFor({ state: "detached" });
 
   const terminalWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
