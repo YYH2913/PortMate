@@ -1,5 +1,5 @@
 import type { ITheme } from "@xterm/xterm";
-import { normalizeTerminalProfileSettings } from "./terminal-settings-state";
+import { normalizeTerminalBackgroundOpacity, normalizeTerminalProfileSettings } from "./terminal-settings-state";
 import type { SessionProfile } from "./types";
 
 export const DEFAULT_TERMINAL_THEME = "portmate-dark";
@@ -134,8 +134,11 @@ export function normalizeTerminalTheme(value: unknown): TerminalThemeId {
     : DEFAULT_TERMINAL_THEME;
 }
 
-export function terminalTheme(value: unknown): ITheme {
-  return terminalThemes[normalizeTerminalTheme(value)];
+export function terminalTheme(value: unknown, backgroundOpacity: unknown = 100): ITheme {
+  const theme = terminalThemes[normalizeTerminalTheme(value)];
+  const opacity = normalizeTerminalBackgroundOpacity(backgroundOpacity);
+  if (opacity === 100 || !theme.background) return theme;
+  return { ...theme, background: hexColorWithOpacity(theme.background, opacity) };
 }
 
 export function applyTerminalPresentation(
@@ -147,8 +150,15 @@ export function applyTerminalPresentation(
   target.options.fontFamily = normalized.fontFamily;
   target.options.fontSize = normalized.fontSize;
   target.options.scrollback = normalized.scrollback;
-  target.options.theme = terminalThemes[themeId];
+  target.options.theme = terminalTheme(themeId, normalized.backgroundOpacity);
   return themeId;
+}
+
+function hexColorWithOpacity(color: string, opacity: number): string {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+  if (!match) return color;
+  const [, red, green, blue] = match;
+  return `rgba(${Number.parseInt(red, 16)}, ${Number.parseInt(green, 16)}, ${Number.parseInt(blue, 16)}, ${opacity / 100})`;
 }
 
 function createXterm256Palette() {

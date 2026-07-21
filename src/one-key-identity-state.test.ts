@@ -65,6 +65,7 @@ function session(
         fontFamily: "monospace",
         fontSize: 13,
         theme: "default",
+        backgroundOpacity: 100,
       },
       logging: {
         enabled: false,

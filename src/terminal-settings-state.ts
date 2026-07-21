@@ -9,6 +9,7 @@ export const TERMINAL_PROFILE_BOUNDS = {
   cols: { min: 1, max: 1024, fallback: 120 },
   scrollback: { min: 0, max: 10_000_000, fallback: 200_000 },
   fontSize: { min: 6, max: 72, fallback: 13 },
+  backgroundOpacity: { min: 20, max: 100, fallback: 100 },
 } as const;
 
 const DEFAULT_TERMINAL_NAME = "xterm-256color";
@@ -39,7 +40,12 @@ export function normalizeTerminalProfileSettings(
       ? fontFamily
       : DEFAULT_TERMINAL_FONT_FAMILY,
     fontSize: boundedInteger(value.fontSize, TERMINAL_PROFILE_BOUNDS.fontSize),
+    backgroundOpacity: normalizeTerminalBackgroundOpacity(value.backgroundOpacity),
   };
+}
+
+export function normalizeTerminalBackgroundOpacity(value: unknown): number {
+  return boundedInteger(value, TERMINAL_PROFILE_BOUNDS.backgroundOpacity);
 }
 
 export function normalizeTerminalStartupSessionIds(value: unknown): string[] {

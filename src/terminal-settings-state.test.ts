@@ -43,6 +43,7 @@ describe("terminal settings state", () => {
       fontFamily: " JetBrains Mono, monospace ",
       fontSize: 5.9,
       theme: "portmate-dark",
+      backgroundOpacity: 19,
     });
 
     expect(normalized).toMatchObject({
@@ -52,6 +53,7 @@ describe("terminal settings state", () => {
       scrollback: TERMINAL_PROFILE_BOUNDS.scrollback.fallback,
       fontFamily: "JetBrains Mono, monospace",
       fontSize: TERMINAL_PROFILE_BOUNDS.fontSize.min,
+      backgroundOpacity: TERMINAL_PROFILE_BOUNDS.backgroundOpacity.min,
     });
   });
 
@@ -64,10 +66,12 @@ describe("terminal settings state", () => {
       fontFamily: `monospace\u0000${"x".repeat(300)}`,
       fontSize: 13,
       theme: "portmate-dark",
+      backgroundOpacity: Number.NaN,
     });
 
     expect(normalized.term).toBe("xterm-256color");
     expect(normalized.fontFamily).toBe("Roboto Mono, JetBrains Mono, monospace");
+    expect(normalized.backgroundOpacity).toBe(TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback);
   });
 });
 

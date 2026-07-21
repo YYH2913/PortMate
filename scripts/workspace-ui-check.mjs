@@ -11,6 +11,27 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function samplePngCenter(browser, png) {
+  const sampleContext = await browser.newContext();
+  try {
+    const samplePage = await sampleContext.newPage();
+    const source = `data:image/png;base64,${png.toString("base64")}`;
+    await samplePage.setContent(`<canvas></canvas><img src="${source}">`);
+    return await samplePage.evaluate(async () => {
+      const image = document.querySelector("img");
+      await image.decode();
+      const canvas = document.querySelector("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      return [...context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data];
+    });
+  } finally {
+    await sampleContext.close();
+  }
+}
+
 async function reservePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -57,6 +78,7 @@ function createSession(id, name, kind, group, tags, connection) {
         fontFamily: "JetBrains Mono, monospace",
         fontSize: 13,
         theme: "portmate-dark",
+        backgroundOpacity: 100,
       },
       logging: {
         enabled: false,
@@ -1207,7 +1229,7 @@ try {
   assert(sessionPreferenceKeys.length === 0,
     `closing session settings persisted non-runtime preferences: ${JSON.stringify(sessionPreferenceKeys)}`);
 
-  async function setActiveSessionTheme(theme) {
+  async function setActiveSessionTheme(theme, backgroundOpacity = 100) {
     await page.locator(".menu-trigger", { hasText: "会话" }).click();
     await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
     const dialog = page.locator(".session-settings-dialog");
@@ -1229,6 +1251,7 @@ try {
       "滚屏:(S)": { min: "0", max: "10000000", maxLength: null },
       "字体:(F)": { min: null, max: null, maxLength: "256" },
       "字号:(Z)": { min: "6", max: "72", maxLength: null },
+      "背景不透明度:(O)": { min: "20", max: "100", maxLength: null },
     }), `terminal input bounds are missing or inconsistent: ${JSON.stringify(terminalBounds)}`);
     const themeSelect = dialog.locator(".dialog-field", { hasText: "主题:" }).locator("select");
     const options = await themeSelect.locator("option").evaluateAll((items) => items.map((item) => item.value));
@@ -1239,6 +1262,7 @@ try {
       "portmate-light",
     ]), `terminal theme choices are incomplete: ${JSON.stringify(options)}`);
     await themeSelect.selectOption(theme);
+    await dialog.locator(".dialog-field", { hasText: "背景不透明度:" }).locator('input[type="range"]').fill(String(backgroundOpacity));
     if (theme === "portmate-light") {
       await page.screenshot({ path: `${screenshotPrefix}-terminal-theme-settings.png`, fullPage: true });
     }
@@ -1251,17 +1275,26 @@ try {
   await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Local Shell"));
   const activeXterm = page.locator(".terminal-pane.active .xterm");
   await activeXterm.evaluate((element) => { element.dataset.themeTestIdentity = "retained"; });
-  await setActiveSessionTheme("portmate-light");
-  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-light"]').waitFor();
+  await setActiveSessionTheme("portmate-light", 55);
+  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-light"][data-terminal-opacity="55"]').waitFor();
   const lightThemeState = await page.locator(".terminal-pane.active .terminal-canvas").evaluate((canvas) => ({
     background: getComputedStyle(canvas).backgroundColor,
     retained: canvas.querySelector(".xterm")?.dataset.themeTestIdentity ?? "",
+    xtermBackground: getComputedStyle(canvas.querySelector(".xterm-viewport")).backgroundColor,
+    renderer: canvas.querySelector(".terminal-host")?.getAttribute("data-terminal-renderer"),
   }));
-  assert(lightThemeState.background === "rgb(247, 248, 250)" && lightThemeState.retained === "retained",
-    `terminal theme did not update in place: ${JSON.stringify(lightThemeState)}`);
+  const lightTerminalPixel = await samplePngCenter(browser, await page.locator(".terminal-pane.active .terminal-canvas").screenshot());
+  assert(lightThemeState.background === "rgba(0, 0, 0, 0)"
+    && lightThemeState.xtermBackground === "rgba(0, 0, 0, 0)"
+    && lightThemeState.renderer === "dom"
+    && lightThemeState.retained === "retained"
+    && lightTerminalPixel[0] >= 138 && lightTerminalPixel[0] <= 146
+    && lightTerminalPixel[1] >= 140 && lightTerminalPixel[1] <= 148
+    && lightTerminalPixel[2] >= 144 && lightTerminalPixel[2] <= 152,
+    `terminal theme did not update in place: ${JSON.stringify({ lightThemeState, lightTerminalPixel })}`);
   await page.screenshot({ path: `${screenshotPrefix}-terminal-light-theme.png`, fullPage: true });
   await setActiveSessionTheme("portmate-dark");
-  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"]').waitFor();
+  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"][data-terminal-renderer="webgl"]').waitFor();
   assert(await activeXterm.getAttribute("data-theme-test-identity") === "retained",
     "restoring the terminal theme replaced the live XTerm instance");
 
@@ -1870,7 +1903,7 @@ try {
       desktop: sessionSettingsBounds,
       mobile: mobileSessionSettingsBounds,
     },
-    terminalTheme: lightThemeState,
+    terminalTheme: { ...lightThemeState, centerPixel: lightTerminalPixel },
     detachedTheme: detachedThemeState,
     mcp: {
       tabs: mcpTabs,

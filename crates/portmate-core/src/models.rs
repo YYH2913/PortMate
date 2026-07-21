@@ -577,6 +577,12 @@ pub struct TerminalSettings {
     pub font_family: String,
     pub font_size: u8,
     pub theme: String,
+    #[serde(default = "default_terminal_background_opacity")]
+    pub background_opacity: u8,
+}
+
+fn default_terminal_background_opacity() -> u8 {
+    100
 }
 
 impl Default for TerminalSettings {
@@ -589,6 +595,7 @@ impl Default for TerminalSettings {
             font_family: "Roboto Mono, JetBrains Mono, monospace".to_string(),
             font_size: 13,
             theme: "portmate-dark".to_string(),
+            background_opacity: default_terminal_background_opacity(),
         }
     }
 }
@@ -949,6 +956,24 @@ mod tests {
         .expect("legacy logging settings should deserialize");
 
         assert_eq!(logging.retention_days, 0);
+    }
+
+    #[test]
+    fn terminal_settings_deserialize_legacy_background_as_opaque() {
+        let terminal: TerminalSettings = serde_json::from_str(
+            r#"{
+                "term": "xterm-256color",
+                "rows": 32,
+                "cols": 120,
+                "scrollback": 200000,
+                "fontFamily": "monospace",
+                "fontSize": 13,
+                "theme": "portmate-dark"
+            }"#,
+        )
+        .expect("legacy terminal settings should deserialize");
+
+        assert_eq!(terminal.background_opacity, 100);
     }
 
     #[test]

@@ -33,6 +33,7 @@ export interface SessionProfile {
     fontFamily: string;
     fontSize: number;
     theme: string;
+    backgroundOpacity: number;
   };
   logging: {
     enabled: boolean;

@@ -193,6 +193,8 @@ const MAX_TERMINAL_COLS: u16 = 1024;
 const MAX_TERMINAL_SCROLLBACK: u32 = 10_000_000;
 const MIN_TERMINAL_FONT_SIZE: u8 = 6;
 const MAX_TERMINAL_FONT_SIZE: u8 = 72;
+const MIN_TERMINAL_BACKGROUND_OPACITY: u8 = 20;
+const MAX_TERMINAL_BACKGROUND_OPACITY: u8 = 100;
 const MAX_TERMINAL_NAME_BYTES: usize = 64;
 const MAX_TERMINAL_FONT_FAMILY_CHARACTERS: usize = 256;
 const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
@@ -25490,6 +25492,10 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         .font_size
         .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
     profile.terminal.theme = normalized_terminal_theme(&profile.terminal.theme).to_string();
+    profile.terminal.background_opacity = profile.terminal.background_opacity.clamp(
+        MIN_TERMINAL_BACKGROUND_OPACITY,
+        MAX_TERMINAL_BACKGROUND_OPACITY,
+    );
     profile.logging.retention_days = profile.logging.retention_days.min(MAX_LOG_RETENTION_DAYS);
 
     match &mut profile.connection {
@@ -29590,6 +29596,7 @@ mod tests {
         profile.terminal.font_family = "bad\0font".to_string();
         profile.terminal.font_size = 0;
         profile.terminal.theme = " graphite ".to_string();
+        profile.terminal.background_opacity = 0;
         let normalized = normalize_session_profile(profile.clone());
         assert_eq!(
             normalized.name.chars().count(),
@@ -29621,6 +29628,10 @@ mod tests {
         );
         assert_eq!(normalized.terminal.font_size, MIN_TERMINAL_FONT_SIZE);
         assert_eq!(normalized.terminal.theme, "graphite");
+        assert_eq!(
+            normalized.terminal.background_opacity,
+            MIN_TERMINAL_BACKGROUND_OPACITY
+        );
 
         let mut fallback = profile.clone();
         fallback.name = "\0\n".to_string();

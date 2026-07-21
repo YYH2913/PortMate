@@ -8214,6 +8214,19 @@ function SessionSettingsContent({
             {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </DialogField>
+        <DialogField label="背景不透明度:(O)">
+          <div className="terminal-opacity-control">
+            <input
+              type="range"
+              min={TERMINAL_PROFILE_BOUNDS.backgroundOpacity.min}
+              max={TERMINAL_PROFILE_BOUNDS.backgroundOpacity.max}
+              step={5}
+              value={draft.terminal.backgroundOpacity ?? TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback}
+              onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, backgroundOpacity: Number(event.target.value) } })}
+            />
+            <output>{draft.terminal.backgroundOpacity ?? TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback}%</output>
+          </div>
+        </DialogField>
       </>
     );
   }
@@ -9305,6 +9318,7 @@ function createSessionDraft(): SessionProfile {
       fontFamily: "JetBrains Mono, monospace",
       fontSize: 13,
       theme: "portmate-dark",
+      backgroundOpacity: 100,
     },
     logging: {
       enabled: false,

@@ -2877,6 +2877,10 @@ button {
   height: 100%;
 }
 
+.terminal-host .xterm-viewport {
+  background-color: transparent !important;
+}
+
 .terminal-completion {
   --terminal-completion-rows: 7;
   position: absolute;
@@ -4351,6 +4355,26 @@ fieldset label {
   height: 144px;
   resize: none;
   padding-top: 8px;
+}
+
+.terminal-opacity-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dialog-field .terminal-opacity-control input[type="range"] {
+  height: 35px;
+  padding: 0;
+  accent-color: var(--cyan);
+}
+
+.terminal-opacity-control output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .trigger-editor,

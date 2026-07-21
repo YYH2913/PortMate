@@ -120,9 +120,12 @@ export default function TerminalCanvas({
   onOneKeyCompletion,
 }: TerminalCanvasProps) {
   const themeId = normalizeTerminalTheme(active?.profile.terminal.theme);
-  const activeTerminalTheme = terminalTheme(themeId);
+  const backgroundOpacity = active?.profile.terminal.backgroundOpacity ?? 100;
+  const activeTerminalTheme = terminalTheme(themeId, backgroundOpacity);
+  const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
+  const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -515,6 +518,7 @@ export default function TerminalCanvas({
     lastCopiedSelectionRef.current = "";
     const term = new XTerm({
       allowProposedApi: true,
+      allowTransparency: true,
       cols: cachedState?.cols ?? terminalSettings.cols,
       rows: cachedState?.rows ?? terminalSettings.rows,
       cursorBlink: true,
@@ -524,7 +528,7 @@ export default function TerminalCanvas({
       fontSize: terminalSettings.fontSize,
       minimumContrastRatio: 1,
       scrollback: terminalSettings.scrollback,
-      theme: terminalTheme(active.profile.terminal.theme),
+      theme: terminalTheme(active.profile.terminal.theme, terminalSettings.backgroundOpacity),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -655,25 +659,47 @@ export default function TerminalCanvas({
     writeEventRef.current = writeEvent;
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
-    void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
-      if (terminalDisposed) return;
-      webglAddon = new WebglAddon();
-      term.loadAddon(webglAddon);
-      host.dataset.terminalRenderer = "webgl";
-      host.dataset.terminalWebgl = "active";
-      webglContextLossDisposable = webglAddon.onContextLoss(() => {
-        const lostAddon = webglAddon;
+    let webglGeneration = 0;
+    const configureWebgl = (enabled: boolean) => {
+      const generation = ++webglGeneration;
+      if (!enabled) {
+        webglContextLossDisposable?.dispose();
+        webglContextLossDisposable = null;
+        webglAddon?.dispose();
         webglAddon = null;
-        lostAddon?.dispose();
+        host.dataset.terminalRenderer = "dom";
+        host.dataset.terminalWebgl = "disabled-transparency";
+        return;
+      }
+      if (webglAddon) return;
+      void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
+        if (terminalDisposed || generation !== webglGeneration || termRef.current !== term) return;
+        const nextAddon = new WebglAddon();
+        term.loadAddon(nextAddon);
+        webglAddon = nextAddon;
+        host.dataset.terminalRenderer = "webgl";
+        host.dataset.terminalWebgl = "active";
+        webglContextLossDisposable = nextAddon.onContextLoss(() => {
+          const lostAddon = webglAddon;
+          webglAddon = null;
+          webglContextLossDisposable?.dispose();
+          webglContextLossDisposable = null;
+          lostAddon?.dispose();
+          host.dataset.terminalRenderer = "dom";
+          host.dataset.terminalWebgl = "fallback";
+        });
+      }).catch(() => {
+        if (generation !== webglGeneration) return;
+        webglContextLossDisposable?.dispose();
+        webglContextLossDisposable = null;
+        webglAddon?.dispose();
+        webglAddon = null;
         host.dataset.terminalRenderer = "dom";
         host.dataset.terminalWebgl = "fallback";
       });
-    }).catch(() => {
-      webglAddon?.dispose();
-      webglAddon = null;
-      host.dataset.terminalRenderer = "dom";
-      host.dataset.terminalWebgl = "fallback";
-    });
+    };
+    configureWebglRef.current = configureWebgl;
+    configureWebgl(terminalSettings.backgroundOpacity === 100);
     if (focused) term.focus();
     const fitAndReport = () => {
       fit.fit();
@@ -799,6 +825,10 @@ export default function TerminalCanvas({
       }
       term.dispose();
       if (searchRef.current === search) searchRef.current = null;
+      if (configureWebglRef.current === configureWebgl) configureWebglRef.current = () => {};
+      webglGeneration += 1;
+      webglContextLossDisposable?.dispose();
+      webglAddon?.dispose();
       termRef.current = null;
     };
   }, [active?.profile.id]);
@@ -808,8 +838,11 @@ export default function TerminalCanvas({
     const term = termRef.current;
     const host = hostRef.current;
     if (!term || !host) return;
-    const appliedTheme = applyTerminalPresentation(term, active.profile.terminal);
+    const normalized = normalizeTerminalProfileSettings(active.profile.terminal);
+    const appliedTheme = applyTerminalPresentation(term, normalized);
     host.dataset.terminalTheme = appliedTheme;
+    host.dataset.terminalOpacity = String(normalized.backgroundOpacity);
+    configureWebglRef.current(normalized.backgroundOpacity === 100);
     const frame = window.requestAnimationFrame(() => fitAndReportRef.current());
     return () => window.cancelAnimationFrame(frame);
   }, [
@@ -818,6 +851,7 @@ export default function TerminalCanvas({
     active?.profile.terminal.fontSize,
     active?.profile.terminal.scrollback,
     active?.profile.terminal.theme,
+    active?.profile.terminal.backgroundOpacity,
   ]);
 
   useEffect(() => {
@@ -1103,7 +1137,7 @@ export default function TerminalCanvas({
   return (
     <div
       className="terminal-canvas"
-      style={{ "--terminal-background": activeTerminalTheme.background ?? "#0d1117" } as CSSProperties}
+      style={{ "--terminal-background": canvasBackground ?? "#0d1117" } as CSSProperties}
     >
       {active ? (
         <>

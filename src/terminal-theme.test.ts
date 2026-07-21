@@ -37,6 +37,7 @@ describe("terminal themes", () => {
       fontSize: 15,
       scrollback: 50_000,
       theme: "portmate-light",
+      backgroundOpacity: 55,
     });
 
     expect(themeId).toBe("portmate-light");
@@ -44,7 +45,12 @@ describe("terminal themes", () => {
       fontFamily: "Roboto Mono, monospace",
       fontSize: 15,
       scrollback: 50_000,
-      theme: { background: "#f7f8fa", foreground: "#202630" },
+      theme: { background: "rgba(247, 248, 250, 0.55)", foreground: "#202630" },
     });
+  });
+
+  it("keeps opaque themes stable and clamps transparent backgrounds", () => {
+    expect(terminalTheme("graphite", 100).background).toBe("#171717");
+    expect(terminalTheme("graphite", 0).background).toBe("rgba(23, 23, 23, 0.2)");
   });
 });
