@@ -118,6 +118,7 @@ const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MODEM_SOH: u8 = 0x01;
 const MODEM_STX: u8 = 0x02;
 const MODEM_EOT: u8 = 0x04;
@@ -758,6 +759,7 @@ struct SshRuntime {
     tap: broadcast::Sender<Vec<u8>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     closed: Arc<AtomicBool>,
+    reader_finished: tokio::sync::oneshot::Receiver<()>,
 }
 
 #[derive(Clone)]
@@ -1163,6 +1165,7 @@ struct EstablishedSshRuntime {
     read_half: ChannelReadHalf,
     auth_method: AuthMethod,
     closed: Arc<AtomicBool>,
+    reader_finished: tokio::sync::oneshot::Sender<()>,
 }
 
 struct SshReadTask {
@@ -1172,6 +1175,17 @@ struct SshReadTask {
     tap: broadcast::Sender<Vec<u8>>,
     read_half: ChannelReadHalf,
     closed: Arc<AtomicBool>,
+    reader_finished: tokio::sync::oneshot::Sender<()>,
+}
+
+struct SshReaderCompletionGuard(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for SshReaderCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 impl AppState {
@@ -4224,21 +4238,12 @@ async fn close_session_under_lifecycle_lock(
         connections.remove(&session_id)
     };
     if let Some(runtime) = existing {
-        runtime.closed.store(true, Ordering::SeqCst);
-        let handle = runtime.handle.lock().await;
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "PortMate close_session", "en")
-            .await;
-        for jump_handle in runtime.jump_handles {
-            let handle = jump_handle.lock().await;
-            let _ = handle
-                .disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate close jump session",
-                    "en",
-                )
-                .await;
-        }
+        disconnect_registered_ssh_runtime(
+            runtime,
+            "PortMate close_session",
+            "PortMate close jump session",
+        )
+        .await;
     }
     let existing_shell = {
         let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
@@ -15316,17 +15321,12 @@ async fn open_ssh_session(
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections.remove(&profile.id)
     } {
-        existing.closed.store(true, Ordering::SeqCst);
-        let handle = existing.handle.lock().await;
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "PortMate reconnect", "en")
-            .await;
-        for jump_handle in existing.jump_handles {
-            let handle = jump_handle.lock().await;
-            let _ = handle
-                .disconnect(Disconnect::ByApplication, "PortMate reconnect jump", "en")
-                .await;
-        }
+        disconnect_registered_ssh_runtime(
+            existing,
+            "PortMate reconnect",
+            "PortMate reconnect jump",
+        )
+        .await;
     }
 
     let established = establish_ssh_runtime(state, &profile, password, passphrase).await?;
@@ -15337,6 +15337,7 @@ async fn open_ssh_session(
         read_half,
         auth_method,
         closed,
+        reader_finished,
     } = established;
     {
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
@@ -15392,6 +15393,7 @@ async fn open_ssh_session(
         tap,
         read_half,
         closed,
+        reader_finished,
     }));
     Ok(summary)
 }
@@ -15562,6 +15564,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
+    let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
 
     if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
         let writer = writer.lock().await;
@@ -15581,11 +15584,13 @@ async fn establish_ssh_runtime_with_timeout_mode(
             tap: tap.clone(),
             remote_forwards,
             closed: Arc::clone(&closed),
+            reader_finished,
         },
         tap,
         read_half,
         auth_method,
         closed,
+        reader_finished: reader_finished_sender,
     })
 }
 
@@ -20673,7 +20678,9 @@ fn read_ssh_channel(
             tap,
             mut read_half,
             closed,
+            reader_finished,
         } = task;
+        let _reader_completion = SshReaderCompletionGuard(Some(reader_finished));
         let io = state.session_io();
         let session_id = profile.id.clone();
         let mut last_persist = Instant::now();
@@ -21085,6 +21092,38 @@ fn stop_pending_ssh_reconnect_if_disabled(
     true
 }
 
+async fn disconnect_registered_ssh_runtime(runtime: SshRuntime, reason: &str, jump_reason: &str) {
+    let SshRuntime {
+        runtime_id,
+        handle,
+        jump_handles,
+        closed,
+        reader_finished,
+        ..
+    } = runtime;
+    closed.store(true, Ordering::SeqCst);
+    let handle = handle.lock().await;
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, reason, "en")
+        .await;
+    drop(handle);
+    for jump_handle in jump_handles {
+        let handle = jump_handle.lock().await;
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, jump_reason, "en")
+            .await;
+    }
+    if tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "PortMate: SSH reader {runtime_id} did not finish within {}ms after disconnect",
+            SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
+        );
+    }
+}
+
 async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
     runtime.closed.store(true, Ordering::SeqCst);
     let handle = runtime.handle.lock().await;
@@ -21230,6 +21269,7 @@ async fn reconnect_ssh_session(
             read_half,
             auth_method,
             closed: next_closed,
+            reader_finished,
         } = established;
         let mut runtime = Some(runtime);
         let install = match state.ssh.lock() {
@@ -21342,6 +21382,7 @@ async fn reconnect_ssh_session(
             tap,
             read_half,
             closed: Arc::clone(&next_closed),
+            reader_finished,
         }));
 
         let one_time_cleanup_error = take_one_time_host_keys(&state, &session_id).err();
