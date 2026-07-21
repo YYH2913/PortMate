@@ -10562,7 +10562,7 @@ async fn zmodem_receive_files(
         zmodem2::Receiver::new().map_err(|error| format!("ZModem receiver 初始化失败: {error}"))?;
     let mut input_buf = Vec::<u8>::new();
     let mut input_offset = 0_usize;
-    let mut current_file: Option<(fs::File, PathBuf)> = None;
+    let mut current_file: Option<(fs::File, PathBuf, PathBuf)> = None;
     let mut received_files = 0_usize;
     let mut bytes_done = 0_u64;
     let mut session_done = false;
@@ -10590,15 +10590,15 @@ async fn zmodem_receive_files(
                             format!("创建 ZModem 本地目录失败 {}: {error}", parent.display())
                         })?;
                     }
-                    let file = fs::File::create(&target).map_err(|error| {
-                        format!("创建 ZModem 本地文件失败 {}: {error}", target.display())
-                    })?;
-                    current_file = Some((file, target));
+                    let (file, temp) = open_new_local_transfer_file(&target)?;
+                    current_file = Some((file, target, temp));
                 }
                 zmodem2::ReceiverEvent::FileComplete => {
-                    if let Some((mut file, _)) = current_file.take() {
+                    if let Some((mut file, target, temp)) = current_file.take() {
                         file.flush()
                             .map_err(|error| format!("刷新 ZModem 本地文件失败: {error}"))?;
+                        drop(file);
+                        finalize_local_resume_file(&temp, &target)?;
                     }
                     received_files += 1;
                 }
@@ -10611,7 +10611,7 @@ async fn zmodem_receive_files(
 
         let file_data = modem_receiver.drain_file().to_vec();
         if !file_data.is_empty() {
-            let Some((file, path)) = current_file.as_mut() else {
+            let Some((file, path, _)) = current_file.as_mut() else {
                 return Err("ZModem 收到文件数据但还没有文件头".to_string());
             };
             file.write_all(&file_data)
@@ -10663,9 +10663,11 @@ async fn zmodem_receive_files(
         }
     }
 
-    if let Some((mut file, _)) = current_file.take() {
+    if let Some((mut file, target, temp)) = current_file.take() {
         file.flush()
             .map_err(|error| format!("刷新 ZModem 本地文件失败: {error}"))?;
+        drop(file);
+        finalize_local_resume_file(&temp, &target)?;
     }
 
     Ok(bytes_done)
@@ -11224,7 +11226,13 @@ fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
     {
         fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
     }
-    fs::write(destination, data).map_err(|error| format!("写入本地文件失败: {error}"))
+    let (mut file, temp) = open_new_local_transfer_file(destination)?;
+    if let Err(error) = file.write_all(data).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("写入本地文件失败: {error}"));
+    }
+    drop(file);
+    finalize_local_resume_file(&temp, destination)
 }
 
 fn parse_ymodem_metadata(data: &[u8]) -> (String, Option<usize>) {
@@ -11414,7 +11422,7 @@ fn local_resume_part_path(target: &Path) -> PathBuf {
 }
 
 fn local_resume_offset(path: &Path, total: u64) -> Result<u64, String> {
-    let Ok(metadata) = fs::metadata(path) else {
+    let Some(metadata) = local_transfer_entry(path, "本地断点文件")? else {
         return Ok(0);
     };
     let size = metadata.len();
@@ -11428,19 +11436,29 @@ fn local_resume_offset(path: &Path, total: u64) -> Result<u64, String> {
 }
 
 fn open_local_resume_writer(path: &Path, offset: u64) -> std::io::Result<fs::File> {
+    if let Err(error) = local_transfer_entry(path, "本地断点文件") {
+        return Err(std::io::Error::other(error));
+    }
     if offset == 0 {
-        OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        options.open(path)
     } else {
-        OpenOptions::new().create(true).append(true).open(path)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        options.open(path)
     }
 }
 
 fn finalize_local_resume_file(temp: &Path, target: &Path) -> Result<(), String> {
-    if target.exists() && target.is_file() {
+    if local_transfer_entry(temp, "本地断点文件")?.is_none() {
+        return Err(format!("本地断点文件不存在: {}", temp.display()));
+    }
+    if local_transfer_entry(target, "本地目标文件")?.is_some() {
         fs::remove_file(target)
             .map_err(|error| format!("删除旧目标文件失败 {}: {error}", target.display()))?;
     }
@@ -11451,6 +11469,41 @@ fn finalize_local_resume_file(temp: &Path, target: &Path) -> Result<(), String> 
             target.display()
         )
     })
+}
+
+fn local_transfer_entry(path: &Path, label: &str) -> Result<Option<fs::Metadata>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("{label}不能是符号链接: {}", path.display()))
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err(format!("{label}不是普通文件: {}", path.display()))
+        }
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("检查{label}失败 {}: {error}", path.display())),
+    }
+}
+
+fn open_new_local_transfer_file(target: &Path) -> Result<(fs::File, PathBuf), String> {
+    let _ = local_transfer_entry(target, "本地目标文件")?;
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("portmate-transfer");
+    let temp = target.with_file_name(format!(".{name}.portmate-{}.part", Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(&temp)
+        .map_err(|error| format!("创建本地传输临时文件失败 {}: {error}", temp.display()))?;
+    Ok((file, temp))
 }
 
 fn remote_resume_part_path(target: &str) -> String {
@@ -35450,6 +35503,39 @@ mod tests {
         finalize_local_resume_file(&part, &target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"complete");
         assert!(!part.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_transfer_writes_reject_symlink_targets() {
+        let root = std::env::temp_dir().join(format!("portmate-transfer-links-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let protected = root.join("protected.bin");
+        fs::write(&protected, b"protected").unwrap();
+
+        let destination = root.join("destination.bin");
+        std::os::unix::fs::symlink(&protected, &destination).unwrap();
+        let error =
+            write_local_transfer_file(destination.to_str().unwrap(), b"replacement").unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+        let part = root.join("destination.bin.portmate-part");
+        std::os::unix::fs::symlink(&protected, &part).unwrap();
+        let error = local_resume_offset(&part, 128).unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+        let temp = root.join("new.part");
+        fs::write(&temp, b"new payload").unwrap();
+        let final_link = root.join("final.bin");
+        std::os::unix::fs::symlink(&protected, &final_link).unwrap();
+        let error = finalize_local_resume_file(&temp, &final_link).unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+        assert!(temp.exists());
 
         let _ = fs::remove_dir_all(root);
     }
