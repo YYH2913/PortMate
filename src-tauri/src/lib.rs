@@ -9512,9 +9512,7 @@ async fn transfer_file_via_xmodem(
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
             let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let source_size = fs::metadata(&local_source)
-                .map_err(|error| format!("读取 XModem 本地文件元数据失败: {error}"))?
-                .len();
+            let source_size = local_transfer_source_size(&local_source)?;
             let completion_token = Uuid::new_v4().simple().to_string();
             let remote_start = maybe_start_remote_modem(
                 state,
@@ -9808,18 +9806,29 @@ fn modem_direction(request: &StartTransferRequest) -> Result<ModemDirection, Str
     let destination_remote = remote_path(&request.destination);
 
     match (source_remote, destination_remote) {
-        (None, Some(remote_destination)) => Ok(ModemDirection::Upload {
-            local_source: request.source.clone(),
-            remote_destination: remote_destination.to_string(),
-        }),
+        (None, Some(remote_destination)) => {
+            if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_none() {
+                return Err("本地传输源不存在".to_string());
+            }
+            Ok(ModemDirection::Upload {
+                local_source: request.source.clone(),
+                remote_destination: remote_destination.to_string(),
+            })
+        }
         (Some(remote_source), None) => Ok(ModemDirection::Download {
             remote_source: remote_source.to_string(),
             local_destination: request.destination.clone(),
         }),
-        (None, None) if Path::new(&request.source).is_file() => Ok(ModemDirection::Upload {
-            local_source: request.source.clone(),
-            remote_destination: request.destination.clone(),
-        }),
+        (None, None) => {
+            if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_some() {
+                Ok(ModemDirection::Upload {
+                    local_source: request.source.clone(),
+                    remote_destination: request.destination.clone(),
+                })
+            } else {
+                Err("Modem transfer expects local -> remote:path upload or remote:path -> local download".to_string())
+            }
+        }
         _ => Err(
             "Modem transfer expects local -> remote:path upload or remote:path -> local download"
                 .to_string(),
@@ -10436,15 +10445,9 @@ async fn zmodem_send_file(
     remote_destination: Option<&str>,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let metadata = fs::metadata(local_source)
-        .map_err(|error| format!("读取 ZModem 本地文件元数据失败: {error}"))?;
-    if !metadata.is_file() {
-        return Err("ZModem upload only supports regular local files".to_string());
-    }
-    let size = u32::try_from(metadata.len())
+    let (mut file, total) = open_local_transfer_source(Path::new(local_source), "ZModem")?;
+    let size = u32::try_from(total)
         .map_err(|_| "ZModem 当前状态机只支持 4 GiB 以内的单文件".to_string())?;
-    let mut file = fs::File::open(local_source)
-        .map_err(|error| format!("打开 ZModem 本地文件失败: {error}"))?;
     let (_, remote_name) = remote_destination
         .map(remote_parent_and_file_name)
         .unwrap_or_else(|| ("".to_string(), local_file_name(local_source)));
@@ -10708,8 +10711,7 @@ async fn xmodem_send_file(
     auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let data =
-        fs::read(local_source).map_err(|error| format!("读取 XModem 本地文件失败: {error}"))?;
+    let data = read_local_transfer_source(local_source, "XModem")?;
     let crc = modem_wait_for_receiver(&mut reader).await?;
     let mut block_no = 1_u8;
     let total = data.len() as u64;
@@ -10815,8 +10817,7 @@ async fn ymodem_send_file(
     auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let data =
-        fs::read(local_source).map_err(|error| format!("读取 YModem 本地文件失败: {error}"))?;
+    let data = read_local_transfer_source(local_source, "YModem")?;
     if !modem_wait_for_receiver(&mut reader).await? {
         return Err("YModem receiver did not request CRC mode".to_string());
     }
@@ -11336,21 +11337,12 @@ async fn copy_local_file_for_transfer(
 ) -> Result<u64, String> {
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
-    if !source.is_file() {
-        return Err(
-            "only local file copy is available for this protocol path right now".to_string(),
-        );
-    }
-    let total = fs::metadata(&source)
-        .map_err(|error| format!("failed to read transfer source metadata: {error}"))?
-        .len();
+    let (mut input, total) = open_local_transfer_source(&source, "local transfer")?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create transfer destination: {error}"))?;
     }
     let temp_destination = local_resume_part_path(&destination);
-    let mut input =
-        fs::File::open(&source).map_err(|error| format!("local transfer open failed: {error}"))?;
     let mut copied = local_resume_offset(&temp_destination, total)?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
@@ -11485,6 +11477,39 @@ fn local_transfer_entry(path: &Path, label: &str) -> Result<Option<fs::Metadata>
     }
 }
 
+fn open_local_transfer_source(path: &Path, label: &str) -> Result<(fs::File, u64), String> {
+    let metadata = local_transfer_entry(path, label)?
+        .ok_or_else(|| format!("{label}不存在: {}", path.display()))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .map_err(|error| format!("打开{label}失败 {}: {error}", path.display()))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
+    if !opened_metadata.is_file() || opened_metadata.len() != metadata.len() {
+        return Err(format!("{label}在打开前后发生变化: {}", path.display()));
+    }
+    Ok((file, metadata.len()))
+}
+
+fn local_transfer_source_size(path: &str) -> Result<u64, String> {
+    local_transfer_entry(Path::new(path), "本地传输源")?
+        .map(|metadata| metadata.len())
+        .ok_or_else(|| format!("本地传输源不存在: {path}"))
+}
+
+fn read_local_transfer_source(path: &str, protocol: &str) -> Result<Vec<u8>, String> {
+    let (mut file, _) = open_local_transfer_source(Path::new(path), &format!("{protocol} 本地源"))?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|error| format!("读取 {protocol} 本地文件失败: {error}"))?;
+    Ok(data)
+}
+
 fn open_new_local_transfer_file(target: &Path) -> Result<(fs::File, PathBuf), String> {
     let _ = local_transfer_entry(target, "本地目标文件")?;
     let name = target
@@ -11571,13 +11596,8 @@ async fn sftp_upload(
     remote_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let metadata = fs::metadata(local_source)
-        .map_err(|error| format!("读取本地文件元数据失败 {local_source}: {error}"))?;
-    if !metadata.is_file() {
-        return Err("SFTP upload only supports regular local files".to_string());
-    }
-    let mut local_file = fs::File::open(local_source)
-        .map_err(|error| format!("打开本地文件失败 {local_source}: {error}"))?;
+    let (mut local_file, total) =
+        open_local_transfer_source(Path::new(local_source), "SFTP upload")?;
     let file_name = Path::new(local_source)
         .file_name()
         .and_then(|value| value.to_str())
@@ -11585,15 +11605,15 @@ async fn sftp_upload(
         .unwrap_or("portmate-upload.bin");
     let target = sftp_destination_file_path(sftp, remote_destination, file_name).await?;
     let temp_target = remote_resume_part_path(&target);
-    let mut copied = sftp_resume_offset(sftp, &temp_target, metadata.len()).await?;
+    let mut copied = sftp_resume_offset(sftp, &temp_target, total).await?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
         local_file
             .seek(std::io::SeekFrom::Start(copied))
             .map_err(|error| format!("SFTP 本地文件 seek 失败 {local_source}: {error}"))?;
-        progress.update(copied, metadata.len()).await?;
+        progress.update(copied, total).await?;
     }
-    if copied == metadata.len() {
+    if copied == total {
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
         return Ok(copied);
     }
@@ -11614,7 +11634,7 @@ async fn sftp_upload(
                 .await
                 .map_err(|error| format!("SFTP 写入远端文件失败 {temp_target}: {error}"))?;
             copied += read as u64;
-            progress.update(copied, metadata.len()).await?;
+            progress.update(copied, total).await?;
         }
         remote_file
             .flush()
@@ -13786,12 +13806,7 @@ async fn scp_upload(
     remote_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let mut file =
-        fs::File::open(local_source).map_err(|error| format!("读取本地文件失败: {error}"))?;
-    let size = file
-        .metadata()
-        .map_err(|error| format!("读取本地文件元数据失败: {error}"))?
-        .len();
+    let (mut file, size) = open_local_transfer_source(Path::new(local_source), "SCP upload")?;
     let file_name = Path::new(local_source)
         .file_name()
         .and_then(|value| value.to_str())
@@ -35585,6 +35600,34 @@ mod tests {
         assert!(error.contains("符号链接"), "{error}");
         assert_eq!(fs::read(&protected).unwrap(), b"protected");
         assert!(temp.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_transfer_sources_reject_symlinks() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-transfer-sources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let protected = root.join("protected.bin");
+        fs::write(&protected, b"protected").unwrap();
+        let source = root.join("source.bin");
+        std::os::unix::fs::symlink(&protected, &source).unwrap();
+
+        assert!(open_local_transfer_source(&source, "source").is_err());
+        assert!(read_local_transfer_source(source.to_str().unwrap(), "XModem").is_err());
+        let error = match modem_direction(&StartTransferRequest {
+            session_id: "session".to_string(),
+            protocol: TransferProtocol::Xmodem,
+            source: source.display().to_string(),
+            destination: "remote:/tmp/source.bin".to_string(),
+        }) {
+            Err(error) => error,
+            Ok(_) => panic!("symbolic link source was accepted"),
+        };
+        assert!(error.contains("符号链接"), "{error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
 
         let _ = fs::remove_dir_all(root);
     }
