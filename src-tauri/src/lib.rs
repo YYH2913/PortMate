@@ -3849,24 +3849,28 @@ async fn open_session_inner(
     } = credentials;
     let profile = {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        let profile = store
+        let saved_profile = store
             .profile(&session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
-        let endpoint = describe_endpoint(&profile);
-        let mut profile = normalize_session_profile(profile);
+        let endpoint = describe_endpoint(&saved_profile);
+        let mut profile = normalize_session_profile(saved_profile);
         apply_session_open_profile_credentials(
             &mut profile,
             username.as_deref(),
             identity.as_ref(),
             isolate_saved_ssh_credentials,
         )?;
-        store.set_runtime_status(&session_id, SessionStatus::Connecting)?;
-        store.record_system_event(
-            &session_id,
-            format!("PortMate: connecting to {endpoint} ({:?})", profile.kind),
-        );
-        save_store(&state.store_path, &store)?;
-        profile
+        commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+            next_store.set_runtime_status(&session_id, SessionStatus::Connecting)?;
+            let event_ids = next_store
+                .record_system_event_tracked(
+                    &session_id,
+                    format!("PortMate: connecting to {endpoint} ({:?})", profile.kind),
+                )
+                .into_iter()
+                .collect();
+            Ok((profile, event_ids))
+        })?
     };
 
     if matches!(
@@ -3917,9 +3921,9 @@ async fn open_session_inner(
 
     {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        let summary = store.open_session(&session_id)?;
-        save_store(&state.store_path, &store)?;
-        Ok(summary)
+        commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+            mark_session_connected_with_events(next_store, &profile, [])
+        })
     }
 }
 
@@ -14618,6 +14622,110 @@ async fn pipe_ssh_channel_to_tcp(
         .map_err(|error| format!("tunnel pipe failed ({}): {error}", tunnel.label))
 }
 
+fn remove_runtime_if_owned<Runtime>(
+    registry: &Mutex<HashMap<String, Runtime>>,
+    session_id: &str,
+    owns_runtime: impl FnOnce(&Runtime) -> bool,
+) -> Result<Option<Runtime>, String> {
+    let mut runtimes = registry.lock().map_err(|error| error.to_string())?;
+    let owned = runtimes.get(session_id).is_some_and(owns_runtime);
+    Ok(if owned {
+        runtimes.remove(session_id)
+    } else {
+        None
+    })
+}
+
+fn mark_session_connected_with_events(
+    store: &mut SessionStore,
+    profile: &SessionProfile,
+    messages: impl IntoIterator<Item = String>,
+) -> Result<(SessionSummary, Vec<String>), String> {
+    let fallback = store.set_runtime_status(&profile.id, SessionStatus::Connected)?;
+    let mut event_ids = Vec::new();
+    for message in messages {
+        if let Some(event_id) = store.record_system_event_tracked(&profile.id, message) {
+            event_ids.push(event_id);
+        }
+    }
+    if let Some(event_id) = store.record_system_event_tracked(
+        &profile.id,
+        format!(
+            "PortMate: connected to {} ({:?})",
+            describe_endpoint(profile),
+            profile.kind
+        ),
+    ) {
+        event_ids.push(event_id);
+    }
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile.id)
+        .unwrap_or(fallback);
+    Ok((summary, event_ids))
+}
+
+async fn remove_ssh_runtime_after_failed_open(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+) -> Result<(), String> {
+    let runtime = remove_runtime_if_owned(&state.ssh, session_id, |runtime| {
+        runtime.runtime_id == runtime_id
+    })?;
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
+    runtime.closed.store(true, Ordering::SeqCst);
+    let handle = runtime.handle.lock().await;
+    let _ = handle
+        .disconnect(
+            Disconnect::ByApplication,
+            "PortMate connection commit failed",
+            "en",
+        )
+        .await;
+    drop(handle);
+    for jump_handle in runtime.jump_handles {
+        let handle = jump_handle.lock().await;
+        let _ = handle
+            .disconnect(
+                Disconnect::ByApplication,
+                "PortMate connection commit failed",
+                "en",
+            )
+            .await;
+    }
+    Ok(())
+}
+
+fn restore_one_time_host_keys(
+    state: &AppState,
+    profile_id: &str,
+    keys: Vec<TrustedHostKey>,
+) -> Result<(), String> {
+    restore_one_time_host_keys_in(&state.one_time_host_keys, profile_id, keys)
+}
+
+fn restore_one_time_host_keys_in(
+    one_time: &Arc<Mutex<HashMap<String, Vec<TrustedHostKey>>>>,
+    profile_id: &str,
+    keys: Vec<TrustedHostKey>,
+) -> Result<(), String> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let mut one_time = one_time.lock().map_err(|error| error.to_string())?;
+    let retained = one_time.entry(profile_id.to_string()).or_default();
+    for key in keys {
+        if !retained.iter().any(|existing| existing.id == key.id) {
+            retained.push(key);
+        }
+    }
+    Ok(())
+}
+
 async fn open_ssh_session(
     state: &AppState,
     profile: SessionProfile,
@@ -14642,7 +14750,6 @@ async fn open_ssh_session(
     }
 
     let established = establish_ssh_runtime(state, &profile, password, passphrase).await?;
-    let one_time_cleanup_error = take_one_time_host_keys(state, &profile.id).err();
     let EstablishedSshRuntime {
         runtime_id,
         runtime,
@@ -14655,6 +14762,48 @@ async fn open_ssh_session(
         let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections.insert(profile.id.clone(), runtime);
     }
+    let (consumed_one_time_host_keys, one_time_cleanup_error) =
+        match take_one_time_host_keys(state, &profile.id) {
+            Ok(keys) => (keys, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+
+    let finalize_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                let _ = next_store.record_auth_success(&profile.id, auth_method);
+                let mut messages = vec![format!(
+                    "PortMate: SSH authentication succeeded via {auth_method:?}"
+                )];
+                if let Some(error) = one_time_cleanup_error.as_deref() {
+                    messages.push(format!(
+                        "PortMate: failed to consume one-time host key trust: {error}"
+                    ));
+                }
+                mark_session_connected_with_events(next_store, &profile, messages)
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    let summary = match finalize_result {
+        Ok(summary) => summary,
+        Err(error) => {
+            let mut errors = vec![error];
+            if let Err(cleanup_error) =
+                remove_ssh_runtime_after_failed_open(state, &profile.id, &runtime_id).await
+            {
+                errors.push(format!("SSH runtime cleanup failed: {cleanup_error}"));
+            }
+            if let Err(restore_error) =
+                restore_one_time_host_keys(state, &profile.id, consumed_one_time_host_keys)
+            {
+                errors.push(format!(
+                    "one-time host key trust restore failed: {restore_error}"
+                ));
+            }
+            return Err(errors.join("; "));
+        }
+    };
 
     tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
         state: state.clone(),
@@ -14664,21 +14813,6 @@ async fn open_ssh_session(
         read_half,
         closed,
     }));
-
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let _ = store.record_auth_success(&profile.id, auth_method);
-    store.record_system_event(
-        &profile.id,
-        format!("PortMate: SSH authentication succeeded via {auth_method:?}"),
-    );
-    if let Some(error) = one_time_cleanup_error {
-        store.record_system_event(
-            &profile.id,
-            format!("PortMate: failed to consume one-time host key trust: {error}"),
-        );
-    }
-    let summary = store.open_session(&profile.id)?;
-    save_store(&state.store_path, &store)?;
     Ok(summary)
 }
 
@@ -15398,24 +15532,56 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
         .spawn(read_shell_pty(ShellReadTask {
             io: state.session_io(),
             session_id: profile.id.clone(),
-            runtime_id,
+            runtime_id: runtime_id.clone(),
             program: program.clone(),
             tap,
-            closed,
-            child,
+            closed: Arc::clone(&closed),
+            child: Arc::clone(&child),
             reader,
         }))
     {
-        let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id);
+        closed.store(true, Ordering::SeqCst);
+        if let Ok(mut child) = child.lock() {
+            let _ = child.kill();
+        }
+        remove_runtime_if_owned(&state.shell, &profile.id, |runtime| {
+            runtime.runtime_id == runtime_id
+        })?;
         return Err(format!("Shell PTY 读取线程启动失败: {error}"));
     }
 
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.record_system_event(&profile.id, format!("PortMate: shell started ({program})"));
-    let summary = store.open_session(&profile.id)?;
-    save_store(&state.store_path, &store)?;
-    Ok(summary)
+    let finalize_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                mark_session_connected_with_events(
+                    next_store,
+                    &profile,
+                    [format!("PortMate: shell started ({program})")],
+                )
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    match finalize_result {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            closed.store(true, Ordering::SeqCst);
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+            let cleanup_error = remove_runtime_if_owned(&state.shell, &profile.id, |runtime| {
+                runtime.runtime_id == runtime_id
+            })
+            .err();
+            if let Some(cleanup_error) = cleanup_error {
+                Err(format!(
+                    "{error}; Shell runtime cleanup failed: {cleanup_error}"
+                ))
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 fn tcp_connection_details(
@@ -15607,11 +15773,37 @@ async fn open_tcp_session(
         );
     }
 
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.record_system_event(&profile.id, format!("PortMate: {label} socket connected"));
-    let summary = store.open_session(&profile.id)?;
-    save_store(&state.store_path, &store)?;
-    drop(store);
+    let finalize_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                mark_session_connected_with_events(
+                    next_store,
+                    &profile,
+                    [format!("PortMate: {label} socket connected")],
+                )
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    let summary = match finalize_result {
+        Ok(summary) => summary,
+        Err(error) => {
+            closed.store(true, Ordering::SeqCst);
+            let cleanup_error = remove_runtime_if_owned(&state.tcp, &profile.id, |runtime| {
+                runtime.runtime_id == runtime_id
+            })
+            .err();
+            let shutdown_error = writer.lock().await.shutdown().await.err();
+            let mut errors = vec![error];
+            if let Some(cleanup_error) = cleanup_error {
+                errors.push(format!("{label} runtime cleanup failed: {cleanup_error}"));
+            }
+            if let Some(shutdown_error) = shutdown_error {
+                errors.push(format!("{label} socket shutdown failed: {shutdown_error}"));
+            }
+            return Err(errors.join("; "));
+        }
+    };
 
     tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
         state: state.clone(),
@@ -15771,32 +15963,55 @@ fn open_serial_session(
     if let Err(error) = spawn_serial_reader(SerialReadTask {
         io: state.session_io(),
         profile: profile.clone(),
-        runtime_id,
+        runtime_id: runtime_id.clone(),
         port_name: port_name.clone(),
         tap,
-        closed,
+        closed: Arc::clone(&closed),
         reader,
         capture,
         receive_idle_timeout: serial
             .receive_idle_timeout_enabled
             .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
     }) {
-        let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id);
+        closed.store(true, Ordering::SeqCst);
+        remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
+            runtime.runtime_id == runtime_id
+        })?;
         return Err(format!("串口读取线程启动失败: {error}"));
     }
 
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.record_system_event(
-        &profile.id,
-        format!(
-            "PortMate: serial port connected ({port_name}, {} baud)",
-            serial.baud_rate
-        ),
-    );
-    let summary = store.open_session(&profile.id)?;
-    save_store(&state.store_path, &store)?;
-    Ok(summary)
+    let finalize_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                mark_session_connected_with_events(
+                    next_store,
+                    &profile,
+                    [format!(
+                        "PortMate: serial port connected ({port_name}, {} baud)",
+                        serial.baud_rate
+                    )],
+                )
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    match finalize_result {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            closed.store(true, Ordering::SeqCst);
+            let cleanup_error = remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
+                runtime.runtime_id == runtime_id
+            })
+            .err();
+            if let Some(cleanup_error) = cleanup_error {
+                Err(format!(
+                    "{error}; serial runtime cleanup failed: {cleanup_error}"
+                ))
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 async fn authenticate_ssh(
@@ -35516,13 +35731,17 @@ mod tests {
             one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
             vec![key.clone(), target_key.clone()]
         );
-        assert_eq!(
-            take_one_time_host_keys_from(&one_time, "ssh-session-1").unwrap(),
-            vec![key, target_key]
-        );
+        let consumed = take_one_time_host_keys_from(&one_time, "ssh-session-1").unwrap();
+        assert_eq!(consumed, vec![key.clone(), target_key.clone()]);
         assert!(one_time_host_keys_snapshot_from(&one_time, "ssh-session-1")
             .unwrap()
             .is_empty());
+        restore_one_time_host_keys_in(&one_time, "ssh-session-1", consumed.clone()).unwrap();
+        restore_one_time_host_keys_in(&one_time, "ssh-session-1", consumed).unwrap();
+        assert_eq!(
+            one_time_host_keys_snapshot_from(&one_time, "ssh-session-1").unwrap(),
+            vec![key, target_key]
+        );
     }
 
     #[test]
@@ -35783,6 +36002,36 @@ mod tests {
             failed.metrics.snapshot(spec).last_error.as_deref(),
             Some("listener failed")
         );
+    }
+
+    #[test]
+    fn runtime_cleanup_never_removes_a_superseding_entry() {
+        let registry = Mutex::new(HashMap::from([(
+            "session-1".to_string(),
+            "runtime-new".to_string(),
+        )]));
+        assert!(remove_runtime_if_owned(&registry, "session-1", |runtime| {
+            runtime == "runtime-old"
+        })
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .get("session-1")
+                .map(String::as_str),
+            Some("runtime-new")
+        );
+        assert_eq!(
+            remove_runtime_if_owned(&registry, "session-1", |runtime| {
+                runtime == "runtime-new"
+            })
+            .unwrap()
+            .as_deref(),
+            Some("runtime-new")
+        );
+        assert!(registry.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -41408,6 +41657,129 @@ mod tests {
                 && record.session_id.as_deref() == Some("session:1")
                 && record.details.get("diskLogs").map(String::as_str) == Some("retained")
         }));
+    }
+
+    #[test]
+    fn shell_open_removes_the_runtime_when_connected_state_cannot_commit() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-shell-open-commit-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(
+            profile.clone(),
+            blocked_parent.join("portmate-store.sqlite3"),
+        );
+
+        let error = open_shell_session(&state, profile.clone()).unwrap_err();
+        assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+        assert!(state.shell.lock().unwrap().is_empty());
+        let store = state.store.lock().unwrap();
+        let summary = store
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == profile.id)
+            .unwrap();
+        assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+        assert!(store.events.iter().all(|event| {
+            event.text.as_deref().is_none_or(|text| {
+                !text.contains("shell started") && !text.contains("connected to")
+            })
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_open_rolls_back_connecting_state_when_snapshot_cannot_commit() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-session-open-commit-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(
+                profile.clone(),
+                blocked_parent.join("portmate-store.sqlite3"),
+            );
+
+            let error = open_session_inner(
+                state.clone(),
+                profile.id.clone(),
+                SessionOpenCredentials::default(),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+            assert!(state.shell.lock().unwrap().is_empty());
+            let store = state.store.lock().unwrap();
+            let summary = store
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == profile.id)
+                .unwrap();
+            assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+            assert!(store.events.is_empty());
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn tcp_open_closes_the_socket_when_connected_state_cannot_commit() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut byte = [0_u8; 1];
+                stream.read(&mut byte).await.unwrap()
+            });
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tcp-open-commit-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let state = test_app_state(
+                profile.clone(),
+                blocked_parent.join("portmate-store.sqlite3"),
+            );
+
+            let error = open_tcp_session(&state, profile.clone()).await.unwrap_err();
+            assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+            assert!(state.tcp.lock().unwrap().is_empty());
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), peer)
+                    .await
+                    .expect("TCP peer did not observe cleanup")
+                    .unwrap(),
+                0
+            );
+            let store = state.store.lock().unwrap();
+            let summary = store
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == profile.id)
+                .unwrap();
+            assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+            assert!(store.events.is_empty());
+
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     fn test_shell_profile() -> SessionProfile {
