@@ -7436,13 +7436,10 @@ fn append_and_save_mcp_audit(
     store: &mut SessionStore,
     record: AuditRecord,
 ) -> Result<(), String> {
-    let previous = store.audit.clone();
-    store.record_audit(record);
-    if let Err(error) = save_store(store_path, store) {
-        store.audit = previous;
-        return Err(error);
-    }
-    Ok(())
+    commit_store_mutation(store, store_path, |next_store| {
+        next_store.record_audit(record);
+        Ok(())
+    })
 }
 
 fn record_invalid_mcp_write(
@@ -7522,23 +7519,20 @@ fn finish_mcp_write_audit(
     approval: Option<&str>,
 ) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let index = store
-        .audit
-        .iter()
-        .position(|record| record.id == audit_id)
-        .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
-    let previous = store.audit[index].clone();
-    store.audit[index].decision = decision.to_string();
-    if let Some(approval) = approval {
-        store.audit[index]
-            .details
-            .insert("approval".to_string(), approval.to_string());
-    }
-    if let Err(error) = save_store(&state.store_path, &store) {
-        store.audit[index] = previous;
-        return Err(error);
-    }
-    Ok(())
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        let record = next_store
+            .audit
+            .iter_mut()
+            .find(|record| record.id == audit_id)
+            .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
+        record.decision = decision.to_string();
+        if let Some(approval) = approval {
+            record
+                .details
+                .insert("approval".to_string(), approval.to_string());
+        }
+        Ok(())
+    })
 }
 
 async fn await_mcp_approval_with_emitter<F>(
