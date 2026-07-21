@@ -268,6 +268,8 @@ try {
     window.__pendingFileProperties = [];
     window.__deferTailLogs = false;
     window.__pendingTailLogs = [];
+    window.__deferTunnelRefresh = false;
+    window.__pendingTunnelRefresh = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -332,6 +334,12 @@ try {
           }
           const path = args.request.path;
           return { name: path.split("/").at(-1), path, remote: args.request.remote, kind: "file", isDir: false, isFile: true, isSymlink: false, size: 0 };
+        }
+        if (command === "list_tunnels") {
+          if (!window.__deferTunnelRefresh) return [];
+          return new Promise((resolve) => {
+            window.__pendingTunnelRefresh.push({ args: structuredClone(args), resolve });
+          });
         }
         if (command === "list_mcp_grants") return window.__mcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
@@ -508,6 +516,28 @@ try {
   await page.screenshot({ path: `${screenshotPrefix}-transfer.png`, fullPage: true });
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
+
+  await page.evaluate(() => {
+    window.__deferTunnelRefresh = true;
+    window.__pendingTunnelRefresh = [];
+  });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
+  const tunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
+  await tunnelDialog.waitFor();
+  await page.waitForFunction(() => window.__pendingTunnelRefresh.length >= 1);
+  await page.waitForTimeout(100);
+  const tunnelRefreshBaseline = await page.evaluate(() => window.__pendingTunnelRefresh.length);
+  await page.waitForTimeout(2_150);
+  assert(await page.evaluate(() => window.__pendingTunnelRefresh.length) === tunnelRefreshBaseline,
+    "slow tunnel refreshes overlapped instead of waiting for the active request");
+  await page.evaluate(() => {
+    for (const pending of window.__pendingTunnelRefresh) pending.resolve([]);
+    window.__pendingTunnelRefresh = [];
+    window.__deferTunnelRefresh = false;
+  });
+  await tunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await tunnelDialog.waitFor({ state: "detached" });
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.locator(".menu-trigger", { hasText: "工具" }).click();

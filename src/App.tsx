@@ -5359,22 +5359,36 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
   const [loading, setLoading] = useState(false);
   const [stoppingId, setStoppingId] = useState("");
   const [error, setError] = useState("");
+  const refreshGate = useRef(new KeyedRequestGate<"tunnels">());
 
   useEffect(() => {
+    refreshGate.current.invalidate("tunnels");
+    setTunnels([]);
+    setStoppingId("");
     void refreshTunnels();
     const timer = window.setInterval(() => void refreshTunnels(true), 2000);
-    return () => window.clearInterval(timer);
+    return () => {
+      refreshGate.current.invalidate("tunnels");
+      window.clearInterval(timer);
+    };
   }, [session.profile.id]);
 
   async function refreshTunnels(quiet = false) {
+    const gate = refreshGate.current;
+    const token = gate.begin("tunnels");
+    if (token === null) return;
     if (!quiet) setLoading(true);
     if (!quiet) setError("");
     try {
-      setTunnels(await invokeBackend<TunnelStatus[]>("list_tunnels", { sessionId: session.profile.id }));
+      const next = await invokeBackend<TunnelStatus[]>("list_tunnels", { sessionId: session.profile.id });
+      if (!gate.isCurrent("tunnels", token)) return;
+      setTunnels(next);
     } catch (error) {
-      if (!quiet) setError(formatError(error));
+      if (gate.isCurrent("tunnels", token) && !quiet) setError(formatError(error));
     } finally {
-      if (!quiet) setLoading(false);
+      const current = gate.isCurrent("tunnels", token);
+      gate.finish("tunnels", token);
+      if (current && !quiet) setLoading(false);
     }
   }
 
@@ -5393,6 +5407,7 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
           targetPort: mode === "dynamic" ? 0 : Number(targetPort),
         },
       });
+      refreshGate.current.invalidate("tunnels");
       setTunnels((current) => mergeTunnels(current, emptyTunnelStatus(tunnel)));
       onDone(`已创建 ${mode} tunnel：${tunnel.label}`);
     } catch (error) {
@@ -5407,6 +5422,7 @@ function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; o
     setError("");
     try {
       await invokeBackend<TunnelStatus>("stop_tunnel", { tunnelId: tunnel.spec.id });
+      refreshGate.current.invalidate("tunnels");
       setTunnels((current) => current.filter((item) => item.spec.id !== tunnel.spec.id));
       onDone(`已停止 tunnel：${tunnel.spec.label}`);
     } catch (error) {
