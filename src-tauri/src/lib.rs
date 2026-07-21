@@ -8344,6 +8344,7 @@ async fn start_transfer_inner(
         finished_at: None,
         average_bytes_per_second: None,
     };
+    let lane = transfer_lane(state, &request.session_id)?;
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut cancellations = state
@@ -8353,21 +8354,48 @@ async fn start_transfer_inner(
         cancellations.insert(task.id.clone(), Arc::clone(&cancel));
     }
 
-    {
-        let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        store.record_transfer(task.clone());
-        store.record_system_event(
-            &request.session_id,
-            format!(
-                "PortMate: transfer queued ({:?}) {} -> {}",
-                request.protocol, request.source, request.destination
-            ),
-        );
-        save_store(&state.store_path, &store)?;
+    let queue_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                next_store.record_transfer(task.clone());
+                let event_ids = next_store
+                    .record_system_event_tracked(
+                        &request.session_id,
+                        format!(
+                            "PortMate: transfer queued ({:?}) {} -> {}",
+                            request.protocol, request.source, request.destination
+                        ),
+                    )
+                    .into_iter()
+                    .collect();
+                Ok(((), event_ids))
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = queue_result {
+        let cleanup_error = state
+            .transfer_cancellations
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())
+            .map(|mut cancellations| {
+                if cancellations
+                    .get(&task.id)
+                    .is_some_and(|registered| Arc::ptr_eq(registered, &cancel))
+                {
+                    cancellations.remove(&task.id);
+                }
+            })
+            .err();
+        return Err(match cleanup_error {
+            Some(cleanup_error) => {
+                format!("{error}; transfer cancellation cleanup failed: {cleanup_error}")
+            }
+            None => error,
+        });
     }
     emit_transfer_task(state, &task);
 
-    let lane = transfer_lane(state, &request.session_id)?;
     let runner_state = state.clone();
     let task_id = task.id.clone();
     tauri::async_runtime::spawn(async move {
@@ -8586,27 +8614,31 @@ fn mark_transfer_running(
 ) -> Result<(), String> {
     let task = {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
-        let task = store
-            .transfers
-            .iter_mut()
-            .find(|task| task.id == task_id)
-            .ok_or_else(|| format!("unknown transfer: {task_id}"))?;
-        if task.status == TransferStatus::Cancelled {
-            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
-        }
-        task.status = TransferStatus::Running;
-        task.message = Some("running".to_string());
-        task.started_at = Some(Utc::now());
-        let task = task.clone();
-        store.record_system_event(
-            &request.session_id,
-            format!(
-                "PortMate: transfer started ({:?}) {} -> {}",
-                request.protocol, request.source, request.destination
-            ),
-        );
-        save_store(&state.store_path, &store)?;
-        task
+        commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+            let task = next_store
+                .transfers
+                .iter_mut()
+                .find(|task| task.id == task_id)
+                .ok_or_else(|| format!("unknown transfer: {task_id}"))?;
+            if task.status == TransferStatus::Cancelled {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
+            task.status = TransferStatus::Running;
+            task.message = Some("running".to_string());
+            task.started_at = Some(Utc::now());
+            let task = task.clone();
+            let event_ids = next_store
+                .record_system_event_tracked(
+                    &request.session_id,
+                    format!(
+                        "PortMate: transfer started ({:?}) {} -> {}",
+                        request.protocol, request.source, request.destination
+                    ),
+                )
+                .into_iter()
+                .collect();
+            Ok((task, event_ids))
+        })?
     };
     emit_transfer_task(state, &task);
     Ok(())
@@ -8620,7 +8652,8 @@ fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
-    let message = truncate_for_log(&message, 2_000);
+    let mut status = status;
+    let mut message = truncate_for_log(&message, 2_000);
     let task = {
         let mut store = match state.store.lock() {
             Ok(store) => store,
@@ -8633,6 +8666,10 @@ fn finish_transfer_task(
             Some(task) => task,
             None => return,
         };
+        if task.status == TransferStatus::Cancelled {
+            status = TransferStatus::Cancelled;
+            message = "cancelled".to_string();
+        }
         if let Some(bytes) = bytes {
             task.bytes_total = bytes;
             task.bytes_done = bytes;
@@ -8642,16 +8679,6 @@ fn finish_transfer_task(
         task.finished_at = Some(Utc::now());
         task.average_bytes_per_second = transfer_average_bps(task);
         let task = task.clone();
-        {
-            let mut cancellations = match state.transfer_cancellations.lock() {
-                Ok(cancellations) => cancellations,
-                Err(error) => {
-                    eprintln!("PortMate: failed to lock transfer cancellations: {error}");
-                    return;
-                }
-            };
-            cancellations.remove(&task.id);
-        }
         store.trim_transfer_history(&task.session_id);
         store.record_system_event(
             session_id,
@@ -8667,6 +8694,12 @@ fn finish_transfer_task(
         }
         task
     };
+    match state.transfer_cancellations.lock() {
+        Ok(mut cancellations) => {
+            cancellations.remove(&task.id);
+        }
+        Err(error) => eprintln!("PortMate: failed to clean up transfer cancellation: {error}"),
+    }
     emit_transfer_task(state, &task);
 }
 
@@ -8709,15 +8742,12 @@ fn transfer_average_bps(task: &TransferTask) -> Option<f64> {
 }
 
 fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<TransferTask, String> {
-    if let Some(cancel) = state
+    let cancel = state
         .transfer_cancellations
         .lock()
         .map_err(|error| error.to_string())?
         .get(transfer_id)
-        .cloned()
-    {
-        cancel.store(true, Ordering::SeqCst);
-    }
+        .cloned();
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let task = store
@@ -8732,6 +8762,9 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
         ))
     .then(|| task.session_id.clone());
     if transfer_task_is_active(&task.status) {
+        if let Some(cancel) = cancel {
+            cancel.store(true, Ordering::SeqCst);
+        }
         task.status = TransferStatus::Cancelled;
         task.message = Some("cancelling".to_string());
         task.finished_at = Some(Utc::now());
@@ -8739,7 +8772,11 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
     }
     let task = task.clone();
     store.trim_transfer_history(&task.session_id);
-    save_store(&state.store_path, &store)?;
+    if let Err(error) = save_store(&state.store_path, &store) {
+        eprintln!(
+            "PortMate: transfer cancellation was accepted but could not be persisted: {error}"
+        );
+    }
     drop(store);
     if let Some(session_id) = abort_modem_session {
         let state = state.clone();
@@ -26175,6 +26212,19 @@ fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
     store.grants = normalized;
 }
 
+fn normalize_interrupted_transfers(store: &mut SessionStore) {
+    let now = Utc::now();
+    for task in &mut store.transfers {
+        if !transfer_task_is_active(&task.status) {
+            continue;
+        }
+        task.status = TransferStatus::Failed;
+        task.message = Some("interrupted by previous PortMate shutdown".to_string());
+        task.finished_at = Some(now);
+        task.average_bytes_per_second = transfer_average_bps(task);
+    }
+}
+
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
     let mut normalized_profiles = Vec::with_capacity(profiles.len());
@@ -26260,6 +26310,7 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
         runtime.status = SessionStatus::Disconnected;
         runtime.connected_since = None;
     }
+    normalize_interrupted_transfers(&mut store);
     store.normalize_bounded_histories();
     store
 }
@@ -30280,6 +30331,60 @@ mod tests {
     }
 
     #[test]
+    fn normalize_loaded_store_marks_orphaned_active_transfers_interrupted() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let started_at = Utc::now() - chrono::Duration::seconds(2);
+        for (id, status, started_at, finished_at) in [
+            ("queued", TransferStatus::Queued, None, None),
+            ("running", TransferStatus::Running, Some(started_at), None),
+            (
+                "completed",
+                TransferStatus::Completed,
+                Some(started_at),
+                Some(Utc::now()),
+            ),
+        ] {
+            store.record_transfer(TransferTask {
+                id: id.to_string(),
+                session_id: session_id.clone(),
+                protocol: TransferProtocol::Sftp,
+                source: "source.bin".to_string(),
+                destination: "destination.bin".to_string(),
+                bytes_total: 1_024,
+                bytes_done: 1_024,
+                status,
+                message: None,
+                started_at,
+                finished_at,
+                average_bytes_per_second: None,
+            });
+        }
+
+        let normalized = normalize_loaded_store(store);
+        for id in ["queued", "running"] {
+            let task = normalized.transfer_by_id(id).unwrap();
+            assert_eq!(task.status, TransferStatus::Failed);
+            assert_eq!(
+                task.message.as_deref(),
+                Some("interrupted by previous PortMate shutdown")
+            );
+            assert!(task.finished_at.is_some());
+        }
+        assert!(normalized
+            .transfer_by_id("running")
+            .unwrap()
+            .average_bytes_per_second
+            .is_some());
+        assert_eq!(
+            normalized.transfer_by_id("completed").unwrap().status,
+            TransferStatus::Completed
+        );
+    }
+
+    #[test]
     fn normalize_loaded_store_quarantines_conflicting_mcp_grants_before_mirroring() {
         let mut store = SessionStore::default();
         let profile = test_shell_profile();
@@ -33659,6 +33764,164 @@ mod tests {
         assert!(!transfer_task_is_active(&TransferStatus::Completed));
         assert!(!transfer_task_is_active(&TransferStatus::Failed));
         assert!(!transfer_task_is_active(&TransferStatus::Cancelled));
+    }
+
+    #[test]
+    fn transfer_queue_commit_failure_rolls_back_task_event_and_cancellation() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-transfer-queue-commit-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(
+                profile.clone(),
+                blocked_parent.join("portmate-store.sqlite3"),
+            );
+
+            let error = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id,
+                    protocol: TransferProtocol::Sftp,
+                    source: "input.bin".to_string(),
+                    destination: "output.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+            let store = state.store.lock().unwrap();
+            assert!(store.transfers.is_empty());
+            assert!(store.events.is_empty());
+            drop(store);
+            assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn transfer_running_commit_failure_restores_queued_state_and_event() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-transfer-running-commit-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(
+            profile.clone(),
+            blocked_parent.join("portmate-store.sqlite3"),
+        );
+        let task = test_transfer_task(&profile.id, TransferStatus::Queued);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        let request = StartTransferRequest {
+            session_id: profile.id,
+            protocol: task.protocol.clone(),
+            source: task.source.clone(),
+            destination: task.destination.clone(),
+        };
+
+        let error = mark_transfer_running(&state, &task.id, &request).unwrap_err();
+
+        assert!(error.contains("无法判定 Store 提交是否生效"), "{error}");
+        let store = state.store.lock().unwrap();
+        let restored = store.transfer_by_id(&task.id).unwrap();
+        assert_eq!(restored.status, TransferStatus::Queued);
+        assert_eq!(restored.message.as_deref(), Some("queued"));
+        assert!(restored.started_at.is_none());
+        assert!(store.events.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transfer_cancel_remains_accepted_when_persistence_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-transfer-cancel-persistence-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
+        let task = test_transfer_task(&profile.id, TransferStatus::Running);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .transfer_cancellations
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), Arc::clone(&cancelled));
+
+        let result = cancel_transfer_inner(&state, &task.id).unwrap();
+
+        assert_eq!(result.status, TransferStatus::Cancelled);
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .status,
+            TransferStatus::Cancelled
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transfer_finish_preserves_cancelled_truth_and_cleans_runtime_state() {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-transfer-finish-persistence-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
+        let mut task = test_transfer_task(&profile.id, TransferStatus::Cancelled);
+        task.message = Some("cancelling".to_string());
+        state.store.lock().unwrap().record_transfer(task.clone());
+        state
+            .transfer_cancellations
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), Arc::new(AtomicBool::new(true)));
+
+        finish_transfer_task(
+            &state,
+            &task.id,
+            &profile.id,
+            TransferStatus::Completed,
+            "completed".to_string(),
+            Some(512),
+        );
+
+        let store = state.store.lock().unwrap();
+        let finished = store.transfer_by_id(&task.id).unwrap();
+        assert_eq!(finished.status, TransferStatus::Cancelled);
+        assert_eq!(finished.message.as_deref(), Some("cancelled"));
+        assert_eq!(finished.bytes_done, 512);
+        assert!(store.events.iter().any(|event| {
+            event.text.as_deref().is_some_and(|text| {
+                text.contains("transfer finished") && text.contains("Cancelled")
+            })
+        }));
+        drop(store);
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -41895,6 +42158,32 @@ mod tests {
             logging: portmate_core::LoggingSettings::default(),
             triggers: Vec::new(),
             transfer: portmate_core::TransferSettings::default(),
+        }
+    }
+
+    fn test_transfer_task(session_id: &str, status: TransferStatus) -> TransferTask {
+        TransferTask {
+            id: "transfer-commit-test".to_string(),
+            session_id: session_id.to_string(),
+            protocol: TransferProtocol::Sftp,
+            source: "input.bin".to_string(),
+            destination: "output.bin".to_string(),
+            bytes_total: 0,
+            bytes_done: 0,
+            started_at: (status == TransferStatus::Running).then(Utc::now),
+            finished_at: None,
+            average_bytes_per_second: None,
+            message: Some(
+                match status {
+                    TransferStatus::Queued => "queued",
+                    TransferStatus::Running => "running",
+                    TransferStatus::Completed => "completed",
+                    TransferStatus::Failed => "failed",
+                    TransferStatus::Cancelled => "cancelled",
+                }
+                .to_string(),
+            ),
+            status,
         }
     }
 
