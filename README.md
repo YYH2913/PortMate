@@ -196,7 +196,11 @@ Changing a saved profile from one protocol to another is rejected while the sess
 Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
 needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
 transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
-ID instead of silently orphaning related data. PortMate retains 5,000
+ID instead of silently orphaning related data. Loaded runtime, event, transfer, timeline, Sysmon,
+and Profile-scoped Host Key records whose Profile no longer exists are removed before the Store is
+exposed, while audit records remain available for accountability and project/user Host Keys only
+lose a stale source-Profile reference. This prevents a later Profile from inheriting old state or
+trust merely by reusing the same ID. PortMate retains 5,000
 session events per session, 5,000 audit records per session/global scope, 2,000 timeline marks,
 1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for
 frequently appended histories. Queued and running transfers are never evicted. Desktop and
@@ -323,8 +327,11 @@ the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessio
 scope for the requested operation. An empty allowed-session list means all sessions; otherwise
 session lists, resources, global log search, prompts, transfer resources, and HTTP SSE state are
 filtered to the configured IDs. The live desktop IPC rechecks the same policy before returning
-data. Stored revoked or expired grants do not authorize access. Removing every grant intentionally
-returns the bridge to its documented empty-store default-read mode.
+data. During Store load, missing Profile IDs are removed from session-scoped grants; a grant that
+loses its final allowed session is explicitly revoked instead of being widened into a global grant.
+Stored revoked or expired grants do not authorize access, including if the old session ID is later
+reused. Removing every grant intentionally returns the bridge to its documented empty-store
+default-read mode.
 
 Write tools are denied by default. For a trusted local development run with an empty grant store:
 
