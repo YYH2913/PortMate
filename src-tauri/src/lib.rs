@@ -13487,7 +13487,7 @@ async fn create_tunnel_inner(
         target_port: request.target_port,
         enabled: true,
     };
-    let (tunnel, local_addr) = start_tunnel_runtime(
+    let (tunnel, local_addr, ssh_runtime_id) = start_tunnel_runtime(
         state,
         &request.session_id,
         tunnel,
@@ -13495,8 +13495,14 @@ async fn create_tunnel_inner(
         None,
     )
     .await?;
-    persist_tunnel_to_profile_and_log(state, &request.session_id, &tunnel, local_addr)?;
-    Ok(tunnel)
+    commit_started_tunnel(
+        state,
+        &request.session_id,
+        tunnel,
+        local_addr,
+        &ssh_runtime_id,
+    )
+    .await
 }
 
 async fn start_tunnel_runtime(
@@ -13505,7 +13511,7 @@ async fn start_tunnel_runtime(
     mut tunnel: TunnelSpec,
     relabel_assigned_port: bool,
     expected_runtime_id: Option<&str>,
-) -> Result<(TunnelSpec, Option<std::net::SocketAddr>), String> {
+) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, String), String> {
     let (handle, remote_forwards, ssh_runtime_id) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         let runtime = connections
@@ -13569,7 +13575,7 @@ async fn start_tunnel_runtime(
         }
         let metrics = Arc::new(TunnelMetrics::default());
         let closed = Arc::new(AtomicBool::new(false));
-        {
+        let install_result = (|| {
             let connections = state.ssh.lock().map_err(|error| error.to_string())?;
             if connections
                 .get(session_id)
@@ -13607,9 +13613,26 @@ async fn start_tunnel_runtime(
                     closed: Arc::clone(&closed),
                 },
             );
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = install_result {
+            let warnings = cancel_remote_tunnel_forward(
+                Arc::clone(&handle),
+                Arc::clone(&remote_forwards),
+                &tunnel,
+            )
+            .await;
+            return Err(if warnings.is_empty() {
+                error
+            } else {
+                format!(
+                    "{error}; remote tunnel cleanup failed: {}",
+                    warnings.join("; ")
+                )
+            });
         }
         spawn_remote_tunnel_health_monitor(state.clone(), tunnel.id.clone(), Arc::clone(&closed));
-        return Ok((tunnel, None));
+        return Ok((tunnel, None, ssh_runtime_id));
     }
 
     let listener = TcpListener::bind((tunnel.bind_host.clone(), tunnel.bind_port))
@@ -13672,7 +13695,7 @@ async fn start_tunnel_runtime(
     let store_path = state.store_path.clone();
     let tunnel_registry = Arc::clone(&state.tunnels);
     let tunnel_for_task = tunnel.clone();
-    let ssh_runtime_id_for_task = ssh_runtime_id;
+    let ssh_runtime_id_for_task = ssh_runtime_id.clone();
     tauri::async_runtime::spawn(async move {
         loop {
             if closed.load(Ordering::SeqCst) {
@@ -13756,7 +13779,34 @@ async fn start_tunnel_runtime(
         }
     });
 
-    Ok((tunnel, Some(local_addr)))
+    Ok((tunnel, Some(local_addr), ssh_runtime_id))
+}
+
+async fn commit_started_tunnel(
+    state: &AppState,
+    session_id: &str,
+    tunnel: TunnelSpec,
+    local_addr: Option<std::net::SocketAddr>,
+    ssh_runtime_id: &str,
+) -> Result<TunnelSpec, String> {
+    if let Err(commit_error) =
+        persist_tunnel_to_profile_and_log(state, session_id, &tunnel, local_addr)
+    {
+        let cleanup = stop_tunnel_runtime_effects(state, &tunnel.id, ssh_runtime_id).await;
+        return Err(match cleanup {
+            Ok((_, warnings)) if warnings.is_empty() => format!(
+                "tunnel Store commit failed and the uncommitted runtime was closed: {commit_error}"
+            ),
+            Ok((_, warnings)) => format!(
+                "tunnel Store commit failed: {commit_error}; runtime cleanup warnings: {}",
+                warnings.join("; ")
+            ),
+            Err(cleanup_error) => format!(
+                "tunnel Store commit failed: {commit_error}; runtime cleanup failed: {cleanup_error}"
+            ),
+        });
+    }
+    Ok(tunnel)
 }
 
 fn spawn_remote_tunnel_health_monitor(state: AppState, tunnel_id: String, closed: Arc<AtomicBool>) {
@@ -14030,7 +14080,7 @@ async fn restore_enabled_tunnels(
         }
         let tunnel_id = tunnel.id.clone();
         match start_tunnel_runtime(state, session_id, tunnel, false, Some(runtime_id)).await {
-            Ok((tunnel, local_addr)) => {
+            Ok((tunnel, local_addr, _)) => {
                 if !ssh_runtime_connected(state, session_id, runtime_id) {
                     let _ = fail_tunnel_runtime_if_owned(
                         &state.tunnels,
@@ -14144,6 +14194,19 @@ fn fail_tunnel_runtime_if_owned(
     ssh_runtime_id: &str,
     error: &str,
 ) -> Result<Option<TunnelRuntime>, String> {
+    let runtime = remove_tunnel_runtime_if_owned(tunnels, tunnel_id, ssh_runtime_id)?;
+    if let Some(runtime) = &runtime {
+        runtime.metrics.record_error(error);
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    Ok(runtime)
+}
+
+fn remove_tunnel_runtime_if_owned(
+    tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    tunnel_id: &str,
+    ssh_runtime_id: &str,
+) -> Result<Option<TunnelRuntime>, String> {
     let mut tunnels = tunnels
         .lock()
         .map_err(|lock_error| lock_error.to_string())?;
@@ -14153,12 +14216,7 @@ fn fail_tunnel_runtime_if_owned(
     {
         return Ok(None);
     }
-    let runtime = tunnels.remove(tunnel_id);
-    if let Some(runtime) = &runtime {
-        runtime.metrics.record_error(error);
-        runtime.closed.store(true, Ordering::SeqCst);
-    }
-    Ok(runtime)
+    Ok(tunnels.remove(tunnel_id))
 }
 
 fn fail_session_tunnel_runtimes(
@@ -14185,79 +14243,20 @@ fn fail_session_tunnel_runtimes(
 }
 
 async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelStatus, String> {
-    let runtime = {
+    let expected_runtime_id = {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
         tunnels
             .get(tunnel_id)
-            .cloned()
+            .map(|runtime| runtime.ssh_runtime_id.clone())
             .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?
     };
+    let (runtime, warnings) =
+        stop_tunnel_runtime_effects(state, tunnel_id, &expected_runtime_id).await?;
 
     let mut stopped = runtime.spec.clone();
     stopped.enabled = false;
-    runtime.closed.store(true, Ordering::SeqCst);
-    let mut warnings = Vec::new();
-
-    if runtime.spec.mode == TunnelMode::Remote {
-        let remote_forward = match state.ssh.lock() {
-            Ok(connections) => connections
-                .get(&runtime.session_id)
-                .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
-                .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards))),
-            Err(error) => {
-                warnings.push(format!(
-                    "SSH runtime lock failed during remote cancel: {error}"
-                ));
-                None
-            }
-        };
-        if let Some((handle, remote_forwards)) = remote_forward {
-            let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
-                let handle = handle.lock().await;
-                handle
-                    .cancel_tcpip_forward(
-                        runtime.spec.bind_host.clone(),
-                        u32::from(runtime.spec.bind_port),
-                    )
-                    .await
-            })
-            .await;
-            match cancel {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => warnings.push(format!(
-                    "remote SSH tunnel cancel failed {}:{}: {error}",
-                    runtime.spec.bind_host, runtime.spec.bind_port
-                )),
-                Err(_) => warnings.push(format!(
-                    "remote SSH tunnel cancel timed out {}:{}",
-                    runtime.spec.bind_host, runtime.spec.bind_port
-                )),
-            }
-            match remote_forwards.lock() {
-                Ok(mut forwards) => {
-                    forwards.remove(&remote_forward_key(
-                        &runtime.spec.bind_host,
-                        runtime.spec.bind_port,
-                    ));
-                    forwards.remove(&remote_forward_port_key(runtime.spec.bind_port));
-                }
-                Err(error) => {
-                    warnings.push(format!("remote forward route cleanup failed: {error}"))
-                }
-            }
-        } else if warnings.is_empty() {
-            warnings.push("SSH runtime unavailable during remote cancel".to_string());
-        }
-    }
-
-    {
-        let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-        tunnels
-            .remove(tunnel_id)
-            .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?;
-    }
-
-    persist_stopped_tunnel_to_profile_and_log(state, &runtime.session_id, &stopped)?;
+    let persistence_result =
+        persist_stopped_tunnel_to_profile_and_log(state, &runtime.session_id, &stopped);
     if !warnings.is_empty() {
         let warning = warnings.join("; ");
         runtime.metrics.record_error(&warning);
@@ -14268,7 +14267,79 @@ async fn stop_tunnel_inner(state: &AppState, tunnel_id: &str) -> Result<TunnelSt
             &format!("stopped locally with warning: {warning}"),
         );
     }
+    if let Err(error) = persistence_result {
+        return Err(format!(
+            "tunnel stopped locally, but the disabled state could not be persisted: {error}"
+        ));
+    }
     Ok(runtime.metrics.snapshot(stopped))
+}
+
+async fn stop_tunnel_runtime_effects(
+    state: &AppState,
+    tunnel_id: &str,
+    ssh_runtime_id: &str,
+) -> Result<(TunnelRuntime, Vec<String>), String> {
+    let runtime = remove_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, ssh_runtime_id)?
+        .ok_or_else(|| format!("tunnel runtime was superseded: {tunnel_id}"))?;
+    runtime.closed.store(true, Ordering::SeqCst);
+    let mut warnings = Vec::new();
+    if runtime.spec.mode != TunnelMode::Remote {
+        return Ok((runtime, warnings));
+    }
+
+    let remote_forward = match state.ssh.lock() {
+        Ok(connections) => connections
+            .get(&runtime.session_id)
+            .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
+            .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards))),
+        Err(error) => {
+            warnings.push(format!(
+                "SSH runtime lock failed during remote cancel: {error}"
+            ));
+            None
+        }
+    };
+    if let Some((handle, remote_forwards)) = remote_forward {
+        warnings.extend(cancel_remote_tunnel_forward(handle, remote_forwards, &runtime.spec).await);
+    } else if warnings.is_empty() {
+        warnings.push("SSH runtime unavailable during remote cancel".to_string());
+    }
+    Ok((runtime, warnings))
+}
+
+async fn cancel_remote_tunnel_forward(
+    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    tunnel: &TunnelSpec,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
+        let handle = handle.lock().await;
+        handle
+            .cancel_tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
+            .await
+    })
+    .await;
+    match cancel {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => warnings.push(format!(
+            "remote SSH tunnel cancel failed {}:{}: {error}",
+            tunnel.bind_host, tunnel.bind_port
+        )),
+        Err(_) => warnings.push(format!(
+            "remote SSH tunnel cancel timed out {}:{}",
+            tunnel.bind_host, tunnel.bind_port
+        )),
+    }
+    match remote_forwards.lock() {
+        Ok(mut forwards) => {
+            forwards.remove(&remote_forward_key(&tunnel.bind_host, tunnel.bind_port));
+            forwards.remove(&remote_forward_port_key(tunnel.bind_port));
+        }
+        Err(error) => warnings.push(format!("remote forward route cleanup failed: {error}")),
+    }
+    warnings
 }
 
 fn tunnel_status_from_runtime(runtime: &TunnelRuntime) -> TunnelStatus {
@@ -14300,27 +14371,32 @@ fn persist_tunnel_to_profile_and_log(
     local_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    if let Some(mut profile) = store.profile(session_id) {
-        match &mut profile.connection {
-            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-                ssh.tunnels.retain(|item| item.id != tunnel.id);
-                ssh.tunnels.push(tunnel.clone());
-                let _ = store.upsert_profile(profile);
+    commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+        if let Some(mut profile) = next_store.profile(session_id) {
+            match &mut profile.connection {
+                ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                    ssh.tunnels.retain(|item| item.id != tunnel.id);
+                    ssh.tunnels.push(tunnel.clone());
+                    let _ = next_store.upsert_profile(profile);
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let listen = local_addr
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| format!("{}:{}", tunnel.bind_host, tunnel.bind_port));
-    store.record_system_event(
-        session_id,
-        format!(
-            "PortMate: SSH {:?} tunnel listening on {} -> {}:{}",
-            tunnel.mode, listen, tunnel.target_host, tunnel.target_port
-        ),
-    );
-    save_store(&state.store_path, &store)
+        let listen = local_addr
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| format!("{}:{}", tunnel.bind_host, tunnel.bind_port));
+        let event_ids = next_store
+            .record_system_event_tracked(
+                session_id,
+                format!(
+                    "PortMate: SSH {:?} tunnel listening on {} -> {}:{}",
+                    tunnel.mode, listen, tunnel.target_host, tunnel.target_port
+                ),
+            )
+            .into_iter()
+            .collect();
+        Ok(((), event_ids))
+    })
 }
 
 fn persist_stopped_tunnel_to_profile_and_log(
@@ -36340,6 +36416,123 @@ mod tests {
             failed.metrics.snapshot(spec).last_error.as_deref(),
             Some("listener failed")
         );
+    }
+
+    #[test]
+    fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tunnel-start-commit-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let profile = test_ssh_profile();
+            let state = test_app_state(
+                profile.clone(),
+                blocked_parent.join("portmate-store.sqlite3"),
+            );
+            let tunnel = TunnelSpec {
+                id: "uncommitted-tunnel".to_string(),
+                label: "uncommitted tunnel".to_string(),
+                mode: TunnelMode::Local,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 10_022,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 22,
+                enabled: true,
+            };
+            let closed = Arc::new(AtomicBool::new(false));
+            state.tunnels.lock().unwrap().insert(
+                tunnel.id.clone(),
+                TunnelRuntime {
+                    session_id: profile.id.clone(),
+                    ssh_runtime_id: "ssh-runtime-1".to_string(),
+                    spec: tunnel.clone(),
+                    metrics: Arc::new(TunnelMetrics::default()),
+                    closed: Arc::clone(&closed),
+                },
+            );
+
+            let error = commit_started_tunnel(&state, &profile.id, tunnel, None, "ssh-runtime-1")
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("uncommitted runtime was closed"), "{error}");
+            assert!(closed.load(Ordering::SeqCst));
+            assert!(state.tunnels.lock().unwrap().is_empty());
+            let store = state.store.lock().unwrap();
+            assert!(store.events.is_empty());
+            let saved = store.profile(&profile.id).unwrap();
+            let ConnectionConfig::Ssh(ssh) = saved.connection else {
+                panic!("expected SSH profile");
+            };
+            assert!(ssh.tunnels.is_empty());
+
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn tunnel_stop_persistence_failure_keeps_local_stop_truth() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tunnel-stop-persistence-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let blocked_parent = root.join("not-a-directory");
+            fs::write(&blocked_parent, b"blocked").unwrap();
+            let tunnel = TunnelSpec {
+                id: "stopped-tunnel".to_string(),
+                label: "stopped tunnel".to_string(),
+                mode: TunnelMode::Local,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 10_023,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 22,
+                enabled: true,
+            };
+            let mut profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+                panic!("expected SSH profile");
+            };
+            ssh.tunnels.push(tunnel.clone());
+            let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
+            let closed = Arc::new(AtomicBool::new(false));
+            state.tunnels.lock().unwrap().insert(
+                tunnel.id.clone(),
+                TunnelRuntime {
+                    session_id: profile.id.clone(),
+                    ssh_runtime_id: "ssh-runtime-1".to_string(),
+                    spec: tunnel.clone(),
+                    metrics: Arc::new(TunnelMetrics::default()),
+                    closed: Arc::clone(&closed),
+                },
+            );
+
+            let error = stop_tunnel_inner(&state, &tunnel.id).await.unwrap_err();
+
+            assert!(error.contains("tunnel stopped locally"), "{error}");
+            assert!(closed.load(Ordering::SeqCst));
+            assert!(state.tunnels.lock().unwrap().is_empty());
+            let store = state.store.lock().unwrap();
+            let saved = store.profile(&profile.id).unwrap();
+            let ConnectionConfig::Ssh(ssh) = saved.connection else {
+                panic!("expected SSH profile");
+            };
+            assert_eq!(ssh.tunnels.len(), 1);
+            assert!(!ssh.tunnels[0].enabled);
+            assert!(store.events.iter().any(|event| {
+                event
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("tunnel stopped"))
+            }));
+
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
