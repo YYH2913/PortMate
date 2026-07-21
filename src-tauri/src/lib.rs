@@ -12510,10 +12510,20 @@ fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), String> {
 
 fn normalize_remote_batch_source(path: &str) -> Result<String, String> {
     let path = path.trim().trim_end_matches('/');
-    if path.is_empty() || matches!(path, "." | ".." | "~") || path.contains('\0') || path == "/" {
+    if path.is_empty()
+        || matches!(path, "." | ".." | "~")
+        || path.contains('\0')
+        || path == "/"
+        || remote_path_has_dot_components(path)
+    {
         return Err("拒绝传输空路径、当前目录或远端根目录".to_string());
     }
     Ok(path.to_string())
+}
+
+fn remote_path_has_dot_components(path: &str) -> bool {
+    path.split('/')
+        .any(|component| matches!(component, "." | ".."))
 }
 
 fn remote_path_is_within(path: &str, parent: &str) -> bool {
@@ -12823,8 +12833,8 @@ async fn start_external_drop_inner(
 
 fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
     let path = path.trim();
-    if path.is_empty() || path.contains('\0') {
-        return Err("远端拖放目标路径不能为空或包含 NUL".to_string());
+    if path.is_empty() || path.contains('\0') || remote_path_has_dot_components(path) {
+        return Err("远端拖放目标路径不能为空、包含 NUL 或使用 . / .. 分量".to_string());
     }
     Ok(())
 }
@@ -13104,11 +13114,12 @@ async fn file_operation_inner(
             .session_id
             .as_deref()
             .ok_or_else(|| "remote file operation requires sessionId".to_string())?;
+        let path = validate_remote_mutating_path(&request.path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
         let result = match operation {
-            FileOperation::CreateDirectory => sftp_create_dir_all(&sftp, &request.path).await,
-            FileOperation::Delete => sftp_remove_recursive(&sftp, &request.path).await,
+            FileOperation::CreateDirectory => sftp_create_dir_all(&sftp, &path).await,
+            FileOperation::Delete => sftp_remove_recursive(&sftp, &path).await,
         };
         let _ = sftp.close().await;
         result
@@ -13144,17 +13155,14 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
             .session_id
             .as_deref()
             .ok_or_else(|| "remote rename requires sessionId".to_string())?;
+        let old_path = validate_remote_mutating_path(&request.old_path)?;
+        let new_path = validate_remote_mutating_path(&request.new_path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
         let result = sftp
-            .rename(request.old_path.clone(), request.new_path.clone())
+            .rename(old_path.clone(), new_path.clone())
             .await
-            .map_err(|error| {
-                format!(
-                    "SFTP 重命名失败 {} -> {}: {error}",
-                    request.old_path, request.new_path
-                )
-            });
+            .map_err(|error| format!("SFTP 重命名失败 {} -> {}: {error}", old_path, new_path));
         let _ = sftp.close().await;
         result
     } else {
@@ -13182,18 +13190,19 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
             .session_id
             .as_deref()
             .ok_or_else(|| "remote chmod requires sessionId".to_string())?;
+        let path = validate_remote_mutating_path(&request.path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
         let mut metadata = sftp
-            .symlink_metadata(request.path.clone())
+            .symlink_metadata(path.clone())
             .await
-            .map_err(|error| format!("SFTP 读取权限失败 {}: {error}", request.path))?;
+            .map_err(|error| format!("SFTP 读取权限失败 {path}: {error}"))?;
         let file_type_bits = metadata.permissions.unwrap_or(0) & 0o170000;
         metadata.permissions = Some(file_type_bits | request.mode);
         let result = sftp
-            .set_metadata(request.path.clone(), metadata)
+            .set_metadata(path.clone(), metadata)
             .await
-            .map_err(|error| format!("SFTP 设置权限失败 {}: {error}", request.path));
+            .map_err(|error| format!("SFTP 设置权限失败 {path}: {error}"));
         let _ = sftp.close().await;
         result
     } else {
@@ -13746,7 +13755,7 @@ fn system_time_to_rfc3339(time: std::time::SystemTime) -> Option<String> {
 }
 
 async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<(), String> {
-    let path = validate_remote_delete_path(path)?;
+    let path = validate_remote_mutating_path(path)?;
     let mut stack = vec![(path.to_string(), false)];
 
     while let Some((current, visited)) = stack.pop() {
@@ -13781,17 +13790,20 @@ async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<(), Str
     Ok(())
 }
 
-fn validate_remote_delete_path(path: &str) -> Result<&str, String> {
+fn validate_remote_mutating_path(path: &str) -> Result<String, String> {
     let path = path.trim();
     let trimmed = path.trim_end_matches('/');
     if path.is_empty()
         || trimmed.is_empty()
-        || matches!(trimmed, "." | "~" | "/" | "//")
+        || matches!(trimmed, "." | ".." | "~" | "/" | "//")
         || path.contains('\0')
     {
-        return Err("拒绝删除空路径、根目录或当前目录".to_string());
+        return Err("拒绝操作空路径、根目录或当前目录".to_string());
     }
-    Ok(path)
+    if remote_path_has_dot_components(trimmed) {
+        return Err("拒绝包含 . 或 .. 路径分量的远端变更路径".to_string());
+    }
+    Ok(path.to_string())
 }
 
 /// Guards local delete/rename endpoints against the two most catastrophic
@@ -13807,10 +13819,24 @@ fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
     {
         return Err("拒绝操作空路径、根目录或当前目录".to_string());
     }
+    if trimmed
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err("拒绝包含 . 或 .. 路径分量的本地变更路径".to_string());
+    }
 
     let candidate = validate_native_local_path(trimmed)?;
     if candidate.parent().is_none() || is_local_filesystem_root(&candidate) {
         return Err("拒绝操作文件系统根目录".to_string());
+    }
+    if candidate.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return Err("拒绝包含 . 或 .. 路径分量的本地变更路径".to_string());
     }
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         let home = PathBuf::from(home);
@@ -35481,6 +35507,24 @@ mod tests {
         assert_eq!(
             validate_native_local_path("nested/child").unwrap(),
             expand_identity_path("nested/child")
+        );
+        assert!(validate_local_mutating_path("nested/../child").is_err());
+        assert!(validate_local_mutating_path("nested/./child").is_err());
+    }
+
+    #[test]
+    fn file_manager_remote_mutating_paths_reject_parent_components() {
+        for path in ["/tmp/..", "/tmp/./file", "nested/../outside", "../outside"] {
+            assert!(
+                validate_remote_mutating_path(path).is_err(),
+                "unsafe remote path was accepted: {path}"
+            );
+            assert!(normalize_remote_batch_source(path).is_err());
+            assert!(validate_remote_drop_destination(path).is_err());
+        }
+        assert_eq!(
+            validate_remote_mutating_path("/tmp/portmate/file").unwrap(),
+            "/tmp/portmate/file"
         );
     }
 
