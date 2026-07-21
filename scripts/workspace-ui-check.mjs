@@ -249,6 +249,8 @@ try {
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
+    const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
+    sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
       localStorage.clear();
       localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
@@ -301,7 +303,7 @@ try {
     window.__pendingTunnelRefresh = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
-    window.__deferSessionLists = false;
+    window.__deferSessionLists = deferStartupSessions;
     window.__pendingSessionLists = [];
     window.__logShards = [
       { path: "logs/a.txt", format: "txt", size: 32, modifiedAt: new Date().toISOString() },
@@ -352,12 +354,30 @@ try {
         }
         if (command === "save_session_profile") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
-          if (index < 0) throw new Error(`unknown test session: ${args.profile.id}`);
-          const saved = {
-            ...window.__sessions[index],
-            profile: structuredClone(args.profile),
-          };
-          window.__sessions[index] = saved;
+          const saved = index >= 0
+            ? {
+              ...window.__sessions[index],
+              profile: structuredClone(args.profile),
+            }
+            : {
+              profile: structuredClone(args.profile),
+              runtime: {
+                sessionId: args.profile.id,
+                paneId: `${args.profile.id}:main`,
+                status: "disconnected",
+                title: args.profile.name,
+                cwd: null,
+                connectedSince: null,
+                lastActivity: null,
+                lastDisconnect: null,
+                lastDisconnectReason: null,
+                activeTransport: null,
+              },
+              logLines: 0,
+              lastLine: "",
+            };
+          if (index >= 0) window.__sessions[index] = saved;
+          else window.__sessions.push(saved);
           return saved;
         }
         if (command === "tail_log") {
@@ -1888,6 +1908,50 @@ try {
     `non-input workspace actions wrote to the terminal: ${JSON.stringify(terminalWrites)}`);
   assert(pageErrors.length === 0, `browser exceptions: ${JSON.stringify(pageErrors)}`);
 
+  const startupRacePage = await context.newPage();
+  const startupRaceErrors = [];
+  startupRacePage.on("pageerror", (error) => startupRaceErrors.push(error.message));
+  await startupRacePage.goto(appUrl);
+  await startupRacePage.evaluate(() => {
+    sessionStorage.setItem("portmate.workspaceUiCheck.deferStartupSessions", "true");
+  });
+  await startupRacePage.reload();
+  await startupRacePage.getByRole("button", { name: "会话", exact: true }).waitFor();
+  await startupRacePage.waitForFunction(() => window.__pendingSessionLists.length >= 2);
+  await startupRacePage.getByRole("button", { name: "会话", exact: true }).click();
+  await startupRacePage.getByRole("button", { name: "新建会话", exact: true }).click();
+  const startupSessionDialog = startupRacePage.locator(".session-settings-dialog");
+  await startupSessionDialog.waitFor();
+  await startupSessionDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Startup Race Profile");
+  await startupSessionDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await startupSessionDialog.waitFor({ state: "detached" });
+  const startupRaceProfile = startupRacePage.locator(".tree-session", { hasText: "Startup Race Profile" });
+  await startupRaceProfile.waitFor();
+  await startupRacePage.evaluate(() => {
+    const stale = window.__pendingSessionLists.splice(0);
+    for (const request of stale) request.resolve(request.result);
+  });
+  await startupRacePage.waitForFunction(() => window.__pendingSessionLists.length === 1);
+  await startupRacePage.evaluate(() => {
+    window.__deferSessionLists = false;
+    const replacement = window.__pendingSessionLists.shift();
+    replacement.resolve(replacement.result);
+  });
+  await startupRacePage.waitForTimeout(200);
+  const startupHydrationState = await startupRacePage.evaluate(() => ({
+    backend: window.__sessions.map((session) => session.profile.name),
+    visible: [...document.querySelectorAll(".tree-session")].map((item) => item.textContent?.trim() ?? ""),
+    listCalls: window.__invokeCalls.filter((call) => call.command === "list_sessions").length,
+    pending: window.__pendingSessionLists.length,
+  }));
+  assert(await startupRaceProfile.count() === 1,
+    `a stale startup session snapshot removed a Profile saved during hydration: ${JSON.stringify(startupHydrationState)}`);
+  assert(startupHydrationState.visible.some((name) => name.includes("Local Shell"))
+    && startupHydrationState.visible.some((name) => name.includes("Bench UART")),
+  `replacement startup hydration did not restore the complete authoritative session list: ${JSON.stringify(startupHydrationState)}`);
+  assert(startupRaceErrors.length === 0, `startup hydration browser exceptions: ${JSON.stringify(startupRaceErrors)}`);
+  await startupRacePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -1918,6 +1982,7 @@ try {
       restored: restoredLayout,
       reset: resetDockLayout,
     },
+    startupHydration: startupHydrationState,
     terminalWrites,
     desktop,
     mobile,

@@ -1024,45 +1024,51 @@ export default function App() {
   }
 
   async function refresh() {
-    const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
-    sessionSummaryRefreshGateRef.current.invalidate("summaries");
-    sessionsSignatureRef.current = sessionsSignature(nextSessions);
-    setSessions(nextSessions);
-    setTransfers(await callBackend("list_transfers", {}, emptyTransfers));
-    setAudit(await callBackend("list_mcp_audit", {}, emptyAudit));
-    setGrants(await callBackend("list_mcp_grants", {}, emptyGrants));
-    setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
-    setOneKeys(await callBackend("list_one_keys", {}, []));
-    setSerialPorts(await callBackend("list_serial_ports", {}, []));
-    const restored = reconcileWorkspaceSnapshot({
-      version: 4,
-      root: workspaceRoot,
-      activePaneId,
-      activeId,
-      tabColors,
-    }, nextSessions.map((session) => session.profile.id));
-    setWorkspaceRoot(restored.root);
-    setActivePaneId(restored.activePaneId);
-    setActiveId(restored.activeId);
-    setTabColors(restored.tabColors);
+    const gate = sessionSummaryRefreshGateRef.current;
+    const token = gate.replace("summaries");
+    try {
+      const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
+      if (gate.isCurrent("summaries", token)) {
+        sessionsSignatureRef.current = sessionsSignature(nextSessions);
+        setSessions(nextSessions);
+        const restored = reconcileWorkspaceSnapshot({
+          version: 4,
+          root: workspaceRoot,
+          activePaneId,
+          activeId,
+          tabColors,
+        }, nextSessions.map((session) => session.profile.id));
+        setWorkspaceRoot(restored.root);
+        setActivePaneId(restored.activePaneId);
+        setActiveId(restored.activeId);
+        setTabColors(restored.tabColors);
+      } else {
+        void refreshSessionSummaries();
+      }
 
-    const nextLogs: Record<string, SessionEvent[]> = {};
-    for (const session of nextSessions) {
-      nextLogs[session.profile.id] = await callBackend("tail_log", { sessionId: session.profile.id, limit: 160 }, []);
+      setTransfers(await callBackend("list_transfers", {}, emptyTransfers));
+      setAudit(await callBackend("list_mcp_audit", {}, emptyAudit));
+      setGrants(await callBackend("list_mcp_grants", {}, emptyGrants));
+      setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
+      setOneKeys(await callBackend("list_one_keys", {}, []));
+      setSerialPorts(await callBackend("list_serial_ports", {}, []));
+
+      if (!gate.isCurrent("summaries", token)) return;
+      for (const session of nextSessions) {
+        if (!gate.isCurrent("summaries", token)) return;
+        await refreshActiveLog(session.profile.id, 160);
+      }
+    } finally {
+      gate.finish("summaries", token);
     }
-    activeLogRefreshGateRef.current.invalidateAll();
-    logSignatureRef.current = Object.fromEntries(
-      Object.entries(nextLogs).map(([sessionId, events]) => [sessionId, logSignature(events)]),
-    );
-    setLogs(nextLogs);
   }
 
-  async function refreshActiveLog(sessionId: string) {
+  async function refreshActiveLog(sessionId: string, limit = 600) {
     const gate = activeLogRefreshGateRef.current;
     const token = gate.begin(sessionId);
     if (token === null) return;
     try {
-      const nextLog = await invokeBackend<SessionEvent[]>("tail_log", { sessionId, limit: 600 });
+      const nextLog = await invokeBackend<SessionEvent[]>("tail_log", { sessionId, limit });
       if (!gate.isCurrent(sessionId, token)) return;
       const signature = logSignature(nextLog);
       if (logSignatureRef.current[sessionId] === signature) return;
