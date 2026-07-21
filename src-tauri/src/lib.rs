@@ -143,6 +143,7 @@ const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
 const MAX_ONE_KEY_SESSIONS: usize = 64;
 const MAX_ONE_KEY_SECRET_BYTES: usize = 32 * 1024;
 const MAX_SESSION_PROFILE_NAME_CHARACTERS: usize = 128;
+const MAX_SESSION_PROFILE_ID_CHARACTERS: usize = 256;
 const MAX_SESSION_PROFILE_GROUP_CHARACTERS: usize = 256;
 const MAX_SESSION_PROFILE_TAGS: usize = 32;
 const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
@@ -26966,6 +26967,10 @@ fn normalized_profile_metadata_text(value: &str, max_characters: usize) -> Strin
         .to_string()
 }
 
+fn normalized_session_profile_id(value: &str) -> String {
+    normalized_profile_metadata_text(value, MAX_SESSION_PROFILE_ID_CHARACTERS)
+}
+
 fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
     if let Ok(mut store) = state.store.lock() {
         let _ = store.set_runtime_status_with_reason(
@@ -27036,7 +27041,7 @@ fn load_store_json(path: &Path) -> Result<SessionStore, String> {
 }
 
 fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
-    profile.id = profile.id.trim().to_string();
+    profile.id = normalized_session_profile_id(&profile.id);
     if profile.id.is_empty() {
         profile.id = format!("session-{}", Uuid::new_v4());
     }
@@ -27394,17 +27399,107 @@ fn normalize_interrupted_transfers(store: &mut SessionStore) {
     }
 }
 
+#[derive(Default)]
+struct LoadedSessionIdRemap {
+    exact: HashMap<String, String>,
+    normalized: HashMap<String, Option<String>>,
+}
+
+impl LoadedSessionIdRemap {
+    fn insert(&mut self, original_id: &str, normalized_id: &str) {
+        self.exact
+            .entry(original_id.to_string())
+            .or_insert_with(|| normalized_id.to_string());
+
+        let original_id = normalized_session_profile_id(original_id);
+        match self.normalized.entry(original_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(normalized_id.to_string()));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().as_deref() != Some(normalized_id) {
+                    entry.insert(None);
+                }
+            }
+        }
+    }
+
+    fn resolve(&self, session_id: &str) -> String {
+        if let Some(session_id) = self.exact.get(session_id) {
+            return session_id.clone();
+        }
+        let normalized = normalized_session_profile_id(session_id);
+        self.normalized
+            .get(&normalized)
+            .and_then(Option::as_ref)
+            .cloned()
+            .unwrap_or_else(|| session_id.to_string())
+    }
+}
+
+fn reserve_unique_loaded_session_id(
+    session_id: &str,
+    profile_position: usize,
+    used_session_ids: &mut HashSet<String>,
+) -> String {
+    if used_session_ids.insert(session_id.to_string()) {
+        return session_id.to_string();
+    }
+
+    let mut suffix = profile_position.saturating_add(1);
+    loop {
+        let suffix_text = format!(":loaded:{suffix}");
+        let base_limit = MAX_SESSION_PROFILE_ID_CHARACTERS.saturating_sub(suffix_text.len());
+        let base = session_id.chars().take(base_limit).collect::<String>();
+        let candidate = format!("{base}{suffix_text}");
+        if used_session_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+fn assign_loaded_profile_id(
+    profile: &mut SessionProfile,
+    normalized_id: &str,
+    assigned_id: String,
+) {
+    profile.id = assigned_id.clone();
+    let ssh = match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh,
+        _ => return,
+    };
+    for key in &mut ssh.trusted_host_keys {
+        if key.scope != HostKeyScope::Profile {
+            continue;
+        }
+        let owner_id = key
+            .profile_id
+            .as_deref()
+            .map(normalized_session_profile_id)
+            .unwrap_or_default();
+        if owner_id.is_empty() || owner_id == normalized_id {
+            key.profile_id = Some(assigned_id.clone());
+        }
+    }
+}
+
 fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
     let mut normalized_profiles = Vec::with_capacity(profiles.len());
-    let mut session_id_remap = HashMap::with_capacity(profiles.len());
-    for profile in profiles {
+    let mut session_id_remap = LoadedSessionIdRemap::default();
+    let mut used_session_ids = HashSet::with_capacity(profiles.len());
+    for (profile_index, mut profile) in profiles.into_iter().enumerate() {
         let original_id = profile.id.clone();
+        let mut normalized_id = normalized_session_profile_id(&profile.id);
+        if normalized_id.is_empty() {
+            normalized_id = format!("session-loaded-{}", profile_index + 1);
+        }
+        let assigned_id =
+            reserve_unique_loaded_session_id(&normalized_id, profile_index, &mut used_session_ids);
+        assign_loaded_profile_id(&mut profile, &normalized_id, assigned_id);
         let profile = normalize_session_profile(profile);
-        session_id_remap.insert(original_id, profile.id.clone());
-        session_id_remap
-            .entry(profile.id.clone())
-            .or_insert_with(|| profile.id.clone());
+        session_id_remap.insert(&original_id, &profile.id);
         normalized_profiles.push(profile);
     }
 
@@ -27485,12 +27580,8 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
     store
 }
 
-fn remap_loaded_session_id(session_id: &str, remap: &HashMap<String, String>) -> String {
-    remap
-        .get(session_id)
-        .or_else(|| remap.get(session_id.trim()))
-        .cloned()
-        .unwrap_or_else(|| session_id.to_string())
+fn remap_loaded_session_id(session_id: &str, remap: &LoadedSessionIdRemap) -> String {
+    remap.resolve(session_id)
 }
 
 fn save_store(path: &Path, store: &SessionStore) -> Result<(), String> {
@@ -31325,6 +31416,7 @@ mod tests {
     #[test]
     fn session_profile_normalization_bounds_metadata_and_terminal_settings() {
         let mut profile = test_shell_profile();
+        profile.id = format!(" \0edge\n{} ", "界".repeat(300));
         profile.name = format!(" \0Router\n{} ", "界".repeat(200));
         profile.group = format!(" Lab\u{0085}{} ", "g".repeat(300));
         profile.tags = std::iter::once(" edge ".to_string())
@@ -31340,6 +31432,12 @@ mod tests {
         profile.terminal.theme = " graphite ".to_string();
         profile.terminal.background_opacity = 0;
         let normalized = normalize_session_profile(profile.clone());
+        assert_eq!(
+            normalized.id.chars().count(),
+            MAX_SESSION_PROFILE_ID_CHARACTERS
+        );
+        assert!(normalized.id.starts_with("edge"));
+        assert!(!normalized.id.chars().any(char::is_control));
         assert_eq!(
             normalized.name.chars().count(),
             MAX_SESSION_PROFILE_NAME_CHARACTERS
@@ -31377,7 +31475,13 @@ mod tests {
 
         let mut fallback = profile.clone();
         fallback.name = "\0\n".to_string();
-        assert_eq!(normalize_session_profile(fallback).name, profile.id);
+        assert_eq!(
+            normalize_session_profile(fallback).name,
+            normalized_profile_metadata_text(
+                &normalized_session_profile_id(&profile.id),
+                MAX_SESSION_PROFILE_NAME_CHARACTERS,
+            )
+        );
 
         profile.terminal.theme = "future-or-corrupt-theme".to_string();
         assert_eq!(
@@ -31548,6 +31652,235 @@ mod tests {
         assert_eq!(normalized.one_keys[0].session_ids, [expected]);
         assert_eq!(normalized.tail_log(expected, 10).len(), 1);
         assert!(normalized.sysmon_for(expected).is_some());
+    }
+
+    #[test]
+    fn normalize_loaded_store_keeps_colliding_profile_identities_separate() {
+        let mut store = SessionStore::default();
+        let now = Utc::now();
+        let mut first_profile = test_ssh_profile();
+        first_profile.id = "edge".to_string();
+        first_profile.name = "Primary edge".to_string();
+        let ConnectionConfig::Ssh(first_ssh) = &mut first_profile.connection else {
+            unreachable!("test profile must use SSH");
+        };
+        first_ssh.host_key_policy.alias = None;
+        first_ssh.trusted_host_keys.push(TrustedHostKey {
+            id: "embedded-primary-key".to_string(),
+            profile_id: Some("edge".to_string()),
+            alias: "embedded-primary".to_string(),
+            host: "embedded-primary".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:embedded-primary".to_string(),
+            public_key_base64: "AAAA".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: now,
+            last_seen: now,
+        });
+        let mut second_profile = first_profile.clone();
+        second_profile.id = " edge ".to_string();
+        second_profile.name = "Legacy spaced edge".to_string();
+        let ConnectionConfig::Ssh(second_ssh) = &mut second_profile.connection else {
+            unreachable!("test profile must use SSH");
+        };
+        second_ssh.trusted_host_keys[0].id = "embedded-legacy-key".to_string();
+        second_ssh.trusted_host_keys[0].profile_id = Some(" edge ".to_string());
+        second_ssh.trusted_host_keys[0].fingerprint_sha256 = "SHA256:embedded-legacy".to_string();
+        store.upsert_profile(first_profile);
+        store.upsert_profile(second_profile);
+        store
+            .record_stream_event(
+                "edge",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "primary output",
+            )
+            .unwrap();
+        store
+            .record_stream_event(
+                " edge ",
+                EventDirection::Inbound,
+                EventStream::Stdout,
+                "legacy output",
+            )
+            .unwrap();
+        store.events.push(SessionEvent {
+            id: "ambiguous-event".to_string(),
+            session_id: "\tedge\n".to_string(),
+            pane_id: "\tedge\n:main".to_string(),
+            ts: Utc::now(),
+            direction: EventDirection::Inbound,
+            stream: EventStream::Stdout,
+            bytes_ref: None,
+            text: Some("ambiguous output".to_string()),
+            annotations: BTreeMap::new(),
+        });
+        store.host_keys.keys.extend([
+            TrustedHostKey {
+                id: "primary-key".to_string(),
+                profile_id: Some("edge".to_string()),
+                alias: "primary".to_string(),
+                host: "primary".to_string(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint_sha256: "SHA256:primary".to_string(),
+                public_key_base64: "AAAA".to_string(),
+                scope: HostKeyScope::Profile,
+                label: None,
+                first_seen: now,
+                last_seen: now,
+            },
+            TrustedHostKey {
+                id: "legacy-key".to_string(),
+                profile_id: Some(" edge ".to_string()),
+                alias: "legacy".to_string(),
+                host: "legacy".to_string(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint_sha256: "SHA256:legacy".to_string(),
+                public_key_base64: "AAAA".to_string(),
+                scope: HostKeyScope::Profile,
+                label: None,
+                first_seen: now,
+                last_seen: now,
+            },
+        ]);
+        store.grants.extend([
+            McpGrant {
+                client_id: "primary-reader".to_string(),
+                name: "Primary reader".to_string(),
+                scopes: vec![McpScope::ReadLogs],
+                allowed_sessions: vec!["edge".to_string()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            },
+            McpGrant {
+                client_id: "legacy-reader".to_string(),
+                name: "Legacy reader".to_string(),
+                scopes: vec![McpScope::ReadLogs],
+                allowed_sessions: vec![" edge ".to_string()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            },
+        ]);
+        store.one_keys.push(OneKeyCredential {
+            id: "collision-one-key".to_string(),
+            label: "Collision OneKey".to_string(),
+            kind: OneKeyKind::Account,
+            username: "operator".to_string(),
+            password_secret_ref: Some("keychain:collision-password".to_string()),
+            passphrase_secret_ref: None,
+            identity: None,
+            session_ids: vec!["edge".to_string(), " edge ".to_string()],
+            created_at: now,
+            updated_at: now,
+        });
+
+        let normalized = normalize_loaded_store(store);
+        let primary = normalized
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "Primary edge")
+            .unwrap();
+        let legacy = normalized
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "Legacy spaced edge")
+            .unwrap();
+
+        assert_eq!(primary.id, "edge");
+        assert_eq!(legacy.id, "edge:loaded:2");
+        let ConnectionConfig::Ssh(primary_ssh) = &primary.connection else {
+            unreachable!("normalized profile must use SSH");
+        };
+        let ConnectionConfig::Ssh(legacy_ssh) = &legacy.connection else {
+            unreachable!("normalized profile must use SSH");
+        };
+        assert_eq!(primary_ssh.host_key_policy.alias.as_deref(), Some("edge"));
+        assert_eq!(
+            legacy_ssh.host_key_policy.alias.as_deref(),
+            Some("edge:loaded:2")
+        );
+        assert_eq!(
+            primary_ssh.trusted_host_keys[0].profile_id.as_deref(),
+            Some("edge")
+        );
+        assert_eq!(
+            legacy_ssh.trusted_host_keys[0].profile_id.as_deref(),
+            Some("edge:loaded:2")
+        );
+        assert_eq!(normalized.profiles.len(), 2);
+        assert_eq!(
+            normalized
+                .profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(
+            normalized.tail_log(&primary.id, 10)[0].text.as_deref(),
+            Some("primary output")
+        );
+        assert_eq!(
+            normalized.tail_log(&legacy.id, 10)[0].text.as_deref(),
+            Some("legacy output")
+        );
+        assert!(!normalized
+            .events
+            .iter()
+            .any(|event| event.id == "ambiguous-event"));
+        assert_eq!(
+            normalized
+                .host_keys
+                .keys
+                .iter()
+                .find(|key| key.id == "primary-key")
+                .and_then(|key| key.profile_id.as_deref()),
+            Some(primary.id.as_str())
+        );
+        assert_eq!(
+            normalized
+                .host_keys
+                .keys
+                .iter()
+                .find(|key| key.id == "legacy-key")
+                .and_then(|key| key.profile_id.as_deref()),
+            Some(legacy.id.as_str())
+        );
+        assert!(normalized.mcp_can_read("primary-reader", McpScope::ReadLogs, Some(&primary.id)));
+        assert!(!normalized.mcp_can_read("primary-reader", McpScope::ReadLogs, Some(&legacy.id)));
+        assert!(normalized.mcp_can_read("legacy-reader", McpScope::ReadLogs, Some(&legacy.id)));
+        assert_eq!(
+            normalized.one_keys[0].session_ids,
+            [primary.id.as_str(), legacy.id.as_str()]
+        );
+        assert!(normalized.runtimes.iter().any(|runtime| {
+            runtime.session_id == primary.id && runtime.title == "Primary edge"
+        }));
+        assert!(normalized.runtimes.iter().any(|runtime| {
+            runtime.session_id == legacy.id && runtime.title == "Legacy spaced edge"
+        }));
+
+        let normalized_ids = normalized
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect::<Vec<_>>();
+        let normalized_again = normalize_loaded_store(normalized);
+        assert_eq!(
+            normalized_again
+                .profiles
+                .iter()
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>(),
+            normalized_ids
+        );
     }
 
     #[test]
