@@ -124,6 +124,29 @@ const sessions = [
     kind: "ssh",
     endpoint: { host: "10.0.0.1", port: 2222 },
     username: "admin",
+    reconnect: true,
+    reconnectDelayMs: 1000,
+    keepaliveEnabled: true,
+    keepaliveIntervalSeconds: 30,
+    keepaliveMaxMissed: 3,
+    proxy: {
+      enabled: false,
+      kind: "socks5",
+      host: "127.0.0.1",
+      port: 1080,
+      username: "",
+      passwordSecretRef: null,
+    },
+    passwordSecretRef: null,
+    passphraseSecretRef: null,
+    hostKeyPolicy: {
+      mode: "trust-on-first-use",
+      alias: null,
+      trustScope: "profile",
+      allowRotation: false,
+      checkIp: false,
+    },
+    trustedHostKeys: [],
     jumps: [],
     identityRefs: [{
       id: "edge-system-key",
@@ -133,6 +156,18 @@ const sessions = [
       path: "/home/operator/.ssh/id_ed25519",
       secretRef: null,
     }],
+    identityPolicy: {
+      identitiesOnly: true,
+      authOrder: ["public-key", "keyboard-interactive", "password"],
+      recordSuccess: true,
+      lastSuccessful: null,
+    },
+    agentPolicy: {
+      enabled: false,
+      forwarding: false,
+      offerMode: "after-profile-keys",
+    },
+    tunnels: [],
   }),
   createSession("bench-uart", "Bench UART", "serial", "Lab", ["hardware"], {
     kind: "serial",
@@ -312,6 +347,8 @@ try {
     window.__secrets = {};
     window.__deferSecretWrites = false;
     window.__pendingSecretWrites = [];
+    window.__failSecretWriteAt = 0;
+    window.__failNextProfileSave = false;
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
@@ -390,6 +427,10 @@ try {
           });
         }
         if (command === "save_session_profile") {
+          if (window.__failNextProfileSave) {
+            window.__failNextProfileSave = false;
+            throw new Error("simulated Profile save failure");
+          }
           const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
           const saved = index >= 0
             ? {
@@ -419,6 +460,10 @@ try {
         }
         if (command === "save_secret") {
           const result = { secretRef: `keychain:test-secret-${++window.__secretSequence}` };
+          if (window.__failSecretWriteAt === window.__secretSequence) {
+            window.__failSecretWriteAt = 0;
+            throw new Error("simulated secret write failure");
+          }
           if (!window.__deferSecretWrites) {
             window.__secrets[result.secretRef] = true;
             return result;
@@ -654,8 +699,14 @@ try {
         }
         if (command === "close_session") {
           if (window.__closeSessionError) throw new Error("simulated close failure");
-          const session = initialSessions.find((item) => item.profile.id === args.sessionId);
-          return session ? { ...session, runtime: { ...session.runtime, status: "disconnected" } } : null;
+          const index = window.__sessions.findIndex((item) => item.profile.id === args.sessionId);
+          if (index < 0) return null;
+          const session = {
+            ...window.__sessions[index],
+            runtime: { ...window.__sessions[index].runtime, status: "disconnected" },
+          };
+          window.__sessions[index] = session;
+          return structuredClone(session);
         }
         if (command === "delete_session_profile") {
           const deletedProfileId = args.sessionId;
@@ -2502,6 +2553,85 @@ try {
     `private-key import lifecycle browser exceptions: ${JSON.stringify(privateKeyImportLifecycleErrors)}`);
   await privateKeyImportLifecyclePage.close();
 
+  const partialCredentialPage = await context.newPage();
+  const partialCredentialErrors = [];
+  partialCredentialPage.on("pageerror", (error) => partialCredentialErrors.push(error.message));
+  await partialCredentialPage.goto(appUrl);
+  await partialCredentialPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const partialCredentialConnect = partialCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await partialCredentialConnect.waitFor();
+  await partialCredentialConnect.click();
+  const partialCredentialDialog = partialCredentialPage.locator(".credential-dialog");
+  await partialCredentialDialog.waitFor();
+  await partialCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
+  await partialCredentialDialog.getByLabel("保存登录密码到系统密钥库", { exact: true }).check();
+  await partialCredentialDialog.getByLabel("私钥口令", { exact: true }).fill("saved passphrase");
+  await partialCredentialDialog.getByLabel("保存私钥口令到系统密钥库", { exact: true }).check();
+  await partialCredentialPage.evaluate(() => { window.__failSecretWriteAt = 2; });
+  await partialCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
+  const partialCredentialNotice = partialCredentialPage.locator(".notice-dialog", { hasText: "保存凭据失败" });
+  await partialCredentialNotice.waitFor();
+  const partialCredentialState = await partialCredentialPage.evaluate(() => ({
+    retainedSecrets: Object.keys(window.__secrets),
+    secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+    secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+    profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+  }));
+  assert(partialCredentialState.retainedSecrets.length === 0
+    && partialCredentialState.secretSaveCalls === 2
+    && partialCredentialState.secretDeleteCalls === 1
+    && partialCredentialState.profileSaveCalls === 0,
+  `a partial connection credential write leaked its first Secret: ${JSON.stringify(partialCredentialState)}`);
+  assert(partialCredentialErrors.length === 0,
+    `partial connection credential browser exceptions: ${JSON.stringify(partialCredentialErrors)}`);
+  await partialCredentialPage.close();
+
+  const failedProfileCredentialPage = await context.newPage();
+  const failedProfileCredentialErrors = [];
+  failedProfileCredentialPage.on("pageerror", (error) => failedProfileCredentialErrors.push(error.message));
+  await failedProfileCredentialPage.goto(appUrl);
+  await failedProfileCredentialPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const failedProfileConnect = failedProfileCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await failedProfileConnect.waitFor();
+  await failedProfileConnect.click();
+  const failedProfileCredentialDialog = failedProfileCredentialPage.locator(".credential-dialog");
+  await failedProfileCredentialDialog.waitFor();
+  await failedProfileCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
+  await failedProfileCredentialDialog.getByLabel("保存登录密码到系统密钥库", { exact: true }).check();
+  await failedProfileCredentialPage.evaluate(() => { window.__failNextProfileSave = true; });
+  await failedProfileCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
+  const failedProfileCredentialNotice = failedProfileCredentialPage.locator(".notice-dialog", { hasText: "连接失败" });
+  await failedProfileCredentialNotice.waitFor();
+  const failedProfileCredentialState = await failedProfileCredentialPage.evaluate(() => {
+    const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    return {
+      backendPasswordRef: edge.profile.connection.passwordSecretRef ?? null,
+      retainedSecrets: Object.keys(window.__secrets),
+      secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+      secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+      profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+      openCalls: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+    };
+  });
+  assert(failedProfileCredentialState.backendPasswordRef === null
+    && failedProfileCredentialState.retainedSecrets.length === 0
+    && failedProfileCredentialState.secretSaveCalls === 1
+    && failedProfileCredentialState.secretDeleteCalls === 1
+    && failedProfileCredentialState.profileSaveCalls === 1
+    && failedProfileCredentialState.openCalls === 0,
+  `a failed Profile save retained connection credentials: ${JSON.stringify(failedProfileCredentialState)}`);
+  await failedProfileCredentialNotice.getByRole("button", { name: "确定", exact: true }).click();
+  await failedProfileCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true }).click();
+  const retryCredentialDialog = failedProfileCredentialPage.locator(".credential-dialog");
+  await retryCredentialDialog.waitFor();
+  assert(await retryCredentialDialog.getByText("登录密码", { exact: true }).count() === 1
+    && await retryCredentialDialog.getByText("登录密码(已存)", { exact: true }).count() === 0,
+  "a failed Profile save left the deleted password ref in current frontend state");
+  await retryCredentialDialog.getByRole("button", { name: "取消", exact: true }).click();
+  assert(failedProfileCredentialErrors.length === 0,
+    `failed Profile credential browser exceptions: ${JSON.stringify(failedProfileCredentialErrors)}`);
+  await failedProfileCredentialPage.close();
+
   const vaultLifecyclePage = await context.newPage();
   const vaultLifecycleErrors = [];
   vaultLifecyclePage.on("pageerror", (error) => vaultLifecycleErrors.push(error.message));
@@ -2647,6 +2777,10 @@ try {
     hostKeyLifecycle: hostKeyLifecycleState,
     profileLifecycle: profileLifecycleState,
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
+    connectionCredentialLifecycle: {
+      partialWrite: partialCredentialState,
+      failedProfileSave: failedProfileCredentialState,
+    },
     vaultLifecycle: vaultLifecycleState,
     profileRecovery: {
       renamed: renamedProfileRecoveryState,

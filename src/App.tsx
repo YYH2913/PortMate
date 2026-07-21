@@ -2676,8 +2676,14 @@ export default function App() {
     const credentials = await requestSessionCredentials(session.profile);
     if (credentials === null) return;
     let profileForConnect: SessionProfile;
+    let createdConnectionSecretRefs: string[] = [];
     try {
-      profileForConnect = await persistConnectionSecrets(applyConnectionCredentials(prepareSessionProfile(session.profile), credentials), credentials);
+      const persistedSecrets = await persistConnectionSecrets(
+        applyConnectionCredentials(prepareSessionProfile(session.profile), credentials),
+        credentials,
+      );
+      profileForConnect = persistedSecrets.profile;
+      createdConnectionSecretRefs = persistedSecrets.createdSecretRefs;
     } catch (error) {
       setNotice({ title: "保存凭据失败", message: formatError(error) });
       return;
@@ -2688,8 +2694,11 @@ export default function App() {
     setSessions((current) => mergeSessionSummaries(current, connecting));
     if (activateWorkspace) activateSession(profileForConnect.id);
 
+    let persistedProfileForConnect: SessionProfile | null = null;
     try {
       const persisted = await saveProfile(profileForConnect);
+      persistedProfileForConnect = persisted.profile;
+      createdConnectionSecretRefs = [];
       applySavedSession(persisted, activateWorkspace);
       const saved = isBackendAvailable()
         ? credentials.oneKeyId
@@ -2707,16 +2716,20 @@ export default function App() {
         return nextSessions;
       });
     } catch (error) {
-      const message = formatError(error);
-      const failed = setSessionStatus({ ...session, profile: profileForConnect }, "error");
-      const backendLog = await callBackend("tail_log", { sessionId: profileForConnect.id, limit: 600 }, []);
+      const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
+      const message = cleanupErrors.length
+        ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
+        : formatError(error);
+      const failureProfile = persistedProfileForConnect ?? session.profile;
+      const failed = setSessionStatus({ ...session, profile: failureProfile }, "error");
+      const backendLog = await callBackend("tail_log", { sessionId: failureProfile.id, limit: 600 }, []);
       const errorText = `PortMate: connection failed: ${message}`;
-      const nextLog = backendLog.length ? backendLog : [...(logs[profileForConnect.id] ?? []), createLocalSystemEvent(profileForConnect, errorText)];
-      replaceSessionLog(profileForConnect.id, nextLog);
+      const nextLog = backendLog.length ? backendLog : [...(logs[failureProfile.id] ?? []), createLocalSystemEvent(failureProfile, errorText)];
+      replaceSessionLog(failureProfile.id, nextLog);
       sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => mergeSessionSummaries(current, failed));
-      if (isSshLikeProfile(profileForConnect) && isHostKeyFailure(message)) {
-        void openHostKeyPrompt(profileForConnect, message, credentials);
+      if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
+        void openHostKeyPrompt(failureProfile, message, credentials);
       } else {
         setNotice({ title: "连接失败", message });
       }
@@ -9815,24 +9828,50 @@ function applyConnectionCredentials(profile: SessionProfile, credentials: Connec
   };
 }
 
-async function persistConnectionSecrets(profile: SessionProfile, credentials: ConnectionCredentials): Promise<SessionProfile> {
+async function persistConnectionSecrets(
+  profile: SessionProfile,
+  credentials: ConnectionCredentials,
+): Promise<{ profile: SessionProfile; createdSecretRefs: string[] }> {
   if (!isBackendAvailable() || !isSshLikeProfile(profile)) {
-    return profile;
+    return { profile, createdSecretRefs: [] };
   }
   let connection = profile.connection;
-  if (credentials.savePassword && credentials.password) {
-    const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-      request: { secretRef: null, secret: credentials.password },
-    });
-    connection = { ...connection, passwordSecretRef: response.secretRef };
+  const createdSecretRefs: string[] = [];
+  try {
+    if (credentials.savePassword && credentials.password) {
+      const response = await invokeBackend<{ secretRef: string }>("save_secret", {
+        request: { secretRef: null, secret: credentials.password },
+      });
+      createdSecretRefs.push(response.secretRef);
+      connection = { ...connection, passwordSecretRef: response.secretRef };
+    }
+    if (credentials.savePassphrase && credentials.passphrase) {
+      const response = await invokeBackend<{ secretRef: string }>("save_secret", {
+        request: { secretRef: null, secret: credentials.passphrase },
+      });
+      createdSecretRefs.push(response.secretRef);
+      connection = { ...connection, passphraseSecretRef: response.secretRef };
+    }
+  } catch (error) {
+    const cleanupErrors = await deleteUnreferencedSecrets(createdSecretRefs);
+    if (cleanupErrors.length) {
+      throw new Error(`${formatError(error)}；已写入凭据清理失败: ${cleanupErrors.join("；")}`);
+    }
+    throw error;
   }
-  if (credentials.savePassphrase && credentials.passphrase) {
-    const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-      request: { secretRef: null, secret: credentials.passphrase },
-    });
-    connection = { ...connection, passphraseSecretRef: response.secretRef };
+  return { profile: { ...profile, connection }, createdSecretRefs };
+}
+
+async function deleteUnreferencedSecrets(secretRefs: readonly string[]): Promise<string[]> {
+  const errors: string[] = [];
+  for (const secretRef of [...new Set(secretRefs)].reverse()) {
+    try {
+      await invokeBackend("delete_secret", { secretRef });
+    } catch (error) {
+      errors.push(formatError(error));
+    }
   }
-  return { ...profile, connection };
+  return errors;
 }
 
 function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & { connection: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> } {
