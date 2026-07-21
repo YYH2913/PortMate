@@ -398,6 +398,7 @@ export default function App() {
   const sessionsSignatureRef = useRef("");
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
+  const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
@@ -478,8 +479,23 @@ export default function App() {
   }
 
   function updateGrants(next: McpGrant[]) {
+    grantMutationGateRef.current.invalidate("grants");
     startupHydrationGateRef.current.invalidate("grants");
     setGrants(next);
+  }
+
+  function beginGrantMutation() {
+    return grantMutationGateRef.current.replace("grants");
+  }
+
+  function commitGrantMutation(next: McpGrant[], token: number) {
+    if (!grantMutationGateRef.current.isCurrent("grants", token)) return false;
+    updateGrants(next);
+    return true;
+  }
+
+  function finishGrantMutation(token: number) {
+    grantMutationGateRef.current.finish("grants", token);
   }
 
   function updateHostKeys(next: HostKeyStore) {
@@ -3405,7 +3421,16 @@ export default function App() {
       {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={updateHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && (
         <Suspense fallback={null}>
-          <LazyMcpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onGrantChange={updateGrants} onAuditChange={updateAudit} />
+          <LazyMcpDialog
+            grants={grants}
+            audit={audit}
+            sessions={sessions}
+            onClose={() => setUtilityDialog(null)}
+            onGrantMutationStart={beginGrantMutation}
+            onGrantChange={commitGrantMutation}
+            onGrantMutationFinish={finishGrantMutation}
+            onAuditChange={updateAudit}
+          />
         </Suspense>
       )}
       {utilityDialog === "one-keys" && (

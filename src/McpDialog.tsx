@@ -14,14 +14,18 @@ export default function McpDialog({
   audit,
   sessions,
   onClose,
+  onGrantMutationStart,
   onGrantChange,
+  onGrantMutationFinish,
   onAuditChange,
 }: {
   grants: McpGrant[];
   audit: AuditRecord[];
   sessions: SessionSummary[];
   onClose: () => void;
-  onGrantChange: (grants: McpGrant[]) => void;
+  onGrantMutationStart: () => number;
+  onGrantChange: (grants: McpGrant[], token: number) => boolean;
+  onGrantMutationFinish: (token: number) => void;
   onAuditChange: (audit: AuditRecord[]) => void;
 }) {
   const [tab, setTab] = useState<McpDialogTab>("grants");
@@ -97,12 +101,13 @@ export default function McpDialog({
   async function saveGrant() {
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
+    const mutationToken = onGrantMutationStart();
     setError("");
     setGrantBusy(true);
     try {
       const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: draft });
-      if (!requestGateRef.current.isCurrent("grants", token)) return;
-      onGrantChange(saved);
+      const accepted = onGrantChange(saved, mutationToken);
+      if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
       const selected = saved.find((grant) => grant.clientId === draft.clientId);
       if (selected) {
         setDraft(selected);
@@ -111,6 +116,7 @@ export default function McpDialog({
     } catch (nextError) {
       if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
     } finally {
+      onGrantMutationFinish(mutationToken);
       if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
     }
   }
@@ -118,17 +124,19 @@ export default function McpDialog({
   async function revokeGrant(clientId: string) {
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
+    const mutationToken = onGrantMutationStart();
     setError("");
     setGrantBusy(true);
     try {
       const saved = await invokeBackend<McpGrant[]>("revoke_mcp_grant", { clientId });
-      if (!requestGateRef.current.isCurrent("grants", token)) return;
-      onGrantChange(saved);
+      const accepted = onGrantChange(saved, mutationToken);
+      if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
       setDraft(saved[0] ?? createMcpGrant());
       setEditingClientId(saved[0]?.clientId ?? null);
     } catch (nextError) {
       if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
     } finally {
+      onGrantMutationFinish(mutationToken);
       if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
     }
   }

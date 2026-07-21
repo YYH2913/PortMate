@@ -312,6 +312,8 @@ try {
     window.__pendingTransferLists = [];
     window.__deferGrantLists = deferStartupDomains;
     window.__pendingGrantLists = [];
+    window.__deferGrantMutations = false;
+    window.__pendingGrantMutations = [];
     window.__logShards = [
       { path: "logs/a.txt", format: "txt", size: 32, modifiedAt: new Date().toISOString() },
       { path: "logs/b.jsonl", format: "jsonl", size: 48, modifiedAt: new Date().toISOString() },
@@ -467,11 +469,15 @@ try {
           const index = window.__mcpGrants.findIndex((grant) => grant.clientId === args.grant.clientId);
           if (index >= 0) window.__mcpGrants[index] = structuredClone(args.grant);
           else window.__mcpGrants.push(structuredClone(args.grant));
-          return structuredClone(window.__mcpGrants);
+          const result = structuredClone(window.__mcpGrants);
+          if (!window.__deferGrantMutations) return result;
+          return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
         if (command === "revoke_mcp_grant") {
           window.__mcpGrants = window.__mcpGrants.filter((grant) => grant.clientId !== args.clientId);
-          return structuredClone(window.__mcpGrants);
+          const result = structuredClone(window.__mcpGrants);
+          if (!window.__deferGrantMutations) return result;
+          return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
         if (command === "rotate_mcp_http_token") return { config: initialMcpHttpConfig, token: "portmate-test-token" };
         if (command === "export_mcp_audit") {
@@ -2055,6 +2061,42 @@ try {
     `startup domain hydration browser exceptions: ${JSON.stringify(startupDomainErrors)}`);
   await startupDomainPage.close();
 
+  const grantLifecyclePage = await context.newPage();
+  const grantLifecycleErrors = [];
+  grantLifecyclePage.on("pageerror", (error) => grantLifecycleErrors.push(error.message));
+  await grantLifecyclePage.goto(appUrl);
+  await grantLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await grantLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await grantLifecyclePage.getByRole("button", { name: "MCP Bridge", exact: true }).click();
+  const lifecycleMcpDialog = grantLifecyclePage.locator(".mcp-dialog");
+  await lifecycleMcpDialog.waitFor();
+  await lifecycleMcpDialog.locator(".mcp-new").click();
+  await lifecycleMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").fill("late-close-client");
+  await lifecycleMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Late Close Client");
+  await grantLifecyclePage.evaluate(() => { window.__deferGrantMutations = true; });
+  await lifecycleMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
+  await grantLifecyclePage.waitForFunction(() => window.__pendingGrantMutations.length === 1);
+  await lifecycleMcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await lifecycleMcpDialog.waitFor({ state: "detached" });
+  await grantLifecyclePage.evaluate(() => {
+    window.__deferGrantMutations = false;
+    const pending = window.__pendingGrantMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await grantLifecyclePage.waitForTimeout(100);
+  await grantLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await grantLifecyclePage.getByRole("button", { name: "MCP Bridge", exact: true }).click();
+  const reopenedMcpDialog = grantLifecyclePage.locator(".mcp-dialog");
+  await reopenedMcpDialog.locator(".mcp-grants button", { hasText: "Late Close Client" }).waitFor();
+  const grantLifecycleState = await grantLifecyclePage.evaluate(() => ({
+    backend: window.__mcpGrants.map((grant) => grant.clientId),
+    pending: window.__pendingGrantMutations.length,
+    saveCalls: window.__invokeCalls.filter((call) => call.command === "save_mcp_grant").length,
+  }));
+  assert(grantLifecycleErrors.length === 0,
+    `grant lifecycle browser exceptions: ${JSON.stringify(grantLifecycleErrors)}`);
+  await grantLifecyclePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2087,6 +2129,7 @@ try {
     },
     startupHydration: startupHydrationState,
     startupDomainHydration: startupDomainState,
+    grantLifecycle: grantLifecycleState,
     terminalWrites,
     desktop,
     mobile,
