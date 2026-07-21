@@ -197,6 +197,8 @@ The shared search dialog opened by the top-bar search button searches the curren
 
 MCP grant mutations, HTTP configuration/token operations, and audit refresh/export use separate dialog-scoped request gates. Repeated tab activation cannot overlap a slow configuration load, corresponding controls remain disabled in flight, and closing the dialog invalidates late responses before they can update desktop state.
 
+Key-manager Agent enumeration, Portable Vault status, and credential-migration recovery checks are independently serialized. Transient read failures preserve the last confirmed state, while vault unlock, lock, and rotation invalidate older status reads before applying their authoritative result.
+
 Every standalone MCP read surface applies the shared typed redaction policy after grant filtering, including session summaries and SSE state, prompt screens, event text/annotations/raw-shard references, timeline marks, Sysmon labels, transfer paths, and live desktop IPC responses. Credential references and local paths are removed while protocol state, timestamps, counters, fingerprints, process IDs, transfer progress, and other diagnostic measurements remain available. Redaction operates on cloned response values and never changes the desktop Store or terminal view.
 
 Run the desktop application:

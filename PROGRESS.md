@@ -186,6 +186,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；重复的 framing/认证单值头、不支持的 `Transfer-Encoding`、畸形头和声明 body 后的额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
 - MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
 - MCP 授权变更、HTTP 配置/Token、审计刷新/导出按任务使用弹窗级请求门控；重复切换标签不会重叠慢配置读取，操作期间对应控件禁用，关闭弹窗会失效迟到响应。
+- 密钥管理器的 Agent 枚举、Portable Vault 状态和凭据迁移恢复检查分别串行化；瞬时读取失败保留最后确认状态，解锁/锁定/轮换会先失效旧 Vault 读取，变更后的恢复检查显式替换旧检查。
 
 主要缺口：
 
