@@ -1297,7 +1297,7 @@ export default function App() {
     if (token === null) return;
     try {
       const nextSessions = await invokeBackend<SessionSummary[]>("list_sessions", {});
-      if (!gate.isCurrent("summaries", token) || !nextSessions.length) return;
+      if (!gate.isCurrent("summaries", token)) return;
       const signature = sessionsSignature(nextSessions);
       if (sessionsSignatureRef.current === signature) return;
       sessionsSignatureRef.current = signature;
@@ -9872,7 +9872,7 @@ function logSignature(events: SessionEvent[]) {
 }
 
 function sessionsSignature(sessions: SessionSummary[]) {
-  return sessions.map((session) => `${session.profile.id}:${session.runtime.status}:${session.runtime.lastActivity}:${session.logLines}`).join("|");
+  return JSON.stringify(sessions);
 }
 
 function mergeSessionSummaries(current: SessionSummary[], saved: SessionSummary) {

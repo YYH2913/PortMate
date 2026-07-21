@@ -307,6 +307,7 @@ try {
     window.__pendingHostKeyMutations = [];
     window.__deferProfileMutations = false;
     window.__pendingProfileMutations = [];
+    window.__profileMutationFailureMode = null;
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
@@ -414,6 +415,16 @@ try {
         }
         if (command === "update_client_identity") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.request.profileId);
+          if (window.__profileMutationFailureMode === "rename") {
+            window.__profileMutationFailureMode = null;
+            window.__sessions[index].profile.name = "Externally renamed router";
+            throw new Error("simulated conflicting Profile mutation");
+          }
+          if (window.__profileMutationFailureMode === "empty") {
+            window.__profileMutationFailureMode = null;
+            window.__sessions = [];
+            throw new Error("simulated deleted Profile mutation");
+          }
           const summary = structuredClone(window.__sessions[index]);
           const identityIndex = summary.profile.connection.identityRefs.findIndex((identity) => identity.id === args.request.identityId);
           summary.profile.connection.identityRefs[identityIndex] = {
@@ -2460,6 +2471,62 @@ try {
     `vault lifecycle browser exceptions: ${JSON.stringify(vaultLifecycleErrors)}`);
   await vaultLifecyclePage.close();
 
+  const profileRecoveryPage = await context.newPage();
+  const profileRecoveryErrors = [];
+  profileRecoveryPage.on("pageerror", (error) => profileRecoveryErrors.push(error.message));
+  await profileRecoveryPage.goto(appUrl);
+  await profileRecoveryPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await profileRecoveryPage.getByRole("button", { name: "工具", exact: true }).click();
+  await profileRecoveryPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const profileRecoveryManager = profileRecoveryPage.locator(".key-dialog");
+  await profileRecoveryManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
+  await profileRecoveryManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Rejected identity");
+  await profileRecoveryPage.evaluate(() => { window.__profileMutationFailureMode = "rename"; });
+  await profileRecoveryManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await profileRecoveryManager.locator(".utility-error", { hasText: "simulated conflicting Profile mutation" }).waitFor();
+  await profileRecoveryPage.locator(".tree-session", { hasText: "Externally renamed router" }).waitFor();
+  const renamedProfileRecoveryState = await profileRecoveryPage.evaluate(() => ({
+    backend: window.__sessions.map((session) => session.profile.name),
+    visible: [...document.querySelectorAll(".tree-session > span:last-child")].map((item) => item.textContent),
+    listCalls: window.__invokeCalls.filter((call) => call.command === "list_sessions").length,
+  }));
+  assert(renamedProfileRecoveryState.backend.includes("Externally renamed router")
+    && renamedProfileRecoveryState.visible.includes("Externally renamed router")
+    && renamedProfileRecoveryState.listCalls >= 2,
+  `a Profile compensation read ignored changed Profile fields: ${JSON.stringify(renamedProfileRecoveryState)}`);
+  assert(profileRecoveryErrors.length === 0,
+    `Profile compensation browser exceptions: ${JSON.stringify(profileRecoveryErrors)}`);
+  await profileRecoveryPage.close();
+
+  const emptyProfileRecoveryPage = await context.newPage();
+  const emptyProfileRecoveryErrors = [];
+  emptyProfileRecoveryPage.on("pageerror", (error) => emptyProfileRecoveryErrors.push(error.message));
+  await emptyProfileRecoveryPage.goto(appUrl);
+  await emptyProfileRecoveryPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await emptyProfileRecoveryPage.getByRole("button", { name: "工具", exact: true }).click();
+  await emptyProfileRecoveryPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const emptyProfileRecoveryManager = emptyProfileRecoveryPage.locator(".key-dialog");
+  await emptyProfileRecoveryManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
+  await emptyProfileRecoveryManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deleted identity");
+  await emptyProfileRecoveryPage.evaluate(() => { window.__profileMutationFailureMode = "empty"; });
+  await emptyProfileRecoveryManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await emptyProfileRecoveryManager.locator(".utility-error", { hasText: "simulated deleted Profile mutation" }).waitFor();
+  await emptyProfileRecoveryPage.waitForFunction(() => document.querySelectorAll(".tree-session").length === 0);
+  const emptyProfileRecoveryState = await emptyProfileRecoveryPage.evaluate(() => ({
+    backendCount: window.__sessions.length,
+    visibleCount: document.querySelectorAll(".tree-session").length,
+    workspaceTabCount: document.querySelectorAll(".workspace-pane-tab").length,
+    listCalls: window.__invokeCalls.filter((call) => call.command === "list_sessions").length,
+  }));
+  assert(emptyProfileRecoveryState.backendCount === 0
+    && emptyProfileRecoveryState.visibleCount === 0
+    && emptyProfileRecoveryState.workspaceTabCount === 0
+    && emptyProfileRecoveryState.listCalls >= 2,
+  `a Profile compensation read rejected the authoritative empty snapshot: ${JSON.stringify(emptyProfileRecoveryState)}`);
+  assert(emptyProfileRecoveryErrors.length === 0,
+    `empty Profile compensation browser exceptions: ${JSON.stringify(emptyProfileRecoveryErrors)}`);
+  await emptyProfileRecoveryPage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2497,6 +2564,10 @@ try {
     hostKeyLifecycle: hostKeyLifecycleState,
     profileLifecycle: profileLifecycleState,
     vaultLifecycle: vaultLifecycleState,
+    profileRecovery: {
+      renamed: renamedProfileRecoveryState,
+      empty: emptyProfileRecoveryState,
+    },
     terminalWrites,
     desktop,
     mobile,
