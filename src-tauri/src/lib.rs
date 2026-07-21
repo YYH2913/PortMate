@@ -13193,16 +13193,21 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
         let path = validate_remote_mutating_path(&request.path)?;
         let handle = ssh_handle_for_transfer(state, session_id)?;
         let sftp = open_sftp_session(handle).await?;
-        let mut metadata = sftp
-            .symlink_metadata(path.clone())
-            .await
-            .map_err(|error| format!("SFTP 读取权限失败 {path}: {error}"))?;
-        let file_type_bits = metadata.permissions.unwrap_or(0) & 0o170000;
-        metadata.permissions = Some(file_type_bits | request.mode);
-        let result = sftp
-            .set_metadata(path.clone(), metadata)
-            .await
-            .map_err(|error| format!("SFTP 设置权限失败 {path}: {error}"));
+        let result = async {
+            let mut metadata = sftp
+                .symlink_metadata(path.clone())
+                .await
+                .map_err(|error| format!("SFTP 读取权限失败 {path}: {error}"))?;
+            if metadata.is_symlink() {
+                return Err(format!("拒绝修改远端符号链接权限: {path}"));
+            }
+            let file_type_bits = metadata.permissions.unwrap_or(0) & 0o170000;
+            metadata.permissions = Some(file_type_bits | request.mode);
+            sftp.set_metadata(path.clone(), metadata)
+                .await
+                .map_err(|error| format!("SFTP 设置权限失败 {path}: {error}"))
+        }
+        .await;
         let _ = sftp.close().await;
         result
     } else {
@@ -38786,6 +38791,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn openssh_sftp_scp_and_tunnels_end_to_end() {
+        use std::os::unix::fs::PermissionsExt;
+
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH integration test: sshd is not installed");
             return;
@@ -39012,6 +39019,35 @@ mod tests {
             assert!(properties.is_file);
             assert_eq!(properties.size, sftp_payload.len() as u64);
             assert_eq!(properties.permissions.unwrap() & 0o777, 0o640);
+
+            let chmod_link = sftp_nested.join("chmod-link.bin");
+            std::os::unix::fs::symlink(&renamed_sftp_file, &chmod_link).unwrap();
+            let original_mode = fs::metadata(&renamed_sftp_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            let error = chmod_path_inner(
+                &state,
+                ChmodPathRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: chmod_link.display().to_string(),
+                    mode: 0o600,
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            assert_eq!(
+                fs::metadata(&renamed_sftp_file)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                original_mode
+            );
+            fs::remove_file(&chmod_link).unwrap();
 
             let copied_sftp_file = sftp_root.join("copied.bin");
             let copied_sftp_part =
