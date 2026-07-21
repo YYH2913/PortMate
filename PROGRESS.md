@@ -128,7 +128,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - 目标 host key 扫描已可经多跳 Jump Host 链路执行；多跳连接链路、每跳独立凭据/host-key 策略编辑和逐跳 host key 确认弹窗可用。
-- Bitvise 风格 Host Key Manager / Client Key Manager 已有 Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、Client Key 搜索/分组/批量复制/置顶/安全移除、私钥文件导入、ssh-agent 批量添加、identity 字段检查器和 Vault 私钥轮换。Inspector 会冻结打开时的 `expectedIdentity`，后端按当前/预期/提交值三方合并字段，未修改的 Secret 引用会保留并发轮换结果，同字段冲突只返回不含内容的字段路径。identity 更新/轮换/删除由后端按 immutable ID 原子持久化；共享 secret 不会被原地覆盖或误删，孤儿清理失败只返回 warning，不会留下悬空 Profile 引用。
+- Bitvise 风格 Host Key Manager / Client Key Manager 已有 Host Key 分组过滤/批量删除/批量复制、host key 字段编辑、Client Key 搜索/分组/批量复制/置顶/安全移除、私钥文件导入、ssh-agent 批量添加、identity 字段检查器和 Vault 私钥轮换。Host Key Inspector 会冻结打开时的 `expectedKey`，后端按当前/预期/提交值三方合并 `profileId/alias/host/port/scope/label`，非重叠字段自动合并，同字段冲突只返回不含内容的字段路径；算法、指纹、公钥和观察时间不会被旧表单覆盖，全局 Store 与 Profile 内同 ID 副本在同一事务更新。Identity Inspector 同样冻结 `expectedIdentity`，未修改的 Secret 引用会保留并发轮换结果，同字段冲突只返回字段路径。identity 更新/轮换/删除由后端按 immutable ID 原子持久化；共享 secret 不会被原地覆盖或误删，孤儿清理失败只返回 warning，不会留下悬空 Profile 引用。
 - IOTA Stronghold portable vault 已接入：使用独立 Argon2id salt 派生 snapshot key，支持创建/解锁/锁定、`stronghold:` secretRef 路由和显式存储选择；自动模式优先 OS keyring，仅在 native 写入失败且 Stronghold 已解锁时 fallback。SQLite 仍只保存引用。已解锁 vault 可在验证当前密码后更换主密码；新密码至少 8 个字符且必须不同，snapshot 使用新派生 key 通过 Stronghold 临时文件提交，提交成功后才替换内存 provider，原 `stronghold:` 引用和 secret 内容保持不变，旧密码无法再解锁。解锁、保存与换密在进程内共用串行化边界；open/save/rekey 另使用跨进程 OS 文件锁并在写前比较已加载 snapshot 的 SHA-256 版本，stale 实例会被拒绝并要求重新解锁，不能用旧 provider 覆盖换密结果。SSH/Tmux 的目标密码、passphrase、Profile Vault 私钥和逐 Jump Host 凭据可按全部或单个 profile 在 native keyring 与 Stronghold 间双向迁移；同源引用只复制一次，Stronghold 批量写只提交一个 snapshot，native 写入会精确读回，预检 token 和 SessionStore revision 在任何目标写入前复核。Profile 采用 copy-on-write 一次提交，旧 secret 仅在全局无引用且没有建连中 reader 时清理。迁移先以 `synchronous=FULL` 写入不含 secret 正文/正文 hash 的 SQLite journal，目标写入只有在 Prepared 精确读回后才开始；Profile KV、mirror、revision 与 `profiles-committed` 是同一事务中的唯一 commit point。重启后按结构化 credential slot 投影分类：全 OLD 只回收未引用目标，全 NEW 在逐项验证目标及源/目标内容一致后继续源清理，混合/缺失/第三种投影或 provider 不可判定时保留两侧并冻结自动恢复。Key Manager 会在打开、vault 锁/解锁和迁移结束后刷新 pending 状态，提供显式“核对并恢复”，pending/corrupt journal 会阻止新的迁移及相关 Profile/secret/identity mutation。恢复面板还能原子导出 JSON + SHA-256 诊断，包含 before/current/after slot、provider 存在性、引用计数和内容一致性布尔值；secret 正文/正文 hash 以及无法验证的原始 corrupt payload 均不会进入文件。MCP token 始终排除在该范围外。
 
 ### 数据、日志与自动化
@@ -219,7 +219,7 @@ npm run build
 
 已有单元测试覆盖：
 
-- Host key alias 隔离、同 alias key mismatch、多算法 host key。
+- Host key alias 隔离、同 alias key mismatch、多算法 host key，以及编辑时的字段级并发三方合并/冲突和不可编辑密钥材料保留。
 - Store open/close、profile upsert、MCP 空 grant 默认读、显式 read scope/session 过滤、write scope、send_text redaction/audit。
 - Trigger contains/regex、七类动作前端字段往返、多动作后端 dispatch、自定义链接替换和声音/通知/高亮 runtime effect。
 - 同步输入设置归一化、目标协议过滤、换行/显式批量发送前后缀变换、Telnet CRLF、FIFO 批次顺序、交互输入不重复包裹、部分失败和关闭后即时取消剩余目标。
@@ -278,7 +278,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 324：`portmate` 248、`portmate-kdf` 1、`portmate-core` 44、`portmate-mcp` 31；`npm test` 另有 54 个文件、286 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 325：`portmate` 249、`portmate-kdf` 1、`portmate-core` 44、`portmate-mcp` 31；`npm test` 另有 54 个文件、286 个前端 menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-runtime/session-search/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
@@ -311,7 +311,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，按任务门控请求，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 324 项 Rust core/协议集成测试、54 文件/286 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性/日志预览乱序、独立窗口日志追赶/轮询失败保留、串口分析器/tunnel/MCP HTTP 慢请求、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、背景透明度、主/独立窗口原位应用和桌面截图，Tmux 基线还覆盖 control refresh 与 mutation 之间的旧快照淘汰，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 325 项 Rust core/协议集成测试、54 文件/286 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性/日志预览乱序、独立窗口日志追赶/轮询失败保留、串口分析器/tunnel/MCP HTTP 慢请求、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、背景透明度、主/独立窗口原位应用和桌面截图，Tmux 基线还覆盖 control refresh 与 mutation 之间的旧快照淘汰，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 

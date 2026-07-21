@@ -197,6 +197,8 @@ Every existing Profile save carries the caller's `expectedProfile` snapshot. Ses
 
 Client Identity field edits apply the same rule at identity scope. The Inspector freezes an `expectedIdentity` when editing starts; its backend performs a field-level three-way merge, preserves a concurrently rotated Secret reference when the editor did not change it, and rejects different edits to the same field with a content-free field path. The browser lifecycle matrix verifies the exact Inspector-open baseline on every delayed edit request.
 
+Host Key field edits freeze the Inspector-open `expectedKey` as well. The backend merges it against the current Store and the submitted editable fields, so independent changes are preserved while different edits to the same field are rejected with only the field path. Only `profileId`, `alias`, `host`, `port`, `scope`, and `label` are copied back to the global trust record and matching Profile copies; algorithm, fingerprint, public-key material, and observation timestamps cannot be replaced by a stale editor. The browser lifecycle matrix verifies that each update carries the original Inspector baseline.
+
 Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
 needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
 transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
