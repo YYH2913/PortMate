@@ -38,7 +38,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -15943,6 +15943,7 @@ fn open_serial_session(
     let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
+    let reader_start_gate = Arc::new(SerialReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
     let writer = Arc::new(Mutex::new(port));
     let capture = serial_capture_for_session(&state.serial_captures, &profile.id)?;
@@ -15967,6 +15968,7 @@ fn open_serial_session(
         port_name: port_name.clone(),
         tap,
         closed: Arc::clone(&closed),
+        start_gate: Arc::clone(&reader_start_gate),
         reader,
         capture,
         receive_idle_timeout: serial
@@ -15974,6 +15976,7 @@ fn open_serial_session(
             .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
     }) {
         closed.store(true, Ordering::SeqCst);
+        reader_start_gate.cancel();
         remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
             runtime.runtime_id == runtime_id
         })?;
@@ -15996,9 +15999,13 @@ fn open_serial_session(
         Err(error) => Err(error.to_string()),
     };
     match finalize_result {
-        Ok(summary) => Ok(summary),
+        Ok(summary) => {
+            reader_start_gate.start();
+            Ok(summary)
+        }
         Err(error) => {
             closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
             let cleanup_error = remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
                 runtime.runtime_id == runtime_id
             })
@@ -21520,6 +21527,66 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
     }
 }
 
+#[derive(Debug, Default)]
+enum SerialReaderStartState {
+    #[default]
+    Pending,
+    Started,
+    Cancelled,
+}
+
+#[derive(Debug, Default)]
+struct SerialReaderStartGate {
+    state: Mutex<SerialReaderStartState>,
+    changed: Condvar,
+}
+
+impl SerialReaderStartGate {
+    fn started() -> Self {
+        Self {
+            state: Mutex::new(SerialReaderStartState::Started),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn start(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = SerialReaderStartState::Started;
+        self.changed.notify_all();
+    }
+
+    fn cancel(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = SerialReaderStartState::Cancelled;
+        self.changed.notify_all();
+    }
+
+    fn wait(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match *state {
+                SerialReaderStartState::Pending => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                SerialReaderStartState::Started => return true,
+                SerialReaderStartState::Cancelled => return false,
+            }
+        }
+    }
+}
+
 struct SerialReadTask {
     io: SessionIo,
     profile: SessionProfile,
@@ -21527,6 +21594,7 @@ struct SerialReadTask {
     port_name: String,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
+    start_gate: Arc<SerialReaderStartGate>,
     reader: SerialPortHandle,
     capture: Arc<Mutex<SerialCaptureBuffer>>,
     receive_idle_timeout: Option<Duration>,
@@ -21548,11 +21616,15 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             port_name,
             tap,
             closed,
+            start_gate,
             mut reader,
             capture,
             receive_idle_timeout,
         } = task;
         let session_id = profile.id.clone();
+        if !start_gate.wait() {
+            return;
+        }
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
@@ -22080,6 +22152,7 @@ fn reconnect_serial_session(
             port_name: port_name.clone(),
             tap,
             closed: next_closed,
+            start_gate: Arc::new(SerialReaderStartGate::started()),
             reader,
             capture,
             receive_idle_timeout: serial
@@ -39027,6 +39100,28 @@ mod tests {
         agent.stop();
         sshd.stop();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn serial_reader_start_gate_waits_for_the_connected_commit() {
+        let gate = Arc::new(SerialReaderStartGate::default());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let task_gate = Arc::clone(&gate);
+        let worker = std::thread::spawn(move || {
+            sender.send(task_gate.wait()).unwrap();
+        });
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        gate.start();
+        assert!(receiver.recv_timeout(Duration::from_secs(1)).unwrap());
+        worker.join().unwrap();
+
+        let gate = SerialReaderStartGate::default();
+        gate.cancel();
+        assert!(!gate.wait());
     }
 
     #[cfg(unix)]
