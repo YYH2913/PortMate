@@ -109,6 +109,8 @@ Saved sessions, runtime state, host-key trust decisions, audit rows, and recent 
 
 Live terminal resize requests reach SSH, Shell PTY, or negotiated Telnet NAWS first. Their persisted Profile `cols`/`rows` metadata then uses a copy-on-write Store commit, so a failed snapshot write reports the failure without replacing live memory with dimensions that were never persisted.
 
+Copy-on-write Store mutations distinguish a definite failed write from a post-commit verification error. After a reported save failure, PortMate compares the complete intended Store with the authoritative disk snapshot; an exact match accepts the commit and repairs the cached snapshot version, a mismatch keeps the previous live state, and unreadable evidence freezes further writes until restart instead of guessing which state won.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
