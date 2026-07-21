@@ -258,6 +258,7 @@ try {
     }
     window.__invokeCalls = [];
     window.__sessions = structuredClone(initialSessions);
+    window.__events = structuredClone(initialEvents);
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__clipboardText = "";
     window.__closeSessionError = false;
@@ -307,7 +308,7 @@ try {
           window.__sessions[index] = saved;
           return saved;
         }
-        if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
+        if (command === "tail_log") return window.__events.filter((event) => event.sessionId === args.sessionId);
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
           return new Promise((resolve) => {
@@ -1092,6 +1093,37 @@ try {
     && detachedThemeState.retained === "retained"
     && detachedPageErrors.length === 0,
   `detached profile update did not apply in place: ${JSON.stringify({ detachedThemeState, detachedPageErrors })}`);
+  const detachedCatchupMarker = "DETACHED-POLL-CATCHUP";
+  const detachedTailCallsBefore = await detachedPage.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "tail_log" && call.args.sessionId === "local-shell"
+  )).length);
+  await detachedPage.evaluate((marker) => {
+    window.__events.push({
+      id: "detached-poll-catchup",
+      sessionId: "local-shell",
+      paneId: "local-shell:main",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      stream: "stdout",
+      bytesRef: null,
+      text: `${marker}\r\n`,
+      annotations: {},
+    });
+  }, detachedCatchupMarker);
+  await detachedPage.waitForFunction(({ previousCalls }) => window.__invokeCalls.filter((call) => (
+    call.command === "tail_log" && call.args.sessionId === "local-shell"
+  )).length > previousCalls, { previousCalls: detachedTailCallsBefore });
+  await detachedPage.evaluate(() => window.dispatchEvent(new Event("portmate-terminal-search")));
+  const detachedSearchInput = detachedPage.locator(".detached-pane-terminal .terminal-search-bar input");
+  await detachedSearchInput.fill(detachedCatchupMarker);
+  let detachedCatchupSearch = "0/0";
+  for (let attempt = 0; attempt < 50 && detachedCatchupSearch === "0/0"; attempt += 1) {
+    await detachedSearchInput.press("Enter");
+    await detachedPage.waitForTimeout(50);
+    detachedCatchupSearch = await detachedPage.locator(".detached-pane-terminal .terminal-search-status").textContent() ?? "0/0";
+  }
+  assert(detachedCatchupSearch !== "0/0", "detached terminal did not render its polled log catch-up event");
+  await detachedPage.getByRole("button", { name: "关闭查找", exact: true }).click();
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
   await detachedPage.close();
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();

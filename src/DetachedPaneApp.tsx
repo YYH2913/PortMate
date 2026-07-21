@@ -42,25 +42,44 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     let disposed = false;
-    void refresh(true);
-    const timer = window.setInterval(() => void refresh(false), 1_200);
+    let sessionsRefreshing = false;
+    let terminalStateRefreshing = false;
+    let eventSignature = "";
+    void refreshSessions();
+    void refreshTerminalState();
+    const sessionTimer = window.setInterval(() => void refreshSessions(), 1_200);
+    const terminalStateTimer = window.setInterval(() => void refreshTerminalState(), 2_000);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      window.clearInterval(sessionTimer);
+      window.clearInterval(terminalStateTimer);
     };
 
-    async function refresh(includeLog: boolean) {
+    async function refreshSessions() {
+      if (sessionsRefreshing) return;
+      sessionsRefreshing = true;
       const nextSessions = await callBackend("list_sessions", {}, loadLocalSessions());
-      if (disposed) return;
-      setSessions(nextSessions);
-      if (!includeLog) return;
-      const [nextEvents, nextOneKeys] = await Promise.all([
-        callBackend("tail_log", { sessionId: request.sessionId, limit: 600 }, []),
-        callBackend("list_one_keys", {}, []),
-      ]);
-      if (!disposed) {
-        setEvents(nextEvents);
+      if (!disposed) setSessions(nextSessions);
+      sessionsRefreshing = false;
+    }
+
+    async function refreshTerminalState() {
+      if (terminalStateRefreshing) return;
+      terminalStateRefreshing = true;
+      try {
+        const [nextEvents, nextOneKeys] = await Promise.all([
+          callBackend<SessionEvent[]>("tail_log", { sessionId: request.sessionId, limit: 600 }, []),
+          callBackend<OneKeySummary[]>("list_one_keys", {}, []),
+        ]);
+        if (disposed) return;
+        const nextSignature = detachedEventSignature(nextEvents);
+        if (eventSignature !== nextSignature) {
+          eventSignature = nextSignature;
+          setEvents(nextEvents);
+        }
         setOneKeys(nextOneKeys);
+      } finally {
+        terminalStateRefreshing = false;
       }
     }
   }, [request.sessionId]);
@@ -379,6 +398,11 @@ function describeDetachedEndpoint(session: SessionSummary) {
     return `${connection.endpoint.host}:${connection.endpoint.port}`;
   }
   return `${connection.host}:${connection.port}`;
+}
+
+function detachedEventSignature(events: readonly SessionEvent[]) {
+  const last = events.at(-1);
+  return `${events.length}:${last?.id ?? ""}:${last?.ts ?? ""}`;
 }
 
 function formatDetachedError(error: unknown) {
