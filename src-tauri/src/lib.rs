@@ -9333,7 +9333,7 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
                 Ok(mut cancellations) => {
                     if cancellations
                         .get(transfer_id)
-                        .is_some_and(|registered| Arc::ptr_eq(registered, &cancel))
+                        .is_some_and(|registered| Arc::ptr_eq(registered, cancel))
                     {
                         cancellations.remove(transfer_id);
                     }
