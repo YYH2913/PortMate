@@ -10680,11 +10680,8 @@ fn zmodem_local_target_path(
     if destination.is_empty() {
         return Err("ZModem 本地目标路径不能为空".to_string());
     }
-    let incoming = Path::new(incoming_name)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("zmodem-file.bin");
+    let incoming =
+        portable_file_name(incoming_name).unwrap_or_else(|| "zmodem-file.bin".to_string());
     let base = expand_identity_path(destination);
     let ends_with_separator = destination.ends_with('/') || destination.ends_with('\\');
 
@@ -10963,11 +10960,7 @@ async fn ymodem_receive_file(
         }
     }
     let destination = if Path::new(local_destination).is_dir() {
-        let safe_name = Path::new(&name)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("ymodem-file.bin");
+        let safe_name = portable_file_name(&name).unwrap_or_else(|| "ymodem-file.bin".to_string());
         Path::new(local_destination)
             .join(safe_name)
             .display()
@@ -11256,20 +11249,54 @@ fn parse_ymodem_metadata(data: &[u8]) -> (String, Option<usize>) {
 }
 
 fn local_file_name(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("portmate-transfer.bin")
-        .to_string()
+    portable_file_name(path).unwrap_or_else(|| "portmate-transfer.bin".to_string())
 }
 
 fn remote_parent_and_file_name(path: &str) -> (String, String) {
-    let normalized = path.trim_end_matches('/');
-    let Some((parent, name)) = normalized.rsplit_once('/') else {
-        return (String::new(), normalized.to_string());
+    let normalized = path.trim().trim_end_matches(['/', '\\']);
+    let Some((index, separator)) = normalized
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '/' | '\\'))
+    else {
+        return (
+            String::new(),
+            portable_file_name(normalized).unwrap_or_default(),
+        );
     };
-    (parent.to_string(), name.to_string())
+    let parent = normalized[..index].to_string();
+    let name_start = index + separator.len_utf8();
+    let name = portable_file_name(&normalized[name_start..]).unwrap_or_default();
+    (parent, name)
+}
+
+fn portable_file_name(path: &str) -> Option<String> {
+    let trimmed = path.trim().trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_drive = if trimmed.len() >= 2
+        && trimmed.as_bytes()[0].is_ascii_alphabetic()
+        && trimmed.as_bytes()[1] == b':'
+    {
+        &trimmed[2..]
+    } else {
+        trimmed
+    };
+    let name = without_drive
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name
+            .chars()
+            .any(|character| character.is_control() || character == '\0')
+    {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn is_modem_timeout(error: &str) -> bool {
@@ -35321,6 +35348,39 @@ mod tests {
             validate_native_local_path("nested/child").unwrap(),
             expand_identity_path("nested/child")
         );
+    }
+
+    #[test]
+    fn modem_file_names_normalize_windows_and_unix_separators() {
+        assert_eq!(
+            portable_file_name(r"C:\Users\operator\report.bin"),
+            Some("report.bin".to_string())
+        );
+        assert_eq!(
+            portable_file_name(r"\\server\share\report.bin"),
+            Some("report.bin".to_string())
+        );
+        assert_eq!(
+            portable_file_name("/var/tmp/report.bin"),
+            Some("report.bin".to_string())
+        );
+        assert_eq!(portable_file_name("../"), None);
+        assert_eq!(
+            local_file_name(r"C:\Users\operator\report.bin"),
+            "report.bin"
+        );
+        assert_eq!(
+            remote_parent_and_file_name(r"C:\Users\operator\report.bin"),
+            (r"C:\Users\operator".to_string(), "report.bin".to_string())
+        );
+
+        let root = std::env::temp_dir().join(format!("portmate-modem-name-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target =
+            zmodem_local_target_path(root.to_str().unwrap(), r"C:\Users\operator\report.bin", 0)
+                .unwrap();
+        assert_eq!(target, root.join("report.bin"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
