@@ -4533,6 +4533,46 @@ where
     Ok(result)
 }
 
+fn persist_applied_store(
+    store: &SessionStore,
+    store_path: &Path,
+    operation: &str,
+) -> Result<(), String> {
+    persist_applied_store_with(
+        store,
+        operation,
+        |next_store| save_store(store_path, next_store),
+        |next_store| verify_persisted_store_commit(store_path, next_store),
+    )
+}
+
+fn persist_applied_store_with<Persist, VerifyAfterError>(
+    store: &SessionStore,
+    operation: &str,
+    persist: Persist,
+    verify_after_error: VerifyAfterError,
+) -> Result<(), String>
+where
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
+{
+    let Err(save_error) = persist(store) else {
+        return Ok(());
+    };
+    match verify_after_error(store) {
+        Ok(true) => {
+            eprintln!(
+                "PortMate: {operation} save returned an error, but the intended snapshot was verified on disk: {save_error}"
+            );
+            Ok(())
+        }
+        Ok(false) => Err(save_error),
+        Err(verify_error) => Err(format!(
+            "{save_error}; 无法判定已应用的 {operation} 是否保存，请重启应用: {verify_error}"
+        )),
+    }
+}
+
 fn record_applied_system_event(
     state: &AppState,
     session_id: &str,
@@ -4573,30 +4613,18 @@ where
         .ok_or_else(|| {
             format!("session profile unavailable after applied operation: {session_id}")
         })?;
-    let Err(save_error) = persist(store) else {
-        return Ok(());
-    };
-    match verify_after_error(store) {
-        Ok(true) => {
-            eprintln!(
-                "PortMate: applied operation event save returned an error, but the intended snapshot was verified on disk: {save_error}"
-            );
-            Ok(())
+    if let Err(error) = persist_applied_store_with(
+        store,
+        "applied operation event",
+        persist,
+        verify_after_error,
+    ) {
+        if let Some(event) = store.events.iter_mut().find(|event| event.id == event_id) {
+            append_logging_error(event, format!("store save failed: {error}"));
         }
-        verification => {
-            let error = match verification {
-                Ok(false) => save_error,
-                Err(verify_error) => format!(
-                    "{save_error}; 无法判定成功操作的审计事件是否已保存，请重启应用: {verify_error}"
-                ),
-                Ok(true) => unreachable!(),
-            };
-            if let Some(event) = store.events.iter_mut().find(|event| event.id == event_id) {
-                append_logging_error(event, format!("store save failed: {error}"));
-            }
-            Err(error)
-        }
+        return Err(error);
     }
+    Ok(())
 }
 
 fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
@@ -7554,33 +7582,18 @@ where
     VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
 {
     update_mcp_write_audit(store, audit_id, decision, approval)?;
-    let Err(save_error) = persist(store) else {
-        return Ok(());
-    };
-    match verify_after_error(store) {
-        Ok(true) => {
-            eprintln!(
-                "PortMate: MCP final audit save returned an error, but the intended snapshot was verified on disk: {save_error}"
+    if let Err(error) =
+        persist_applied_store_with(store, "MCP final audit", persist, verify_after_error)
+    {
+        if let Some(record) = store.audit.iter_mut().find(|record| record.id == audit_id) {
+            record.details.insert(
+                "finalizationPersistence".to_string(),
+                "degraded".to_string(),
             );
-            Ok(())
         }
-        verification => {
-            let error = match verification {
-                Ok(false) => save_error,
-                Err(verify_error) => format!(
-                    "{save_error}; 无法判定 MCP 最终审计是否已保存，请重启应用: {verify_error}"
-                ),
-                Ok(true) => unreachable!(),
-            };
-            if let Some(record) = store.audit.iter_mut().find(|record| record.id == audit_id) {
-                record.details.insert(
-                    "finalizationPersistence".to_string(),
-                    "degraded".to_string(),
-                );
-            }
-            Err(error)
-        }
+        return Err(error);
     }
+    Ok(())
 }
 
 fn update_mcp_write_audit(
@@ -9114,7 +9127,9 @@ fn finish_transfer_task(
                 truncate_for_log(&message, 800)
             ),
         );
-        if let Err(error) = save_store(&state.store_path, &store) {
+        if let Err(error) =
+            persist_applied_store(&store, &state.store_path, "transfer finish state")
+        {
             eprintln!("PortMate: failed to persist transfer finish: {error}");
         }
         task
@@ -9197,7 +9212,9 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
     }
     let task = task.clone();
     store.trim_transfer_history(&task.session_id);
-    if let Err(error) = save_store(&state.store_path, &store) {
+    if let Err(error) =
+        persist_applied_store(&store, &state.store_path, "transfer cancellation state")
+    {
         eprintln!(
             "PortMate: transfer cancellation was accepted but could not be persisted: {error}"
         );
@@ -9218,6 +9235,33 @@ fn emit_transfer_task(state: &AppState, task: &TransferTask) {
     if let Some(app_handle) = &state.app_handle {
         let _ = app_handle.emit("portmate-transfer-task", task.clone());
     }
+}
+
+fn record_applied_transfer_progress_with<Persist, VerifyAfterError>(
+    store: &mut SessionStore,
+    task_id: &str,
+    bytes_done: u64,
+    bytes_total: u64,
+    persist: Persist,
+    verify_after_error: VerifyAfterError,
+) -> Result<TransferTask, String>
+where
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
+{
+    let task = store
+        .transfers
+        .iter_mut()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| format!("unknown transfer: {task_id}"))?;
+    task.bytes_done = bytes_done;
+    if bytes_total > 0 {
+        task.bytes_total = bytes_total;
+    }
+    task.message = Some("running".to_string());
+    let task = task.clone();
+    persist_applied_store_with(store, "transfer progress", persist, verify_after_error)?;
+    Ok(task)
 }
 
 impl TransferProgressContext {
@@ -9271,19 +9315,14 @@ impl TransferProgressContext {
         }
         let task = {
             let mut store = self.state.store.lock().map_err(|error| error.to_string())?;
-            let task = store
-                .transfers
-                .iter_mut()
-                .find(|task| task.id == self.task_id)
-                .ok_or_else(|| format!("unknown transfer: {}", self.task_id))?;
-            task.bytes_done = bytes_done;
-            if bytes_total > 0 {
-                task.bytes_total = bytes_total;
-            }
-            task.message = Some("running".to_string());
-            let task = task.clone();
-            save_store(&self.state.store_path, &store)?;
-            task
+            record_applied_transfer_progress_with(
+                &mut store,
+                &self.task_id,
+                bytes_done,
+                bytes_total,
+                |next_store| save_store(&self.state.store_path, next_store),
+                |next_store| verify_persisted_store_commit(&self.state.store_path, next_store),
+            )?
         };
         emit_transfer_task(&self.state, &task);
         Ok(())
@@ -34479,6 +34518,41 @@ mod tests {
         };
 
         assert_eq!(transfer_average_bps(&task), Some(1024.0));
+    }
+
+    #[test]
+    fn transfer_progress_keeps_applied_bytes_and_accepts_verified_commits() {
+        let mut store = SessionStore::default();
+        let task = test_transfer_task("session-1", TransferStatus::Running);
+        let task_id = task.id.clone();
+        store.record_transfer(task);
+
+        let updated = record_applied_transfer_progress_with(
+            &mut store,
+            &task_id,
+            512,
+            1_024,
+            |_| Err("post-commit version read failed".to_string()),
+            |_| Ok(true),
+        )
+        .unwrap();
+        assert_eq!(updated.bytes_done, 512);
+        assert_eq!(updated.bytes_total, 1_024);
+
+        let error = record_applied_transfer_progress_with(
+            &mut store,
+            &task_id,
+            768,
+            1_024,
+            |_| Err("disk full".to_string()),
+            |_| Ok(false),
+        )
+        .unwrap_err();
+        assert_eq!(error, "disk full");
+        let retained = store.transfer_by_id(&task_id).unwrap();
+        assert_eq!(retained.bytes_done, 768);
+        assert_eq!(retained.bytes_total, 1_024);
+        assert_eq!(retained.message.as_deref(), Some("running"));
     }
 
     #[test]
