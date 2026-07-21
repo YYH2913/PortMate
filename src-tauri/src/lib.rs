@@ -3514,7 +3514,17 @@ fn save_session_profile(
     validate_transfer_default_local_dir(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let current_profile = store.profile(&profile.id);
-    validate_expected_profile_credentials(current_profile.as_ref(), expected_profile.as_ref())?;
+    if proxy_password_update.is_some() {
+        validate_expected_proxy_password(current_profile.as_ref(), expected_profile.as_ref())?;
+    }
+    profile = merge_expected_profile_update(
+        current_profile.as_ref(),
+        expected_profile.as_ref(),
+        profile,
+    )?;
+    validate_profile_client_identity_ids(&profile)?;
+    validate_logging_retention(&profile)?;
+    validate_transfer_default_local_dir(&profile)?;
     let runtime_status = store
         .runtimes
         .iter()
@@ -3788,26 +3798,97 @@ fn validate_profile_transport_change(
     Ok(())
 }
 
-fn validate_expected_profile_credentials(
+fn merge_expected_profile_update(
+    current_profile: Option<&SessionProfile>,
+    expected_profile: Option<&SessionProfile>,
+    incoming_profile: SessionProfile,
+) -> Result<SessionProfile, String> {
+    match (current_profile, expected_profile) {
+        (Some(current), Some(expected)) => {
+            if current.id != incoming_profile.id || expected.id != incoming_profile.id {
+                return Err("expectedProfile 与保存目标不是同一个 Profile".to_string());
+            }
+            let expected = serde_json::to_value(expected)
+                .map_err(|error| format!("序列化 expectedProfile 失败: {error}"))?;
+            let current = serde_json::to_value(current)
+                .map_err(|error| format!("序列化当前 Profile 失败: {error}"))?;
+            let incoming = serde_json::to_value(&incoming_profile)
+                .map_err(|error| format!("序列化待保存 Profile 失败: {error}"))?;
+            let merged = merge_profile_json_value("profile", &expected, &current, &incoming)?;
+            serde_json::from_value(merged)
+                .map_err(|error| format!("反序列化合并后的 Profile 失败: {error}"))
+        }
+        (Some(_), None) => Err("保存现有 Profile 必须提供 expectedProfile 版本".to_string()),
+        (None, Some(_)) => Err("Profile 已被其他操作删除，请刷新会话列表".to_string()),
+        (None, None) => Ok(incoming_profile),
+    }
+}
+
+fn validate_expected_proxy_password(
     current_profile: Option<&SessionProfile>,
     expected_profile: Option<&SessionProfile>,
 ) -> Result<(), String> {
-    match (current_profile, expected_profile) {
-        (Some(current), Some(expected))
-            if profile_secret_ref_occurrences(current)
-                != profile_secret_ref_occurrences(expected) =>
-        {
-            return Err("Profile 凭据已在其他操作中更新，请重新打开设置后再保存".to_string());
-        }
-        (Some(_), None) => {
-            return Err("保存现有 Profile 必须提供 expectedProfile 版本".to_string());
-        }
-        (None, Some(_)) => {
-            return Err("Profile 已被其他操作删除，请刷新会话列表".to_string());
-        }
-        _ => {}
+    let (Some(current), Some(expected)) = (current_profile, expected_profile) else {
+        return Ok(());
+    };
+    let current_ref = profile_proxy(current).and_then(|proxy| proxy.password_secret_ref.as_deref());
+    let expected_ref =
+        profile_proxy(expected).and_then(|proxy| proxy.password_secret_ref.as_deref());
+    if current_ref != expected_ref {
+        return Err("代理密码已在其他操作中更新，请重新打开设置后再保存".to_string());
     }
     Ok(())
+}
+
+fn merge_profile_json_value(
+    path: &str,
+    expected: &serde_json::Value,
+    current: &serde_json::Value,
+    incoming: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if incoming == expected {
+        return Ok(current.clone());
+    }
+    if current == expected || incoming == current {
+        return Ok(incoming.clone());
+    }
+
+    let (
+        serde_json::Value::Object(expected),
+        serde_json::Value::Object(current),
+        serde_json::Value::Object(incoming),
+    ) = (expected, current, incoming)
+    else {
+        return Err(format!(
+            "Profile 字段已被其他操作修改，请刷新后重试: {path}"
+        ));
+    };
+    if expected.len() != current.len()
+        || expected.len() != incoming.len()
+        || !expected
+            .keys()
+            .all(|key| current.contains_key(key) && incoming.contains_key(key))
+    {
+        return Err(format!(
+            "Profile 结构已被其他操作修改，请刷新后重试: {path}"
+        ));
+    }
+
+    let mut merged = serde_json::Map::with_capacity(expected.len());
+    for (key, expected_value) in expected {
+        let current_value = current
+            .get(key)
+            .expect("Profile key sets were checked above");
+        let incoming_value = incoming
+            .get(key)
+            .expect("Profile key sets were checked above");
+        let child_path = format!("{path}.{key}");
+        merged.insert(
+            key.clone(),
+            merge_profile_json_value(&child_path, expected_value, current_value, incoming_value)?,
+        );
+    }
+    Ok(serde_json::Value::Object(merged))
 }
 
 fn session_lifecycle_lane(
@@ -44332,24 +44413,88 @@ mod tests {
     }
 
     #[test]
-    fn stale_profile_credentials_are_rejected_after_migration() {
-        let mut old = test_ssh_profile();
-        if let ConnectionConfig::Ssh(ssh) = &mut old.connection {
+    fn concurrent_profile_updates_merge_non_overlapping_fields_and_reject_conflicts() {
+        let mut expected = test_ssh_profile();
+        if let ConnectionConfig::Ssh(ssh) = &mut expected.connection {
             ssh.password_secret_ref = Some("keychain:old".to_string());
+            ssh.proxy.password_secret_ref = Some("keychain:old-proxy".to_string());
         }
-        let mut current = old.clone();
+        let mut current = expected.clone();
         if let ConnectionConfig::Ssh(ssh) = &mut current.connection {
             ssh.password_secret_ref = Some("stronghold:new".to_string());
+            ssh.proxy.password_secret_ref = Some("stronghold:new-proxy".to_string());
         }
-        assert!(
-            validate_expected_profile_credentials(Some(&current), Some(&old))
-                .unwrap_err()
-                .contains("其他操作中更新")
+        current.terminal.cols = 173;
+        let mut incoming = expected.clone();
+        incoming.name = "Operator edit".to_string();
+
+        let merged =
+            merge_expected_profile_update(Some(&current), Some(&expected), incoming.clone());
+        let merged = merged.unwrap();
+        assert_eq!(merged.name, "Operator edit");
+        assert_eq!(merged.terminal.cols, 173);
+        let ConnectionConfig::Ssh(merged_ssh) = merged.connection else {
+            unreachable!("merged profile must remain SSH");
+        };
+        assert_eq!(
+            merged_ssh.password_secret_ref.as_deref(),
+            Some("stronghold:new")
         );
-        validate_expected_profile_credentials(Some(&current), Some(&current)).unwrap();
-        assert!(validate_expected_profile_credentials(Some(&current), None)
-            .unwrap_err()
-            .contains("expectedProfile"));
+        assert_eq!(
+            merged_ssh.proxy.password_secret_ref.as_deref(),
+            Some("stronghold:new-proxy")
+        );
+        assert!(
+            validate_expected_proxy_password(Some(&current), Some(&expected))
+                .unwrap_err()
+                .contains("代理密码")
+        );
+        validate_expected_proxy_password(Some(&current), Some(&current)).unwrap();
+
+        let mut conflicting_current = expected.clone();
+        conflicting_current.group = "current group".to_string();
+        let mut conflicting_incoming = expected.clone();
+        conflicting_incoming.group = "incoming group".to_string();
+        let error = merge_expected_profile_update(
+            Some(&conflicting_current),
+            Some(&expected),
+            conflicting_incoming,
+        )
+        .unwrap_err();
+        assert!(error.contains("profile.group"), "{error}");
+
+        let mut matching_incoming = expected.clone();
+        matching_incoming.group = "current group".to_string();
+        let matching = merge_expected_profile_update(
+            Some(&conflicting_current),
+            Some(&expected),
+            matching_incoming,
+        )
+        .unwrap();
+        assert_eq!(matching.group, "current group");
+
+        assert!(
+            merge_expected_profile_update(Some(&current), None, incoming.clone())
+                .unwrap_err()
+                .contains("expectedProfile")
+        );
+        assert!(
+            merge_expected_profile_update(None, Some(&expected), incoming.clone())
+                .unwrap_err()
+                .contains("删除")
+        );
+        assert_eq!(
+            merge_expected_profile_update(None, None, incoming.clone()).unwrap(),
+            incoming
+        );
+
+        let mut wrong_expected = expected.clone();
+        wrong_expected.id = "another-profile".to_string();
+        assert!(
+            merge_expected_profile_update(Some(&current), Some(&wrong_expected), expected)
+                .unwrap_err()
+                .contains("不是同一个 Profile")
+        );
     }
 
     #[test]
