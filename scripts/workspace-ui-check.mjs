@@ -250,7 +250,9 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
+    const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
+    sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
     if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
       localStorage.clear();
       localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
@@ -289,6 +291,7 @@ try {
     window.__events = structuredClone(initialEvents);
     window.__oneKeys = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
+    window.__transfers = [];
     window.__clipboardText = "";
     window.__closeSessionError = false;
     window.__deferFileLoads = false;
@@ -305,6 +308,10 @@ try {
     window.__pendingSysmon = [];
     window.__deferSessionLists = deferStartupSessions;
     window.__pendingSessionLists = [];
+    window.__deferTransferLists = deferStartupDomains;
+    window.__pendingTransferLists = [];
+    window.__deferGrantLists = deferStartupDomains;
+    window.__pendingGrantLists = [];
     window.__logShards = [
       { path: "logs/a.txt", format: "txt", size: 32, modifiedAt: new Date().toISOString() },
       { path: "logs/b.jsonl", format: "jsonl", size: 48, modifiedAt: new Date().toISOString() },
@@ -390,6 +397,11 @@ try {
             window.__pendingTailLogs.push({ args: structuredClone(args), resolve });
           });
         }
+        if (command === "list_transfers") {
+          const result = structuredClone(window.__transfers);
+          if (!window.__deferTransferLists) return result;
+          return new Promise((resolve) => window.__pendingTransferLists.push({ result, resolve }));
+        }
         if (command === "list_serial_capture") {
           return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
         }
@@ -432,7 +444,11 @@ try {
             window.__pendingSysmon.push({ command, args: structuredClone(args), resolve });
           });
         }
-        if (command === "list_mcp_grants") return window.__mcpGrants;
+        if (command === "list_mcp_grants") {
+          const result = structuredClone(window.__mcpGrants);
+          if (!window.__deferGrantLists) return result;
+          return new Promise((resolve) => window.__pendingGrantLists.push({ result, resolve }));
+        }
         if (command === "list_one_keys") {
           if (window.__failOneKeyLists > 0) {
             window.__failOneKeyLists -= 1;
@@ -447,8 +463,16 @@ try {
         }
         if (command === "list_mcp_approvals") return [];
         if (command === "respond_mcp_approval") return null;
-        if (command === "save_mcp_grant") return initialMcpGrants;
-        if (command === "revoke_mcp_grant") return initialMcpGrants.filter((grant) => grant.clientId !== args.clientId);
+        if (command === "save_mcp_grant") {
+          const index = window.__mcpGrants.findIndex((grant) => grant.clientId === args.grant.clientId);
+          if (index >= 0) window.__mcpGrants[index] = structuredClone(args.grant);
+          else window.__mcpGrants.push(structuredClone(args.grant));
+          return structuredClone(window.__mcpGrants);
+        }
+        if (command === "revoke_mcp_grant") {
+          window.__mcpGrants = window.__mcpGrants.filter((grant) => grant.clientId !== args.clientId);
+          return structuredClone(window.__mcpGrants);
+        }
         if (command === "rotate_mcp_http_token") return { config: initialMcpHttpConfig, token: "portmate-test-token" };
         if (command === "export_mcp_audit") {
           return {
@@ -485,10 +509,7 @@ try {
           };
         }
         if (command === "list_host_keys") return { keys: [] };
-        if ([
-          "list_transfers",
-          "list_serial_ports",
-        ].includes(command)) return [];
+        if (command === "list_serial_ports") return [];
         if (command.startsWith("plugin:event|")) return null;
         return null;
       },
@@ -1952,6 +1973,88 @@ try {
   assert(startupRaceErrors.length === 0, `startup hydration browser exceptions: ${JSON.stringify(startupRaceErrors)}`);
   await startupRacePage.close();
 
+  const startupDomainPage = await context.newPage();
+  const startupDomainErrors = [];
+  startupDomainPage.on("pageerror", (error) => startupDomainErrors.push(error.message));
+  await startupDomainPage.goto(appUrl);
+  await startupDomainPage.evaluate(() => {
+    sessionStorage.setItem("portmate.workspaceUiCheck.deferStartupDomains", "true");
+  });
+  await startupDomainPage.reload();
+  await startupDomainPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await startupDomainPage.waitForFunction(() => (
+    window.__pendingTransferLists.length >= 2 && window.__pendingGrantLists.length >= 2
+  ));
+  await startupDomainPage.waitForFunction(() => (
+    (window.__tauriEventListeners.get("portmate-transfer-task") || []).length > 0
+  ));
+  const hydrationTransfer = {
+    id: "startup-hydration-transfer",
+    sessionId: "edge-router",
+    protocol: "sftp",
+    source: "/tmp/startup-source.bin",
+    destination: "/srv/startup-target.bin",
+    bytesTotal: 1024,
+    bytesDone: 512,
+    status: "running",
+    message: "startup transfer retained",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    averageBytesPerSecond: 256,
+  };
+  await startupDomainPage.evaluate((task) => {
+    window.__transfers = [structuredClone(task)];
+    window.__emitTauriEvent("portmate-transfer-task", task);
+  }, hydrationTransfer);
+
+  await startupDomainPage.getByRole("button", { name: "工具", exact: true }).click();
+  await startupDomainPage.getByRole("button", { name: "MCP Bridge", exact: true }).click();
+  const startupMcpDialog = startupDomainPage.locator(".mcp-dialog");
+  await startupMcpDialog.waitFor();
+  await startupMcpDialog.locator(".mcp-new").click();
+  await startupMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").fill("startup-hydration-client");
+  await startupMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Startup Hydration Client");
+  await startupMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
+  await startupMcpDialog.locator(".mcp-grants button", { hasText: "Startup Hydration Client" }).waitFor();
+
+  await startupDomainPage.evaluate(() => {
+    for (const pending of window.__pendingTransferLists.splice(0)) pending.resolve(pending.result);
+    for (const pending of window.__pendingGrantLists.splice(0)) pending.resolve(pending.result);
+  });
+  await startupDomainPage.waitForFunction(() => (
+    window.__pendingTransferLists.length === 1 && window.__pendingGrantLists.length === 1
+  ));
+  await startupDomainPage.evaluate(() => {
+    window.__deferTransferLists = false;
+    window.__deferGrantLists = false;
+    const transferReplacement = window.__pendingTransferLists.shift();
+    const grantReplacement = window.__pendingGrantLists.shift();
+    transferReplacement.resolve(transferReplacement.result);
+    grantReplacement.resolve(grantReplacement.result);
+  });
+  await startupDomainPage.waitForTimeout(200);
+  const startupGrantLabels = await startupMcpDialog.locator(".mcp-grants button strong").allTextContents();
+  assert(startupGrantLabels.includes("Startup Hydration Client")
+    && startupGrantLabels.includes("Operations Console")
+    && startupGrantLabels.includes("Audit Reader"),
+  `startup grant hydration did not converge: ${JSON.stringify(startupGrantLabels)}`);
+  await startupMcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await startupDomainPage.getByRole("button", { name: "工具", exact: true }).click();
+  await startupDomainPage.getByRole("button", { name: "传输任务", exact: true }).click();
+  const startupTransferRow = startupDomainPage.locator(".transfer-row", { hasText: "/tmp/startup-source.bin" });
+  await startupTransferRow.waitFor();
+  const startupDomainState = await startupDomainPage.evaluate(() => ({
+    transfers: window.__transfers.map((task) => task.id),
+    grants: window.__mcpGrants.map((grant) => grant.clientId),
+    transferListCalls: window.__invokeCalls.filter((call) => call.command === "list_transfers").length,
+    grantListCalls: window.__invokeCalls.filter((call) => call.command === "list_mcp_grants").length,
+    pendingTransfers: window.__pendingTransferLists.length,
+    pendingGrants: window.__pendingGrantLists.length,
+  }));
+  assert(startupDomainErrors.length === 0,
+    `startup domain hydration browser exceptions: ${JSON.stringify(startupDomainErrors)}`);
+  await startupDomainPage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -1983,6 +2086,7 @@ try {
       reset: resetDockLayout,
     },
     startupHydration: startupHydrationState,
+    startupDomainHydration: startupDomainState,
     terminalWrites,
     desktop,
     mobile,

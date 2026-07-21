@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -131,6 +131,7 @@ const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 const MAX_RESOLVED_MCP_APPROVAL_IDS = 256;
+type StartupHydrationDomain = "transfers" | "audit" | "grants" | "host-keys" | "one-keys" | "serial-ports";
 const workspaceUtilityIcons = { Folder, Search, X };
 const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon: LucideIcon }> = {
   explorer: { label: "资源管理器", icon: Folder },
@@ -396,6 +397,7 @@ export default function App() {
   const activeLogRefreshGateRef = useRef(new KeyedRequestGate<string>());
   const sessionsSignatureRef = useRef("");
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
+  const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
@@ -463,6 +465,31 @@ export default function App() {
     }
     syncInputRef.current = enabled;
     setSyncInput(enabled);
+  }
+
+  function updateTransfers(update: SetStateAction<TransferTask[]>) {
+    startupHydrationGateRef.current.invalidate("transfers");
+    setTransfers(update);
+  }
+
+  function updateAudit(next: AuditRecord[]) {
+    startupHydrationGateRef.current.invalidate("audit");
+    setAudit(next);
+  }
+
+  function updateGrants(next: McpGrant[]) {
+    startupHydrationGateRef.current.invalidate("grants");
+    setGrants(next);
+  }
+
+  function updateHostKeys(next: HostKeyStore) {
+    startupHydrationGateRef.current.invalidate("host-keys");
+    setHostKeys(next);
+  }
+
+  function updateOneKeys(next: OneKeySummary[]) {
+    startupHydrationGateRef.current.invalidate("one-keys");
+    setOneKeys(next);
   }
 
   function commitScreenLock(next: ScreenLockState) {
@@ -897,7 +924,7 @@ export default function App() {
     let unlisten: (() => void) | null = null;
     void listen<TransferTask>("portmate-transfer-task", (event) => {
       if (disposed) return;
-      setTransfers((current) => mergeTransfers(current, event.payload));
+      updateTransfers((current) => mergeTransfers(current, event.payload));
     })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -1026,6 +1053,14 @@ export default function App() {
   async function refresh() {
     const gate = sessionSummaryRefreshGateRef.current;
     const token = gate.replace("summaries");
+    const supplementalHydration = Promise.all([
+      hydrateStartupValue("transfers", () => readStartupValue("list_transfers", emptyTransfers), setTransfers, true),
+      hydrateStartupValue("audit", () => readStartupValue("list_mcp_audit", emptyAudit), setAudit, true),
+      hydrateStartupValue("grants", () => readStartupValue("list_mcp_grants", emptyGrants), setGrants, true),
+      hydrateStartupValue("host-keys", () => readStartupValue("list_host_keys", emptyHostKeys), setHostKeys, true),
+      hydrateStartupValue("one-keys", () => readStartupValue("list_one_keys", []), setOneKeys, true),
+      hydrateStartupValue("serial-ports", () => readStartupValue("list_serial_ports", []), setSerialPorts, true),
+    ]);
     try {
       const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
       if (gate.isCurrent("summaries", token)) {
@@ -1046,12 +1081,7 @@ export default function App() {
         void refreshSessionSummaries();
       }
 
-      setTransfers(await callBackend("list_transfers", {}, emptyTransfers));
-      setAudit(await callBackend("list_mcp_audit", {}, emptyAudit));
-      setGrants(await callBackend("list_mcp_grants", {}, emptyGrants));
-      setHostKeys(await callBackend("list_host_keys", {}, emptyHostKeys));
-      setOneKeys(await callBackend("list_one_keys", {}, []));
-      setSerialPorts(await callBackend("list_serial_ports", {}, []));
+      await supplementalHydration;
 
       if (!gate.isCurrent("summaries", token)) return;
       for (const session of nextSessions) {
@@ -1061,6 +1091,33 @@ export default function App() {
     } finally {
       gate.finish("summaries", token);
     }
+  }
+
+  async function hydrateStartupValue<T>(
+    domain: StartupHydrationDomain,
+    load: () => Promise<T>,
+    apply: (value: T) => void,
+    replace = false,
+  ) {
+    const gate = startupHydrationGateRef.current;
+    const token = replace ? gate.replace(domain) : gate.begin(domain);
+    if (token === null) return;
+    try {
+      const value = await load();
+      if (!gate.isCurrent(domain, token)) {
+        void hydrateStartupValue(domain, load, apply);
+        return;
+      }
+      apply(value);
+    } catch {
+      if (!gate.isCurrent(domain, token)) void hydrateStartupValue(domain, load, apply);
+    } finally {
+      gate.finish(domain, token);
+    }
+  }
+
+  function readStartupValue<T>(command: string, fallback: T): Promise<T> {
+    return isBackendAvailable() ? invokeBackend<T>(command, {}) : Promise.resolve(fallback);
   }
 
   async function refreshActiveLog(sessionId: string, limit = 600) {
@@ -1593,13 +1650,13 @@ export default function App() {
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions(response.sessions);
     saveLocalSessionSummaries(response.sessions);
-    setOneKeys(response.oneKeys);
-    setHostKeys(response.hostKeys);
-    setGrants(response.grants);
+    updateOneKeys(response.oneKeys);
+    updateHostKeys(response.hostKeys);
+    updateGrants(response.grants);
     setLogs((current) => Object.fromEntries(
       Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
     ));
-    setTransfers((current) => current.filter((transfer) => transfer.sessionId !== profileId));
+    updateTransfers((current) => current.filter((transfer) => transfer.sessionId !== profileId));
     setSerialCaptures((current) => Object.fromEntries(
       Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
     ));
@@ -2619,7 +2676,7 @@ export default function App() {
         request: { profile, observation: hostKeyPrompt.scan.observation, decision },
       });
       const nextHostKeys = await callBackend("list_host_keys", {}, hostKeys);
-      setHostKeys(nextHostKeys);
+      updateHostKeys(nextHostKeys);
       setDraft(profile);
       setHostKeyPrompt(null);
       setNotice({ title: "Host key 已确认", message: reconnect ? "已保存信任决策，正在重新连接。" : "已保存信任决策。" });
@@ -2965,7 +3022,7 @@ export default function App() {
       );
     }
     if (panel === "fileManager") {
-      return <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => setTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />;
+      return <FileManagerPanel active={active} transfers={transfers} onTransfer={(task) => updateTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />;
     }
     if (panel === "history") {
       return (
@@ -3318,7 +3375,7 @@ export default function App() {
         />
       )}
       {utilityDialog === "transfer" && active && <TransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
-        setTransfers((current) => mergeTransfers(current, task));
+        updateTransfers((current) => mergeTransfers(current, task));
       }} onNotice={(message) => {
         setNotice({ title: "传输任务", message });
       }} />}
@@ -3345,15 +3402,15 @@ export default function App() {
         </Suspense>
       )}
       {utilityDialog === "logs" && <LogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />}
-      {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={setHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
+      {utilityDialog === "keys" && <KeyManagerDialog hostKeys={hostKeys} sessions={sessions} onChange={updateHostKeys} onProfileChange={applySavedSession} onProfilesChange={applySavedSessions} onClose={() => setUtilityDialog(null)} />}
       {utilityDialog === "mcp" && (
         <Suspense fallback={null}>
-          <LazyMcpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onGrantChange={setGrants} onAuditChange={setAudit} />
+          <LazyMcpDialog grants={grants} audit={audit} sessions={sessions} onClose={() => setUtilityDialog(null)} onGrantChange={updateGrants} onAuditChange={updateAudit} />
         </Suspense>
       )}
       {utilityDialog === "one-keys" && (
         <Suspense fallback={null}>
-          <LazyOneKeyDialog oneKeys={oneKeys} sessions={sessions} activeId={activeId} onChange={setOneKeys} onClose={() => setUtilityDialog(null)} />
+          <LazyOneKeyDialog oneKeys={oneKeys} sessions={sessions} activeId={activeId} onChange={updateOneKeys} onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "quick-commands" && (
