@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
-import { callBackend, invokeBackend, isBackendAvailable } from "./api";
+import { invokeBackend, isBackendAvailable } from "./api";
 import { COMMAND_HISTORY_STORAGE_KEY, commandHistoryCommands, normalizeCommandHistory, normalizeCommandHistoryPolicy } from "./command-history-state";
 import {
   buildDetachedPanePath,
@@ -58,26 +58,36 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     async function refreshSessions() {
       if (sessionsRefreshing) return;
       sessionsRefreshing = true;
-      const nextSessions = await callBackend("list_sessions", {}, loadLocalSessions());
-      if (!disposed) setSessions(nextSessions);
-      sessionsRefreshing = false;
+      try {
+        const nextSessions = isBackendAvailable()
+          ? await invokeBackend<SessionSummary[]>("list_sessions", {})
+          : loadLocalSessions();
+        if (!disposed) setSessions(nextSessions);
+      } catch {
+        // Keep the last confirmed session state during transient backend failures.
+      } finally {
+        sessionsRefreshing = false;
+      }
     }
 
     async function refreshTerminalState() {
       if (terminalStateRefreshing) return;
       terminalStateRefreshing = true;
       try {
-        const [nextEvents, nextOneKeys] = await Promise.all([
-          callBackend<SessionEvent[]>("tail_log", { sessionId: request.sessionId, limit: 600 }, []),
-          callBackend<OneKeySummary[]>("list_one_keys", {}, []),
+        if (!isBackendAvailable()) return;
+        const [eventsResult, oneKeysResult] = await Promise.allSettled([
+          invokeBackend<SessionEvent[]>("tail_log", { sessionId: request.sessionId, limit: 600 }),
+          invokeBackend<OneKeySummary[]>("list_one_keys", {}),
         ]);
         if (disposed) return;
-        const nextSignature = detachedEventSignature(nextEvents);
-        if (eventSignature !== nextSignature) {
-          eventSignature = nextSignature;
-          setEvents(nextEvents);
+        if (eventsResult.status === "fulfilled") {
+          const nextSignature = detachedEventSignature(eventsResult.value);
+          if (eventSignature !== nextSignature) {
+            eventSignature = nextSignature;
+            setEvents(eventsResult.value);
+          }
         }
-        setOneKeys(nextOneKeys);
+        if (oneKeysResult.status === "fulfilled") setOneKeys(oneKeysResult.value);
       } finally {
         terminalStateRefreshing = false;
       }
@@ -200,7 +210,13 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   }
 
   return (
-    <main className="detached-pane-root" data-window-id={request.windowId} data-pane-id={request.paneId}>
+    <main
+      className="detached-pane-root"
+      data-window-id={request.windowId}
+      data-pane-id={request.paneId}
+      data-event-count={events.length}
+      data-one-key-count={oneKeys.length}
+    >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
         <strong>{request.title || session?.profile.name || "会话不可用"}</strong>

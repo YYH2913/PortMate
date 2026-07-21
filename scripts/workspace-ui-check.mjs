@@ -263,6 +263,7 @@ try {
     window.__invokeCalls = [];
     window.__sessions = structuredClone(initialSessions);
     window.__events = structuredClone(initialEvents);
+    window.__oneKeys = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__clipboardText = "";
     window.__closeSessionError = false;
@@ -272,6 +273,8 @@ try {
     window.__pendingFileProperties = [];
     window.__deferTailLogs = false;
     window.__pendingTailLogs = [];
+    window.__failTailLogs = 0;
+    window.__failOneKeyLists = 0;
     window.__deferTunnelRefresh = false;
     window.__pendingTunnelRefresh = [];
     window.__deferSysmon = false;
@@ -328,6 +331,10 @@ try {
           return saved;
         }
         if (command === "tail_log") {
+          if (window.__failTailLogs > 0) {
+            window.__failTailLogs -= 1;
+            throw new Error("simulated tail_log failure");
+          }
           if (!window.__deferTailLogs) return window.__events.filter((event) => event.sessionId === args.sessionId);
           return new Promise((resolve) => {
             window.__pendingTailLogs.push({ args: structuredClone(args), resolve });
@@ -367,6 +374,13 @@ try {
           });
         }
         if (command === "list_mcp_grants") return window.__mcpGrants;
+        if (command === "list_one_keys") {
+          if (window.__failOneKeyLists > 0) {
+            window.__failOneKeyLists -= 1;
+            throw new Error("simulated list_one_keys failure");
+          }
+          return window.__oneKeys;
+        }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") return initialMcpHttpConfig;
         if (command === "list_mcp_approvals") return [];
@@ -412,7 +426,6 @@ try {
         if ([
           "list_transfers",
           "list_serial_ports",
-          "list_one_keys",
         ].includes(command)) return [];
         if (command.startsWith("plugin:event|")) return null;
         return null;
@@ -1295,6 +1308,48 @@ try {
   }
   assert(detachedCatchupSearch !== "0/0", "detached terminal did not render its polled log catch-up event");
   await detachedPage.getByRole("button", { name: "关闭查找", exact: true }).click();
+  const detachedOneKeyCallsBefore = await detachedPage.evaluate(() => {
+    window.__oneKeys = [{
+      id: "detached-one-key",
+      label: "Detached test",
+      kind: "account",
+      username: "tester",
+      hasPassword: true,
+      hasPassphrase: false,
+      identity: null,
+      sessionIds: ["local-shell"],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }];
+    return window.__invokeCalls.filter((call) => call.command === "list_one_keys").length;
+  });
+  await detachedPage.waitForFunction((previousCalls) => (
+    window.__invokeCalls.filter((call) => call.command === "list_one_keys").length > previousCalls
+    && document.querySelector(".detached-pane-root")?.getAttribute("data-one-key-count") === "1"
+  ), detachedOneKeyCallsBefore);
+  const detachedStableCounts = await detachedPage.locator(".detached-pane-root").evaluate((root) => ({
+    events: root.getAttribute("data-event-count"),
+    oneKeys: root.getAttribute("data-one-key-count"),
+  }));
+  const detachedFailureCalls = await detachedPage.evaluate(() => {
+    window.__failTailLogs = 1;
+    window.__failOneKeyLists = 1;
+    return {
+      tail: window.__invokeCalls.filter((call) => call.command === "tail_log").length,
+      oneKeys: window.__invokeCalls.filter((call) => call.command === "list_one_keys").length,
+    };
+  });
+  await detachedPage.waitForFunction((previousCalls) => (
+    window.__invokeCalls.filter((call) => call.command === "tail_log").length > previousCalls.tail
+    && window.__invokeCalls.filter((call) => call.command === "list_one_keys").length > previousCalls.oneKeys
+  ), detachedFailureCalls);
+  await detachedPage.waitForTimeout(100);
+  const detachedCountsAfterFailure = await detachedPage.locator(".detached-pane-root").evaluate((root) => ({
+    events: root.getAttribute("data-event-count"),
+    oneKeys: root.getAttribute("data-one-key-count"),
+  }));
+  assert(JSON.stringify(detachedCountsAfterFailure) === JSON.stringify(detachedStableCounts),
+    `detached terminal cleared valid state after a polling failure: ${JSON.stringify({ detachedStableCounts, detachedCountsAfterFailure })}`);
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
   await detachedPage.close();
 
