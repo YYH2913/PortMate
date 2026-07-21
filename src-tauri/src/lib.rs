@@ -4283,7 +4283,7 @@ async fn close_session_under_lifecycle_lock(
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let summary = store.close_session(&session_id)?;
-    save_store(&state.store_path, &store)
+    persist_applied_store(&store, &state.store_path, "session disconnect state")
         .map_err(|error| format!("会话传输已在本地关闭，但断开状态无法持久化: {error}"))?;
     Ok(summary)
 }
@@ -6170,7 +6170,7 @@ fn record_applied_serial_line_state(
         .into_iter()
         .find(|summary| summary.profile.id == request.session_id)
         .ok_or_else(|| format!("session summary is missing: {}", request.session_id))?;
-    save_store(store_path, store)
+    persist_applied_store(store, store_path, "serial line state")
         .map_err(|error| format!("串口线路已在设备上更新，但 Profile 状态无法持久化: {error}"))?;
     Ok(summary)
 }
@@ -6197,7 +6197,7 @@ fn serial_send_break(state: State<'_, AppState>, session_id: String) -> Result<(
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     store.record_system_event(&session_id, "PortMate: serial Break sent");
-    save_store(&state.store_path, &store)
+    persist_applied_store(&store, &state.store_path, "serial Break event")
         .map_err(|error| format!("Break 已发送并清除，但系统事件无法持久化: {error}"))?;
     Ok(())
 }
@@ -14874,7 +14874,7 @@ fn persist_stopped_tunnel_to_profile_and_log(
             stopped.mode, stopped.bind_host, stopped.bind_port
         ),
     );
-    save_store(&state.store_path, &store)
+    persist_applied_store(&store, &state.store_path, "stopped tunnel state")
 }
 
 fn mark_tunnel_stopped_in_store(store: &mut SessionStore, session_id: &str, stopped: &TunnelSpec) {
