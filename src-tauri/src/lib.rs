@@ -7520,19 +7520,87 @@ fn finish_mcp_write_audit(
 ) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        let record = next_store
-            .audit
-            .iter_mut()
-            .find(|record| record.id == audit_id)
-            .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
-        record.decision = decision.to_string();
-        if let Some(approval) = approval {
-            record
-                .details
-                .insert("approval".to_string(), approval.to_string());
-        }
-        Ok(())
+        update_mcp_write_audit(next_store, audit_id, decision, approval)
     })
+}
+
+fn finish_applied_mcp_write_audit(
+    state: &AppState,
+    audit_id: &str,
+    decision: &str,
+    approval: Option<&str>,
+) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    finish_applied_mcp_write_audit_with(
+        &mut store,
+        audit_id,
+        decision,
+        approval,
+        |next_store| save_store(&state.store_path, next_store),
+        |next_store| verify_persisted_store_commit(&state.store_path, next_store),
+    )
+}
+
+fn finish_applied_mcp_write_audit_with<Persist, VerifyAfterError>(
+    store: &mut SessionStore,
+    audit_id: &str,
+    decision: &str,
+    approval: Option<&str>,
+    persist: Persist,
+    verify_after_error: VerifyAfterError,
+) -> Result<(), String>
+where
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
+{
+    update_mcp_write_audit(store, audit_id, decision, approval)?;
+    let Err(save_error) = persist(store) else {
+        return Ok(());
+    };
+    match verify_after_error(store) {
+        Ok(true) => {
+            eprintln!(
+                "PortMate: MCP final audit save returned an error, but the intended snapshot was verified on disk: {save_error}"
+            );
+            Ok(())
+        }
+        verification => {
+            let error = match verification {
+                Ok(false) => save_error,
+                Err(verify_error) => format!(
+                    "{save_error}; 无法判定 MCP 最终审计是否已保存，请重启应用: {verify_error}"
+                ),
+                Ok(true) => unreachable!(),
+            };
+            if let Some(record) = store.audit.iter_mut().find(|record| record.id == audit_id) {
+                record.details.insert(
+                    "finalizationPersistence".to_string(),
+                    "degraded".to_string(),
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn update_mcp_write_audit(
+    store: &mut SessionStore,
+    audit_id: &str,
+    decision: &str,
+    approval: Option<&str>,
+) -> Result<(), String> {
+    let record = store
+        .audit
+        .iter_mut()
+        .find(|record| record.id == audit_id)
+        .ok_or_else(|| format!("MCP audit record disappeared before completion: {audit_id}"))?;
+    record.decision = decision.to_string();
+    if let Some(approval) = approval {
+        record
+            .details
+            .insert("approval".to_string(), approval.to_string());
+    }
+    Ok(())
 }
 
 async fn await_mcp_approval_with_emitter<F>(
@@ -7728,7 +7796,7 @@ async fn handle_ipc_request(
     } else {
         "failed"
     };
-    if let Err(error) = finish_mcp_write_audit(&state, &audit_id, decision, approval) {
+    if let Err(error) = finish_applied_mcp_write_audit(&state, &audit_id, decision, approval) {
         eprintln!("PortMate: failed to finalize MCP audit {audit_id} as {decision}: {error}");
     }
     result
@@ -34306,6 +34374,81 @@ mod tests {
 
             let _ = fs::remove_dir_all(root);
         });
+    }
+
+    #[test]
+    fn applied_mcp_audit_keeps_final_truth_when_persistence_fails() {
+        let mut store = SessionStore::default();
+        store.record_audit(AuditRecord {
+            id: "audit-applied".to_string(),
+            ts: Utc::now(),
+            actor: "mcp:test-client".to_string(),
+            action: "send_text".to_string(),
+            session_id: Some("session-1".to_string()),
+            decision: "authorized".to_string(),
+            details: BTreeMap::new(),
+        });
+
+        let error = finish_applied_mcp_write_audit_with(
+            &mut store,
+            "audit-applied",
+            "succeeded",
+            Some("approved"),
+            |_| Err("disk full".to_string()),
+            |_| Ok(false),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "disk full");
+        let audit = store
+            .audit
+            .iter()
+            .find(|record| record.id == "audit-applied")
+            .unwrap();
+        assert_eq!(audit.decision, "succeeded");
+        assert_eq!(
+            audit.details.get("approval").map(String::as_str),
+            Some("approved")
+        );
+        assert_eq!(
+            audit
+                .details
+                .get("finalizationPersistence")
+                .map(String::as_str),
+            Some("degraded")
+        );
+    }
+
+    #[test]
+    fn applied_mcp_audit_accepts_a_verified_post_commit_error() {
+        let mut store = SessionStore::default();
+        store.record_audit(AuditRecord {
+            id: "audit-verified".to_string(),
+            ts: Utc::now(),
+            actor: "mcp:test-client".to_string(),
+            action: "run_command".to_string(),
+            session_id: Some("session-1".to_string()),
+            decision: "authorized".to_string(),
+            details: BTreeMap::new(),
+        });
+
+        finish_applied_mcp_write_audit_with(
+            &mut store,
+            "audit-verified",
+            "failed",
+            None,
+            |_| Err("post-commit version read failed".to_string()),
+            |_| Ok(true),
+        )
+        .unwrap();
+
+        let audit = store
+            .audit
+            .iter()
+            .find(|record| record.id == "audit-verified")
+            .unwrap();
+        assert_eq!(audit.decision, "failed");
+        assert!(!audit.details.contains_key("finalizationPersistence"));
     }
 
     #[test]
