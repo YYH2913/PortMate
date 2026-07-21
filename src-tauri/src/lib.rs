@@ -13125,9 +13125,12 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
         {
             use std::os::unix::fs::PermissionsExt;
             let path = validate_local_mutating_path(&request.path)?;
-            let mut permissions = fs::metadata(&path)
-                .map_err(|error| format!("读取本地权限失败 {}: {error}", path.display()))?
-                .permissions();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("读取本地权限失败 {}: {error}", path.display()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!("拒绝修改本地符号链接权限: {}", path.display()));
+            }
+            let mut permissions = metadata.permissions();
             permissions.set_mode(request.mode);
             fs::set_permissions(&path, permissions)
                 .map_err(|error| format!("设置本地权限失败 {}: {error}", path.display()))
@@ -13506,8 +13509,7 @@ fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
         .map_err(|error| format!("读取本地目录失败 {}: {error}", path.display()))?
     {
         let entry = entry.map_err(|error| format!("读取本地目录项失败: {error}"))?;
-        let metadata = entry
-            .metadata()
+        let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| format!("读取本地文件元数据失败: {error}"))?;
         let modified = metadata
             .modified()
@@ -13519,8 +13521,8 @@ fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
         entries.push(FileEntry {
             name: entry.file_name().to_string_lossy().to_string(),
             path: entry.path().display().to_string(),
-            is_dir: metadata.is_dir(),
-            size: if metadata.is_file() {
+            is_dir: metadata.is_dir() && !metadata.file_type().is_symlink(),
+            size: if metadata.is_file() && !metadata.file_type().is_symlink() {
                 metadata.len()
             } else {
                 0
@@ -35445,6 +35447,41 @@ mod tests {
         let target =
             local_destination_file_path(&format!("{}/", root.display()), "../outside.bin").unwrap();
         assert_eq!(target, root.join("outside.bin"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_file_listing_and_chmod_do_not_follow_symbolic_links() {
+        let root = std::env::temp_dir().join(format!("portmate-file-links-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let protected = root.join("protected.txt");
+        fs::write(&protected, b"protected").unwrap();
+        let link = root.join("linked.txt");
+        std::os::unix::fs::symlink(&protected, &link).unwrap();
+
+        let entries = list_local_files(root.to_str().unwrap()).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.name == "linked.txt")
+            .unwrap();
+        assert!(!entry.is_dir);
+        assert_eq!(entry.size, 0);
+
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let error = tauri::async_runtime::block_on(chmod_path_inner(
+            &state,
+            ChmodPathRequest {
+                session_id: None,
+                path: link.display().to_string(),
+                mode: 0o600,
+                remote: false,
+            },
+        ))
+        .unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
         let _ = fs::remove_dir_all(root);
     }
 
