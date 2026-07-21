@@ -35623,6 +35623,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("target");
         let link = root.path().join("link");
+        let renamed_link = root.path().join("renamed-link");
         fs::create_dir(&target).unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
@@ -35632,6 +35633,43 @@ mod tests {
         assert!(error.contains("符号链接"), "{error}");
         assert!(!target.join("nested").exists());
         assert!(reject_local_symlink_components(&link, true, "final link").is_ok());
+
+        let state = test_app_state(
+            test_ssh_profile(),
+            root.path().join("portmate-store.sqlite3"),
+        );
+        tauri::async_runtime::block_on(async {
+            rename_path_inner(
+                &state,
+                RenamePathRequest {
+                    session_id: None,
+                    old_path: link.display().to_string(),
+                    new_path: renamed_link.display().to_string(),
+                    remote: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(fs::symlink_metadata(&renamed_link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(target.is_dir());
+
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: None,
+                    path: renamed_link.display().to_string(),
+                    remote: false,
+                },
+                FileOperation::Delete,
+            )
+            .await
+            .unwrap();
+        });
+        assert!(fs::symlink_metadata(&renamed_link).is_err());
+        assert!(target.is_dir());
     }
 
     #[test]
@@ -39077,7 +39115,37 @@ mod tests {
             .unwrap_err();
             assert!(error.contains("符号链接"), "{error}");
             assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
-            fs::remove_file(&sftp_directory_link).unwrap();
+
+            let renamed_directory_link = root.join("sftp-directory-link-renamed");
+            rename_path_inner(
+                &state,
+                RenamePathRequest {
+                    session_id: Some(profile.id.clone()),
+                    old_path: sftp_directory_link.display().to_string(),
+                    new_path: renamed_directory_link.display().to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(fs::symlink_metadata(&renamed_directory_link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: renamed_directory_link.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::Delete,
+            )
+            .await
+            .unwrap();
+            assert!(fs::symlink_metadata(&renamed_directory_link).is_err());
+            assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
             fs::remove_dir_all(&sftp_link_target).unwrap();
 
             let drop_source = root.join("external-drop-source");
