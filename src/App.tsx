@@ -95,7 +95,7 @@ import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
 import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
@@ -2191,6 +2191,49 @@ export default function App() {
     focusWorkspacePaneInput(newPaneId);
   }
 
+  function splitWorkspaceViewFromDrop(
+    sourcePaneId: string,
+    viewId: string,
+    targetPaneId: string,
+    edge: WorkspacePaneDirection,
+  ) {
+    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
+    const target = findWorkspacePane(workspaceRoot, targetPaneId);
+    const view = source?.views.find((candidate) => candidate.id === viewId);
+    if (!workspaceRoot || !source || !target || !view) return;
+    if (sourcePaneId === targetPaneId && source.views.length <= 1) {
+      setNotice({ title: "拖放视图", message: "最终视图不能拆成空分组。" });
+      return;
+    }
+    const paneDelta = source.views.length > 1 ? 1 : 0;
+    if (workspacePaneLeaves(workspaceRoot).length + paneDelta > MAX_WORKSPACE_PANES) {
+      setNotice({ title: "拖放视图", message: `工作区最多支持 ${MAX_WORKSPACE_PANES} 个分组。` });
+      return;
+    }
+    const direction: WorkspaceSplitDirection = edge === "left" || edge === "right" ? "vertical" : "horizontal";
+    const placement: WorkspaceSplitPlacement = edge === "left" || edge === "up" ? "first" : "second";
+    const newPaneId = createWorkspaceNodeId("pane");
+    const nextRoot = moveWorkspacePaneViewToNewGroup(
+      workspaceRoot,
+      sourcePaneId,
+      targetPaneId,
+      viewId,
+      direction,
+      newPaneId,
+      createWorkspaceNodeId("split"),
+      placement,
+    );
+    if (nextRoot === workspaceRoot) {
+      setNotice({ title: "拖放视图", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      return;
+    }
+    setWorkspaceRoot(nextRoot);
+    setActivePaneId(newPaneId);
+    setActiveId(view.sessionId);
+    setZoomedPaneId("");
+    focusWorkspacePaneInput(newPaneId);
+  }
+
   function moveWorkspaceView(sourcePaneId: string, targetPaneId: string) {
     const source = findWorkspacePane(workspaceRoot, sourcePaneId);
     if (!source || sourcePaneId === targetPaneId) return;
@@ -3101,6 +3144,7 @@ export default function App() {
             onRenameView={openWorkspaceViewRename}
             onOpenViewContextMenu={openWorkspaceViewContextMenu}
             onMoveViewDrop={moveWorkspaceViewToIndex}
+            onSplitViewDrop={splitWorkspaceViewFromDrop}
             onSplitRatioChange={(splitId, ratio) => {
               setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
             }}
@@ -4559,6 +4603,7 @@ function TerminalPaneGrid({
   onRenameView,
   onOpenViewContextMenu,
   onMoveViewDrop,
+  onSplitViewDrop,
   onSplitRatioChange,
 }: {
   root: WorkspaceNode | null;
@@ -4592,6 +4637,12 @@ function TerminalPaneGrid({
   onRenameView: (paneId: string, viewId?: string) => void;
   onOpenViewContextMenu: (paneId: string, viewId: string, x: number, y: number) => void;
   onMoveViewDrop: (sourcePaneId: string, viewId: string, targetPaneId: string, targetIndex: number) => void;
+  onSplitViewDrop: (
+    sourcePaneId: string,
+    viewId: string,
+    targetPaneId: string,
+    edge: WorkspacePaneDirection,
+  ) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 }) {
   if (!root) {
@@ -4629,6 +4680,7 @@ function TerminalPaneGrid({
         onRenameView={onRenameView}
         onOpenViewContextMenu={onOpenViewContextMenu}
         onMoveViewDrop={onMoveViewDrop}
+        onSplitViewDrop={onSplitViewDrop}
         onSplitRatioChange={onSplitRatioChange}
       />
     </div>
@@ -4668,6 +4720,12 @@ type TerminalWorkspaceNodeProps = {
   onRenameView: (paneId: string, viewId?: string) => void;
   onOpenViewContextMenu: (paneId: string, viewId: string, x: number, y: number) => void;
   onMoveViewDrop: (sourcePaneId: string, viewId: string, targetPaneId: string, targetIndex: number) => void;
+  onSplitViewDrop: (
+    sourcePaneId: string,
+    viewId: string,
+    targetPaneId: string,
+    edge: WorkspacePaneDirection,
+  ) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 };
 
@@ -4687,6 +4745,40 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
       className={node.id === props.activePaneId ? "terminal-pane active" : "terminal-pane"}
       data-pane-id={node.id}
       onMouseDown={() => props.onActivate(node.id, node.activeViewId)}
+      onDragOver={(event) => {
+        if (!isWorkspaceViewDrag(event.dataTransfer)) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(".workspace-pane-tabs")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        clearWorkspaceDropIndicators();
+        event.currentTarget.dataset.viewDropZone = workspaceViewDropZone(
+          event.currentTarget,
+          event.clientX,
+          event.clientY,
+        );
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          delete event.currentTarget.dataset.viewDropZone;
+        }
+      }}
+      onDrop={(event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(".workspace-pane-tabs")) return;
+        const source = readWorkspaceViewDrag(event.dataTransfer);
+        const zone = readWorkspaceViewDropZone(event.currentTarget.dataset.viewDropZone);
+        clearWorkspaceDropIndicators();
+        if (!source || !zone) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (zone === "center") {
+          props.onMoveViewDrop(source.paneId, source.viewId, node.id, node.views.length);
+        } else {
+          props.onSplitViewDrop(source.paneId, source.viewId, node.id, zone);
+        }
+      }}
     >
       <header>
         <div
@@ -5006,6 +5098,8 @@ function focusWorkspacePaneInput(paneId: string) {
 }
 
 const WORKSPACE_VIEW_DRAG_TYPE = "application/x-portmate-workspace-view";
+type WorkspaceViewDropZone = WorkspacePaneDirection | "center";
+const workspaceViewDropZones: readonly WorkspaceViewDropZone[] = ["left", "right", "up", "down", "center"];
 
 function isWorkspaceViewDrag(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types).includes(WORKSPACE_VIEW_DRAG_TYPE);
@@ -5024,6 +5118,26 @@ function readWorkspaceViewDrag(dataTransfer: DataTransfer): { paneId: string; vi
   }
 }
 
+function workspaceViewDropZone(element: HTMLElement, clientX: number, clientY: number): WorkspaceViewDropZone {
+  const bounds = element.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (clientX - bounds.left) / Math.max(1, bounds.width)));
+  const y = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
+  const edges: Array<[WorkspacePaneDirection, number]> = [
+    ["left", x],
+    ["right", 1 - x],
+    ["up", y],
+    ["down", 1 - y],
+  ];
+  const nearest = edges.sort((left, right) => left[1] - right[1])[0];
+  return nearest[1] <= 0.24 ? nearest[0] : "center";
+}
+
+function readWorkspaceViewDropZone(value: string | undefined): WorkspaceViewDropZone | null {
+  return workspaceViewDropZones.includes(value as WorkspaceViewDropZone)
+    ? value as WorkspaceViewDropZone
+    : null;
+}
+
 function markWorkspaceDropTarget(element: HTMLElement, position: "before" | "after" | "end") {
   clearWorkspaceDropIndicators();
   element.dataset.dropPosition = position;
@@ -5035,6 +5149,9 @@ function clearWorkspaceDropTarget(element: HTMLElement) {
 
 function clearWorkspaceDropIndicators() {
   document.querySelectorAll<HTMLElement>("[data-drop-position]").forEach(clearWorkspaceDropTarget);
+  document.querySelectorAll<HTMLElement>("[data-view-drop-zone]").forEach((element) => {
+    delete element.dataset.viewDropZone;
+  });
 }
 
 function TransferDialog({

@@ -729,6 +729,53 @@ try {
   assert(await page.locator(".workspace-pane-tab.active", { hasText: /^Edge$/ }).count() === 1,
     "tag search did not restore the exact Edge workspace view");
 
+  const viewDragData = await page.evaluateHandle(() => new DataTransfer());
+  const benchViewTab = page.locator(".workspace-pane-tab", { hasText: "Bench UART" });
+  const edgePane = page.locator(".terminal-pane", { has: page.locator(".workspace-pane-tab", { hasText: /^Edge$/ }) });
+  const edgePaneBounds = await edgePane.boundingBox();
+  assert(edgePaneBounds, "edge pane geometry is unavailable for view drag");
+  await benchViewTab.dispatchEvent("dragstart", { dataTransfer: viewDragData });
+  await edgePane.dispatchEvent("dragover", {
+    dataTransfer: viewDragData,
+    clientX: edgePaneBounds.x + edgePaneBounds.width - 2,
+    clientY: edgePaneBounds.y + edgePaneBounds.height / 2,
+  });
+  assert(await edgePane.getAttribute("data-view-drop-zone") === "right",
+    "dragging a view over the pane edge did not expose the right split drop zone");
+  await edgePane.dispatchEvent("drop", {
+    dataTransfer: viewDragData,
+    clientX: edgePaneBounds.x + edgePaneBounds.width - 2,
+    clientY: edgePaneBounds.y + edgePaneBounds.height / 2,
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".terminal-pane").length === 2);
+  assert(await page.locator(".terminal-pane .workspace-pane-tab", { hasText: "Edge" }).count() === 1
+    && await page.locator(".terminal-pane .workspace-pane-tab", { hasText: "Bench UART" }).count() === 1,
+  "view edge drop did not create one pane per terminal view");
+  await page.screenshot({ path: `${screenshotPrefix}-view-split-drop.png`, fullPage: true });
+
+  const benchPane = page.locator(".terminal-pane", { has: page.locator(".workspace-pane-tab", { hasText: "Bench UART" }) });
+  const edgePaneAfterSplit = page.locator(".terminal-pane", { has: page.locator(".workspace-pane-tab", { hasText: /^Edge$/ }) });
+  const edgeCenterBounds = await edgePaneAfterSplit.boundingBox();
+  assert(edgeCenterBounds, "edge pane geometry is unavailable after split drop");
+  await benchPane.locator(".workspace-pane-tab", { hasText: "Bench UART" }).dispatchEvent("dragstart", { dataTransfer: viewDragData });
+  await edgePaneAfterSplit.dispatchEvent("dragover", {
+    dataTransfer: viewDragData,
+    clientX: edgeCenterBounds.x + edgeCenterBounds.width / 2,
+    clientY: edgeCenterBounds.y + edgeCenterBounds.height / 2,
+  });
+  assert(await edgePaneAfterSplit.getAttribute("data-view-drop-zone") === "center",
+    "dragging a view over the pane center did not expose the group drop zone");
+  await edgePaneAfterSplit.dispatchEvent("drop", {
+    dataTransfer: viewDragData,
+    clientX: edgeCenterBounds.x + edgeCenterBounds.width / 2,
+    clientY: edgeCenterBounds.y + edgeCenterBounds.height / 2,
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".terminal-pane").length === 1);
+  assert(await page.locator(".workspace-pane-tab", { hasText: "Edge" }).count() === 1
+    && await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).count() === 1,
+  "center drop did not merge the moved view back into the target group");
+  await viewDragData.dispose();
+
   async function openTerminalSettings() {
     await page.locator(".menu-trigger", { hasText: "工具" }).click();
     await page.locator(".menu-popover button", { hasText: "终端设置" }).click();
@@ -1405,6 +1452,7 @@ try {
     screenshots: [
       `${screenshotPrefix}-search.png`,
       `${screenshotPrefix}-search-mobile.png`,
+      `${screenshotPrefix}-view-split-drop.png`,
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-file-manager.png`,

@@ -2319,6 +2319,7 @@ button {
 }
 
 .terminal-pane {
+  position: relative;
   display: grid;
   grid-template-rows: 28px minmax(0, 1fr);
   min-width: 0;
@@ -2326,6 +2327,50 @@ button {
   container-type: inline-size;
   background: #0d1117;
   transition: box-shadow 120ms ease-out;
+}
+
+.terminal-pane[data-view-drop-zone]::after {
+  position: absolute;
+  z-index: 12;
+  border: 1px solid rgba(94, 234, 212, 0.8);
+  background: rgba(32, 178, 170, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(7, 19, 27, 0.72);
+  content: "";
+  pointer-events: none;
+}
+
+.terminal-pane[data-view-drop-zone="center"]::after {
+  inset: 24% 22%;
+}
+
+.terminal-pane[data-view-drop-zone="left"]::after,
+.terminal-pane[data-view-drop-zone="right"]::after {
+  top: 32px;
+  bottom: 4px;
+  width: calc(50% - 6px);
+}
+
+.terminal-pane[data-view-drop-zone="left"]::after {
+  left: 4px;
+}
+
+.terminal-pane[data-view-drop-zone="right"]::after {
+  right: 4px;
+}
+
+.terminal-pane[data-view-drop-zone="up"]::after,
+.terminal-pane[data-view-drop-zone="down"]::after {
+  right: 4px;
+  left: 4px;
+  height: calc(50% - 20px);
+}
+
+.terminal-pane[data-view-drop-zone="up"]::after {
+  top: 32px;
+}
+
+.terminal-pane[data-view-drop-zone="down"]::after {
+  bottom: 4px;
 }
 
 .terminal-pane.active {

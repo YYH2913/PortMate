@@ -498,6 +498,39 @@ export function moveWorkspacePaneView(
   return withoutView ? insertWorkspacePaneView(withoutView, targetPaneId, view, targetIndex) : root;
 }
 
+export function moveWorkspacePaneViewToNewGroup(
+  root: WorkspaceNode | null,
+  sourcePaneId: string,
+  targetPaneId: string,
+  viewId: string,
+  direction: WorkspaceSplitDirection,
+  newPaneId = createWorkspaceNodeId("pane"),
+  splitId = createWorkspaceNodeId("split"),
+  placement: WorkspaceSplitPlacement = "second",
+): WorkspaceNode | null {
+  if (!root) return root;
+  const source = findWorkspacePane(root, sourcePaneId);
+  const target = findWorkspacePane(root, targetPaneId);
+  const view = source?.views.find((candidate) => candidate.id === viewId);
+  if (!source || !target || !view) return root;
+  if (sourcePaneId === targetPaneId && source.views.length <= 1) return root;
+  const paneDelta = source.views.length > 1 ? 1 : 0;
+  if (workspacePaneLeaves(root).length + paneDelta > MAX_WORKSPACE_PANES) return root;
+
+  const withoutView = removeWorkspacePaneView(root, sourcePaneId, viewId);
+  if (!withoutView || !findWorkspacePane(withoutView, targetPaneId)) return root;
+  const splitRoot = splitWorkspacePaneWithView(
+    withoutView,
+    targetPaneId,
+    direction,
+    view,
+    newPaneId,
+    splitId,
+    placement,
+  );
+  return splitRoot === withoutView ? root : splitRoot;
+}
+
 export function removeWorkspacePaneSession(
   root: WorkspaceNode | null,
   paneId: string,

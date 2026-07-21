@@ -20,6 +20,7 @@ import {
   replaceWorkspacePaneSession,
   moveWorkspacePaneSession,
   moveWorkspacePaneView,
+  moveWorkspacePaneViewToNewGroup,
   resolveStartupSessionIds,
   sanitizeWorkspaceSnapshot,
   setWorkspacePaneViewColor,
@@ -436,6 +437,62 @@ describe("workspace snapshots", () => {
     const last = moveWorkspacePaneView(first, "group-a", "group-a", "view-c", 3)!;
     expect(findWorkspacePane(last, "group-a")?.views.map((view) => view.id)).toEqual(["view-a", "view-b", "view-c"]);
     expect(findWorkspacePane(last, "group-a")?.views[1].color).toBe("#008B8B");
+  });
+
+  it("moves views to directional groups without losing single-view source panes", () => {
+    const grouped = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "pane",
+        id: "group-a",
+        activeViewId: "view-a",
+        views: [
+          { id: "view-a", sessionId: "a", title: "Primary", color: "" },
+          { id: "view-b", sessionId: "b", title: "Secondary", color: "#008B8B" },
+        ],
+      },
+      activePaneId: "group-a",
+      activeId: "a",
+    });
+    const split = moveWorkspacePaneViewToNewGroup(
+      grouped.root,
+      "group-a",
+      "group-a",
+      "view-b",
+      "vertical",
+      "group-b",
+      "split-b",
+      "second",
+    )!;
+    expect(workspacePaneLeaves(split).map((pane) => pane.id)).toEqual(["group-a", "group-b"]);
+    expect(findWorkspacePane(split, "group-a")?.views.map((view) => view.id)).toEqual(["view-a"]);
+    expect(findWorkspacePane(split, "group-b")?.views).toEqual([
+      { id: "view-b", sessionId: "b", title: "Secondary", color: "#008B8B", keyMode: "remote" },
+    ]);
+
+    const moved = moveWorkspacePaneViewToNewGroup(
+      split,
+      "group-b",
+      "group-a",
+      "view-b",
+      "horizontal",
+      "group-c",
+      "split-c",
+      "first",
+    )!;
+    expect(workspacePaneLeaves(moved).map((pane) => pane.id)).toEqual(["group-c", "group-a"]);
+    expect(findWorkspacePane(moved, "group-b")).toBeUndefined();
+    expect(findWorkspacePane(moved, "group-c")?.activeViewId).toBe("view-b");
+    const only = createWorkspacePane("only", "only-pane");
+    expect(moveWorkspacePaneViewToNewGroup(
+      only,
+      "only-pane",
+      "only-pane",
+      only.activeViewId,
+      "vertical",
+      "unused-pane",
+      "unused-split",
+    )).toMatchObject({ kind: "pane", id: "only-pane" });
   });
 
   it("repairs duplicate v4 view ids and removes only unavailable session views", () => {
