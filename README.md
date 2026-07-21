@@ -107,6 +107,8 @@ command backend inside the desktop app.
 
 Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend. PortMate 0.1 changes the bundle identifier from the macOS-conflicting `dev.portmate.app` to `dev.portmate.desktop`; startup atomically renames the legacy app-data directory when the new directory is absent or empty, and refuses to merge two non-empty stores.
 
+Live terminal resize requests reach SSH, Shell PTY, or negotiated Telnet NAWS first. Their persisted Profile `cols`/`rows` metadata then uses a copy-on-write Store commit, so a failed snapshot write reports the failure without replacing live memory with dimensions that were never persisted.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
