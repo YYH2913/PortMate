@@ -281,6 +281,12 @@ try {
     window.__pendingSysmon = [];
     window.__deferSessionLists = false;
     window.__pendingSessionLists = [];
+    window.__logShards = [
+      { path: "logs/a.txt", format: "txt", size: 32, modifiedAt: new Date().toISOString() },
+      { path: "logs/b.jsonl", format: "jsonl", size: 48, modifiedAt: new Date().toISOString() },
+    ];
+    window.__deferLogPreviews = false;
+    window.__pendingLogPreviews = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -345,6 +351,15 @@ try {
         }
         if (command === "list_serial_capture_history") {
           return { frames: [], enabled: false, totalFrames: 0, capturedBytes: 0, droppedFrames: 0, unavailableFrames: 0 };
+        }
+        if (command === "list_log_shards") return window.__logShards;
+        if (command === "read_log_shard") {
+          if (!window.__deferLogPreviews) {
+            return { path: args.path, content: `preview:${args.path}`, encoding: "utf8", bytesRead: 16, truncated: false };
+          }
+          return new Promise((resolve) => {
+            window.__pendingLogPreviews.push({ args: structuredClone(args), resolve });
+          });
         }
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
@@ -1384,6 +1399,32 @@ try {
   assert(serialAnalyzerPageErrors.length === 0,
     `serial analyzer refresh gate raised browser errors: ${JSON.stringify(serialAnalyzerPageErrors)}`);
   await serialAnalyzerPage.close();
+
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.getByRole("button", { name: "日志管理", exact: true }).click();
+  const logManager = page.locator(".log-manager-dialog");
+  await logManager.waitFor();
+  await logManager.getByRole("button", { name: /logs\/a\.txt/ }).waitFor();
+  await page.evaluate(() => { window.__deferLogPreviews = true; });
+  await logManager.getByRole("button", { name: /logs\/a\.txt/ }).click();
+  await logManager.getByRole("button", { name: /logs\/b\.jsonl/ }).click();
+  await page.waitForFunction(() => window.__pendingLogPreviews.length === 2);
+  await page.evaluate(() => {
+    const pending = window.__pendingLogPreviews[1];
+    pending.resolve({ path: pending.args.path, content: "newer preview", encoding: "utf8", bytesRead: 13, truncated: false });
+  });
+  await logManager.locator(".log-preview > header strong", { hasText: "logs/b.jsonl" }).waitFor();
+  await page.evaluate(() => {
+    const pending = window.__pendingLogPreviews[0];
+    pending.resolve({ path: pending.args.path, content: "stale preview", encoding: "utf8", bytesRead: 13, truncated: false });
+    window.__pendingLogPreviews = [];
+    window.__deferLogPreviews = false;
+  });
+  await page.waitForTimeout(100);
+  assert(await logManager.locator(".log-preview > header strong").textContent() === "logs/b.jsonl",
+    "a stale log preview response replaced the latest selected shard");
+  await logManager.getByRole("button", { name: "关闭", exact: true }).last().click();
+  await logManager.waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.locator(".menu-trigger", { hasText: "工具" }).click();

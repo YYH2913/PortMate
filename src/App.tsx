@@ -5939,6 +5939,7 @@ function LogManagerDialog({
   const [activeSearchMatch, setActiveSearchMatch] = useState<LogShardSearchMatch | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveResult, setArchiveResult] = useState<ArchiveLogShardsResult | null>(null);
+  const requestGate = useRef(new KeyedRequestGate<"shards" | "preview" | "search">());
 
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
@@ -5946,10 +5947,13 @@ function LogManagerDialog({
   const bundleAttachmentSelection = summarizeBundleAttachmentSelection(shards, selected);
 
   async function refreshShards() {
+    const token = requestGate.current.begin("shards");
+    if (token === null) return;
     setBusy(true);
     setError("");
     try {
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
+      if (!requestGate.current.isCurrent("shards", token)) return;
       setShards(next);
       const paths = new Set(next.map((shard) => shard.path));
       setSelected((current) => current.filter((path) => paths.has(path)));
@@ -5957,14 +5961,15 @@ function LogManagerDialog({
       setSearchResult(null);
       setActiveSearchMatch(null);
     } catch (error) {
-      setError(formatError(error));
+      if (requestGate.current.isCurrent("shards", token)) setError(formatError(error));
     } finally {
-      setBusy(false);
+      if (requestGate.current.finish("shards", token)) setBusy(false);
     }
   }
 
   useEffect(() => {
     void refreshShards();
+    return () => requestGate.current.invalidateAll();
   }, []);
 
   useEffect(() => {
@@ -5972,15 +5977,19 @@ function LogManagerDialog({
   }, [bundleAttachmentSelection.count, bundleAttachmentSelection.withinLimits]);
 
   async function openPreview(path: string) {
+    requestGate.current.invalidate("preview");
+    const token = requestGate.current.begin("preview");
+    if (token === null) return;
     setBusy(true);
     setError("");
     try {
       setActiveSearchMatch(null);
-      setPreview(await invokeBackend<LogShardPreview>("read_log_shard", { path, maxBytes: 64 * 1024 }));
+      const next = await invokeBackend<LogShardPreview>("read_log_shard", { path, maxBytes: 64 * 1024 });
+      if (requestGate.current.isCurrent("preview", token)) setPreview(next);
     } catch (error) {
-      setError(formatError(error));
+      if (requestGate.current.isCurrent("preview", token)) setError(formatError(error));
     } finally {
-      setBusy(false);
+      if (requestGate.current.finish("preview", token)) setBusy(false);
     }
   }
 
@@ -5989,21 +5998,26 @@ function LogManagerDialog({
     const selectedSet = new Set(selected);
     const bytes = shards.filter((shard) => selectedSet.has(shard.path)).reduce((sum, shard) => sum + shard.size, 0);
     if (!window.confirm(`删除 ${selected.length} 个日志分片（${formatBytes(bytes)}）?`)) return;
+    const token = requestGate.current.begin("shards");
+    if (token === null) return;
+    requestGate.current.invalidate("preview");
+    requestGate.current.invalidate("search");
     setBusy(true);
     setError("");
     try {
       const result = await invokeBackend<DeleteLogShardsResult>("delete_log_shards", { paths: selected });
+      if (!requestGate.current.isCurrent("shards", token)) return;
       setSelected([]);
       setPreview(null);
       setSearchResult(null);
       setActiveSearchMatch(null);
       onNotice(`已删除 ${result.deleted} 个分片，释放 ${formatBytes(result.bytesDeleted)}`);
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
-      setShards(next);
+      if (requestGate.current.isCurrent("shards", token)) setShards(next);
     } catch (error) {
-      setError(formatError(error));
+      if (requestGate.current.isCurrent("shards", token)) setError(formatError(error));
     } finally {
-      setBusy(false);
+      if (requestGate.current.finish("shards", token)) setBusy(false);
     }
   }
 
@@ -6055,23 +6069,36 @@ function LogManagerDialog({
 
   async function searchShardContent() {
     if (!contentQuery.trim()) return;
+    const token = requestGate.current.begin("search");
+    if (token === null) return;
     setSearchBusy(true);
     setError("");
     try {
       const result = await invokeBackend<SearchLogShardsResult>("search_log_shards", {
         request: { query: contentQuery, paths: selected, limit: 200 },
       });
+      if (!requestGate.current.isCurrent("search", token)) return;
       setSearchResult(result);
       setActiveSearchMatch(result.matches[0] ?? null);
       setPreview(null);
     } catch (error) {
-      setError(formatError(error));
+      if (requestGate.current.isCurrent("search", token)) setError(formatError(error));
     } finally {
-      setSearchBusy(false);
+      if (requestGate.current.finish("search", token)) setSearchBusy(false);
     }
   }
 
+  function changeContentQuery(next: string) {
+    requestGate.current.invalidate("search");
+    setSearchBusy(false);
+    setContentQuery(next);
+    setSearchResult(null);
+    setActiveSearchMatch(null);
+  }
+
   function clearContentSearch() {
+    requestGate.current.invalidate("search");
+    setSearchBusy(false);
     setSearchResult(null);
     setActiveSearchMatch(null);
   }
@@ -6107,7 +6134,7 @@ function LogManagerDialog({
           </div>
           <div className="log-content-search">
             <Search size={14} />
-            <input value={contentQuery} onChange={(event) => setContentQuery(event.target.value)} onKeyDown={(event) => {
+            <input value={contentQuery} onChange={(event) => changeContentQuery(event.target.value)} onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
                 void searchShardContent();
