@@ -19,7 +19,10 @@ import {
   FileText,
   Files,
   Folder,
+  FolderPlus,
+  Info,
   KeyRound,
+  ListChecks,
   Lock,
   LoaderCircle,
   Maximize2,
@@ -36,10 +39,12 @@ import {
   Search,
   SendHorizontal,
   Settings,
+  ShieldCheck,
   Square,
   SquareTerminal,
   Trash2,
   Unlock,
+  Upload,
   UserPlus,
   X,
 } from "lucide-react";
@@ -4404,27 +4409,29 @@ function FileBrowserPane({
     >
       <div className="file-toolbar">
         <strong>{title}</strong>
-        <input value={panel.path} onChange={(event) => onPathChange(event.target.value)} onKeyDown={(event) => {
+        <input aria-label={`${title}路径`} value={panel.path} onChange={(event) => onPathChange(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter") {
             onLoad(panel.path);
           }
         }} />
-        <button onClick={() => onLoad(panel.path)} disabled={panel.busy}><RefreshCw size={13} /></button>
+        <button type="button" title={`刷新${title}目录`} aria-label={`刷新${title}目录`} onClick={() => onLoad(panel.path)} disabled={panel.busy}><RefreshCw size={13} /></button>
       </div>
       <div className="file-actions">
-        <button type="button" onClick={onSelectAll}>{panel.selected.length === panel.entries.length && panel.entries.length ? "清除" : "全选"}</button>
-        <button onClick={onCreateDir}>新建</button>
-        <button onClick={onRename} disabled={panel.selected.length !== 1}>重命名</button>
-        <button onClick={onDelete} disabled={!panel.selected.length}>删除</button>
-        <button onClick={onChmod} disabled={panel.selected.length !== 1}>权限</button>
-        <button onClick={onProperties} disabled={panel.selected.length !== 1}>属性</button>
+        <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} onClick={onSelectAll}><ListChecks size={13} /></button>
+        <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir}><FolderPlus size={13} /></button>
+        <button type="button" title="重命名" aria-label="重命名" onClick={onRename} disabled={panel.selected.length !== 1}><Pencil size={13} /></button>
+        <button type="button" title="删除" aria-label="删除" onClick={onDelete} disabled={!panel.selected.length}><Trash2 size={13} /></button>
+        <button type="button" title="修改权限" aria-label="修改权限" onClick={onChmod} disabled={panel.selected.length !== 1}><ShieldCheck size={13} /></button>
+        <button type="button" title="文件属性" aria-label="文件属性" onClick={onProperties} disabled={panel.selected.length !== 1}><Info size={13} /></button>
         <select value={conflictPolicy} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label="文件冲突策略" title="文件冲突策略">
-          <option value="fail">冲突：停止</option>
-          <option value="overwrite">冲突：覆盖</option>
-          <option value="skip">冲突：跳过</option>
-          <option value="rename">冲突：重命名</option>
+          <option value="fail">停止</option>
+          <option value="overwrite">覆盖</option>
+          <option value="skip">跳过</option>
+          <option value="rename">重命名</option>
         </select>
-        <button onClick={onTransfer} disabled={!panel.selected.length || !canTransfer}>{transferLabel}{panel.selected.length > 1 ? ` ${panel.selected.length}` : ""}</button>
+        <button type="button" title={transferLabel} aria-label={`${transferLabel}${panel.selected.length > 1 ? ` ${panel.selected.length} 项` : ""}`} onClick={onTransfer} disabled={!panel.selected.length || !canTransfer}>
+          {remote ? <Download size={13} /> : <Upload size={13} />}
+        </button>
       </div>
       {panel.error ? (
         <div className="file-error">{panel.error}</div>

@@ -570,13 +570,26 @@ try {
       const rect = pane.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
     }),
+    actions: [...dock.querySelectorAll(".file-actions")].map((actions) => ({
+      clientWidth: actions.clientWidth,
+      scrollWidth: actions.scrollWidth,
+      labels: [...actions.querySelectorAll("button")].map((button) => button.getAttribute("aria-label")),
+      icons: actions.querySelectorAll("button svg").length,
+    })),
   }));
   assert(fileDockLayout.width >= 350 && fileDockLayout.width <= 366
     && fileDockLayout.active === "fileManager"
     && JSON.stringify(fileDockLayout.tabs) === JSON.stringify(["explorer", "fileManager"])
     && JSON.stringify(fileDockLayout.panels) === JSON.stringify(["explorer", "fileManager"])
     && fileDockLayout.panes.length === 2
-    && fileDockLayout.panes[1].top >= fileDockLayout.panes[0].bottom - 1,
+    && fileDockLayout.panes[1].top >= fileDockLayout.panes[0].bottom - 1
+    && fileDockLayout.actions.length === 2
+    && fileDockLayout.actions.every((actions) => (
+      actions.scrollWidth <= actions.clientWidth + 1
+      && actions.labels.length === 7
+      && actions.labels.every(Boolean)
+      && actions.icons === 7
+    )),
   `file manager and explorer are not simultaneously visible in the left dock: ${JSON.stringify(fileDockLayout)}`);
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 

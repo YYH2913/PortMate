@@ -1999,14 +1999,18 @@ button {
 }
 
 .file-actions button {
-  flex: 0 0 auto;
-  padding: 0 8px;
+  display: grid;
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
+  place-items: center;
   cursor: pointer;
 }
 
 .file-actions select {
-  min-width: 96px;
-  flex: 0 0 auto;
+  min-width: 66px;
+  flex: 1 1 76px;
+  padding-inline: 4px;
 }
 
 .file-actions button:disabled {
