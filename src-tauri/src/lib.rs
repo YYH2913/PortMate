@@ -20803,7 +20803,9 @@ fn read_ssh_channel(
                         ssh_reconnect_delay(&reconnect_profile).as_millis()
                     ),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "SSH reconnect transition")
+                {
                     eprintln!("PortMate: failed to persist SSH reconnect event: {error}");
                 }
                 true
@@ -20822,7 +20824,9 @@ fn read_ssh_channel(
                         "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s)"
                     ),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "SSH disconnect transition")
+                {
                     eprintln!("PortMate: failed to persist SSH close event: {error}");
                 }
                 false
@@ -21014,7 +21018,9 @@ fn record_ssh_reconnect_failure_if_pending(
             reconnect_delay.as_millis()
         ),
     );
-    if let Err(save_error) = save_store(&state.store_path, &store) {
+    if let Err(save_error) =
+        persist_applied_store(&store, &state.store_path, "SSH reconnect failure state")
+    {
         eprintln!("PortMate: failed to persist SSH reconnect failure: {save_error}");
     }
     SshReconnectFailureDisposition::Recorded
@@ -21063,7 +21069,9 @@ fn stop_pending_ssh_reconnect_if_disabled(
             "PortMate: SSH reconnect stopped: {reason}; stopped {stopped_tunnels} tunnel runtime(s)"
         ),
     );
-    if let Err(error) = save_store(&state.store_path, &store) {
+    if let Err(error) =
+        persist_applied_store(&store, &state.store_path, "stopped SSH reconnect state")
+    {
         eprintln!("PortMate: failed to persist SSH reconnect stop: {error}");
     }
     true
@@ -21255,7 +21263,11 @@ async fn reconnect_ssh_session(
                                             ),
                                         );
                                     }
-                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                    if let Err(error) = persist_applied_store(
+                                        &store,
+                                        &state.store_path,
+                                        "installed SSH reconnect state",
+                                    ) {
                                         eprintln!(
                                             "PortMate: failed to persist SSH reconnect status: {error}"
                                         );
@@ -21357,7 +21369,9 @@ async fn reconnect_ssh_session(
                     format!("PortMate: failed to consume one-time host key trust: {error}"),
                 );
             }
-            if let Err(error) = save_store(&state.store_path, &store) {
+            if let Err(error) =
+                persist_applied_store(&store, &state.store_path, "completed SSH reconnect state")
+            {
                 eprintln!("PortMate: failed to persist SSH reconnect success: {error}");
             }
         }
@@ -21567,7 +21581,9 @@ fn read_tcp_stream(
                         "PortMate: {label} socket closed; reconnecting in {reconnect_delay_ms}ms"
                     ),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "TCP/Telnet reconnect transition")
+                {
                     eprintln!("PortMate: failed to persist {label} reconnect event: {error}");
                 }
             }
@@ -21585,7 +21601,11 @@ fn read_tcp_stream(
                     Some(format!("{label} socket closed")),
                 );
                 store.record_system_event(&session_id, format!("PortMate: {label} socket closed"));
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) = persist_applied_store(
+                    &store,
+                    &io.store_path,
+                    "TCP/Telnet disconnect transition",
+                ) {
                     eprintln!("PortMate: failed to persist {label} close event: {error}");
                 }
             }
@@ -21679,7 +21699,11 @@ fn record_tcp_reconnect_failure_if_pending(
             tcp_reconnect_delay(attempt).as_millis()
         ),
     );
-    if let Err(save_error) = save_store(&state.store_path, &store) {
+    if let Err(save_error) = persist_applied_store(
+        &store,
+        &state.store_path,
+        "TCP/Telnet reconnect failure state",
+    ) {
         eprintln!("PortMate: failed to persist {label} reconnect failure: {save_error}");
     }
     TcpReconnectFailureDisposition::Recorded
@@ -21724,7 +21748,11 @@ fn stop_pending_tcp_reconnect_if_disabled(
         session_id,
         format!("PortMate: TCP/Telnet reconnect stopped: {reason}"),
     );
-    if let Err(error) = save_store(&state.store_path, &store) {
+    if let Err(error) = persist_applied_store(
+        &store,
+        &state.store_path,
+        "stopped TCP/Telnet reconnect state",
+    ) {
         eprintln!("PortMate: failed to persist TCP/Telnet reconnect stop: {error}");
     }
     true
@@ -21912,7 +21940,11 @@ async fn reconnect_tcp_session(
                                         &session_id,
                                         format!("PortMate: TCP/Telnet reconnect stopped: {reason}"),
                                     );
-                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                    if let Err(error) = persist_applied_store(
+                                        &store,
+                                        &state.store_path,
+                                        "stopped TCP/Telnet reconnect state",
+                                    ) {
                                         eprintln!(
                                             "PortMate: failed to persist TCP/Telnet reconnect stop: {error}"
                                         );
@@ -21942,7 +21974,11 @@ async fn reconnect_tcp_session(
                                             ),
                                         );
                                     }
-                                    if let Err(error) = save_store(&state.store_path, &store) {
+                                    if let Err(error) = persist_applied_store(
+                                        &store,
+                                        &state.store_path,
+                                        "installed TCP/Telnet reconnect state",
+                                    ) {
                                         eprintln!(
                                             "PortMate: failed to persist {label} reconnect success: {error}"
                                         );
@@ -22318,7 +22354,9 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                             .as_millis()
                     ),
                 );
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "serial reconnect transition")
+                {
                     eprintln!("PortMate: failed to persist serial reconnect event: {error}");
                 }
             }
@@ -22334,7 +22372,9 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                     Some(disconnect_reason.clone()),
                 );
                 store.record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "serial disconnect transition")
+                {
                     eprintln!("PortMate: failed to persist serial close event: {error}");
                 }
             }
@@ -22428,7 +22468,9 @@ fn record_serial_reconnect_failure_if_pending(
             serial_reconnect_delay(attempt).as_millis()
         ),
     );
-    if let Err(save_error) = save_store(&io.store_path, &store) {
+    if let Err(save_error) =
+        persist_applied_store(&store, &io.store_path, "serial reconnect failure state")
+    {
         eprintln!("PortMate: failed to persist serial reconnect failure: {save_error}");
     }
     SerialReconnectFailureDisposition::Recorded
@@ -22473,7 +22515,9 @@ fn stop_pending_serial_reconnect_if_disabled(
         session_id,
         format!("PortMate: serial reconnect stopped: {reason}"),
     );
-    if let Err(error) = save_store(&io.store_path, &store) {
+    if let Err(error) =
+        persist_applied_store(&store, &io.store_path, "stopped serial reconnect state")
+    {
         eprintln!("PortMate: failed to persist serial reconnect stop: {error}");
     }
     true
@@ -22682,7 +22726,11 @@ fn reconnect_serial_session(
                                         &session_id,
                                         format!("PortMate: serial reconnect stopped: {reason}"),
                                     );
-                                    if let Err(error) = save_store(&io.store_path, &store) {
+                                    if let Err(error) = persist_applied_store(
+                                        &store,
+                                        &io.store_path,
+                                        "stopped serial reconnect state",
+                                    ) {
                                         eprintln!(
                                             "PortMate: failed to persist serial reconnect stop: {error}"
                                         );
@@ -22753,7 +22801,15 @@ fn reconnect_serial_session(
                     &session_id,
                     format!("PortMate: serial read thread restart failed: {error}"),
                 );
-                let _ = save_store(&io.store_path, &store);
+                if let Err(save_error) = persist_applied_store(
+                    &store,
+                    &io.store_path,
+                    "failed serial reader restart state",
+                ) {
+                    eprintln!(
+                        "PortMate: failed to persist serial reader restart failure: {save_error}"
+                    );
+                }
             }
             return;
         }
@@ -22772,7 +22828,9 @@ fn reconnect_serial_session(
                     format!("PortMate: serial reconnect status update failed: {error}"),
                 );
             }
-            if let Err(error) = save_store(&io.store_path, &store) {
+            if let Err(error) =
+                persist_applied_store(&store, &io.store_path, "completed serial reconnect state")
+            {
                 eprintln!("PortMate: failed to persist serial reconnect success: {error}");
             }
         }
