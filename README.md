@@ -193,6 +193,8 @@ The analyzer starts on the bounded live memory source and polls it without touch
 
 Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
 
+Every existing Profile save carries the caller's `expectedProfile` snapshot. The backend performs a three-way merge against the current Store: fields left unchanged by the caller retain newer values such as terminal resize metadata or migrated Secret references, while independent user edits are applied together. If both sides changed the same leaf or atomic list to different values, the save is rejected with only the conflicting field path and no field contents. An explicit proxy-password set or clear additionally verifies its expected Secret reference before creating a replacement Secret. A create request cannot overwrite an existing normalized Profile ID because an existing target requires an expected snapshot.
+
 Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
 needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
 transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
