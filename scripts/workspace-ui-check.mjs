@@ -105,6 +105,10 @@ const sessions = [
     kind: "serial",
     port: "/dev/ttyUSB0",
     baudRate: 115200,
+    dataBits: 8,
+    parity: "none",
+    stopBits: 1,
+    flowControl: "none",
   }),
   createSession("local-shell", "Local Shell", "shell", "Local", ["development"], {
     kind: "shell",
@@ -328,6 +332,12 @@ try {
           return new Promise((resolve) => {
             window.__pendingTailLogs.push({ args: structuredClone(args), resolve });
           });
+        }
+        if (command === "list_serial_capture") {
+          return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
+        }
+        if (command === "list_serial_capture_history") {
+          return { frames: [], enabled: false, totalFrames: 0, capturedBytes: 0, droppedFrames: 0, unavailableFrames: 0 };
         }
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
@@ -1287,6 +1297,38 @@ try {
   await detachedPage.getByRole("button", { name: "关闭查找", exact: true }).click();
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
   await detachedPage.close();
+
+  const serialAnalyzerUrl = new URL(appUrl);
+  serialAnalyzerUrl.searchParams.set("serialAnalyzer", "1");
+  serialAnalyzerUrl.searchParams.set("windowId", "serial-refresh-gate");
+  serialAnalyzerUrl.searchParams.set("sessionId", "bench-uart");
+  const serialAnalyzerPage = await context.newPage();
+  const serialAnalyzerPageErrors = [];
+  serialAnalyzerPage.on("pageerror", (error) => serialAnalyzerPageErrors.push(error.message));
+  await serialAnalyzerPage.goto(serialAnalyzerUrl.toString());
+  await serialAnalyzerPage.locator(".serial-analyzer-root").waitFor({ timeout: 30_000 }).catch(async (error) => {
+    throw new Error(`serial analyzer did not open at ${serialAnalyzerPage.url()}: ${JSON.stringify({
+      pageErrors: serialAnalyzerPageErrors,
+      body: (await serialAnalyzerPage.locator("body").textContent())?.slice(0, 500),
+      cause: error.message,
+    })}`);
+  });
+  await serialAnalyzerPage.evaluate(() => { window.__deferSessionLists = true; });
+  await serialAnalyzerPage.waitForFunction(() => window.__pendingSessionLists.length === 1);
+  await serialAnalyzerPage.waitForTimeout(3_200);
+  assert(await serialAnalyzerPage.evaluate(() => window.__pendingSessionLists.length) === 1,
+    "serial analyzer session polling started overlapping requests");
+  await serialAnalyzerPage.getByRole("button", { name: "刷新串口捕获", exact: true }).click();
+  assert(await serialAnalyzerPage.evaluate(() => window.__pendingSessionLists.length) === 1,
+    "serial analyzer manual refresh bypassed the session request gate");
+  await serialAnalyzerPage.evaluate(() => {
+    for (const pending of window.__pendingSessionLists) pending.resolve(pending.result);
+    window.__pendingSessionLists = [];
+    window.__deferSessionLists = false;
+  });
+  assert(serialAnalyzerPageErrors.length === 0,
+    `serial analyzer refresh gate raised browser errors: ${JSON.stringify(serialAnalyzerPageErrors)}`);
+  await serialAnalyzerPage.close();
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.locator(".menu-trigger", { hasText: "工具" }).click();

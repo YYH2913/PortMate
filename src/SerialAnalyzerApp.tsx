@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   analyzeSerialCaptureFrames,
   defaultSerialAnalyzerStoredState,
@@ -63,6 +64,8 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   const [history, setHistory] = useState<SerialCaptureHistorySnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
+  const sessionsRef = useRef<SessionSummary[]>(sessions);
+  const sessionRefreshGateRef = useRef(new KeyedRequestGate<"sessions">());
   const framesRef = useRef<SerialCaptureFrame[]>([]);
   const captureRefreshRef = useRef<number | null>(null);
   const captureEpochRef = useRef(0);
@@ -74,24 +77,25 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   }, [session?.profile.name]);
 
   useEffect(() => {
+    void refreshSessions();
+    const timer = window.setInterval(() => void refreshSessions(), 1500);
+    return () => {
+      window.clearInterval(timer);
+      sessionRefreshGateRef.current.invalidate("sessions");
+    };
+  }, []);
+
+  useEffect(() => {
     let disposed = false;
     const epoch = captureEpochRef.current + 1;
     captureEpochRef.current = epoch;
-    void refreshSession();
     if (source === "live") void refreshCapture();
     else void refreshHistory();
     const captureTimer = source === "live" ? window.setInterval(() => void refreshCapture(), 750) : null;
-    const sessionTimer = window.setInterval(() => void refreshSession(), 1500);
     return () => {
       disposed = true;
       if (captureTimer !== null) window.clearInterval(captureTimer);
-      window.clearInterval(sessionTimer);
     };
-
-    async function refreshSession() {
-      const next = await callBackend("list_sessions", {}, loadLocalSessions());
-      if (!disposed) setSessions(next);
-    }
 
     async function refreshCapture(force = false) {
       if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
@@ -141,6 +145,24 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
     setFrames(next);
   }
 
+  function storeSessions(next: SessionSummary[]) {
+    sessionsRef.current = next;
+    setSessions(next);
+  }
+
+  async function refreshSessions() {
+    const gate = sessionRefreshGateRef.current;
+    const token = gate.begin("sessions");
+    if (token === null) return;
+    try {
+      const fallback = isBackendAvailable() ? sessionsRef.current : loadLocalSessions();
+      const next = await callBackend<SessionSummary[]>("list_sessions", {}, fallback);
+      if (gate.isCurrent("sessions", token)) storeSessions(next);
+    } finally {
+      gate.finish("sessions", token);
+    }
+  }
+
   async function refreshNow() {
     const epoch = captureEpochRef.current;
     if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
@@ -165,8 +187,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         setHistory(snapshot);
         setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
       }
-      const nextSessions = await callBackend("list_sessions", {}, sessions);
-      if (captureEpochRef.current === epoch) setSessions(nextSessions);
+      await refreshSessions();
     } catch (error) {
       if (captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
     } finally {
