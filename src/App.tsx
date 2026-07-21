@@ -322,6 +322,7 @@ export default function App() {
   const [keyManagerCredentialSyncRevision, setKeyManagerCredentialSyncRevision] = useState(0);
   const [searchDialog, setSearchDialog] = useState<SearchDialogState>({ mode: "sessions", query: "" });
   const [draft, setDraft] = useState<SessionProfile>(() => createSessionDraft());
+  const draftExpectedProfileRef = useRef<SessionProfile | null>(null);
   const [sendText, setSendText] = useState("");
   const [sendMode, setSendMode] = useState<SendMode>("text");
   const [sendCount, setSendCount] = useState(1);
@@ -1407,9 +1408,7 @@ export default function App() {
       return;
     }
     if (item === "新建会话") {
-      setDraft(createSessionDraft());
-      setSessionSettingsSection("会话");
-      setDialog("session");
+      openSessionProfileDialog(createSessionDraft(), null, "会话");
       return;
     }
     if (item === "启动会话") {
@@ -1422,9 +1421,7 @@ export default function App() {
     }
     if (item === "会话设置") {
       if (!active) return;
-      setDraft(active.profile);
-      setSessionSettingsSection("会话");
-      setDialog("session");
+      openSessionProfileDialog(active.profile, active.profile, "会话");
       return;
     }
     if (["端口转发", "触发器", "密钥管理器"].includes(item)) {
@@ -1438,9 +1435,7 @@ export default function App() {
       }
       if (item === "触发器") {
         if (!active) return;
-        setDraft(active.profile);
-        setSessionSettingsSection("触发器");
-        setDialog("session");
+        openSessionProfileDialog(active.profile, active.profile, "触发器");
         return;
       }
       setUtilityDialog("keys");
@@ -1534,7 +1529,7 @@ export default function App() {
     if (!session) return;
     const nextName = window.prompt("标签名称", session.profile.name);
     if (!nextName?.trim()) return;
-    const saved = await saveProfile({ ...session.profile, name: nextName.trim() });
+    const saved = await saveProfile({ ...session.profile, name: nextName.trim() }, session.profile);
     applySavedSession(saved);
   }
 
@@ -1543,14 +1538,17 @@ export default function App() {
     if (!session) return;
     const nextGroup = window.prompt("移动到分组", session.profile.group || "Sessions");
     if (nextGroup === null) return;
-    const saved = await saveProfile({ ...session.profile, group: nextGroup.trim() || "Sessions" });
+    const saved = await saveProfile(
+      { ...session.profile, group: nextGroup.trim() || "Sessions" },
+      session.profile,
+    );
     applySavedSession(saved);
   }
 
   async function saveSessionFromContext(sessionId?: string | null, activateWorkspace = true) {
     const session = contextSession(sessionId);
     if (!session) return;
-    const saved = await saveProfile(prepareSessionProfile(session.profile));
+    const saved = await saveProfile(prepareSessionProfile(session.profile), session.profile);
     applySavedSession(saved, activateWorkspace);
     setNotice({ title: "保存会话", message: `已保存 ${saved.profile.name}` });
   }
@@ -1565,16 +1563,16 @@ export default function App() {
     duplicate.id = createSessionId();
     duplicate.name = `${session.profile.name} copy`;
     duplicate.connection = isolateDuplicatedConnection(duplicate.id, duplicate.connection);
-    setDraft(duplicate);
-    setSessionSettingsSection("会话");
-    setDialog("session");
+    openSessionProfileDialog(duplicate, null, "会话");
   }
 
   function openSessionSettingsFromContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
-    setDraft(session?.profile ?? createSessionDraft());
-    setSessionSettingsSection("会话");
-    setDialog("session");
+    openSessionProfileDialog(
+      session?.profile ?? createSessionDraft(),
+      session?.profile ?? null,
+      "会话",
+    );
   }
 
   function copySessionNameFromContext(sessionId?: string | null) {
@@ -1750,6 +1748,9 @@ export default function App() {
     setWorkspaceGroupMove(null);
     setWorkspaceViewRename(null);
     setWorkspaceViewContextMenu(null);
+    if (draftExpectedProfileRef.current?.id === profileId) {
+      draftExpectedProfileRef.current = null;
+    }
     setDraft((current) => current.id === profileId ? createSessionDraft() : current);
     setHostKeyPrompt((current) => current?.profile.id === profileId ? null : current);
     delete serialCapturesRef.current[profileId];
@@ -1893,17 +1894,30 @@ export default function App() {
         return;
       case "triggers": {
         const session = sessions.find((candidate) => candidate.profile.id === state.sessionId);
-        setDraft(session?.profile ?? createSessionDraft());
-        setSessionSettingsSection("触发器");
-        setDialog("session");
+        openSessionProfileDialog(
+          session?.profile ?? createSessionDraft(),
+          session?.profile ?? null,
+          "触发器",
+        );
         return;
       }
     }
   }
 
   function openNewSessionDialog() {
-    setDraft(createSessionDraft());
-    setSessionSettingsSection("会话");
+    openSessionProfileDialog(createSessionDraft(), null, "会话");
+  }
+
+  function openSessionProfileDialog(
+    nextDraft: SessionProfile,
+    expectedProfile: SessionProfile | null,
+    section: string,
+  ) {
+    setDraft(cloneSessionProfile(nextDraft));
+    draftExpectedProfileRef.current = expectedProfile
+      ? cloneSessionProfile(expectedProfile)
+      : null;
+    setSessionSettingsSection(section);
     setDialog("session");
   }
 
@@ -2625,9 +2639,14 @@ export default function App() {
   async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null): Promise<SessionSummary | null> {
     const profile = prepareSessionProfile(draft);
     try {
-      const saved = await saveProfile(profile, proxyPasswordUpdate);
+      const saved = await saveProfile(
+        profile,
+        draftExpectedProfileRef.current,
+        proxyPasswordUpdate,
+      );
       applySavedSession(saved);
       setDraft(saved.profile);
+      draftExpectedProfileRef.current = cloneSessionProfile(saved.profile);
       return saved;
     } catch (error) {
       setNotice({ title: "保存会话失败", message: formatError(error) });
@@ -2639,9 +2658,12 @@ export default function App() {
     void connectSession(saved.profile.id, saved);
   }
 
-  async function saveProfile(profile: SessionProfile, proxyPasswordUpdate: ProxyPasswordUpdate = null) {
+  async function saveProfile(
+    profile: SessionProfile,
+    expectedProfile: SessionProfile | null,
+    proxyPasswordUpdate: ProxyPasswordUpdate = null,
+  ) {
     if (isBackendAvailable()) {
-      const expectedProfile = sessions.find((session) => session.profile.id === profile.id)?.profile ?? null;
       return invokeBackend<SessionSummary>("save_session_profile", { profile, expectedProfile, proxyPasswordUpdate });
     }
     return createSessionSummary(profile);
@@ -2689,7 +2711,7 @@ export default function App() {
 
     let persistedProfileForConnect: SessionProfile | null = null;
     try {
-      const persisted = await saveProfile(profileForConnect);
+      const persisted = await saveProfile(profileForConnect, session.profile);
       persistedProfileForConnect = persisted.profile;
       createdConnectionSecretRefs = [];
       applySavedSession(persisted, activateWorkspace);
@@ -2766,9 +2788,7 @@ export default function App() {
 
   function openHostKeySettingsFromPrompt() {
     if (!hostKeyPrompt) return;
-    setDraft(hostKeyPrompt.profile);
-    setSessionSettingsSection("验证");
-    setDialog("session");
+    openSessionProfileDialog(hostKeyPrompt.profile, hostKeyPrompt.profile, "验证");
     setHostKeyPrompt(null);
   }
 
@@ -3450,7 +3470,10 @@ export default function App() {
           onDraftChange={setDraft}
           onSave={saveDraft}
           onConnect={connectSavedDraft}
-          onClose={() => setDialog(null)}
+          onClose={() => {
+            draftExpectedProfileRef.current = null;
+            setDialog(null);
+          }}
         />
       )}
       {utilityDialog === "transfer" && active && <TransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
@@ -7050,6 +7073,7 @@ function KeyManagerDialog({
 
   async function saveProfileFromManager(
     profile: SessionProfile,
+    expectedProfile: SessionProfile,
     message: string,
     existingMutationToken?: number,
   ): Promise<{ persisted: boolean; accepted: boolean }> {
@@ -7058,7 +7082,6 @@ function KeyManagerDialog({
     setError("");
     setStatus("");
     try {
-      const expectedProfile = sessions.find((session) => session.profile.id === profile.id)?.profile ?? null;
       const saved = await invokeBackend<SessionSummary>("save_session_profile", { profile: prepareSessionProfile(profile), expectedProfile });
       backendSucceeded = true;
       const accepted = onProfileChange(saved, mutationToken);
@@ -7136,7 +7159,7 @@ function KeyManagerDialog({
             identitiesOnly: true,
           },
         },
-      }, `已导入私钥到 ${profile.name}`, mutationToken);
+      }, profile, `已导入私钥到 ${profile.name}`, mutationToken);
       if (saveResult.persisted) {
         newSecretRef = null;
         if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
@@ -7196,7 +7219,7 @@ function KeyManagerDialog({
         ...selectedProfile.connection,
         trustedHostKeys: [...copiedKeys, ...currentKeys],
       },
-    }, `已复制 ${copiedKeys.length} 个 host key 到 ${selectedProfile.name}`);
+    }, selectedProfile, `已复制 ${copiedKeys.length} 个 host key 到 ${selectedProfile.name}`);
   }
 
   async function copyHostKeyToProfile(key: TrustedHostKey) {
@@ -7243,7 +7266,7 @@ function KeyManagerDialog({
           offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
         },
       },
-    }, `Agent keys: ${added} added, ${updated} updated · ${selectedProfile.name}`);
+    }, selectedProfile, `Agent keys: ${added} added, ${updated} updated · ${selectedProfile.name}`);
     if (saveResult.accepted && mountedRef.current) setSelectedAgentKeyIds([]);
   }
 
@@ -7290,7 +7313,7 @@ function KeyManagerDialog({
           offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
         } : selectedProfile.connection.agentPolicy,
       },
-    }, `已复制 ${copied} 个 client key 到 ${selectedProfile.name}`);
+    }, selectedProfile, `已复制 ${copied} 个 client key 到 ${selectedProfile.name}`);
     if (saveResult.accepted && mountedRef.current) setSelectedClientKeyIds([]);
   }
 

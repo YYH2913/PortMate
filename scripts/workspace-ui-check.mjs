@@ -838,6 +838,38 @@ try {
     `connected session menu capabilities are wrong: ${JSON.stringify(sessionMenuState)}`);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
 
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
+  const concurrentProfileDialog = page.locator(".session-settings-dialog");
+  await concurrentProfileDialog.waitFor();
+  const concurrentProfileSetup = await page.evaluate(() => {
+    const session = window.__sessions.find((item) => item.profile.id === "edge-router");
+    const baselineGroup = session.profile.group;
+    window.__sessions = window.__sessions.map((item) => item.profile.id === "edge-router"
+      ? { ...item, profile: { ...item.profile, group: "Concurrent external group" } }
+      : item);
+    return {
+      baselineGroup,
+      listCalls: window.__invokeCalls.filter((call) => call.command === "list_sessions").length,
+    };
+  });
+  await page.waitForFunction(({ listCalls }) => (
+    window.__invokeCalls.filter((call) => call.command === "list_sessions").length > listCalls
+  ), concurrentProfileSetup);
+  await page.locator(".workspace-dock-content.panel-explorer .tree-folder", { hasText: "Concurrent external group" }).waitFor();
+  await concurrentProfileDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await concurrentProfileDialog.waitFor({ state: "detached" });
+  const concurrentProfileSave = await page.evaluate(() => {
+    const calls = window.__invokeCalls.filter((call) => call.command === "save_session_profile");
+    return calls.at(-1)?.args ?? null;
+  });
+  assert(concurrentProfileSave?.expectedProfile?.group === concurrentProfileSetup.baselineGroup
+    && concurrentProfileSave?.profile?.group === concurrentProfileSetup.baselineGroup,
+  `Session Settings replaced its edit-time Profile baseline with a newer poll: ${JSON.stringify({
+    setup: concurrentProfileSetup,
+    save: concurrentProfileSave,
+  })}`);
+
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   const toolMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),
