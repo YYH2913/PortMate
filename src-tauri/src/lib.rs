@@ -2994,7 +2994,9 @@ fn record_outbound_user_event_with_context(
                     event.annotations.extend(additional_annotations.clone());
                     append_logging_errors(&mut event, &errors);
                     sync_stored_event(&mut store, &event);
-                    if let Err(error) = save_store(&io.store_path, &store) {
+                    if let Err(error) =
+                        persist_applied_store(&store, &io.store_path, "outbound user event")
+                    {
                         eprintln!(
                             "PortMate: outbound transport succeeded but store save failed: {error}"
                         );
@@ -3027,7 +3029,9 @@ fn record_outbound_user_event_with_context(
     }) {
         if let Ok(mut store) = io.store.lock() {
             sync_stored_event(&mut store, &event);
-            if let Err(error) = save_store(&io.store_path, &store) {
+            if let Err(error) =
+                persist_applied_store(&store, &io.store_path, "outbound user logging state")
+            {
                 append_logging_error(
                     &mut event,
                     format!("store save after file log failure failed: {error}"),
@@ -3075,7 +3079,9 @@ fn record_outbound_control_event(
                 append_logging_errors(&mut event, &errors);
                 sync_stored_event(&mut store, &event);
                 if persist_store {
-                    if let Err(error) = save_store(&io.store_path, &store) {
+                    if let Err(error) =
+                        persist_applied_store(&store, &io.store_path, "outbound control event")
+                    {
                         eprintln!(
                             "PortMate: outbound control succeeded but store save failed: {error}"
                         );
@@ -3105,7 +3111,9 @@ fn record_outbound_control_event(
         if let Ok(mut store) = io.store.lock() {
             sync_stored_event(&mut store, &event);
             if persist_store {
-                if let Err(error) = save_store(&io.store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "outbound control logging state")
+                {
                     append_logging_error(
                         &mut event,
                         format!("store save after file log failure failed: {error}"),
@@ -22902,7 +22910,9 @@ fn record_channel_bytes(
         let (trigger_dispatch, trigger_changed_store) =
             apply_trigger_actions_locked(&mut store, session_id, &text);
         if trigger_changed_store {
-            if let Err(error) = save_store(&io.store_path, &store) {
+            if let Err(error) =
+                persist_applied_store(&store, &io.store_path, "trigger action state")
+            {
                 eprintln!("PortMate: failed to persist trigger actions: {error}");
             }
         }
@@ -22952,7 +22962,9 @@ fn publish_system_event(
         if let Some(store) = store.upgrade() {
             if let Ok(mut store) = store.lock() {
                 sync_stored_event(&mut store, &event);
-                if let Err(error) = save_store(store_path, &store) {
+                if let Err(error) =
+                    persist_applied_store(&store, store_path, "system event logging state")
+                {
                     append_logging_error(
                         &mut event,
                         format!("store save after system log failure failed: {error}"),
@@ -28113,7 +28125,7 @@ fn save_store_json(path: &Path, store: &SessionStore) -> Result<(), String> {
 
 fn persist_store_arc(path: &Path, store: &Arc<Mutex<SessionStore>>) -> Result<(), String> {
     let store = store.lock().map_err(|error| error.to_string())?;
-    save_store(path, &store)
+    persist_applied_store(&store, path, "runtime event stream")
 }
 
 fn describe_endpoint(profile: &SessionProfile) -> String {
