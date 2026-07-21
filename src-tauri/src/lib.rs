@@ -4244,25 +4244,66 @@ fn commit_store_mutation<ResultValue, Mutate>(
 where
     Mutate: FnOnce(&mut SessionStore) -> Result<ResultValue, String>,
 {
-    commit_store_mutation_with(store, mutate, |next_store| {
-        save_store(store_path, next_store)
-    })
+    commit_store_mutation_with(
+        store,
+        mutate,
+        |next_store| save_store(store_path, next_store),
+        |next_store| verify_persisted_store_commit(store_path, next_store),
+    )
 }
 
-fn commit_store_mutation_with<ResultValue, Mutate, Persist>(
+fn commit_store_mutation_with<ResultValue, Mutate, Persist, VerifyAfterError>(
     store: &mut SessionStore,
     mutate: Mutate,
     persist: Persist,
+    verify_after_error: VerifyAfterError,
 ) -> Result<ResultValue, String>
 where
     Mutate: FnOnce(&mut SessionStore) -> Result<ResultValue, String>,
     Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
 {
     let mut next_store = store.clone();
     let result = mutate(&mut next_store)?;
-    persist(&next_store)?;
+    if let Err(save_error) = persist(&next_store) {
+        match verify_after_error(&next_store) {
+            Ok(true) => {
+                eprintln!(
+                    "PortMate: store save returned an error, but the intended snapshot was verified on disk: {save_error}"
+                );
+            }
+            Ok(false) => return Err(save_error),
+            Err(verify_error) => {
+                return Err(format!(
+                    "{save_error}; 无法判定 Store 提交是否生效，请重启应用: {verify_error}"
+                ));
+            }
+        }
+    }
     *store = next_store;
     Ok(result)
+}
+
+fn verify_persisted_store_commit(path: &Path, expected: &SessionStore) -> Result<bool, String> {
+    let persisted = read_persisted_store_for_migration(path)?;
+    let persisted = serde_json::to_value(persisted)
+        .map_err(|error| format!("failed to encode persisted Store for verification: {error}"))?;
+    let expected = serde_json::to_value(expected)
+        .map_err(|error| format!("failed to encode expected Store for verification: {error}"))?;
+    if persisted != expected {
+        return Ok(false);
+    }
+
+    let version = store_snapshot_version(path)?;
+    if !matches!(version, StoreSnapshotVersion::Sha256(_)) {
+        return Err("persisted Store exists but has no verifiable snapshot version".to_string());
+    }
+    STORE_SNAPSHOT_VERSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(path.to_path_buf(), version);
+    Ok(true)
 }
 
 fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
@@ -28196,6 +28237,7 @@ mod tests {
                 assert_eq!((profile.terminal.cols, profile.terminal.rows), (132, 43));
                 Err("store conflict".to_string())
             },
+            |_| Ok(false),
         )
         .unwrap_err();
         assert_eq!(error, "store conflict");
@@ -28208,7 +28250,8 @@ mod tests {
         let summary = commit_store_mutation_with(
             &mut store,
             |next_store| resize_session_profile_in_store(next_store, &session_id, 132, 43),
-            |_| Ok(()),
+            |_| Err("post-commit version read failed".to_string()),
+            |_| Ok(true),
         )
         .unwrap();
         assert_eq!(
@@ -30383,6 +30426,35 @@ mod tests {
     }
 
     #[test]
+    fn verified_store_commit_repairs_an_unknown_cached_version() {
+        let root = std::env::temp_dir().join(format!("portmate-store-verify-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_shell_profile());
+        save_store(&store_path, &store).unwrap();
+        store.profiles[0].name = "verified commit".to_string();
+        save_store(&store_path, &store).unwrap();
+
+        STORE_SNAPSHOT_VERSIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(store_path.clone(), StoreSnapshotVersion::UnknownAfterCommit);
+        assert!(verify_persisted_store_commit(&store_path, &store).unwrap());
+        let cached = STORE_SNAPSHOT_VERSIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()[&store_path];
+        assert!(matches!(cached, StoreSnapshotVersion::Sha256(_)));
+
+        let mut different = store.clone();
+        different.profiles[0].name = "not persisted".to_string();
+        assert!(!verify_persisted_store_commit(&store_path, &different).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn journal_mutations_are_durable_barriers_and_advance_store_revision() {
         let fixture = test_migration_journal_fixture();
         let root = std::env::temp_dir().join(format!("portmate-journal-cas-{}", Uuid::new_v4()));
@@ -32258,6 +32330,7 @@ mod tests {
                 assert_eq!(next_store.grants[0].name, "Updated grant");
                 Err("store conflict".to_string())
             },
+            |_| Ok(false),
         )
         .unwrap_err();
         assert_eq!(error, "store conflict");
@@ -32267,6 +32340,7 @@ mod tests {
             &mut store,
             |next_store| upsert_mcp_grant_in_store(next_store, updated),
             |_| Ok(()),
+            |_| panic!("successful persistence must not be reverified"),
         )
         .unwrap();
         assert_eq!(store.grants[0].name, "Updated grant");
@@ -32275,6 +32349,7 @@ mod tests {
             &mut store,
             |next_store| Ok(revoke_mcp_grant_from_store(next_store, "ops-client")),
             |_| Err("disk full".to_string()),
+            |_| Ok(false),
         )
         .unwrap_err();
         assert_eq!(error, "disk full");
@@ -35189,6 +35264,7 @@ mod tests {
                 assert!(next_store.host_keys.keys.is_empty());
                 Err("disk full".to_string())
             },
+            |_| Ok(false),
         )
         .unwrap_err();
         assert_eq!(error, "disk full");
@@ -35203,6 +35279,7 @@ mod tests {
                 ))
             },
             |_| Ok(()),
+            |_| panic!("successful persistence must not be reverified"),
         )
         .unwrap();
         assert!(saved.keys.is_empty());
