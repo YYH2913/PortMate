@@ -3937,6 +3937,7 @@ function FileManagerPanel({
   const selectionAnchors = useRef<{ local: string; remote: string }>({ local: "", remote: "" });
   const fileLoadEpochs = useRef({ local: 0, remote: 0 });
   const activeFileSessionIdRef = useRef("");
+  const filePropertiesGate = useRef(new KeyedRequestGate<"properties">());
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
   activeFileSessionIdRef.current = canRemote ? active?.profile.id ?? "" : "";
 
@@ -3957,6 +3958,8 @@ function FileManagerPanel({
   useEffect(() => {
     setDropTarget(null);
     setExternalDrop(null);
+    filePropertiesGate.current.invalidate("properties");
+    setPropertiesDialog(null);
   }, [active?.profile.id]);
 
   useEffect(() => {
@@ -4121,14 +4124,26 @@ function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected) return;
+    const gate = filePropertiesGate.current;
+    gate.invalidate("properties");
+    const token = gate.begin("properties")!;
     const nextState: NonNullable<FilePropertiesDialogState> = { remote, path: selected.path, properties: null, busy: true, error: "" };
     setPropertiesDialog(nextState);
     try {
       const properties = await invokeBackend<FileProperties>("file_properties", { request: { sessionId: active?.profile.id ?? null, path: selected.path, remote } });
+      if (!gate.isCurrent("properties", token)) return;
       setPropertiesDialog({ ...nextState, properties, busy: false });
     } catch (error) {
+      if (!gate.isCurrent("properties", token)) return;
       setPropertiesDialog({ ...nextState, busy: false, error: formatError(error) });
+    } finally {
+      gate.finish("properties", token);
     }
+  }
+
+  function closePropertiesDialog() {
+    filePropertiesGate.current.invalidate("properties");
+    setPropertiesDialog(null);
   }
 
   async function transferBetween(upload: boolean) {
@@ -4381,7 +4396,7 @@ function FileManagerPanel({
         ) : null}
       </div>
       <TransferList transfers={transfers.slice(-3)} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
-      {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={() => setPropertiesDialog(null)} /> : null}
+      {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={closePropertiesDialog} /> : null}
     </div>
   );
 }

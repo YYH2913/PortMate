@@ -264,6 +264,8 @@ try {
     window.__closeSessionError = false;
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
+    window.__deferFileProperties = false;
+    window.__pendingFileProperties = [];
     window.__deferTailLogs = false;
     window.__pendingTailLogs = [];
     window.__tauriCallbacks = new Map();
@@ -321,6 +323,15 @@ try {
           return new Promise((resolve) => {
             window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
           });
+        }
+        if (command === "file_properties") {
+          if (window.__deferFileProperties) {
+            return new Promise((resolve) => {
+              window.__pendingFileProperties.push({ args: structuredClone(args), resolve });
+            });
+          }
+          const path = args.request.path;
+          return { name: path.split("/").at(-1), path, remote: args.request.remote, kind: "file", isDir: false, isFile: true, isSymlink: false, size: 0 };
         }
         if (command === "list_mcp_grants") return window.__mcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
@@ -616,7 +627,10 @@ try {
   await page.waitForFunction(() => window.__pendingFileLoads.length === 2);
   await page.evaluate(() => {
     const pending = window.__pendingFileLoads.find((request) => request.args.request.path === "/portmate-fast");
-    pending.resolve([{ name: "FAST-RESULT", path: "/portmate-fast/FAST-RESULT", isDir: false, size: 4, modified: null }]);
+    pending.resolve([
+      { name: "FAST-RESULT", path: "/portmate-fast/FAST-RESULT", isDir: false, size: 4, modified: null },
+      { name: "SECOND-RESULT", path: "/portmate-fast/SECOND-RESULT", isDir: false, size: 6, modified: null },
+    ]);
   });
   await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "FAST-RESULT" }).waitFor();
   await page.evaluate(() => {
@@ -629,6 +643,50 @@ try {
     && await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "FAST-RESULT" }).count() === 1
     && await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "STALE-RESULT" }).count() === 0,
   "a stale file listing replaced the latest directory response");
+
+  const localFilePane = page.locator('.file-browser-pane[data-file-pane="local"]');
+  const filePropertiesButton = localFilePane.getByRole("button", { name: "文件属性", exact: true });
+  await page.evaluate(() => { window.__deferFileProperties = true; });
+  await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
+  await filePropertiesButton.click();
+  await page.locator(".file-properties-dialog").waitFor();
+  await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
+  await localFilePane.locator(".file-row", { hasText: "SECOND-RESULT" }).click();
+  await filePropertiesButton.click();
+  await page.waitForFunction(() => window.__pendingFileProperties.length === 2);
+  await page.evaluate(() => {
+    const pending = window.__pendingFileProperties.find((request) => request.args.request.path.endsWith("/SECOND-RESULT"));
+    pending.resolve({
+      name: "SECOND-RESULT",
+      path: "/portmate-fast/SECOND-RESULT",
+      remote: false,
+      kind: "file",
+      isDir: false,
+      isFile: true,
+      isSymlink: false,
+      size: 6,
+    });
+  });
+  await page.locator(".file-properties-dialog", { hasText: "SECOND-RESULT" }).waitFor();
+  await page.evaluate(() => {
+    const pending = window.__pendingFileProperties.find((request) => request.args.request.path.endsWith("/FAST-RESULT"));
+    pending.resolve({
+      name: "FAST-RESULT",
+      path: "/portmate-fast/FAST-RESULT",
+      remote: false,
+      kind: "file",
+      isDir: false,
+      isFile: true,
+      isSymlink: false,
+      size: 4,
+    });
+    window.__deferFileProperties = false;
+  });
+  await page.waitForTimeout(100);
+  const filePropertiesText = await page.locator(".file-properties-dialog").textContent();
+  assert(filePropertiesText.includes("SECOND-RESULT") && !filePropertiesText.includes("FAST-RESULT"),
+    `a stale properties response replaced the reopened inspector: ${filePropertiesText}`);
+  await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 
   const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');
