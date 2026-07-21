@@ -6294,6 +6294,7 @@ function KeyManagerDialog({
   const [editDraft, setEditDraft] = useState<HostKeyEditDraft | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery">());
 
   const selectedProfile = sshSessions.find((session) => session.profile.id === profileId)?.profile ?? null;
   const editingKey = hostKeys.keys.find((key) => key.id === editingKeyId) ?? null;
@@ -6402,44 +6403,61 @@ function KeyManagerDialog({
 
   async function refreshAgentKeys() {
     if (!isBackendAvailable()) return;
+    const token = refreshGate.current.begin("agent-keys");
+    if (token === null) return;
     try {
-      setAgentKeys(await invokeBackend<IdentityRef[]>("list_ssh_agent_identities", {}));
+      const next = await invokeBackend<IdentityRef[]>("list_ssh_agent_identities", {});
+      if (refreshGate.current.isCurrent("agent-keys", token)) setAgentKeys(next);
     } catch {
-      setAgentKeys([]);
+      // Keep the last confirmed agent list when enumeration is temporarily unavailable.
+    } finally {
+      refreshGate.current.finish("agent-keys", token);
     }
   }
 
   async function refreshPortableVault() {
     if (!isBackendAvailable()) return;
+    const token = refreshGate.current.begin("vault");
+    if (token === null) return;
     try {
-      setPortableVault(await invokeBackend<PortableVaultStatus>("portable_vault_status", {}));
+      const next = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
+      if (refreshGate.current.isCurrent("vault", token)) setPortableVault(next);
     } catch {
-      setPortableVault(null);
+      // Preserve the last confirmed vault state on a transient status failure.
+    } finally {
+      refreshGate.current.finish("vault", token);
     }
   }
 
-  async function refreshMigrationRecovery(clearError = true) {
+  async function refreshMigrationRecovery(clearError = true, replace = false) {
     if (!isBackendAvailable()) {
       setMigrationRecoveryChecking(false);
       return;
     }
+    if (replace) refreshGate.current.invalidate("recovery");
+    const token = refreshGate.current.begin("recovery");
+    if (token === null) return;
     setMigrationRecoveryChecking(true);
     try {
       const pending = await getProfileSecretMigrationRecovery();
+      if (!refreshGate.current.isCurrent("recovery", token)) return;
       setMigrationRecovery(pending);
       setMigrationRecoveryStatusError("");
       if (pending) setMigrationPreviewState(null);
       if (clearError) setMigrationRecoveryError("");
     } catch (error) {
-      setMigrationRecoveryStatusError(formatError(error));
-      if (clearError) setMigrationRecoveryError("");
+      if (refreshGate.current.isCurrent("recovery", token)) {
+        setMigrationRecoveryStatusError(formatError(error));
+        if (clearError) setMigrationRecoveryError("");
+      }
     } finally {
-      setMigrationRecoveryChecking(false);
+      if (refreshGate.current.finish("recovery", token)) setMigrationRecoveryChecking(false);
     }
   }
 
   async function unlockPortableVault() {
     if (!portableVaultPassword) return;
+    refreshGate.current.invalidate("vault");
     const existed = portableVault?.exists ?? false;
     setPortableVaultBusy(true);
     setPortableVaultFeedback(null);
@@ -6452,7 +6470,7 @@ function KeyManagerDialog({
       setPortableVault(next);
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
-      await refreshMigrationRecovery();
+      await refreshMigrationRecovery(true, true);
     } catch (error) {
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "error", message: formatError(error) });
@@ -6462,6 +6480,7 @@ function KeyManagerDialog({
   }
 
   async function lockPortableVault() {
+    refreshGate.current.invalidate("vault");
     setPortableVaultBusy(true);
     clearPortableVaultRotation();
     setPortableVaultFeedback(null);
@@ -6471,7 +6490,7 @@ function KeyManagerDialog({
       setPortableVault(await invokeBackend<PortableVaultStatus>("lock_portable_vault", {}));
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
-      await refreshMigrationRecovery();
+      await refreshMigrationRecovery(true, true);
     } catch (error) {
       setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
@@ -6499,6 +6518,7 @@ function KeyManagerDialog({
       setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码必须与当前密码不同" });
       return;
     }
+    refreshGate.current.invalidate("vault");
     setPortableVaultBusy(true);
     try {
       const next = await invokeBackend<PortableVaultStatus>("rotate_portable_vault_password", {
@@ -6582,7 +6602,7 @@ function KeyManagerDialog({
       setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
       setMigrationError(profileSecretMigrationErrorMessage(message));
     } finally {
-      await refreshMigrationRecovery();
+      await refreshMigrationRecovery(true, true);
       setMigrationBusy(null);
     }
   }
@@ -6619,7 +6639,7 @@ function KeyManagerDialog({
       setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
       setMigrationRecoveryError(profileSecretMigrationErrorMessage(message));
     } finally {
-      await refreshMigrationRecovery(false);
+      await refreshMigrationRecovery(false, true);
       setMigrationRecoveryBusy(false);
     }
   }
