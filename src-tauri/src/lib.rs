@@ -9307,8 +9307,9 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
             TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
         ))
     .then(|| task.session_id.clone());
-    if transfer_task_is_active(&task.status) {
-        if let Some(cancel) = cancel {
+    let was_active = transfer_task_is_active(&task.status);
+    if was_active {
+        if let Some(cancel) = cancel.as_ref() {
             cancel.store(true, Ordering::SeqCst);
         }
         task.status = TransferStatus::Cancelled;
@@ -9326,6 +9327,23 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
         );
     }
     drop(store);
+    if was_active {
+        if let Some(cancel) = cancel.as_ref() {
+            match state.transfer_cancellations.lock() {
+                Ok(mut cancellations) => {
+                    if cancellations
+                        .get(transfer_id)
+                        .is_some_and(|registered| Arc::ptr_eq(registered, &cancel))
+                    {
+                        cancellations.remove(transfer_id);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("PortMate: failed to clean up cancelled transfer handle: {error}")
+                }
+            }
+        }
+    }
     if let Some(session_id) = abort_modem_session {
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
@@ -30442,11 +30460,15 @@ mod tests {
             assert_eq!(cancelling.status, TransferStatus::Cancelled);
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
-                    if !state
-                        .transfer_cancellations
+                    if state
+                        .store
                         .lock()
                         .unwrap()
-                        .contains_key(&task.id)
+                        .transfer_by_id(&task.id)
+                        .is_some_and(|task| {
+                            task.status == TransferStatus::Cancelled
+                                && task.message.as_deref() == Some("cancelled")
+                        })
                     {
                         break;
                     }
