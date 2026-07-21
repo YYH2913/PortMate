@@ -117,6 +117,8 @@ Session open persists both the initial `Connecting` state and the final `Connect
 
 A newly opened Serial reader waits behind a condition-variable gate until the `Connected` snapshot commits, so receive-idle timing cannot expire while SQLite is still busy finalizing the connection. Commit failure cancels the gate without publishing a disconnect, while reconnect readers start immediately after their runtime ownership check succeeds.
 
+Transfer queue and `Running` transitions commit the task state and matching system event through the same tracked Store transaction before the worker is allowed to advance. A failed queue commit removes only that task's cancellation handle, while a failed `Running` commit restores the queued snapshot and discards its uncommitted start event. Cancellation remains accepted after its runtime flag is raised even when the following snapshot write fails, and a racing finish callback cannot overwrite `Cancelled` with `Completed`. On startup, persisted `Queued` or `Running` tasks from a previous shutdown are converted to terminal failures with an interruption reason and finish timestamp instead of remaining permanently active.
+
 Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
 duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
 record instead of breaking every later SQLite save or silently reopening default read access.
