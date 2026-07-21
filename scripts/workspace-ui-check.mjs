@@ -666,6 +666,19 @@ try {
           if (!window.__deferHostKeyMutations) return result;
           return new Promise((resolve) => window.__pendingHostKeyMutations.push({ result, resolve }));
         }
+        if (command === "update_host_key") {
+          const index = window.__hostKeys.findIndex((key) => key.id === args.request.keyId);
+          window.__hostKeys[index] = {
+            ...window.__hostKeys[index],
+            profileId: args.request.profileId,
+            alias: args.request.alias,
+            host: args.request.host,
+            port: args.request.port,
+            scope: args.request.scope,
+            label: args.request.label,
+          };
+          return { keys: structuredClone(window.__hostKeys) };
+        }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") {
           if (!window.__deferMcpHttpConfig) return initialMcpHttpConfig;
@@ -2444,16 +2457,31 @@ try {
     pending.resolve(pending.result);
   });
   await hostKeyLifecyclePage.waitForTimeout(100);
-  const hostKeyLifecycleState = await hostKeyLifecyclePage.evaluate(() => ({
-    backend: window.__hostKeys.map((key) => key.alias),
-    visible: [...document.querySelectorAll(".key-row > strong")].map((item) => item.textContent),
-    pending: window.__pendingHostKeyMutations.length,
-    importCalls: window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length,
-  }));
+  const firstHostKeyRow = thirdKeyManager.locator(".key-row", { hasText: "first.example:22" });
+  await firstHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  const hostKeyEditPanel = thirdKeyManager.locator(".key-edit-panel");
+  await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").fill("Operator label");
+  await hostKeyEditPanel.getByRole("button", { name: "保存编辑", exact: true }).click();
+  await hostKeyLifecyclePage.waitForFunction(() => (
+    window.__invokeCalls.filter((call) => call.command === "update_host_key").length === 1
+  ));
+  const hostKeyLifecycleState = await hostKeyLifecyclePage.evaluate(() => {
+    const updates = window.__invokeCalls.filter((call) => call.command === "update_host_key");
+    return {
+      backend: window.__hostKeys.map((key) => key.alias),
+      visible: [...document.querySelectorAll(".key-row > strong")].map((item) => item.textContent),
+      pending: window.__pendingHostKeyMutations.length,
+      importCalls: window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length,
+      updateCalls: updates.length,
+      expectedAliases: updates.map((call) => call.args.request.expectedKey?.alias ?? null),
+    };
+  });
   assert(JSON.stringify(hostKeyLifecycleState.backend) === JSON.stringify(["first.example", "second.example", "third.example"])
     && JSON.stringify(hostKeyLifecycleState.visible) === JSON.stringify(["first.example:22", "second.example:22", "third.example:22"])
     && hostKeyLifecycleState.pending === 0
-    && hostKeyLifecycleState.importCalls === 3,
+    && hostKeyLifecycleState.importCalls === 3
+    && hostKeyLifecycleState.updateCalls === 1
+    && JSON.stringify(hostKeyLifecycleState.expectedAliases) === JSON.stringify(["first.example"]),
   `a stale host-key mutation replaced the latest manager state: ${JSON.stringify(hostKeyLifecycleState)}`);
   assert(hostKeyLifecycleErrors.length === 0,
     `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);

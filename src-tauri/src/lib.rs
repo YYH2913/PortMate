@@ -2331,6 +2331,7 @@ pub struct KnownHostsImportRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HostKeyUpdateRequest {
     pub key_id: String,
+    pub expected_key: TrustedHostKey,
     pub profile_id: Option<String>,
     pub alias: String,
     pub host: String,
@@ -4743,6 +4744,9 @@ fn update_host_key_in_store(
     store: &mut SessionStore,
     request: HostKeyUpdateRequest,
 ) -> Result<HostKeyStore, String> {
+    if request.expected_key.id != request.key_id {
+        return Err("expectedKey 与更新目标不是同一个 host key".to_string());
+    }
     let alias = request.alias.trim().to_string();
     if alias.is_empty() {
         return Err("host key alias 不能为空".to_string());
@@ -4760,24 +4764,41 @@ fn update_host_key_in_store(
         .map(str::trim)
         .filter(|profile_id| !profile_id.is_empty())
         .map(str::to_string);
-    if request.scope == HostKeyScope::Profile {
-        let Some(profile_id) = profile_id.as_deref() else {
-            return Err("Profile scope host key 必须选择 Profile".to_string());
-        };
-        if store.profile(profile_id).is_none() {
-            return Err(format!("unknown session: {profile_id}"));
-        }
-    } else if let Some(profile_id) = profile_id.as_deref() {
-        if store.profile(profile_id).is_none() {
-            return Err(format!("unknown session: {profile_id}"));
-        }
-    }
     let label = request
         .label
         .as_deref()
         .map(str::trim)
         .filter(|label| !label.is_empty())
         .map(str::to_string);
+
+    let current_key = store
+        .host_keys
+        .keys
+        .iter()
+        .find(|key| key.id == request.key_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown host key: {}", request.key_id))?;
+    let mut incoming_key = request.expected_key.clone();
+    incoming_key.profile_id = profile_id;
+    incoming_key.alias = alias;
+    incoming_key.host = host;
+    incoming_key.port = request.port;
+    incoming_key.scope = request.scope;
+    incoming_key.label = label;
+    let merged_key =
+        merge_expected_host_key_update(&current_key, &request.expected_key, incoming_key)?;
+    if merged_key.scope == HostKeyScope::Profile {
+        let Some(profile_id) = merged_key.profile_id.as_deref() else {
+            return Err("Profile scope host key 必须选择 Profile".to_string());
+        };
+        if store.profile(profile_id).is_none() {
+            return Err(format!("unknown session: {profile_id}"));
+        }
+    } else if let Some(profile_id) = merged_key.profile_id.as_deref() {
+        if store.profile(profile_id).is_none() {
+            return Err(format!("unknown session: {profile_id}"));
+        }
+    }
 
     let Some(key) = store
         .host_keys
@@ -4787,29 +4808,47 @@ fn update_host_key_in_store(
     else {
         return Err(format!("unknown host key: {}", request.key_id));
     };
-    key.profile_id = profile_id.clone();
-    key.alias = alias.clone();
-    key.host = host.clone();
-    key.port = request.port;
-    key.scope = request.scope;
-    key.label = label.clone();
+    apply_host_key_editable_fields(key, &merged_key);
 
     for profile in &mut store.profiles {
         if let ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) = &mut profile.connection {
             for profile_key in &mut ssh.trusted_host_keys {
                 if profile_key.id == request.key_id {
-                    profile_key.profile_id = profile_id.clone();
-                    profile_key.alias = alias.clone();
-                    profile_key.host = host.clone();
-                    profile_key.port = request.port;
-                    profile_key.scope = request.scope;
-                    profile_key.label = label.clone();
+                    apply_host_key_editable_fields(profile_key, &merged_key);
                 }
             }
         }
     }
 
     Ok(store.host_keys.clone())
+}
+
+fn merge_expected_host_key_update(
+    current_key: &TrustedHostKey,
+    expected_key: &TrustedHostKey,
+    incoming_key: TrustedHostKey,
+) -> Result<TrustedHostKey, String> {
+    if current_key.id != incoming_key.id || expected_key.id != incoming_key.id {
+        return Err("expectedKey 与更新目标不是同一个 host key".to_string());
+    }
+    let expected = serde_json::to_value(expected_key)
+        .map_err(|error| format!("序列化 expectedKey 失败: {error}"))?;
+    let current = serde_json::to_value(current_key)
+        .map_err(|error| format!("序列化当前 host key 失败: {error}"))?;
+    let incoming = serde_json::to_value(&incoming_key)
+        .map_err(|error| format!("序列化待更新 host key 失败: {error}"))?;
+    let merged = merge_profile_json_value("hostKey", &expected, &current, &incoming)?;
+    serde_json::from_value(merged)
+        .map_err(|error| format!("反序列化合并后的 host key 失败: {error}"))
+}
+
+fn apply_host_key_editable_fields(target: &mut TrustedHostKey, source: &TrustedHostKey) {
+    target.profile_id.clone_from(&source.profile_id);
+    target.alias.clone_from(&source.alias);
+    target.host.clone_from(&source.host);
+    target.port = source.port;
+    target.scope = source.scope;
+    target.label.clone_from(&source.label);
 }
 
 #[tauri::command]
@@ -38293,12 +38332,13 @@ mod tests {
         }
         let profile_id = profile.id.clone();
         store.upsert_profile(profile);
-        store.host_keys.keys.push(key);
+        store.host_keys.keys.push(key.clone());
 
         let next = update_host_key_in_store(
             &mut store,
             HostKeyUpdateRequest {
                 key_id: "host-key-1".to_string(),
+                expected_key: key,
                 profile_id: Some(profile_id.clone()),
                 alias: " new-alias ".to_string(),
                 host: " new-host ".to_string(),
@@ -38329,6 +38369,52 @@ mod tests {
         assert_eq!(profile_copy.host, "new-host");
         assert_eq!(profile_copy.port, 2222);
         assert_eq!(profile_copy.label.as_deref(), Some("new label"));
+    }
+
+    #[test]
+    fn concurrent_host_key_edits_merge_fields_and_reject_conflicts() {
+        let now = Utc::now();
+        let expected = TrustedHostKey {
+            id: "host-key-1".to_string(),
+            profile_id: Some("ssh-session-1".to_string()),
+            alias: "original-alias".to_string(),
+            host: "original-host".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::Profile,
+            label: Some("original label".to_string()),
+            first_seen: now,
+            last_seen: now,
+        };
+        let mut current = expected.clone();
+        current.label = Some("current label".to_string());
+        current.last_seen = now + chrono::Duration::seconds(1);
+        let mut incoming = expected.clone();
+        incoming.alias = "incoming-alias".to_string();
+
+        let merged = merge_expected_host_key_update(&current, &expected, incoming.clone()).unwrap();
+        assert_eq!(merged.alias, "incoming-alias");
+        assert_eq!(merged.label.as_deref(), Some("current label"));
+        assert_eq!(merged.last_seen, current.last_seen);
+        assert_eq!(merged.fingerprint_sha256, current.fingerprint_sha256);
+
+        let mut conflicting_current = expected.clone();
+        conflicting_current.alias = "current-alias".to_string();
+        let error =
+            merge_expected_host_key_update(&conflicting_current, &expected, incoming).unwrap_err();
+        assert!(error.contains("hostKey.alias"), "{error}");
+        assert!(!error.contains("current-alias"), "{error}");
+        assert!(!error.contains("incoming-alias"), "{error}");
+
+        let mut wrong_expected = expected.clone();
+        wrong_expected.id = "host-key-2".to_string();
+        assert!(
+            merge_expected_host_key_update(&current, &wrong_expected, expected)
+                .unwrap_err()
+                .contains("不是同一个 host key")
+        );
     }
 
     #[test]
@@ -38518,11 +38604,13 @@ mod tests {
             first_seen: Utc::now(),
             last_seen: Utc::now(),
         });
+        let expected_key = store.host_keys.keys[0].clone();
 
         let error = update_host_key_in_store(
             &mut store,
             HostKeyUpdateRequest {
                 key_id: "host-key-1".to_string(),
+                expected_key,
                 profile_id: None,
                 alias: "alias".to_string(),
                 host: "host".to_string(),

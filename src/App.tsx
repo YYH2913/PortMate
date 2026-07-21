@@ -225,6 +225,7 @@ type ScreenLockState = {
 type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
 type HostKeyEditDraft = {
   keyId: string;
+  expectedKey: TrustedHostKey;
   profileId: string;
   alias: string;
   host: string;
@@ -7034,6 +7035,7 @@ function KeyManagerDialog({
     setEditingKeyId(key.id);
     setEditDraft({
       keyId: key.id,
+      expectedKey: { ...key },
       profileId: key.profileId ?? profileId,
       alias: key.alias,
       host: key.host,
@@ -7054,6 +7056,7 @@ function KeyManagerDialog({
       const nextStore = await invokeBackend<HostKeyStore>("update_host_key", {
         request: {
           keyId: editDraft.keyId,
+          expectedKey: editDraft.expectedKey,
           profileId: editDraft.profileId || null,
           alias: editDraft.alias,
           host: editDraft.host,
@@ -7064,7 +7067,8 @@ function KeyManagerDialog({
       });
       const accepted = onChange(nextStore, mutationToken);
       if (!accepted || !mountedRef.current) return;
-      setEditingKeyId(editDraft.keyId);
+      setEditingKeyId("");
+      setEditDraft(null);
       setStatus("Host key 已更新");
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
