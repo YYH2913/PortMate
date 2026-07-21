@@ -261,6 +261,8 @@ try {
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__clipboardText = "";
     window.__closeSessionError = false;
+    window.__deferFileLoads = false;
+    window.__pendingFileLoads = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -306,6 +308,12 @@ try {
           return saved;
         }
         if (command === "tail_log") return initialEvents.filter((event) => event.sessionId === args.sessionId);
+        if (command === "list_files") {
+          if (!window.__deferFileLoads) return [];
+          return new Promise((resolve) => {
+            window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
+          });
+        }
         if (command === "list_mcp_grants") return window.__mcpGrants;
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") return initialMcpHttpConfig;
@@ -350,7 +358,6 @@ try {
         }
         if (command === "list_host_keys") return { keys: [] };
         if ([
-          "list_files",
           "list_transfers",
           "list_serial_ports",
           "list_one_keys",
@@ -591,6 +598,29 @@ try {
       && actions.icons === 7
     )),
   `file manager and explorer are not simultaneously visible in the left dock: ${JSON.stringify(fileDockLayout)}`);
+
+  const localFilePath = page.getByRole("textbox", { name: "本地路径", exact: true });
+  await page.evaluate(() => { window.__deferFileLoads = true; });
+  await localFilePath.fill("/portmate-slow");
+  await localFilePath.press("Enter");
+  await localFilePath.fill("/portmate-fast");
+  await localFilePath.press("Enter");
+  await page.waitForFunction(() => window.__pendingFileLoads.length === 2);
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.find((request) => request.args.request.path === "/portmate-fast");
+    pending.resolve([{ name: "FAST-RESULT", path: "/portmate-fast/FAST-RESULT", isDir: false, size: 4, modified: null }]);
+  });
+  await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "FAST-RESULT" }).waitFor();
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.find((request) => request.args.request.path === "/portmate-slow");
+    pending.resolve([{ name: "STALE-RESULT", path: "/portmate-slow/STALE-RESULT", isDir: false, size: 5, modified: null }]);
+    window.__deferFileLoads = false;
+  });
+  await page.waitForTimeout(100);
+  assert(await localFilePath.inputValue() === "/portmate-fast"
+    && await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "FAST-RESULT" }).count() === 1
+    && await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "STALE-RESULT" }).count() === 0,
+  "a stale file listing replaced the latest directory response");
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 
   const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');

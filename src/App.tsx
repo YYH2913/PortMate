@@ -3914,7 +3914,10 @@ function FileManagerPanel({
   const [externalDrop, setExternalDrop] = useState<ExternalDropState>(null);
   const [conflictPolicy, setConflictPolicy] = useState<TransferConflictPolicy>("fail");
   const selectionAnchors = useRef<{ local: string; remote: string }>({ local: "", remote: "" });
+  const fileLoadEpochs = useRef({ local: 0, remote: 0 });
+  const activeFileSessionIdRef = useRef("");
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
+  activeFileSessionIdRef.current = canRemote ? active?.profile.id ?? "" : "";
 
   useEffect(() => {
     void loadFiles(false);
@@ -3922,8 +3925,10 @@ function FileManagerPanel({
 
   useEffect(() => {
     if (canRemote) {
-      void loadFiles(true);
+      setRemotePanel((current) => ({ ...current, path: ".", entries: [], selected: [], error: "" }));
+      void loadFiles(true, ".");
     } else {
+      fileLoadEpochs.current.remote += 1;
       setRemotePanel((current) => ({ ...current, entries: [], selected: [], error: "" }));
     }
   }, [canRemote, active?.profile.id]);
@@ -4009,15 +4014,27 @@ function FileManagerPanel({
   }
 
   async function loadFiles(remote: boolean, nextPath = remote ? remotePanel.path : localPanel.path) {
+    const loadKey = remote ? "remote" : "local";
+    const epoch = fileLoadEpochs.current[loadKey] + 1;
+    fileLoadEpochs.current[loadKey] = epoch;
+    const sessionId = remote ? active?.profile.id ?? "" : "";
+    if (remote && (!canRemote || !sessionId)) return;
     updatePanel(remote, { busy: true, error: "" });
     try {
-      const nextEntries = await invokeBackend<FileEntry[]>("list_files", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
+      const nextEntries = await invokeBackend<FileEntry[]>("list_files", { request: { sessionId: sessionId || null, path: nextPath, remote } });
+      if (fileLoadEpochs.current[loadKey] !== epoch
+        || (remote && activeFileSessionIdRef.current !== sessionId)) return;
       updatePanel(remote, { entries: nextEntries, path: nextPath, selected: [] });
       selectionAnchors.current[remote ? "remote" : "local"] = "";
     } catch (error) {
+      if (fileLoadEpochs.current[loadKey] !== epoch
+        || (remote && activeFileSessionIdRef.current !== sessionId)) return;
       updatePanel(remote, { entries: [], error: formatError(error) });
     } finally {
-      updatePanel(remote, { busy: false });
+      if (fileLoadEpochs.current[loadKey] === epoch
+        && (!remote || activeFileSessionIdRef.current === sessionId)) {
+        updatePanel(remote, { busy: false });
+      }
     }
   }
 
