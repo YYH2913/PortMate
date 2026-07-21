@@ -12680,10 +12680,7 @@ fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
 }
 
 fn validate_local_drop_destination(path: &str) -> Result<PathBuf, String> {
-    if path.trim().is_empty() || path.contains('\0') {
-        return Err("本地拖放目标路径不能为空或包含 NUL".to_string());
-    }
-    let destination = expand_identity_path(path.trim());
+    let destination = validate_native_local_path(path)?;
     let metadata = fs::metadata(&destination).map_err(|error| {
         format!(
             "读取本地拖放目标目录失败 {}: {error}",
@@ -12968,7 +12965,7 @@ async fn file_operation_inner(
     } else {
         match operation {
             FileOperation::CreateDirectory => {
-                let path = PathBuf::from(&request.path);
+                let path = validate_local_mutating_path(&request.path)?;
                 fs::create_dir_all(&path)
                     .map_err(|error| format!("创建本地目录失败 {}: {error}", path.display()))
             }
@@ -13053,7 +13050,7 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let path = PathBuf::from(&request.path);
+            let path = validate_local_mutating_path(&request.path)?;
             let mut permissions = fs::metadata(&path)
                 .map_err(|error| format!("读取本地权限失败 {}: {error}", path.display()))?
                 .permissions();
@@ -13425,11 +13422,11 @@ async fn mutate_tmux_inner(
 }
 
 fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
-    let path = expand_identity_path(if path.trim().is_empty() {
+    let path = validate_native_local_path(if path.trim().is_empty() {
         "."
     } else {
         path.trim()
-    });
+    })?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&path)
         .map_err(|error| format!("读取本地目录失败 {}: {error}", path.display()))?
@@ -13462,7 +13459,7 @@ fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
 }
 
 fn local_file_properties(path: &str) -> Result<FileProperties, String> {
-    let path = expand_identity_path(path);
+    let path = validate_native_local_path(path)?;
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("读取本地路径属性失败 {}: {error}", path.display()))?;
     let file_type = metadata.file_type();
@@ -13659,8 +13656,8 @@ fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
         return Err("拒绝操作空路径、根目录或当前目录".to_string());
     }
 
-    let candidate = expand_identity_path(trimmed);
-    if candidate.parent().is_none() {
+    let candidate = validate_native_local_path(trimmed)?;
+    if candidate.parent().is_none() || is_local_filesystem_root(&candidate) {
         return Err("拒绝操作文件系统根目录".to_string());
     }
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
@@ -13674,6 +13671,29 @@ fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(candidate)
+}
+
+fn validate_native_local_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err("本地路径不能为空或包含 NUL".to_string());
+    }
+    match classify_local_transfer_path(trimmed, current_local_transfer_path_platform()) {
+        LocalTransferPathKind::Relative | LocalTransferPathKind::Absolute => {
+            Ok(expand_identity_path(trimmed))
+        }
+        LocalTransferPathKind::RootedWithoutDrive => {
+            Err("Windows 本地路径必须包含盘符或完整 UNC 前缀".to_string())
+        }
+        LocalTransferPathKind::DriveRelative => {
+            Err("Windows 本地路径不能使用 drive-relative 形式".to_string())
+        }
+        LocalTransferPathKind::ForeignAnchored => Err("本地路径与当前操作系统不兼容".to_string()),
+    }
+}
+
+fn is_local_filesystem_root(path: &Path) -> bool {
+    path.has_root() && path.file_name().is_none()
 }
 
 fn sort_file_entries(entries: &mut [FileEntry]) {
@@ -35258,6 +35278,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request.source, remote_windows_path);
+    }
+
+    #[test]
+    fn file_manager_local_paths_reject_foreign_roots_and_filesystem_roots() {
+        let foreign = if cfg!(windows) {
+            "/tmp/portmate-foreign"
+        } else {
+            r"C:\Users\operator\foreign"
+        };
+        assert!(validate_native_local_path(foreign).is_err());
+        assert!(validate_local_mutating_path(foreign).is_err());
+        assert!(validate_local_drop_destination(foreign).is_err());
+        assert!(list_local_files(foreign).is_err());
+        assert!(local_file_properties(foreign).is_err());
+
+        let filesystem_root = if cfg!(windows) { r"C:\" } else { "/" };
+        assert!(validate_local_mutating_path(filesystem_root).is_err());
+        assert!(validate_local_mutating_path("~").is_err());
+        assert_eq!(
+            validate_native_local_path("nested/child").unwrap(),
+            expand_identity_path("nested/child")
+        );
     }
 
     #[test]
