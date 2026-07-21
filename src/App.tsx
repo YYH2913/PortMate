@@ -7038,8 +7038,9 @@ function KeyManagerDialog({
   async function saveProfileFromManager(
     profile: SessionProfile,
     message: string,
+    existingMutationToken?: number,
   ): Promise<{ persisted: boolean; accepted: boolean }> {
-    const mutationToken = onProfileMutationStart(profile.id);
+    const mutationToken = existingMutationToken ?? onProfileMutationStart(profile.id);
     let backendSucceeded = false;
     setError("");
     setStatus("");
@@ -7075,12 +7076,17 @@ function KeyManagerDialog({
 
   async function importPrivateKeyToProfile() {
     if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    const profile = selectedProfile;
     const privateKey = privateKeyText.trim();
     if (!privateKey) return;
     if (!privateKey.includes("PRIVATE KEY")) {
       setError("私钥内容看起来不是 OpenSSH/PEM private key");
       return;
     }
+    const mutationToken = onProfileMutationStart(profile.id);
+    let mutationDelegated = false;
+    let newSecretRef: string | null = null;
+    setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -7088,6 +7094,16 @@ function KeyManagerDialog({
       const response = await invokeBackend<{ secretRef: string }>("save_secret", {
         request: { secretRef: null, secret: privateKeyText, storage: privateKeyStorage === "auto" ? null : privateKeyStorage },
       });
+      newSecretRef = response.secretRef;
+      if (!onProfileMutationCurrent(profile.id, mutationToken)) {
+        try {
+          await invokeBackend("delete_secret", { secretRef: newSecretRef });
+        } catch {
+          // A superseded import must not continue into a stale Profile save.
+        }
+        newSecretRef = null;
+        return;
+      }
       const identityRef: IdentityRef = {
         id: `vault:${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`,
         label,
@@ -7096,18 +7112,20 @@ function KeyManagerDialog({
         path: null,
         secretRef: response.secretRef,
       };
+      mutationDelegated = true;
       const saveResult = await saveProfileFromManager({
-        ...selectedProfile,
+        ...profile,
         connection: {
-          ...selectedProfile.connection,
-          identityRefs: [identityRef, ...selectedProfile.connection.identityRefs],
+          ...profile.connection,
+          identityRefs: [identityRef, ...profile.connection.identityRefs],
           identityPolicy: {
-            ...selectedProfile.connection.identityPolicy,
+            ...profile.connection.identityPolicy,
             identitiesOnly: true,
           },
         },
-      }, `已导入私钥到 ${selectedProfile.name}`);
+      }, `已导入私钥到 ${profile.name}`, mutationToken);
       if (saveResult.persisted) {
+        newSecretRef = null;
         if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
       } else {
         try {
@@ -7115,9 +7133,20 @@ function KeyManagerDialog({
         } catch {
           // Preserve the original profile-save error if best-effort cleanup also fails.
         }
+        newSecretRef = null;
       }
     } catch (error) {
-      setError(formatError(error));
+      if (newSecretRef && !mutationDelegated) {
+        try {
+          await invokeBackend("delete_secret", { secretRef: newSecretRef });
+        } catch {
+          // Preserve the original import error if best-effort cleanup also fails.
+        }
+      }
+      if (mountedRef.current) setError(formatError(error));
+    } finally {
+      if (!mutationDelegated) onProfileMutationFinish(profile.id, mutationToken, true);
+      if (mountedRef.current) setClientKeyMutationBusy(false);
     }
   }
 
@@ -7825,7 +7854,7 @@ function KeyManagerDialog({
               <input type="file" accept=".pem,.key,.txt" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
               <select value={privateKeyStorage} onChange={(event) => setPrivateKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">存储：自动（优先系统）</option><option value="native">存储：系统密钥库</option><option value="portable" disabled={!portableVault?.unlocked}>存储：Portable Stronghold</option></select>
               <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
-              <button onClick={() => void importPrivateKeyToProfile()} disabled={credentialMutationControlsDisabled || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
             </details>
             <div className="key-agent-header agent-section-header">
               <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>

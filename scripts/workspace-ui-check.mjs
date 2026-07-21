@@ -308,6 +308,10 @@ try {
     window.__deferProfileMutations = false;
     window.__pendingProfileMutations = [];
     window.__profileMutationFailureMode = null;
+    window.__secretSequence = 0;
+    window.__secrets = {};
+    window.__deferSecretWrites = false;
+    window.__pendingSecretWrites = [];
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
@@ -412,6 +416,24 @@ try {
           if (index >= 0) window.__sessions[index] = saved;
           else window.__sessions.push(saved);
           return saved;
+        }
+        if (command === "save_secret") {
+          const result = { secretRef: `keychain:test-secret-${++window.__secretSequence}` };
+          if (!window.__deferSecretWrites) {
+            window.__secrets[result.secretRef] = true;
+            return result;
+          }
+          return new Promise((resolve) => window.__pendingSecretWrites.push({
+            result,
+            resolve: () => {
+              window.__secrets[result.secretRef] = true;
+              resolve(result);
+            },
+          }));
+        }
+        if (command === "delete_secret") {
+          delete window.__secrets[args.secretRef];
+          return null;
         }
         if (command === "update_client_identity") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.request.profileId);
@@ -2419,6 +2441,67 @@ try {
     `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
   await profileLifecyclePage.close();
 
+  const privateKeyImportLifecyclePage = await context.newPage();
+  const privateKeyImportLifecycleErrors = [];
+  privateKeyImportLifecyclePage.on("pageerror", (error) => privateKeyImportLifecycleErrors.push(error.message));
+  await privateKeyImportLifecyclePage.goto(appUrl);
+  await privateKeyImportLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await privateKeyImportLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const importingKeyManager = privateKeyImportLifecyclePage.locator(".key-dialog");
+  const importPanel = importingKeyManager.locator(".key-import-panel");
+  await importPanel.locator("summary").click();
+  await importPanel.getByPlaceholder("Key label", { exact: true }).fill("Deferred imported key");
+  await importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true }).fill([
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "test-key-body",
+    "-----END OPENSSH PRIVATE KEY-----",
+  ].join("\n"));
+  await privateKeyImportLifecyclePage.evaluate(() => { window.__deferSecretWrites = true; });
+  await importPanel.getByRole("button", { name: "导入到 Profile", exact: true }).click();
+  await privateKeyImportLifecyclePage.waitForFunction(() => window.__pendingSecretWrites.length === 1);
+  await importingKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await importingKeyManager.waitFor({ state: "detached" });
+
+  await privateKeyImportLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const currentKeyManager = privateKeyImportLifecyclePage.locator(".key-dialog");
+  await currentKeyManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
+  await currentKeyManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Current identity");
+  await currentKeyManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await currentKeyManager.getByRole("button", { name: "编辑 Current identity", exact: true }).waitFor();
+
+  await privateKeyImportLifecyclePage.evaluate(() => {
+    window.__deferSecretWrites = false;
+    window.__pendingSecretWrites.shift().resolve();
+  });
+  await privateKeyImportLifecyclePage.waitForFunction(() => (
+    window.__invokeCalls.filter((call) => call.command === "delete_secret").length === 1
+  ));
+  const privateKeyImportLifecycleState = await privateKeyImportLifecyclePage.evaluate(() => {
+    const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    return {
+      backend: edge.profile.connection.identityRefs.map((identity) => identity.label),
+      visible: [...document.querySelectorAll(".client-key-row .client-key-main > strong")].map((item) => item.textContent),
+      retainedSecrets: Object.keys(window.__secrets),
+      pending: window.__pendingSecretWrites.length,
+      profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+      secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+      secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+    };
+  });
+  assert(JSON.stringify(privateKeyImportLifecycleState.backend) === JSON.stringify(["Current identity"])
+    && JSON.stringify(privateKeyImportLifecycleState.visible) === JSON.stringify(["Current identity"])
+    && privateKeyImportLifecycleState.retainedSecrets.length === 0
+    && privateKeyImportLifecycleState.pending === 0
+    && privateKeyImportLifecycleState.profileSaveCalls === 0
+    && privateKeyImportLifecycleState.secretSaveCalls === 1
+    && privateKeyImportLifecycleState.secretDeleteCalls === 1,
+  `a late private-key import overwrote the current Profile or leaked its secret: ${JSON.stringify(privateKeyImportLifecycleState)}`);
+  assert(privateKeyImportLifecycleErrors.length === 0,
+    `private-key import lifecycle browser exceptions: ${JSON.stringify(privateKeyImportLifecycleErrors)}`);
+  await privateKeyImportLifecyclePage.close();
+
   const vaultLifecyclePage = await context.newPage();
   const vaultLifecycleErrors = [];
   vaultLifecyclePage.on("pageerror", (error) => vaultLifecycleErrors.push(error.message));
@@ -2563,6 +2646,7 @@ try {
     oneKeyLifecycle: oneKeyLifecycleState,
     hostKeyLifecycle: hostKeyLifecycleState,
     profileLifecycle: profileLifecycleState,
+    privateKeyImportLifecycle: privateKeyImportLifecycleState,
     vaultLifecycle: vaultLifecycleState,
     profileRecovery: {
       renamed: renamedProfileRecoveryState,
