@@ -287,6 +287,8 @@ try {
     ];
     window.__deferLogPreviews = false;
     window.__pendingLogPreviews = [];
+    window.__deferMcpHttpConfig = false;
+    window.__pendingMcpHttpConfig = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -397,7 +399,10 @@ try {
           return window.__oneKeys;
         }
         if (command === "list_mcp_audit") return initialMcpAudit;
-        if (command === "mcp_http_config") return initialMcpHttpConfig;
+        if (command === "mcp_http_config") {
+          if (!window.__deferMcpHttpConfig) return initialMcpHttpConfig;
+          return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
+        }
         if (command === "list_mcp_approvals") return [];
         if (command === "respond_mcp_approval") return null;
         if (command === "save_mcp_grant") return initialMcpGrants;
@@ -1444,11 +1449,26 @@ try {
     "MCP write confirmation setting did not load for the selected grant");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
+  await page.evaluate(() => { window.__deferMcpHttpConfig = true; });
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
   await mcpDialog.locator(".mcp-http-view").waitFor();
   assert(await mcpDialog.locator(".mcp-content").count() === 0
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP HTTP page renders inactive task content");
+  await page.waitForFunction(() => window.__pendingMcpHttpConfig.length === 1);
+  assert(await mcpDialog.getByRole("button", { name: "生成 Token", exact: true }).isDisabled(),
+    "MCP token generation stayed enabled while HTTP configuration was loading");
+  await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
+  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
+  await page.waitForTimeout(100);
+  assert(await page.evaluate(() => window.__pendingMcpHttpConfig.length) === 1,
+    "switching back to MCP HTTP started an overlapping configuration request");
+  await page.evaluate((config) => {
+    for (const pending of window.__pendingMcpHttpConfig) pending.resolve(config);
+    window.__pendingMcpHttpConfig = [];
+    window.__deferMcpHttpConfig = false;
+  }, mcpHttpConfig);
+  await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).waitFor();
   const mcpHttpText = await mcpDialog.locator(".mcp-http-panel").textContent();
   assert(mcpHttpText.includes(mcpHttpConfig.endpoint)
     && mcpHttpText.includes(mcpHttpConfig.executable)

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Copy, Download, Plus, RefreshCw, Search, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
 import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
@@ -30,6 +31,7 @@ export default function McpDialog({
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
   const [httpToken, setHttpToken] = useState("");
   const [httpBusy, setHttpBusy] = useState(false);
+  const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditQuery, setAuditQuery] = useState("");
   const [auditDecision, setAuditDecision] = useState("");
@@ -37,6 +39,7 @@ export default function McpDialog({
   const [auditScope, setAuditScope] = useState<"" | McpScope>("");
   const [selectedAuditId, setSelectedAuditId] = useState("");
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
+  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "audit">());
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
     query: auditQuery,
@@ -57,32 +60,48 @@ export default function McpDialog({
     void loadHttpConfig();
   }, [httpConfig, tab]);
 
+  useEffect(() => () => requestGateRef.current.invalidateAll(), []);
+
   async function loadHttpConfig() {
+    const token = requestGateRef.current.begin("http");
+    if (token === null) return;
+    setHttpBusy(true);
     try {
-      setHttpConfig(await invokeBackend<McpHttpConfig>("mcp_http_config", {}));
+      const next = await invokeBackend<McpHttpConfig>("mcp_http_config", {});
+      if (requestGateRef.current.isCurrent("http", token)) setHttpConfig(next);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
     }
   }
 
   async function rotateHttpToken() {
+    const token = requestGateRef.current.begin("http");
+    if (token === null) return;
     setError("");
     setHttpBusy(true);
     try {
       const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-      setHttpConfig(response.config);
-      setHttpToken(response.token);
+      if (requestGateRef.current.isCurrent("http", token)) {
+        setHttpConfig(response.config);
+        setHttpToken(response.token);
+      }
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
     } finally {
-      setHttpBusy(false);
+      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
     }
   }
 
   async function saveGrant() {
+    const token = requestGateRef.current.begin("grants");
+    if (token === null) return;
     setError("");
+    setGrantBusy(true);
     try {
       const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: draft });
+      if (!requestGateRef.current.isCurrent("grants", token)) return;
       onGrantChange(saved);
       const selected = saved.find((grant) => grant.clientId === draft.clientId);
       if (selected) {
@@ -90,46 +109,60 @@ export default function McpDialog({
         setEditingClientId(selected.clientId);
       }
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
     }
   }
 
   async function revokeGrant(clientId: string) {
+    const token = requestGateRef.current.begin("grants");
+    if (token === null) return;
     setError("");
+    setGrantBusy(true);
     try {
       const saved = await invokeBackend<McpGrant[]>("revoke_mcp_grant", { clientId });
+      if (!requestGateRef.current.isCurrent("grants", token)) return;
       onGrantChange(saved);
       setDraft(saved[0] ?? createMcpGrant());
       setEditingClientId(saved[0]?.clientId ?? null);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
     }
   }
 
   async function refreshAudit() {
+    const token = requestGateRef.current.begin("audit");
+    if (token === null) return;
     setError("");
     setAuditBusy(true);
     try {
-      onAuditChange(await invokeBackend<AuditRecord[]>("list_mcp_audit", {}));
+      const next = await invokeBackend<AuditRecord[]>("list_mcp_audit", {});
+      if (requestGateRef.current.isCurrent("audit", token)) onAuditChange(next);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("audit", token)) setError(formatError(nextError));
     } finally {
-      setAuditBusy(false);
+      if (requestGateRef.current.finish("audit", token)) setAuditBusy(false);
     }
   }
 
   async function exportAudit() {
+    const token = requestGateRef.current.begin("audit");
+    if (token === null) return;
     setError("");
     setAuditBusy(true);
     setAuditExport(null);
     try {
-      setAuditExport(await invokeBackend<ExportMcpAuditResult>("export_mcp_audit", {
+      const next = await invokeBackend<ExportMcpAuditResult>("export_mcp_audit", {
         request: { recordIds: filteredAudit.map((record) => record.id) },
-      }));
+      });
+      if (requestGateRef.current.isCurrent("audit", token)) setAuditExport(next);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (requestGateRef.current.isCurrent("audit", token)) setError(formatError(nextError));
     } finally {
-      setAuditBusy(false);
+      if (requestGateRef.current.finish("audit", token)) setAuditBusy(false);
     }
   }
 
@@ -176,9 +209,9 @@ export default function McpDialog({
         {tab === "grants" ? (
           <div className="mcp-content" role="tabpanel">
             <aside className="mcp-grants">
-              <button type="button" className="mcp-new" onClick={newGrant}><Plus size={14} />新建授权</button>
+              <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
               {grants.map((grant) => (
-                <button key={grant.clientId} type="button" className={grant.clientId === editingClientId ? "active" : ""} onClick={() => selectGrant(grant)}>
+                <button key={grant.clientId} type="button" disabled={grantBusy} className={grant.clientId === editingClientId ? "active" : ""} onClick={() => selectGrant(grant)}>
                   <strong>{grant.name || grant.clientId}</strong>
                   <span>{grant.scopes.join(", ") || "read-only"}</span>
                 </button>
@@ -199,8 +232,8 @@ export default function McpDialog({
               </fieldset>
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
-                <button type="button" onClick={() => void saveGrant()}>保存</button>
-                <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={!editingClientId}>撤销</button>
+                <button type="button" disabled={grantBusy} onClick={() => void saveGrant()}>保存</button>
+                <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
               </div>
             </section>
           </div>
