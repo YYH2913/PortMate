@@ -69,7 +69,9 @@ function createSession(id, name, kind, group, tags, connection) {
       kind,
       group,
       tags,
-      connection,
+      connection: connection.kind === "ssh" || connection.kind === "tmux"
+        ? { ...connection, identityRefs: connection.identityRefs ?? [] }
+        : connection,
       terminal: {
         term: "xterm-256color",
         rows: 28,
@@ -302,6 +304,9 @@ try {
     window.__pendingTailLogs = [];
     window.__failTailLogs = 0;
     window.__failOneKeyLists = 0;
+    window.__oneKeySequence = 0;
+    window.__deferOneKeyMutations = false;
+    window.__pendingOneKeyMutations = [];
     window.__deferTunnelRefresh = false;
     window.__pendingTunnelRefresh = [];
     window.__deferSysmon = false;
@@ -456,7 +461,40 @@ try {
             window.__failOneKeyLists -= 1;
             throw new Error("simulated list_one_keys failure");
           }
-          return window.__oneKeys;
+          return structuredClone(window.__oneKeys);
+        }
+        if (command === "save_one_key") {
+          const request = args.request;
+          const existing = window.__oneKeys.find((item) => item.id === request.id);
+          const id = request.id || `one-key-${++window.__oneKeySequence}`;
+          const now = new Date().toISOString();
+          const secretPresent = (update, current) => (
+            update.action === "set" ? true : update.action === "clear" ? false : current
+          );
+          const saved = {
+            id,
+            label: request.label,
+            kind: request.kind,
+            username: request.username,
+            hasPassword: secretPresent(request.passwordUpdate, existing?.hasPassword ?? false),
+            hasPassphrase: secretPresent(request.passphraseUpdate, existing?.hasPassphrase ?? false),
+            identity: existing?.identity ?? null,
+            sessionIds: [...request.sessionIds],
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          const index = window.__oneKeys.findIndex((item) => item.id === id);
+          if (index >= 0) window.__oneKeys[index] = saved;
+          else window.__oneKeys.push(saved);
+          const result = { items: structuredClone(window.__oneKeys), savedId: id };
+          if (!window.__deferOneKeyMutations) return result;
+          return new Promise((resolve) => window.__pendingOneKeyMutations.push({ result, resolve }));
+        }
+        if (command === "delete_one_key") {
+          window.__oneKeys = window.__oneKeys.filter((item) => item.id !== args.request.id);
+          const result = structuredClone(window.__oneKeys);
+          if (!window.__deferOneKeyMutations) return result;
+          return new Promise((resolve) => window.__pendingOneKeyMutations.push({ result, resolve }));
         }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") {
@@ -2097,6 +2135,61 @@ try {
     `grant lifecycle browser exceptions: ${JSON.stringify(grantLifecycleErrors)}`);
   await grantLifecyclePage.close();
 
+  const oneKeyLifecyclePage = await context.newPage();
+  const oneKeyLifecycleErrors = [];
+  oneKeyLifecyclePage.on("pageerror", (error) => oneKeyLifecycleErrors.push(error.message));
+  await oneKeyLifecyclePage.goto(appUrl);
+  await oneKeyLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await oneKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await oneKeyLifecyclePage.getByRole("button", { name: "OneKeys", exact: true }).click();
+  const firstOneKeyDialog = oneKeyLifecyclePage.locator(".one-key-dialog");
+  await firstOneKeyDialog.waitFor();
+  await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").fill("First deferred key");
+  await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "用户名" }).locator("input").fill("first-user");
+  await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "密码" }).locator("input").fill("first-secret");
+  await firstOneKeyDialog.locator(".one-key-sessions label", { hasText: "Edge Router" }).click();
+  await firstOneKeyDialog.locator(".one-key-sessions > header span", { hasText: "1" }).waitFor();
+  await oneKeyLifecyclePage.evaluate(() => { window.__deferOneKeyMutations = true; });
+  await firstOneKeyDialog.locator('button[title="保存 OneKey"]').click();
+  await oneKeyLifecyclePage.waitForFunction(() => window.__pendingOneKeyMutations.length === 1);
+  await firstOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
+  await firstOneKeyDialog.waitFor({ state: "detached" });
+
+  await oneKeyLifecyclePage.evaluate(() => { window.__deferOneKeyMutations = false; });
+  await oneKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
+  await oneKeyLifecyclePage.getByRole("button", { name: "OneKeys", exact: true }).click();
+  const secondOneKeyDialog = oneKeyLifecyclePage.locator(".one-key-dialog");
+  await secondOneKeyDialog.waitFor();
+  await secondOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").fill("Second current key");
+  await secondOneKeyDialog.locator(".one-key-fields label", { hasText: "用户名" }).locator("input").fill("second-user");
+  await secondOneKeyDialog.locator(".one-key-fields label", { hasText: "密码" }).locator("input").fill("second-secret");
+  await secondOneKeyDialog.locator(".one-key-sessions label", { hasText: "Edge Router" }).click();
+  await secondOneKeyDialog.locator(".one-key-sessions > header span", { hasText: "1" }).waitFor();
+  await secondOneKeyDialog.locator('button[title="保存 OneKey"]').click();
+  await secondOneKeyDialog.locator('.one-key-list [role="option"]', { hasText: "First deferred key" }).waitFor();
+  await secondOneKeyDialog.locator('.one-key-list [role="option"]', { hasText: "Second current key" }).waitFor();
+  await oneKeyLifecyclePage.evaluate(() => {
+    const pending = window.__pendingOneKeyMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await oneKeyLifecyclePage.waitForTimeout(100);
+  const oneKeyLifecycleState = await oneKeyLifecyclePage.evaluate(() => ({
+    backend: window.__oneKeys.map((item) => item.label),
+    visible: [...document.querySelectorAll('.one-key-list [role="option"] strong')].map((item) => item.textContent),
+    selected: document.querySelector('.one-key-list [role="option"][aria-selected="true"] strong')?.textContent ?? "",
+    pending: window.__pendingOneKeyMutations.length,
+    saveCalls: window.__invokeCalls.filter((call) => call.command === "save_one_key").length,
+  }));
+  assert(JSON.stringify(oneKeyLifecycleState.backend) === JSON.stringify(["First deferred key", "Second current key"])
+    && JSON.stringify(oneKeyLifecycleState.visible) === JSON.stringify(["First deferred key", "Second current key"])
+    && oneKeyLifecycleState.selected === "Second current key"
+    && oneKeyLifecycleState.pending === 0
+    && oneKeyLifecycleState.saveCalls === 2,
+  `a stale OneKey mutation replaced the latest dialog state: ${JSON.stringify(oneKeyLifecycleState)}`);
+  assert(oneKeyLifecycleErrors.length === 0,
+    `OneKey lifecycle browser exceptions: ${JSON.stringify(oneKeyLifecycleErrors)}`);
+  await oneKeyLifecyclePage.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2130,6 +2223,7 @@ try {
     startupHydration: startupHydrationState,
     startupDomainHydration: startupDomainState,
     grantLifecycle: grantLifecycleState,
+    oneKeyLifecycle: oneKeyLifecycleState,
     terminalWrites,
     desktop,
     mobile,

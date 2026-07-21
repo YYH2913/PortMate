@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { KeyRound, Plus, Save, Send, Trash2, UserRound, X } from "lucide-react";
 import { invokeBackend } from "./api";
@@ -78,6 +78,10 @@ function draftFromItem(item: OneKeySummary): OneKeyDraft {
   };
 }
 
+function cloneItems(items: readonly OneKeySummary[]) {
+  return items.map((item) => ({ ...item, sessionIds: [...item.sessionIds] }));
+}
+
 function secretUpdate(
   value: string,
   clear: boolean,
@@ -97,20 +101,25 @@ export default function OneKeyDialog({
   oneKeys,
   sessions,
   activeId,
+  onMutationStart,
   onChange,
+  onMutationFinish,
   onClose,
 }: {
   oneKeys: OneKeySummary[];
   sessions: SessionSummary[];
   activeId: string;
-  onChange: (items: OneKeySummary[]) => void;
+  onMutationStart: () => number;
+  onChange: (items: OneKeySummary[], token: number) => boolean;
+  onMutationFinish: (token: number) => void;
   onClose: () => void;
 }) {
-  const [items, setItems] = useState(() => oneKeys.map((item) => ({ ...item, sessionIds: [...item.sessionIds] })));
+  const [items, setItems] = useState(() => cloneItems(oneKeys));
   const [selectedId, setSelectedId] = useState(oneKeys[0]?.id ?? "");
   const [draft, setDraft] = useState<OneKeyDraft>(() => oneKeys[0] ? draftFromItem(oneKeys[0]) : emptyDraft());
   const [busy, setBusy] = useState<"save" | "delete" | "send" | null>(null);
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
+  const mountedRef = useRef(true);
   const active = sessions.find((session) => session.profile.id === activeId);
   const compatibleSessions = useMemo(
     () => sessions.filter((session) => draft.kind === "account" || session.profile.kind === "ssh" || session.profile.kind === "tmux"),
@@ -129,6 +138,23 @@ export default function OneKeyDialog({
         && item.identity.id === currentIdentitySelection.identityId
       )),
   );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const next = cloneItems(oneKeys);
+    setItems(next);
+    if (!selectedId || next.some((item) => item.id === selectedId)) return;
+    const replacement = next[0];
+    setSelectedId(replacement?.id ?? "");
+    setDraft(replacement ? draftFromItem(replacement) : emptyDraft());
+    setFeedback(null);
+  }, [oneKeys, selectedId]);
 
   function selectItem(item: OneKeySummary) {
     setSelectedId(item.id);
@@ -191,12 +217,14 @@ export default function OneKeyDialog({
       identityUpdate: oneKeyIdentityUpdate(draft.kind, draft.currentIdentity, draft.identitySelection),
       sessionIds: draft.sessionIds,
     };
+    const mutationToken = onMutationStart();
     setBusy("save");
     setFeedback(null);
     try {
       const response = await invokeBackend<OneKeyMutationResponse>("save_one_key", { request });
-      setItems(response.items);
-      onChange(response.items);
+      const accepted = onChange(response.items, mutationToken);
+      if (!accepted || !mountedRef.current) return;
+      setItems(cloneItems(response.items));
       const saved = response.items.find((item) => item.id === response.savedId);
       if (saved) {
         setSelectedId(saved.id);
@@ -204,28 +232,32 @@ export default function OneKeyDialog({
       }
       setFeedback({ kind: "status", text: "OneKey 已保存。" });
     } catch (error) {
-      setFeedback({ kind: "error", text: String(error) });
+      if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
-      setBusy(null);
+      onMutationFinish(mutationToken);
+      if (mountedRef.current) setBusy(null);
     }
   }
 
   async function remove() {
     if (!draft.id || !window.confirm(`删除 OneKey “${draft.label}”？`)) return;
+    const mutationToken = onMutationStart();
     setBusy("delete");
     setFeedback(null);
     try {
       const next = await invokeBackend<OneKeySummary[]>("delete_one_key", { request: { id: draft.id } });
-      setItems(next);
-      onChange(next);
+      const accepted = onChange(next, mutationToken);
+      if (!accepted || !mountedRef.current) return;
+      setItems(cloneItems(next));
       const replacement = next[0];
       setSelectedId(replacement?.id ?? "");
       setDraft(replacement ? draftFromItem(replacement) : emptyDraft());
       setFeedback({ kind: "status", text: "OneKey 已删除。" });
     } catch (error) {
-      setFeedback({ kind: "error", text: String(error) });
+      if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
-      setBusy(null);
+      onMutationFinish(mutationToken);
+      if (mountedRef.current) setBusy(null);
     }
   }
 
@@ -237,11 +269,13 @@ export default function OneKeyDialog({
       await invokeBackend("send_one_key", {
         request: { id: draft.id, sessionId: active.profile.id, field },
       });
-      setFeedback({ kind: "status", text: `${field === "username" ? "用户名" : field === "password" ? "密码" : "私钥口令"}已发送。` });
+      if (mountedRef.current) {
+        setFeedback({ kind: "status", text: `${field === "username" ? "用户名" : field === "password" ? "密码" : "私钥口令"}已发送。` });
+      }
     } catch (error) {
-      setFeedback({ kind: "error", text: String(error) });
+      if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
-      setBusy(null);
+      if (mountedRef.current) setBusy(null);
     }
   }
 

@@ -399,6 +399,7 @@ export default function App() {
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
+  const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureRefreshesRef = useRef(new Set<string>());
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
@@ -504,8 +505,23 @@ export default function App() {
   }
 
   function updateOneKeys(next: OneKeySummary[]) {
+    oneKeyMutationGateRef.current.invalidate("one-keys");
     startupHydrationGateRef.current.invalidate("one-keys");
     setOneKeys(next);
+  }
+
+  function beginOneKeyMutation() {
+    return oneKeyMutationGateRef.current.replace("one-keys");
+  }
+
+  function commitOneKeyMutation(next: OneKeySummary[], token: number) {
+    if (!oneKeyMutationGateRef.current.isCurrent("one-keys", token)) return false;
+    updateOneKeys(next);
+    return true;
+  }
+
+  function finishOneKeyMutation(token: number) {
+    oneKeyMutationGateRef.current.finish("one-keys", token);
   }
 
   function commitScreenLock(next: ScreenLockState) {
@@ -3435,7 +3451,15 @@ export default function App() {
       )}
       {utilityDialog === "one-keys" && (
         <Suspense fallback={null}>
-          <LazyOneKeyDialog oneKeys={oneKeys} sessions={sessions} activeId={activeId} onChange={updateOneKeys} onClose={() => setUtilityDialog(null)} />
+          <LazyOneKeyDialog
+            oneKeys={oneKeys}
+            sessions={sessions}
+            activeId={activeId}
+            onMutationStart={beginOneKeyMutation}
+            onChange={commitOneKeyMutation}
+            onMutationFinish={finishOneKeyMutation}
+            onClose={() => setUtilityDialog(null)}
+          />
         </Suspense>
       )}
       {utilityDialog === "quick-commands" && (
