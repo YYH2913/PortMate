@@ -6479,6 +6479,7 @@ function KeyManagerDialog({
   const [selectedClientKeyIds, setSelectedClientKeyIds] = useState<string[]>([]);
   const [editingClientKeyId, setEditingClientKeyId] = useState("");
   const [clientKeyEditDraft, setClientKeyEditDraft] = useState<ClientIdentityEditDraft | null>(null);
+  const clientKeyEditExpectedIdentityRef = useRef<IdentityRef | null>(null);
   const [clientKeyPrivateKey, setClientKeyPrivateKey] = useState("");
   const [clientKeyPassphrase, setClientKeyPassphrase] = useState("");
   const [clientKeyStorage, setClientKeyStorage] = useState<SecretStorageChoice>("auto");
@@ -6600,6 +6601,7 @@ function KeyManagerDialog({
     if (editingClientKeyId && !validClientIds.has(editingClientKeyId)) {
       setEditingClientKeyId("");
       setClientKeyEditDraft(null);
+      clientKeyEditExpectedIdentityRef.current = null;
       setClientKeyPrivateKey("");
       setClientKeyPassphrase("");
     }
@@ -7438,6 +7440,7 @@ function KeyManagerDialog({
 
   function startEditClientIdentity(item: ClientIdentityItem) {
     setEditingClientKeyId(item.selectionId);
+    clientKeyEditExpectedIdentityRef.current = { ...item.identity };
     setClientKeyEditDraft({
       profileId: item.profileId,
       identityId: item.identity.id,
@@ -7462,6 +7465,7 @@ function KeyManagerDialog({
       if (connection.kind === "ssh" || connection.kind === "tmux") {
         const identity = connection.identityRefs.find((item) => item.id === clientKeyEditDraft.identityId);
         if (identity) {
+          clientKeyEditExpectedIdentityRef.current = { ...identity };
           setClientKeyEditDraft({
             profileId: response.summary.profile.id,
             identityId: identity.id,
@@ -7486,7 +7490,8 @@ function KeyManagerDialog({
   }
 
   async function saveClientIdentity() {
-    if (!clientKeyEditDraft) return;
+    const expectedIdentity = clientKeyEditExpectedIdentityRef.current;
+    if (!clientKeyEditDraft || !expectedIdentity) return;
     const mutationProfileId = clientKeyEditDraft.profileId;
     const mutationToken = onProfileMutationStart(mutationProfileId);
     let backendSucceeded = false;
@@ -7498,6 +7503,7 @@ function KeyManagerDialog({
         request: {
           profileId: clientKeyEditDraft.profileId,
           identityId: clientKeyEditDraft.identityId,
+          expectedIdentity,
           label: clientKeyEditDraft.label,
           source: clientKeyEditDraft.source,
           fingerprintSha256: clientKeyEditDraft.fingerprintSha256 || null,
@@ -7568,6 +7574,7 @@ function KeyManagerDialog({
       if (applyClientIdentityMutation(response, "Client identity 引用已移除", mutationToken)) {
         setEditingClientKeyId("");
         setClientKeyEditDraft(null);
+        clientKeyEditExpectedIdentityRef.current = null;
         setClientKeyPrivateKey("");
         setClientKeyPassphrase("");
       }
@@ -7854,7 +7861,7 @@ function KeyManagerDialog({
               <section className="client-key-inspector">
                 <header>
                   <span><Pencil size={14} /><strong>Identity Inspector</strong></span>
-                  <button className="key-icon-button" type="button" title="关闭检查器" aria-label="关闭 identity 检查器" onClick={() => { setEditingClientKeyId(""); setClientKeyEditDraft(null); }}><X size={14} /></button>
+                  <button className="key-icon-button" type="button" title="关闭检查器" aria-label="关闭 identity 检查器" onClick={() => { setEditingClientKeyId(""); setClientKeyEditDraft(null); clientKeyEditExpectedIdentityRef.current = null; }}><X size={14} /></button>
                 </header>
                 <div className="client-key-inspector-grid">
                   <label><span>Label</span><input value={clientKeyEditDraft.label} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, label: event.target.value })} /></label>

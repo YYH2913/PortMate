@@ -2141,6 +2141,7 @@ pub struct ProfileSecretMigrationDiagnosticExportResult {
 pub struct ClientIdentityUpdateRequest {
     pub profile_id: String,
     pub identity_id: String,
+    pub expected_identity: IdentityRef,
     pub label: String,
     pub source: IdentitySource,
     pub fingerprint_sha256: Option<String>,
@@ -5801,7 +5802,9 @@ fn update_client_identity(
 ) -> Result<ClientIdentityMutationResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let identity = normalize_client_identity(
+    let expected_identity =
+        normalize_client_identity(&request.identity_id, request.expected_identity, |_| Ok(()))?;
+    let incoming_identity = normalize_client_identity(
         &request.identity_id,
         IdentityRef {
             id: request.identity_id.clone(),
@@ -5811,10 +5814,19 @@ fn update_client_identity(
             path: request.path,
             secret_ref: request.secret_ref,
         },
-        |secret_ref| read_secret_from_store(secret_ref).map(|_| ()),
+        |_| Ok(()),
     )?;
-    let new_secret_ref = identity.secret_ref.clone();
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let current_identity = find_client_identity(&store, &request.profile_id, &request.identity_id)?;
+    let identity = merge_expected_client_identity_update(
+        &current_identity,
+        &expected_identity,
+        incoming_identity,
+    )?;
+    let identity = normalize_client_identity(&request.identity_id, identity, |secret_ref| {
+        read_secret_from_store(secret_ref).map(|_| ())
+    })?;
+    let new_secret_ref = identity.secret_ref.clone();
     let (summary, old_secret_ref) =
         commit_store_mutation(&mut store, &state.store_path, |next_store| {
             replace_client_identity(
@@ -17708,6 +17720,25 @@ where
         }
     }
     Ok(identity)
+}
+
+fn merge_expected_client_identity_update(
+    current_identity: &IdentityRef,
+    expected_identity: &IdentityRef,
+    incoming_identity: IdentityRef,
+) -> Result<IdentityRef, String> {
+    if current_identity.id != incoming_identity.id || expected_identity.id != incoming_identity.id {
+        return Err("expectedIdentity 与更新目标不是同一个 identity".to_string());
+    }
+    let expected = serde_json::to_value(expected_identity)
+        .map_err(|error| format!("序列化 expectedIdentity 失败: {error}"))?;
+    let current = serde_json::to_value(current_identity)
+        .map_err(|error| format!("序列化当前 identity 失败: {error}"))?;
+    let incoming = serde_json::to_value(&incoming_identity)
+        .map_err(|error| format!("序列化待更新 identity 失败: {error}"))?;
+    let merged = merge_profile_json_value("identity", &expected, &current, &incoming)?;
+    serde_json::from_value(merged)
+        .map_err(|error| format!("反序列化合并后的 identity 失败: {error}"))
 }
 
 fn replace_client_identity(
@@ -42728,6 +42759,45 @@ mod tests {
         assert_eq!(agent.label, "Agent Key");
         assert_eq!(agent.fingerprint_sha256.as_deref(), Some("SHA256:agent"));
         assert!(agent.secret_ref.is_none());
+    }
+
+    #[test]
+    fn concurrent_client_identity_updates_merge_fields_and_preserve_new_secrets() {
+        let mut expected = vault_identity("identity-a", "keychain:old");
+        expected.label = "Original label".to_string();
+        expected.fingerprint_sha256 = Some("SHA256:original".to_string());
+
+        let mut current = expected.clone();
+        current.label = "Current label".to_string();
+        current.secret_ref = Some("keychain:rotated".to_string());
+
+        let mut incoming = expected.clone();
+        incoming.fingerprint_sha256 = Some("SHA256:incoming".to_string());
+
+        let merged =
+            merge_expected_client_identity_update(&current, &expected, incoming.clone()).unwrap();
+        assert_eq!(merged.label, "Current label");
+        assert_eq!(
+            merged.fingerprint_sha256.as_deref(),
+            Some("SHA256:incoming")
+        );
+        assert_eq!(merged.secret_ref.as_deref(), Some("keychain:rotated"));
+
+        let mut conflicting = incoming;
+        conflicting.label = "Incoming label".to_string();
+        let error =
+            merge_expected_client_identity_update(&current, &expected, conflicting).unwrap_err();
+        assert!(error.contains("identity.label"), "{error}");
+        assert!(!error.contains("Current label"), "{error}");
+        assert!(!error.contains("Incoming label"), "{error}");
+
+        let mut wrong_expected = expected.clone();
+        wrong_expected.id = "identity-b".to_string();
+        assert!(
+            merge_expected_client_identity_update(&current, &wrong_expected, expected)
+                .unwrap_err()
+                .contains("不是同一个 identity")
+        );
     }
 
     #[test]

@@ -2508,17 +2508,22 @@ try {
   await profileLifecyclePage.waitForTimeout(100);
   const profileLifecycleState = await profileLifecyclePage.evaluate(() => {
     const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    const updates = window.__invokeCalls.filter((call) => call.command === "update_client_identity");
     return {
       backend: edge.profile.connection.identityRefs.map((identity) => identity.label),
       visible: [...document.querySelectorAll(".client-key-row .client-key-main > strong")].map((item) => item.textContent),
       pending: window.__pendingProfileMutations.length,
-      updateCalls: window.__invokeCalls.filter((call) => call.command === "update_client_identity").length,
+      updateCalls: updates.length,
+      expectedLabels: updates.map((call) => call.args.request.expectedIdentity?.label ?? null),
     };
   });
   assert(JSON.stringify(profileLifecycleState.backend) === JSON.stringify(["Current identity"])
     && JSON.stringify(profileLifecycleState.visible) === JSON.stringify(["Current identity"])
     && profileLifecycleState.pending === 0
-    && profileLifecycleState.updateCalls === 3,
+    && profileLifecycleState.updateCalls === 3
+    && JSON.stringify(profileLifecycleState.expectedLabels) === JSON.stringify([
+      "Initial identity", "Closed identity", "Closed identity",
+    ]),
   `a stale Profile mutation replaced the latest identity state: ${JSON.stringify(profileLifecycleState)}`);
   assert(profileLifecycleErrors.length === 0,
     `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
