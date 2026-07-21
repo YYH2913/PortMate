@@ -147,6 +147,8 @@ try {
     window.__tmuxState = structuredClone(tmuxState);
     window.__tmuxControlRuntimes = {};
     window.__tmuxControlSequence = 0;
+    window.__holdNextTmuxList = false;
+    window.__resolveTmuxList = null;
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -177,7 +179,17 @@ try {
         }
         if (command === "list_sessions") return [initialSession];
         if (command === "tail_log") return [];
-        if (command === "list_tmux_state") return structuredClone(window.__tmuxState);
+        if (command === "list_tmux_state") {
+          const snapshot = structuredClone(window.__tmuxState);
+          if (!window.__holdNextTmuxList) return snapshot;
+          window.__holdNextTmuxList = false;
+          return new Promise((resolve) => {
+            window.__resolveTmuxList = () => {
+              window.__resolveTmuxList = null;
+              resolve(snapshot);
+            };
+          });
+        }
         if (command === "start_tmux_control") {
           window.__tmuxControlSequence += 1;
           const runtimeId = `control-${window.__tmuxControlSequence}`;
@@ -550,6 +562,9 @@ try {
     && controlCalls[9].args.target === "build",
   `invalid control-mode lifecycle: ${JSON.stringify(controlCalls)}`);
 
+  await page.getByRole("button", { name: "实时监听 session lab", exact: true }).click();
+  await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
+
   await labZeroSwitch.check();
   await page.getByText("lab:0 已开启 pane 同步输入", { exact: true }).waitFor();
   assert(await labZeroSwitch.isChecked(), "lab:0 switch did not reflect the confirmed enabled state");
@@ -569,11 +584,28 @@ try {
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "list_tmux_state").length >= 2);
 
   const paneTwo = page.locator('[data-tmux-pane="%2"]');
+  await page.evaluate(() => {
+    window.__holdNextTmuxList = true;
+    window.__emitTauriEvent("portmate-tmux-control-event", {
+      sessionId: "ssh-tmux",
+      target: "lab",
+      kind: "state-changed",
+      active: true,
+      runtimeId: window.__tmuxControlRuntimes.lab,
+      protocolEvent: "pane-focus-changed",
+      error: null,
+    });
+  });
+  await page.waitForFunction(() => typeof window.__resolveTmuxList === "function");
   await paneTwo.getByRole("button", { name: "激活 pane lab:0.1", exact: true }).click();
   await page.getByText("lab:0.1 已激活", { exact: true }).waitFor();
+  await page.evaluate(async () => {
+    window.__resolveTmuxList();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   assert(await paneTwo.evaluate((element) => element.classList.contains("active")), "selected pane did not become active");
   assert(await page.locator('[data-tmux-pane="%1"]').evaluate((element) => !element.classList.contains("active")),
-    "previous pane remained active after selection");
+    "a stale control refresh reverted the confirmed pane selection");
 
   await page.getByRole("combobox", { name: "lab:0 window 布局", exact: true }).selectOption("tiled");
   await page.getByText("lab:0 已应用 tiled 布局", { exact: true }).waitFor();

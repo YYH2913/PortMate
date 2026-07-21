@@ -9,6 +9,12 @@ export class KeyedRequestGate<Key> {
     return token;
   }
 
+  replace(key: Key): number {
+    const token = ++this.nextToken;
+    this.active.set(key, token);
+    return token;
+  }
+
   isCurrent(key: Key, token: number): boolean {
     return this.active.get(key) === token;
   }

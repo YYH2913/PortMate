@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Pencil, Play, Plus, Radio, RefreshCw, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import { groupTmuxPanes } from "./tmux-state";
 import type { TmuxWindowGroup } from "./tmux-state";
 import type {
@@ -73,6 +74,7 @@ export default function TmuxDialog({
   const controlOwnedTargetsRef = useRef(new Set<string>());
   const controlRefreshInFlightRef = useRef(false);
   const controlRefreshPendingRef = useRef(false);
+  const stateRequestGateRef = useRef(new KeyedRequestGate<"state">());
   sessionIdRef.current = session.profile.id;
   const windows = useMemo(() => groupTmuxPanes(state.panes, state.windows), [state.panes, state.windows]);
   const operationBusy = busy || Boolean(syncingTarget) || Boolean(mutatingTarget);
@@ -106,6 +108,7 @@ export default function TmuxDialog({
 
   useEffect(() => {
     const sessionId = session.profile.id;
+    stateRequestGateRef.current.invalidate("state");
     controlOwnedTargetsRef.current.clear();
     controlRuntimesRef.current.clear();
     controlRequestedTargetsRef.current.clear();
@@ -115,6 +118,7 @@ export default function TmuxDialog({
     setControlBusyTargets(new Set());
     void refreshTmux();
     return () => {
+      stateRequestGateRef.current.invalidate("state");
       const ownedTargets = [...controlOwnedTargetsRef.current];
       controlOwnedTargetsRef.current.clear();
       controlRuntimesRef.current.clear();
@@ -166,20 +170,26 @@ export default function TmuxDialog({
   }, [session.profile.id]);
 
   async function refreshTmux() {
+    const sessionId = session.profile.id;
+    const gate = stateRequestGateRef.current;
+    const token = gate.replace("state");
     setBusy(true);
     setError("");
     setFeedback("");
     setEditor(null);
     setDeleteConfirmation(null);
     try {
-      const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId: session.profile.id });
+      const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId });
+      if (!isCurrentStateRequest(sessionId, token)) return;
       setState(nextState);
       setTarget((current) => current || nextState.sessions[0]?.name || "portmate");
     } catch (error) {
+      if (!isCurrentStateRequest(sessionId, token)) return;
       setState({ sessions: [], windows: [], panes: [] });
       setError(formatTmuxError(error));
     } finally {
-      setBusy(false);
+      gate.finish("state", token);
+      if (mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
     }
   }
 
@@ -194,13 +204,17 @@ export default function TmuxDialog({
         && sessionIdRef.current === expectedSessionId
       ) {
         controlRefreshPendingRef.current = false;
+        const gate = stateRequestGateRef.current;
+        const token = gate.replace("state");
         try {
           const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId: expectedSessionId });
-          if (mountedRef.current && sessionIdRef.current === expectedSessionId) setState(nextState);
+          if (isCurrentStateRequest(expectedSessionId, token)) setState(nextState);
         } catch (error) {
-          if (mountedRef.current && sessionIdRef.current === expectedSessionId) {
+          if (isCurrentStateRequest(expectedSessionId, token)) {
             setError(formatTmuxError(error));
           }
+        } finally {
+          gate.finish("state", token);
         }
       }
     } finally {
@@ -296,6 +310,9 @@ export default function TmuxDialog({
   }
 
   async function setPaneSync(nextTarget: string, enabled: boolean) {
+    const sessionId = session.profile.id;
+    const gate = stateRequestGateRef.current;
+    const token = gate.replace("state");
     setSyncingTarget(nextTarget);
     setError("");
     setFeedback("");
@@ -303,16 +320,21 @@ export default function TmuxDialog({
     setDeleteConfirmation(null);
     try {
       const nextState = await invokeBackend<TmuxState>("set_tmux_pane_sync", {
-        sessionId: session.profile.id,
+        sessionId,
         target: nextTarget,
         enabled,
       });
-      setState(nextState);
-      setFeedback(`${nextTarget} 已${enabled ? "开启" : "关闭"} pane 同步输入`);
+      if (isCurrentStateRequest(sessionId, token)) setState(nextState);
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        setFeedback(`${nextTarget} 已${enabled ? "开启" : "关闭"} pane 同步输入`);
+      }
     } catch (error) {
-      setError(formatTmuxError(error));
+      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
     } finally {
-      setSyncingTarget("");
+      gate.finish("state", token);
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        setSyncingTarget((current) => current === nextTarget ? "" : current);
+      }
     }
   }
 
@@ -323,19 +345,23 @@ export default function TmuxDialog({
     successMessage: string,
     options: Pick<TmuxMutationRequest, "destination" | "layout" | "amount"> = {},
   ) {
+    const sessionId = session.profile.id;
+    const gate = stateRequestGateRef.current;
+    const token = gate.replace("state");
     setMutatingTarget(mutationTarget);
     setError("");
     setFeedback("");
     try {
       const request: TmuxMutationRequest = {
-        sessionId: session.profile.id,
+        sessionId,
         action,
         target: mutationTarget,
         name,
         ...options,
       };
       const nextState = await invokeBackend<TmuxState>("mutate_tmux", { request });
-      setState(nextState);
+      if (isCurrentStateRequest(sessionId, token)) setState(nextState);
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       if (action === "rename-session" && name && target === mutationTarget) setTarget(name);
       if (action === "kill-session" && target === mutationTarget) {
         setTarget(nextState.sessions[0]?.name || "portmate");
@@ -344,10 +370,19 @@ export default function TmuxDialog({
       setDeleteConfirmation(null);
       setFeedback(successMessage);
     } catch (error) {
-      setError(formatTmuxError(error));
+      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
     } finally {
-      setMutatingTarget("");
+      gate.finish("state", token);
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        setMutatingTarget((current) => current === mutationTarget ? "" : current);
+      }
     }
+  }
+
+  function isCurrentStateRequest(sessionId: string, token: number) {
+    return mountedRef.current
+      && sessionIdRef.current === sessionId
+      && stateRequestGateRef.current.isCurrent("state", token);
   }
 
   function submitEditor() {

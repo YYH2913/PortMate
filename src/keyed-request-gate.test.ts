@@ -25,6 +25,17 @@ describe("keyed request gate", () => {
     expect(gate.finish("session-a", replacement)).toBe(true);
   });
 
+  it("replaces an active request and accepts only the newest response", () => {
+    const gate = new KeyedRequestGate<string>();
+    const stale = gate.replace("session-a");
+    const replacement = gate.replace("session-a");
+
+    expect(gate.isCurrent("session-a", stale)).toBe(false);
+    expect(gate.finish("session-a", stale)).toBe(false);
+    expect(gate.isCurrent("session-a", replacement)).toBe(true);
+    expect(gate.finish("session-a", replacement)).toBe(true);
+  });
+
   it("invalidates every active request during a full snapshot replacement", () => {
     const gate = new KeyedRequestGate<string>();
     const first = gate.begin("session-a")!;
