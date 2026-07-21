@@ -296,16 +296,18 @@ export default function TmuxDialog({
   async function attach(nextTarget = target) {
     const cleanTarget = nextTarget.trim();
     if (!cleanTarget) return;
+    const sessionId = session.profile.id;
     setBusy(true);
     setError("");
     setFeedback("");
     try {
-      await invokeBackend<SessionEvent>("attach_tmux", { sessionId: session.profile.id, target: cleanTarget });
+      await invokeBackend<SessionEvent>("attach_tmux", { sessionId, target: cleanTarget });
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       onDone(`已发送 tmux attach/new-session：${cleanTarget}`);
     } catch (error) {
-      setError(formatTmuxError(error));
+      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
     } finally {
-      setBusy(false);
+      if (mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
     }
   }
 

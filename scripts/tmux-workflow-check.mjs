@@ -149,6 +149,8 @@ try {
     window.__tmuxControlSequence = 0;
     window.__holdNextTmuxList = false;
     window.__resolveTmuxList = null;
+    window.__deferTmuxAttach = false;
+    window.__pendingTmuxAttach = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -412,7 +414,12 @@ try {
           }
           return structuredClone(window.__tmuxState);
         }
-        if (command === "attach_tmux") return null;
+        if (command === "attach_tmux") {
+          if (!window.__deferTmuxAttach) return null;
+          return new Promise((resolve) => {
+            window.__pendingTmuxAttach.push({ args: structuredClone(args), resolve });
+          });
+        }
         if (command === "list_host_keys") return { keys: [] };
         if (["list_files", "list_transfers", "list_mcp_audit", "list_mcp_grants", "list_serial_ports", "list_one_keys"].includes(command)) return [];
         if (command.startsWith("plugin:event|")) return null;
@@ -452,6 +459,24 @@ try {
   assert(await labZero.locator(".tmux-window-panes > div strong").allTextContents().then((values) => values.join(",")) === "lab:0.0,lab:0.1", "pane rows must be sorted by pane index");
   assert(await labZeroSwitch.isChecked() === false, "lab:0 must initially be unsynchronized");
   assert(await labOneSwitch.isChecked() === true, "lab:1 must initially be synchronized");
+
+  await page.evaluate(() => { window.__deferTmuxAttach = true; });
+  const slowAttachInput = page.getByPlaceholder("session name");
+  await slowAttachInput.fill("slow-attach");
+  await page.getByRole("button", { name: "附着/新建", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingTmuxAttach.length === 1);
+  await page.getByRole("button", { name: "关闭 Tmux", exact: true }).click();
+  await page.locator(".tmux-dialog").waitFor({ state: "detached" });
+  await toolsMenu.click();
+  await page.getByRole("button", { name: "Tmux", exact: true }).click();
+  await page.getByRole("heading", { name: "窗口与窗格" }).waitFor();
+  await page.evaluate(async () => {
+    window.__deferTmuxAttach = false;
+    window.__pendingTmuxAttach.shift().resolve(null);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert(await page.locator(".tmux-dialog").count() === 1,
+    "a completed attach from a closed Tmux dialog closed its replacement");
 
   await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-tmux-control-event") || []).length > 0);
   await page.getByRole("button", { name: "实时监听 session lab", exact: true }).click();
