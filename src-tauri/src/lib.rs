@@ -11557,12 +11557,7 @@ fn remote_resume_part_path(target: &str) -> String {
 }
 
 async fn sftp_resume_offset(sftp: &SftpSession, path: &str, total: u64) -> Result<u64, String> {
-    let Some(size) = sftp
-        .metadata(path.to_string())
-        .await
-        .ok()
-        .and_then(|metadata| metadata.size)
-    else {
+    let Some(size) = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await? else {
         return Ok(0);
     };
     if size <= total {
@@ -11575,11 +11570,43 @@ async fn sftp_resume_offset(sftp: &SftpSession, path: &str, total: u64) -> Resul
     }
 }
 
+async fn sftp_regular_file_size(
+    sftp: &SftpSession,
+    path: &str,
+    label: &str,
+) -> Result<Option<u64>, String> {
+    let metadata = match sftp.symlink_metadata(path.to_string()).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let exists = match sftp.try_exists(path.to_string()).await {
+                Ok(exists) => exists,
+                Err(exists_error) => {
+                    return Err(format!(
+                        "{label}无法读取远端属性 {path}: {error}; existence check failed: {exists_error}"
+                    ));
+                }
+            };
+            if exists {
+                return Err(format!("{label}无法读取远端属性 {path}: {error}"));
+            }
+            return Ok(None);
+        }
+    };
+    if metadata.is_symlink() {
+        return Err(format!("{label}不能是符号链接: {path}"));
+    }
+    if !metadata.is_regular() {
+        return Err(format!("{label}不是普通文件: {path}"));
+    }
+    Ok(Some(metadata.len()))
+}
+
 async fn sftp_open_resume_writer(
     sftp: &SftpSession,
     path: &str,
     offset: u64,
 ) -> Result<russh_sftp::client::fs::File, String> {
+    let _ = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await?;
     let flags = if offset == 0 {
         OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
     } else {
@@ -11602,7 +11629,20 @@ async fn sftp_finalize_resume_file(
     temp: &str,
     target: &str,
 ) -> Result<(), String> {
-    let _ = sftp.remove_file(target.to_string()).await;
+    if sftp_regular_file_size(sftp, temp, "SFTP 断点文件")
+        .await?
+        .is_none()
+    {
+        return Err(format!("SFTP 断点文件不存在: {temp}"));
+    }
+    if sftp_regular_file_size(sftp, target, "SFTP 目标文件")
+        .await?
+        .is_some()
+    {
+        sftp.remove_file(target.to_string())
+            .await
+            .map_err(|error| format!("SFTP 删除旧目标文件失败 {target}: {error}"))?;
+    }
     sftp.rename(temp.to_string(), target.to_string())
         .await
         .map_err(|error| format!("SFTP 重命名断点文件失败 {temp} -> {target}: {error}"))
@@ -11681,16 +11721,13 @@ async fn sftp_download(
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    let total = sftp_regular_file_size(sftp, remote_source, "SFTP 远端源文件")
+        .await?
+        .ok_or_else(|| format!("SFTP 远端源文件不存在: {remote_source}"))?;
     let mut remote_file = sftp
         .open(remote_source.to_string())
         .await
         .map_err(|error| format!("SFTP 打开远端文件失败 {remote_source}: {error}"))?;
-    let total = sftp
-        .metadata(remote_source.to_string())
-        .await
-        .ok()
-        .and_then(|metadata| metadata.size)
-        .unwrap_or(0);
     let target = local_destination_file_path(local_destination, remote_source)?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
@@ -11744,16 +11781,13 @@ async fn sftp_remote_copy(
     remote_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    let total = sftp_regular_file_size(sftp, remote_source, "SFTP 远端源文件")
+        .await?
+        .ok_or_else(|| format!("SFTP 远端源文件不存在: {remote_source}"))?;
     let mut source_file = sftp
         .open(remote_source.to_string())
         .await
         .map_err(|error| format!("SFTP 打开远端源文件失败 {remote_source}: {error}"))?;
-    let total = sftp
-        .metadata(remote_source.to_string())
-        .await
-        .ok()
-        .and_then(|metadata| metadata.size)
-        .unwrap_or(0);
     let file_name = remote_file_name(remote_source);
     let target = sftp_destination_file_path(sftp, remote_destination, &file_name).await?;
     let temp_target = remote_resume_part_path(&target);
@@ -12029,8 +12063,11 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$remote_name\"; else target=\"$dst\"; fi ;; esac; ",
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
+            "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
             "cleanup() {{ if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || :; fi; }}; ",
             "trap cleanup INT TERM HUP EXIT; ",
+            "if ! reject_link \"$src\" || [ ! -f \"$src\" ]; then exit 1; fi; ",
+            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "if ! total=$(stat -c %s -- \"$src\"); then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
@@ -12054,6 +12091,7 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "if [ \"$final\" -ne \"$total\" ]; then ",
             "printf 'PortMate remote copy size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
+            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "mv -f -- \"$part\" \"$target\" || exit 1; ",
             "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
         ),
@@ -13976,6 +14014,8 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$source_name\"; else target=\"$dst\"; fi ;; esac; ",
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
+            "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
+            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
@@ -13995,6 +14035,7 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "if [ \"$final\" -ne \"$total\" ]; then ",
             "printf 'PortMate SCP upload size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
+            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "mv -f -- \"$part\" \"$target\" || exit 1; ",
             "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
         ),
@@ -14018,7 +14059,7 @@ async fn scp_download(
             .map_err(|error| format!("SCP 打开 SSH channel 失败: {error}"))?
     };
     channel
-        .exec(true, format!("scp -f {}", shell_quote(remote_source)))
+        .exec(true, scp_download_command(remote_source))
         .await
         .map_err(|error| format!("SCP 启动远端发送失败: {error}"))?;
     let mut pending = VecDeque::new();
@@ -14107,6 +14148,13 @@ async fn scp_download(
     finalize_local_resume_file(&temp_target, target)?;
     let _ = channel.close().await;
     Ok(size)
+}
+
+fn scp_download_command(remote_source: &str) -> String {
+    format!(
+        "source={}; if [ -L \"$source\" ] || [ ! -f \"$source\" ]; then printf 'PortMate refuses symbolic link or non-file source: %s\\n' \"$source\" >&2; exit 1; fi; exec scp -f \"$source\"",
+        shell_quote(remote_source)
+    )
 }
 
 async fn scp_wait_ack(
@@ -37738,6 +37786,43 @@ mod tests {
         assert!(command.contains("dst='/tmp/o'\\''clock.bin'"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn remote_copy_command_rejects_symbolic_sources_and_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        let protected = root.path().join("protected.bin");
+        let source_link = root.path().join("source-link.bin");
+        let target_link = root.path().join("target-link.bin");
+        let part_link = root.path().join("target.bin.portmate-part");
+        fs::write(&source, b"payload").unwrap();
+        fs::write(&protected, b"protected").unwrap();
+
+        for (input, destination, expected) in [
+            (&source_link, root.path().join("target.bin"), "source"),
+            (&source, target_link.clone(), "target"),
+            (&source, root.path().join("target.bin"), "part"),
+        ] {
+            if expected == "source" {
+                std::os::unix::fs::symlink(&source, input).unwrap();
+            } else if expected == "target" {
+                std::os::unix::fs::symlink(&protected, &destination).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&protected, &part_link).unwrap();
+            }
+
+            let command =
+                remote_copy_command(input.to_str().unwrap(), destination.to_str().unwrap());
+            let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
+            assert!(!output.status.success(), "{expected} symlink was accepted");
+            assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+            for path in [&source_link, &target_link, &part_link] {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
     #[test]
     fn log_truncation_preserves_utf8_boundaries() {
         assert_eq!(truncate_for_log("  short message  ", 20), "short message");
@@ -37796,6 +37881,51 @@ mod tests {
         assert_eq!(markers.done, Some(6));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scp_upload_command_rejects_symbolic_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join("protected.bin");
+        let target = root.path().join("target.bin");
+        let part = root.path().join("target.bin.portmate-part");
+        fs::write(&protected, b"protected").unwrap();
+
+        for link in [&target, &part] {
+            std::os::unix::fs::symlink(&protected, link).unwrap();
+            let command = scp_upload_command(root.path().to_str().unwrap(), "target.bin", 7);
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            drop(child.stdin.take());
+            let output = child.wait_with_output().unwrap();
+            assert!(!output.status.success(), "symlink target was accepted");
+            assert_eq!(fs::read(&protected).unwrap(), b"protected");
+            fs::remove_file(link).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scp_download_command_rejects_symbolic_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join("protected.bin");
+        let source_link = root.path().join("source-link.bin");
+        fs::write(&protected, b"protected").unwrap();
+        std::os::unix::fs::symlink(&protected, &source_link).unwrap();
+
+        let command = scp_download_command(source_link.to_str().unwrap());
+        assert!(command.contains("[ -L \"$source\" ]"));
+        assert!(command.contains("exec scp -f \"$source\""));
+        let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(fs::read(&protected).unwrap(), b"protected");
     }
 
     #[test]
