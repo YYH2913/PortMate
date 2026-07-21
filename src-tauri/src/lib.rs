@@ -4535,6 +4535,72 @@ where
     Ok(result)
 }
 
+fn record_applied_system_event(
+    state: &AppState,
+    session_id: &str,
+    message: String,
+    operation: &str,
+) {
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("PortMate: {operation} succeeded but the system event lock failed: {error}");
+            return;
+        }
+    };
+    if let Err(error) = record_applied_system_event_with(
+        &mut store,
+        session_id,
+        message,
+        |next_store| save_store(&state.store_path, next_store),
+        |next_store| verify_persisted_store_commit(&state.store_path, next_store),
+    ) {
+        eprintln!("PortMate: {operation} succeeded but system event persistence degraded: {error}");
+    }
+}
+
+fn record_applied_system_event_with<Persist, VerifyAfterError>(
+    store: &mut SessionStore,
+    session_id: &str,
+    message: String,
+    persist: Persist,
+    verify_after_error: VerifyAfterError,
+) -> Result<(), String>
+where
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
+{
+    let event_id = store
+        .record_system_event_tracked(session_id, message)
+        .ok_or_else(|| {
+            format!("session profile unavailable after applied operation: {session_id}")
+        })?;
+    let Err(save_error) = persist(store) else {
+        return Ok(());
+    };
+    match verify_after_error(store) {
+        Ok(true) => {
+            eprintln!(
+                "PortMate: applied operation event save returned an error, but the intended snapshot was verified on disk: {save_error}"
+            );
+            Ok(())
+        }
+        verification => {
+            let error = match verification {
+                Ok(false) => save_error,
+                Err(verify_error) => format!(
+                    "{save_error}; 无法判定成功操作的审计事件是否已保存，请重启应用: {verify_error}"
+                ),
+                Ok(true) => unreachable!(),
+            };
+            if let Some(event) = store.events.iter_mut().find(|event| event.id == event_id) {
+                append_logging_error(event, format!("store save failed: {error}"));
+            }
+            Err(error)
+        }
+    }
+}
+
 fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
     store
         .host_keys
@@ -13122,17 +13188,18 @@ async fn set_tmux_pane_sync_inner(
 ) -> Result<TmuxState, String> {
     let handle = ssh_handle_for_transfer(state, session_id)?;
     let command = tmux_pane_sync_command(target, enabled)?;
+    let event_message = format!(
+        "PortMate: tmux pane synchronization {} ({})",
+        if enabled { "enabled" } else { "disabled" },
+        normalize_tmux_target(target)?
+    );
     exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
-    if let Ok(mut store) = state.store.lock() {
-        store.record_system_event(
-            session_id,
-            format!(
-                "PortMate: tmux pane synchronization {} ({})",
-                if enabled { "enabled" } else { "disabled" },
-                normalize_tmux_target(target)?
-            ),
-        );
-    }
+    record_applied_system_event(
+        state,
+        session_id,
+        event_message,
+        "tmux pane synchronization",
+    );
     list_tmux_state_inner(state, session_id).await
 }
 
@@ -13141,18 +13208,14 @@ async fn mutate_tmux_inner(
     request: TmuxMutationRequest,
 ) -> Result<TmuxState, String> {
     let command = tmux_mutation_command(&request)?;
+    let event_message = format!(
+        "PortMate: tmux {} ({})",
+        tmux_mutation_label(request.action),
+        tmux_mutation_event_scope(&request)?
+    );
     let handle = ssh_handle_for_transfer(state, &request.session_id)?;
     exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
-    if let Ok(mut store) = state.store.lock() {
-        store.record_system_event(
-            &request.session_id,
-            format!(
-                "PortMate: tmux {} ({})",
-                tmux_mutation_label(request.action),
-                tmux_mutation_event_scope(&request)?
-            ),
-        );
-    }
+    record_applied_system_event(state, &request.session_id, event_message, "tmux mutation");
     list_tmux_state_inner(state, &request.session_id).await
 }
 
@@ -36473,6 +36536,51 @@ mod tests {
         let queued = store.drain_system_event_outbox();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].0.text.as_deref(), Some("committed transaction"));
+    }
+
+    #[test]
+    fn applied_system_event_persistence_failure_keeps_remote_truth_in_memory() {
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_ssh_profile());
+
+        let error = record_applied_system_event_with(
+            &mut store,
+            "ssh-session-1",
+            "PortMate: tmux kill-pane (%7)".to_string(),
+            |_| Err("disk full".to_string()),
+            |_| Ok(false),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "disk full");
+        let event = store.events.last().unwrap();
+        assert_eq!(event.text.as_deref(), Some("PortMate: tmux kill-pane (%7)"));
+        assert!(event
+            .annotations
+            .get("loggingError")
+            .is_some_and(|error| error.contains("disk full")));
+    }
+
+    #[test]
+    fn applied_system_event_accepts_a_verified_post_commit_error() {
+        let mut store = SessionStore::default();
+        store.upsert_profile(test_ssh_profile());
+
+        record_applied_system_event_with(
+            &mut store,
+            "ssh-session-1",
+            "PortMate: tmux select-layout (lab:1)".to_string(),
+            |_| Err("post-commit verification failed".to_string()),
+            |_| Ok(true),
+        )
+        .unwrap();
+
+        let event = store.events.last().unwrap();
+        assert_eq!(
+            event.text.as_deref(),
+            Some("PortMate: tmux select-layout (lab:1)")
+        );
+        assert!(!event.annotations.contains_key("loggingError"));
     }
 
     #[test]
