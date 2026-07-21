@@ -147,6 +147,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 显式 `run_command` 在 transport write 前生成 UUID `commandId`，命令出站事件带 `commandState=started`，后续入站事件继承同一 ID；下一条显式命令会替换，普通/OneKey/modem 输入、open/close、断线和重连会清理。该模型不猜测 prompt 或命令结束，快速回显不会先于关联激活，写入失败也不残留；annotations 会保留到 SQLite、JSONL、MCP 和 session bundle。执行型 Quick Command 使用该路径，已加载日志可按完整 ID 搜索并显示短 ID。
 - direct、连接生命周期、trigger、重连、transfer、tunnel 等 system/control 事件通过 Core 的单槽 wake + 4,096 条有界 outbox 统一写入脱敏 Text/JSONL 并实时 emit；system sink 不创建或追加 Raw，正常运行中每个入队事件只发布一次，退出时会停用共享 notifier、drain 并 join worker。积压超限或 worker 断开会在 store event 写入 `loggingError`，不会无限增长或静默丢弃后续诊断。事件后补 annotations 会按内容变化更新 SQLite `events` mirror，不退化为重复插入全部历史。
 - `工具 -> 日志管理` 可安全枚举 raw/txt/jsonl 分片，按路径和格式筛选、查看受限尾部预览（raw/非 UTF-8 使用 Hex）并批量清理；扫描、预览和删除均有数量/大小上限，symlink、路径穿越和非分片扩展不会进入操作范围。
+- 日志分片列表、预览和内容搜索按请求代际隔离；快速选择 A/B 后 A 的慢响应不能覆盖 B，刷新、删除、查询变更或关闭弹窗会失效不再对应当前界面的结果。
 - 日志管理可全文搜索磁盘 Text/JSONL 分片，包括已从有界 store events 裁剪的历史；支持全部或选中路径，结果带分片、行号、字节偏移和受限上下文，并明确报告命中/单文件/总扫描上限与 warning。Raw 保持 Hex 预览，不伪装成文本搜索。
 - 日志管理可把最多 1,000 个、合计不超过 512 MiB 的选中 raw/txt/jsonl 分片流式归档为原子落盘的 `.tar.gz`，包内 manifest 记录逐文件 SHA-256，并生成 `.sha256` sidecar；源分片保留不删除，路径穿越、symlink、非法扩展和归档过程中截断的文件会被拒绝。
 - 每个 profile 可配置 0..=3650 天自动保留期；旧配置默认关闭。应用启动时后台检查，持续写入时最多每小时复查一次，只按 profile 模板匹配并在删除前二次核对 mtime，随后清理空目录；启用保留期的自定义模板必须含 `{session}` 或 `{profile}`，避免误删共享路径。
@@ -184,6 +185,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - HTTP 明确采用 MCP 允许的无状态 Streamable HTTP 模式，不签发 `Mcp-Session-Id`，因此没有伪造的 session/DELETE/replay 生命周期；仓库固定的官方 TypeScript SDK 1.29.0 回归会启动真实 bridge，覆盖 initialize/initialized、GET SSE、ping、tools/resources/templates/prompts/resource read 共 9 个请求，并核对认证、双 Accept 和协商版本头。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；重复的 framing/认证单值头、不支持的 `Transfer-Encoding`、畸形头和声明 body 后的额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
 - MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
+- MCP 授权变更、HTTP 配置/Token、审计刷新/导出按任务使用弹窗级请求门控；重复切换标签不会重叠慢配置读取，操作期间对应控件禁用，关闭弹窗会失效迟到响应。
 
 主要缺口：
 
@@ -206,11 +208,13 @@ npm run test:workspace-ui
 npm run build
 ```
 
-`npm run build` 已把应用壳、MCP Bridge、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 472.1 kB、MCP Bridge 约 11.5 kB、终端 core JS 约 466.9 kB、WebGL JS 约 120.4 kB、主 CSS 约 130.7 kB、终端 CSS 约 3.9 kB；共享 session 搜索状态约 1.9 kB、工作区辅助筛选约 2.8 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.6 kB、终端 buffer 约 1.4 kB、选择/在线搜索约 2.2 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
+`npm run build` 已把应用壳、MCP Bridge、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 495.1 kB、MCP Bridge 约 13.2 kB、终端 core JS 约 466.7 kB、WebGL JS 约 120.4 kB、主 CSS 约 139.9 kB、终端 CSS 约 3.9 kB；共享 session 搜索状态约 1.9 kB、工作区辅助筛选约 2.8 kB、命令历史状态约 1.8 kB、session/终端菜单约 4.7 kB、终端 buffer 约 1.4 kB、选择/在线搜索约 2.2 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
 
 终端浏览器回归覆盖 Unicode 11、write-only OSC 52、WebGL/DOM fallback、进程内屏幕恢复、查找、绝对/相对 buffer 行跳转、自由输入和键盘模式。终端文本导出覆盖同 session Primary/Mirror 精确路由、ANSI 去除、wrapped row、完整 buffer/精确 selection、空 selection 阻断、桌面/移动菜单和零终端写入；终端选择覆盖菜单 copy/select-all/clear、空选区错误、Remote/Local `Ctrl+Shift+C/A`、Normal/Command 隔离、开启 SGR mouse reporting 后的真实矩形列选择、同 session view ID、桌面/移动几何和零鼠标/键盘写入。终端 buffer 回归在真实 XTerm 中区分 clear scrollback/screen/all，验证 alternate screen 禁用、Remote/Local 快捷键、Mirror 精确路由、紧凑桌面/移动布局和零后端写入。搜索、导出、选择和 buffer 模块均验证首次按需加载后的行为。
 
 仓库内 `npm run test:workspace-ui` 会自行启动隔离 Vite/Chrome，从旧版六面板全开快照验证终端优先迁移，并覆盖左/右/底部停靠区同时显示、同区多面板并行显示、标题栏聚焦与跨区拖放、三向 pointer/键盘尺寸调整、双击复位、刷新持久化、关闭后空间归还、唯一资源树/历史筛选、四组顶层菜单及 SSH/Serial 精确禁用态、低频 pane 动作从标题栏迁到 view 右键菜单、四方向新分组子菜单、同步输入正反切换、顶部会话/日志共享搜索与键盘激活、发送区无伪控件、真实 Profile 启动目标的禁用/选择/保存/恢复、Profile 删除确认/后端单次调用/view 与快照收敛、终端设置单层标签、六协议会话设置双选择器/协议感知传输/无伪偏好写入、MCP 三任务页互斥/联合审计筛选/详情/精确导出、关闭失败保留连接状态与诊断，以及 1440x900/390x844 桌面移动截图边界；上述非输入操作还会确认没有调用 `send_text`、`send_bytes` 或 `run_command`。其他工作区回归覆盖 v4 view 复制/别名/着色/重载/关闭恢复、同组排序、跨组拖放、独立窗口往返、标签循环、完整 view 右键菜单、分屏方向、精确移组、视图生命周期快捷键、可配置键盘模式、面板显隐、专注模式和主/独立窗口锁屏。命令补全覆盖 Quick/历史/参数排序、Tab 精确后缀、控制序列退让和主/独立窗口一致性；命令历史覆盖旧数组迁移、配置裁剪、发送记录、清除、关闭持久化后的进程内保留和 detached 读取；Quick Commands 覆盖管理/排序/取消/保存、Quick Bar 和插入/执行差异；串口分析器覆盖 delimiter/SLIP/COBS/Modbus framing、实时/Raw 日志源、证据视图、协议错误、分页、书签、重连诊断和导出。
+
+该 workspace suite 还会把两个日志预览按反向顺序完成，并在 MCP HTTP 配置挂起时重复切换标签，直接覆盖弹窗请求门控。
 
 已有单元测试覆盖：
 
@@ -282,7 +286,7 @@ npm run build
 - Telnet/Raw TCP 已有 loopback mock 测试覆盖跨 read 分片的 IAC/TTYPE 子协商、Profile TTYPE、双向 BINARY 接受/拒绝/撤销、binary/NVT 数据差异、NAWS 协商前 resize、`0xff` 尺寸转义和连续 resize、NVT `CR NUL`/CRLF 与 EOF 孤立 CR、raw byte IAC 转义、Raw TCP 原样字节发送、内核 keepalive 自定义/关闭、旧 Profile 默认值与边界归一化，以及断线自动重连状态恢复、运行中缩短重连延迟并切换端口、pending/connected 阶段关闭重连的收敛；更广真实 Telnet 服务矩阵仍待补。
 - 已有 OpenSSH SFTP 浏览/写操作/传输、SFTP/SCP 五条断点续传路径、SFTP/SCP 取消后 retry、服务端拒写失败状态、活动 SSH 断开后重连续传、lrzsz X/Y/ZModem 双向端到端、X/YModem 数据块与 EOT 的 ACK 丢失重传、静默 XModem 快速取消/CAN 和 transport 重连态旧 worker 快速失败测试；SFTP/SCP 更广服务故障矩阵，以及 modem 物理串口/OpenSSH 活动传输断线/工具变体矩阵仍待补。
 - 已有 OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 主动关闭、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
-- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区多面板并行显示、标题栏聚焦和跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、文件列表/属性反向响应、独立终端日志追赶/轮询失败保留、串口分析器 session 慢轮询串行化、tunnel 慢轮询串行化、Sysmon 跨会话反向响应、Profile 删除后 session/log 迟到响应失效、真实筛选、精确上下文动作、Profile 删除确认/级联/view 与快照收敛、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离及桌面/移动截图边界。
+- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区多面板并行显示、标题栏聚焦和跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、文件列表/属性/日志预览反向响应、独立终端日志追赶/轮询失败保留、串口分析器 session 慢轮询串行化、tunnel 慢轮询串行化、MCP HTTP 慢加载防重入、Sysmon 跨会话反向响应、Profile 删除后 session/log 迟到响应失效、真实筛选、精确上下文动作、Profile 删除确认/级联/view 与快照收敛、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离及桌面/移动截图边界。
 - Unicode 11、Serialize、write-only OSC 52、WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好、缓存恢复、真实 Vim/less/top PTY 和 6,000 行长日志已有可重复 Playwright 基线，仍缺完整 vttest、真实 tmux 及 top/less 的跨实现和跨平台矩阵。
 
 ## 对照最终目标的完成度
@@ -305,8 +309,8 @@ npm run build
 | 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
-| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 273 项 Rust core/协议集成测试、54 文件/284 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性乱序、独立窗口日志追赶/轮询失败保留、串口分析器/tunnel 慢轮询、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、主/独立窗口原位应用和桌面截图，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，按任务门控请求，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
+| 测试体系 | 部分实现 | 273 项 Rust core/协议集成测试、54 文件/284 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性/日志预览乱序、独立窗口日志追赶/轮询失败保留、串口分析器/tunnel/MCP HTTP 慢请求、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、主/独立窗口原位应用和桌面截图，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
