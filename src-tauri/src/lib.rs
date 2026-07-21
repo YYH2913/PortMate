@@ -14198,7 +14198,11 @@ async fn start_tunnel_runtime(
                                         &session_id,
                                         format!("PortMate: SSH tunnel client failed: {error}"),
                                     );
-                                    if let Err(error) = save_store(&store_path, &store) {
+                                    if let Err(error) = persist_applied_store(
+                                        &store,
+                                        &store_path,
+                                        "tunnel client failure event",
+                                    ) {
                                         eprintln!(
                                             "PortMate: failed to persist tunnel client error: {error}"
                                         );
@@ -14230,7 +14234,15 @@ async fn start_tunnel_runtime(
                             stopped.enabled = false;
                             mark_tunnel_stopped_in_store(&mut store, &session_id, &stopped);
                             store.record_system_event(&session_id, format!("PortMate: {message}"));
-                            let _ = save_store(&store_path, &store);
+                            if let Err(error) = persist_applied_store(
+                                &store,
+                                &store_path,
+                                "failed tunnel listener state",
+                            ) {
+                                eprintln!(
+                                    "PortMate: failed to persist tunnel listener failure: {error}"
+                                );
+                            }
                         }
                     }
                     break;
@@ -14492,15 +14504,12 @@ fn socket_endpoint_port(endpoint: &str) -> Option<u16> {
 }
 
 fn record_tunnel_health_event(state: &AppState, session_id: &str, tunnel_id: &str, message: &str) {
-    if let Ok(mut store) = state.store.lock() {
-        store.record_system_event(
-            session_id,
-            format!("PortMate: remote tunnel {tunnel_id}: {message}"),
-        );
-        if let Err(error) = save_store(&state.store_path, &store) {
-            eprintln!("PortMate: failed to persist remote tunnel health event: {error}");
-        }
-    }
+    record_applied_system_event(
+        state,
+        session_id,
+        format!("PortMate: remote tunnel {tunnel_id}: {message}"),
+        "remote tunnel health event",
+    );
 }
 
 fn enabled_tunnel_specs(state: &AppState, session_id: &str) -> Result<Vec<TunnelSpec>, String> {
@@ -14582,15 +14591,12 @@ fn record_tunnel_restore_failure(
     error: &str,
 ) {
     let label = tunnel_id.map(|id| format!(" {id}")).unwrap_or_default();
-    if let Ok(mut store) = state.store.lock() {
-        store.record_system_event(
-            session_id,
-            format!("PortMate: failed to restore SSH tunnel{label}: {error}"),
-        );
-        if let Err(save_error) = save_store(&state.store_path, &store) {
-            eprintln!("PortMate: failed to persist tunnel restore failure: {save_error}");
-        }
-    }
+    record_applied_system_event(
+        state,
+        session_id,
+        format!("PortMate: failed to restore SSH tunnel{label}: {error}"),
+        "tunnel restore failure event",
+    );
 }
 
 fn normalize_tunnel_request(
