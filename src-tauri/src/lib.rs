@@ -4131,13 +4131,13 @@ fn apply_host_key_decision(
         remember_one_time_host_key(state.inner(), &request.profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
-    let trusted = store.apply_host_key_decision(
-        &request.profile_id,
-        &request.observation,
-        request.decision,
-    )?;
-    save_store(&state.store_path, &store)?;
-    Ok(trusted)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        next_store.apply_host_key_decision(
+            &request.profile_id,
+            &request.observation,
+            request.decision,
+        )
+    })
 }
 
 #[tauri::command]
@@ -4173,12 +4173,12 @@ fn trust_scanned_host_key(
         remember_one_time_host_key(state.inner(), &profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
-    let trusted = store
-        .host_keys
-        .apply_decision(&profile_id, &policy, &request.observation, request.decision)
-        .map_err(|error| error.to_string())?;
-    save_store(&state.store_path, &store)?;
-    Ok(trusted)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        next_store
+            .host_keys
+            .apply_decision(&profile_id, &policy, &request.observation, request.decision)
+            .map_err(|error| error.to_string())
+    })
 }
 
 #[tauri::command]
@@ -4187,15 +4187,15 @@ fn import_known_hosts(
     request: KnownHostsImportRequest,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    if store.profile(&request.profile_id).is_none() {
-        return Err(format!("unknown session: {}", request.profile_id));
-    }
-    store
-        .host_keys
-        .import_known_hosts(&request.profile_id, &request.contents);
-    let host_keys = store.host_keys.clone();
-    save_store(&state.store_path, &store)?;
-    Ok(host_keys)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        if next_store.profile(&request.profile_id).is_none() {
+            return Err(format!("unknown session: {}", request.profile_id));
+        }
+        next_store
+            .host_keys
+            .import_known_hosts(&request.profile_id, &request.contents);
+        Ok(next_store.host_keys.clone())
+    })
 }
 
 #[tauri::command]
@@ -4207,9 +4207,9 @@ fn export_known_hosts(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 fn delete_host_key(state: State<'_, AppState>, key_id: String) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let host_keys = delete_host_keys_from_store(&mut store, &[key_id]);
-    save_store(&state.store_path, &store)?;
-    Ok(host_keys)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        Ok(delete_host_keys_from_store(next_store, &[key_id]))
+    })
 }
 
 #[tauri::command]
@@ -4218,9 +4218,38 @@ fn delete_host_keys(
     key_ids: Vec<String>,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let host_keys = delete_host_keys_from_store(&mut store, &key_ids);
-    save_store(&state.store_path, &store)?;
-    Ok(host_keys)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        Ok(delete_host_keys_from_store(next_store, &key_ids))
+    })
+}
+
+fn commit_host_key_mutation<ResultValue, Mutate>(
+    store: &mut SessionStore,
+    store_path: &Path,
+    mutate: Mutate,
+) -> Result<ResultValue, String>
+where
+    Mutate: FnOnce(&mut SessionStore) -> Result<ResultValue, String>,
+{
+    commit_host_key_mutation_with(store, mutate, |next_store| {
+        save_store(store_path, next_store)
+    })
+}
+
+fn commit_host_key_mutation_with<ResultValue, Mutate, Persist>(
+    store: &mut SessionStore,
+    mutate: Mutate,
+    persist: Persist,
+) -> Result<ResultValue, String>
+where
+    Mutate: FnOnce(&mut SessionStore) -> Result<ResultValue, String>,
+    Persist: FnOnce(&SessionStore) -> Result<(), String>,
+{
+    let mut next_store = store.clone();
+    let result = mutate(&mut next_store)?;
+    persist(&next_store)?;
+    *store = next_store;
+    Ok(result)
 }
 
 fn delete_host_keys_from_store(store: &mut SessionStore, key_ids: &[String]) -> HostKeyStore {
@@ -4243,9 +4272,9 @@ fn update_host_key(
     request: HostKeyUpdateRequest,
 ) -> Result<HostKeyStore, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let host_keys = update_host_key_in_store(&mut store, request)?;
-    save_store(&state.store_path, &store)?;
-    Ok(host_keys)
+    commit_host_key_mutation(&mut store, &state.store_path, |next_store| {
+        update_host_key_in_store(next_store, request)
+    })
 }
 
 fn update_host_key_in_store(
@@ -35003,6 +35032,69 @@ mod tests {
         assert_eq!(profile_copy.host, "new-host");
         assert_eq!(profile_copy.port, 2222);
         assert_eq!(profile_copy.label.as_deref(), Some("new label"));
+    }
+
+    #[test]
+    fn host_key_mutation_changes_memory_only_after_persistence_succeeds() {
+        let mut store = SessionStore::default();
+        let mut profile = test_ssh_profile();
+        let key = portmate_core::TrustedHostKey {
+            id: "host-key-1".to_string(),
+            profile_id: Some(profile.id.clone()),
+            alias: "bench-device".to_string(),
+            host: "192.0.2.10".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:test".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.trusted_host_keys.push(key.clone());
+        }
+        store.upsert_profile(profile);
+        store.host_keys.keys.push(key);
+        let before = serde_json::to_value(&store).unwrap();
+
+        let error = commit_host_key_mutation_with(
+            &mut store,
+            |next_store| {
+                Ok(delete_host_keys_from_store(
+                    next_store,
+                    &["host-key-1".to_string()],
+                ))
+            },
+            |next_store| {
+                assert!(next_store.host_keys.keys.is_empty());
+                Err("disk full".to_string())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "disk full");
+        assert_eq!(serde_json::to_value(&store).unwrap(), before);
+
+        let saved = commit_host_key_mutation_with(
+            &mut store,
+            |next_store| {
+                Ok(delete_host_keys_from_store(
+                    next_store,
+                    &["host-key-1".to_string()],
+                ))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(saved.keys.is_empty());
+        assert!(store.host_keys.keys.is_empty());
+        let profile = store.profile("ssh-session-1").unwrap();
+        let trusted_host_keys = match profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh.trusted_host_keys,
+            _ => panic!("expected SSH profile"),
+        };
+        assert!(trusted_host_keys.is_empty());
     }
 
     #[test]
