@@ -11643,7 +11643,7 @@ fn remote_path(value: &str) -> Option<&str> {
         .filter(|path| !path.trim().is_empty())
 }
 
-fn ssh_handle_for_transfer(
+fn ssh_handle_for_auxiliary_operation(
     state: &AppState,
     session_id: &str,
 ) -> Result<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>, String> {
@@ -11651,7 +11651,7 @@ fn ssh_handle_for_transfer(
     connections
         .get(session_id)
         .map(|runtime| Arc::clone(&runtime.handle))
-        .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行 remote: 传输".to_string())
+        .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行远端操作".to_string())
 }
 
 struct SshAuxiliaryLease {
@@ -11679,7 +11679,7 @@ fn acquire_ssh_auxiliary_slot(
 
 fn ssh_auxiliary_lease(state: &AppState, session_id: &str) -> Result<SshAuxiliaryLease, String> {
     let slot = acquire_ssh_auxiliary_slot(state)?;
-    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let handle = ssh_handle_for_auxiliary_operation(state, session_id)?;
     Ok(SshAuxiliaryLease {
         handle,
         _slot: slot,
@@ -33088,7 +33088,7 @@ mod tests {
         let missing_runtime = ssh_auxiliary_lease(&state, "missing-session")
             .err()
             .expect("missing SSH runtime unexpectedly produced a lease");
-        assert!(missing_runtime.contains("需要先连接 SSH/Tmux"));
+        assert_eq!(missing_runtime, "需要先连接 SSH/Tmux 会话才能执行远端操作");
         assert_eq!(
             state.ssh_auxiliary_slots.available_permits(),
             MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS
