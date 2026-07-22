@@ -217,7 +217,7 @@ const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+const DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
@@ -8447,12 +8447,19 @@ async fn scan_ssh_host_key_via_jump(
         });
         let jump_label = format!("Jump Host 第 {} 跳", index + 1);
         let mut jump_session = if let Some(previous_jump) = jump_sessions.last_mut() {
-            let jump_channel = match previous_jump
-                .channel_open_direct_tcpip(jump_host.clone(), u32::from(jump_port), "127.0.0.1", 0)
-                .await
+            let jump_channel = match open_direct_tcpip_with_timeout(
+                previous_jump,
+                jump_host.clone(),
+                jump_port,
+                "127.0.0.1".to_string(),
+                0,
+                Duration::from_secs(12),
+                "PortMate jump host key scan channel timeout",
+            )
+            .await
             {
                 Ok(channel) => channel,
-                Err(error) => {
+                Err(DirectTcpipOpenError::Failed(error)) => {
                     disconnect_jump_sessions(
                         jump_sessions,
                         "PortMate jump host key scan channel failed",
@@ -8460,6 +8467,23 @@ async fn scan_ssh_host_key_via_jump(
                     .await;
                     return Err(format!(
                         "Jump Host 第 {} 跳打开 host key 扫描通道到 {jump_host}:{jump_port} 失败: {error}",
+                        index + 1
+                    ));
+                }
+                Err(DirectTcpipOpenError::TimedOut {
+                    timeout_ms,
+                    cleanup_warning,
+                }) => {
+                    disconnect_jump_sessions(
+                        jump_sessions,
+                        "PortMate jump host key scan channel timeout",
+                    )
+                    .await;
+                    let cleanup_warning = cleanup_warning
+                        .map(|warning| format!("; {warning}"))
+                        .unwrap_or_default();
+                    return Err(format!(
+                        "Jump Host 第 {} 跳打开 host key 扫描通道到 {jump_host}:{jump_port} 超时（{timeout_ms} ms）{cleanup_warning}",
                         index + 1
                     ));
                 }
@@ -8579,19 +8603,21 @@ async fn scan_ssh_host_key_via_jump(
     }
 
     let target_host = ssh.endpoint.host.trim().to_string();
-    let jump_channel = match jump_sessions
-        .last_mut()
-        .expect("non-empty jumps should create jump sessions")
-        .channel_open_direct_tcpip(
-            target_host.clone(),
-            u32::from(ssh.endpoint.port),
-            "127.0.0.1",
-            0,
-        )
-        .await
+    let jump_channel = match open_direct_tcpip_with_timeout(
+        jump_sessions
+            .last()
+            .expect("non-empty jumps should create jump sessions"),
+        target_host.clone(),
+        ssh.endpoint.port,
+        "127.0.0.1".to_string(),
+        0,
+        Duration::from_secs(12),
+        "PortMate jump host key scan target channel timeout",
+    )
+    .await
     {
         Ok(channel) => channel,
-        Err(error) => {
+        Err(DirectTcpipOpenError::Failed(error)) => {
             disconnect_jump_sessions(
                 jump_sessions,
                 "PortMate jump host key scan target channel failed",
@@ -8599,6 +8625,23 @@ async fn scan_ssh_host_key_via_jump(
             .await;
             return Err(format!(
                 "Jump Host 打开 host key 扫描通道到 {target_host}:{} 失败: {error}",
+                ssh.endpoint.port
+            ));
+        }
+        Err(DirectTcpipOpenError::TimedOut {
+            timeout_ms,
+            cleanup_warning,
+        }) => {
+            disconnect_jump_sessions(
+                jump_sessions,
+                "PortMate jump host key scan target channel timeout",
+            )
+            .await;
+            let cleanup_warning = cleanup_warning
+                .map(|warning| format!("; {warning}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "Jump Host 打开 host key 扫描通道到 {target_host}:{} 超时（{timeout_ms} ms）{cleanup_warning}",
                 ssh.endpoint.port
             ));
         }
@@ -15240,23 +15283,77 @@ fn remote_forward_port_key(port: u16) -> String {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum BoundedTunnelSetupError {
+enum BoundedConnectionStepError {
     TimedOut,
     Failed(String),
 }
 
-async fn bounded_tunnel_setup<T, E, F>(
+async fn bounded_connection_step<T, E, F>(
     operation: F,
     timeout: Duration,
-) -> Result<T, BoundedTunnelSetupError>
+) -> Result<T, BoundedConnectionStepError>
 where
     E: std::fmt::Display,
     F: std::future::Future<Output = Result<T, E>>,
 {
     match tokio::time::timeout(timeout, operation).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(BoundedTunnelSetupError::Failed(error.to_string())),
-        Err(_) => Err(BoundedTunnelSetupError::TimedOut),
+        Ok(Err(error)) => Err(BoundedConnectionStepError::Failed(error.to_string())),
+        Err(_) => Err(BoundedConnectionStepError::TimedOut),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DirectTcpipOpenError {
+    TimedOut {
+        timeout_ms: u128,
+        cleanup_warning: Option<String>,
+    },
+    Failed(String),
+}
+
+async fn open_direct_tcpip_with_timeout<H: client::Handler>(
+    handle: &client::Handle<H>,
+    target_host: String,
+    target_port: u16,
+    originator_address: String,
+    originator_port: u16,
+    timeout: Duration,
+    disconnect_description: &str,
+) -> Result<Channel<client::Msg>, DirectTcpipOpenError> {
+    match bounded_connection_step(
+        handle.channel_open_direct_tcpip(
+            target_host,
+            u32::from(target_port),
+            originator_address,
+            u32::from(originator_port),
+        ),
+        timeout,
+    )
+    .await
+    {
+        Ok(channel) => Ok(channel),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(DirectTcpipOpenError::Failed(error)),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            // Cancelling russh's confirmation wait can orphan its channel entry.
+            let cleanup = tokio::time::timeout(
+                DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT,
+                handle.disconnect(Disconnect::ByApplication, disconnect_description, "en"),
+            )
+            .await;
+            let cleanup_warning = match cleanup {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(format!("SSH disconnect request failed: {error}")),
+                Err(_) => Some(format!(
+                    "SSH disconnect request timed out after {} ms",
+                    DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+                )),
+            };
+            Err(DirectTcpipOpenError::TimedOut {
+                timeout_ms: timeout.as_millis(),
+                cleanup_warning,
+            })
+        }
     }
 }
 
@@ -15275,41 +15372,28 @@ async fn open_tunnel_direct_tcpip(
                 TUNNEL_CONNECT_TIMEOUT.as_millis()
             )
         })?;
-    match bounded_tunnel_setup(
-        handle.channel_open_direct_tcpip(
-            target_host,
-            u32::from(target_port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        ),
+    match open_direct_tcpip_with_timeout(
+        &handle,
+        target_host,
+        target_port,
+        peer.ip().to_string(),
+        peer.port(),
         TUNNEL_CONNECT_TIMEOUT,
+        "PortMate tunnel channel open timeout",
     )
     .await
     {
         Ok(channel) => Ok(channel),
-        Err(BoundedTunnelSetupError::Failed(error)) => Err(format!("{label} failed: {error}")),
-        Err(BoundedTunnelSetupError::TimedOut) => {
-            // Cancelling russh's confirmation wait can orphan its channel entry.
-            let cleanup = tokio::time::timeout(
-                TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT,
-                handle.disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate tunnel channel open timeout",
-                    "en",
-                ),
-            )
-            .await;
-            let cleanup_warning = match cleanup {
-                Ok(Ok(())) => String::new(),
-                Ok(Err(error)) => format!("; SSH disconnect request failed: {error}"),
-                Err(_) => format!(
-                    "; SSH disconnect request timed out after {} ms",
-                    TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
-                ),
-            };
+        Err(DirectTcpipOpenError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(DirectTcpipOpenError::TimedOut {
+            timeout_ms,
+            cleanup_warning,
+        }) => {
+            let cleanup_warning = cleanup_warning
+                .map(|warning| format!("; {warning}"))
+                .unwrap_or_default();
             Err(format!(
-                "{label} timed out after {} ms{cleanup_warning}",
-                TUNNEL_CONNECT_TIMEOUT.as_millis()
+                "{label} timed out after {timeout_ms} ms{cleanup_warning}"
             ))
         }
     }
@@ -15387,7 +15471,7 @@ async fn handle_remote_tunnel_client(
     originator_port: u16,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
-    let target_connect = bounded_tunnel_setup(
+    let target_connect = bounded_connection_step(
         TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port)),
         TUNNEL_CONNECT_TIMEOUT,
     )
@@ -15398,11 +15482,11 @@ async fn handle_remote_tunnel_client(
             let _ = channel.eof().await;
             let _ = channel.close().await;
             return Err(match error {
-                BoundedTunnelSetupError::Failed(error) => format!(
+                BoundedConnectionStepError::Failed(error) => format!(
                     "remote tunnel target connect failed {}:{} for {}:{}: {error}",
                     tunnel.target_host, tunnel.target_port, originator_address, originator_port
                 ),
-                BoundedTunnelSetupError::TimedOut => format!(
+                BoundedConnectionStepError::TimedOut => format!(
                     "remote tunnel target connect timed out after {} ms {}:{} for {}:{}",
                     TUNNEL_CONNECT_TIMEOUT.as_millis(),
                     tunnel.target_host,
@@ -16017,16 +16101,37 @@ async fn connect_ssh_target(
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
         });
         let mut jump_session = if let Some(previous_jump) = jump_sessions.last_mut() {
-            let jump_channel = match previous_jump
-                .channel_open_direct_tcpip(jump_host.clone(), u32::from(jump_port), "127.0.0.1", 0)
-                .await
+            let jump_channel = match open_direct_tcpip_with_timeout(
+                previous_jump,
+                jump_host.clone(),
+                jump_port,
+                "127.0.0.1".to_string(),
+                0,
+                connect_timeout,
+                "PortMate jump chain channel timeout",
+            )
+            .await
             {
                 Ok(channel) => channel,
-                Err(error) => {
+                Err(DirectTcpipOpenError::Failed(error)) => {
                     disconnect_jump_sessions(jump_sessions, "PortMate jump chain channel failed")
                         .await;
                     return Err(format!(
                         "Jump Host 第 {} 跳打开 direct-tcpip 到 {jump_host}:{jump_port} 失败: {error}",
+                        index + 1
+                    ));
+                }
+                Err(DirectTcpipOpenError::TimedOut {
+                    timeout_ms,
+                    cleanup_warning,
+                }) => {
+                    disconnect_jump_sessions(jump_sessions, "PortMate jump chain channel timeout")
+                        .await;
+                    let cleanup_warning = cleanup_warning
+                        .map(|warning| format!("; {warning}"))
+                        .unwrap_or_default();
+                    return Err(format!(
+                        "Jump Host 第 {} 跳打开 direct-tcpip 到 {jump_host}:{jump_port} 超时（{timeout_ms} ms）{cleanup_warning}",
                         index + 1
                     ));
                 }
@@ -16146,22 +16251,37 @@ async fn connect_ssh_target(
         jump_sessions.push(jump_session);
     }
 
-    let jump_channel = match jump_sessions
-        .last_mut()
-        .expect("non-empty jumps should create jump sessions")
-        .channel_open_direct_tcpip(
-            target_host.clone(),
-            u32::from(ssh.endpoint.port),
-            "127.0.0.1",
-            0,
-        )
-        .await
+    let jump_channel = match open_direct_tcpip_with_timeout(
+        jump_sessions
+            .last()
+            .expect("non-empty jumps should create jump sessions"),
+        target_host.clone(),
+        ssh.endpoint.port,
+        "127.0.0.1".to_string(),
+        0,
+        connect_timeout,
+        "PortMate jump target channel timeout",
+    )
+    .await
     {
         Ok(channel) => channel,
-        Err(error) => {
+        Err(DirectTcpipOpenError::Failed(error)) => {
             disconnect_jump_sessions(jump_sessions, "PortMate jump target channel failed").await;
             return Err(format!(
                 "Jump Host 打开 direct-tcpip 到 {target_host}:{} 失败: {error}",
+                ssh.endpoint.port
+            ));
+        }
+        Err(DirectTcpipOpenError::TimedOut {
+            timeout_ms,
+            cleanup_warning,
+        }) => {
+            disconnect_jump_sessions(jump_sessions, "PortMate jump target channel timeout").await;
+            let cleanup_warning = cleanup_warning
+                .map(|warning| format!("; {warning}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "Jump Host 打开 direct-tcpip 到 {target_host}:{} 超时（{timeout_ms} ms）{cleanup_warning}",
                 ssh.endpoint.port
             ));
         }
@@ -29156,6 +29276,8 @@ mod tests {
     struct MixedAuthTestCounters {
         password_successes: AtomicU64,
         keyboard_interactive_successes: AtomicU64,
+        direct_tcpip_attempts: AtomicU64,
+        direct_tcpip_completions: AtomicU64,
     }
 
     #[cfg(unix)]
@@ -29164,6 +29286,7 @@ mod tests {
         username: String,
         secret: String,
         counters: Arc<MixedAuthTestCounters>,
+        direct_tcpip_delay: Option<Duration>,
     }
 
     #[cfg(unix)]
@@ -29225,6 +29348,15 @@ mod tests {
             _originator_port: u32,
             _session: &mut russh::server::Session,
         ) -> Result<bool, Self::Error> {
+            self.counters
+                .direct_tcpip_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.direct_tcpip_delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.counters
+                .direct_tcpip_completions
+                .fetch_add(1, Ordering::SeqCst);
             let Ok(mut socket) =
                 TcpStream::connect((host_to_connect, port_to_connect as u16)).await
             else {
@@ -29239,10 +29371,37 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[derive(Clone)]
+    struct AcceptAnyTestSshClient;
+
+    #[cfg(unix)]
+    impl client::Handler for AcceptAnyTestSshClient {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _server_public_key: &ssh_key::PublicKey,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    #[cfg(unix)]
     async fn spawn_mixed_auth_test_server(
         host_key_path: &Path,
         username: &str,
         secret: &str,
+    ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
+        spawn_mixed_auth_test_server_with_direct_tcpip_delay(host_key_path, username, secret, None)
+            .await
+    }
+
+    #[cfg(unix)]
+    async fn spawn_mixed_auth_test_server_with_direct_tcpip_delay(
+        host_key_path: &Path,
+        username: &str,
+        secret: &str,
+        direct_tcpip_delay: Option<Duration>,
     ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -29251,6 +29410,7 @@ mod tests {
             username: username.to_string(),
             secret: secret.to_string(),
             counters: Arc::clone(&counters),
+            direct_tcpip_delay,
         };
         let config = Arc::new(russh::server::Config {
             auth_rejection_time: Duration::ZERO,
@@ -38928,9 +39088,9 @@ mod tests {
     }
 
     #[test]
-    fn bounded_tunnel_setup_preserves_results_and_stops_pending_operations() {
+    fn bounded_connection_step_preserves_results_and_stops_pending_operations() {
         tauri::async_runtime::block_on(async {
-            let success = bounded_tunnel_setup(
+            let success = bounded_connection_step(
                 async { Ok::<_, &'static str>("connected") },
                 Duration::from_secs(1),
             )
@@ -38938,7 +39098,7 @@ mod tests {
             .unwrap();
             assert_eq!(success, "connected");
 
-            let failed = bounded_tunnel_setup(
+            let failed = bounded_connection_step(
                 async { Err::<(), _>("connection refused") },
                 Duration::from_secs(1),
             )
@@ -38946,16 +39106,85 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 failed,
-                BoundedTunnelSetupError::Failed("connection refused".to_string())
+                BoundedConnectionStepError::Failed("connection refused".to_string())
             );
 
-            let timed_out = bounded_tunnel_setup(
+            let timed_out = bounded_connection_step(
                 std::future::pending::<Result<(), &'static str>>(),
                 Duration::from_millis(20),
             )
             .await
             .unwrap_err();
-            assert_eq!(timed_out, BoundedTunnelSetupError::TimedOut);
+            assert_eq!(timed_out, BoundedConnectionStepError::TimedOut);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_tcpip_open_timeout_disconnects_a_stalled_russh_session() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping direct-tcpip timeout test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-direct-tcpip-user";
+            let secret = "PortMate direct-tcpip secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server_with_direct_tcpip_delay(
+                    &host_key,
+                    username,
+                    secret,
+                    Some(Duration::from_millis(200)),
+                )
+                .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+
+            let error = open_direct_tcpip_with_timeout(
+                &handle,
+                "127.0.0.1".to_string(),
+                9,
+                "127.0.0.1".to_string(),
+                0,
+                Duration::from_millis(30),
+                "PortMate direct-tcpip timeout test",
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                DirectTcpipOpenError::TimedOut {
+                    timeout_ms: 30,
+                    cleanup_warning: None,
+                }
+            );
+            assert_eq!(counters.direct_tcpip_attempts.load(Ordering::SeqCst), 1);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.direct_tcpip_completions.load(Ordering::SeqCst) != 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("delayed direct-tcpip callback did not finish");
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
         });
     }
 
