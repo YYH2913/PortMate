@@ -12173,7 +12173,7 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
         Ok(bytes)
     }
     .await;
-    close_ssh_transfer_channel_bounded(&channel).await;
+    close_ssh_channel_bounded(&channel).await;
     outcome
 }
 
@@ -13594,7 +13594,7 @@ async fn start_tmux_control_inner(
                 None,
             );
         }
-        let _ = channel.close().await;
+        close_ssh_channel_bounded(&channel).await;
         if let Ok(mut controls) = controls.lock() {
             let current = controls
                 .get(&control_key)
@@ -14113,7 +14113,7 @@ fn sort_file_entries(entries: &mut [FileEntry]) {
     });
 }
 
-async fn close_ssh_transfer_channel_bounded(channel: &Channel<client::Msg>) {
+async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
     let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
 }
 
@@ -14125,7 +14125,7 @@ async fn scp_send_data_with_idle_timeout(
     stage: &str,
 ) -> Result<(), String> {
     if let Err(error) = progress.check_cancelled() {
-        close_ssh_transfer_channel_bounded(channel).await;
+        close_ssh_channel_bounded(channel).await;
         return Err(error);
     }
     let started = Instant::now();
@@ -14153,7 +14153,7 @@ async fn scp_send_data_with_idle_timeout(
         }
     };
     if outcome.is_err() {
-        close_ssh_transfer_channel_bounded(channel).await;
+        close_ssh_channel_bounded(channel).await;
     }
     outcome
 }
@@ -14166,7 +14166,7 @@ async fn scp_wait_channel_message(
     stage: &str,
 ) -> Result<Option<ChannelMsg>, String> {
     if let Err(error) = progress.check_cancelled() {
-        close_ssh_transfer_channel_bounded(channel).await;
+        close_ssh_channel_bounded(channel).await;
         return Err(error);
     }
     let outcome = {
@@ -14201,7 +14201,7 @@ async fn scp_wait_channel_message(
             Ok(message)
         }
         Err(error) => {
-            close_ssh_transfer_channel_bounded(channel).await;
+            close_ssh_channel_bounded(channel).await;
             Err(error)
         }
     }
@@ -14231,11 +14231,11 @@ async fn scp_upload(
     let started = Instant::now();
     let mut copied = loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(30) {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端续传状态超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14284,7 +14284,7 @@ async fn scp_upload(
     let mut buffer = vec![0_u8; 64 * 1024];
     while copied < size {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         let read = file
@@ -14307,11 +14307,11 @@ async fn scp_upload(
     match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(format!("SCP 写入 EOF 失败: {error}"));
         }
         Err(_) => {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(format!(
                 "SCP 写入 EOF 空闲超时（{} ms）",
                 SCP_IO_IDLE_TIMEOUT.as_millis()
@@ -14322,11 +14322,11 @@ async fn scp_upload(
     let started = Instant::now();
     loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(300) {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端完成超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14499,7 +14499,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     }
     if copied == size {
         finalize_local_resume_file(&temp_target, target)?;
-        close_ssh_transfer_channel_bounded(&channel).await;
+        close_ssh_channel_bounded(&channel).await;
         return Ok(size);
     }
     let mut file = open_local_resume_writer(&temp_target, copied)
@@ -14516,7 +14516,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     let mut received = 0_u64;
     while received < size {
         if let Err(error) = progress.check_cancelled() {
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(error);
         }
         if pending.is_empty() {
@@ -14572,7 +14572,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     )
     .await?;
     finalize_local_resume_file(&temp_target, target)?;
-    close_ssh_transfer_channel_bounded(&channel).await;
+    close_ssh_channel_bounded(&channel).await;
     Ok(size)
 }
 
@@ -14656,7 +14656,7 @@ async fn scp_next_byte(
 ) -> Result<Option<u8>, String> {
     loop {
         if let Err(error) = progress.check_cancelled() {
-            close_ssh_transfer_channel_bounded(channel).await;
+            close_ssh_channel_bounded(channel).await;
             return Err(error);
         }
         if let Some(byte) = pending.pop_front() {
@@ -15910,8 +15910,7 @@ async fn handle_remote_tunnel_client(
     let local_stream = match target_connect {
         Ok(stream) => stream,
         Err(error) => {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
+            close_ssh_channel_bounded(&channel).await;
             return Err(match error {
                 BoundedConnectionStepError::Failed(error) => format!(
                     "remote tunnel target connect failed {}:{} for {}:{}: {error}",
@@ -40399,7 +40398,7 @@ mod tests {
             )
             .await
             .unwrap();
-            close_ssh_transfer_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
             assert_eq!(counters.subsystem_requests.load(Ordering::SeqCst), 1);
             assert_eq!(counters.lstat_attempts.load(Ordering::SeqCst), 1);
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
