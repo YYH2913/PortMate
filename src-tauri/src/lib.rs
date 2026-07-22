@@ -12806,6 +12806,7 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RemoteCopyMarkers {
     total: Option<u64>,
+    resume_candidate: Option<u64>,
     resume: Option<u64>,
     progress: Option<u64>,
     done: Option<u64>,
@@ -12875,9 +12876,14 @@ fn validate_remote_copy_markers(
 fn remote_copy_markers(output: &[u8]) -> RemoteCopyMarkers {
     let text = String::from_utf8_lossy(output);
     let mut markers = RemoteCopyMarkers::default();
-    for line in text.lines() {
+    for line in text.split_inclusive('\n') {
+        if !line.ends_with('\n') {
+            continue;
+        }
         if let Some(value) = line.trim().strip_prefix("__PORTMATE_SIZE__") {
             markers.total = value.trim().parse::<u64>().ok();
+        } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_RESUME_CANDIDATE__") {
+            markers.resume_candidate = value.trim().parse::<u64>().ok();
         } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_RESUME__") {
             markers.resume = value.trim().parse::<u64>().ok();
         } else if let Some(value) = line.trim().strip_prefix("__PORTMATE_PROGRESS__") {
@@ -14899,6 +14905,7 @@ async fn scp_upload<H: client::Handler>(
         let mut stderr = Vec::new();
         let mut exit_status = None;
         let mut reported_total = None;
+        let mut resume_candidate = None;
         let started = Instant::now();
         let mut copied = loop {
             if progress.cancel.load(Ordering::SeqCst) {
@@ -14916,13 +14923,80 @@ async fn scp_upload<H: client::Handler>(
                         "SCP upload stdout",
                     )?;
                     let markers = remote_copy_markers(&output);
-                    if markers.total.is_some() && markers.total != reported_total {
-                        let total = markers.total.unwrap_or_default();
-                        progress.update(0, total).await?;
-                        reported_total = Some(total);
+                    if let Some(total) = markers.total {
+                        if total != size {
+                            return Err(format!(
+                                "SCP upload remote size marker {total} does not match local size {size}"
+                            ));
+                        }
+                        if reported_total != Some(total) {
+                            progress.update(0, total).await?;
+                            reported_total = Some(total);
+                        }
+                    }
+                    if let Some(candidate) = markers.resume_candidate {
+                        if reported_total != Some(size) {
+                            return Err(
+                                "SCP upload resume candidate arrived before the size marker"
+                                    .to_string(),
+                            );
+                        }
+                        if candidate > size {
+                            return Err(format!(
+                                "SCP upload resume candidate {candidate} exceeds local size {size}"
+                            ));
+                        }
+                        match resume_candidate {
+                            Some(previous) if previous != candidate => {
+                                return Err(format!(
+                                    "SCP upload resume candidate changed from {previous} to {candidate}"
+                                ));
+                            }
+                            Some(_) => {}
+                            None => {
+                                let digest =
+                                    scp_source_prefix_sha256(&mut file, candidate, progress)?;
+                                let marker = format!(
+                                    "__PORTMATE_PREFIX_SHA256__{digest}\n"
+                                );
+                                scp_send_data_with_idle_timeout(
+                                    &channel,
+                                    marker.as_bytes(),
+                                    progress,
+                                    SCP_IO_IDLE_TIMEOUT,
+                                    "SCP 写入续传前缀校验",
+                                )
+                                .await?;
+                                resume_candidate = Some(candidate);
+                            }
+                        }
                     }
                     if let Some(resume) = markers.resume {
-                        let resume = resume.min(size);
+                        if reported_total != Some(size) {
+                            return Err(
+                                "SCP upload resume marker arrived before the size marker"
+                                    .to_string(),
+                            );
+                        }
+                        if resume > size {
+                            return Err(format!(
+                                "SCP upload resume marker {resume} exceeds local size {size}"
+                            ));
+                        }
+                        match resume_candidate {
+                            Some(candidate) if resume == 0 || resume == candidate => {}
+                            Some(candidate) => {
+                                return Err(format!(
+                                    "SCP upload resume marker {resume} did not match verified candidate {candidate}"
+                                ));
+                            }
+                            None if resume == 0 => {}
+                            None => {
+                                return Err(format!(
+                                    "SCP upload accepted unverified resume marker {resume}"
+                                ));
+                            }
+                        }
                         progress.set_rate_baseline(resume);
                         if resume > 0 {
                             progress.update(resume, size).await?;
@@ -15056,6 +15130,36 @@ async fn scp_upload<H: client::Handler>(
     outcome
 }
 
+fn scp_source_prefix_sha256(
+    source: &mut fs::File,
+    length: u64,
+    progress: &TransferProgressContext,
+) -> Result<String, String> {
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| format!("SCP 定位本地前缀失败: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut remaining = length;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while remaining > 0 {
+        progress.check_cancelled()?;
+        let take = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = source
+            .read(&mut buffer[..take])
+            .map_err(|error| format!("读取 SCP 本地前缀失败: {error}"))?;
+        if read == 0 {
+            return Err(format!(
+                "SCP 本地源文件在校验续传前缀时提前结束（剩余 {remaining} 字节）"
+            ));
+        }
+        digest.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> String {
     format!(
         concat!(
@@ -15066,12 +15170,18 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
+            "part_sha256() {{ value=$(sha256sum -- \"$1\") || return 1; printf '%s\\n' \"${{value%% *}}\"; }}; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
             "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
-            "if [ \"$current\" -le \"$total\" ]; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "if [ \"$current\" -eq 0 ]; then offset=0; elif [ \"$current\" -le \"$total\" ]; then ",
+            "printf '__PORTMATE_RESUME_CANDIDATE__%s\\n' \"$current\"; ",
+            "if ! IFS= read -r expected_prefix_sha256; then exit 1; fi; ",
+            "if ! actual_prefix_sha256=$(part_sha256 \"$part\"); then printf 'PortMate SCP upload cannot hash resume prefix\\n' >&2; exit 1; fi; ",
+            "if [ \"$expected_prefix_sha256\" = \"__PORTMATE_PREFIX_SHA256__$actual_prefix_sha256\" ]; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "printf '__PORTMATE_RESUME__%s\\n' \"$offset\"; ",
@@ -42136,6 +42246,7 @@ mod tests {
             remote_copy_markers(output),
             RemoteCopyMarkers {
                 total: Some(1024),
+                resume_candidate: None,
                 resume: None,
                 progress: None,
                 done: Some(1024)
@@ -42145,11 +42256,12 @@ mod tests {
 
     #[test]
     fn remote_copy_markers_parse_latest_progress() {
-        let output = b"__PORTMATE_SIZE__4096\n__PORTMATE_RESUME__512\n__PORTMATE_PROGRESS__512\n__PORTMATE_PROGRESS__2048\n__PORTMATE_DONE__4096\n";
+        let output = b"__PORTMATE_SIZE__4096\n__PORTMATE_RESUME_CANDIDATE__512\n__PORTMATE_RESUME__512\n__PORTMATE_PROGRESS__512\n__PORTMATE_PROGRESS__2048\n__PORTMATE_DONE__4096\n";
         assert_eq!(
             remote_copy_markers(output),
             RemoteCopyMarkers {
                 total: Some(4096),
+                resume_candidate: Some(512),
                 resume: Some(512),
                 progress: Some(2048),
                 done: Some(4096)
@@ -42161,6 +42273,7 @@ mod tests {
     fn remote_copy_markers_require_monotonic_consistent_progress() {
         let reported = RemoteCopyMarkers {
             total: Some(4096),
+            resume_candidate: None,
             resume: Some(512),
             progress: Some(2048),
             done: None,
@@ -42315,6 +42428,10 @@ mod tests {
         assert!(command.contains("__PORTMATE_PROGRESS__%s"));
         assert!(command.contains("case \"$dst\" in */)"));
         assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
+        assert!(command.contains("__PORTMATE_RESUME_CANDIDATE__%s"));
+        assert!(command.contains("IFS= read -r expected_prefix_sha256"));
+        assert!(command.contains("part_sha256()"));
+        assert!(command.contains("__PORTMATE_PREFIX_SHA256__$actual_prefix_sha256"));
         assert!(command.contains("cat >> \"$part\" || exit 1"));
         assert!(command.contains("mv -f -- \"$part\" \"$target\""));
         assert!(command.contains("stat -c '__PORTMATE_DONE__%s' -- \"$target\""));
@@ -42339,6 +42456,13 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        let prefix_hash = format!("{:x}", Sha256::digest(b"abc"));
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("__PORTMATE_PREFIX_SHA256__{prefix_hash}\n").as_bytes())
+            .unwrap();
         child.stdin.as_mut().unwrap().write_all(b"def").unwrap();
         drop(child.stdin.take());
 
@@ -42356,6 +42480,104 @@ mod tests {
         assert_eq!(markers.done, Some(6));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scp_upload_command_rewrites_mismatched_existing_part_file() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("upload.bin");
+        let part = root.path().join("upload.bin.portmate-part");
+        fs::write(&part, b"xyz").unwrap();
+
+        let command = scp_upload_command(root.path().to_str().unwrap(), "upload.bin", 6);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let prefix_hash = format!("{:x}", Sha256::digest(b"abc"));
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("__PORTMATE_PREFIX_SHA256__{prefix_hash}\nabcdef").as_bytes())
+            .unwrap();
+        drop(child.stdin.take());
+
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+        assert!(!part.exists());
+        let markers = remote_copy_markers(&output.stdout);
+        assert_eq!(markers.total, Some(6));
+        assert_eq!(markers.resume_candidate, Some(3));
+        assert_eq!(markers.resume, Some(0));
+        assert_eq!(markers.done, Some(6));
+    }
+
+    #[test]
+    fn scp_upload_command_resets_unverified_existing_part_file() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("upload.bin");
+        let part = root.path().join("upload.bin.portmate-part");
+        fs::write(&part, b"abc").unwrap();
+
+        let command = scp_upload_command(root.path().to_str().unwrap(), "upload.bin", 6);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"unexpected-response\nabcdef")
+            .unwrap();
+        drop(child.stdin.take());
+
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+        let markers = remote_copy_markers(&output.stdout);
+        assert_eq!(markers.resume_candidate, Some(3));
+        assert_eq!(markers.resume, Some(0));
+    }
+
+    #[test]
+    fn scp_source_prefix_sha256_hashes_exact_prefix_and_restores_reader() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        fs::write(&source, b"abcdef").unwrap();
+        let mut file = open_local_transfer_source(&source, "source").unwrap().0;
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        let progress = test_transfer_progress_context(
+            &state,
+            "transfer-commit-test",
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        assert_eq!(
+            scp_source_prefix_sha256(&mut file, 3, &progress).unwrap(),
+            format!("{:x}", Sha256::digest(b"abc"))
+        );
+        let mut suffix = Vec::new();
+        file.read_to_end(&mut suffix).unwrap();
+        assert_eq!(suffix, b"def");
     }
 
     #[cfg(unix)]
@@ -44888,7 +45110,7 @@ mod tests {
             let payload = b"PortMate OpenSSH SCP integration payload\n";
             fs::write(&upload_source, payload).unwrap();
             let remote_part = PathBuf::from(remote_resume_part_path(remote_file.to_str().unwrap()));
-            fs::write(&remote_part, &payload[..9]).unwrap();
+            fs::write(&remote_part, b"wrong-prefix").unwrap();
             let upload = start_transfer_inner(
                 &state,
                 StartTransferRequest {
