@@ -36,7 +36,9 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(any(target_os = "linux", test))]
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
@@ -245,6 +247,11 @@ const TMUX_CONTROL_EVENT_DEBOUNCE: Duration = Duration::from_millis(120);
 const TMUX_CONTROL_EVENT_MAX_LATENCY: Duration = Duration::from_secs(1);
 const MAX_LOCAL_SYSMON_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOCAL_SYSMON_STDERR_BYTES: usize = 64 * 1024;
+const MAX_TRIGGER_COMMAND_CONCURRENCY: usize = 4;
+const TRIGGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const TRIGGER_COMMAND_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_TRIGGER_COMMAND_STDOUT_BYTES: usize = 64 * 1024;
+const MAX_TRIGGER_COMMAND_STDERR_BYTES: usize = 64 * 1024;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
@@ -401,6 +408,7 @@ pub struct AppState {
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    trigger_command_slots: Arc<tokio::sync::Semaphore>,
     pending_mcp_approvals: PendingMcpApprovalMap,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     ipc_publication: Arc<Mutex<IpcPublicationState>>,
@@ -1107,6 +1115,7 @@ struct SessionIo {
     runtimes: RuntimeRegistry,
     serial_captures: SerialCaptureMap,
     active_commands: ActiveCommandMap,
+    trigger_command_slots: Arc<tokio::sync::Semaphore>,
     store_path: PathBuf,
 }
 
@@ -1213,6 +1222,7 @@ impl AppState {
             runtimes: self.runtimes(),
             serial_captures: Arc::clone(&self.serial_captures),
             active_commands: Arc::clone(&self.active_commands),
+            trigger_command_slots: Arc::clone(&self.trigger_command_slots),
             store_path: self.store_path.clone(),
         }
     }
@@ -24062,6 +24072,7 @@ fn record_channel_bytes(
         spawn_trigger_command(
             Arc::clone(&io.store),
             io.store_path.clone(),
+            Arc::clone(&io.trigger_command_slots),
             session_id.to_string(),
             command,
         );
@@ -26122,11 +26133,27 @@ fn apply_trigger_actions_locked(
 fn spawn_trigger_command(
     store: Arc<Mutex<SessionStore>>,
     store_path: PathBuf,
+    command_slots: Arc<tokio::sync::Semaphore>,
     session_id: String,
     command: String,
 ) {
-    std::thread::spawn(move || {
-        let output = run_shell_command(&command);
+    let permit = match command_slots.try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            record_trigger_command_event(
+                &store,
+                &store_path,
+                &session_id,
+                format!(
+                    "PortMate: trigger command skipped: concurrent command limit reached ({MAX_TRIGGER_COMMAND_CONCURRENCY})"
+                ),
+            );
+            return;
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let output = run_shell_command(&command).await;
+        drop(permit);
         let message = match output {
             Ok((code, stdout, stderr)) => format!(
                 "PortMate: trigger command exited code={code}: {}{}",
@@ -26139,15 +26166,29 @@ fn spawn_trigger_command(
             ),
             Err(error) => format!("PortMate: trigger command failed: {error}"),
         };
-        if let Ok(mut store) = store.lock() {
-            store.record_system_event(&session_id, message);
-            if let Err(error) =
-                persist_applied_store(&store, &store_path, "trigger command result event")
-            {
-                eprintln!("PortMate: failed to persist trigger command output: {error}");
-            }
+        let persist = tauri::async_runtime::spawn_blocking(move || {
+            record_trigger_command_event(&store, &store_path, &session_id, message);
+        });
+        if let Err(error) = persist.await {
+            eprintln!("PortMate: trigger command result task failed: {error}");
         }
     });
+}
+
+fn record_trigger_command_event(
+    store: &Arc<Mutex<SessionStore>>,
+    store_path: &Path,
+    session_id: &str,
+    message: String,
+) {
+    let Ok(mut store) = store.lock() else {
+        eprintln!("PortMate: session store lock poisoned; dropping trigger command result");
+        return;
+    };
+    store.record_system_event(session_id, message);
+    if let Err(error) = persist_applied_store(&store, store_path, "trigger command result event") {
+        eprintln!("PortMate: failed to persist trigger command output: {error}");
+    }
 }
 
 fn spawn_trigger_send_text(io: SessionIo, session_id: String, text: String) {
@@ -26170,23 +26211,203 @@ fn spawn_trigger_send_text(io: SessionIo, session_id: String, text: String) {
     });
 }
 
-fn run_shell_command(command: &str) -> Result<(i32, String, String), String> {
-    let output = if cfg!(windows) {
-        Command::new("cmd")
-            .args(["/C", command])
-            .output()
-            .map_err(|error| error.to_string())?
-    } else {
-        Command::new("sh")
-            .args(["-lc", command])
-            .output()
-            .map_err(|error| error.to_string())?
+async fn run_shell_command(command: &str) -> Result<(i32, String, String), String> {
+    run_shell_command_bounded(
+        command,
+        TRIGGER_COMMAND_TIMEOUT,
+        MAX_TRIGGER_COMMAND_STDOUT_BYTES,
+        MAX_TRIGGER_COMMAND_STDERR_BYTES,
+    )
+    .await
+}
+
+async fn run_shell_command_bounded(
+    command: &str,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+) -> Result<(i32, String, String), String> {
+    #[cfg(windows)]
+    let mut process = {
+        let mut process = tokio::process::Command::new("cmd");
+        process.args(["/D", "/S", "/C", command]);
+        process
+    };
+    #[cfg(not(windows))]
+    let mut process = {
+        let mut process = tokio::process::Command::new("sh");
+        process.args(["-lc", command]);
+        process
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        process.as_std_mut().process_group(0);
+    }
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("could not start trigger command: {error}"))?;
+    let process_id = child.id();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "could not capture trigger command stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "could not capture trigger command stderr".to_string())?;
+    let mut stdout_task = tokio::spawn(read_bounded_trigger_command_output(
+        stdout,
+        max_stdout_bytes,
+        "stdout",
+    ));
+    let mut stderr_task = tokio::spawn(read_bounded_trigger_command_output(
+        stderr,
+        max_stderr_bytes,
+        "stderr",
+    ));
+    let started = Instant::now();
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!(
+                "could not wait for trigger command: {error}{}",
+                trigger_command_cleanup_suffix(cleanup_warning)
+            ));
+        }
+        Err(_) => {
+            let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!(
+                "trigger command timed out after {} ms{}",
+                timeout.as_millis(),
+                trigger_command_cleanup_suffix(cleanup_warning)
+            ));
+        }
+    };
+    let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+        let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
+        stdout_task.abort();
+        stderr_task.abort();
+        return Err(format!(
+            "trigger command output timed out after {} ms{}",
+            timeout.as_millis(),
+            trigger_command_cleanup_suffix(cleanup_warning)
+        ));
+    };
+    let outputs = tokio::time::timeout(remaining, async {
+        let (stdout, stderr) = tokio::try_join!(&mut stdout_task, &mut stderr_task)
+            .map_err(|error| format!("trigger command output task failed: {error}"))?;
+        Ok::<_, String>((stdout?, stderr?))
+    })
+    .await;
+    let (stdout, stderr) = match outputs {
+        Ok(Ok(outputs)) => outputs,
+        Ok(Err(error)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(error);
+        }
+        Err(_) => {
+            let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!(
+                "trigger command output timed out after {} ms{}",
+                timeout.as_millis(),
+                trigger_command_cleanup_suffix(cleanup_warning)
+            ));
+        }
     };
     Ok((
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
+        status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&stdout).to_string(),
+        String::from_utf8_lossy(&stderr).to_string(),
     ))
+}
+
+async fn terminate_trigger_command(
+    child: &mut tokio::process::Child,
+    process_id: Option<u32>,
+) -> Option<String> {
+    let mut warnings = Vec::new();
+    #[cfg(unix)]
+    if let Some(process_id) = process_id.filter(|process_id| *process_id <= i32::MAX as u32) {
+        let result = unsafe { libc::kill(-(process_id as i32), libc::SIGKILL) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                warnings.push(format!("process group termination failed: {error}"));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = process_id;
+    match tokio::time::timeout(TRIGGER_COMMAND_CLEANUP_TIMEOUT, child.kill()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+        Ok(Err(error)) => warnings.push(format!("child cleanup failed: {error}")),
+        Err(_) => warnings.push(format!(
+            "child cleanup timed out after {} ms",
+            TRIGGER_COMMAND_CLEANUP_TIMEOUT.as_millis()
+        )),
+    }
+    (!warnings.is_empty()).then(|| warnings.join("; "))
+}
+
+fn trigger_command_cleanup_suffix(warning: Option<String>) -> String {
+    warning
+        .map(|warning| format!("; {warning}"))
+        .unwrap_or_default()
+}
+
+async fn read_bounded_trigger_command_output<R>(
+    mut reader: R,
+    max_bytes: usize,
+    stream: &'static str,
+) -> Result<Vec<u8>, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = Vec::new();
+    let mut overflow = false;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|error| format!("could not read trigger command {stream}: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        if overflow {
+            continue;
+        }
+        let next_len = output
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| format!("trigger command {stream} length overflow"))?;
+        if next_len > max_bytes {
+            overflow = true;
+        } else {
+            output.extend_from_slice(&chunk[..count]);
+        }
+    }
+    if overflow {
+        Err(format!(
+            "trigger command {stream} exceeded {max_bytes} byte limit"
+        ))
+    } else {
+        Ok(output)
+    }
 }
 
 fn truncate_for_log(value: &str, limit: usize) -> String {
@@ -29587,6 +29808,9 @@ pub fn run() {
                 tunnels: Arc::new(Mutex::new(HashMap::new())),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+                trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_TRIGGER_COMMAND_CONCURRENCY,
+                )),
                 pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
@@ -38630,6 +38854,75 @@ mod tests {
         assert!(store.timeline.iter().any(|mark| mark.label == "panic-mark"));
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn trigger_shell_command_captures_exit_status_and_bounds_output() {
+        let (code, stdout, stderr) = run_shell_command_bounded(
+            "printf stdout; printf stderr >&2; exit 7",
+            Duration::from_secs(2),
+            64,
+            64,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 7);
+        assert_eq!(stdout, "stdout");
+        assert_eq!(stderr, "stderr");
+
+        let error = run_shell_command_bounded("printf 12345", Duration::from_secs(2), 4, 64)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "trigger command stdout exceeded 4 byte limit");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn trigger_shell_command_timeout_returns_promptly() {
+        let started = Instant::now();
+        let error = run_shell_command_bounded("sleep 5", Duration::from_millis(100), 64, 64)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "trigger command timed out after 100 ms");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn trigger_command_saturation_skips_execution_with_diagnostic() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-trigger-command-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        let state = test_app_state(profile, store_path.clone());
+        let permits = (0..MAX_TRIGGER_COMMAND_CONCURRENCY)
+            .map(|_| {
+                Arc::clone(&state.trigger_command_slots)
+                    .try_acquire_owned()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        spawn_trigger_command(
+            Arc::clone(&state.store),
+            store_path,
+            Arc::clone(&state.trigger_command_slots),
+            session_id.clone(),
+            "this command must not run".to_string(),
+        );
+
+        let store = state.store.lock().unwrap();
+        assert!(store.events.iter().any(|event| {
+            event.session_id == session_id
+                && event
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("concurrent command limit reached (4)"))
+        }));
+        drop(store);
+        drop(permits);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn log_shard_management_lists_previews_and_deletes_safely() {
         let root = std::env::temp_dir().join(format!("portmate-log-manager-{}", Uuid::new_v4()));
@@ -47234,6 +47527,9 @@ mod tests {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+            trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
+                MAX_TRIGGER_COMMAND_CONCURRENCY,
+            )),
             pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
             ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
