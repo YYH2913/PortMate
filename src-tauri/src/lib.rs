@@ -3698,6 +3698,7 @@ fn save_session_profile(
     validate_transfer_default_local_dir(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let current_profile = store.profile(&profile.id);
+    store.validate_profile_capacity(&profile.id)?;
     if proxy_password_update.is_some() {
         validate_expected_proxy_password(current_profile.as_ref(), expected_profile.as_ref())?;
     }
@@ -3734,6 +3735,7 @@ fn save_session_profile(
             })?;
         }
         commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            next_store.validate_profile_capacity(&profile.id)?;
             Ok(next_store.upsert_profile(profile))
         })
     })();
@@ -28560,7 +28562,7 @@ fn load_store(path: &Path) -> Result<SessionStore, String> {
     let snapshot_lock = lock_store_snapshot(path)?;
     let initialize_store = !path.exists();
     let store = if !initialize_store {
-        normalize_loaded_store(load_store_sqlite(path)?)
+        normalize_loaded_store_checked(load_store_sqlite(path)?)?
     } else {
         let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
         if legacy_path.exists() {
@@ -28604,9 +28606,10 @@ fn load_store_sqlite(path: &Path) -> Result<SessionStore, String> {
 fn load_store_json(path: &Path) -> Result<SessionStore, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("failed to read store {}: {error}", path.display()))?;
-    serde_json::from_str::<SessionStore>(&raw)
-        .map(normalize_loaded_store)
-        .map_err(|error| format!("failed to parse store {}: {error}", path.display()))
+    let store = serde_json::from_str::<SessionStore>(&raw)
+        .map_err(|error| format!("failed to parse store {}: {error}", path.display()))?;
+    normalize_loaded_store_checked(store)
+        .map_err(|error| format!("failed to load store {}: {error}", path.display()))
 }
 
 fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
@@ -29064,6 +29067,11 @@ fn assign_loaded_profile_id(
 
 fn normalize_loaded_store(store: SessionStore) -> SessionStore {
     normalize_loaded_store_at(store, Utc::now())
+}
+
+fn normalize_loaded_store_checked(store: SessionStore) -> Result<SessionStore, String> {
+    store.validate_profile_count()?;
+    Ok(normalize_loaded_store(store))
 }
 
 fn normalize_loaded_store_at(mut store: SessionStore, loaded_at: DateTime<Utc>) -> SessionStore {
@@ -29555,6 +29563,7 @@ fn save_store_checked_locked_with_writer<F>(
 where
     F: FnOnce(&Path, &SessionStore) -> Result<(), String>,
 {
+    store.validate_profile_count()?;
     if *expected == StoreSnapshotVersion::UnknownAfterCommit {
         return Err("PortMate store 上次提交后无法刷新版本，请重启应用后再保存".to_string());
     }
@@ -33502,6 +33511,16 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn normalize_loaded_store_rejects_oversized_profile_collections() {
+        let mut store = SessionStore::default();
+        store.profiles = vec![test_shell_profile(); portmate_core::MAX_SESSION_PROFILES + 1];
+
+        let error = normalize_loaded_store_checked(store).unwrap_err();
+
+        assert!(error.contains(&portmate_core::MAX_SESSION_PROFILES.to_string()));
     }
 
     #[test]

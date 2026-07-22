@@ -635,7 +635,7 @@ impl PortMateMcp {
 }
 
 fn load_store_from_path(path: &std::path::Path) -> Option<SessionStore> {
-    let mut store = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+    let store = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
         let connection = SqliteConnection::open(path).ok()?;
         ensure_store_schema(&connection).ok()?;
         let raw = connection
@@ -651,6 +651,11 @@ fn load_store_from_path(path: &std::path::Path) -> Option<SessionStore> {
             .ok()
             .and_then(|raw| serde_json::from_str::<SessionStore>(&raw).ok())?
     };
+    prepare_loaded_store(store)
+}
+
+fn prepare_loaded_store(mut store: SessionStore) -> Option<SessionStore> {
+    store.validate_profile_count().ok()?;
     store.normalize_bounded_histories();
     Some(store)
 }
@@ -2131,6 +2136,15 @@ mod tests {
             transfer: portmate_core::TransferSettings::default(),
         });
         store
+    }
+
+    #[test]
+    fn standalone_store_loading_rejects_oversized_profile_collections() {
+        let mut store = test_snapshot_store("profile bound");
+        let profile = store.profiles[0].clone();
+        store.profiles = vec![profile; portmate_core::MAX_SESSION_PROFILES + 1];
+
+        assert!(prepare_loaded_store(store).is_none());
     }
 
     fn sensitive_snapshot_store() -> SessionStore {

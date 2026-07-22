@@ -19,6 +19,7 @@ const MAX_TIMELINE_MARKS_PER_SESSION: usize = 2000;
 const MAX_SYSMON_SNAPSHOTS_PER_SESSION: usize = 1024;
 const MAX_TERMINAL_TRANSFERS_PER_SESSION: usize = 1000;
 const AUX_HISTORY_TRIM_BATCH: usize = 128;
+pub const MAX_SESSION_PROFILES: usize = 10_000;
 pub const MAX_SESSION_DISCONNECT_REASON_CHARACTERS: usize = 256;
 
 type SystemEventEnvelope = (SessionEvent, Option<SessionProfile>);
@@ -170,6 +171,28 @@ impl SessionStore {
             .iter()
             .find(|profile| profile.id == session_id)
             .cloned()
+    }
+
+    pub fn validate_profile_count(&self) -> Result<(), String> {
+        if self.profiles.len() > MAX_SESSION_PROFILES {
+            return Err(format!(
+                "session profile count exceeds {MAX_SESSION_PROFILES}"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_profile_capacity(&self, session_id: &str) -> Result<(), String> {
+        self.validate_profile_count()?;
+        if self.profiles.iter().any(|profile| profile.id == session_id) {
+            return Ok(());
+        }
+        if self.profiles.len() >= MAX_SESSION_PROFILES {
+            return Err(format!(
+                "session profile count has reached {MAX_SESSION_PROFILES}"
+            ));
+        }
+        Ok(())
     }
 
     pub fn upsert_profile(&mut self, profile: SessionProfile) -> SessionSummary {
@@ -1332,6 +1355,31 @@ mod tests {
         assert_eq!(summary.profile.id, "new-session");
         assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
         assert_eq!(store.summaries().len(), 1);
+    }
+
+    #[test]
+    fn profile_capacity_allows_updates_at_limit_and_rejects_oversized_stores() {
+        let mut store = test_store();
+        let profile = store.profiles[0].clone();
+        store.profiles = (0..MAX_SESSION_PROFILES)
+            .map(|index| {
+                let mut profile = profile.clone();
+                profile.id = format!("session-{index}");
+                profile
+            })
+            .collect();
+
+        assert!(store.validate_profile_count().is_ok());
+        assert!(store.validate_profile_capacity("session-0").is_ok());
+        let capacity_error = store.validate_profile_capacity("new-session").unwrap_err();
+        assert!(capacity_error.contains(&MAX_SESSION_PROFILES.to_string()));
+
+        let mut overflow = profile;
+        overflow.id = "overflow-session".to_string();
+        store.profiles.push(overflow);
+        let count_error = store.validate_profile_count().unwrap_err();
+        assert!(count_error.contains(&MAX_SESSION_PROFILES.to_string()));
+        assert!(store.validate_profile_capacity("session-0").is_err());
     }
 
     #[test]
