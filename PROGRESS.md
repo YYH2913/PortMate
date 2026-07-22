@@ -9,7 +9,7 @@
 本次审查覆盖当前仓库内的桌面端、共享核心库、MCP bridge 和项目说明：
 
 - 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`、`src/sync-input-state.ts`。
-- Tauri 后端：`src-tauri/src/app_data_migration.rs`、`src-tauri/src/lib.rs`、`src-tauri/src/telnet_protocol.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
+- Tauri 后端：`src-tauri/src/app_data_migration.rs`、`src-tauri/src/lib.rs`、`src-tauri/src/proxy_protocol.rs`、`src-tauri/src/telnet_protocol.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
 - 共享核心：`crates/portmate-core/src/models.rs`、`store.rs`、`host_keys.rs`、`mcp.rs`、`triggers.rs`、`redaction.rs`。
 - MCP stdio bridge：`crates/portmate-mcp/src/main.rs`。
 - 项目目标和使用说明：`PLAN.md`、`README.md`、`package.json`、workspace `Cargo.toml`。
@@ -82,7 +82,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 已实现：
 
 - SSH PTY shell：`russh` 连接、PTY、resize、password/public-key/keyboard-interactive/ssh-agent、profile-vault 私钥、保存密码/口令。
-- SSH/Tmux/TCP/Telnet 的代理设置已接入真实 transport：每个 Profile 可选择 HTTP CONNECT 或 SOCKS5，并可使用 HTTP Basic 或 SOCKS5 username/password 认证；SOCKS5 使用 domain target，避免在本机解析目标域名。代理密码以事务式 Profile 保存流程写入 native keyring/Stronghold，只持久化 `secretRef`，共享引用计数、孤儿清理、迁移 journal 与恢复投影覆盖四类 Profile。SSH host-key 扫描和正式连接走同一路径；存在 Jump Host 时代理只承载第一条物理连接，后续跳点继续通过 `direct-tcpip`。
+- SSH/Tmux/TCP/Telnet 的代理设置已接入真实 transport：每个 Profile 可选择 HTTP CONNECT 或 SOCKS5，并可使用 HTTP Basic 或 SOCKS5 username/password 认证；SOCKS5 使用 domain target，避免在本机解析目标域名。HTTP CONNECT/SOCKS5 客户端握手、认证边界和响应解析已提取到独立 `proxy_protocol.rs`；SOCKS5 成功响应会严格验证 RFC 1928 保留字段和非空 domain 型绑定地址，畸形代理不能被当成已建连。代理密码以事务式 Profile 保存流程写入 native keyring/Stronghold，只持久化 `secretRef`，共享引用计数、孤儿清理、迁移 journal 与恢复投影覆盖四类 Profile。SSH host-key 扫描和正式连接走同一路径；存在 Jump Host 时代理只承载第一条物理连接，后续跳点继续通过 `direct-tcpip`。
 - SSH/Tmux 的重连延迟和协议 KeepAlive 已由 Profile 持久化；延迟范围 100-60,000 ms、默认 1,000 ms，等待期间每 100 ms 重读最新 Profile，因此修改延迟或关闭 reconnect 会影响下一次尝试。KeepAlive 可独立开关并配置 1-3,600 秒探测间隔和 1-20 次未响应上限，默认 30/3；正式会话和整条 Jump Host 链使用同一组 russh client 参数。后台重连每次尝试都会按 session ID 从 store 重新加载并规范化最新 profile；已保存的 endpoint、username、secretRef、identity、Jump Host、host-key 策略与健康参数会用于下一次尝试。握手期间连接配置变化会废弃旧建立结果和旧失败诊断，关闭 reconnect 会终止 worker；runtime ID 代际校验覆盖 tunnel 恢复和 `Connected` 状态提交，避免已关闭 runtime 被旧任务重新标记为已连接。
 - Shell：跨平台 PTY 基础能力，支持自定义程序、参数、cwd。
 - Profile 在 `Connecting`/`Connected`/`Reconnecting` 状态下禁止直接切换协议类型，必须先关闭会话；同协议内的设置仍可保存。Core runtime 会保留真实 `activeTransport` 直到断开或新 transport 确实启动，避免新协议编码、状态和旧 registry 连接交叉。
@@ -258,7 +258,7 @@ npm run build
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、外部目录树递归上传（含空目录）、SFTP/SCP upload/download 与 SFTP remote-copy 的 `.portmate-part` 断点续传、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
-- HTTP CONNECT/SOCKS5 对 TCP/Telnet 的真实转发、拒绝响应、无认证限制、目标域名交给代理解析、关闭代理时忽略残留端点、空代理端点和换行注入拒绝；混合认证 Jump Host 矩阵还覆盖经代理执行目标 host-key 扫描及 password/keyboard-interactive 正式连接。
+- HTTP CONNECT/SOCKS5 对 TCP/Telnet 的真实转发、拒绝响应、无认证限制、目标域名交给代理解析、关闭代理时忽略残留端点、空代理端点、换行注入拒绝，以及 SOCKS5 非零保留字段/空绑定域名拒绝；混合认证 Jump Host 矩阵还覆盖经代理执行目标 host-key 扫描及 password/keyboard-interactive 正式连接。
 - SSH 重连延迟/KeepAlive 的旧 Profile 默认值、非法阈值夹紧、KeepAlive 开关到 russh `keepalive_interval` 的映射、健康参数变化触发最新 Profile 重连代次更新，以及真实 OpenSSH 断线等待期间从 5,000 ms 缩短到 100 ms 后恢复 session 和原 tunnel。
 - 独立真实 `ssh-agent` 与 OpenSSH 服务上的 agent 禁用、未过滤 offer、`IdentitiesOnly` 空白名单、显式指纹白名单，以及错误指纹不能被相同 comment/path 绕过。
 - OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、相邻协议 stale-byte 隔离、raw TTY 恢复、XModem block padding 精确截断，以及 TCP loopback 下数据块/EOT 首个 ACK 丢失后的精确重传。
@@ -284,7 +284,7 @@ npm run build
 - Sysmon 旧摘要快照兼容、Linux/macOS/FreeBSD CPU/内存/负载解析、Windows PowerShell/CIM 编码命令与 marker JSON 解析、Top 进程排序与 8 条边界、磁盘解析/挂载点去重与 16 条边界、Linux `/proc/net/dev`、macOS/FreeBSD `netstat -ibn` 和 Windows 性能计数器的每接口速率/重复行去重及 32 条边界、完整远端输出、真实本机 Linux `/proc`/`ps`/`df` 采样、本机 macOS/Windows 异步采样调度，以及本机命令非零退出/超时/4 MiB stdout/64 KiB stderr 边界、SQLite v3→v4 details 迁移和默认 120、允许 `1..=240` 的会话历史查询、时间戳去重排序、刷新即时归并及 CPU/内存/RX/TX 趋势量程。
 - Tmux、远端 tunnel 健康探测和 Sysmon 共用的 SSH exec 捕获分别限制 stdout 4 MiB、stderr 64 KiB；精确上限可接受，越界分片会在写入前整体拒绝并保持已有缓冲区不变。
 
-当前 Rust workspace 自动化测试总数为 333：`portmate` 253、`portmate-kdf` 1、`portmate-core` 48、`portmate-mcp` 31；`npm test` 另有 57 个文件、318 个前端 desktop-clean/display-formatter/menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-profile-helper/session-runtime/session-search/session-cache/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 自动化测试总数为 335：`portmate` 255、`portmate-kdf` 1、`portmate-core` 48、`portmate-mcp` 31；`npm test` 另有 57 个文件、318 个前端 desktop-clean/display-formatter/menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-profile-helper/session-runtime/session-search/session-cache/screen-lock/detached-pane/trigger/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
@@ -317,7 +317,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和有界 IPC I/O 已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、JSON Content-Type/协议版本/CORS preflight 校验、严格 HTTP framing、64 KiB/128 项请求头边界、64 MiB JSON-RPC/SSE 数据边界、总读取/单次写入超时和 64 连接上限；官方 TypeScript SDK 1.29.0 的真实 9 请求序列已通过。桌面 MCP Bridge 已把授权/HTTP/审计拆为互斥任务页，按任务门控请求，并提供联合审计筛选、详情和有界原子 JSONL/SHA-256 导出；其他 SDK 矩阵待补。 |
-| 测试体系 | 部分实现 | 333 项 Rust core/协议集成测试、57 文件/318 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性/日志预览乱序、独立窗口日志追赶/轮询失败保留、主/独立/串口分析窗口损坏 SessionSummary cache 恢复、串口分析器/tunnel/MCP HTTP 慢请求、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话健康 tooltip/描述、串口分析器健康格式/稳定状态宽度/截图、连接取消/迟到响应/双击单飞/context reconnect 顺序、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、背景透明度、主/独立窗口原位应用和桌面截图，Tmux 基线还覆盖 control refresh 与 mutation 之间的旧 generation/旧快照淘汰，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
+| 测试体系 | 部分实现 | 335 项 Rust core/协议集成测试、57 文件/318 项前端单测和仓库内终端/Tmux/workspace UI Playwright 基线可用；终端基线已加入事件去重滚动、真实 Vim/less/top PTY 和有界 6,000 行日志性能回归，workspace 基线覆盖文件读取/属性/日志预览乱序、独立窗口日志追赶/轮询失败保留、主/独立/串口分析窗口损坏 SessionSummary cache 恢复、串口分析器/tunnel/MCP HTTP 慢请求、Sysmon 跨会话响应、删除后 session/log 迟到响应、会话健康 tooltip/描述、串口分析器健康格式/稳定状态宽度/截图、连接取消/迟到响应/双击单飞/context reconnect 顺序、会话元数据/终端 Profile 输入边界、连续标签输入、主题选择、背景透明度、主/独立窗口原位应用和桌面截图，Tmux 基线还覆盖 control refresh 与 mutation 之间的旧 generation/旧快照淘汰，其他 UI 检查迁移、完整 vttest、真实 tmux 和跨平台矩阵仍不足。 |
 
 ## 下一阶段目标
 
@@ -349,7 +349,7 @@ npm run build
 
 ### P3：架构整理与发布准备
 
-1. Tmux control-mode 增量解析、事件分类、命令构造/转义和 session/window/pane 行解析已提取到独立 `tmux_protocol.rs`；Telnet 的 NVT/IAC 出站编码、分片协商状态机、BINARY/NAWS/TTYPE 状态与消息构造已完整提取到 `telnet_protocol.rs`。TCP/Telnet 生命周期、日志、代理和重连 orchestration 保持在 `lib.rs`，并通过 11 项 Telnet 专项、Clippy 和全 workspace 回归；继续按 transport、transfer、mcp、storage、security、terminal 边界拆分其余后端。
+1. Tmux control-mode 增量解析、事件分类、命令构造/转义和 session/window/pane 行解析已提取到独立 `tmux_protocol.rs`；Telnet 的 NVT/IAC 出站编码、分片协商状态机、BINARY/NAWS/TTYPE 状态与消息构造已完整提取到 `telnet_protocol.rs`；HTTP CONNECT/SOCKS5 客户端握手、认证边界与响应校验已提取到 `proxy_protocol.rs`。TCP/Telnet 生命周期、日志、Profile/Secret 代理编排和重连 orchestration 仍保持在 `lib.rs`，并通过代理 7 项专项、11 项 Telnet 专项、Clippy 和全 workspace 回归；继续按 transport、transfer、mcp、storage、security、terminal 边界拆分其余后端。
 2. Bundle identifier 数据目录迁移、PortMate 自有状态判定和 Store/legacy JSON/vault 路径常量已从启动主文件提取到 `app_data_migration.rs`，保留 bootstrap-only WebView 目录替换和双活 Store fail-closed 回归。SQLite 大型追加表已改为增量写入并有 INSERT/DELETE 触发器回归；继续拆分其余存储模块并评估 kv/JSON 兼容快照的异步化。
 3. Stronghold portable vault 已覆盖 OS keyring 不可用/禁用场景、主密码轮换、SSH/Tmux 凭据批量迁移和保守的跨重启恢复；继续把 journal/recovery 与 provider 适配从 `src-tauri/src/lib.rs` 拆为独立 security/storage 模块。
 4. Linux DEB/RPM/AppImage 打包、标准图标、MCP sidecar、干净 bundle/umask、AppImage 可移植 symlink/权限修复、生产 CSP/capability 嵌入验证和逐包协议检查已完成；继续增加真实 Windows/macOS runner 的 MSI/NSIS/app/DMG 验证与签名。
