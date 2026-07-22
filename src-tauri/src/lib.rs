@@ -15952,12 +15952,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
             ));
         }
     };
-    let jump_handles = jump_sessions
-        .into_iter()
-        .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
-        .collect();
-
-    persist_observed_host_key(
+    let host_key_persistence = persist_observed_host_key(
         &state.store,
         &state.store_path,
         HostKeyPersistenceGuard {
@@ -15966,32 +15961,52 @@ async fn establish_ssh_runtime_with_timeout_mode(
         },
         &observed_key,
         &one_time_host_keys,
-    )?;
-
-    let channel = session
-        .channel_open_session()
-        .await
-        .map_err(|error| format!("SSH 打开 session channel 失败: {error}"))?;
-    channel
-        .request_pty(
-            true,
-            &profile.terminal.term,
-            u32::from(profile.terminal.cols),
-            u32::from(profile.terminal.rows),
-            0,
-            0,
-            &[],
+    );
+    if let Err(error) = host_key_persistence {
+        let cleanup_warning = request_ssh_disconnect_with_timeout(
+            &session,
+            "PortMate target host key persistence failed",
         )
-        .await
-        .map_err(|error| format!("SSH 请求 PTY 失败: {error}"))?;
-    apply_ssh_terminal_color_env(&channel).await;
-    if ssh.agent_policy.forwarding {
-        let _ = channel.agent_forward(false).await;
+        .await;
+        disconnect_jump_sessions(jump_sessions, "PortMate target host key persistence failed")
+            .await;
+        let cleanup_warning = cleanup_warning
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+        return Err(format!("{error}{cleanup_warning}"));
     }
-    channel
-        .request_shell(true)
-        .await
-        .map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
+
+    let channel = open_ssh_terminal_channel_with_timeout(
+        &session,
+        profile,
+        &ssh,
+        connect_timeout,
+        "PortMate terminal channel setup timeout",
+    )
+    .await;
+    let channel = match channel {
+        Ok(channel) => channel,
+        Err(error) => {
+            let cleanup_warning = if matches!(error, SshTerminalSetupError::Failed(_)) {
+                request_ssh_disconnect_with_timeout(
+                    &session,
+                    "PortMate terminal channel setup failed",
+                )
+                .await
+            } else {
+                None
+            };
+            disconnect_jump_sessions(jump_sessions, "PortMate terminal channel setup failed").await;
+            let cleanup_warning = cleanup_warning
+                .map(|warning| format!("; {warning}"))
+                .unwrap_or_default();
+            return Err(format!("{error}{cleanup_warning}"));
+        }
+    };
+    let jump_handles = jump_sessions
+        .into_iter()
+        .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
+        .collect();
 
     let runtime_id = Uuid::new_v4().to_string();
     let (read_half, write_half) = channel.split();
@@ -15999,14 +16014,6 @@ async fn establish_ssh_runtime_with_timeout_mode(
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
-
-    if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
-        let writer = writer.lock().await;
-        writer
-            .data(&b"tmux new-session -A -s portmate\r"[..])
-            .await
-            .map_err(|error| format!("Tmux attach 命令发送失败: {error}"))?;
-    }
 
     Ok(EstablishedSshRuntime {
         runtime_id: runtime_id.clone(),
@@ -17107,6 +17114,91 @@ impl std::fmt::Display for SshAuthenticationError {
                 Ok(())
             }
             Self::Failed(error) => formatter.write_str(error),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SshTerminalSetupError {
+    TimedOut {
+        timeout_ms: u128,
+        cleanup_warning: Option<String>,
+    },
+    Failed(String),
+}
+
+impl std::fmt::Display for SshTerminalSetupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut {
+                timeout_ms,
+                cleanup_warning,
+            } => {
+                write!(formatter, "SSH 终端 channel setup 超时（{timeout_ms} ms）")?;
+                if let Some(warning) = cleanup_warning {
+                    write!(formatter, "; {warning}")?;
+                }
+                Ok(())
+            }
+            Self::Failed(error) => formatter.write_str(error),
+        }
+    }
+}
+
+async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
+    session: &client::Handle<H>,
+    profile: &SessionProfile,
+    ssh: &SshConnection,
+    timeout: Duration,
+    disconnect_description: &str,
+) -> Result<Channel<client::Msg>, SshTerminalSetupError> {
+    let setup = async {
+        let channel = session
+            .channel_open_session()
+            .await
+            .map_err(|error| format!("SSH 打开 session channel 失败: {error}"))?;
+        channel
+            .request_pty(
+                true,
+                &profile.terminal.term,
+                u32::from(profile.terminal.cols),
+                u32::from(profile.terminal.rows),
+                0,
+                0,
+                &[],
+            )
+            .await
+            .map_err(|error| format!("SSH 请求 PTY 失败: {error}"))?;
+        apply_ssh_terminal_color_env(&channel).await;
+        if ssh.agent_policy.forwarding {
+            channel
+                .agent_forward(false)
+                .await
+                .map_err(|error| format!("SSH 请求 agent forwarding 失败: {error}"))?;
+        }
+        channel
+            .request_shell(true)
+            .await
+            .map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
+        if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
+            channel
+                .data(&b"tmux new-session -A -s portmate\r"[..])
+                .await
+                .map_err(|_| "Tmux attach 命令发送失败: SSH channel 已关闭".to_string())?;
+        }
+        Ok::<_, String>(channel)
+    };
+
+    match bounded_connection_step(setup, timeout).await {
+        Ok(channel) => Ok(channel),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(SshTerminalSetupError::Failed(error)),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning =
+                request_ssh_disconnect_with_timeout(session, disconnect_description).await;
+            Err(SshTerminalSetupError::TimedOut {
+                timeout_ms: timeout.as_millis(),
+                cleanup_warning,
+            })
         }
     }
 }
@@ -29397,6 +29489,8 @@ mod tests {
         password_completions: AtomicU64,
         password_successes: AtomicU64,
         keyboard_interactive_successes: AtomicU64,
+        session_channel_attempts: AtomicU64,
+        session_channel_completions: AtomicU64,
         direct_tcpip_attempts: AtomicU64,
         direct_tcpip_completions: AtomicU64,
     }
@@ -29408,6 +29502,7 @@ mod tests {
         secret: String,
         counters: Arc<MixedAuthTestCounters>,
         password_auth_delay: Option<Duration>,
+        session_channel_delay: Option<Duration>,
         direct_tcpip_delay: Option<Duration>,
     }
 
@@ -29470,6 +29565,23 @@ mod tests {
             }
         }
 
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<russh::server::Msg>,
+            _session: &mut russh::server::Session,
+        ) -> Result<bool, Self::Error> {
+            self.counters
+                .session_channel_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.session_channel_delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.counters
+                .session_channel_completions
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }
+
         async fn channel_open_direct_tcpip(
             &mut self,
             channel: Channel<russh::server::Msg>,
@@ -29523,7 +29635,8 @@ mod tests {
         username: &str,
         secret: &str,
     ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
-        spawn_mixed_auth_test_server_with_delays(host_key_path, username, secret, None, None).await
+        spawn_mixed_auth_test_server_with_delays(host_key_path, username, secret, None, None, None)
+            .await
     }
 
     #[cfg(unix)]
@@ -29532,6 +29645,7 @@ mod tests {
         username: &str,
         secret: &str,
         password_auth_delay: Option<Duration>,
+        session_channel_delay: Option<Duration>,
         direct_tcpip_delay: Option<Duration>,
     ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -29542,6 +29656,7 @@ mod tests {
             secret: secret.to_string(),
             counters: Arc::clone(&counters),
             password_auth_delay,
+            session_channel_delay,
             direct_tcpip_delay,
         };
         let config = Arc::new(russh::server::Config {
@@ -39271,6 +39386,7 @@ mod tests {
                 username,
                 secret,
                 None,
+                None,
                 Some(Duration::from_millis(200)),
             )
             .await;
@@ -39341,6 +39457,7 @@ mod tests {
                 secret,
                 Some(Duration::from_millis(200)),
                 None,
+                None,
             )
             .await;
             let mut handle = client::connect(
@@ -39389,6 +39506,79 @@ mod tests {
             .await
             .expect("delayed password authentication callback did not finish");
             assert_eq!(counters.password_successes.load(Ordering::SeqCst), 1);
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_terminal_setup_timeout_disconnects_a_stalled_russh_session() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SSH terminal setup timeout test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-terminal-setup-user";
+            let secret = "PortMate terminal setup secret";
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key,
+                username,
+                secret,
+                None,
+                Some(Duration::from_millis(200)),
+                None,
+            )
+            .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let profile = test_ssh_profile();
+            let ssh = match &profile.connection {
+                ConnectionConfig::Ssh(ssh) => ssh,
+                _ => unreachable!("test SSH profile changed transport"),
+            };
+
+            let error = open_ssh_terminal_channel_with_timeout(
+                &handle,
+                &profile,
+                ssh,
+                Duration::from_millis(30),
+                "PortMate terminal setup timeout test",
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                SshTerminalSetupError::TimedOut {
+                    timeout_ms: 30,
+                    cleanup_warning: None,
+                }
+            );
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 1);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.session_channel_completions.load(Ordering::SeqCst) != 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("delayed SSH session-channel callback did not finish");
 
             drop(handle);
             server_task.abort();
