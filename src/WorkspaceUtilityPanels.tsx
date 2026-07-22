@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
 import { filterWorkspaceSessions } from "./session-search-state";
+import { sessionRuntimeHealthDescription } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
 
 type UtilityIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: string | number }>;
@@ -134,18 +135,24 @@ function SessionTree({
             <Folder size={14} />
             <span>{group}</span>
           </div>
-          {items.map((session) => (
-            <button
-              key={session.profile.id}
-              type="button"
-              className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
-              onClick={() => onSelect(session.profile.id)}
-              onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
-            >
-              <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
-              <span>{session.profile.name}</span>
-            </button>
-          ))}
+          {items.map((session) => {
+            const health = sessionRuntimeHealthDescription(session.runtime);
+            return (
+              <button
+                key={session.profile.id}
+                type="button"
+                className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
+                title={`${session.profile.name}\n${health}`}
+                aria-label={session.profile.name}
+                aria-description={health}
+                onClick={() => onSelect(session.profile.id)}
+                onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
+              >
+                <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
+                <span>{session.profile.name}</span>
+              </button>
+            );
+          })}
         </div>
       ))}
     </div>

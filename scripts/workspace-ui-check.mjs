@@ -186,6 +186,8 @@ const sessions = [
     env: {},
   }),
 ];
+sessions[0].runtime.lastDisconnect = new Date(recordedAt - 60_000).toISOString();
+sessions[0].runtime.lastDisconnectReason = "SSH keepalive timeout";
 
 const events = sessions.map((session) => ({
   id: `event-${session.profile.id}`,
@@ -788,6 +790,12 @@ try {
       connectionControls: document.querySelectorAll(".connection-toggle").length,
       paneHeaderActions: [...document.querySelectorAll(".terminal-pane > header > button")]
         .map((button) => button.getAttribute("aria-label")),
+      connectionHealthTitle: document.querySelector(".connection-toggle")?.getAttribute("title") ?? "",
+      connectionHealthDescription: document.querySelector(".connection-toggle")?.getAttribute("aria-description") ?? "",
+      explorerHealthTitle: [...document.querySelectorAll(".tree-session")]
+        .find((button) => button.textContent?.includes("Edge Router"))?.getAttribute("title") ?? "",
+      explorerHealthDescription: [...document.querySelectorAll(".tree-session")]
+        .find((button) => button.textContent?.includes("Edge Router"))?.getAttribute("aria-description") ?? "",
       topToolsText: document.querySelector(".menu-tools")?.textContent ?? "",
       brand: document.querySelector(".menu-brand")?.textContent?.trim() ?? "",
       menuLabels: [...document.querySelectorAll(".menu-trigger")].map((button) => button.textContent),
@@ -815,6 +823,20 @@ try {
     `connection context is still duplicated: ${JSON.stringify(initial)}`);
   assert(JSON.stringify(initial.paneHeaderActions) === JSON.stringify(["断开 Edge Router"]),
     `low-frequency pane actions are still permanently visible: ${JSON.stringify(initial.paneHeaderActions)}`);
+  assert(initial.connectionHealthTitle.includes("已连接")
+    && initial.connectionHealthTitle.includes("上次断开")
+    && initial.connectionHealthTitle.includes("SSH keepalive timeout"),
+  `pane connection health is missing: ${initial.connectionHealthTitle}`);
+  assert(initial.explorerHealthTitle.includes("已连接")
+    && initial.explorerHealthTitle.includes("上次断开")
+    && initial.explorerHealthTitle.includes("SSH keepalive timeout"),
+  `resource health is missing: ${initial.explorerHealthTitle}`);
+  assert(initial.connectionHealthDescription.includes("已连接")
+    && initial.connectionHealthDescription.includes("SSH keepalive timeout"),
+  `pane connection health description is missing: ${initial.connectionHealthDescription}`);
+  assert(initial.explorerHealthDescription.includes("已连接")
+    && initial.explorerHealthDescription.includes("SSH keepalive timeout"),
+  `resource health description is missing: ${initial.explorerHealthDescription}`);
   assert(initial.brand === "PortMate", `workspace brand is missing: ${JSON.stringify(initial.brand)}`);
   assert(!initial.topToolsText.includes("隧道"),
     `duplicate tunnel shortcut survived: ${initial.topToolsText}`);

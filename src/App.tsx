@@ -70,7 +70,7 @@ import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { flattenSessionTree, MAX_SESSION_PROFILE_GROUP_CHARACTERS, MAX_SESSION_PROFILE_NAME_CHARACTERS, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS, normalizeSessionMetadataText, normalizeSessionProfileMetadata, protocolTabs, sessionSettingTrees } from "./session-settings-state";
 import type { ProtocolTab } from "./session-settings-state";
-import { sessionConnectionAction } from "./session-runtime-state";
+import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
@@ -4971,6 +4971,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   const session = props.sessions.find((item) => item.profile.id === activeView.sessionId);
   const serialConnection = session?.profile.connection.kind === "serial" ? session.profile.connection : null;
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : null;
+  const connectionActionLabel = connectionAction === "disconnect" ? "断开" : "连接";
+  const connectionHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "";
   const groupViews = node.views.map((view) => ({
     view,
     session: props.sessions.find((item) => item.profile.id === view.sessionId),
@@ -5158,8 +5160,9 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           <button
             type="button"
             className={`connection-toggle ${session.runtime.status}`}
-            title={`${connectionAction === "disconnect" ? "断开" : "连接"} ${session.profile.name}`}
-            aria-label={`${connectionAction === "disconnect" ? "断开" : "连接"} ${session.profile.name}`}
+            title={`${connectionActionLabel} ${session.profile.name}\n${connectionHealth}`}
+            aria-label={`${connectionActionLabel} ${session.profile.name}`}
+            aria-description={connectionHealth}
             onClick={(event) => {
               event.stopPropagation();
               if (connectionAction === "disconnect") props.onDisconnect(session.profile.id);
