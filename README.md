@@ -521,12 +521,16 @@ Detached terminal windows use that health description in their single-line foote
 exposing internal status values. Their connection control follows the main window action model, so
 an in-progress initial connection or automatic reconnect can be cancelled from the detached window
 rather than incorrectly offering another connect action.
-Desktop connection attempts are single-flight per session. Disconnecting invalidates the current
-frontend generation, closes a matching credential prompt, and ignores late save/open/log responses;
-double activation cannot queue another open. A context-menu reconnect closes the current transport
-first and proceeds only after that close succeeds. The backend independently rejects opening any
-session whose Store status is active or whose transport registry still owns a runtime, preventing a
-stale or non-UI caller from replacing a live runtime.
+Desktop connection attempts are single-flight per session. The backend also permits at most 64
+initial opens app-wide; each cancellation handle owns its permit until the attempt succeeds, fails,
+or finishes cancellation. A duplicate session is rejected before waiting on its lifecycle lane, and
+saturation is rejected before Profile, Secret, Store, or transport work. OneKey login reserves the
+same slot before resolving credentials. Disconnecting invalidates the current frontend generation,
+closes a matching credential prompt, and ignores late save/open/log responses; double activation
+cannot queue another open. A context-menu reconnect closes the current transport first and proceeds
+only after that close succeeds. The backend independently rejects opening any session whose Store
+status is active or whose transport registry still owns a runtime, preventing a stale or non-UI
+caller from replacing a live runtime.
 The authoritative close response becomes the next reconnect attempt's runtime baseline, so its
 disconnect timestamp and reason remain visible throughout the new handshake.
 
