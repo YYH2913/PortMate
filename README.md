@@ -466,7 +466,9 @@ Browser preview uses the same transition rules as the native Store: entering `Co
 disconnect, the first successful connection does not invent a prior outage, and fallback failures
 retain their concrete error reason instead of replacing it with a generic session error. Browser
 fallback also normalizes and bounds that reason before updating cacheable runtime state, rather than
-waiting until the health tooltip renders.
+waiting until the health tooltip renders. Valid legacy SessionSummary caches pass through the same
+normalizer before detached windows consume them, so one oversized historical reason does not require
+discarding the rest of the cache.
 The native Store collapses whitespace and limits every persisted disconnect reason to 256 Unicode
 characters before it reaches snapshots or SQLite. Existing oversized legacy values are normalized
 when the Store loads, using a bounded streaming formatter rather than allocating a second copy of an
