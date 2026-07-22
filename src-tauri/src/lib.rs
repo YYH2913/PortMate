@@ -12388,6 +12388,7 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
     let mut output = Vec::new();
     let mut stderr = Vec::new();
     let mut exit_status = None;
+    let mut eof_received = false;
     let mut reported = RemoteCopyMarkers::default();
     let started = Instant::now();
     let mut last_progress = Instant::now();
@@ -12477,16 +12478,18 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
                     MAX_SSH_EXEC_STDERR_BYTES,
                     "remote copy stderr",
                 )?,
-                Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
-                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
-                Some(_) => {}
+                Some(message) => {
+                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received) {
+                        break;
+                    }
+                }
+                None => break,
             }
         }
 
-        if exit_status.is_some_and(|code| code != 0) {
+        if let Some(code) = exit_status.filter(|code| *code != 0) {
             return Err(format!(
-                "SSH remote copy 返回非零状态 {:?}: {}",
-                exit_status,
+                "SSH remote copy 返回非零状态 {code}: {}",
                 String::from_utf8_lossy(&stderr)
             ));
         }
@@ -27519,6 +27522,25 @@ fn windows_powershell_encoded_script(script: &str) -> String {
     BASE64_STANDARD.encode(utf16le)
 }
 
+fn ssh_exec_message_completes(
+    message: &ChannelMsg,
+    exit_status: &mut Option<u32>,
+    eof_received: &mut bool,
+) -> bool {
+    match message {
+        ChannelMsg::ExitStatus { exit_status: code } => {
+            *exit_status = Some(*code);
+            *eof_received
+        }
+        ChannelMsg::Eof => {
+            *eof_received = true;
+            exit_status.is_some()
+        }
+        ChannelMsg::Close => true,
+        _ => false,
+    }
+}
+
 async fn exec_ssh_command_capture<H: client::Handler>(
     handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     command: &str,
@@ -27538,6 +27560,9 @@ async fn exec_ssh_command_capture<H: client::Handler>(
         let mut eof_received = false;
         tokio::time::timeout(remaining, async {
             while let Some(message) = channel.wait().await {
+                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received) {
+                    break;
+                }
                 match message {
                     ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
                         &mut output,
@@ -27551,19 +27576,6 @@ async fn exec_ssh_command_capture<H: client::Handler>(
                         MAX_SSH_EXEC_STDERR_BYTES,
                         "stderr",
                     )?,
-                    ChannelMsg::ExitStatus { exit_status: code } => {
-                        exit_status = Some(code);
-                        if eof_received {
-                            break;
-                        }
-                    }
-                    ChannelMsg::Eof => {
-                        eof_received = true;
-                        if exit_status.is_some() {
-                            break;
-                        }
-                    }
-                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }
@@ -31023,6 +31035,22 @@ mod tests {
                     session.exit_status_request(channel, 9)?;
                 }
                 b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
+                command
+                    if command
+                        .windows(b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__".len())
+                        .any(|window| {
+                            window == b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__"
+                        }) =>
+                {
+                    session.data(
+                        channel,
+                        b"__PORTMATE_SIZE__4\n__PORTMATE_RESUME__0\n__PORTMATE_PROGRESS__4\n__PORTMATE_DONE__4\n"
+                            .to_vec(),
+                    )?;
+                    session.extended_data(channel, 1, b"late remote-copy failure".to_vec())?;
+                    session.eof(channel)?;
+                    session.exit_status_request(channel, 11)?;
+                }
                 command if command.starts_with(b"tmux ") => {
                     session.exit_status_request(channel, 0)?;
                     session.eof(channel)?;
@@ -42503,10 +42531,38 @@ mod tests {
             .unwrap_err();
             assert_eq!(error, "SSH remote copy 空闲超时（30 ms）");
             assert!(started.elapsed() < Duration::from_millis(500));
-            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfers
+                .push(test_transfer_task(
+                    &test_shell_profile().id,
+                    TransferStatus::Running,
+                ));
+            let late_status_progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let error = remote_copy_with_timeouts(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__",
+                "/destination.bin",
+                &late_status_progress,
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "SSH remote copy 返回非零状态 11: late remote-copy failure"
+            );
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 3);
             assert_eq!(
                 counters.session_channel_completions.load(Ordering::SeqCst),
-                2
+                3
             );
 
             drop(handle);
