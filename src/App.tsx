@@ -789,7 +789,7 @@ export default function App() {
     void (async () => {
       for (const sessionId of targets) {
         const session = sessions.find((item) => item.profile.id === sessionId);
-        if (session?.runtime.status === "disconnected") {
+        if (session && sessionConnectionAction(session.runtime.status) === "connect") {
           await connectSession(sessionId);
         }
       }

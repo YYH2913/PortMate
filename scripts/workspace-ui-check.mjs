@@ -301,8 +301,10 @@ try {
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
+    const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
+    sessionStorage.removeItem("portmate.workspaceUiCheck.recoverInactiveStartup");
     if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
       localStorage.clear();
       localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
@@ -338,6 +340,23 @@ try {
     }
     window.__invokeCalls = [];
     window.__sessions = structuredClone(initialSessions);
+    if (recoverInactiveStartup) {
+      const session = window.__sessions.find((item) => item.profile.id === "local-shell");
+      session.runtime.status = "error";
+      session.runtime.connectedSince = null;
+      session.runtime.lastDisconnect = new Date().toISOString();
+      session.runtime.lastDisconnectReason = "previous startup failure";
+      localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
+        historyEnabled: true,
+        historyLimit: "100",
+        historyRetentionDays: "30",
+        startupMode: "specific",
+        startupSessions: ["local-shell", "", "", ""],
+        lockOnIdle: false,
+        requireMasterPassword: false,
+        oneKeyCompletionEnabled: false,
+      }));
+    }
     window.__events = structuredClone(initialEvents);
     window.__oneKeys = [];
     window.__hostKeys = [];
@@ -2377,6 +2396,32 @@ try {
   `replacement startup hydration did not restore the complete authoritative session list: ${JSON.stringify(startupHydrationState)}`);
   assert(startupRaceErrors.length === 0, `startup hydration browser exceptions: ${JSON.stringify(startupRaceErrors)}`);
   await startupRacePage.close();
+
+  const inactiveStartupPage = await context.newPage();
+  const inactiveStartupErrors = [];
+  inactiveStartupPage.on("pageerror", (error) => inactiveStartupErrors.push(error.message));
+  await inactiveStartupPage.goto(appUrl);
+  await inactiveStartupPage.evaluate(() => {
+    sessionStorage.setItem("portmate.workspaceUiCheck.recoverInactiveStartup", "true");
+  });
+  await inactiveStartupPage.reload();
+  await inactiveStartupPage.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "open_session" && call.args.sessionId === "local-shell"
+  )));
+  const inactiveStartupState = await inactiveStartupPage.evaluate(() => ({
+    status: window.__sessions.find((session) => session.profile.id === "local-shell")?.runtime.status ?? "missing",
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session" && call.args.sessionId === "local-shell").length,
+    connectedOpens: window.__invokeCalls.filter((call) => (
+      call.command === "open_session" && call.args.sessionId !== "local-shell"
+    )).length,
+  }));
+  assert(inactiveStartupState.status === "connected"
+    && inactiveStartupState.opens === 1
+    && inactiveStartupState.connectedOpens === 0,
+  `startup recovery did not connect only the configured inactive session: ${JSON.stringify(inactiveStartupState)}`);
+  assert(inactiveStartupErrors.length === 0,
+    `inactive startup recovery browser exceptions: ${JSON.stringify(inactiveStartupErrors)}`);
+  await inactiveStartupPage.close();
 
   const startupDomainPage = await context.newPage();
   const startupDomainErrors = [];
