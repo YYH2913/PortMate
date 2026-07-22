@@ -15055,6 +15055,8 @@ async fn scp_upload<H: client::Handler>(
             copied += read as u64;
             progress.update(copied, size).await?;
         }
+        ensure_exact_transfer_size(copied, size, "SCP upload")?;
+        ensure_scp_source_has_not_grown(&mut file)?;
         match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -15128,6 +15130,15 @@ async fn scp_upload<H: client::Handler>(
     .await;
     close_ssh_channel_bounded(&channel).await;
     outcome
+}
+
+fn ensure_scp_source_has_not_grown(source: &mut fs::File) -> Result<(), String> {
+    let mut extra = [0_u8; 1];
+    match source.read(&mut extra) {
+        Ok(0) => Ok(()),
+        Ok(_) => Err("SCP 本地源文件在传输中增长，已保留断点文件且未提升目标文件".to_string()),
+        Err(error) => Err(format!("SCP 检查本地源文件结尾失败: {error}")),
+    }
 }
 
 fn scp_source_prefix_sha256(
@@ -42578,6 +42589,23 @@ mod tests {
         let mut suffix = Vec::new();
         file.read_to_end(&mut suffix).unwrap();
         assert_eq!(suffix, b"def");
+    }
+
+    #[test]
+    fn scp_upload_source_tail_check_rejects_growth() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        fs::write(&source, b"abcdef").unwrap();
+        let mut file = open_local_transfer_source(&source, "source").unwrap().0;
+        file.seek(std::io::SeekFrom::Start(3)).unwrap();
+
+        assert_eq!(
+            ensure_scp_source_has_not_grown(&mut file).unwrap_err(),
+            "SCP 本地源文件在传输中增长，已保留断点文件且未提升目标文件"
+        );
+
+        file.seek(std::io::SeekFrom::End(0)).unwrap();
+        ensure_scp_source_has_not_grown(&mut file).unwrap();
     }
 
     #[cfg(unix)]
