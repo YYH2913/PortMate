@@ -140,6 +140,8 @@ const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
 const SCP_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const REMOTE_COPY_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const REMOTE_COPY_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_ONE_KEYS: usize = 64;
 const MAX_ONE_KEY_LABEL_CHARACTERS: usize = 64;
 const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
@@ -12004,6 +12006,25 @@ async fn remote_copy(
     remote_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    remote_copy_with_timeouts(
+        handle,
+        remote_source,
+        remote_destination,
+        progress,
+        REMOTE_COPY_IO_IDLE_TIMEOUT,
+        REMOTE_COPY_TOTAL_TIMEOUT,
+    )
+    .await
+}
+
+async fn remote_copy_with_timeouts<H: client::Handler>(
+    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    remote_source: &str,
+    remote_destination: &str,
+    progress: &TransferProgressContext,
+    idle_timeout: Duration,
+    total_timeout: Duration,
+) -> Result<u64, String> {
     let command = remote_copy_command(remote_source, remote_destination);
     let mut channel = open_shared_ssh_exec_channel(
         &handle,
@@ -12016,91 +12037,124 @@ async fn remote_copy(
     let mut output = Vec::new();
     let mut stderr = Vec::new();
     let mut exit_status = None;
-    let mut reported_total = None;
-    let mut reported_resume = None;
-    let mut reported_progress = None;
-    let mut reported_done = None;
+    let mut reported = RemoteCopyMarkers::default();
     let started = Instant::now();
+    let mut last_progress = Instant::now();
 
-    loop {
-        if progress.cancel.load(Ordering::SeqCst) {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
-            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
-        }
-        if started.elapsed() > Duration::from_secs(300) {
-            let _ = channel.close().await;
-            return Err("SSH remote copy 超时".to_string());
-        }
+    let outcome = async {
+        loop {
+            progress.check_cancelled()?;
+            let message = {
+                let wait = channel.wait();
+                tokio::pin!(wait);
+                loop {
+                    let idle_remaining = idle_timeout.saturating_sub(last_progress.elapsed());
+                    if idle_remaining.is_zero() {
+                        break Err(format!(
+                            "SSH remote copy 空闲超时（{} ms）",
+                            idle_timeout.as_millis()
+                        ));
+                    }
+                    let total_remaining = total_timeout.saturating_sub(started.elapsed());
+                    if total_remaining.is_zero() {
+                        break Err(format!(
+                            "SSH remote copy 总超时（{} ms）",
+                            total_timeout.as_millis()
+                        ));
+                    }
+                    tokio::select! {
+                        message = &mut wait => break Ok(message),
+                        _ = tokio::time::sleep(
+                            idle_remaining
+                                .min(total_remaining)
+                                .min(TRANSFER_CANCEL_POLL_INTERVAL)
+                        ) => {
+                            progress.check_cancelled()?;
+                        }
+                    }
+                }
+            }?;
 
-        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
-            Ok(Some(ChannelMsg::Data { data })) => {
-                output.extend_from_slice(&data);
-                let markers = remote_copy_markers(&output);
-                if markers.total.is_some() && markers.total != reported_total {
-                    let total = markers.total.unwrap_or_default();
-                    progress.update(0, total).await?;
-                    reported_total = Some(total);
-                }
-                if markers.resume.is_some() && markers.resume != reported_resume {
-                    let mut resume_bytes = markers.resume.unwrap_or_default();
-                    if let Some(total) = markers.total.or(reported_total) {
-                        resume_bytes = resume_bytes.min(total);
+            match message {
+                Some(ChannelMsg::Data { data }) => {
+                    append_bounded_ssh_exec_data(
+                        &mut output,
+                        &data,
+                        MAX_SSH_EXEC_STDOUT_BYTES,
+                        "remote copy stdout",
+                    )?;
+                    let markers = remote_copy_markers(&output);
+                    validate_remote_copy_markers(&markers, &reported)?;
+                    let made_progress = markers != reported;
+                    if markers.total.is_some() && markers.total != reported.total {
+                        let total = markers.total.unwrap_or_default();
+                        progress.update(0, total).await?;
+                        reported.total = Some(total);
                     }
-                    progress.set_rate_baseline(resume_bytes);
-                    progress
-                        .update(resume_bytes, markers.total.or(reported_total).unwrap_or(0))
-                        .await?;
-                    reported_resume = Some(markers.resume.unwrap_or_default());
-                }
-                if markers.progress.is_some() && markers.progress != reported_progress {
-                    let mut progress_bytes = markers.progress.unwrap_or_default();
-                    if let Some(total) = markers.total.or(reported_total) {
-                        progress_bytes = progress_bytes.min(total);
+                    if markers.resume.is_some() && markers.resume != reported.resume {
+                        let resume_bytes = markers.resume.unwrap_or_default();
+                        progress.set_rate_baseline(resume_bytes);
+                        progress
+                            .update(resume_bytes, markers.total.or(reported.total).unwrap_or(0))
+                            .await?;
+                        reported.resume = Some(resume_bytes);
                     }
-                    progress
-                        .update(
-                            progress_bytes,
-                            markers.total.or(reported_total).unwrap_or(0),
-                        )
-                        .await?;
-                    reported_progress = Some(markers.progress.unwrap_or_default());
+                    if markers.progress.is_some() && markers.progress != reported.progress {
+                        let progress_bytes = markers.progress.unwrap_or_default();
+                        progress
+                            .update(
+                                progress_bytes,
+                                markers.total.or(reported.total).unwrap_or(0),
+                            )
+                            .await?;
+                        reported.progress = Some(progress_bytes);
+                    }
+                    if markers.done.is_some() && markers.done != reported.done {
+                        let done = markers.done.unwrap_or_default();
+                        progress
+                            .update(done, reported.total.unwrap_or(done))
+                            .await?;
+                        reported.done = Some(done);
+                    }
+                    if made_progress {
+                        last_progress = Instant::now();
+                    }
                 }
-                if markers.done.is_some() && markers.done != reported_done {
-                    let done = markers.done.unwrap_or_default();
-                    progress
-                        .update(done, reported_total.unwrap_or(done))
-                        .await?;
-                    reported_done = Some(done);
-                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
+                    &mut stderr,
+                    &data,
+                    MAX_SSH_EXEC_STDERR_BYTES,
+                    "remote copy stderr",
+                )?,
+                Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
+                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                Some(_) => {}
             }
-            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
-            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
-            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => break,
-            Ok(Some(_)) => {}
-            Err(_) => {}
         }
-    }
 
-    if exit_status.is_some_and(|code| code != 0) {
-        return Err(format!(
-            "SSH remote copy 返回非零状态 {:?}: {}",
-            exit_status,
-            String::from_utf8_lossy(&stderr)
-        ));
-    }
+        if exit_status.is_some_and(|code| code != 0) {
+            return Err(format!(
+                "SSH remote copy 返回非零状态 {:?}: {}",
+                exit_status,
+                String::from_utf8_lossy(&stderr)
+            ));
+        }
 
-    let markers = remote_copy_markers(&output);
-    let bytes = markers.done.ok_or_else(|| {
-        format!(
-            "remote copy completed but done marker was missing: {}",
-            String::from_utf8_lossy(&output)
-        )
-    })?;
-    progress
-        .update(bytes, reported_total.unwrap_or(bytes))
-        .await?;
-    Ok(bytes)
+        let markers = remote_copy_markers(&output);
+        let bytes = markers.done.ok_or_else(|| {
+            format!(
+                "remote copy completed but done marker was missing: {}",
+                String::from_utf8_lossy(&output)
+            )
+        })?;
+        progress
+            .update(bytes, reported.total.unwrap_or(bytes))
+            .await?;
+        Ok(bytes)
+    }
+    .await;
+    close_ssh_transfer_channel_bounded(&channel).await;
+    outcome
 }
 
 fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String {
@@ -12149,12 +12203,73 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
     )
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RemoteCopyMarkers {
     total: Option<u64>,
     resume: Option<u64>,
     progress: Option<u64>,
     done: Option<u64>,
+}
+
+fn validate_remote_copy_markers(
+    markers: &RemoteCopyMarkers,
+    reported: &RemoteCopyMarkers,
+) -> Result<(), String> {
+    if let (Some(previous), Some(current)) = (reported.total, markers.total) {
+        if current != previous {
+            return Err(format!(
+                "SSH remote copy size marker changed from {previous} to {current}"
+            ));
+        }
+    }
+    if let (Some(previous), Some(current)) = (reported.resume, markers.resume) {
+        if current != previous {
+            return Err(format!(
+                "SSH remote copy resume marker changed from {previous} to {current}"
+            ));
+        }
+    }
+    if let (Some(previous), Some(current)) = (reported.progress, markers.progress) {
+        if current < previous {
+            return Err(format!(
+                "SSH remote copy progress marker moved backwards from {previous} to {current}"
+            ));
+        }
+    }
+    if let (Some(previous), Some(current)) = (reported.done, markers.done) {
+        if current != previous {
+            return Err(format!(
+                "SSH remote copy done marker changed from {previous} to {current}"
+            ));
+        }
+    }
+
+    let total = markers.total.or(reported.total);
+    for (label, value) in [
+        ("resume", markers.resume),
+        ("progress", markers.progress),
+        ("done", markers.done),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        let total = total.ok_or_else(|| {
+            format!("SSH remote copy {label} marker arrived before the size marker")
+        })?;
+        if value > total {
+            return Err(format!(
+                "SSH remote copy {label} marker {value} exceeds size {total}"
+            ));
+        }
+    }
+    if let (Some(total), Some(done)) = (total, markers.done) {
+        if done != total {
+            return Err(format!(
+                "SSH remote copy done marker {done} does not match size {total}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn remote_copy_markers(output: &[u8]) -> RemoteCopyMarkers {
@@ -13978,7 +14093,7 @@ fn sort_file_entries(entries: &mut [FileEntry]) {
     });
 }
 
-async fn close_scp_channel_bounded(channel: &Channel<client::Msg>) {
+async fn close_ssh_transfer_channel_bounded(channel: &Channel<client::Msg>) {
     let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
 }
 
@@ -13990,7 +14105,7 @@ async fn scp_send_data_with_idle_timeout(
     stage: &str,
 ) -> Result<(), String> {
     if let Err(error) = progress.check_cancelled() {
-        close_scp_channel_bounded(channel).await;
+        close_ssh_transfer_channel_bounded(channel).await;
         return Err(error);
     }
     let started = Instant::now();
@@ -14018,7 +14133,7 @@ async fn scp_send_data_with_idle_timeout(
         }
     };
     if outcome.is_err() {
-        close_scp_channel_bounded(channel).await;
+        close_ssh_transfer_channel_bounded(channel).await;
     }
     outcome
 }
@@ -14031,7 +14146,7 @@ async fn scp_wait_channel_message(
     stage: &str,
 ) -> Result<Option<ChannelMsg>, String> {
     if let Err(error) = progress.check_cancelled() {
-        close_scp_channel_bounded(channel).await;
+        close_ssh_transfer_channel_bounded(channel).await;
         return Err(error);
     }
     let outcome = {
@@ -14066,7 +14181,7 @@ async fn scp_wait_channel_message(
             Ok(message)
         }
         Err(error) => {
-            close_scp_channel_bounded(channel).await;
+            close_ssh_transfer_channel_bounded(channel).await;
             Err(error)
         }
     }
@@ -14096,11 +14211,11 @@ async fn scp_upload(
     let started = Instant::now();
     let mut copied = loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(30) {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端续传状态超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14149,7 +14264,7 @@ async fn scp_upload(
     let mut buffer = vec![0_u8; 64 * 1024];
     while copied < size {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         let read = file
@@ -14172,11 +14287,11 @@ async fn scp_upload(
     match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(format!("SCP 写入 EOF 失败: {error}"));
         }
         Err(_) => {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(format!(
                 "SCP 写入 EOF 空闲超时（{} ms）",
                 SCP_IO_IDLE_TIMEOUT.as_millis()
@@ -14187,11 +14302,11 @@ async fn scp_upload(
     let started = Instant::now();
     loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(300) {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端完成超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14364,7 +14479,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     }
     if copied == size {
         finalize_local_resume_file(&temp_target, target)?;
-        close_scp_channel_bounded(&channel).await;
+        close_ssh_transfer_channel_bounded(&channel).await;
         return Ok(size);
     }
     let mut file = open_local_resume_writer(&temp_target, copied)
@@ -14381,7 +14496,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     let mut received = 0_u64;
     while received < size {
         if let Err(error) = progress.check_cancelled() {
-            close_scp_channel_bounded(&channel).await;
+            close_ssh_transfer_channel_bounded(&channel).await;
             return Err(error);
         }
         if pending.is_empty() {
@@ -14437,7 +14552,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     )
     .await?;
     finalize_local_resume_file(&temp_target, target)?;
-    close_scp_channel_bounded(&channel).await;
+    close_ssh_transfer_channel_bounded(&channel).await;
     Ok(size)
 }
 
@@ -14521,7 +14636,7 @@ async fn scp_next_byte(
 ) -> Result<Option<u8>, String> {
     loop {
         if let Err(error) = progress.check_cancelled() {
-            close_scp_channel_bounded(channel).await;
+            close_ssh_transfer_channel_bounded(channel).await;
             return Err(error);
         }
         if let Some(byte) = pending.pop_front() {
@@ -39418,6 +39533,66 @@ mod tests {
     }
 
     #[test]
+    fn remote_copy_markers_require_monotonic_consistent_progress() {
+        let reported = RemoteCopyMarkers {
+            total: Some(4096),
+            resume: Some(512),
+            progress: Some(2048),
+            done: None,
+        };
+        validate_remote_copy_markers(&reported, &reported).unwrap();
+        validate_remote_copy_markers(
+            &RemoteCopyMarkers {
+                progress: Some(3072),
+                ..reported
+            },
+            &reported,
+        )
+        .unwrap();
+
+        for (markers, expected) in [
+            (
+                RemoteCopyMarkers {
+                    total: Some(8192),
+                    ..reported
+                },
+                "size marker changed",
+            ),
+            (
+                RemoteCopyMarkers {
+                    resume: Some(1024),
+                    ..reported
+                },
+                "resume marker changed",
+            ),
+            (
+                RemoteCopyMarkers {
+                    progress: Some(1024),
+                    ..reported
+                },
+                "progress marker moved backwards",
+            ),
+            (
+                RemoteCopyMarkers {
+                    progress: Some(8192),
+                    ..reported
+                },
+                "progress marker 8192 exceeds size 4096",
+            ),
+            (
+                RemoteCopyMarkers {
+                    done: Some(3072),
+                    ..reported
+                },
+                "done marker 3072 does not match size 4096",
+            ),
+        ] {
+            let error = validate_remote_copy_markers(&markers, &reported).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
     fn remote_copy_command_polls_progress_and_cleans_background_copy() {
         let command = remote_copy_command("/tmp/source file.bin", "/tmp/o'clock.bin");
         assert!(command.contains("__PORTMATE_RESUME__%s"));
@@ -40046,6 +40221,98 @@ mod tests {
             .await
             .unwrap_err();
             assert_eq!(error, "SCP 等待文件头 空闲超时（30 ms）");
+            assert!(started.elapsed() < Duration::from_millis(500));
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                counters.session_channel_completions.load(Ordering::SeqCst),
+                2
+            );
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_copy_silent_peer_observes_cancellation_and_idle_timeout() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping silent remote-copy test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-silent-remote-copy-user";
+            let secret = "PortMate silent remote-copy secret";
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key, username, secret, None, None, None,
+            )
+            .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let state = test_app_state(
+                test_shell_profile(),
+                root.path().join("portmate-store.sqlite3"),
+            );
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            let cancellation_progress = test_transfer_progress_context(
+                &state,
+                "unused-silent-remote-copy-cancel",
+                Arc::clone(&cancel),
+            );
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel.store(true, Ordering::SeqCst);
+            });
+            let started = Instant::now();
+            let error = remote_copy_with_timeouts(
+                Arc::clone(&handle),
+                "/silent-source.bin",
+                "/silent-destination.bin",
+                &cancellation_progress,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            cancel_task.await.unwrap();
+
+            let idle_progress = test_transfer_progress_context(
+                &state,
+                "unused-silent-remote-copy-idle",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let started = Instant::now();
+            let error = remote_copy_with_timeouts(
+                Arc::clone(&handle),
+                "/silent-source.bin",
+                "/silent-destination.bin",
+                &idle_progress,
+                Duration::from_millis(30),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, "SSH remote copy 空闲超时（30 ms）");
             assert!(started.elapsed() < Duration::from_millis(500));
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
             assert_eq!(
@@ -46694,6 +46961,22 @@ mod tests {
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
             ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
             store_path,
+        }
+    }
+
+    fn test_transfer_progress_context(
+        state: &AppState,
+        task_id: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> TransferProgressContext {
+        TransferProgressContext {
+            state: state.clone(),
+            task_id: task_id.to_string(),
+            cancel,
+            last_emit: Arc::new(Mutex::new(Instant::now())),
+            started: Instant::now(),
+            rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+            rate_limit_bytes_per_second: None,
         }
     }
 
