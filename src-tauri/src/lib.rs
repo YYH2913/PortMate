@@ -142,6 +142,7 @@ const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
 const SCP_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_COPY_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_COPY_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+const SFTP_REQUEST_TIMEOUT_SECONDS: u64 = 20;
 const MAX_ONE_KEYS: usize = 64;
 const MAX_ONE_KEY_LABEL_CHARACTERS: usize = 64;
 const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
@@ -9452,26 +9453,45 @@ async fn transfer_file_via_sftp(
         (None, None) => {
             copy_local_file_for_transfer(&request.source, &request.destination, progress).await
         }
-        (None, Some(remote_destination)) => {
+        remote_paths => {
             let handle = ssh_handle_for_transfer(state, &request.session_id)?;
             let sftp = open_sftp_session(handle).await?;
-            let result = sftp_upload(&sftp, &request.source, remote_destination, progress).await;
+            let transfer = async {
+                match remote_paths {
+                    (None, Some(remote_destination)) => {
+                        sftp_upload(&sftp, &request.source, remote_destination, progress).await
+                    }
+                    (Some(remote_source), None) => {
+                        sftp_download(&sftp, remote_source, &request.destination, progress).await
+                    }
+                    (Some(remote_source), Some(remote_destination)) => {
+                        sftp_remote_copy(&sftp, remote_source, remote_destination, progress).await
+                    }
+                    (None, None) => unreachable!("local transfer handled before opening SFTP"),
+                }
+            };
+            let result = await_sftp_transfer_with_cancellation(transfer, progress).await;
             let _ = sftp.close().await;
             result
         }
-        (Some(remote_source), None) => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-            let sftp = open_sftp_session(handle).await?;
-            let result = sftp_download(&sftp, remote_source, &request.destination, progress).await;
-            let _ = sftp.close().await;
-            result
-        }
-        (Some(remote_source), Some(remote_destination)) => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-            let sftp = open_sftp_session(handle).await?;
-            let result = sftp_remote_copy(&sftp, remote_source, remote_destination, progress).await;
-            let _ = sftp.close().await;
-            result
+    }
+}
+
+async fn await_sftp_transfer_with_cancellation<T, F>(
+    operation: F,
+    progress: &TransferProgressContext,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
+    progress.check_cancelled()?;
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            _ = tokio::time::sleep(TRANSFER_CANCEL_POLL_INTERVAL) => {
+                progress.check_cancelled()?;
+            }
         }
     }
 }
@@ -11416,7 +11436,7 @@ async fn open_sftp_session_with_timeout<H: client::Handler>(
         let sftp = SftpSession::new(channel.into_stream())
             .await
             .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
-        sftp.set_timeout(20);
+        sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
         Ok::<_, String>(sftp)
     };
     match bounded_connection_step(setup, remaining).await {
@@ -30016,6 +30036,125 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[derive(Default)]
+    struct SilentSftpTestCounters {
+        session_channel_attempts: AtomicU64,
+        session_channel_completions: AtomicU64,
+        subsystem_requests: AtomicU64,
+        lstat_attempts: AtomicU64,
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone)]
+    struct SilentSftpSshTestServer {
+        username: String,
+        secret: String,
+        counters: Arc<SilentSftpTestCounters>,
+        channels: Arc<tokio::sync::Mutex<HashMap<russh::ChannelId, Channel<russh::server::Msg>>>>,
+        response_delay: Duration,
+    }
+
+    #[cfg(unix)]
+    impl russh::server::Handler for SilentSftpSshTestServer {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            user: &str,
+            password: &str,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            if user == self.username && password == self.secret {
+                Ok(russh::server::Auth::Accept)
+            } else {
+                Ok(russh::server::Auth::reject())
+            }
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            channel: Channel<russh::server::Msg>,
+            _session: &mut russh::server::Session,
+        ) -> Result<bool, Self::Error> {
+            self.counters
+                .session_channel_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            self.channels.lock().await.insert(channel.id(), channel);
+            self.counters
+                .session_channel_completions
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel_id: russh::ChannelId,
+            name: &str,
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            if name != "sftp" {
+                session.channel_failure(channel_id)?;
+                return Ok(());
+            }
+            let Some(channel) = self.channels.lock().await.remove(&channel_id) else {
+                session.channel_failure(channel_id)?;
+                return Ok(());
+            };
+            self.counters
+                .subsystem_requests
+                .fetch_add(1, Ordering::SeqCst);
+            session.channel_success(channel_id)?;
+            russh_sftp::server::run(
+                channel.into_stream(),
+                SilentSftpProtocolTestServer {
+                    counters: Arc::clone(&self.counters),
+                    response_delay: self.response_delay,
+                },
+            )
+            .await;
+            Ok(())
+        }
+
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            _data: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            self.channels.lock().await.remove(&channel);
+            session.channel_success(channel)?;
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    struct SilentSftpProtocolTestServer {
+        counters: Arc<SilentSftpTestCounters>,
+        response_delay: Duration,
+    }
+
+    #[cfg(unix)]
+    impl russh_sftp::server::Handler for SilentSftpProtocolTestServer {
+        type Error = russh_sftp::protocol::StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            russh_sftp::protocol::StatusCode::OpUnsupported
+        }
+
+        async fn lstat(
+            &mut self,
+            id: u32,
+            _path: String,
+        ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+            self.counters.lstat_attempts.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.response_delay).await;
+            Ok(russh_sftp::protocol::Attrs {
+                id,
+                attrs: russh_sftp::protocol::FileAttributes::default(),
+            })
+        }
+    }
+
+    #[cfg(unix)]
     #[derive(Clone)]
     struct AcceptAnyTestSshClient;
 
@@ -30060,6 +30199,50 @@ mod tests {
             password_auth_delay,
             session_channel_delay,
             direct_tcpip_delay,
+        };
+        let config = Arc::new(russh::server::Config {
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            keys: vec![load_secret_key(host_key_path, None).unwrap()],
+            ..Default::default()
+        });
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let config = Arc::clone(&config);
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, socket, handler).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+        (port, counters, task)
+    }
+
+    #[cfg(unix)]
+    async fn spawn_silent_sftp_test_server(
+        host_key_path: &Path,
+        username: &str,
+        secret: &str,
+        response_delay: Duration,
+    ) -> (
+        u16,
+        Arc<SilentSftpTestCounters>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let counters = Arc::new(SilentSftpTestCounters::default());
+        let handler = SilentSftpSshTestServer {
+            username: username.to_string(),
+            secret: secret.to_string(),
+            counters: Arc::clone(&counters),
+            channels: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            response_delay,
         };
         let config = Arc::new(russh::server::Config {
             auth_rejection_time: Duration::ZERO,
@@ -40131,6 +40314,101 @@ mod tests {
             .expect("delayed SFTP channel callback did not finish");
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
 
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_in_flight_request_observes_transfer_cancellation() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SFTP cancellation test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-silent-sftp-user";
+            let secret = "PortMate silent SFTP secret";
+            let (port, counters, server_task) =
+                spawn_silent_sftp_test_server(&host_key, username, secret, Duration::from_secs(1))
+                    .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let sftp = open_sftp_session_with_timeout(Arc::clone(&handle), Duration::from_secs(1))
+                .await
+                .unwrap();
+            let state = test_app_state(
+                test_shell_profile(),
+                root.path().join("portmate-store.sqlite3"),
+            );
+            let cancel = Arc::new(AtomicBool::new(false));
+            let progress = test_transfer_progress_context(
+                &state,
+                "unused-silent-sftp-cancel",
+                Arc::clone(&cancel),
+            );
+            let request_counters = Arc::clone(&counters);
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while request_counters.lstat_attempts.load(Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("silent SFTP server did not receive LSTAT");
+                cancel.store(true, Ordering::SeqCst);
+            });
+
+            let started = Instant::now();
+            let local_target = root.path().join("silent-target.bin");
+            let transfer = sftp_download(
+                &sftp,
+                "/silent-source.bin",
+                local_target.to_str().unwrap(),
+                &progress,
+            );
+            let error = await_sftp_transfer_with_cancellation(transfer, &progress)
+                .await
+                .unwrap_err();
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            cancel_task.await.unwrap();
+            sftp.close().await.unwrap();
+
+            let channel = open_shared_ssh_exec_channel(
+                &handle,
+                "true",
+                Duration::from_secs(1),
+                "SFTP cancellation follow-up exec",
+            )
+            .await
+            .unwrap();
+            close_ssh_transfer_channel_bounded(&channel).await;
+            assert_eq!(counters.subsystem_requests.load(Ordering::SeqCst), 1);
+            assert_eq!(counters.lstat_attempts.load(Ordering::SeqCst), 1);
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                counters.session_channel_completions.load(Ordering::SeqCst),
+                2
+            );
+
+            drop(handle);
             server_task.abort();
             let _ = server_task.await;
         });
