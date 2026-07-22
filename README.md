@@ -62,11 +62,14 @@ in-memory choices usable and no longer throws from a React effect or explicit se
    npm run desktop:clean
    ```
 
-   This launcher sanitizes snap-injected GTK/WebKit paths while preserving the Windows build and
-   signing environment. On Linux, macOS, and Windows it releases a stale Vite listener only when
-   OS process metadata proves that its command belongs to this PortMate checkout. A different
-   process on port `1420` is reported by PID and left untouched. Use `npm run desktop` when neither
-   cleanup is needed.
+   This launcher removes known snap-injected GTK/WebKit paths while preserving unrelated Rust,
+   compiler, SDK, signing, and PortMate environment variables on every platform. Unix keeps an
+   explicitly configured non-snap `XDG_DATA_DIRS`, restores the pre-snap value when available, or
+   falls back to user and system share directories. On Linux, macOS, and Windows it releases a stale
+   Vite listener only when OS process metadata proves that its command belongs to this PortMate
+   checkout. A listener that exits during cleanup is treated as already stopped; a different process
+   on port `1420` is reported by PID and left untouched. Use `npm run desktop` when cleanup is not
+   needed.
 
 2. The app starts empty. No sample sessions, logs, transfers, host keys, or MCP audit rows are injected.
 
