@@ -43,7 +43,7 @@ export function transitionSessionRuntimeStatus(
       ? now
       : runtime.lastDisconnect ?? null,
     lastDisconnectReason: outage
-      ? normalizeDisconnectReason(reason) || disconnectReasonDefaults[status] || "runtime status changed"
+      ? normalizeSessionDisconnectReason(reason) || disconnectReasonDefaults[status] || "runtime status changed"
       : runtime.lastDisconnectReason ?? null,
   };
 }
@@ -65,12 +65,12 @@ export function sessionRuntimeDisconnectDescription(
     const timestamp = formatTimestamp(runtime.lastDisconnect).trim();
     if (timestamp) parts.push(`上次断开 ${timestamp}`);
   }
-  const reason = normalizeDisconnectReason(runtime.lastDisconnectReason);
+  const reason = normalizeSessionDisconnectReason(runtime.lastDisconnectReason);
   if (reason) parts.push(`原因: ${reason}`);
   return parts.join(" · ");
 }
 
-function normalizeDisconnectReason(value: string | null | undefined): string {
+export function normalizeSessionDisconnectReason(value: string | null | undefined): string {
   if (!value) return "";
   const characters: string[] = [];
   let pendingSpace = false;

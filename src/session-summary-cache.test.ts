@@ -46,6 +46,20 @@ describe("session summary cache", () => {
     })).toEqual(sessions);
     expect(readSessionSummaryCache({ getItem: () => { throw new Error("denied"); } })).toEqual([]);
   });
+
+  it("normalizes legacy disconnect reasons before cached windows consume them", () => {
+    const summary = createSummary("shell-a");
+    summary.runtime.lastDisconnectReason = `  socket\n\tclosed ${"界".repeat(300)}  `;
+    const [cached] = parseSessionSummaryCache(JSON.stringify([summary]));
+
+    expect(cached.runtime.lastDisconnectReason?.startsWith("socket closed 界")).toBe(true);
+    expect(cached.runtime.lastDisconnectReason?.endsWith("...")).toBe(true);
+    expect(cached.runtime.lastDisconnectReason).not.toContain("\n");
+    expect(Array.from(cached.runtime.lastDisconnectReason ?? "")).toHaveLength(256);
+
+    summary.runtime.lastDisconnectReason = " \n\t ";
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))[0].runtime.lastDisconnectReason).toBeNull();
+  });
 });
 
 function createSummary(id: string, kind: SessionKind = "shell"): SessionSummary {

@@ -1,4 +1,5 @@
 import type { SessionSummary } from "./types";
+import { normalizeSessionDisconnectReason } from "./session-runtime-state";
 
 export const SESSION_SUMMARY_CACHE_STORAGE_KEY = "portmate.sessions";
 
@@ -30,10 +31,21 @@ export function parseSessionSummaryCache(raw: string | null): SessionSummary[] {
     if (!sessions || !sessions.every(isSessionSummary)) return [];
     const ids = sessions.map((session) => session.profile.id);
     if (new Set(ids).size !== ids.length) return [];
-    return sessions;
+    return sessions.map(normalizeCachedSessionSummary);
   } catch {
     return [];
   }
+}
+
+function normalizeCachedSessionSummary(session: SessionSummary): SessionSummary {
+  const lastDisconnectReason = normalizeSessionDisconnectReason(session.runtime.lastDisconnectReason);
+  return {
+    ...session,
+    runtime: {
+      ...session.runtime,
+      lastDisconnectReason: lastDisconnectReason || null,
+    },
+  };
 }
 
 function isSessionSummary(value: unknown): value is SessionSummary {
