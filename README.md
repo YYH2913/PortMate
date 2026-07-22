@@ -288,9 +288,9 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
 emits approximately 497.1 kB of main JS, 467.3 kB of terminal core JS, 120.4 kB of WebGL JS,
-140.4 kB of main CSS, 13.3 kB for the MCP workspace, 12.1 kB for the OneKeys manager, 4.7 kB for
+140.4 kB of main CSS, 13.3 kB for the MCP workspace, 12.1 kB for the OneKeys manager, 4.8 kB for
 session/terminal context menus, 4.2 kB for the transfer dialog, 4.0 kB for the SSH credential prompt, 3.7 kB for one-time MCP approval, 2.9 kB for the lazy workspace
-utility panels, and 4.5 kB for the view
+utility panels, and 4.6 kB for the view
 context menu, a 0.7 kB notice dialog, and a 0.5 kB browser export helper, with xterm CSS split alongside them. The 1.8 kB
 command-history state module, 1.4 kB terminal-buffer module, 2.2 kB terminal-selection/online-search module, and
 browser download code load only when used; the previous approximately
