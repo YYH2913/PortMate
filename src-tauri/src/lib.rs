@@ -235,7 +235,7 @@ const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reac
 const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
-const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
 const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str = "PORTMATE_MIGRATION_RESTART_REQUIRED:";
 const PROFILE_SECRET_MIGRATION_JOURNAL_VERSION: u32 = 1;
@@ -27560,10 +27560,9 @@ async fn exec_ssh_command_capture<H: client::Handler>(
         .await
         .map_err(|_| "SSH exec 超时".to_string())??;
 
-        if exit_status.is_some_and(|code| code != 0) && output.is_empty() {
+        if let Some(code) = exit_status.filter(|code| *code != 0) {
             return Err(format!(
-                "SSH exec 返回非零状态 {:?}: {}",
-                exit_status,
+                "SSH exec 返回非零状态 {code}: {}",
                 String::from_utf8_lossy(&stderr)
             ));
         }
@@ -30997,6 +30996,12 @@ mod tests {
                 }
                 b"__PORTMATE_TEST_EXEC_OVERFLOW__" => {
                     session.extended_data(channel, 1, vec![b'x'; MAX_SSH_EXEC_STDERR_BYTES + 1])?;
+                    session.eof(channel)?;
+                }
+                b"__PORTMATE_TEST_EXEC_NONZERO__" => {
+                    session.data(channel, b"partial output".to_vec())?;
+                    session.extended_data(channel, 1, b"remote failure".to_vec())?;
+                    session.exit_status_request(channel, 7)?;
                     session.eof(channel)?;
                 }
                 b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
@@ -42111,7 +42116,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ssh_exec_capture_closes_channels_on_success_timeout_and_overflow() {
+    fn ssh_exec_capture_closes_channels_on_success_nonzero_timeout_and_overflow() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping SSH exec cleanup test: ssh-keygen is not installed");
             return;
@@ -42149,6 +42154,15 @@ mod tests {
             .unwrap();
             assert_eq!(output, "captured");
 
+            let nonzero_error = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_NONZERO__",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(nonzero_error, "SSH exec 返回非零状态 7: remote failure");
+
             let timeout_error = exec_ssh_command_capture(
                 Arc::clone(&handle),
                 "__PORTMATE_TEST_EXEC_TIMEOUT__",
@@ -42172,13 +42186,13 @@ mod tests {
             );
 
             tokio::time::timeout(Duration::from_secs(1), async {
-                while counters.channel_closes.load(Ordering::SeqCst) < 3 {
+                while counters.channel_closes.load(Ordering::SeqCst) < 4 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await
             .expect("SSH exec channels were not closed on every exit path");
-            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 3);
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 4);
 
             drop(handle);
             server_task.abort();
@@ -42976,6 +42990,8 @@ mod tests {
 
     #[test]
     fn remote_tunnel_probe_only_marks_successful_cross_platform_tools() {
+        assert!(REMOTE_TUNNEL_PROBE_COMMAND
+            .contains("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true"));
         assert!(REMOTE_TUNNEL_PROBE_COMMAND
             .contains("command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null)"));
         assert!(REMOTE_TUNNEL_PROBE_COMMAND.contains(
