@@ -771,6 +771,9 @@ export default function TerminalCanvas({
         pasteFromClipboard(event);
       }
     };
+    const pauseCompletionOnPaste = () => {
+      resetCompletionInput(false);
+    };
     const forceBlockSelection = (event: MouseEvent) => {
       if (!blockSelectionRef.current || event.altKey || event.button !== 0 || !event.target) return;
       event.preventDefault();
@@ -781,6 +784,7 @@ export default function TerminalCanvas({
         terminalBlockSelectionMouseEventInit(event, forceSelection),
       ));
     };
+    host.addEventListener("paste", pauseCompletionOnPaste, true);
     host.addEventListener("mousedown", forceBlockSelection, true);
     host.addEventListener("auxclick", pasteOnMiddleClick);
 
@@ -792,6 +796,7 @@ export default function TerminalCanvas({
       inputDisposable.dispose();
       selectionDisposable.dispose();
       bufferChangeDisposable.dispose();
+      host.removeEventListener("paste", pauseCompletionOnPaste, true);
       host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
       if (inputFlushTimerRef.current !== null) {

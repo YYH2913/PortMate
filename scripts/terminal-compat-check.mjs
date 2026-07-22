@@ -700,6 +700,27 @@ try {
   await page.keyboard.type("k");
   await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "send_text" && call.args.text === "k"));
 
+  const activeTextarea = page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea');
+  const activeCompletion = page.locator('[data-pane-id="pane-a"] .terminal-completion');
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("git s");
+  await activeCompletion.waitFor();
+  const completionBeforePaste = await activeCompletion.textContent();
+  assert(completionBeforePaste?.includes("status"), `command completion did not activate before paste: ${completionBeforePaste}`);
+  await page.keyboard.press("Enter");
+
+  await activeTextarea.dispatchEvent("paste", { bubbles: true, cancelable: true });
+  await page.keyboard.type("git s");
+  await page.waitForTimeout(100);
+  assert(await activeCompletion.count() === 0, "plain terminal paste did not pause command completion");
+
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("git s");
+  await activeCompletion.waitFor();
+  const completionAfterPasteBoundary = await activeCompletion.textContent();
+  assert(completionAfterPasteBoundary?.includes("status"), `command completion did not resume after pasted line boundary: ${completionAfterPasteBoundary}`);
+  await page.keyboard.press("Enter");
+
   await page.evaluate(() => { window.__clipboardWrites = []; });
   const selectedWithoutPreference = await selectTerminalText();
   await page.waitForTimeout(100);
@@ -759,6 +780,11 @@ try {
     onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
     mouseTexts,
     leakedMouseTexts,
+    completionPasteBoundary: {
+      beforePaste: completionBeforePaste?.includes("status") ?? false,
+      paused: true,
+      resumed: completionAfterPasteBoundary?.includes("status") ?? false,
+    },
     disabledClipboardWrites,
     desktopLayout,
     mobileLayout,
