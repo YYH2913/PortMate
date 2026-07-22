@@ -359,7 +359,7 @@ $payload = [ordered]@{
 [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 4 -Compress))
 "#;
 
-type LogRetentionChecks = Mutex<HashMap<(PathBuf, String, u32), Instant>>;
+type LogRetentionChecks = Mutex<HashMap<(PathBuf, String), (u32, Instant)>>;
 type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
 type ActiveCommandMap = Arc<Mutex<HashMap<String, String>>>;
 type TmuxControlMap = Arc<Mutex<HashMap<(String, String), TmuxControlRuntime>>>;
@@ -3760,6 +3760,7 @@ fn save_session_profile(
         }
     }
     drop(store);
+    clear_log_retention_check(&state.store_path, &summary.profile.id);
     if let Some(app_handle) = &state.app_handle {
         let _ = app_handle.emit("portmate-session-profile-updated", summary.clone());
     }
@@ -4460,6 +4461,7 @@ fn cleanup_deleted_session_runtime_state(
     transfer_ids: &[String],
 ) {
     clear_active_command(&state.session_io(), session_id);
+    clear_log_retention_check(&state.store_path, session_id);
     state
         .serial_captures
         .lock()
@@ -24989,24 +24991,35 @@ fn maybe_prune_expired_log_shards(
 ) -> Result<(), String> {
     let retention_days = profile.logging.retention_days;
     if retention_days == 0 {
+        clear_log_retention_check(store_path, &profile.id);
         return Ok(());
     }
     validate_logging_retention(profile)?;
-    let key = (store_path.to_path_buf(), profile.id.clone(), retention_days);
+    let key = (store_path.to_path_buf(), profile.id.clone());
     let checks = LOG_RETENTION_CHECKS.get_or_init(|| Mutex::new(HashMap::new()));
     {
         let mut checks = checks
             .lock()
             .map_err(|error| format!("log retention lock poisoned: {error}"))?;
+        checks.retain(|_, (_, checked)| checked.elapsed() < LOG_RETENTION_CHECK_INTERVAL);
         if checks
             .get(&key)
-            .is_some_and(|checked| checked.elapsed() < LOG_RETENTION_CHECK_INTERVAL)
+            .is_some_and(|(checked_days, _)| *checked_days == retention_days)
         {
             return Ok(());
         }
-        checks.insert(key, Instant::now());
+        checks.insert(key, (retention_days, Instant::now()));
     }
     prune_expired_log_shards_for_profile(store_path, profile, SystemTime::now()).map(|_| ())
+}
+
+fn clear_log_retention_check(store_path: &Path, profile_id: &str) {
+    if let Some(checks) = LOG_RETENTION_CHECKS.get() {
+        checks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(store_path.to_path_buf(), profile_id.to_string()));
+    }
 }
 
 fn prune_expired_log_shards_for_profile(
@@ -39723,6 +39736,50 @@ mod tests {
         profile.logging.path_template = "{date}/shared.jsonl".to_string();
         assert!(validate_logging_retention(&profile).is_err());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_retention_check_registry_replaces_changes_and_reclaims_entries() {
+        let root =
+            std::env::temp_dir().join(format!("portmate-log-retention-cache-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let key = (store_path.clone(), "retention-session".to_string());
+        let stale_key = (root.join("stale.sqlite3"), "stale-session".to_string());
+        let mut profile = test_shell_profile();
+        profile.id = key.1.clone();
+        profile.logging.retention_days = 30;
+        let checks = LOG_RETENTION_CHECKS.get_or_init(|| Mutex::new(HashMap::new()));
+        checks.lock().unwrap().insert(
+            stale_key.clone(),
+            (
+                7,
+                Instant::now() - LOG_RETENTION_CHECK_INTERVAL - Duration::from_secs(1),
+            ),
+        );
+
+        maybe_prune_expired_log_shards(&store_path, &profile).unwrap();
+        {
+            let checks = checks.lock().unwrap();
+            assert_eq!(checks.get(&key).map(|(days, _)| *days), Some(30));
+            assert!(!checks.contains_key(&stale_key));
+        }
+
+        profile.logging.retention_days = 31;
+        maybe_prune_expired_log_shards(&store_path, &profile).unwrap();
+        assert_eq!(
+            checks.lock().unwrap().get(&key).map(|(days, _)| *days),
+            Some(31)
+        );
+
+        profile.logging.retention_days = 0;
+        maybe_prune_expired_log_shards(&store_path, &profile).unwrap();
+        assert!(!checks.lock().unwrap().contains_key(&key));
+
+        profile.logging.retention_days = 30;
+        maybe_prune_expired_log_shards(&store_path, &profile).unwrap();
+        clear_log_retention_check(&store_path, &profile.id);
+        assert!(!checks.lock().unwrap().contains_key(&key));
         let _ = fs::remove_dir_all(root);
     }
 
