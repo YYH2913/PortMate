@@ -229,6 +229,8 @@ const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_TUNNELS: usize = 256;
 const MAX_TUNNEL_CONNECTIONS: usize = 256;
+const MAX_ACTIVE_TRANSFER_TASKS: usize = 5_000;
+const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
 const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
 const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -376,6 +378,41 @@ struct SessionOpenCancellation {
     changed: tokio::sync::Notify,
 }
 
+struct TransferCancellation {
+    cancelled: Arc<AtomicBool>,
+    changed: tokio::sync::Notify,
+}
+
+impl TransferCancellation {
+    fn new() -> Self {
+        Self::with_flag(Arc::new(AtomicBool::new(false)))
+    }
+
+    fn with_flag(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.changed.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn wait(&self) {
+        let changed = self.changed.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        changed.await;
+    }
+}
+
 impl SessionOpenCancellation {
     fn new() -> Self {
         Self {
@@ -418,7 +455,8 @@ pub struct AppState {
     active_commands: ActiveCommandMap,
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     tunnel_connection_slots: Arc<tokio::sync::Semaphore>,
-    transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    transfer_cancellations: Arc<Mutex<HashMap<String, Arc<TransferCancellation>>>>,
+    transfer_task_slots: Arc<tokio::sync::Semaphore>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     trigger_command_slots: Arc<tokio::sync::Semaphore>,
     trigger_send_batch_slots: Arc<tokio::sync::Semaphore>,
@@ -8923,6 +8961,9 @@ async fn start_transfer_inner(
             .ok_or_else(|| format!("unknown session: {}", request.session_id))?
     };
     let request = prepare_transfer_request(&profile, request)?;
+    let task_permit = Arc::clone(&state.transfer_task_slots)
+        .try_acquire_owned()
+        .map_err(|_| format!("transfer runner limit reached ({MAX_ACTIVE_TRANSFER_TASKS})"))?;
 
     let task = TransferTask {
         id: Uuid::new_v4().to_string(),
@@ -8939,7 +8980,7 @@ async fn start_transfer_inner(
         average_bytes_per_second: None,
     };
     let lane = transfer_lane(state, &request.session_id)?;
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(TransferCancellation::new());
     {
         let mut cancellations = state
             .transfer_cancellations
@@ -8951,6 +8992,7 @@ async fn start_transfer_inner(
     let queue_result = match state.store.lock() {
         Ok(mut store) => {
             commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                ensure_transfer_queue_capacity(next_store, &request.session_id, 1)?;
                 next_store.record_transfer(task.clone());
                 let event_ids = next_store
                     .record_system_event_tracked(
@@ -8993,6 +9035,7 @@ async fn start_transfer_inner(
     let runner_state = state.clone();
     let task_id = task.id.clone();
     tauri::async_runtime::spawn(async move {
+        let _task_permit = task_permit;
         run_queued_transfer(runner_state, request, task_id, cancel, lane).await;
     });
 
@@ -9203,11 +9246,25 @@ async fn run_queued_transfer(
     state: AppState,
     request: StartTransferRequest,
     task_id: String,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<TransferCancellation>,
     lane: Arc<tokio::sync::Mutex<()>>,
 ) {
-    let _lane_guard = lane.lock().await;
-    if cancel.load(Ordering::SeqCst) {
+    let lane_guard = tokio::select! {
+        guard = lane.lock() => Some(guard),
+        () = cancel.wait() => None,
+    };
+    let Some(_lane_guard) = lane_guard else {
+        finish_transfer_task(
+            &state,
+            &task_id,
+            &request.session_id,
+            TransferStatus::Cancelled,
+            "cancelled".to_string(),
+            None,
+        );
+        return;
+    };
+    if cancel.is_cancelled() {
         finish_transfer_task(
             &state,
             &task_id,
@@ -9234,7 +9291,7 @@ async fn run_queued_transfer(
     let progress = TransferProgressContext {
         state: state.clone(),
         task_id: task_id.clone(),
-        cancel: Arc::clone(&cancel),
+        cancel: Arc::clone(&cancel.cancelled),
         last_emit: Arc::new(Mutex::new(Instant::now())),
         started: Instant::now(),
         rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
@@ -9263,7 +9320,7 @@ async fn run_queued_transfer(
     };
 
     let (status, message, bytes) = match result {
-        Ok(bytes) if cancel.load(Ordering::SeqCst) => (
+        Ok(bytes) if cancel.is_cancelled() => (
             TransferStatus::Cancelled,
             "cancelled".to_string(),
             Some(bytes),
@@ -9405,6 +9462,56 @@ fn transfer_task_is_active(status: &TransferStatus) -> bool {
     matches!(status, TransferStatus::Queued | TransferStatus::Running)
 }
 
+fn ensure_transfer_queue_capacity(
+    store: &SessionStore,
+    session_id: &str,
+    additional: usize,
+) -> Result<(), String> {
+    let mut total = 0_usize;
+    let mut session = 0_usize;
+    for transfer in &store.transfers {
+        if !transfer_task_is_active(&transfer.status) {
+            continue;
+        }
+        total = total.saturating_add(1);
+        if transfer.session_id == session_id {
+            session = session.saturating_add(1);
+        }
+    }
+    if session
+        .checked_add(additional)
+        .is_none_or(|count| count > MAX_ACTIVE_TRANSFERS_PER_SESSION)
+    {
+        return Err(format!(
+            "active transfer count for session has reached {MAX_ACTIVE_TRANSFERS_PER_SESSION}"
+        ));
+    }
+    if total
+        .checked_add(additional)
+        .is_none_or(|count| count > MAX_ACTIVE_TRANSFER_TASKS)
+    {
+        return Err(format!(
+            "active transfer count has reached app limit ({MAX_ACTIVE_TRANSFER_TASKS})"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_transfer_batch_capacity(
+    state: &AppState,
+    session_id: &str,
+    additional: usize,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    ensure_transfer_queue_capacity(&store, session_id, additional)?;
+    if state.transfer_task_slots.available_permits() < additional {
+        return Err(format!(
+            "transfer runner limit would be exceeded ({MAX_ACTIVE_TRANSFER_TASKS})"
+        ));
+    }
+    Ok(())
+}
+
 fn transfer_rate_limit_bytes_per_second(state: &AppState, session_id: &str) -> Option<u64> {
     state
         .store
@@ -9462,7 +9569,7 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
     let was_active = transfer_task_is_active(&task.status);
     if was_active {
         if let Some(cancel) = cancel.as_ref() {
-            cancel.store(true, Ordering::SeqCst);
+            cancel.cancel();
         }
         task.status = TransferStatus::Cancelled;
         task.message = Some("cancelling".to_string());
@@ -9479,23 +9586,6 @@ fn cancel_transfer_inner(state: &AppState, transfer_id: &str) -> Result<Transfer
         );
     }
     drop(store);
-    if was_active {
-        if let Some(cancel) = cancel.as_ref() {
-            match state.transfer_cancellations.lock() {
-                Ok(mut cancellations) => {
-                    if cancellations
-                        .get(transfer_id)
-                        .is_some_and(|registered| Arc::ptr_eq(registered, cancel))
-                    {
-                        cancellations.remove(transfer_id);
-                    }
-                }
-                Err(error) => {
-                    eprintln!("PortMate: failed to clean up cancelled transfer handle: {error}")
-                }
-            }
-        }
-    }
     if let Some(session_id) = abort_modem_session {
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
@@ -12480,7 +12570,7 @@ enum FileOperation {
 
 const MAX_EXTERNAL_DROP_ROOTS: usize = 512;
 const MAX_EXTERNAL_DROP_ENTRIES: usize = 20_000;
-const MAX_EXTERNAL_DROP_FILES: usize = 5_000;
+const MAX_EXTERNAL_DROP_FILES: usize = MAX_ACTIVE_TRANSFERS_PER_SESSION;
 
 #[derive(Debug)]
 struct ExternalDropRoot {
@@ -12648,6 +12738,8 @@ async fn start_file_batch_inner(
                 .ok_or_else(|| "文件批次总大小溢出".to_string())?;
             prepared_files.push((file.source, relative, target));
         }
+
+        ensure_transfer_batch_capacity(state, &request.session_id, prepared_files.len())?;
 
         directory_targets.sort_by_key(|path| batch_path_depth(path));
         for target in &directory_targets {
@@ -13100,6 +13192,7 @@ async fn start_external_drop_inner(
                     request.conflict_policy,
                 )
                 .await?;
+                ensure_transfer_batch_capacity(state, &request.session_id, plan.files.len())?;
                 sftp_create_dir_all(&sftp, request.destination.trim()).await?;
                 for relative in &plan.directories {
                     let target = remote_join_path(
@@ -13124,6 +13217,7 @@ async fn start_external_drop_inner(
             request.conflict_policy,
         )
         .await?;
+        ensure_transfer_batch_capacity(state, &request.session_id, plan.files.len())?;
         for relative in &plan.directories {
             let target = destination.join(relative);
             fs::create_dir_all(&target)
@@ -30284,6 +30378,9 @@ pub fn run() {
                     MAX_TUNNEL_CONNECTIONS,
                 )),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+                transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_ACTIVE_TRANSFER_TASKS,
+                )),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
                 trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                     MAX_TRIGGER_COMMAND_CONCURRENCY,
@@ -37657,6 +37754,121 @@ mod tests {
     }
 
     #[test]
+    fn transfer_queue_capacity_bounds_session_app_and_overflow_counts() {
+        let mut store = SessionStore::default();
+        for index in 0..MAX_ACTIVE_TRANSFERS_PER_SESSION {
+            let mut task = test_transfer_task("session-1", TransferStatus::Queued);
+            task.id = format!("queued-{index}");
+            store.record_transfer(task);
+        }
+        assert!(ensure_transfer_queue_capacity(&store, "session-1", 1)
+            .unwrap_err()
+            .contains(&MAX_ACTIVE_TRANSFERS_PER_SESSION.to_string()));
+        assert!(ensure_transfer_queue_capacity(&store, "session-2", 1)
+            .unwrap_err()
+            .contains("app limit"));
+        assert!(
+            ensure_transfer_queue_capacity(&SessionStore::default(), "session-1", usize::MAX)
+                .unwrap_err()
+                .contains(&MAX_ACTIVE_TRANSFERS_PER_SESSION.to_string())
+        );
+    }
+
+    #[test]
+    fn transfer_runner_saturation_rejects_before_queue_side_effects() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("portmate-transfer-runner-limit-{}", Uuid::new_v4()));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+            let _permits = Arc::clone(&state.transfer_task_slots)
+                .try_acquire_many_owned(MAX_ACTIVE_TRANSFER_TASKS as u32)
+                .unwrap();
+
+            let error = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id,
+                    protocol: TransferProtocol::Sftp,
+                    source: "input.bin".to_string(),
+                    destination: "output.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.contains("runner limit"), "{error}");
+            assert!(state.store.lock().unwrap().transfers.is_empty());
+            assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn cancelling_queued_transfer_releases_runner_without_entering_lane() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "portmate-transfer-queued-cancel-{}",
+                Uuid::new_v4()
+            ));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+            let lane = transfer_lane(&state, &profile.id).unwrap();
+            let lane_guard = lane.lock().await;
+            let initial_permits = state.transfer_task_slots.available_permits();
+            let task = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: "input.bin".to_string(),
+                    destination: "output.bin".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                state.transfer_task_slots.available_permits(),
+                initial_permits - 1
+            );
+
+            let cancelled = cancel_transfer_inner(&state, &task.id).unwrap();
+            assert_eq!(cancelled.status, TransferStatus::Cancelled);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if state.transfer_task_slots.available_permits() == initial_permits
+                        && !state
+                            .transfer_cancellations
+                            .lock()
+                            .unwrap()
+                            .contains_key(&task.id)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled queued transfer retained its runner");
+            assert!(
+                lane.try_lock().is_err(),
+                "queued transfer entered the occupied lane"
+            );
+            drop(lane_guard);
+
+            let saved = state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap();
+            assert_eq!(saved.status, TransferStatus::Cancelled);
+            assert_eq!(saved.message.as_deref(), Some("cancelled"));
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
     fn transfer_queue_commit_failure_rolls_back_task_event_and_cancellation() {
         tauri::async_runtime::block_on(async {
             let root = std::env::temp_dir().join(format!(
@@ -37745,11 +37957,12 @@ mod tests {
         let task = test_transfer_task(&profile.id, TransferStatus::Running);
         state.store.lock().unwrap().record_transfer(task.clone());
         let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = Arc::new(TransferCancellation::with_flag(Arc::clone(&cancelled)));
         state
             .transfer_cancellations
             .lock()
             .unwrap()
-            .insert(task.id.clone(), Arc::clone(&cancelled));
+            .insert(task.id.clone(), cancellation);
 
         let result = cancel_transfer_inner(&state, &task.id).unwrap();
 
@@ -37783,11 +37996,14 @@ mod tests {
         let mut task = test_transfer_task(&profile.id, TransferStatus::Cancelled);
         task.message = Some("cancelling".to_string());
         state.store.lock().unwrap().record_transfer(task.clone());
+        let cancellation = Arc::new(TransferCancellation::with_flag(Arc::new(AtomicBool::new(
+            true,
+        ))));
         state
             .transfer_cancellations
             .lock()
             .unwrap()
-            .insert(task.id.clone(), Arc::new(AtomicBool::new(true)));
+            .insert(task.id.clone(), cancellation);
 
         finish_transfer_task(
             &state,
@@ -47925,7 +48141,7 @@ mod tests {
             .transfer_cancellations
             .lock()
             .unwrap()
-            .insert(transfer_id.clone(), Arc::new(AtomicBool::new(false)));
+            .insert(transfer_id.clone(), Arc::new(TransferCancellation::new()));
         state
             .one_time_host_keys
             .lock()
@@ -48476,6 +48692,7 @@ mod tests {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(MAX_TUNNEL_CONNECTIONS)),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TRANSFER_TASKS)),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
             trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                 MAX_TRIGGER_COMMAND_CONCURRENCY,
