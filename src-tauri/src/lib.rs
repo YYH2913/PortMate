@@ -11709,7 +11709,7 @@ async fn copy_local_file_for_transfer(
             .map_err(|error| format!("local transfer seek failed: {error}"))?;
         progress.update(copied, total).await?;
     }
-    if copied == total {
+    if total > 0 && copied == total {
         finalize_local_resume_file(&temp_destination, &destination)?;
         return Ok(copied);
     }
@@ -11728,8 +11728,10 @@ async fn copy_local_file_for_transfer(
             .write_all(&buffer[..read])
             .map_err(|error| format!("local transfer write failed: {error}"))?;
         copied += read as u64;
+        ensure_transfer_not_oversized(copied, total, "local transfer")?;
         progress.update(copied, total).await?;
     }
+    ensure_exact_transfer_size(copied, total, "local transfer")?;
     output
         .flush()
         .map_err(|error| format!("local transfer flush failed: {error}"))?;
@@ -11812,6 +11814,26 @@ fn local_resume_offset(path: &Path, total: u64) -> Result<u64, String> {
         fs::remove_file(path)
             .map_err(|error| format!("删除过大的断点文件失败 {}: {error}", path.display()))?;
         Ok(0)
+    }
+}
+
+fn ensure_exact_transfer_size(copied: u64, total: u64, label: &str) -> Result<(), String> {
+    if copied == total {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} size mismatch: copied {copied}, expected {total}"
+        ))
+    }
+}
+
+fn ensure_transfer_not_oversized(copied: u64, total: u64, label: &str) -> Result<(), String> {
+    if copied <= total {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} size mismatch: copied {copied}, expected {total}"
+        ))
     }
 }
 
@@ -12041,7 +12063,7 @@ async fn sftp_upload(
             .map_err(|error| format!("SFTP 本地文件 seek 失败 {local_source}: {error}"))?;
         progress.update(copied, total).await?;
     }
-    if copied == total {
+    if total > 0 && copied == total {
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
         return Ok(copied);
     }
@@ -12062,8 +12084,10 @@ async fn sftp_upload(
                 .await
                 .map_err(|error| format!("SFTP 写入远端文件失败 {temp_target}: {error}"))?;
             copied += read as u64;
+            ensure_transfer_not_oversized(copied, total, "SFTP upload")?;
             progress.update(copied, total).await?;
         }
+        ensure_exact_transfer_size(copied, total, "SFTP upload")?;
         remote_file
             .flush()
             .await
@@ -12134,8 +12158,10 @@ async fn sftp_download(
             .write_all(&buffer[..read])
             .map_err(|error| format!("写入本地目标文件失败 {}: {error}", temp_target.display()))?;
         copied += read as u64;
+        ensure_transfer_not_oversized(copied, total, "SFTP download")?;
         progress.update(copied, total).await?;
     }
+    ensure_exact_transfer_size(copied, total, "SFTP download")?;
     local_file
         .flush()
         .map_err(|error| format!("刷新本地目标文件失败 {}: {error}", temp_target.display()))?;
@@ -12193,8 +12219,10 @@ async fn sftp_remote_copy(
                 .await
                 .map_err(|error| format!("SFTP 写入远端目标文件失败 {temp_target}: {error}"))?;
             copied += read as u64;
+            ensure_transfer_not_oversized(copied, total, "SFTP remote copy")?;
             progress.update(copied, total).await?;
         }
+        ensure_exact_transfer_size(copied, total, "SFTP remote copy")?;
         target_file
             .flush()
             .await
@@ -39282,6 +39310,83 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn local_transfer_creates_empty_files_and_rejects_source_shrink() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .transfers
+            .push(test_transfer_task(&profile.id, TransferStatus::Running));
+
+        tauri::async_runtime::block_on(async {
+            let empty_source = root.path().join("empty-source.bin");
+            let empty_target = root.path().join("empty-target.bin");
+            fs::write(&empty_source, []).unwrap();
+            let empty_progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let copied = copy_local_file_for_transfer(
+                empty_source.to_str().unwrap(),
+                empty_target.to_str().unwrap(),
+                &empty_progress,
+            )
+            .await
+            .unwrap();
+            assert_eq!(copied, 0);
+            assert_eq!(fs::metadata(&empty_target).unwrap().len(), 0);
+
+            let source = root.path().join("shrinking-source.bin");
+            let target = root.path().join("shrinking-target.bin");
+            fs::write(&source, vec![b'x'; 256 * 1024]).unwrap();
+            let part = local_resume_part_path(&target);
+            let progress = TransferProgressContext {
+                state: state.clone(),
+                task_id: "transfer-commit-test".to_string(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                last_emit: Arc::new(Mutex::new(Instant::now())),
+                started: Instant::now(),
+                rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+                rate_limit_bytes_per_second: Some(512 * 1024),
+            };
+            let source_path = source.display().to_string();
+            let target_path = target.display().to_string();
+            let copy = tokio::spawn(async move {
+                copy_local_file_for_transfer(&source_path, &target_path, &progress).await
+            });
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if fs::metadata(&part).is_ok_and(|metadata| metadata.len() >= 64 * 1024) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("local transfer did not write its first block");
+            OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap()
+                .set_len(64 * 1024)
+                .unwrap();
+
+            let error = copy.await.unwrap().unwrap_err();
+            assert_eq!(
+                error,
+                "local transfer size mismatch: copied 65536, expected 262144"
+            );
+            assert!(!target.exists());
+            assert_eq!(fs::metadata(&part).unwrap().len(), 64 * 1024);
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_transfer_writes_reject_symlink_targets() {
@@ -44452,6 +44557,30 @@ mod tests {
             .await
             .unwrap();
             assert!(!sftp_root.exists());
+
+            let empty_sftp_source = root.join("empty-sftp-source.bin");
+            let empty_sftp_target = root.join("empty-sftp-target.bin");
+            fs::write(&empty_sftp_source, []).unwrap();
+            let empty_sftp_upload = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: empty_sftp_source.display().to_string(),
+                    destination: format!("remote:{}", empty_sftp_target.display()),
+                },
+            )
+            .await
+            .unwrap();
+            let empty_sftp_upload =
+                wait_for_transfer_terminal_state(&state, &empty_sftp_upload.id).await;
+            assert_eq!(
+                empty_sftp_upload.status,
+                TransferStatus::Completed,
+                "empty SFTP upload failed: {:?}",
+                empty_sftp_upload.message
+            );
+            assert_eq!(fs::metadata(&empty_sftp_target).unwrap().len(), 0);
 
             let upload_source = root.join("scp-upload-source.bin");
             let remote_file = root.join("scp-remote.bin");
