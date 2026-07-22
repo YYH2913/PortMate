@@ -127,7 +127,9 @@ hint during frontend and Store normalization, so historical data cannot re-enabl
 method that the current Profile excludes. Automatic reconnect applies the same rule. The complete
 ordered authentication sequence shares one 12-second budget during a Jump Host host-key scan and
 one 20-second setup budget for each live Jump Host or target; timeout disconnects the current SSH
-handle and closes the already established Jump Host chain. The compact
+handle and closes the already established Jump Host chain. After authentication, opening the
+terminal channel, requesting its PTY/environment/agent forwarding/shell, and sending the initial
+Tmux attach command share a separate 20-second budget with the same pre-runtime cleanup. The compact
 settings menu exposes all 15 ordered non-empty subsets of public-key, keyboard-interactive, and
 password authentication; an existing Profile containing an external or legacy method keeps a visible
 `当前配置` entry instead of rendering an empty selector or silently rewriting it. The adjacent
