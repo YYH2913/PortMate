@@ -465,6 +465,10 @@ A successful `Connected` transition ends that outage, so the next transport loss
 Browser preview uses the same transition rules as the native Store: entering `Connecting` is not a
 disconnect, the first successful connection does not invent a prior outage, and fallback failures
 retain their concrete error reason instead of replacing it with a generic session error.
+The native Store collapses whitespace and limits every persisted disconnect reason to 256 Unicode
+characters before it reaches snapshots or SQLite. Existing oversized legacy values are normalized
+when the Store loads, using a bounded streaming formatter rather than allocating a second copy of an
+untrusted field.
 The standalone serial analyzer uses the same validated diagnostics: its compact title bar shows a
 stable Chinese status label and exposes the full health description accessibly, while the status
 strip omits empty history and bounds malformed or multiline disconnect reasons without rendering an
