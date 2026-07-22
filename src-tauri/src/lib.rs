@@ -228,6 +228,7 @@ const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_TUNNELS: usize = 256;
 const MAX_TUNNEL_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_SESSION_OPENS: usize = 64;
+const MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS: usize = 256;
 const MAX_ACTIVE_TRANSFER_TASKS: usize = 5_000;
 const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
 const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
@@ -453,6 +454,7 @@ pub struct AppState {
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     session_open_slots: Arc<tokio::sync::Semaphore>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
+    ssh_auxiliary_slots: Arc<tokio::sync::Semaphore>,
     tmux_controls: TmuxControlMap,
     tmux_control_slots: Arc<tokio::sync::Semaphore>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
@@ -7145,17 +7147,8 @@ async fn refresh_sysmon_inner(
         profile.connection,
         ConnectionConfig::Ssh(_) | ConnectionConfig::Tmux(_)
     ) {
-        let handle = {
-            let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-            connections
-                .get(session_id)
-                .map(|runtime| Arc::clone(&runtime.handle))
-        };
-        if let Some(handle) = handle {
-            collect_remote_sysmon(session_id, handle).await?
-        } else {
-            return Err("需要先连接 SSH/Tmux 会话才能读取远端 Sysmon".to_string());
-        }
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        collect_remote_sysmon(session_id, auxiliary.handle()).await?
     } else {
         collect_local_sysmon(session_id).await?
     };
@@ -9756,7 +9749,8 @@ async fn transfer_file_via_sftp(
             copy_local_file_for_transfer(&request.source, &request.destination, progress).await
         }
         remote_paths => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            let handle = auxiliary.handle();
             let sftp = open_sftp_session(handle).await?;
             let transfer = async {
                 match remote_paths {
@@ -9812,15 +9806,18 @@ async fn transfer_file_via_local_or_scp(
             copy_local_file_for_transfer(&request.source, &request.destination, progress).await
         }
         (None, Some(remote_destination)) => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            let handle = auxiliary.handle();
             scp_upload(handle, &request.source, remote_destination, progress).await
         }
         (Some(remote_source), None) => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            let handle = auxiliary.handle();
             scp_download(handle, remote_source, &request.destination, progress).await
         }
         (Some(remote_source), Some(remote_destination)) => {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            let handle = auxiliary.handle();
             remote_copy(handle, remote_source, remote_destination, progress).await
         }
     }
@@ -11657,6 +11654,38 @@ fn ssh_handle_for_transfer(
         .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行 remote: 传输".to_string())
 }
 
+struct SshAuxiliaryLease {
+    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl SshAuxiliaryLease {
+    fn handle(&self) -> Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>> {
+        Arc::clone(&self.handle)
+    }
+}
+
+fn acquire_ssh_auxiliary_slot(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    Arc::clone(&state.ssh_auxiliary_slots)
+        .try_acquire_owned()
+        .map_err(|_| {
+            format!(
+                "SSH auxiliary operation limit reached ({MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS})"
+            )
+        })
+}
+
+fn ssh_auxiliary_lease(state: &AppState, session_id: &str) -> Result<SshAuxiliaryLease, String> {
+    let slot = acquire_ssh_auxiliary_slot(state)?;
+    let handle = ssh_handle_for_transfer(state, session_id)?;
+    Ok(SshAuxiliaryLease {
+        handle,
+        _slot: slot,
+    })
+}
+
 async fn copy_local_file_for_transfer(
     source: &str,
     destination: &str,
@@ -12685,7 +12714,8 @@ async fn start_file_batch_inner(
         ));
     }
 
-    let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+    let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+    let handle = auxiliary.handle();
     let sftp = open_sftp_session(handle).await?;
     let result = async {
         let mut plan = if request.source_remote {
@@ -13228,7 +13258,8 @@ async fn start_external_drop_inner(
 
     if request.remote {
         if !plan.directories.is_empty() || !plan.files.is_empty() {
-            let handle = ssh_handle_for_transfer(state, &request.session_id)?;
+            let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            let handle = auxiliary.handle();
             let sftp = open_sftp_session(handle).await?;
             let result = async {
                 apply_external_drop_conflicts(
@@ -13565,7 +13596,8 @@ async fn list_files_inner(
             .session_id
             .as_deref()
             .ok_or_else(|| "remote file list requires sessionId".to_string())?;
-        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
         list_remote_files(handle, &request.path).await
     } else {
         list_local_files(&request.path)
@@ -13584,7 +13616,8 @@ async fn file_properties_inner(
             .session_id
             .as_deref()
             .ok_or_else(|| "remote file properties require sessionId".to_string())?;
-        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
         let sftp = open_sftp_session(handle).await?;
         let result = remote_file_properties(&sftp, request.path.trim()).await;
         let _ = sftp.close().await;
@@ -13605,7 +13638,8 @@ async fn file_operation_inner(
             .as_deref()
             .ok_or_else(|| "remote file operation requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
-        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
         let sftp = open_sftp_session(handle).await?;
         let result = async {
             match operation {
@@ -13659,7 +13693,8 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
             .ok_or_else(|| "remote rename requires sessionId".to_string())?;
         let old_path = validate_remote_mutating_path(&request.old_path)?;
         let new_path = validate_remote_mutating_path(&request.new_path)?;
-        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
         let sftp = open_sftp_session(handle).await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &old_path, true, "远端重命名源路径").await?;
@@ -13699,7 +13734,8 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
             .as_deref()
             .ok_or_else(|| "remote chmod requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
-        let handle = ssh_handle_for_transfer(state, session_id)?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
         let sftp = open_sftp_session(handle).await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &path, false, "远端 chmod 路径").await?;
@@ -13832,7 +13868,8 @@ async fn start_tmux_control_inner(
         ensure_tmux_control_capacity(&controls, &control_key)?;
     }
 
-    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let auxiliary_lease = ssh_auxiliary_lease(state, session_id)?;
+    let handle = auxiliary_lease.handle();
     let command = format!(
         "tmux -C attach-session -t {}",
         shell_quote(normalize_tmux_target(&target)?)
@@ -13994,6 +14031,7 @@ async fn start_tmux_control_inner(
             None,
             stopped_error.as_deref(),
         );
+        drop(auxiliary_lease);
         drop(control_slot);
     });
 
@@ -14082,7 +14120,13 @@ fn shutdown_tmux_controls(state: &AppState) {
 }
 
 async fn list_tmux_state_inner(state: &AppState, session_id: &str) -> Result<TmuxState, String> {
-    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+    list_tmux_state_with_handle(auxiliary.handle()).await
+}
+
+async fn list_tmux_state_with_handle(
+    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+) -> Result<TmuxState, String> {
     let sessions_output = exec_ssh_command_capture(
         Arc::clone(&handle),
         "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}' 2>/dev/null || true",
@@ -14136,21 +14180,22 @@ async fn set_tmux_pane_sync_inner(
     target: &str,
     enabled: bool,
 ) -> Result<TmuxState, String> {
-    let handle = ssh_handle_for_transfer(state, session_id)?;
+    let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+    let handle = auxiliary.handle();
     let command = tmux_pane_sync_command(target, enabled)?;
     let event_message = format!(
         "PortMate: tmux pane synchronization {} ({})",
         if enabled { "enabled" } else { "disabled" },
         normalize_tmux_target(target)?
     );
-    exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
+    exec_ssh_command_capture(Arc::clone(&handle), &command, Duration::from_secs(8)).await?;
     record_applied_system_event(
         state,
         session_id,
         event_message,
         "tmux pane synchronization",
     );
-    list_tmux_state_inner(state, session_id).await
+    list_tmux_state_with_handle(handle).await
 }
 
 async fn mutate_tmux_inner(
@@ -14163,10 +14208,11 @@ async fn mutate_tmux_inner(
         tmux_mutation_label(request.action),
         tmux_mutation_event_scope(&request)?
     );
-    let handle = ssh_handle_for_transfer(state, &request.session_id)?;
-    exec_ssh_command_capture(handle, &command, Duration::from_secs(8)).await?;
+    let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+    let handle = auxiliary.handle();
+    exec_ssh_command_capture(Arc::clone(&handle), &command, Duration::from_secs(8)).await?;
     record_applied_system_event(state, &request.session_id, event_message, "tmux mutation");
-    list_tmux_state_inner(state, &request.session_id).await
+    list_tmux_state_with_handle(handle).await
 }
 
 fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
@@ -15528,6 +15574,7 @@ async fn probe_remote_tunnel_health(
     state: &AppState,
     runtime: &TunnelRuntime,
 ) -> Result<RemoteTunnelHealth, String> {
+    let _auxiliary_slot = acquire_ssh_auxiliary_slot(state)?;
     let (handle, remote_forwards) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -27472,55 +27519,60 @@ fn windows_powershell_encoded_script(script: &str) -> String {
     BASE64_STANDARD.encode(utf16le)
 }
 
-async fn exec_ssh_command_capture(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+async fn exec_ssh_command_capture<H: client::Handler>(
+    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     command: &str,
     timeout: Duration,
 ) -> Result<String, String> {
     let started = Instant::now();
     let mut channel = open_shared_ssh_exec_channel(&handle, command, timeout, "SSH exec").await?;
-    let remaining = timeout
-        .checked_sub(started.elapsed())
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| "SSH exec 超时".to_string())?;
+    let result = async {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "SSH exec 超时".to_string())?;
 
-    let mut output = Vec::new();
-    let mut stderr = Vec::new();
-    let mut exit_status = None;
-    tokio::time::timeout(remaining, async {
-        while let Some(message) = channel.wait().await {
-            match message {
-                ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
-                    &mut output,
-                    &data,
-                    MAX_SSH_EXEC_STDOUT_BYTES,
-                    "stdout",
-                )?,
-                ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
-                    &mut stderr,
-                    &data,
-                    MAX_SSH_EXEC_STDERR_BYTES,
-                    "stderr",
-                )?,
-                ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
-                ChannelMsg::Eof | ChannelMsg::Close => break,
-                _ => {}
+        let mut output = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
+        tokio::time::timeout(remaining, async {
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
+                        &mut output,
+                        &data,
+                        MAX_SSH_EXEC_STDOUT_BYTES,
+                        "stdout",
+                    )?,
+                    ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
+                        &mut stderr,
+                        &data,
+                        MAX_SSH_EXEC_STDERR_BYTES,
+                        "stderr",
+                    )?,
+                    ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    _ => {}
+                }
             }
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|_| "SSH exec 超时".to_string())??;
+
+        if exit_status.is_some_and(|code| code != 0) && output.is_empty() {
+            return Err(format!(
+                "SSH exec 返回非零状态 {:?}: {}",
+                exit_status,
+                String::from_utf8_lossy(&stderr)
+            ));
         }
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|_| "SSH exec 超时".to_string())??;
 
-    if exit_status.is_some_and(|code| code != 0) && output.is_empty() {
-        return Err(format!(
-            "SSH exec 返回非零状态 {:?}: {}",
-            exit_status,
-            String::from_utf8_lossy(&stderr)
-        ));
+        Ok(String::from_utf8_lossy(&output).to_string())
     }
-
-    Ok(String::from_utf8_lossy(&output).to_string())
+    .await;
+    close_ssh_channel_bounded(&channel).await;
+    result
 }
 
 fn append_bounded_ssh_exec_data(
@@ -30494,6 +30546,9 @@ pub fn run() {
                     MAX_CONCURRENT_SESSION_OPENS,
                 )),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
+                ssh_auxiliary_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS,
+                )),
                 tmux_controls: Arc::new(Mutex::new(HashMap::new())),
                 tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
                 shell: Arc::new(Mutex::new(HashMap::new())),
@@ -30837,6 +30892,7 @@ mod tests {
         session_channel_completions: AtomicU64,
         direct_tcpip_attempts: AtomicU64,
         direct_tcpip_completions: AtomicU64,
+        channel_closes: AtomicU64,
     }
 
     #[cfg(unix)]
@@ -30929,10 +30985,36 @@ mod tests {
         async fn exec_request(
             &mut self,
             channel: russh::ChannelId,
-            _data: &[u8],
+            data: &[u8],
             session: &mut russh::server::Session,
         ) -> Result<(), Self::Error> {
             session.channel_success(channel)?;
+            match data {
+                b"__PORTMATE_TEST_EXEC_SUCCESS__" => {
+                    session.data(channel, b"captured".to_vec())?;
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                b"__PORTMATE_TEST_EXEC_OVERFLOW__" => {
+                    session.extended_data(channel, 1, vec![b'x'; MAX_SSH_EXEC_STDERR_BYTES + 1])?;
+                    session.eof(channel)?;
+                }
+                b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
+                command if command.starts_with(b"tmux ") => {
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        async fn channel_close(
+            &mut self,
+            _channel: russh::ChannelId,
+            _session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            self.counters.channel_closes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -32976,6 +33058,235 @@ mod tests {
             assert!(store.sysmon.is_empty());
             assert!(store.events.is_empty());
             let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn ssh_auxiliary_capacity_rejects_before_lookup_and_recovers_permits() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_ssh_profile(), temp.path().join("store.sqlite3"));
+        let permits = Arc::clone(&state.ssh_auxiliary_slots)
+            .try_acquire_many_owned(MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS as u32)
+            .unwrap();
+
+        let saturated = ssh_auxiliary_lease(&state, "missing-session")
+            .err()
+            .expect("saturated auxiliary capacity unexpectedly allowed a lease");
+        assert_eq!(
+            saturated,
+            format!(
+                "SSH auxiliary operation limit reached ({MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS})"
+            )
+        );
+        assert_eq!(state.ssh_auxiliary_slots.available_permits(), 0);
+
+        drop(permits);
+        assert_eq!(
+            state.ssh_auxiliary_slots.available_permits(),
+            MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS
+        );
+        let missing_runtime = ssh_auxiliary_lease(&state, "missing-session")
+            .err()
+            .expect("missing SSH runtime unexpectedly produced a lease");
+        assert!(missing_runtime.contains("需要先连接 SSH/Tmux"));
+        assert_eq!(
+            state.ssh_auxiliary_slots.available_permits(),
+            MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS
+        );
+    }
+
+    #[test]
+    fn ssh_auxiliary_saturation_blocks_remote_entry_points_without_side_effects() {
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let profile = test_ssh_profile();
+            let state = test_app_state(profile.clone(), temp.path().join("store.sqlite3"));
+            let _permits = Arc::clone(&state.ssh_auxiliary_slots)
+                .try_acquire_many_owned(MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS as u32)
+                .unwrap();
+
+            let file_error = list_files_inner(
+                &state,
+                ListFilesRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: "/tmp".to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_err();
+            let tmux_list_error = list_tmux_state_inner(&state, &profile.id)
+                .await
+                .unwrap_err();
+            let tmux_mutation_error = mutate_tmux_inner(
+                &state,
+                TmuxMutationRequest {
+                    session_id: profile.id.clone(),
+                    action: TmuxMutationAction::KillPane,
+                    target: "%1".to_string(),
+                    name: None,
+                    destination: None,
+                    layout: None,
+                    amount: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            let tmux_control_error = start_tmux_control_inner(&state, &profile.id, "lab")
+                .await
+                .unwrap_err();
+            let sysmon_error = refresh_sysmon_inner(&state, &profile.id).await.unwrap_err();
+            let tunnel_error = probe_remote_tunnel_health(
+                &state,
+                &TunnelRuntime {
+                    session_id: profile.id.clone(),
+                    ssh_runtime_id: "missing-runtime".to_string(),
+                    spec: TunnelSpec {
+                        id: "saturated-health-check".to_string(),
+                        label: "saturated health check".to_string(),
+                        mode: TunnelMode::Remote,
+                        bind_host: "127.0.0.1".to_string(),
+                        bind_port: 10_022,
+                        target_host: "127.0.0.1".to_string(),
+                        target_port: 22,
+                        enabled: true,
+                    },
+                    metrics: Arc::new(TunnelMetrics::default()),
+                    closed: Arc::new(AtomicBool::new(false)),
+                },
+            )
+            .await
+            .unwrap_err();
+
+            for error in [
+                file_error,
+                tmux_list_error,
+                tmux_mutation_error,
+                tmux_control_error,
+                sysmon_error,
+                tunnel_error,
+            ] {
+                assert!(error.contains("auxiliary operation limit"), "{error}");
+            }
+            assert!(state.ssh.lock().unwrap().is_empty());
+            assert!(state.tmux_controls.lock().unwrap().is_empty());
+            assert_eq!(
+                state.tmux_control_slots.available_permits(),
+                MAX_ACTIVE_TMUX_CONTROLS
+            );
+            assert_eq!(
+                state.sysmon_slots.available_permits(),
+                MAX_CONCURRENT_SYSMON_REFRESHES
+            );
+            let store = state.store.lock().unwrap();
+            assert!(store.sysmon.is_empty());
+            assert!(store.events.is_empty());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping tmux auxiliary lease test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let profile = test_ssh_profile();
+            let mut state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state.ssh_auxiliary_slots = Arc::new(tokio::sync::Semaphore::new(1));
+            let username = "portmate-tmux-lease-user";
+            let secret = "PortMate tmux lease secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server(&host_key, username, secret).await;
+            let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
+            let handler = PortMateSshHandler {
+                profile_id: profile.id.clone(),
+                host: "127.0.0.1".to_string(),
+                port,
+                alias: None,
+                policy: portmate_core::HostKeyPolicy {
+                    mode: HostKeyMode::TrustOnFirstUse,
+                    alias: None,
+                    trust_scope: HostKeyScope::Profile,
+                    allow_rotation: false,
+                    check_ip: false,
+                },
+                host_keys: state.store.lock().unwrap().host_keys.clone(),
+                one_time_host_key_ids: Vec::new(),
+                observed_key: Arc::new(Mutex::new(None)),
+                host_key_error: Arc::new(Mutex::new(None)),
+                remote_forwards: Arc::clone(&remote_forwards),
+            };
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                handler,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let terminal = handle.channel_open_session().await.unwrap();
+            let (_reader, writer) = terminal.split();
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let (tap, _) = broadcast::channel(1);
+            let (_reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
+            state.ssh.lock().unwrap().insert(
+                profile.id.clone(),
+                SshRuntime {
+                    runtime_id: "tmux-lease-runtime".to_string(),
+                    handle: Arc::clone(&handle),
+                    jump_handles: Vec::new(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    remote_forwards,
+                    closed: Arc::new(AtomicBool::new(false)),
+                    reader_finished,
+                },
+            );
+
+            let state_after_mutation = mutate_tmux_inner(
+                &state,
+                TmuxMutationRequest {
+                    session_id: profile.id.clone(),
+                    action: TmuxMutationAction::KillPane,
+                    target: "%1".to_string(),
+                    name: None,
+                    destination: None,
+                    layout: None,
+                    amount: None,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(state_after_mutation.sessions.is_empty());
+            assert!(state_after_mutation.windows.is_empty());
+            assert!(state_after_mutation.panes.is_empty());
+            assert_eq!(state.ssh_auxiliary_slots.available_permits(), 1);
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 5);
+
+            state.ssh.lock().unwrap().remove(&profile.id);
+            let handle = handle.lock().await;
+            let _ = handle
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate tmux lease test complete",
+                    "en",
+                )
+                .await;
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
         });
     }
 
@@ -41800,6 +42111,83 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn ssh_exec_capture_closes_channels_on_success_timeout_and_overflow() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SSH exec cleanup test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-exec-cleanup-user";
+            let secret = "PortMate exec cleanup secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server(&host_key, username, secret).await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+
+            let output = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_SUCCESS__",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(output, "captured");
+
+            let timeout_error = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_TIMEOUT__",
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(timeout_error, "SSH exec 超时");
+
+            let overflow_error = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_OVERFLOW__",
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+            assert!(overflow_error.contains("stderr"), "{overflow_error}");
+            assert!(
+                overflow_error.contains(&MAX_SSH_EXEC_STDERR_BYTES.to_string()),
+                "{overflow_error}"
+            );
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.channel_closes.load(Ordering::SeqCst) < 3 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SSH exec channels were not closed on every exit path");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 3);
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn sftp_in_flight_request_observes_transfer_cancellation() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping SFTP cancellation test: ssh-keygen is not installed");
@@ -48955,6 +49343,9 @@ mod tests {
             system_event_sink: Arc::new(Mutex::new(None)),
             session_open_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SESSION_OPENS)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
+            ssh_auxiliary_slots: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS,
+            )),
             tmux_controls: Arc::new(Mutex::new(HashMap::new())),
             tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
             shell: Arc::new(Mutex::new(HashMap::new())),
