@@ -10275,7 +10275,11 @@ function loadLocalValue<T>(key: string, fallback: T): T {
 }
 
 function saveLocalValue<T>(key: string, value: T) {
-  window.localStorage.setItem(key, JSON.stringify(value));
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Local preferences remain available in memory when browser storage is unavailable.
+  }
 }
 
 function cloneSessionProfile(profile: SessionProfile): SessionProfile {

@@ -2898,6 +2898,7 @@ try {
   await cacheRecoveryContext.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem("portmate.sessions", JSON.stringify({ version: 1, sessions: [null] }));
+    Storage.prototype.setItem = () => { throw new DOMException("storage denied", "SecurityError"); };
   });
   const cacheRecoveryErrors = [];
   const cacheRecoveryMain = await cacheRecoveryContext.newPage();
@@ -2919,7 +2920,7 @@ try {
   assert((await cacheRecoveryAnalyzer.locator(".serial-analyzer-missing").textContent())?.includes("串口会话不可用"),
     "serial analyzer did not conservatively discard an invalid session cache");
   assert(cacheRecoveryErrors.length === 0,
-    `invalid session cache caused browser exceptions: ${JSON.stringify(cacheRecoveryErrors)}`);
+    `invalid session cache or denied preference writes caused browser exceptions: ${JSON.stringify(cacheRecoveryErrors)}`);
   await cacheRecoveryContext.close();
 
   console.log(JSON.stringify({
@@ -2972,7 +2973,7 @@ try {
       renamed: renamedProfileRecoveryState,
       empty: emptyProfileRecoveryState,
     },
-    sessionCacheRecovery: ["main", "detached", "serial-analyzer"],
+    sessionCacheRecovery: ["main", "detached", "serial-analyzer", "storage-write-denied"],
     terminalWrites,
     desktop,
     mobile,
