@@ -5,6 +5,10 @@ import {
   SESSION_SUMMARY_CACHE_STORAGE_KEY,
 } from "./session-summary-cache";
 import type { ConnectionConfig, SessionKind, SessionSummary } from "./types";
+import {
+  MAX_TUNNELS_PER_PROFILE,
+  MAX_TUNNEL_HOST_CHARACTERS,
+} from "./tunnel-state";
 
 describe("session summary cache", () => {
   it("reads legacy arrays and the versioned cache envelope", () => {
@@ -59,6 +63,49 @@ describe("session summary cache", () => {
     expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
 
     summary.profile.triggers = [trigger, { ...trigger }];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+  });
+
+  it("rejects tunnel collections and fields outside backend bounds", () => {
+    const summary = createSummary("ssh-a", "ssh");
+    if (summary.profile.connection.kind !== "ssh") throw new Error("expected SSH profile");
+    const tunnel = {
+      id: "tunnel-a",
+      label: "Tunnel A",
+      mode: "local" as const,
+      bindHost: "127.0.0.1",
+      bindPort: 10_022,
+      targetHost: "device.internal",
+      targetPort: 22,
+      enabled: true,
+    };
+    summary.profile.connection.tunnels = Array.from(
+      { length: MAX_TUNNELS_PER_PROFILE + 1 },
+      (_, index) => ({ ...tunnel, id: `tunnel-${index}` }),
+    );
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.connection.tunnels = [
+      tunnel,
+      { ...tunnel, label: "Duplicate" },
+    ];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.connection.tunnels = [{
+      ...tunnel,
+      targetHost: "x".repeat(MAX_TUNNEL_HOST_CHARACTERS + 1),
+    }];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.connection.tunnels = [{
+      ...tunnel,
+      mode: "dynamic",
+      targetHost: "must-be-empty.invalid",
+      targetPort: 443,
+    }];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.connection.tunnels = [{ ...tunnel, bindPort: 1.5 }];
     expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
   });
 

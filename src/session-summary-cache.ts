@@ -8,6 +8,12 @@ import {
   MAX_TRIGGER_MATCHER_CHARACTERS,
   MAX_TRIGGERS_PER_PROFILE,
 } from "./trigger-state";
+import {
+  MAX_TUNNELS_PER_PROFILE,
+  MAX_TUNNEL_HOST_CHARACTERS,
+  MAX_TUNNEL_ID_CHARACTERS,
+  MAX_TUNNEL_LABEL_CHARACTERS,
+} from "./tunnel-state";
 
 export const SESSION_SUMMARY_CACHE_STORAGE_KEY = "portmate.sessions";
 
@@ -164,8 +170,7 @@ function isConnection(value: unknown, expectedKind: unknown): boolean {
         && includes(["disabled", "after-profile-keys", "before-profile-keys"] as const, agentPolicy.offerMode)
         && Array.isArray(connection.jumps)
         && connection.jumps.every(isJumpHop)
-        && Array.isArray(connection.tunnels)
-        && connection.tunnels.every(isTunnelSpec);
+        && isTunnelList(connection.tunnels);
     }
     default:
       return false;
@@ -274,15 +279,62 @@ function isJumpHop(value: unknown): boolean {
 
 function isTunnelSpec(value: unknown): boolean {
   const tunnel = recordValue(value);
-  return tunnel !== null
-    && isString(tunnel.id)
-    && isString(tunnel.label)
-    && includes(["local", "remote", "dynamic"] as const, tunnel.mode)
-    && isString(tunnel.bindHost)
-    && isFiniteNumber(tunnel.bindPort)
-    && isString(tunnel.targetHost)
-    && isFiniteNumber(tunnel.targetPort)
-    && isBoolean(tunnel.enabled);
+  if (tunnel === null
+    || !isBoundedTunnelText(tunnel.id, MAX_TUNNEL_ID_CHARACTERS, false, false)
+    || !isBoundedTunnelText(tunnel.label, MAX_TUNNEL_LABEL_CHARACTERS, false, false)
+    || !includes(["local", "remote", "dynamic"] as const, tunnel.mode)
+    || !isTunnelPort(tunnel.bindPort, true)
+    || !isBoolean(tunnel.enabled)) return false;
+  const mode = tunnel.mode as "local" | "remote" | "dynamic";
+  if (!isBoundedTunnelText(
+    tunnel.bindHost,
+    MAX_TUNNEL_HOST_CHARACTERS,
+    mode === "remote",
+    true,
+  )) return false;
+  return mode === "dynamic"
+    ? tunnel.targetHost === "" && tunnel.targetPort === 0
+    : isBoundedTunnelText(
+      tunnel.targetHost,
+      MAX_TUNNEL_HOST_CHARACTERS,
+      false,
+      true,
+    ) && isTunnelPort(tunnel.targetPort, false);
+}
+
+function isTunnelList(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > MAX_TUNNELS_PER_PROFILE) return false;
+  const ids = new Set<string>();
+  return value.every((tunnel) => {
+    const record = recordValue(tunnel);
+    if (!isTunnelSpec(record) || ids.has(record?.id as string)) return false;
+    ids.add(record?.id as string);
+    return true;
+  });
+}
+
+function isTunnelPort(value: unknown, allowZero: boolean): boolean {
+  return isFiniteNumber(value)
+    && Number.isInteger(value)
+    && value >= (allowZero ? 0 : 1)
+    && value <= 65_535;
+}
+
+function isBoundedTunnelText(
+  value: unknown,
+  maxCharacters: number,
+  allowEmpty: boolean,
+  rejectWhitespace: boolean,
+): value is string {
+  if (typeof value !== "string" || value.trim() !== value || (!allowEmpty && !value)) return false;
+  let count = 0;
+  for (const character of value) {
+    count += 1;
+    if (count > maxCharacters || (rejectWhitespace && /\s/u.test(character))) return false;
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
+  }
+  return true;
 }
 
 function isTriggerList(value: unknown): boolean {

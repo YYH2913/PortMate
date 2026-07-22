@@ -989,6 +989,30 @@ try {
   await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
   const tunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
   await tunnelDialog.waitFor();
+  const tunnelBindHost = tunnelDialog.locator(".dialog-field", { hasText: "监听:" }).locator("input");
+  const tunnelBindPort = tunnelDialog.locator(".dialog-field", { hasText: /^端口:/ }).locator("input");
+  const tunnelTargetHost = tunnelDialog.locator(".dialog-field", { hasText: "目标:" }).locator("input");
+  const tunnelTargetPort = tunnelDialog.locator(".dialog-field", { hasText: "目标端口:" }).locator("input");
+  const tunnelCreate = tunnelDialog.locator(".utility-actions button", { hasText: "创建" });
+  assert(await tunnelBindHost.getAttribute("maxlength") === "255"
+    && await tunnelTargetHost.getAttribute("maxlength") === "255",
+  "tunnel host inputs do not expose the backend character bound");
+  assert(await tunnelBindPort.getAttribute("type") === "number"
+    && await tunnelBindPort.getAttribute("min") === "0"
+    && await tunnelBindPort.getAttribute("max") === "65535"
+    && await tunnelTargetPort.getAttribute("min") === "1",
+  "tunnel port inputs do not expose the backend numeric bounds");
+  await tunnelBindPort.fill("65536");
+  assert(await tunnelCreate.isDisabled(), "oversized tunnel bind port left Create enabled");
+  await tunnelBindPort.fill("0");
+  await tunnelTargetPort.fill("0");
+  assert(await tunnelCreate.isDisabled(), "zero tunnel target port left Create enabled");
+  await tunnelTargetPort.fill("22");
+  await tunnelTargetHost.fill("bad host");
+  assert(await tunnelCreate.isDisabled(), "whitespace tunnel target left Create enabled");
+  await tunnelTargetHost.fill("127.0.0.1");
+  assert(!await tunnelCreate.isDisabled(), "valid tunnel fields did not restore Create");
+  await page.screenshot({ path: `${screenshotPrefix}-tunnel.png`, fullPage: true });
   await page.waitForFunction(() => window.__pendingTunnelRefresh.length >= 1);
   await page.waitForTimeout(100);
   const tunnelRefreshBaseline = await page.evaluate(() => window.__pendingTunnelRefresh.length);
@@ -3318,6 +3342,7 @@ try {
       `${screenshotPrefix}-view-split-drop.png`,
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-transfer.png`,
+      `${screenshotPrefix}-tunnel.png`,
       `${screenshotPrefix}-file-manager.png`,
       `${screenshotPrefix}-sender.png`,
       `${screenshotPrefix}-session-settings.png`,

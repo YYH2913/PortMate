@@ -4,6 +4,12 @@ import { RefreshCw, Square, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { formatBytes } from "./display-formatters";
 import { KeyedRequestGate } from "./keyed-request-gate";
+import {
+  canAddTunnel,
+  isValidTunnelHostInput,
+  MAX_TUNNEL_HOST_CHARACTERS,
+  parseTunnelPort,
+} from "./tunnel-state";
 import type { SessionSummary, TunnelSpec, TunnelStatus } from "./types";
 
 export default function TunnelDialog({
@@ -63,6 +69,12 @@ export default function TunnelDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    const normalizedBindPort = parseTunnelPort(bindPort, true);
+    const normalizedTargetPort = mode === "dynamic" ? 0 : parseTunnelPort(targetPort, false);
+    if (normalizedBindPort === null || normalizedTargetPort === null) {
+      setError("端口必须是 0 到 65535 之间的整数，目标端口不能为 0。");
+      return;
+    }
     setBusy(true);
     try {
       const tunnel = await invokeBackend<TunnelSpec>("create_tunnel", {
@@ -70,9 +82,9 @@ export default function TunnelDialog({
           sessionId: session.profile.id,
           mode,
           bindHost,
-          bindPort: Number(bindPort),
+          bindPort: normalizedBindPort,
           targetHost: mode === "dynamic" ? "" : targetHost,
-          targetPort: mode === "dynamic" ? 0 : Number(targetPort),
+          targetPort: normalizedTargetPort,
         },
       });
       refreshGate.current.invalidate("tunnels");
@@ -101,6 +113,16 @@ export default function TunnelDialog({
   }
 
   const sessionTunnels = tunnels.filter((tunnel) => tunnel.spec.enabled);
+  const savedEnabledTunnelCount = session.profile.connection.kind === "ssh"
+    || session.profile.connection.kind === "tmux"
+    ? session.profile.connection.tunnels.filter((tunnel) => tunnel.enabled).length
+    : 0;
+  const activeTunnelCount = Math.max(sessionTunnels.length, savedEnabledTunnelCount);
+  const tunnelLimitReached = !canAddTunnel(activeTunnelCount);
+  const formValid = isValidTunnelHostInput(bindHost)
+    && parseTunnelPort(bindPort, true) !== null
+    && (mode === "dynamic"
+      || (isValidTunnelHostInput(targetHost) && parseTunnelPort(targetPort, false) !== null));
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -122,18 +144,18 @@ export default function TunnelDialog({
             </select>
           </DialogField>
           <DialogField label="监听:">
-            <input value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
+            <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
           </DialogField>
           <DialogField label="端口:">
-            <input value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
+            <input type="number" min={0} max={65_535} step={1} inputMode="numeric" value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
           </DialogField>
           {mode !== "dynamic" ? (
             <>
               <DialogField label="目标:">
-                <input value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
+                <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
               </DialogField>
               <DialogField label="目标端口:">
-                <input value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
+                <input type="number" min={1} max={65_535} step={1} inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
               </DialogField>
             </>
           ) : null}
@@ -170,7 +192,7 @@ export default function TunnelDialog({
         </section>
         <footer className="utility-actions">
           <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !bindHost || !bindPort || (mode !== "dynamic" && (!targetHost || !targetPort))}>{busy ? "创建中" : "创建"}</button>
+          <button type="submit" disabled={busy || tunnelLimitReached || !formValid} title={tunnelLimitReached ? "已达到 64 条 tunnel 上限" : "创建 tunnel"}>{busy ? "创建中" : "创建"}</button>
         </footer>
       </form>
     </div>
