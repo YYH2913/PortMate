@@ -18,3 +18,8 @@ pub use redaction::{
 pub use store::{
     normalize_session_disconnect_reason, SessionStore, MAX_SESSION_DISCONNECT_REASON_CHARACTERS,
 };
+pub use triggers::{
+    normalize_triggers, validate_triggers, MAX_TRIGGERS_PER_PROFILE, MAX_TRIGGER_ACTIONS,
+    MAX_TRIGGER_ACTION_VALUE_CHARACTERS, MAX_TRIGGER_ID_CHARACTERS, MAX_TRIGGER_LABEL_CHARACTERS,
+    MAX_TRIGGER_MATCHER_CHARACTERS,
+};

@@ -6,15 +6,16 @@ use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
-    compute_ssh_sha256_fingerprint, prompt_templates, redact_secrets, redact_session_event,
-    redact_session_events, redact_session_summary, redact_transfer_task, resource_templates,
-    tool_definitions, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
-    HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
-    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential,
-    OneKeyIdentity, OneKeyKind, ProxyConfig, ProxyKind, SessionEvent, SessionKind, SessionProfile,
-    SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface,
-    SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
-    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
+    compute_ssh_sha256_fingerprint, normalize_triggers, prompt_templates, redact_secrets,
+    redact_session_event, redact_session_events, redact_session_summary, redact_transfer_task,
+    resource_templates, tool_definitions, validate_triggers, AuditRecord, AuthMethod,
+    ConnectionConfig, EventDirection, EventStream, HostKeyDecision, HostKeyEvaluation, HostKeyMode,
+    HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef, IdentitySource, McpGrant,
+    McpScope, OneKeyCredential, OneKeyIdentity, OneKeyKind, ProxyConfig, ProxyKind, SessionEvent,
+    SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection,
+    SysmonDisk, SysmonNetworkInterface, SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark,
+    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
+    TunnelSpec,
 };
 use regex::Regex;
 use rusqlite::{params, Connection as SqliteConnection};
@@ -3526,6 +3527,7 @@ fn save_session_profile(
 ) -> Result<SessionSummary, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
+    validate_triggers(&profile.triggers)?;
     let mut profile = normalize_session_profile(profile);
     let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
@@ -3544,6 +3546,7 @@ fn save_session_profile(
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
     validate_transfer_default_local_dir(&profile)?;
+    validate_triggers(&profile.triggers)?;
     let runtime_status = store
         .runtimes
         .iter()
@@ -27992,6 +27995,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
         MAX_TERMINAL_BACKGROUND_OPACITY,
     );
     profile.logging.retention_days = profile.logging.retention_days.min(MAX_LOG_RETENTION_DAYS);
+    profile.triggers = normalize_triggers(profile.triggers);
 
     match &mut profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
@@ -32636,6 +32640,30 @@ mod tests {
         profile.terminal.font_size = 0;
         profile.terminal.theme = " graphite ".to_string();
         profile.terminal.background_opacity = 0;
+        profile.triggers = vec![
+            portmate_core::TriggerSpec {
+                id: "valid-trigger".to_string(),
+                label: "Valid".to_string(),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "match".to_string(),
+                    case_sensitive: true,
+                },
+                actions: vec![TriggerAction::TimelineMark {
+                    label: "mark".to_string(),
+                }],
+                enabled: true,
+            },
+            portmate_core::TriggerSpec {
+                id: "invalid\ntrigger".to_string(),
+                label: "Invalid".to_string(),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "match".to_string(),
+                    case_sensitive: true,
+                },
+                actions: Vec::new(),
+                enabled: true,
+            },
+        ];
         let normalized = normalize_session_profile(profile.clone());
         assert_eq!(
             normalized.id.chars().count(),
@@ -32677,6 +32705,8 @@ mod tests {
             normalized.terminal.background_opacity,
             MIN_TERMINAL_BACKGROUND_OPACITY
         );
+        assert_eq!(normalized.triggers.len(), 1);
+        assert_eq!(normalized.triggers[0].id, "valid-trigger");
 
         let mut fallback = profile.clone();
         fallback.name = "\0\n".to_string();
