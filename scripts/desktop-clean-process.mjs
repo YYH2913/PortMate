@@ -28,3 +28,13 @@ export function isProjectViteCommand(command, projectRoot, platform = process.pl
     `${root}/node_modules/vite/bin/vite.js`,
   ].some((marker) => normalizedCommand.includes(marker));
 }
+
+export function signalProcessIfRunning(pid, signal, kill = process.kill) {
+  try {
+    kill(pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}

@@ -1,25 +1,5 @@
 import { resolve } from "node:path";
 
-const inheritedDesktopVariables = new Set([
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "PATH",
-  "TMPDIR",
-  "DISPLAY",
-  "WAYLAND_DISPLAY",
-  "XDG_RUNTIME_DIR",
-  "DBUS_SESSION_BUS_ADDRESS",
-  "XDG_CURRENT_DESKTOP",
-  "XDG_SESSION_TYPE",
-  "TERM",
-  "COLORTERM",
-  "SSH_AUTH_SOCK",
-  "LANG",
-  "LC_ALL",
-]);
-
 const injectedDesktopVariables = new Set([
   "GDK_PIXBUF_MODULEDIR",
   "GDK_PIXBUF_MODULE_FILE",
@@ -48,22 +28,23 @@ const systemDataDirectories = [
 ];
 
 export function buildDesktopEnvironment(source, platform = process.platform) {
-  if (platform === "win32") {
-    return Object.fromEntries(
-      Object.entries(source).filter(([key, value]) => (
-        value !== undefined && !injectedDesktopVariables.has(key)
-      )),
-    );
-  }
-
-  const env = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (inheritedDesktopVariables.has(key) && value !== undefined) env[key] = value;
-  }
+  const env = Object.fromEntries(
+    Object.entries(source).filter(([key, value]) => (
+      value !== undefined && !injectedDesktopVariables.has(key)
+    )),
+  );
+  if (platform === "win32") return env;
 
   const restoredDataDirectories = source.XDG_DATA_DIRS_VSCODE_SNAP_ORIG?.trim();
   if (restoredDataDirectories) {
     env.XDG_DATA_DIRS = restoredDataDirectories;
+    return env;
+  }
+
+  const configuredDataDirectories = source.XDG_DATA_DIRS?.trim();
+  const snapInjected = Boolean(source.SNAP?.trim() || source.SNAP_NAME?.trim());
+  if (configuredDataDirectories && !snapInjected) {
+    env.XDG_DATA_DIRS = configuredDataDirectories;
     return env;
   }
 

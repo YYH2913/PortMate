@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
-import { isProjectViteCommand, parseWindowsListeningPids } from "./desktop-clean-process.mjs";
+import { isProjectViteCommand, parseWindowsListeningPids, signalProcessIfRunning } from "./desktop-clean-process.mjs";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
 if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) {
@@ -46,19 +46,13 @@ async function releaseProjectDevPort() {
     throw new Error(`Port ${devPort} is owned by another process (PID ${foreign.join(", ")}); it was not terminated.`);
   }
 
-  for (const pid of listeners) process.kill(pid, "SIGTERM");
+  for (const pid of listeners) signalProcessIfRunning(pid, "SIGTERM");
   if (await waitForPort(devHost, devPort, 2_000)) {
     console.log(`Stopped stale PortMate Vite listener on ${devHost}:${devPort}.`);
     return;
   }
 
-  for (const pid of listeners) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
-    }
-  }
+  for (const pid of listeners) signalProcessIfRunning(pid, "SIGKILL");
   if (!await waitForPort(devHost, devPort, 1_000)) {
     throw new Error(`Port ${devPort} remained busy after stopping stale PortMate Vite (PID ${listeners.join(", ")}).`);
   }

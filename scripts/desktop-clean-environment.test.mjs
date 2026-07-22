@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
-import { isProjectViteCommand, parseWindowsListeningPids } from "./desktop-clean-process.mjs";
+import { isProjectViteCommand, parseWindowsListeningPids, signalProcessIfRunning } from "./desktop-clean-process.mjs";
 
 describe("buildDesktopEnvironment", () => {
-  it("keeps only desktop runtime variables", () => {
+  it("removes injected desktop variables without dropping build configuration", () => {
     const env = buildDesktopEnvironment({
       HOME: "/home/alice",
       PATH: "/usr/bin",
       DISPLAY: ":0",
       SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.socket",
       TMPDIR: "/tmp/alice",
+      CARGO_HOME: "/opt/rust/cargo",
+      RUSTUP_HOME: "/opt/rust/rustup",
+      RUSTUP_TOOLCHAIN: "stable-custom",
+      CC: "clang-19",
+      PKG_CONFIG_PATH: "/opt/gtk/lib/pkgconfig",
+      RUSTFLAGS: "-C target-cpu=native",
+      PORTMATE_STORE_PATH: "/tmp/portmate.sqlite3",
       LD_PRELOAD: "/snap/injected.so",
       GTK_PATH: "/snap/gtk",
       GIO_MODULE_DIR: "/snap/gio",
@@ -21,6 +28,13 @@ describe("buildDesktopEnvironment", () => {
       DISPLAY: ":0",
       SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.socket",
       TMPDIR: "/tmp/alice",
+      CARGO_HOME: "/opt/rust/cargo",
+      RUSTUP_HOME: "/opt/rust/rustup",
+      RUSTUP_TOOLCHAIN: "stable-custom",
+      CC: "clang-19",
+      PKG_CONFIG_PATH: "/opt/gtk/lib/pkgconfig",
+      RUSTFLAGS: "-C target-cpu=native",
+      PORTMATE_STORE_PATH: "/tmp/portmate.sqlite3",
     });
     expect(env).not.toHaveProperty("LD_PRELOAD");
     expect(env).not.toHaveProperty("GTK_PATH");
@@ -35,6 +49,48 @@ describe("buildDesktopEnvironment", () => {
 
     expect(env.XDG_DATA_DIRS).toBe("/opt/share:/usr/share");
     expect(env).not.toHaveProperty("XDG_DATA_DIRS_VSCODE_SNAP_ORIG");
+  });
+
+  it("preserves a custom XDG data path outside a Snap environment", () => {
+    const env = buildDesktopEnvironment({
+      HOME: "/home/alice",
+      XDG_DATA_DIRS: "/opt/company/share:/usr/share",
+    });
+
+    expect(env.XDG_DATA_DIRS).toBe("/opt/company/share:/usr/share");
+  });
+
+  it("replaces Snap-injected XDG data paths when no original value is available", () => {
+    const env = buildDesktopEnvironment({
+      HOME: "/home/alice",
+      SNAP: "/snap/code/200",
+      SNAP_NAME: "code",
+      XDG_DATA_DIRS: "/snap/code/200/usr/share:/usr/share",
+    });
+
+    expect(env.XDG_DATA_DIRS).toBe(
+      "/home/alice/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
+    );
+    expect(env).not.toHaveProperty("SNAP");
+    expect(env).not.toHaveProperty("SNAP_NAME");
+  });
+
+  it("preserves macOS SDK and toolchain configuration", () => {
+    const env = buildDesktopEnvironment({
+      HOME: "/Users/alice",
+      PATH: "/usr/bin:/opt/homebrew/bin",
+      DEVELOPER_DIR: "/Applications/Xcode.app/Contents/Developer",
+      SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
+      MACOSX_DEPLOYMENT_TARGET: "13.0",
+      CARGO_TARGET_DIR: "/tmp/portmate-target",
+    }, "darwin");
+
+    expect(env).toMatchObject({
+      DEVELOPER_DIR: "/Applications/Xcode.app/Contents/Developer",
+      SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
+      MACOSX_DEPLOYMENT_TARGET: "13.0",
+      CARGO_TARGET_DIR: "/tmp/portmate-target",
+    });
   });
 
   it("derives the flatpak user path from HOME without a fixed username", () => {
@@ -111,5 +167,21 @@ describe("desktop clean process ownership", () => {
       "win32",
     )).toBe(false);
     expect(isProjectViteCommand("vite --port 1420", projectRoot, "win32")).toBe(false);
+  });
+
+  it("treats an already-exited listener as a successful no-op", () => {
+    const missing = Object.assign(new Error("process not found"), { code: "ESRCH" });
+    expect(signalProcessIfRunning(4210, "SIGTERM", () => { throw missing; })).toBe(false);
+  });
+
+  it("does not hide permission failures while signalling a listener", () => {
+    const denied = Object.assign(new Error("permission denied"), { code: "EPERM" });
+    expect(() => signalProcessIfRunning(4210, "SIGTERM", () => { throw denied; })).toThrow(denied);
+  });
+
+  it("reports when a listener received the requested signal", () => {
+    const calls = [];
+    expect(signalProcessIfRunning(4210, "SIGKILL", (pid, signal) => calls.push([pid, signal]))).toBe(true);
+    expect(calls).toEqual([[4210, "SIGKILL"]]);
   });
 });
