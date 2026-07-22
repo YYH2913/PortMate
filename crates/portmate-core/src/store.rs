@@ -510,9 +510,11 @@ impl SessionStore {
 
         match &mut profile.connection {
             ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-                if ssh.identity_policy.record_success {
-                    ssh.identity_policy.last_successful = Some(method);
-                }
+                ssh.identity_policy.last_successful = ssh
+                    .identity_policy
+                    .record_success
+                    .then_some(method)
+                    .filter(|method| ssh.identity_policy.auth_order.contains(method));
                 Ok(())
             }
             _ => Err(format!("profile is not SSH-backed: {session_id}")),
@@ -1381,6 +1383,49 @@ mod tests {
             .screen("test-session")
             .unwrap()
             .contains("disconnected"));
+    }
+
+    #[test]
+    fn auth_success_recording_respects_the_enabled_policy() {
+        let mut store = test_store();
+        let mut ssh = sensitive_ssh_connection();
+        ssh.identity_policy.auth_order = vec![AuthMethod::Password];
+        store.profiles[0].kind = SessionKind::Ssh;
+        store.profiles[0].connection = ConnectionConfig::Ssh(ssh);
+
+        store
+            .record_auth_success("test-session", AuthMethod::PublicKey)
+            .unwrap();
+        let profile = store.profile("test-session").unwrap();
+        let ConnectionConfig::Ssh(ssh) = profile.connection else {
+            panic!("test profile must remain SSH");
+        };
+        assert_eq!(ssh.identity_policy.last_successful, None);
+
+        store
+            .record_auth_success("test-session", AuthMethod::Password)
+            .unwrap();
+        let profile = store.profile("test-session").unwrap();
+        let ConnectionConfig::Ssh(ssh) = profile.connection else {
+            panic!("test profile must remain SSH");
+        };
+        assert_eq!(
+            ssh.identity_policy.last_successful,
+            Some(AuthMethod::Password)
+        );
+
+        let ConnectionConfig::Ssh(ssh) = &mut store.profiles[0].connection else {
+            panic!("test profile must remain SSH");
+        };
+        ssh.identity_policy.record_success = false;
+        store
+            .record_auth_success("test-session", AuthMethod::Password)
+            .unwrap();
+        let profile = store.profile("test-session").unwrap();
+        let ConnectionConfig::Ssh(ssh) = profile.connection else {
+            panic!("test profile must remain SSH");
+        };
+        assert_eq!(ssh.identity_policy.last_successful, None);
     }
 
     #[test]

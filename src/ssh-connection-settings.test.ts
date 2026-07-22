@@ -68,4 +68,46 @@ describe("SSH connection settings", () => {
       keepaliveMaxMissed: 7,
     });
   });
+
+  it("keeps the successful-auth hint inside the current authentication policy", () => {
+    const disabledMethod = normalizeSshConnectionSettings({
+      ...baseConnection(),
+      identityPolicy: {
+        identitiesOnly: true,
+        authOrder: ["password"],
+        recordSuccess: true,
+        lastSuccessful: "public-key",
+      },
+    });
+    expect(disabledMethod.identityPolicy).toMatchObject({
+      authOrder: ["password"],
+      recordSuccess: true,
+      lastSuccessful: null,
+    });
+
+    const recordingDisabled = normalizeSshConnectionSettings({
+      ...baseConnection(),
+      identityPolicy: {
+        identitiesOnly: true,
+        authOrder: ["password", "public-key"],
+        recordSuccess: false,
+        lastSuccessful: "public-key",
+      },
+    });
+    expect(recordingDisabled.identityPolicy.lastSuccessful).toBeNull();
+
+    const legacyAliases = normalizeSshConnectionSettings({
+      ...baseConnection(),
+      identityPolicy: {
+        identitiesOnly: true,
+        authOrder: ["publickey", "password", "publickey"] as unknown as SshConnection["identityPolicy"]["authOrder"],
+        recordSuccess: true,
+        lastSuccessful: "publickey" as unknown as SshConnection["identityPolicy"]["lastSuccessful"],
+      },
+    });
+    expect(legacyAliases.identityPolicy).toMatchObject({
+      authOrder: ["public-key", "password"],
+      lastSuccessful: "public-key",
+    });
+  });
 });

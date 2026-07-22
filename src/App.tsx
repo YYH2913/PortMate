@@ -9627,11 +9627,6 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
       alias: alias || profileId,
     },
     trustedHostKeys: normalized.trustedHostKeys.filter((key) => key.scope !== "profile" || !key.profileId || key.profileId === profileId),
-    identityPolicy: {
-      ...normalized.identityPolicy,
-      authOrder: normalized.identityPolicy.authOrder.map(normalizeAuthMethod).filter((method, index, methods) => methods.indexOf(method) === index),
-      lastSuccessful: normalized.identityPolicy.lastSuccessful ? normalizeAuthMethod(normalized.identityPolicy.lastSuccessful) : null,
-    },
   };
 }
 
@@ -9673,15 +9668,6 @@ function isolateDuplicatedConnection(profileId: string, connection: ConnectionCo
       lastSuccessful: null,
     },
   };
-}
-
-function normalizeAuthMethod(method: string): AuthMethod {
-  if (method === "publickey") return "public-key";
-  if (method === "gssapi") return "gssapi-with-mic";
-  if (method === "keyboard-interactive" || method === "password" || method === "public-key" || method === "gssapi-with-mic" || method === "none") {
-    return method;
-  }
-  return "password";
 }
 
 function defaultSessionName(profile: SessionProfile) {

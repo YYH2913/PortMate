@@ -17620,7 +17620,9 @@ async fn authenticate_keyboard_interactive(
 
 fn ordered_auth_methods(ssh: &SshConnection) -> Vec<AuthMethod> {
     let mut ordered = Vec::new();
-    if let Some(last) = ssh.identity_policy.last_successful {
+    if let Some(last) = ssh.identity_policy.last_successful.filter(|method| {
+        ssh.identity_policy.record_success && ssh.identity_policy.auth_order.contains(method)
+    }) {
         ordered.push(last);
     }
     for method in &ssh.identity_policy.auth_order {
@@ -27358,6 +27360,14 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
                 ];
             }
             ssh.identity_policy.auth_order = normalized_auth_order;
+            if !ssh.identity_policy.record_success
+                || ssh
+                    .identity_policy
+                    .last_successful
+                    .is_some_and(|method| !ssh.identity_policy.auth_order.contains(&method))
+            {
+                ssh.identity_policy.last_successful = None;
+            }
         }
         ConnectionConfig::Tcp(tcp) | ConnectionConfig::Telnet(tcp) => {
             tcp.host = tcp.host.trim().to_string();
@@ -31732,6 +31742,38 @@ mod tests {
             normalize_session_profile(profile).terminal.theme,
             DEFAULT_TERMINAL_THEME
         );
+    }
+
+    #[test]
+    fn ssh_auth_success_hint_respects_the_current_policy() {
+        let mut profile = test_ssh_profile();
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+            panic!("test profile must be SSH");
+        };
+        ssh.identity_policy.auth_order = vec![AuthMethod::Password, AuthMethod::PublicKey];
+        ssh.identity_policy.last_successful = Some(AuthMethod::PublicKey);
+        assert_eq!(
+            ordered_auth_methods(ssh),
+            vec![AuthMethod::PublicKey, AuthMethod::Password]
+        );
+
+        ssh.identity_policy.last_successful = Some(AuthMethod::KeyboardInteractive);
+        assert_eq!(
+            ordered_auth_methods(ssh),
+            vec![AuthMethod::Password, AuthMethod::PublicKey]
+        );
+
+        ssh.identity_policy.record_success = false;
+        ssh.identity_policy.last_successful = Some(AuthMethod::PublicKey);
+        assert_eq!(
+            ordered_auth_methods(ssh),
+            vec![AuthMethod::Password, AuthMethod::PublicKey]
+        );
+        let normalized = normalize_session_profile(profile);
+        let ConnectionConfig::Ssh(ssh) = normalized.connection else {
+            panic!("normalized test profile must remain SSH");
+        };
+        assert_eq!(ssh.identity_policy.last_successful, None);
     }
 
     #[test]
