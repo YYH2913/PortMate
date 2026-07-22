@@ -60,6 +60,7 @@ import { menuGroups, menuItemDisabled } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
+import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { normalizeProxyConfig, proxyDefaults } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
@@ -88,9 +89,7 @@ import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme, TERMINAL_THEME_OPTIONS } from "./terminal-theme";
-import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
-import { transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
-import type { TransferProtocol } from "./transfer-capabilities";
+import TransferList from "./TransferList";
 import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
 import { normalizeTcpConnectionSettings, tcpConnectionBounds, tcpConnectionDefaults } from "./tcp-connection-settings";
 import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
@@ -127,6 +126,7 @@ const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").t
 const LazyCommandHistoryList = lazy(() => import("./WorkspaceUtilityPanels").then(({ CommandHistoryList }) => ({ default: CommandHistoryList })));
 const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
+const LazyTransferDialog = lazy(() => import("./TransferDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
@@ -3477,11 +3477,15 @@ export default function App() {
           }}
         />
       )}
-      {utilityDialog === "transfer" && active && <TransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
-        updateTransfers((current) => mergeTransfers(current, task));
-      }} onNotice={(message) => {
-        setNotice({ title: "传输任务", message });
-      }} />}
+      {utilityDialog === "transfer" && active && (
+        <Suspense fallback={null}>
+          <LazyTransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
+            updateTransfers((current) => mergeTransfers(current, task));
+          }} onNotice={(message) => {
+            setNotice({ title: "传输任务", message });
+          }} />
+        </Suspense>
+      )}
       {utilityDialog === "tunnel" && active && <TunnelDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
         setUtilityDialog(null);
         setNotice({ title: "端口转发", message: label });
@@ -4052,60 +4056,6 @@ function SerialMonitorPanel({
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function TransferList({ transfers, onRetry, onCancel }: { transfers: TransferTask[]; onRetry: (task: TransferTask) => void; onCancel: (task: TransferTask) => void }) {
-  if (!transfers.length) return <div className="empty-pane top">没有传输任务</div>;
-  return (
-    <div className="transfer-list">
-      {transfers.slice().reverse().map((task) => {
-        const message = transferDisplayMessage(task);
-        const StatusIcon = task.status === "queued" ? Clock3
-          : task.status === "running" ? LoaderCircle
-            : task.status === "completed" ? CheckCircle2
-              : task.status === "cancelled" ? Ban
-                : AlertCircle;
-        return (
-          <div key={task.id} className={`transfer-row status-${task.status}`}>
-            <div className="transfer-row-head">
-              <strong>{task.protocol}</strong>
-              <span className="transfer-status"><StatusIcon size={14} /><span>{transferStatusLabel(task.status)}</span></span>
-              <div className="transfer-row-actions">
-                {task.status === "running" ? (
-                  <button type="button" onClick={() => onCancel(task)}>取消</button>
-                ) : null}
-                {task.status === "failed" || task.status === "cancelled" ? (
-                  <button type="button" onClick={() => onRetry(task)}>重试</button>
-                ) : null}
-                {task.status === "failed" ? (
-                  <button
-                    className="transfer-icon-button"
-                    type="button"
-                    title="复制失败诊断"
-                    aria-label="复制失败诊断"
-                    onClick={() => void navigator.clipboard?.writeText(transferDiagnosticText(task)).catch(() => {})}
-                  >
-                    <Copy size={14} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            <small title={`${task.source} → ${task.destination}`}>{task.source} → {task.destination}</small>
-            <small>
-              {formatBytes(task.bytesDone)} / {task.bytesTotal ? formatBytes(task.bytesTotal) : "未知"}
-              {task.averageBytesPerSecond ? ` · ${formatBytes(task.averageBytesPerSecond)}/s` : ""}
-              {task.startedAt && task.finishedAt ? ` · ${formatDuration(task.startedAt, task.finishedAt)}` : ""}
-              {task.status === "failed" && task.finishedAt ? ` · ${formatEventClock(task.finishedAt)}` : ""}
-            </small>
-            {message ? <div className="transfer-message" role={task.status === "failed" ? "alert" : undefined} title={message}><AlertCircle size={14} /><span>{message}</span></div> : null}
-            <div className="transfer-progress">
-              <span style={{ width: `${task.bytesTotal ? Math.min(100, (task.bytesDone / task.bytesTotal) * 100) : task.status === "completed" ? 100 : 0}%` }} />
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -5437,140 +5387,6 @@ function clearWorkspaceDropIndicators() {
   document.querySelectorAll<HTMLElement>("[data-view-drop-zone]").forEach((element) => {
     delete element.dataset.viewDropZone;
   });
-}
-
-function TransferDialog({
-  session,
-  transfers,
-  onClose,
-  onTask,
-  onNotice,
-}: {
-  session: SessionSummary;
-  transfers: TransferTask[];
-  onClose: () => void;
-  onTask: (task: TransferTask) => void;
-  onNotice: (message: string) => void;
-}) {
-  const protocols = useMemo(() => transferProtocolsForProfile(session.profile), [session.profile]);
-  const [protocol, setProtocol] = useState<TransferProtocol | "">(() => protocols[0] ?? "");
-  const [source, setSource] = useState("");
-  const [destination, setDestination] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
-  const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
-  const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
-  const connected = session.runtime.status === "connected";
-
-  useEffect(() => {
-    if (!protocol || !protocols.includes(protocol)) {
-      setProtocol(protocols[0] ?? "");
-    }
-  }, [protocol, protocols]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    if (!protocol) {
-      setError("当前 Profile 未启用可用的传输协议。");
-      return;
-    }
-    if (!connected) {
-      setError("连接会话后才能开始传输。");
-      return;
-    }
-    setBusy(true);
-    try {
-      const task = await invokeBackend<TransferTask>("start_transfer", {
-        request: { sessionId: session.profile.id, protocol, source, destination },
-      });
-      onTask(task);
-      onNotice(`${task.protocol} ${task.status}: ${task.message ?? ""}`);
-    } catch (error) {
-      setError(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function retryTransfer(task: TransferTask) {
-    try {
-      const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
-      onTask(retried);
-      onNotice(`${retried.protocol} ${retried.status}: ${retried.message ?? ""}`);
-    } catch (error) {
-      setError(formatError(error));
-    }
-  }
-
-  async function cancelTransfer(task: TransferTask) {
-    try {
-      const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
-      onTask(cancelled);
-      onNotice(`${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}`);
-    } catch (error) {
-      setError(formatError(error));
-    }
-  }
-
-  async function cancelRunningTransfers() {
-    for (const task of runningTransfers) {
-      await cancelTransfer(task);
-    }
-  }
-
-  async function retryFailedTransfers() {
-    for (const task of retryableTransfers) {
-      await retryTransfer(task);
-    }
-  }
-
-  return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog utility-dialog transfer-dialog" onSubmit={submit}>
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>传输任务</strong>
-          <button type="button" onClick={onClose}><X size={20} /></button>
-        </header>
-        <section className="utility-content">
-          <DialogField label="会话:">
-            <input value={session.profile.name} readOnly />
-          </DialogField>
-          <DialogField label="协议:">
-            <select value={protocol} disabled={!protocols.length} onChange={(event) => setProtocol(event.target.value as TransferProtocol)}>
-              {!protocols.length ? <option value="">未启用传输协议</option> : null}
-              {protocols.map((option) => <option key={option} value={option}>{transferProtocolLabel(option)}</option>)}
-            </select>
-          </DialogField>
-          <DialogField label="来源:">
-            <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="/local/file 或 remote:/remote/file" />
-          </DialogField>
-          <DialogField label="目标:">
-            <input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" />
-          </DialogField>
-          <div className="transfer-queue-panel">
-            <header>
-              <strong>队列</strong>
-              <div>
-                <button type="button" onClick={() => void retryFailedTransfers()} disabled={!retryableTransfers.length}>重试失败</button>
-                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={!runningTransfers.length}>取消运行中</button>
-              </div>
-            </header>
-            <TransferList transfers={sessionTransfers} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
-          </div>
-          {!connected ? <div className="utility-status">当前会话未连接，只能查看和管理已有任务。</div> : null}
-          {connected && !protocols.length ? <div className="utility-status">当前 Profile 未启用适用于此协议的传输方式。</div> : null}
-          {error ? <div className="utility-error">{error}</div> : null}
-        </section>
-        <footer className="utility-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || !destination.trim()}>{busy ? "执行中" : "开始"}</button>
-        </footer>
-      </form>
-    </div>
-  );
 }
 
 function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; onClose: () => void; onDone: (message: string) => void }) {
@@ -10478,13 +10294,6 @@ function parentPath(path: string, remote: boolean) {
   return trimmed.slice(0, index);
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`;
-}
-
 function formatSysmonUptime(seconds: number) {
   const wholeSeconds = Math.max(0, Math.trunc(seconds));
   const days = Math.floor(wholeSeconds / 86_400);
@@ -10537,22 +10346,6 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
-}
-
-function formatDuration(start: string, end: string) {
-  const elapsedMs = Math.max(0, Date.parse(end) - Date.parse(start));
-  if (!Number.isFinite(elapsedMs)) return "";
-  if (elapsedMs < 1000) return `${elapsedMs} ms`;
-  const seconds = elapsedMs / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${Math.round(seconds % 60)}s`;
-}
-
-function formatEventClock(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--:--:--";
-  return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function parseHexBytes(value: string) {
