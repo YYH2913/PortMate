@@ -11701,12 +11701,10 @@ async fn copy_local_file_for_transfer(
             .map_err(|error| format!("failed to create transfer destination: {error}"))?;
     }
     let temp_destination = local_resume_part_path(&destination);
-    let mut copied = local_resume_offset(&temp_destination, total)?;
+    let mut copied =
+        local_resume_offset_matching_local_source(&mut input, &temp_destination, total, progress)?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
-        input
-            .seek(std::io::SeekFrom::Start(copied))
-            .map_err(|error| format!("local transfer seek failed: {error}"))?;
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
@@ -11815,6 +11813,68 @@ fn local_resume_offset(path: &Path, total: u64) -> Result<u64, String> {
             .map_err(|error| format!("删除过大的断点文件失败 {}: {error}", path.display()))?;
         Ok(0)
     }
+}
+
+fn open_local_transfer_reader(path: &Path, label: &str) -> Result<fs::File, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options
+        .open(path)
+        .map_err(|error| format!("打开{label}失败 {}: {error}", path.display()))
+}
+
+fn local_resume_offset_matching_local_source(
+    source: &mut fs::File,
+    part_path: &Path,
+    total: u64,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
+    let offset = local_resume_offset(part_path, total)?;
+    if offset == 0 {
+        return Ok(0);
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| format!("local transfer source seek failed: {error}"))?;
+    let mut part = open_local_transfer_reader(part_path, "本地断点文件")?;
+    let matches = compare_local_prefix(source, &mut part, offset, progress)?;
+    source
+        .seek(std::io::SeekFrom::Start(if matches { offset } else { 0 }))
+        .map_err(|error| format!("local transfer source seek failed: {error}"))?;
+    Ok(if matches { offset } else { 0 })
+}
+
+fn compare_local_prefix(
+    left: &mut fs::File,
+    right: &mut fs::File,
+    length: u64,
+    progress: &TransferProgressContext,
+) -> Result<bool, String> {
+    let mut left_buffer = vec![0_u8; 64 * 1024];
+    let mut right_buffer = vec![0_u8; 64 * 1024];
+    let mut compared = 0_u64;
+    while compared < length {
+        progress.check_cancelled()?;
+        let remaining = usize::try_from(length - compared).unwrap_or(usize::MAX);
+        let take = remaining.min(left_buffer.len());
+        match left.read_exact(&mut left_buffer[..take]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(format!("读取本地源文件前缀失败: {error}")),
+        }
+        match right.read_exact(&mut right_buffer[..take]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(format!("读取本地断点文件前缀失败: {error}")),
+        }
+        if left_buffer[..take] != right_buffer[..take] {
+            return Ok(false);
+        }
+        compared += take as u64;
+    }
+    Ok(true)
 }
 
 fn ensure_exact_transfer_size(copied: u64, total: u64, label: &str) -> Result<(), String> {
@@ -11962,6 +12022,137 @@ async fn sftp_resume_offset(sftp: &SftpSession, path: &str, total: u64) -> Resul
     }
 }
 
+async fn sftp_resume_offset_matching_local_source(
+    sftp: &SftpSession,
+    part_path: &str,
+    total: u64,
+    source: &mut fs::File,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
+    let offset = sftp_resume_offset(sftp, part_path, total).await?;
+    if offset == 0 {
+        return Ok(0);
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| format!("SFTP 本地源文件 seek 失败: {error}"))?;
+    let mut part = sftp
+        .open(part_path.to_string())
+        .await
+        .map_err(|error| format!("SFTP 打开断点文件失败 {part_path}: {error}"))?;
+    let matches = compare_sftp_and_local_prefix(&mut part, source, offset, progress).await;
+    let _ = part.shutdown().await;
+    let matches = matches?;
+    source
+        .seek(std::io::SeekFrom::Start(if matches { offset } else { 0 }))
+        .map_err(|error| format!("SFTP 本地源文件 seek 失败: {error}"))?;
+    Ok(if matches { offset } else { 0 })
+}
+
+async fn local_resume_offset_matching_sftp_source(
+    source: &mut russh_sftp::client::fs::File,
+    part_path: &Path,
+    total: u64,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
+    let offset = local_resume_offset(part_path, total)?;
+    if offset == 0 {
+        return Ok(0);
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .await
+        .map_err(|error| format!("SFTP 远端源文件 seek 失败: {error}"))?;
+    let mut part = open_local_transfer_reader(part_path, "本地断点文件")?;
+    let matches = compare_sftp_and_local_prefix(source, &mut part, offset, progress).await?;
+    source
+        .seek(std::io::SeekFrom::Start(if matches { offset } else { 0 }))
+        .await
+        .map_err(|error| format!("SFTP 远端源文件 seek 失败: {error}"))?;
+    Ok(if matches { offset } else { 0 })
+}
+
+async fn sftp_resume_offset_matching_sftp_source(
+    sftp: &SftpSession,
+    source: &mut russh_sftp::client::fs::File,
+    part_path: &str,
+    total: u64,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
+    let offset = sftp_resume_offset(sftp, part_path, total).await?;
+    if offset == 0 {
+        return Ok(0);
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .await
+        .map_err(|error| format!("SFTP 远端源文件 seek 失败: {error}"))?;
+    let mut part = sftp
+        .open(part_path.to_string())
+        .await
+        .map_err(|error| format!("SFTP 打开断点文件失败 {part_path}: {error}"))?;
+    let matches = compare_sftp_prefixes(source, &mut part, offset, progress).await;
+    let _ = part.shutdown().await;
+    let matches = matches?;
+    source
+        .seek(std::io::SeekFrom::Start(if matches { offset } else { 0 }))
+        .await
+        .map_err(|error| format!("SFTP 远端源文件 seek 失败: {error}"))?;
+    Ok(if matches { offset } else { 0 })
+}
+
+async fn compare_sftp_and_local_prefix(
+    remote: &mut russh_sftp::client::fs::File,
+    local: &mut fs::File,
+    length: u64,
+    progress: &TransferProgressContext,
+) -> Result<bool, String> {
+    let mut remote_buffer = vec![0_u8; 64 * 1024];
+    let mut local_buffer = vec![0_u8; 64 * 1024];
+    let mut compared = 0_u64;
+    while compared < length {
+        progress.check_cancelled()?;
+        let remaining = usize::try_from(length - compared).unwrap_or(usize::MAX);
+        let take = remaining.min(remote_buffer.len());
+        if remote.read_exact(&mut remote_buffer[..take]).await.is_err()
+            || std::io::Read::read_exact(local, &mut local_buffer[..take]).is_err()
+        {
+            return Ok(false);
+        }
+        if remote_buffer[..take] != local_buffer[..take] {
+            return Ok(false);
+        }
+        compared += take as u64;
+    }
+    Ok(true)
+}
+
+async fn compare_sftp_prefixes(
+    left: &mut russh_sftp::client::fs::File,
+    right: &mut russh_sftp::client::fs::File,
+    length: u64,
+    progress: &TransferProgressContext,
+) -> Result<bool, String> {
+    let mut left_buffer = vec![0_u8; 64 * 1024];
+    let mut right_buffer = vec![0_u8; 64 * 1024];
+    let mut compared = 0_u64;
+    while compared < length {
+        progress.check_cancelled()?;
+        let remaining = usize::try_from(length - compared).unwrap_or(usize::MAX);
+        let take = remaining.min(left_buffer.len());
+        if left.read_exact(&mut left_buffer[..take]).await.is_err()
+            || right.read_exact(&mut right_buffer[..take]).await.is_err()
+        {
+            return Ok(false);
+        }
+        if left_buffer[..take] != right_buffer[..take] {
+            return Ok(false);
+        }
+        compared += take as u64;
+    }
+    Ok(true)
+}
+
 async fn sftp_regular_file_size(
     sftp: &SftpSession,
     path: &str,
@@ -12055,12 +12246,16 @@ async fn sftp_upload(
         .unwrap_or("portmate-upload.bin");
     let target = sftp_destination_file_path(sftp, remote_destination, file_name).await?;
     let temp_target = remote_resume_part_path(&target);
-    let mut copied = sftp_resume_offset(sftp, &temp_target, total).await?;
+    let mut copied = sftp_resume_offset_matching_local_source(
+        sftp,
+        &temp_target,
+        total,
+        &mut local_file,
+        progress,
+    )
+    .await?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
-        local_file
-            .seek(std::io::SeekFrom::Start(copied))
-            .map_err(|error| format!("SFTP 本地文件 seek 失败 {local_source}: {error}"))?;
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
@@ -12128,13 +12323,11 @@ async fn sftp_download(
             .map_err(|error| format!("创建本地目录失败 {}: {error}", parent.display()))?;
     }
     let temp_target = local_resume_part_path(&target);
-    let mut copied = local_resume_offset(&temp_target, total)?;
+    let mut copied =
+        local_resume_offset_matching_sftp_source(&mut remote_file, &temp_target, total, progress)
+            .await?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
-        remote_file
-            .seek(std::io::SeekFrom::Start(copied))
-            .await
-            .map_err(|error| format!("SFTP 远端文件 seek 失败 {remote_source}: {error}"))?;
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
@@ -12187,13 +12380,16 @@ async fn sftp_remote_copy(
     let file_name = remote_file_name(remote_source);
     let target = sftp_destination_file_path(sftp, remote_destination, &file_name).await?;
     let temp_target = remote_resume_part_path(&target);
-    let mut copied = sftp_resume_offset(sftp, &temp_target, total).await?;
+    let mut copied = sftp_resume_offset_matching_sftp_source(
+        sftp,
+        &mut source_file,
+        &temp_target,
+        total,
+        progress,
+    )
+    .await?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
-        source_file
-            .seek(std::io::SeekFrom::Start(copied))
-            .await
-            .map_err(|error| format!("SFTP 远端源文件 seek 失败 {remote_source}: {error}"))?;
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
@@ -39311,6 +39507,50 @@ mod tests {
     }
 
     #[test]
+    fn local_resume_requires_a_matching_source_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .transfers
+            .push(test_transfer_task(&profile.id, TransferStatus::Running));
+        let progress = test_transfer_progress_context(
+            &state,
+            "transfer-commit-test",
+            Arc::new(AtomicBool::new(false)),
+        );
+        let source = root.path().join("source.bin");
+        let target = root.path().join("target.bin");
+        let part = local_resume_part_path(&target);
+        fs::write(&source, b"abcdef").unwrap();
+
+        fs::write(&part, b"abc").unwrap();
+        let mut source_file = open_local_transfer_source(&source, "source").unwrap().0;
+        assert_eq!(
+            local_resume_offset_matching_local_source(&mut source_file, &part, 6, &progress,)
+                .unwrap(),
+            3
+        );
+        let mut suffix = Vec::new();
+        source_file.read_to_end(&mut suffix).unwrap();
+        assert_eq!(suffix, b"def");
+
+        fs::write(&part, b"xyz").unwrap();
+        let mut source_file = open_local_transfer_source(&source, "source").unwrap().0;
+        assert_eq!(
+            local_resume_offset_matching_local_source(&mut source_file, &part, 6, &progress,)
+                .unwrap(),
+            0
+        );
+        let mut full = Vec::new();
+        source_file.read_to_end(&mut full).unwrap();
+        assert_eq!(full, b"abcdef");
+    }
+
+    #[test]
     fn local_transfer_creates_empty_files_and_rejects_source_shrink() {
         let root = tempfile::tempdir().unwrap();
         let profile = test_shell_profile();
@@ -44329,7 +44569,7 @@ mod tests {
             let uploaded_sftp_part = PathBuf::from(remote_resume_part_path(
                 uploaded_sftp_file.to_str().unwrap(),
             ));
-            fs::write(&uploaded_sftp_part, &sftp_payload[..11]).unwrap();
+            fs::write(&uploaded_sftp_part, b"wrong-prefix").unwrap();
             let sftp_upload = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -44420,7 +44660,7 @@ mod tests {
             let copied_sftp_file = sftp_root.join("copied.bin");
             let copied_sftp_part =
                 PathBuf::from(remote_resume_part_path(copied_sftp_file.to_str().unwrap()));
-            fs::write(&copied_sftp_part, &sftp_payload[..13]).unwrap();
+            fs::write(&copied_sftp_part, b"wrong-prefix").unwrap();
             let sftp_copy = start_transfer_inner(
                 &state,
                 StartTransferRequest {
@@ -44445,7 +44685,7 @@ mod tests {
 
             let sftp_download_target = root.join("sftp-download-target.bin");
             let sftp_download_part = local_resume_part_path(&sftp_download_target);
-            fs::write(&sftp_download_part, &sftp_payload[..17]).unwrap();
+            fs::write(&sftp_download_part, b"wrong-prefix").unwrap();
             let sftp_download = start_transfer_inner(
                 &state,
                 StartTransferRequest {
