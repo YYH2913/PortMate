@@ -251,6 +251,8 @@ const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
+const MAX_ACTIVE_TMUX_CONTROLS: usize = 256;
+const MAX_TMUX_CONTROLS_PER_SESSION: usize = 64;
 const MAX_TMUX_CONTROL_STDERR_BYTES: usize = 64 * 1024;
 const TMUX_CONTROL_EVENT_DEBOUNCE: Duration = Duration::from_millis(120);
 const TMUX_CONTROL_EVENT_MAX_LATENCY: Duration = Duration::from_secs(1);
@@ -448,6 +450,7 @@ pub struct AppState {
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     tmux_controls: TmuxControlMap,
+    tmux_control_slots: Arc<tokio::sync::Semaphore>,
     shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
@@ -835,6 +838,11 @@ struct TmuxControlRuntime {
     runtime_id: String,
     target: String,
     cancel: Arc<AtomicBool>,
+}
+
+enum TmuxControlInstall {
+    Existing(TmuxControlRuntime),
+    Installed(Option<TmuxControlRuntime>),
 }
 
 struct TmuxControlEventContext {
@@ -4402,8 +4410,10 @@ fn session_has_registered_runtime(state: &AppState, session_id: &str) -> Result<
         .tmux_controls
         .lock()
         .map_err(|error| error.to_string())?
-        .keys()
-        .any(|(runtime_session_id, _)| runtime_session_id == session_id)
+        .iter()
+        .any(|((runtime_session_id, _), runtime)| {
+            runtime_session_id == session_id && !runtime.cancel.load(Ordering::SeqCst)
+        })
     {
         return Ok(true);
     }
@@ -13706,6 +13716,47 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
     }
 }
 
+fn ensure_tmux_control_capacity(
+    controls: &HashMap<(String, String), TmuxControlRuntime>,
+    control_key: &(String, String),
+) -> Result<(), String> {
+    if controls.contains_key(control_key) {
+        return Ok(());
+    }
+    let session_count = controls
+        .keys()
+        .filter(|(session_id, _)| session_id == &control_key.0)
+        .count();
+    if session_count >= MAX_TMUX_CONTROLS_PER_SESSION {
+        return Err(format!(
+            "tmux control watcher count for session has reached {MAX_TMUX_CONTROLS_PER_SESSION}"
+        ));
+    }
+    if controls.len() >= MAX_ACTIVE_TMUX_CONTROLS {
+        return Err(format!(
+            "tmux control watcher count has reached app limit ({MAX_ACTIVE_TMUX_CONTROLS})"
+        ));
+    }
+    Ok(())
+}
+
+fn install_tmux_control_runtime(
+    controls: &mut HashMap<(String, String), TmuxControlRuntime>,
+    control_key: &(String, String),
+    runtime: TmuxControlRuntime,
+) -> Result<TmuxControlInstall, String> {
+    if let Some(existing) = controls
+        .get(control_key)
+        .filter(|existing| !existing.cancel.load(Ordering::SeqCst))
+    {
+        return Ok(TmuxControlInstall::Existing(existing.clone()));
+    }
+    ensure_tmux_control_capacity(controls, control_key)?;
+    Ok(TmuxControlInstall::Installed(
+        controls.insert(control_key.clone(), runtime),
+    ))
+}
+
 async fn start_tmux_control_inner(
     state: &AppState,
     session_id: &str,
@@ -13729,6 +13780,29 @@ async fn start_tmux_control_inner(
                 runtime_id: Some(runtime.runtime_id.clone()),
             });
         }
+        ensure_tmux_control_capacity(&controls, &control_key)?;
+    }
+
+    let control_slot = Arc::clone(&state.tmux_control_slots)
+        .try_acquire_owned()
+        .map_err(|_| format!("tmux control watcher limit reached ({MAX_ACTIVE_TMUX_CONTROLS})"))?;
+    {
+        let controls = state
+            .tmux_controls
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if let Some(runtime) = controls
+            .get(&control_key)
+            .filter(|runtime| !runtime.cancel.load(Ordering::SeqCst))
+        {
+            return Ok(TmuxControlStatus {
+                session_id: session_id.to_string(),
+                target,
+                active: true,
+                runtime_id: Some(runtime.runtime_id.clone()),
+            });
+        }
+        ensure_tmux_control_capacity(&controls, &control_key)?;
     }
 
     let handle = ssh_handle_for_transfer(state, session_id)?;
@@ -13746,19 +13820,33 @@ async fn start_tmux_control_inner(
 
     let runtime_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
-    let previous = {
-        let mut controls = state
-            .tmux_controls
-            .lock()
-            .map_err(|error| error.to_string())?;
-        controls.insert(
-            control_key.clone(),
+    let install_result = match state.tmux_controls.lock() {
+        Ok(mut controls) => install_tmux_control_runtime(
+            &mut controls,
+            &control_key,
             TmuxControlRuntime {
                 runtime_id: runtime_id.clone(),
                 target: target.clone(),
                 cancel: Arc::clone(&cancel),
             },
-        )
+        ),
+        Err(error) => Err(error.to_string()),
+    };
+    let previous = match install_result {
+        Ok(TmuxControlInstall::Installed(previous)) => previous,
+        Ok(TmuxControlInstall::Existing(existing)) => {
+            close_ssh_channel_bounded(&channel).await;
+            return Ok(TmuxControlStatus {
+                session_id: session_id.to_string(),
+                target,
+                active: true,
+                runtime_id: Some(existing.runtime_id),
+            });
+        }
+        Err(error) => {
+            close_ssh_channel_bounded(&channel).await;
+            return Err(error);
+        }
     };
     if let Some(previous) = previous {
         previous.cancel.store(true, Ordering::SeqCst);
@@ -13879,6 +13967,7 @@ async fn start_tmux_control_inner(
             None,
             stopped_error.as_deref(),
         );
+        drop(control_slot);
     });
 
     Ok(TmuxControlStatus {
@@ -13925,38 +14014,34 @@ fn cancel_tmux_control_runtime(
     session_id: &str,
     target: &str,
 ) -> Result<Option<TmuxControlRuntime>, String> {
-    let runtime = state
+    let controls = state
         .tmux_controls
         .lock()
-        .map_err(|error| error.to_string())?
-        .remove(&(session_id.to_string(), target.to_string()));
-    if let Some(runtime) = runtime {
+        .map_err(|error| error.to_string())?;
+    let runtime = controls
+        .get(&(session_id.to_string(), target.to_string()))
+        .cloned();
+    if let Some(runtime) = &runtime {
         runtime.cancel.store(true, Ordering::SeqCst);
-        Ok(Some(runtime))
-    } else {
-        Ok(None)
     }
+    Ok(runtime)
 }
 
 fn cancel_tmux_control_runtimes_for_session(
     state: &AppState,
     session_id: &str,
 ) -> Result<Vec<TmuxControlRuntime>, String> {
-    let mut controls = state
+    let controls = state
         .tmux_controls
         .lock()
         .map_err(|error| error.to_string())?;
-    let keys = controls
-        .keys()
-        .filter(|(candidate_session_id, _)| candidate_session_id == session_id)
-        .cloned()
+    let runtimes = controls
+        .iter()
+        .filter(|((candidate_session_id, _), _)| candidate_session_id == session_id)
+        .map(|(_, runtime)| runtime.clone())
         .collect::<Vec<_>>();
-    let mut runtimes = Vec::with_capacity(keys.len());
-    for key in keys {
-        if let Some(runtime) = controls.remove(&key) {
-            runtime.cancel.store(true, Ordering::SeqCst);
-            runtimes.push(runtime);
-        }
+    for runtime in &runtimes {
+        runtime.cancel.store(true, Ordering::SeqCst);
     }
     Ok(runtimes)
 }
@@ -30362,6 +30447,7 @@ pub fn run() {
                 system_event_sink: Arc::new(Mutex::new(None)),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
                 tmux_controls: Arc::new(Mutex::new(HashMap::new())),
+                tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
                 shell: Arc::new(Mutex::new(HashMap::new())),
                 tcp: Arc::new(Mutex::new(HashMap::new())),
                 serial: Arc::new(Mutex::new(HashMap::new())),
@@ -48703,6 +48789,7 @@ mod tests {
             system_event_sink: Arc::new(Mutex::new(None)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
             tmux_controls: Arc::new(Mutex::new(HashMap::new())),
+            tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
             shell: Arc::new(Mutex::new(HashMap::new())),
             tcp: Arc::new(Mutex::new(HashMap::new())),
             serial: Arc::new(Mutex::new(HashMap::new())),
@@ -49062,6 +49149,114 @@ mod tests {
     }
 
     #[test]
+    fn tmux_control_capacity_bounds_registry_and_rechecks_installation() {
+        let runtime = |runtime_id: String, target: String| TmuxControlRuntime {
+            runtime_id,
+            target,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let mut session_controls = HashMap::new();
+        for index in 0..MAX_TMUX_CONTROLS_PER_SESSION {
+            let target = format!("target-{index}");
+            session_controls.insert(
+                ("session-1".to_string(), target.clone()),
+                runtime(format!("runtime-{index}"), target),
+            );
+        }
+        let existing_key = ("session-1".to_string(), "target-0".to_string());
+        assert!(ensure_tmux_control_capacity(&session_controls, &existing_key).is_ok());
+        let session_error = ensure_tmux_control_capacity(
+            &session_controls,
+            &("session-1".to_string(), "overflow".to_string()),
+        )
+        .unwrap_err();
+        assert!(session_error.contains(&MAX_TMUX_CONTROLS_PER_SESSION.to_string()));
+        assert!(ensure_tmux_control_capacity(
+            &session_controls,
+            &("session-2".to_string(), "allowed".to_string()),
+        )
+        .is_ok());
+
+        match install_tmux_control_runtime(
+            &mut session_controls,
+            &existing_key,
+            runtime("duplicate".to_string(), "target-0".to_string()),
+        )
+        .unwrap()
+        {
+            TmuxControlInstall::Existing(existing) => {
+                assert_eq!(existing.runtime_id, "runtime-0")
+            }
+            TmuxControlInstall::Installed(_) => panic!("active watcher must remain idempotent"),
+        }
+        session_controls
+            .get(&existing_key)
+            .unwrap()
+            .cancel
+            .store(true, Ordering::SeqCst);
+        match install_tmux_control_runtime(
+            &mut session_controls,
+            &existing_key,
+            runtime("replacement".to_string(), "target-0".to_string()),
+        )
+        .unwrap()
+        {
+            TmuxControlInstall::Installed(Some(previous)) => {
+                assert_eq!(previous.runtime_id, "runtime-0")
+            }
+            _ => panic!("cancelled watcher should be replaceable without growing the registry"),
+        }
+        assert_eq!(session_controls.len(), MAX_TMUX_CONTROLS_PER_SESSION);
+        assert_eq!(
+            session_controls.get(&existing_key).unwrap().runtime_id,
+            "replacement"
+        );
+
+        let mut app_controls = HashMap::new();
+        let pending_key = ("pending-session".to_string(), "pending".to_string());
+        assert!(ensure_tmux_control_capacity(&app_controls, &pending_key).is_ok());
+        for index in 0..MAX_ACTIVE_TMUX_CONTROLS {
+            let target = format!("target-{index}");
+            app_controls.insert(
+                (
+                    format!("session-{}", index / MAX_TMUX_CONTROLS_PER_SESSION),
+                    target.clone(),
+                ),
+                runtime(format!("runtime-{index}"), target),
+            );
+        }
+        let app_error = install_tmux_control_runtime(
+            &mut app_controls,
+            &pending_key,
+            runtime("pending-runtime".to_string(), "pending".to_string()),
+        )
+        .err()
+        .unwrap();
+        assert!(app_error.contains("app limit"));
+        assert!(app_error.contains(&MAX_ACTIVE_TMUX_CONTROLS.to_string()));
+        assert_eq!(app_controls.len(), MAX_ACTIVE_TMUX_CONTROLS);
+        assert!(!app_controls.contains_key(&pending_key));
+    }
+
+    #[test]
+    fn tmux_control_slot_saturation_rejects_before_ssh_lookup() {
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let state = test_app_state(test_ssh_profile(), temp.path().join("store.sqlite3"));
+            let _permits = Arc::clone(&state.tmux_control_slots)
+                .try_acquire_many_owned(MAX_ACTIVE_TMUX_CONTROLS as u32)
+                .unwrap();
+
+            let error = start_tmux_control_inner(&state, "ssh-session-1", "lab")
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("watcher limit"), "{error}");
+            assert!(state.tmux_controls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
     fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
         let temp = tempfile::tempdir().unwrap();
         let state = test_app_state(test_ssh_profile(), temp.path().join("store.sqlite3"));
@@ -49093,10 +49288,14 @@ mod tests {
         assert!(lab_cancel.load(Ordering::SeqCst));
         assert!(!build_cancel.load(Ordering::SeqCst));
         assert!(!other_cancel.load(Ordering::SeqCst));
-        assert_eq!(state.tmux_controls.lock().unwrap().len(), 2);
-        assert!(cancel_tmux_control_runtime(&state, "session:1", "lab")
-            .unwrap()
-            .is_none());
+        assert_eq!(state.tmux_controls.lock().unwrap().len(), 3);
+        assert_eq!(
+            cancel_tmux_control_runtime(&state, "session:1", "lab")
+                .unwrap()
+                .unwrap()
+                .runtime_id,
+            "control-1"
+        );
 
         let ops_cancel = Arc::new(AtomicBool::new(false));
         state.tmux_controls.lock().unwrap().insert(
@@ -49114,14 +49313,16 @@ mod tests {
         assert!(build_cancel.load(Ordering::SeqCst));
         assert!(ops_cancel.load(Ordering::SeqCst));
         assert!(!other_cancel.load(Ordering::SeqCst));
-        assert_eq!(state.tmux_controls.lock().unwrap().len(), 1);
+        assert!(!session_has_registered_runtime(&state, "session:1").unwrap());
+        assert_eq!(state.tmux_controls.lock().unwrap().len(), 4);
 
         let status = stop_tmux_control_inner(&state, "session:2", Some("lab")).unwrap();
         assert_eq!(status.target, "lab");
         assert_eq!(status.runtime_id.as_deref(), Some("control-3"));
         assert!(!status.active);
         assert!(other_cancel.load(Ordering::SeqCst));
-        assert!(state.tmux_controls.lock().unwrap().is_empty());
+        assert!(!session_has_registered_runtime(&state, "session:2").unwrap());
+        assert_eq!(state.tmux_controls.lock().unwrap().len(), 4);
     }
 
     fn test_serial_profile(serial: portmate_core::SerialConnection) -> SessionProfile {
