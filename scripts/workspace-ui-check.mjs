@@ -1590,6 +1590,10 @@ try {
   await authOrderSelect.selectOption("keyboard-interactive>public-key");
   assert(await authOrderSelect.inputValue() === "keyboard-interactive>public-key",
     "SSH authentication order selector did not retain a valid non-default order");
+  const recordAuthSuccess = page.locator(".session-settings-dialog .dialog-field", { hasText: "记住成功方式:(R)" }).getByRole("button");
+  assert(await recordAuthSuccess.getAttribute("aria-pressed") === "true", "SSH successful-auth recording is not enabled by default");
+  await recordAuthSuccess.click();
+  assert(await recordAuthSuccess.getAttribute("aria-pressed") === "false", "SSH successful-auth recording cannot be disabled from Session Settings");
   await protocolSelect.selectOption("SSH");
   await sectionSelect.selectOption("传输");
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1

@@ -9113,6 +9113,23 @@ function SshAdvancedFields({
             ))}
           </select>
         </DialogField>
+        <DialogToggleField
+          label="记住成功方式:(R)"
+          checked={ssh.identityPolicy.recordSuccess}
+          onChange={(recordSuccess) => onDraftChange({
+            ...draft,
+            kind,
+            connection: {
+              ...ssh,
+              kind,
+              identityPolicy: {
+                ...ssh.identityPolicy,
+                recordSuccess,
+                lastSuccessful: recordSuccess ? ssh.identityPolicy.lastSuccessful : null,
+              },
+            },
+          })}
+        />
         <DialogField label="公钥:(K)">
           <select value={firstIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"] })}>
             <option>profile-vault</option>
