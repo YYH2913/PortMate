@@ -121,7 +121,9 @@ const SQLITE_SCHEMA_VERSION: &str = "4";
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_IPC_CONNECTIONS: usize = 64;
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const IPC_REJECTION_TIMEOUT: Duration = Duration::from_millis(100);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MODEM_SOH: u8 = 0x01;
@@ -7182,15 +7184,18 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
                 return;
             }
         }
+        let connection_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IPC_CONNECTIONS));
 
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let state = state.clone();
-                    let token = token.clone();
-                    tauri::async_runtime::spawn(async move {
-                        handle_ipc_client(state, token, stream).await;
-                    });
+                    spawn_ipc_client(
+                        state.clone(),
+                        token.clone(),
+                        stream,
+                        Arc::clone(&connection_slots),
+                    )
+                    .await;
                 }
                 Err(error) => {
                     eprintln!("PortMate: MCP IPC accept failed: {error}");
@@ -7199,6 +7204,37 @@ fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
             }
         }
     });
+}
+
+async fn spawn_ipc_client(
+    state: AppState,
+    token: String,
+    mut stream: TcpStream,
+    connection_slots: Arc<tokio::sync::Semaphore>,
+) -> bool {
+    let permit = match connection_slots.try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            write_ipc_response(
+                &mut stream,
+                &IpcResponse {
+                    ok: false,
+                    value: None,
+                    error: Some(format!(
+                        "MCP IPC connection limit reached ({MAX_IPC_CONNECTIONS})"
+                    )),
+                },
+                IPC_REJECTION_TIMEOUT,
+            )
+            .await;
+            return false;
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let _permit = permit;
+        handle_ipc_client(state, token, stream).await;
+    });
+    true
 }
 
 fn ipc_endpoint_lock_path(endpoint_path: &Path) -> PathBuf {
@@ -7501,8 +7537,12 @@ async fn handle_ipc_client(state: AppState, token: String, mut stream: TcpStream
         },
     };
 
-    if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = tokio::time::timeout(IPC_IO_TIMEOUT, async {
+    write_ipc_response(&mut stream, &response, IPC_IO_TIMEOUT).await;
+}
+
+async fn write_ipc_response(stream: &mut TcpStream, response: &IpcResponse, timeout: Duration) {
+    if let Ok(bytes) = serde_json::to_vec(response) {
+        let _ = tokio::time::timeout(timeout, async {
             stream.write_all(&bytes).await?;
             stream.shutdown().await
         })
@@ -36534,6 +36574,59 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(error.contains("timed out after 25 ms"));
+        });
+    }
+
+    #[test]
+    fn ipc_connection_limit_rejects_excess_and_releases_completed_slots() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!("portmate-ipc-slots-{}", Uuid::new_v4()));
+            let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let slots = Arc::new(tokio::sync::Semaphore::new(1));
+
+            let first_client = TcpStream::connect(address).await.unwrap();
+            let (first_server, _) = listener.accept().await.unwrap();
+            assert!(
+                spawn_ipc_client(
+                    state.clone(),
+                    "expected-token".to_string(),
+                    first_server,
+                    Arc::clone(&slots),
+                )
+                .await
+            );
+            assert_eq!(slots.available_permits(), 0);
+
+            let mut rejected_client = TcpStream::connect(address).await.unwrap();
+            let (rejected_server, _) = listener.accept().await.unwrap();
+            assert!(
+                !spawn_ipc_client(
+                    state,
+                    "expected-token".to_string(),
+                    rejected_server,
+                    Arc::clone(&slots),
+                )
+                .await
+            );
+            let mut response = Vec::new();
+            rejected_client.read_to_end(&mut response).await.unwrap();
+            let response: IpcResponse = serde_json::from_slice(&response).unwrap();
+            assert!(!response.ok);
+            assert!(response.error.as_deref().is_some_and(|error| {
+                error.contains("connection limit reached")
+                    && error.contains(&MAX_IPC_CONNECTIONS.to_string())
+            }));
+
+            drop(first_client);
+            let restored =
+                tokio::time::timeout(Duration::from_secs(1), Arc::clone(&slots).acquire_owned())
+                    .await
+                    .expect("IPC connection slot was not released")
+                    .unwrap();
+            drop(restored);
+            let _ = fs::remove_dir_all(root);
         });
     }
 
