@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { proxyDefaults } from "./proxy-settings";
 import {
   normalizeSshConnectionSettings,
+  SSH_AUTH_ORDER_OPTIONS,
   sshConnectionBounds,
   sshConnectionDefaults,
 } from "./ssh-connection-settings";
@@ -27,6 +28,14 @@ function baseConnection(): SshConnection {
 }
 
 describe("SSH connection settings", () => {
+  it("offers every ordered non-empty subset of the supported authentication methods", () => {
+    expect(SSH_AUTH_ORDER_OPTIONS).toHaveLength(15);
+    expect(new Set(SSH_AUTH_ORDER_OPTIONS).size).toBe(15);
+    expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive>public-key");
+    expect(SSH_AUTH_ORDER_OPTIONS).toContain("password>keyboard-interactive>public-key");
+    expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive");
+  });
+
   it("fills health defaults for legacy profiles", () => {
     const legacy = baseConnection() as Partial<SshConnection>;
     delete legacy.reconnectDelayMs;

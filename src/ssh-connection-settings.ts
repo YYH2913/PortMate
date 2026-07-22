@@ -15,6 +15,24 @@ export const sshConnectionBounds = {
 
 const defaultAuthOrder: AuthMethod[] = ["public-key", "keyboard-interactive", "password"];
 
+export const SSH_AUTH_ORDER_OPTIONS = [
+  "public-key>keyboard-interactive>password",
+  "public-key>password>keyboard-interactive",
+  "public-key>keyboard-interactive",
+  "public-key>password",
+  "public-key",
+  "keyboard-interactive>public-key>password",
+  "keyboard-interactive>password>public-key",
+  "keyboard-interactive>public-key",
+  "keyboard-interactive>password",
+  "keyboard-interactive",
+  "password>public-key>keyboard-interactive",
+  "password>keyboard-interactive>public-key",
+  "password>public-key",
+  "password>keyboard-interactive",
+  "password",
+] as const;
+
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(value)));

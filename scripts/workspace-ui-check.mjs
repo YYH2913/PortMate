@@ -1579,6 +1579,18 @@ try {
       `${protocol} has no real protocol settings`);
   }
   await protocolSelect.selectOption("SSH");
+  await sectionSelect.selectOption("公钥");
+  const authOrderSelect = page.locator(".session-settings-dialog .dialog-field", { hasText: "顺序:(O)" }).locator("select");
+  const authOrderOptions = await authOrderSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
+  assert(authOrderOptions.length === 15
+    && new Set(authOrderOptions).size === 15
+    && authOrderOptions.includes("keyboard-interactive>public-key")
+    && authOrderOptions.includes("password>keyboard-interactive>public-key"),
+  `SSH authentication orders are incomplete: ${JSON.stringify(authOrderOptions)}`);
+  await authOrderSelect.selectOption("keyboard-interactive>public-key");
+  assert(await authOrderSelect.inputValue() === "keyboard-interactive>public-key",
+    "SSH authentication order selector did not retain a valid non-default order");
+  await protocolSelect.selectOption("SSH");
   await sectionSelect.selectOption("传输");
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "SCP:" }).count() === 1,

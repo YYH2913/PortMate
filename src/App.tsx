@@ -75,7 +75,7 @@ import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAsc
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
-import { normalizeSshConnectionSettings, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
+import { normalizeSshConnectionSettings, SSH_AUTH_ORDER_OPTIONS, sshConnectionBounds, sshConnectionDefaults } from "./ssh-connection-settings";
 import { allSyncProtocols, defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
@@ -9059,6 +9059,11 @@ function SshAdvancedFields({
 
   if (section === "公钥") {
     const firstIdentity = ssh.identityRefs[0] ?? createIdentityRef();
+    const authOrderValue = ssh.identityPolicy.authOrder.join(">");
+    const authOrderIsPreset = SSH_AUTH_ORDER_OPTIONS.some((option) => option === authOrderValue);
+    const authOrderOptions: readonly string[] = authOrderIsPreset
+      ? SSH_AUTH_ORDER_OPTIONS
+      : [authOrderValue, ...SSH_AUTH_ORDER_OPTIONS];
     const updateIdentity = (patch: Partial<IdentityRef>) => {
       const identity = { ...firstIdentity, ...patch };
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...ssh.identityRefs.slice(1)] } });
@@ -9101,9 +9106,11 @@ function SshAdvancedFields({
         </DialogField>
         <DialogField label="顺序:(O)">
           <select value={ssh.identityPolicy.authOrder.join(">")} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, authOrder: event.target.value.split(">") as AuthMethod[] } } })}>
-            <option>public-key&gt;keyboard-interactive&gt;password</option>
-            <option>public-key&gt;password</option>
-            <option>password</option>
+            {authOrderOptions.map((option, index) => (
+              <option key={option} value={option}>
+                {option.replaceAll(">", " > ")}{!authOrderIsPreset && index === 0 ? "（当前配置）" : ""}
+              </option>
+            ))}
           </select>
         </DialogField>
         <DialogField label="公钥:(K)">
