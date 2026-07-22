@@ -226,6 +226,8 @@ const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_TUNNEL_CONNECTIONS: usize = 256;
+const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
 const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
@@ -413,6 +415,7 @@ pub struct AppState {
     serial_captures: SerialCaptureMap,
     active_commands: ActiveCommandMap,
     tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    tunnel_connection_slots: Arc<tokio::sync::Semaphore>,
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     trigger_command_slots: Arc<tokio::sync::Semaphore>,
@@ -980,6 +983,7 @@ struct TunnelRuntime {
 struct TunnelForwardTarget {
     spec: TunnelSpec,
     metrics: Arc<TunnelMetrics>,
+    connection_slots: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1106,6 +1110,31 @@ impl TunnelMetrics {
             last_error: self.last_error.lock().ok().and_then(|value| value.clone()),
         }
     }
+}
+
+fn try_acquire_tunnel_connection(
+    connection_slots: &Arc<tokio::sync::Semaphore>,
+    metrics: &TunnelMetrics,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    match Arc::clone(connection_slots).try_acquire_owned() {
+        Ok(permit) => {
+            metrics.clear_error_with_prefix(TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX);
+            Some(permit)
+        }
+        Err(_) => {
+            metrics.record_error_if_changed(&format!(
+                "{TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX} app limit ({MAX_TUNNEL_CONNECTIONS})"
+            ));
+            None
+        }
+    }
+}
+
+fn forwarded_tcpip_ports(connected_port: u32, originator_port: u32) -> Option<(u16, u16)> {
+    Some((
+        u16::try_from(connected_port).ok()?,
+        u16::try_from(originator_port).ok()?,
+    ))
 }
 
 #[derive(Clone)]
@@ -1457,22 +1486,36 @@ impl client::Handler for PortMateSshHandler {
         let connected_address = connected_address.to_string();
         let originator_address = originator_address.to_string();
         async move {
+            let Some((connected_port, originator_port)) =
+                forwarded_tcpip_ports(connected_port, originator_port)
+            else {
+                close_ssh_channel_bounded(&channel).await;
+                return Ok(());
+            };
             let target = {
                 let forwards = lock_ssh_handler_state(&forwards, "remote forward targets")?;
-                let key = remote_forward_key(&connected_address, connected_port as u16);
+                let key = remote_forward_key(&connected_address, connected_port);
                 forwards
                     .get(&key)
-                    .or_else(|| forwards.get(&remote_forward_port_key(connected_port as u16)))
+                    .or_else(|| forwards.get(&remote_forward_port_key(connected_port)))
                     .cloned()
             };
             if let Some(target) = target {
+                let Some(permit) = try_acquire_tunnel_connection(
+                    &target.connection_slots,
+                    target.metrics.as_ref(),
+                ) else {
+                    close_ssh_channel_bounded(&channel).await;
+                    return Ok(());
+                };
                 tauri::async_runtime::spawn(async move {
+                    let _permit = permit;
                     target.metrics.connection_opened();
                     let result = handle_remote_tunnel_client(
                         channel,
                         target.spec.clone(),
                         originator_address,
-                        originator_port as u16,
+                        originator_port,
                         Arc::clone(&target.metrics),
                     )
                     .await;
@@ -1485,6 +1528,8 @@ impl client::Handler for PortMateSshHandler {
                     }
                     target.metrics.connection_closed();
                 });
+            } else {
+                close_ssh_channel_bounded(&channel).await;
             }
             Ok(())
         }
@@ -14919,6 +14964,7 @@ async fn start_tunnel_runtime(
             let target = TunnelForwardTarget {
                 spec: tunnel.clone(),
                 metrics: Arc::clone(&metrics),
+                connection_slots: Arc::clone(&state.tunnel_connection_slots),
             };
             forwards.insert(
                 remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
@@ -14982,6 +15028,7 @@ async fn start_tunnel_runtime(
     }
     let closed = Arc::new(AtomicBool::new(false));
     let metrics = Arc::new(TunnelMetrics::default());
+    let connection_slots = Arc::clone(&state.tunnel_connection_slots);
     {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         if connections
@@ -15025,6 +15072,11 @@ async fn start_tunnel_runtime(
             }
             match tokio::time::timeout(Duration::from_millis(500), listener.accept()).await {
                 Ok(Ok((stream, peer))) => {
+                    let Some(permit) =
+                        try_acquire_tunnel_connection(&connection_slots, metrics.as_ref())
+                    else {
+                        continue;
+                    };
                     let handle = handle.clone();
                     let spec = tunnel_for_task.clone();
                     let metrics = Arc::clone(&metrics);
@@ -15032,6 +15084,7 @@ async fn start_tunnel_runtime(
                     let store_path = store_path.clone();
                     let session_id = session_id.clone();
                     tauri::async_runtime::spawn(async move {
+                        let _permit = permit;
                         metrics.connection_opened();
                         let result = if spec.mode == TunnelMode::Dynamic {
                             handle_dynamic_tunnel_client(handle, stream, peer, Arc::clone(&metrics))
@@ -15238,6 +15291,7 @@ async fn probe_remote_tunnel_health(
             let target = TunnelForwardTarget {
                 spec: runtime.spec.clone(),
                 metrics: Arc::clone(&runtime.metrics),
+                connection_slots: Arc::clone(&state.tunnel_connection_slots),
             };
             forwards.insert(exact_key, target.clone());
             forwards.insert(port_key, target);
@@ -30108,6 +30162,9 @@ pub fn run() {
                 serial_captures: Arc::new(Mutex::new(HashMap::new())),
                 active_commands: Arc::new(Mutex::new(HashMap::new())),
                 tunnels: Arc::new(Mutex::new(HashMap::new())),
+                tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_TUNNEL_CONNECTIONS,
+                )),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
                 trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
@@ -41519,6 +41576,31 @@ mod tests {
         .unwrap();
         assert!(dynamic.target_host.is_empty());
         assert_eq!(dynamic.target_port, 0);
+
+        assert_eq!(forwarded_tcpip_ports(65_535, 0), Some((65_535, 0)));
+        assert_eq!(forwarded_tcpip_ports(65_536, 22), None);
+        assert_eq!(forwarded_tcpip_ports(22, 65_536), None);
+    }
+
+    #[test]
+    fn tunnel_connection_slots_bound_and_release_concurrency() {
+        let metrics = TunnelMetrics::default();
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = try_acquire_tunnel_connection(&slots, &metrics).unwrap();
+        assert!(try_acquire_tunnel_connection(&slots, &metrics).is_none());
+        assert!(metrics
+            .last_error
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|error| {
+                error.starts_with(TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX)
+                    && error.contains(&MAX_TUNNEL_CONNECTIONS.to_string())
+            }));
+
+        drop(permit);
+        assert!(try_acquire_tunnel_connection(&slots, &metrics).is_some());
+        assert!(metrics.last_error.lock().unwrap().is_none());
     }
 
     #[test]
@@ -48114,6 +48196,7 @@ mod tests {
             serial_captures: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
+            tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(MAX_TUNNEL_CONNECTIONS)),
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
             trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
