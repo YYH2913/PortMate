@@ -27586,8 +27586,7 @@ fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
     store.grants = normalized;
 }
 
-fn normalize_interrupted_transfers(store: &mut SessionStore) {
-    let now = Utc::now();
+fn normalize_interrupted_transfers(store: &mut SessionStore, now: DateTime<Utc>) {
     for task in &mut store.transfers {
         if !transfer_task_is_active(&task.status) {
             continue;
@@ -27684,7 +27683,11 @@ fn assign_loaded_profile_id(
     }
 }
 
-fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
+fn normalize_loaded_store(store: SessionStore) -> SessionStore {
+    normalize_loaded_store_at(store, Utc::now())
+}
+
+fn normalize_loaded_store_at(mut store: SessionStore, loaded_at: DateTime<Utc>) -> SessionStore {
     let profiles = std::mem::take(&mut store.profiles);
     let mut normalized_profiles = Vec::with_capacity(profiles.len());
     let mut session_id_remap = LoadedSessionIdRemap::default();
@@ -27774,11 +27777,30 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
                 .last_disconnect_reason
                 .as_deref()
                 .and_then(portmate_core::normalize_session_disconnect_reason);
+            match saved.status {
+                SessionStatus::Connected => {
+                    runtime.last_disconnect = Some(loaded_at);
+                    runtime.last_disconnect_reason =
+                        Some("connection interrupted by previous PortMate shutdown".to_string());
+                }
+                SessionStatus::Connecting => {
+                    runtime.last_disconnect = Some(loaded_at);
+                    runtime.last_disconnect_reason = Some(
+                        "connection attempt interrupted by previous PortMate shutdown".to_string(),
+                    );
+                }
+                SessionStatus::Reconnecting => {
+                    runtime.last_disconnect.get_or_insert(loaded_at);
+                    runtime.last_disconnect_reason =
+                        Some("reconnect interrupted by previous PortMate shutdown".to_string());
+                }
+                SessionStatus::Disconnected | SessionStatus::Blocked | SessionStatus::Error => {}
+            }
         }
         runtime.status = SessionStatus::Disconnected;
         runtime.connected_since = None;
     }
-    normalize_interrupted_transfers(&mut store);
+    normalize_interrupted_transfers(&mut store, loaded_at);
     store.normalize_bounded_histories();
     store
 }
@@ -31713,7 +31735,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_loaded_store_preserves_runtime_diagnostics() {
+    fn normalize_loaded_store_preserves_inactive_runtime_diagnostics() {
         let mut store = SessionStore::default();
         let profile = test_shell_profile();
         let session_id = profile.id.clone();
@@ -31725,7 +31747,7 @@ mod tests {
             .iter_mut()
             .find(|runtime| runtime.session_id == session_id)
             .unwrap();
-        runtime.status = SessionStatus::Connected;
+        runtime.status = SessionStatus::Error;
         runtime.connected_since = Some(Utc::now() - chrono::Duration::hours(1));
         runtime.pane_id = "custom-pane".to_string();
         runtime.title = "dynamic shell title".to_string();
@@ -31753,6 +31775,80 @@ mod tests {
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn normalize_loaded_store_records_interrupted_active_runtime_diagnostics() {
+        let loaded_at = Utc::now();
+        let previous_disconnect = loaded_at - chrono::Duration::minutes(5);
+        for (status, saved_disconnect, expected_disconnect, expected_reason) in [
+            (
+                SessionStatus::Connected,
+                Some(previous_disconnect),
+                loaded_at,
+                "connection interrupted by previous PortMate shutdown",
+            ),
+            (
+                SessionStatus::Connecting,
+                None,
+                loaded_at,
+                "connection attempt interrupted by previous PortMate shutdown",
+            ),
+            (
+                SessionStatus::Reconnecting,
+                Some(previous_disconnect),
+                previous_disconnect,
+                "reconnect interrupted by previous PortMate shutdown",
+            ),
+            (
+                SessionStatus::Reconnecting,
+                None,
+                loaded_at,
+                "reconnect interrupted by previous PortMate shutdown",
+            ),
+        ] {
+            let mut store = SessionStore::default();
+            let profile = test_shell_profile();
+            let session_id = profile.id.clone();
+            store.upsert_profile(profile);
+            let runtime = store
+                .runtimes
+                .iter_mut()
+                .find(|runtime| runtime.session_id == session_id)
+                .unwrap();
+            runtime.status = status;
+            runtime.connected_since = Some(loaded_at - chrono::Duration::hours(1));
+            runtime.last_disconnect = saved_disconnect;
+            runtime.last_disconnect_reason = Some("stale diagnostic".to_string());
+
+            let normalized = normalize_loaded_store_at(store, loaded_at);
+            let runtime = normalized
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.session_id == session_id)
+                .unwrap();
+
+            assert_eq!(runtime.status, SessionStatus::Disconnected);
+            assert!(runtime.connected_since.is_none());
+            assert_eq!(runtime.last_disconnect, Some(expected_disconnect));
+            assert_eq!(
+                runtime.last_disconnect_reason.as_deref(),
+                Some(expected_reason)
+            );
+
+            let normalized_again =
+                normalize_loaded_store_at(normalized, loaded_at + chrono::Duration::minutes(1));
+            let runtime = normalized_again
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.session_id == session_id)
+                .unwrap();
+            assert_eq!(runtime.last_disconnect, Some(expected_disconnect));
+            assert_eq!(
+                runtime.last_disconnect_reason.as_deref(),
+                Some(expected_reason)
+            );
+        }
     }
 
     #[test]
