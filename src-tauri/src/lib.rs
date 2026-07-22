@@ -253,8 +253,10 @@ const TRIGGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const TRIGGER_COMMAND_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TRIGGER_COMMAND_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_TRIGGER_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH: usize = 8;
 const MAX_TRIGGER_SEND_BATCH_CONCURRENCY: usize = 8;
 const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
+const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
@@ -24148,15 +24150,13 @@ fn record_channel_bytes(
             let _ = app_handle.emit("portmate-trigger-effect", effect);
         }
     }
-    for command in trigger_dispatch.local_commands {
-        spawn_trigger_command(
-            Arc::clone(&io.store),
-            io.store_path.clone(),
-            Arc::clone(&io.trigger_command_slots),
-            session_id.to_string(),
-            command,
-        );
-    }
+    spawn_trigger_commands(
+        Arc::clone(&io.store),
+        io.store_path.clone(),
+        Arc::clone(&io.trigger_command_slots),
+        session_id.to_string(),
+        trigger_dispatch.local_commands,
+    );
     if let Some(source_runtime_id) = source_runtime_id {
         spawn_trigger_send_text_batch(
             io.clone(),
@@ -26156,6 +26156,7 @@ fn apply_trigger_actions_locked(
     let matches = portmate_core::triggers::evaluate_triggers(&profile.triggers, text);
     let mut dispatch = TriggerDispatch::default();
     let mut changed = false;
+    let mut dropped_local_commands = 0_usize;
     let mut dropped_send_texts = 0_usize;
     for trigger_match in matches {
         changed = true;
@@ -26196,7 +26197,13 @@ fn apply_trigger_actions_locked(
                         dropped_send_texts = dropped_send_texts.saturating_add(1);
                     }
                 }
-                TriggerAction::LocalCommand { command } => dispatch.local_commands.push(command),
+                TriggerAction::LocalCommand { command } => {
+                    if dispatch.local_commands.len() < MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH {
+                        dispatch.local_commands.push(command);
+                    } else {
+                        dropped_local_commands = dropped_local_commands.saturating_add(1);
+                    }
+                }
                 TriggerAction::Notification { message } => {
                     store.record_system_event(
                         session_id,
@@ -26220,10 +26227,13 @@ fn apply_trigger_actions_locked(
                     });
                 }
                 TriggerAction::CustomLink { url_template } => {
-                    let url = url_template.replace("{text}", text.trim());
+                    let (url, truncated) = render_trigger_custom_link(&url_template, text);
                     store.record_system_event(
                         session_id,
-                        format!("PortMate: trigger custom link ({url})"),
+                        format!(
+                            "PortMate: trigger custom link ({url}){}",
+                            if truncated { " [truncated]" } else { "" }
+                        ),
                     );
                     dispatch.effects.push(TriggerEffect {
                         session_id: session_id.to_string(),
@@ -26249,6 +26259,14 @@ fn apply_trigger_actions_locked(
             }
         }
     }
+    if dropped_local_commands > 0 {
+        store.record_system_event(
+            session_id,
+            format!(
+                "PortMate: trigger local-command batch limit reached ({MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH}); skipped {dropped_local_commands} actions"
+            ),
+        );
+    }
     if dropped_send_texts > 0 {
         store.record_system_event(
             session_id,
@@ -26260,49 +26278,92 @@ fn apply_trigger_actions_locked(
     (dispatch, changed)
 }
 
-fn spawn_trigger_command(
+fn render_trigger_custom_link(template: &str, matched_text: &str) -> (String, bool) {
+    let mut output = String::new();
+    let mut remaining = MAX_TRIGGER_CUSTOM_LINK_CHARACTERS;
+    let replacement = matched_text.trim();
+    let mut parts = template.split("{text}").peekable();
+    while let Some(literal) = parts.next() {
+        if append_bounded_trigger_text(&mut output, literal, &mut remaining) {
+            return (output, true);
+        }
+        if parts.peek().is_some()
+            && append_bounded_trigger_text(&mut output, replacement, &mut remaining)
+        {
+            return (output, true);
+        }
+    }
+    (output, false)
+}
+
+fn append_bounded_trigger_text(output: &mut String, value: &str, remaining: &mut usize) -> bool {
+    for character in value.chars() {
+        if *remaining == 0 {
+            return true;
+        }
+        output.push(character);
+        *remaining -= 1;
+    }
+    false
+}
+
+fn spawn_trigger_commands(
     store: Arc<Mutex<SessionStore>>,
     store_path: PathBuf,
     command_slots: Arc<tokio::sync::Semaphore>,
     session_id: String,
-    command: String,
+    commands: Vec<String>,
 ) {
-    let permit = match command_slots.try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
-            record_trigger_command_event(
-                &store,
-                &store_path,
-                &session_id,
-                format!(
-                    "PortMate: trigger command skipped: concurrent command limit reached ({MAX_TRIGGER_COMMAND_CONCURRENCY})"
-                ),
-            );
-            return;
-        }
-    };
-    tauri::async_runtime::spawn(async move {
-        let output = run_shell_command(&command).await;
-        drop(permit);
-        let message = match output {
-            Ok((code, stdout, stderr)) => format!(
-                "PortMate: trigger command exited code={code}: {}{}",
-                truncate_for_log(&stdout, 1600),
-                if stderr.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(" stderr={}", truncate_for_log(&stderr, 1600))
-                }
-            ),
-            Err(error) => format!("PortMate: trigger command failed: {error}"),
+    let mut skipped = 0_usize;
+    for command in commands {
+        let permit = match Arc::clone(&command_slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
         };
-        let persist = tauri::async_runtime::spawn_blocking(move || {
-            record_trigger_command_event(&store, &store_path, &session_id, message);
+        let command_store = Arc::clone(&store);
+        let command_store_path = store_path.clone();
+        let command_session_id = session_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let output = run_shell_command(&command).await;
+            drop(permit);
+            let message = match output {
+                Ok((code, stdout, stderr)) => format!(
+                    "PortMate: trigger command exited code={code}: {}{}",
+                    truncate_for_log(&stdout, 1600),
+                    if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" stderr={}", truncate_for_log(&stderr, 1600))
+                    }
+                ),
+                Err(error) => format!("PortMate: trigger command failed: {error}"),
+            };
+            let persist = tauri::async_runtime::spawn_blocking(move || {
+                record_trigger_command_event(
+                    &command_store,
+                    &command_store_path,
+                    &command_session_id,
+                    message,
+                );
+            });
+            if let Err(error) = persist.await {
+                eprintln!("PortMate: trigger command result task failed: {error}");
+            }
         });
-        if let Err(error) = persist.await {
-            eprintln!("PortMate: trigger command result task failed: {error}");
-        }
-    });
+    }
+    if skipped > 0 {
+        record_trigger_command_event(
+            &store,
+            &store_path,
+            &session_id,
+            format!(
+                "PortMate: trigger commands skipped: concurrent command limit reached ({MAX_TRIGGER_COMMAND_CONCURRENCY}); skipped {skipped} actions"
+            ),
+        );
+    }
 }
 
 fn record_trigger_command_event(
@@ -32125,25 +32186,12 @@ mod tests {
                 let _ = release_rx.await;
             });
 
-            let mut profile =
-                test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-                    host: "127.0.0.1".to_string(),
-                    port: address.port(),
-                    reconnect: false,
-                    ..Default::default()
-                }));
-            profile.triggers = vec![portmate_core::TriggerSpec {
-                id: "stale-trigger".to_string(),
-                label: "Stale".to_string(),
-                matcher: portmate_core::TriggerMatcher::Contains {
-                    text: "STALE".to_string(),
-                    case_sensitive: true,
-                },
-                actions: vec![TriggerAction::TimelineMark {
-                    label: "must-not-run".to_string(),
-                }],
-                enabled: true,
-            }];
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
             let root =
                 std::env::temp_dir().join(format!("portmate-modem-cancel-{}", Uuid::new_v4()));
             fs::create_dir_all(&root).unwrap();
@@ -39102,6 +39150,21 @@ mod tests {
         assert!(store.timeline.iter().any(|mark| mark.label == "panic-mark"));
     }
 
+    #[test]
+    fn trigger_custom_link_expansion_is_streamed_and_unicode_bounded() {
+        assert_eq!(
+            render_trigger_custom_link("https://example.test/?q={text}", " status "),
+            ("https://example.test/?q=status".to_string(), false)
+        );
+
+        let template = "{text}".repeat(600);
+        let matched = "界".repeat(MAX_TRIGGER_CUSTOM_LINK_CHARACTERS + 1);
+        let (rendered, truncated) = render_trigger_custom_link(&template, &matched);
+        assert!(truncated);
+        assert_eq!(rendered.chars().count(), MAX_TRIGGER_CUSTOM_LINK_CHARACTERS);
+        assert!(rendered.chars().all(|character| character == '界'));
+    }
+
     #[cfg(not(windows))]
     #[tokio::test]
     async fn trigger_shell_command_captures_exit_status_and_bounds_output() {
@@ -39150,21 +39213,24 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        spawn_trigger_command(
+        spawn_trigger_commands(
             Arc::clone(&state.store),
             store_path,
             Arc::clone(&state.trigger_command_slots),
             session_id.clone(),
-            "this command must not run".to_string(),
+            vec![
+                "this command must not run".to_string(),
+                "neither should this".to_string(),
+            ],
         );
 
         let store = state.store.lock().unwrap();
         assert!(store.events.iter().any(|event| {
             event.session_id == session_id
-                && event
-                    .text
-                    .as_deref()
-                    .is_some_and(|text| text.contains("concurrent command limit reached (4)"))
+                && event.text.as_deref().is_some_and(|text| {
+                    text.contains("concurrent command limit reached (4)")
+                        && text.contains("skipped 2 actions")
+                })
         }));
         drop(store);
         drop(permits);
@@ -39177,7 +39243,7 @@ mod tests {
         let store_path = root.join("portmate-store.sqlite3");
         let mut profile = test_shell_profile();
         let session_id = profile.id.clone();
-        profile.triggers = (0..3)
+        let mut triggers: Vec<portmate_core::TriggerSpec> = (0..3)
             .map(|trigger_index| portmate_core::TriggerSpec {
                 id: format!("send-{trigger_index}"),
                 label: format!("Send {trigger_index}"),
@@ -39193,6 +39259,23 @@ mod tests {
                 enabled: true,
             })
             .collect();
+        triggers.extend((0..2).map(|trigger_index| {
+            portmate_core::TriggerSpec {
+                id: format!("command-{trigger_index}"),
+                label: format!("Command {trigger_index}"),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "MATCH".to_string(),
+                    case_sensitive: true,
+                },
+                actions: (0..if trigger_index == 0 { 8 } else { 1 })
+                    .map(|action_index| TriggerAction::LocalCommand {
+                        command: format!("command-{trigger_index}-{action_index}"),
+                    })
+                    .collect(),
+                enabled: true,
+            }
+        }));
+        profile.triggers = triggers;
         let state = test_app_state(profile, store_path.clone());
 
         let (dispatch, changed) = {
@@ -39201,11 +39284,19 @@ mod tests {
         };
         assert!(changed);
         assert_eq!(dispatch.send_texts.len(), MAX_TRIGGER_SEND_TEXTS_PER_BATCH);
+        assert_eq!(
+            dispatch.local_commands.len(),
+            MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH
+        );
         assert!(state.store.lock().unwrap().events.iter().any(|event| {
-            event
-                .text
-                .as_deref()
-                .is_some_and(|text| text.contains("skipped 1 actions"))
+            event.text.as_deref().is_some_and(|text| {
+                text.contains("send_text batch limit") && text.contains("skipped 1 actions")
+            })
+        }));
+        assert!(state.store.lock().unwrap().events.iter().any(|event| {
+            event.text.as_deref().is_some_and(|text| {
+                text.contains("local-command batch limit") && text.contains("skipped 1 actions")
+            })
         }));
 
         let permits = (0..MAX_TRIGGER_SEND_BATCH_CONCURRENCY)
@@ -39242,12 +39333,25 @@ mod tests {
                 socket.read_exact(&mut received).await.unwrap();
                 received
             });
-            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-                host: "127.0.0.1".to_string(),
-                port: address.port(),
-                reconnect: false,
-                ..Default::default()
-            }));
+            let mut profile =
+                test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                    ..Default::default()
+                }));
+            profile.triggers = vec![portmate_core::TriggerSpec {
+                id: "stale-trigger".to_string(),
+                label: "Stale".to_string(),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "STALE".to_string(),
+                    case_sensitive: true,
+                },
+                actions: vec![TriggerAction::TimelineMark {
+                    label: "must-not-run".to_string(),
+                }],
+                enabled: true,
+            }];
             let root =
                 std::env::temp_dir().join(format!("portmate-trigger-order-{}", Uuid::new_v4()));
             let store_path = root.join("portmate-store.sqlite3");
