@@ -27535,6 +27535,7 @@ async fn exec_ssh_command_capture<H: client::Handler>(
         let mut output = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_status = None;
+        let mut eof_received = false;
         tokio::time::timeout(remaining, async {
             while let Some(message) = channel.wait().await {
                 match message {
@@ -27550,8 +27551,19 @@ async fn exec_ssh_command_capture<H: client::Handler>(
                         MAX_SSH_EXEC_STDERR_BYTES,
                         "stderr",
                     )?,
-                    ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
-                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    ChannelMsg::ExitStatus { exit_status: code } => {
+                        exit_status = Some(code);
+                        if eof_received {
+                            break;
+                        }
+                    }
+                    ChannelMsg::Eof => {
+                        eof_received = true;
+                        if exit_status.is_some() {
+                            break;
+                        }
+                    }
+                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }
@@ -31003,6 +31015,12 @@ mod tests {
                     session.extended_data(channel, 1, b"remote failure".to_vec())?;
                     session.exit_status_request(channel, 7)?;
                     session.eof(channel)?;
+                }
+                b"__PORTMATE_TEST_EXEC_EOF_BEFORE_NONZERO__" => {
+                    session.data(channel, b"early output".to_vec())?;
+                    session.extended_data(channel, 1, b"late status failure".to_vec())?;
+                    session.eof(channel)?;
+                    session.exit_status_request(channel, 9)?;
                 }
                 b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
                 command if command.starts_with(b"tmux ") => {
@@ -42116,7 +42134,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ssh_exec_capture_closes_channels_on_success_nonzero_timeout_and_overflow() {
+    fn ssh_exec_capture_handles_eof_status_order_and_closes_every_exit_path() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping SSH exec cleanup test: ssh-keygen is not installed");
             return;
@@ -42163,6 +42181,18 @@ mod tests {
             .unwrap_err();
             assert_eq!(nonzero_error, "SSH exec 返回非零状态 7: remote failure");
 
+            let late_status_error = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_EOF_BEFORE_NONZERO__",
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                late_status_error,
+                "SSH exec 返回非零状态 9: late status failure"
+            );
+
             let timeout_error = exec_ssh_command_capture(
                 Arc::clone(&handle),
                 "__PORTMATE_TEST_EXEC_TIMEOUT__",
@@ -42186,13 +42216,13 @@ mod tests {
             );
 
             tokio::time::timeout(Duration::from_secs(1), async {
-                while counters.channel_closes.load(Ordering::SeqCst) < 4 {
+                while counters.channel_closes.load(Ordering::SeqCst) < 5 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await
             .expect("SSH exec channels were not closed on every exit path");
-            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 4);
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 5);
 
             drop(handle);
             server_task.abort();
