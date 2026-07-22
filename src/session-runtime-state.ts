@@ -21,6 +21,28 @@ export function sessionRuntimeStatusLabel(status: SessionStatus): string {
   return statusLabels[status];
 }
 
+export function transitionSessionRuntimeStatus(
+  runtime: SessionRuntime,
+  status: SessionStatus,
+  now: string,
+  reason?: string,
+): SessionRuntime {
+  const outage = sessionRuntimeOutageStatus(status);
+  const continuingOutage = outage && sessionRuntimeOutageStatus(runtime.status);
+  return {
+    ...runtime,
+    status,
+    connectedSince: status === "connected" ? runtime.connectedSince ?? now : null,
+    lastActivity: now,
+    lastDisconnect: outage && (!continuingOutage || !runtime.lastDisconnect)
+      ? now
+      : runtime.lastDisconnect ?? null,
+    lastDisconnectReason: outage
+      ? reason ?? `session ${status}`
+      : runtime.lastDisconnectReason ?? null,
+  };
+}
+
 export function sessionRuntimeHealthDescription(
   runtime: SessionRuntime,
   formatTimestamp: (value: string) => string = formatRuntimeTimestamp,
@@ -40,6 +62,10 @@ function normalizeDisconnectReason(value: string | null | undefined): string {
   const characters = Array.from(normalized);
   if (characters.length <= MAX_DISCONNECT_REASON_CHARS) return normalized;
   return `${characters.slice(0, MAX_DISCONNECT_REASON_CHARS - 3).join("")}...`;
+}
+
+function sessionRuntimeOutageStatus(status: SessionStatus): boolean {
+  return status === "disconnected" || status === "reconnecting" || status === "error";
 }
 
 function formatRuntimeTimestamp(value: string): string {

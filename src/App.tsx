@@ -70,7 +70,7 @@ import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { flattenSessionTree, MAX_SESSION_PROFILE_GROUP_CHARACTERS, MAX_SESSION_PROFILE_NAME_CHARACTERS, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS, normalizeSessionMetadataText, normalizeSessionProfileMetadata, protocolTabs, sessionSettingTrees } from "./session-settings-state";
 import type { ProtocolTab } from "./session-settings-state";
-import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
+import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
@@ -2737,7 +2737,7 @@ export default function App() {
         ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
         : formatError(error);
       const failureProfile = persistedProfileForConnect ?? session.profile;
-      const failed = setSessionStatus({ ...session, profile: failureProfile }, "error");
+      const failed = setSessionStatus({ ...session, profile: failureProfile }, "error", message);
       const backendLog = await callBackend("tail_log", { sessionId: failureProfile.id, limit: 600 }, []);
       const errorText = `PortMate: connection failed: ${message}`;
       const nextLog = backendLog.length ? backendLog : [...(logs[failureProfile.id] ?? []), createLocalSystemEvent(failureProfile, errorText)];
@@ -2801,7 +2801,7 @@ export default function App() {
     try {
       const saved = isBackendAvailable()
         ? await invokeBackend<SessionSummary>("close_session", { sessionId })
-        : setSessionStatus(session, "disconnected");
+        : setSessionStatus(session, "disconnected", "user closed session");
       const fallbackLog = [...(logs[sessionId] ?? []), createLocalSystemEvent(saved.profile, "PortMate: session disconnected")];
       const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
 
@@ -9711,18 +9711,13 @@ async function playTriggerSound(name: string) {
   await context.resume();
 }
 
-function setSessionStatus(session: SessionSummary, status: SessionStatus): SessionSummary {
+function setSessionStatus(session: SessionSummary, status: SessionStatus, reason?: string): SessionSummary {
   const now = new Date().toISOString();
   return {
     ...session,
     runtime: {
-      ...session.runtime,
-      status,
+      ...transitionSessionRuntimeStatus(session.runtime, status, now, reason),
       title: session.profile.name,
-      connectedSince: status === "connected" ? session.runtime.connectedSince ?? now : null,
-      lastActivity: now,
-      lastDisconnect: status === "connected" ? session.runtime.lastDisconnect ?? null : now,
-      lastDisconnectReason: status === "connected" ? session.runtime.lastDisconnectReason ?? null : `session ${status}`,
       activeTransport: session.profile.kind,
     },
   };

@@ -2707,6 +2707,12 @@ try {
     && failedProfileCredentialState.profileSaveCalls === 1
     && failedProfileCredentialState.openCalls === 0,
   `a failed Profile save retained connection credentials: ${JSON.stringify(failedProfileCredentialState)}`);
+  const failedProfileHealth = await failedProfileCredentialPage
+    .getByRole("button", { name: "连接 Edge Router", exact: true })
+    .getAttribute("title");
+  assert(failedProfileHealth?.includes("连接错误")
+    && failedProfileHealth.includes("simulated Profile save failure"),
+  `connection failure health lost its actual reason: ${failedProfileHealth}`);
   await failedProfileCredentialNotice.getByRole("button", { name: "确定", exact: true }).click();
   await failedProfileCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true }).click();
   const retryCredentialDialog = failedProfileCredentialPage.locator(".credential-dialog");
