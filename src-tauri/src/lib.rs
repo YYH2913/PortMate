@@ -30768,6 +30768,15 @@ mod tests {
             })
             .await
             .expect("updated TCP runtime never re-entered reconnecting state");
+            let second_disconnect_at = state
+                .store
+                .lock()
+                .unwrap()
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.session_id == profile.id)
+                .and_then(|runtime| runtime.last_disconnect)
+                .expect("second TCP outage did not record its disconnect time");
 
             {
                 let mut store = state.store.lock().unwrap();
@@ -30798,6 +30807,16 @@ mod tests {
             })
             .await
             .expect("disabling TCP reconnect did not remove the pending runtime");
+            let stopped_runtime = state
+                .store
+                .lock()
+                .unwrap()
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.session_id == profile.id)
+                .cloned()
+                .expect("stopped TCP runtime summary is missing");
+            assert_eq!(stopped_runtime.last_disconnect, Some(second_disconnect_at));
 
             let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
             assert!(screen.contains("reconnecting in 5000ms"));

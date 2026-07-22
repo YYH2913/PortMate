@@ -268,6 +268,7 @@ impl SessionStore {
             .iter_mut()
             .find(|runtime| runtime.session_id == session_id)
         {
+            let previous_status = runtime.status;
             runtime.status = status;
             runtime.title = profile.name.clone();
             runtime.connected_since = if status == SessionStatus::Connected {
@@ -277,7 +278,7 @@ impl SessionStore {
             };
             runtime.last_activity = now;
             runtime.active_transport = profile.kind;
-            apply_runtime_health(runtime, status, reason);
+            apply_runtime_health(runtime, Some(previous_status), status, reason);
         } else {
             let mut runtime = SessionRuntime {
                 session_id: session_id.to_string(),
@@ -291,7 +292,7 @@ impl SessionStore {
                 last_disconnect_reason: None,
                 active_transport: profile.kind,
             };
-            apply_runtime_health(&mut runtime, status, reason);
+            apply_runtime_health(&mut runtime, None, status, reason);
             self.runtimes.push(runtime);
         }
 
@@ -309,11 +310,16 @@ impl SessionStore {
             .iter_mut()
             .find(|runtime| runtime.session_id == session_id)
         {
+            let previous_status = runtime.status;
             runtime.status = SessionStatus::Disconnected;
             runtime.connected_since = None;
             runtime.last_activity = now;
-            runtime.last_disconnect = Some(now);
-            runtime.last_disconnect_reason = Some("user closed session".to_string());
+            apply_runtime_health(
+                runtime,
+                Some(previous_status),
+                SessionStatus::Disconnected,
+                Some("user closed session".to_string()),
+            );
         }
 
         let _ = self.push_system_event(session_id, "PortMate: session disconnected".to_string());
@@ -1083,14 +1089,15 @@ fn trim_oldest_matching<T>(
 
 fn apply_runtime_health(
     runtime: &mut SessionRuntime,
+    previous_status: Option<SessionStatus>,
     status: SessionStatus,
     reason: Option<String>,
 ) {
-    if matches!(
-        status,
-        SessionStatus::Disconnected | SessionStatus::Reconnecting | SessionStatus::Error
-    ) {
-        runtime.last_disconnect = Some(runtime.last_activity);
+    if runtime_outage_status(status) {
+        let continuing_outage = previous_status.is_some_and(runtime_outage_status);
+        if !continuing_outage || runtime.last_disconnect.is_none() {
+            runtime.last_disconnect = Some(runtime.last_activity);
+        }
         runtime.last_disconnect_reason = Some(reason.unwrap_or_else(|| match status {
             SessionStatus::Disconnected => "session disconnected".to_string(),
             SessionStatus::Reconnecting => "session reconnecting".to_string(),
@@ -1098,6 +1105,13 @@ fn apply_runtime_health(
             _ => "runtime status changed".to_string(),
         }));
     }
+}
+
+fn runtime_outage_status(status: SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::Disconnected | SessionStatus::Reconnecting | SessionStatus::Error
+    )
 }
 
 #[cfg(test)]
@@ -1669,6 +1683,82 @@ mod tests {
         assert_eq!(
             summary.runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
+        );
+    }
+
+    #[test]
+    fn runtime_health_preserves_first_disconnect_time_during_one_outage() {
+        let mut store = test_store();
+        store
+            .set_runtime_status("test-session", SessionStatus::Connected)
+            .unwrap();
+        let reconnecting = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Reconnecting,
+                Some("network timeout".to_string()),
+            )
+            .unwrap();
+        let disconnected_at = reconnecting.runtime.last_disconnect.unwrap();
+
+        let retry_failed = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Reconnecting,
+                Some("SSH reconnect failed: connection refused".to_string()),
+            )
+            .unwrap();
+        assert_eq!(retry_failed.runtime.last_disconnect, Some(disconnected_at));
+        assert_eq!(
+            retry_failed.runtime.last_disconnect_reason.as_deref(),
+            Some("SSH reconnect failed: connection refused")
+        );
+
+        let stopped = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Disconnected,
+                Some("automatic reconnect disabled".to_string()),
+            )
+            .unwrap();
+        assert_eq!(stopped.runtime.last_disconnect, Some(disconnected_at));
+        assert_eq!(
+            stopped.runtime.last_disconnect_reason.as_deref(),
+            Some("automatic reconnect disabled")
+        );
+
+        let closed_again = store.close_session("test-session").unwrap();
+        assert_eq!(closed_again.runtime.last_disconnect, Some(disconnected_at));
+        assert_eq!(
+            closed_again.runtime.last_disconnect_reason.as_deref(),
+            Some("user closed session")
+        );
+    }
+
+    #[test]
+    fn runtime_health_records_a_new_time_after_recovery() {
+        let mut store = test_store();
+        let old_disconnect = Utc::now() - chrono::Duration::hours(1);
+        let runtime = store
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == "test-session")
+            .unwrap();
+        runtime.status = SessionStatus::Connected;
+        runtime.last_disconnect = Some(old_disconnect);
+        runtime.last_disconnect_reason = Some("older outage".to_string());
+
+        let reconnecting = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Reconnecting,
+                Some("new transport loss".to_string()),
+            )
+            .unwrap();
+        assert!(reconnecting.runtime.last_disconnect.unwrap() > old_disconnect);
+        assert_eq!(
+            reconnecting.runtime.last_disconnect_reason.as_deref(),
+            Some("new transport loss")
         );
     }
 
