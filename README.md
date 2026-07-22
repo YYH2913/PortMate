@@ -402,9 +402,11 @@ queues at most 32 requests, expires after 60 seconds, fails closed when the UI i
 accepts each approval ID only once. `PORTMATE_MCP_TRUSTED=1` additionally enables the documented
 local bootstrap only while the grant store is empty.
 
-The desktop IPC reader caps each request at 1 MiB and requires the complete payload within five
-seconds; response writes use the same timeout. Oversized, incomplete, malformed, and invalid-token
-requests are rejected before command dispatch and do not create audit records.
+The desktop IPC server permits at most 64 active clients. Saturated connections receive a bounded
+error and are closed within a 100-millisecond rejection budget without creating another task. Each
+accepted request is capped at 1 MiB and must arrive completely within five seconds; response writes
+use the same timeout. Oversized, incomplete, malformed, and invalid-token requests are rejected
+before command dispatch and do not create audit records.
 
 The same bridge can expose JSON-RPC over local HTTP for clients that cannot spawn stdio servers. It only accepts loopback bind addresses, validates `Origin` when present, and requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring.
 The desktop `工具 -> MCP Bridge` dialog shows the packaged executable, exact desktop store path, default HTTP endpoint, Origin, startup command, and tokenRef, and can generate or rotate the keyring token. The generated command is platform-specific, shell-quotes paths, and never falls back to a source-only `cargo run` command.
