@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { sessionConnectionAction } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
 
 export type SessionContextAction =
@@ -53,6 +54,9 @@ export function SessionContextMenu({
   const top = Math.max(8, Math.min(state.y, window.innerHeight - 580));
   const sessionId = active?.profile.id ?? state.sessionId;
   const disabled = !active;
+  const status = active?.runtime.status;
+  const reconnectDisabled = !status || status === "connecting" || status === "reconnecting";
+  const disconnectDisabled = !status || sessionConnectionAction(status) !== "disconnect";
 
   return (
     <div className="portmate-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
@@ -74,13 +78,13 @@ export function SessionContextMenu({
       <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
       <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={disabled} onClick={() => onAction("reconnect", sessionId)} />
+      <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
       <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
       <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
       <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
       <ContextMenuButton label="移动视图到分组(M)" disabled={disabled} onClick={() => onAction("move-group", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label="断开会话(C)" disabled={disabled} onClick={() => onAction("close", sessionId)} />
+      <ContextMenuButton label="断开会话(C)" disabled={disconnectDisabled} onClick={() => onAction("close", sessionId)} />
       <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
       <ContextMenuButton label="断开所有非活动会话(I)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
       <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />

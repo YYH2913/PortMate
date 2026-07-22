@@ -4065,6 +4065,7 @@ async fn open_session_under_lifecycle_lock(
     credentials: SessionOpenCredentials,
     cancellation: Arc<SessionOpenCancellation>,
 ) -> Result<SessionSummary, String> {
+    ensure_session_can_open(&state, &session_id)?;
     clear_active_command(&state.session_io(), &session_id);
     let SessionOpenCredentials {
         username,
@@ -4177,6 +4178,40 @@ async fn open_session_under_lifecycle_lock(
             mark_session_connected_with_events(next_store, &profile, [])
         })
     }
+}
+
+fn ensure_session_can_open(state: &AppState, session_id: &str) -> Result<(), String> {
+    let status = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if !store
+            .profiles
+            .iter()
+            .any(|profile| profile.id == session_id)
+        {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        store
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == session_id)
+            .map(|runtime| runtime.status)
+            .unwrap_or(SessionStatus::Disconnected)
+    };
+    if matches!(
+        status,
+        SessionStatus::Connecting | SessionStatus::Connected | SessionStatus::Reconnecting
+    ) {
+        return Err(format!(
+            "session is already active ({status:?}); close it before opening again"
+        ));
+    }
+    if session_has_registered_runtime(state, session_id)? {
+        return Err(
+            "session transport runtime is still registered; close it before opening again"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 async fn cancel_session_open_under_lifecycle_lock(state: &AppState, session_id: &str) -> String {
@@ -45188,6 +45223,86 @@ mod tests {
                 .await
                 .expect("close_session did not resume after lifecycle lane release")
                 .unwrap()
+                .unwrap();
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+            assert!(state.shell.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn duplicate_session_open_preserves_the_existing_runtime() {
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+            let opened = open_session_inner(
+                state.clone(),
+                profile.id.clone(),
+                SessionOpenCredentials::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(opened.runtime.status, SessionStatus::Connected);
+            let runtime_id = state
+                .shell
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .runtime_id
+                .clone();
+            let event_count = state.store.lock().unwrap().events.len();
+
+            let active_error = open_session_inner(
+                state.clone(),
+                profile.id.clone(),
+                SessionOpenCredentials::default(),
+            )
+            .await
+            .unwrap_err();
+            assert!(active_error.contains("already active"), "{active_error}");
+            assert_eq!(
+                state
+                    .shell
+                    .lock()
+                    .unwrap()
+                    .get(&profile.id)
+                    .unwrap()
+                    .runtime_id,
+                runtime_id
+            );
+            assert_eq!(state.store.lock().unwrap().events.len(), event_count);
+
+            state
+                .store
+                .lock()
+                .unwrap()
+                .set_runtime_status(&profile.id, SessionStatus::Disconnected)
+                .unwrap();
+            let residue_error = open_session_inner(
+                state.clone(),
+                profile.id.clone(),
+                SessionOpenCredentials::default(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                residue_error.contains("transport runtime is still registered"),
+                "{residue_error}"
+            );
+            assert_eq!(
+                state
+                    .shell
+                    .lock()
+                    .unwrap()
+                    .get(&profile.id)
+                    .unwrap()
+                    .runtime_id,
+                runtime_id
+            );
+
+            let closed = close_session_inner(&state, profile.id.clone())
+                .await
                 .unwrap();
             assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
             assert!(state.shell.lock().unwrap().is_empty());

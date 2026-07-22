@@ -4,10 +4,6 @@ import type { SessionSummary } from "./types";
 import { SessionContextMenu, TerminalContextMenu } from "./ContextMenus";
 
 const originalWindow = globalThis.window;
-const session = {
-  profile: { id: "session-a", name: "Primary" },
-} as SessionSummary;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "window", {
     configurable: true,
@@ -42,6 +38,17 @@ describe("session context menu", () => {
     expect(html).not.toContain("开启同步输入(S)");
   });
 
+  it("matches reconnect and disconnect availability to the runtime state", () => {
+    const disconnected = renderMenu(false, "disconnected");
+    const connected = renderMenu(false, "connected");
+    const reconnecting = renderMenu(false, "reconnecting");
+    expect(buttonMarkup(disconnected, "断开会话(C)")).toContain("disabled");
+    expect(buttonMarkup(connected, "断开会话(C)")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "重新连接会话(R)")).not.toContain("disabled");
+    expect(buttonMarkup(reconnecting, "重新连接会话(R)")).toContain("disabled");
+    expect(buttonMarkup(reconnecting, "断开会话(C)")).not.toContain("disabled");
+  });
+
   it("exposes online search in the terminal action menu", () => {
     const html = renderToStaticMarkup(
       <TerminalContextMenu
@@ -53,7 +60,11 @@ describe("session context menu", () => {
   });
 });
 
-function renderMenu(syncInput: boolean): string {
+function renderMenu(syncInput: boolean, status: SessionSummary["runtime"]["status"] = "connected"): string {
+  const session = {
+    profile: { id: "session-a", name: "Primary" },
+    runtime: { status },
+  } as SessionSummary;
   return renderToStaticMarkup(
     <SessionContextMenu
       state={{ x: 100, y: 100, sessionId: session.profile.id }}
@@ -64,4 +75,12 @@ function renderMenu(syncInput: boolean): string {
       onColor={() => {}}
     />,
   );
+}
+
+function buttonMarkup(html: string, label: string): string {
+  const labelIndex = html.indexOf(label);
+  expect(labelIndex).toBeGreaterThanOrEqual(0);
+  const start = html.lastIndexOf("<button", labelIndex);
+  const end = html.indexOf("</button>", labelIndex);
+  return html.slice(start, end + "</button>".length);
 }

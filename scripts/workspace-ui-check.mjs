@@ -360,6 +360,8 @@ try {
     window.__transfers = [];
     window.__clipboardText = "";
     window.__closeSessionError = false;
+    window.__deferSessionOpens = false;
+    window.__pendingSessionOpens = [];
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
     window.__deferFileProperties = false;
@@ -713,6 +715,33 @@ try {
             size: 384,
             records: args.request.recordIds.length,
           };
+        }
+        if (command === "open_session" || command === "open_session_with_one_key") {
+          const index = window.__sessions.findIndex((item) => item.profile.id === args.sessionId);
+          if (index < 0) return null;
+          const result = {
+            ...window.__sessions[index],
+            runtime: {
+              ...window.__sessions[index].runtime,
+              status: "connected",
+              connectedSince: new Date().toISOString(),
+              lastActivity: new Date().toISOString(),
+            },
+          };
+          if (!window.__deferSessionOpens) {
+            window.__sessions[index] = result;
+            return structuredClone(result);
+          }
+          window.__sessions[index] = {
+            ...window.__sessions[index],
+            runtime: {
+              ...window.__sessions[index].runtime,
+              status: "connecting",
+              connectedSince: null,
+              lastActivity: new Date().toISOString(),
+            },
+          };
+          return new Promise((resolve) => window.__pendingSessionOpens.push({ result: structuredClone(result), resolve }));
         }
         if (command === "close_session") {
           if (window.__closeSessionError) throw new Error("simulated close failure");
@@ -2807,6 +2836,117 @@ try {
   assert(failedProfileCredentialErrors.length === 0,
     `failed Profile credential browser exceptions: ${JSON.stringify(failedProfileCredentialErrors)}`);
   await failedProfileCredentialPage.close();
+
+  const connectionLifecyclePage = await context.newPage();
+  const connectionLifecycleErrors = [];
+  connectionLifecyclePage.on("pageerror", (error) => connectionLifecycleErrors.push(error.message));
+  await connectionLifecyclePage.goto(appUrl);
+  const lifecycleSession = connectionLifecyclePage.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Local Shell" });
+  await lifecycleSession.click();
+  await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).click();
+  const lifecycleConnect = connectionLifecyclePage.getByRole("button", { name: "连接 Local Shell", exact: true });
+  await lifecycleConnect.waitFor();
+  const connectionLifecycleBaseline = await connectionLifecyclePage.evaluate(() => {
+    window.__deferSessionOpens = true;
+    return {
+      saves: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+      opens: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+    };
+  });
+  await lifecycleConnect.click();
+  await connectionLifecyclePage.waitForFunction(() => window.__pendingSessionOpens.length === 1);
+  await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).waitFor();
+
+  await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
+  const sessionContextMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
+  await sessionContextMenu.waitFor();
+  const sessionReconnect = sessionContextMenu.locator("button", { hasText: "重新连接会话(R)" });
+  const sessionDisconnect = sessionContextMenu.locator("button", { hasText: "断开会话(C)" });
+  assert(await sessionReconnect.isDisabled() && !await sessionDisconnect.isDisabled(),
+    "session context menu exposed reconnect or hid disconnect during a pending connection");
+  await connectionLifecyclePage.mouse.click(700, 400);
+  await sessionContextMenu.waitFor({ state: "detached" });
+
+  const lifecycleTab = connectionLifecyclePage.locator(".workspace-pane-tab", { hasText: "Local Shell" }).first();
+  await lifecycleTab.dispatchEvent("contextmenu", { clientX: 240, clientY: 80 });
+  await connectionLifecyclePage.locator(".workspace-view-context-menu").waitFor();
+  const viewReconnect = connectionLifecyclePage.getByRole("button", { name: "重新连接会话", exact: true });
+  assert(await viewReconnect.isDisabled(),
+    "view context menu exposed reconnect during a pending connection");
+  await connectionLifecyclePage.mouse.click(700, 400);
+  await connectionLifecyclePage.locator(".workspace-view-context-menu").waitFor({ state: "detached" });
+
+  await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).click();
+  await lifecycleConnect.waitFor();
+  await connectionLifecyclePage.evaluate(() => {
+    const pending = window.__pendingSessionOpens.shift();
+    pending.resolve(pending.result);
+  });
+  await connectionLifecyclePage.waitForTimeout(150);
+  const staleConnectionState = await connectionLifecyclePage.evaluate(() => ({
+    backend: window.__sessions.find((session) => session.profile.id === "local-shell")?.runtime.status ?? "missing",
+    pending: window.__pendingSessionOpens.length,
+    saves: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+  }));
+  assert(staleConnectionState.backend === "disconnected"
+    && staleConnectionState.pending === 0
+    && staleConnectionState.saves === connectionLifecycleBaseline.saves + 1
+    && staleConnectionState.opens === connectionLifecycleBaseline.opens + 1
+    && await lifecycleConnect.isVisible(),
+  `a late connection response restored a manually disconnected session: ${JSON.stringify(staleConnectionState)}`);
+
+  await lifecycleConnect.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await connectionLifecyclePage.waitForFunction(() => window.__pendingSessionOpens.length === 1);
+  const duplicateConnectionState = await connectionLifecyclePage.evaluate(() => ({
+    pending: window.__pendingSessionOpens.length,
+    saves: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+  }));
+  assert(duplicateConnectionState.pending === 1
+    && duplicateConnectionState.saves === connectionLifecycleBaseline.saves + 2
+    && duplicateConnectionState.opens === connectionLifecycleBaseline.opens + 2,
+  `duplicate connection triggers escaped the per-session gate: ${JSON.stringify(duplicateConnectionState)}`);
+  await connectionLifecyclePage.evaluate(() => {
+    const pending = window.__pendingSessionOpens.shift();
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    window.__sessions[index] = structuredClone(pending.result);
+    window.__deferSessionOpens = false;
+    pending.resolve(structuredClone(pending.result));
+  });
+  await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).waitFor();
+  await connectionLifecyclePage.waitForTimeout(100);
+  const reconnectLifecycleStart = await connectionLifecyclePage.evaluate(() => window.__invokeCalls.length);
+  await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
+  const reconnectContextMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
+  await reconnectContextMenu.waitFor();
+  const reconnectAction = reconnectContextMenu.locator("button", { hasText: "重新连接会话(R)" });
+  assert(!await reconnectAction.isDisabled(), "connected session context menu disabled reconnect");
+  await reconnectAction.click();
+  await connectionLifecyclePage.waitForFunction((start) => window.__invokeCalls.slice(start).some((call) => (
+    call.command === "open_session" && call.args.sessionId === "local-shell"
+  )), reconnectLifecycleStart);
+  const reconnectLifecycle = await connectionLifecyclePage.evaluate((start) => ({
+    calls: window.__invokeCalls.slice(start)
+      .filter((call) => ["close_session", "save_session_profile", "open_session"].includes(call.command))
+      .map((call) => ({
+        command: call.command,
+        sessionId: call.args.sessionId ?? call.args.profile?.id ?? "",
+      })),
+    status: window.__sessions.find((session) => session.profile.id === "local-shell")?.runtime.status ?? "missing",
+  }), reconnectLifecycleStart);
+  assert(JSON.stringify(reconnectLifecycle.calls) === JSON.stringify([
+    { command: "close_session", sessionId: "local-shell" },
+    { command: "save_session_profile", sessionId: "local-shell" },
+    { command: "open_session", sessionId: "local-shell" },
+  ]) && reconnectLifecycle.status === "connected",
+  `context reconnect did not close before opening: ${JSON.stringify(reconnectLifecycle)}`);
+  assert(connectionLifecycleErrors.length === 0,
+    `connection lifecycle browser exceptions: ${JSON.stringify(connectionLifecycleErrors)}`);
+  await connectionLifecyclePage.close();
 
   const cancelledDraftSecretPage = await context.newPage();
   const cancelledDraftSecretErrors = [];

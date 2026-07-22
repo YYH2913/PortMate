@@ -384,7 +384,10 @@ export default function App() {
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
-  const credentialResolverRef = useRef<((credentials: ConnectionCredentials | null) => void) | null>(null);
+  const credentialResolverRef = useRef<{
+    sessionId: string;
+    resolve: (credentials: ConnectionCredentials | null) => void;
+  } | null>(null);
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const syncInputRef = useRef(false);
@@ -392,6 +395,7 @@ export default function App() {
   const activeLogRefreshGateRef = useRef(new KeyedRequestGate<string>());
   const sessionsSignatureRef = useRef("");
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
+  const connectionAttemptGateRef = useRef(new KeyedRequestGate<string>());
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
@@ -1813,7 +1817,7 @@ export default function App() {
         copySessionUrlFromContext(sessionId);
         return;
       case "reconnect":
-        if (target) void connectSession(target.profile.id);
+        if (target) void reconnectSession(target.profile.id);
         return;
       case "save":
         void saveSessionFromContext(sessionId);
@@ -2249,7 +2253,7 @@ export default function App() {
         copySessionUrlFromContext(view.sessionId);
         return;
       case "reconnect":
-        void connectSession(view.sessionId, undefined, false);
+        void reconnectSession(view.sessionId, false);
         return;
       case "save":
         void saveSessionFromContext(view.sessionId, false);
@@ -2687,69 +2691,100 @@ export default function App() {
 
   async function connectSession(sessionId = activeId, sessionOverride?: SessionSummary, activateWorkspace = true) {
     const session = sessionOverride ?? sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return;
+    if (!session || session.runtime.status === "connecting" || session.runtime.status === "reconnecting") return;
+    const attemptToken = connectionAttemptGateRef.current.begin(session.profile.id);
+    if (attemptToken === null) return;
 
-    const credentials = await requestSessionCredentials(session.profile);
-    if (credentials === null) return;
-    let profileForConnect: SessionProfile;
-    let createdConnectionSecretRefs: string[] = [];
+    const attemptIsCurrent = () => connectionAttemptGateRef.current.isCurrent(session.profile.id, attemptToken);
     try {
-      const persistedSecrets = await persistConnectionSecrets(
-        applyConnectionCredentials(prepareSessionProfile(session.profile), credentials),
-        credentials,
-      );
-      profileForConnect = persistedSecrets.profile;
-      createdConnectionSecretRefs = persistedSecrets.createdSecretRefs;
-    } catch (error) {
-      setNotice({ title: "保存凭据失败", message: formatError(error) });
-      return;
-    }
-
-    const connecting = setSessionStatus({ ...session, profile: profileForConnect }, "connecting");
-    sessionSummaryRefreshGateRef.current.invalidate("summaries");
-    setSessions((current) => mergeSessionSummaries(current, connecting));
-    if (activateWorkspace) activateSession(profileForConnect.id);
-
-    let persistedProfileForConnect: SessionProfile | null = null;
-    try {
-      const persisted = await saveProfile(profileForConnect, session.profile);
-      persistedProfileForConnect = persisted.profile;
-      createdConnectionSecretRefs = [];
-      applySavedSession(persisted, activateWorkspace);
-      const saved = isBackendAvailable()
-        ? credentials.oneKeyId
-          ? await invokeBackend<SessionSummary>("open_session_with_one_key", { sessionId: persisted.profile.id, oneKeyId: credentials.oneKeyId })
-          : await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
-        : setSessionStatus(persisted, "connected");
-      const fallbackLog = [...(logs[persisted.profile.id] ?? []), createLocalSystemEvent(saved.profile, `PortMate: connected to ${describeProfileEndpoint(saved.profile)}`)];
-      const nextLog = await callBackend("tail_log", { sessionId: persisted.profile.id, limit: 600 }, fallbackLog);
-
-      replaceSessionLog(persisted.profile.id, nextLog);
-      sessionSummaryRefreshGateRef.current.invalidate("summaries");
-      setSessions((current) => {
-        const nextSessions = mergeSessionSummaries(current, saved);
-        saveLocalSessionSummaries(nextSessions);
-        return nextSessions;
-      });
-    } catch (error) {
-      const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
-      const message = cleanupErrors.length
-        ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
-        : formatError(error);
-      const failureProfile = persistedProfileForConnect ?? session.profile;
-      const failed = setSessionStatus({ ...session, profile: failureProfile }, "error", message);
-      const backendLog = await callBackend("tail_log", { sessionId: failureProfile.id, limit: 600 }, []);
-      const errorText = `PortMate: connection failed: ${message}`;
-      const nextLog = backendLog.length ? backendLog : [...(logs[failureProfile.id] ?? []), createLocalSystemEvent(failureProfile, errorText)];
-      replaceSessionLog(failureProfile.id, nextLog);
-      sessionSummaryRefreshGateRef.current.invalidate("summaries");
-      setSessions((current) => mergeSessionSummaries(current, failed));
-      if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
-        void openHostKeyPrompt(failureProfile, message, credentials);
-      } else {
-        setNotice({ title: "连接失败", message });
+      const credentials = await requestSessionCredentials(session.profile);
+      if (!attemptIsCurrent() || credentials === null) return;
+      let profileForConnect: SessionProfile;
+      let createdConnectionSecretRefs: string[] = [];
+      try {
+        const persistedSecrets = await persistConnectionSecrets(
+          applyConnectionCredentials(prepareSessionProfile(session.profile), credentials),
+          credentials,
+        );
+        profileForConnect = persistedSecrets.profile;
+        createdConnectionSecretRefs = persistedSecrets.createdSecretRefs;
+        if (!attemptIsCurrent()) {
+          await deleteUnreferencedSecrets(createdConnectionSecretRefs);
+          return;
+        }
+      } catch (error) {
+        const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
+        if (!attemptIsCurrent()) return;
+        const message = cleanupErrors.length
+          ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
+          : formatError(error);
+        setNotice({ title: "保存凭据失败", message });
+        return;
       }
+
+      const connecting = setSessionStatus({ ...session, profile: profileForConnect }, "connecting");
+      sessionSummaryRefreshGateRef.current.invalidate("summaries");
+      setSessions((current) => mergeSessionSummaries(current, connecting));
+      if (activateWorkspace) activateSession(profileForConnect.id);
+
+      let persistedProfileForConnect: SessionProfile | null = null;
+      try {
+        const persisted = await saveProfile(profileForConnect, session.profile);
+        persistedProfileForConnect = persisted.profile;
+        createdConnectionSecretRefs = [];
+        if (!attemptIsCurrent()) return;
+        applySavedSession({ ...connecting, profile: persisted.profile }, activateWorkspace);
+        const saved = isBackendAvailable()
+          ? credentials.oneKeyId
+            ? await invokeBackend<SessionSummary>("open_session_with_one_key", { sessionId: persisted.profile.id, oneKeyId: credentials.oneKeyId })
+            : await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
+          : setSessionStatus(persisted, "connected");
+        if (!attemptIsCurrent()) return;
+        const fallbackLog = [...(logs[persisted.profile.id] ?? []), createLocalSystemEvent(saved.profile, `PortMate: connected to ${describeProfileEndpoint(saved.profile)}`)];
+        const nextLog = await callBackend("tail_log", { sessionId: persisted.profile.id, limit: 600 }, fallbackLog);
+        if (!attemptIsCurrent()) return;
+
+        replaceSessionLog(persisted.profile.id, nextLog);
+        sessionSummaryRefreshGateRef.current.invalidate("summaries");
+        setSessions((current) => {
+          const nextSessions = mergeSessionSummaries(current, saved);
+          saveLocalSessionSummaries(nextSessions);
+          return nextSessions;
+        });
+      } catch (error) {
+        const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
+        if (!attemptIsCurrent()) return;
+        const message = cleanupErrors.length
+          ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
+          : formatError(error);
+        const failureProfile = persistedProfileForConnect ?? session.profile;
+        const failed = setSessionStatus({ ...session, profile: failureProfile }, "error", message);
+        const backendLog = await callBackend("tail_log", { sessionId: failureProfile.id, limit: 600 }, []);
+        if (!attemptIsCurrent()) return;
+        const errorText = `PortMate: connection failed: ${message}`;
+        const nextLog = backendLog.length ? backendLog : [...(logs[failureProfile.id] ?? []), createLocalSystemEvent(failureProfile, errorText)];
+        replaceSessionLog(failureProfile.id, nextLog);
+        sessionSummaryRefreshGateRef.current.invalidate("summaries");
+        setSessions((current) => mergeSessionSummaries(current, failed));
+        if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
+          void openHostKeyPrompt(failureProfile, message, credentials);
+        } else {
+          setNotice({ title: "连接失败", message });
+        }
+      }
+    } finally {
+      connectionAttemptGateRef.current.finish(session.profile.id, attemptToken);
     }
+  }
+
+  async function reconnectSession(sessionId: string, activateWorkspace = true) {
+    const session = sessions.find((item) => item.profile.id === sessionId);
+    if (!session) return;
+    if (sessionConnectionAction(session.runtime.status) === "disconnect") {
+      const disconnected = await disconnectSession(sessionId, false);
+      if (!disconnected) return;
+    }
+    await connectSession(sessionId, session, activateWorkspace);
   }
 
   async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
@@ -2794,6 +2829,13 @@ export default function App() {
   }
 
   async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<boolean> {
+    connectionAttemptGateRef.current.invalidate(sessionId);
+    const credentialRequest = credentialResolverRef.current;
+    if (credentialRequest?.sessionId === sessionId) {
+      credentialResolverRef.current = null;
+      setCredentialPrompt(null);
+      credentialRequest.resolve(null);
+    }
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) return false;
     if (isBackendAvailable() && session.runtime.status === "disconnected") return true;
@@ -3052,6 +3094,7 @@ export default function App() {
     if (!isSshLikeProfile(profile)) {
       return Promise.resolve({ username: null, password: null, passphrase: null, oneKeyId: null, savePassword: false, savePassphrase: false });
     }
+    if (credentialResolverRef.current) return Promise.resolve(null);
 
     const ssh = profile.connection;
     const target = describeProfileEndpoint(profile) || profile.name || "SSH";
@@ -3068,15 +3111,16 @@ export default function App() {
     };
 
     return new Promise((resolve) => {
-      credentialResolverRef.current = resolve;
+      credentialResolverRef.current = { sessionId: profile.id, resolve };
       setCredentialPrompt(prompt);
     });
   }
 
   function completeCredentialPrompt(credentials: ConnectionCredentials | null) {
-    credentialResolverRef.current?.(credentials);
+    const credentialRequest = credentialResolverRef.current;
     credentialResolverRef.current = null;
     setCredentialPrompt(null);
+    credentialRequest?.resolve(credentials);
   }
 
   async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
@@ -3407,6 +3451,7 @@ export default function App() {
           <LazyWorkspaceViewContextMenu
             state={workspaceViewContextMenu}
             view={workspaceContextView}
+            sessionStatus={workspaceContextSession.runtime.status}
             label={workspaceContextView.title || workspaceContextSession.profile.name}
             colors={tabColorChoices}
             canMerge={workspaceContextCanMerge}

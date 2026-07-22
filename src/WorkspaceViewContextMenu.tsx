@@ -1,6 +1,7 @@
 import { Ban } from "lucide-react";
 import type { ReactNode } from "react";
 import type { WorkspaceView } from "./workspace-state";
+import type { SessionStatus } from "./types";
 
 export type WorkspaceViewContextAction =
   | "copy-name"
@@ -33,6 +34,7 @@ export type WorkspaceViewContextAction =
 export default function WorkspaceViewContextMenu({
   state,
   view,
+  sessionStatus,
   label,
   colors,
   canDuplicate,
@@ -54,6 +56,7 @@ export default function WorkspaceViewContextMenu({
 }: {
   state: { x: number; y: number };
   view: WorkspaceView;
+  sessionStatus: SessionStatus;
   label: string;
   colors: readonly { label: string; value: string }[];
   canDuplicate: boolean;
@@ -122,7 +125,7 @@ export default function WorkspaceViewContextMenu({
       <MenuButton label="复制会话名称" onClick={() => onAction("copy-name")} />
       <MenuButton label="复制会话 URL" onClick={() => onAction("copy-url")} />
       <Divider />
-      <MenuButton label="重新连接会话" onClick={() => onAction("reconnect")} />
+      <MenuButton label="重新连接会话" disabled={sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
       <MenuButton label="保存会话配置" onClick={() => onAction("save")} />
       <MenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
       <MenuButton label="导出选中文本" onClick={() => onAction("export-selection")} />
