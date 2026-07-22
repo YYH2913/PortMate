@@ -3816,7 +3816,8 @@ fn merge_expected_profile_update(
                 .map_err(|error| format!("序列化当前 Profile 失败: {error}"))?;
             let incoming = serde_json::to_value(&incoming_profile)
                 .map_err(|error| format!("序列化待保存 Profile 失败: {error}"))?;
-            let merged = merge_profile_json_value("profile", &expected, &current, &incoming)?;
+            let merged =
+                merge_expected_json_value("Profile", "profile", &expected, &current, &incoming)?;
             serde_json::from_value(merged)
                 .map_err(|error| format!("反序列化合并后的 Profile 失败: {error}"))
         }
@@ -3842,7 +3843,8 @@ fn validate_expected_proxy_password(
     Ok(())
 }
 
-fn merge_profile_json_value(
+fn merge_expected_json_value(
+    entity: &str,
     path: &str,
     expected: &serde_json::Value,
     current: &serde_json::Value,
@@ -3862,7 +3864,7 @@ fn merge_profile_json_value(
     ) = (expected, current, incoming)
     else {
         return Err(format!(
-            "Profile 字段已被其他操作修改，请刷新后重试: {path}"
+            "{entity} 字段已被其他操作修改，请刷新后重试: {path}"
         ));
     };
     if expected.len() != current.len()
@@ -3872,7 +3874,7 @@ fn merge_profile_json_value(
             .all(|key| current.contains_key(key) && incoming.contains_key(key))
     {
         return Err(format!(
-            "Profile 结构已被其他操作修改，请刷新后重试: {path}"
+            "{entity} 结构已被其他操作修改，请刷新后重试: {path}"
         ));
     }
 
@@ -3880,14 +3882,20 @@ fn merge_profile_json_value(
     for (key, expected_value) in expected {
         let current_value = current
             .get(key)
-            .expect("Profile key sets were checked above");
+            .expect("merged JSON key sets were checked above");
         let incoming_value = incoming
             .get(key)
-            .expect("Profile key sets were checked above");
+            .expect("merged JSON key sets were checked above");
         let child_path = format!("{path}.{key}");
         merged.insert(
             key.clone(),
-            merge_profile_json_value(&child_path, expected_value, current_value, incoming_value)?,
+            merge_expected_json_value(
+                entity,
+                &child_path,
+                expected_value,
+                current_value,
+                incoming_value,
+            )?,
         );
     }
     Ok(serde_json::Value::Object(merged))
@@ -4837,7 +4845,7 @@ fn merge_expected_host_key_update(
         .map_err(|error| format!("序列化当前 host key 失败: {error}"))?;
     let incoming = serde_json::to_value(&incoming_key)
         .map_err(|error| format!("序列化待更新 host key 失败: {error}"))?;
-    let merged = merge_profile_json_value("hostKey", &expected, &current, &incoming)?;
+    let merged = merge_expected_json_value("Host Key", "hostKey", &expected, &current, &incoming)?;
     serde_json::from_value(merged)
         .map_err(|error| format!("反序列化合并后的 host key 失败: {error}"))
 }
@@ -17775,7 +17783,13 @@ fn merge_expected_client_identity_update(
         .map_err(|error| format!("序列化当前 identity 失败: {error}"))?;
     let incoming = serde_json::to_value(&incoming_identity)
         .map_err(|error| format!("序列化待更新 identity 失败: {error}"))?;
-    let merged = merge_profile_json_value("identity", &expected, &current, &incoming)?;
+    let merged = merge_expected_json_value(
+        "Client Identity",
+        "identity",
+        &expected,
+        &current,
+        &incoming,
+    )?;
     serde_json::from_value(merged)
         .map_err(|error| format!("反序列化合并后的 identity 失败: {error}"))
 }
@@ -38404,6 +38418,8 @@ mod tests {
         conflicting_current.alias = "current-alias".to_string();
         let error =
             merge_expected_host_key_update(&conflicting_current, &expected, incoming).unwrap_err();
+        assert!(error.contains("Host Key 字段"), "{error}");
+        assert!(!error.contains("Profile 字段"), "{error}");
         assert!(error.contains("hostKey.alias"), "{error}");
         assert!(!error.contains("current-alias"), "{error}");
         assert!(!error.contains("incoming-alias"), "{error}");
@@ -42875,6 +42891,8 @@ mod tests {
         conflicting.label = "Incoming label".to_string();
         let error =
             merge_expected_client_identity_update(&current, &expected, conflicting).unwrap_err();
+        assert!(error.contains("Client Identity 字段"), "{error}");
+        assert!(!error.contains("Profile 字段"), "{error}");
         assert!(error.contains("identity.label"), "{error}");
         assert!(!error.contains("Current label"), "{error}");
         assert!(!error.contains("Incoming label"), "{error}");
@@ -44619,6 +44637,7 @@ mod tests {
             conflicting_incoming,
         )
         .unwrap_err();
+        assert!(error.contains("Profile 字段"), "{error}");
         assert!(error.contains("profile.group"), "{error}");
 
         let mut matching_incoming = expected.clone();
