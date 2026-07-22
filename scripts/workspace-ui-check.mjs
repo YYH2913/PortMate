@@ -2894,6 +2894,34 @@ try {
     `empty Profile compensation browser exceptions: ${JSON.stringify(emptyProfileRecoveryErrors)}`);
   await emptyProfileRecoveryPage.close();
 
+  const cacheRecoveryContext = await browser.newContext({ viewport: { width: 960, height: 680 } });
+  await cacheRecoveryContext.addInitScript(() => {
+    localStorage.clear();
+    localStorage.setItem("portmate.sessions", JSON.stringify({ version: 1, sessions: [null] }));
+  });
+  const cacheRecoveryErrors = [];
+  const cacheRecoveryMain = await cacheRecoveryContext.newPage();
+  cacheRecoveryMain.on("pageerror", (error) => cacheRecoveryErrors.push(`main: ${error.message}`));
+  await cacheRecoveryMain.goto(appUrl);
+  await cacheRecoveryMain.locator(".wind-root").waitFor();
+
+  const cacheRecoveryDetached = await cacheRecoveryContext.newPage();
+  cacheRecoveryDetached.on("pageerror", (error) => cacheRecoveryErrors.push(`detached: ${error.message}`));
+  await cacheRecoveryDetached.goto(`${appUrl}?detachedPane=1&windowId=cache-recovery&paneId=cache-pane&viewId=cache-view&sessionId=missing&title=&color=&keyMode=remote`);
+  await cacheRecoveryDetached.locator(".detached-pane-root").waitFor();
+  assert((await cacheRecoveryDetached.locator(".detached-pane-toolbar").textContent())?.includes("会话不可用"),
+    "detached window did not conservatively discard an invalid session cache");
+
+  const cacheRecoveryAnalyzer = await cacheRecoveryContext.newPage();
+  cacheRecoveryAnalyzer.on("pageerror", (error) => cacheRecoveryErrors.push(`analyzer: ${error.message}`));
+  await cacheRecoveryAnalyzer.goto(`${appUrl}?serialAnalyzer=1&windowId=cache-analyzer&sessionId=missing`);
+  await cacheRecoveryAnalyzer.locator(".serial-analyzer-root").waitFor();
+  assert((await cacheRecoveryAnalyzer.locator(".serial-analyzer-missing").textContent())?.includes("串口会话不可用"),
+    "serial analyzer did not conservatively discard an invalid session cache");
+  assert(cacheRecoveryErrors.length === 0,
+    `invalid session cache caused browser exceptions: ${JSON.stringify(cacheRecoveryErrors)}`);
+  await cacheRecoveryContext.close();
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -2944,6 +2972,7 @@ try {
       renamed: renamedProfileRecoveryState,
       empty: emptyProfileRecoveryState,
     },
+    sessionCacheRecovery: ["main", "detached", "serial-analyzer"],
     terminalWrites,
     desktop,
     mobile,

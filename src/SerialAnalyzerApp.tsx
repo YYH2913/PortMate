@@ -37,6 +37,7 @@ import type {
 } from "./serial-analyzer-state";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import { mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
+import { readSessionSummaryCache } from "./session-summary-cache";
 import type {
   ExportSerialCaptureResult,
   SerialCaptureFrame,
@@ -553,8 +554,7 @@ function loadStoredAnalyzerState(): SerialAnalyzerStoredState {
 
 function loadLocalSessions(): SessionSummary[] {
   try {
-    const raw = window.localStorage.getItem("portmate.sessions");
-    return raw ? JSON.parse(raw) as SessionSummary[] : [];
+    return readSessionSummaryCache(window.localStorage);
   } catch {
     return [];
   }

@@ -15,6 +15,7 @@ import {
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
+import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
 import TerminalCanvas from "./TerminalCanvas";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
@@ -139,7 +140,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === "portmate.sessions" || event.key === null) {
+      if (event.key === SESSION_SUMMARY_CACHE_STORAGE_KEY || event.key === null) {
         setSessions(loadLocalSessions());
       }
       if (["portmate.terminalPrefs", COMMAND_HISTORY_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
@@ -331,8 +332,7 @@ function DetachedScreenLockOverlay({ marker }: { marker: ScreenLockMarker }) {
 
 function loadLocalSessions(): SessionSummary[] {
   try {
-    const raw = window.localStorage.getItem("portmate.sessions");
-    return raw ? JSON.parse(raw) as SessionSummary[] : [];
+    return readSessionSummaryCache(window.localStorage);
   } catch {
     return [];
   }

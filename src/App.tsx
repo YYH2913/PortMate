@@ -1140,7 +1140,7 @@ export default function App() {
       hydrateStartupValue("serial-ports", () => readStartupValue("list_serial_ports", []), setSerialPorts, true),
     ]);
     try {
-      const nextSessions = await callBackend("list_sessions", {}, loadLocalSessionSummaries());
+      const nextSessions = await callBackend("list_sessions", {}, emptySessions);
       if (gate.isCurrent("summaries", token)) {
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
         setSessions(nextSessions);
@@ -10097,17 +10097,12 @@ function emptyTunnelStatus(spec: TunnelSpec): TunnelStatus {
   };
 }
 
-function loadLocalSessionSummaries() {
-  try {
-    const raw = window.localStorage.getItem("portmate.sessions");
-    return raw ? JSON.parse(raw) as SessionSummary[] : emptySessions;
-  } catch {
-    return emptySessions;
-  }
-}
-
 function saveLocalSessionSummaries(sessions: SessionSummary[]) {
-  window.localStorage.setItem("portmate.sessions", JSON.stringify(sessions));
+  try {
+    window.localStorage.setItem("portmate.sessions", JSON.stringify({ version: 1, sessions }));
+  } catch {
+    // This cache is only a detached-window fallback.
+  }
 }
 
 async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName: string): Promise<void> {
