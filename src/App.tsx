@@ -2778,11 +2778,12 @@ export default function App() {
   }
 
   async function reconnectSession(sessionId: string, activateWorkspace = true) {
-    const session = sessions.find((item) => item.profile.id === sessionId);
+    let session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) return;
     if (sessionConnectionAction(session.runtime.status) === "disconnect") {
       const disconnected = await disconnectSession(sessionId, false);
       if (!disconnected) return;
+      session = disconnected;
     }
     await connectSession(sessionId, session, activateWorkspace);
   }
@@ -2828,7 +2829,7 @@ export default function App() {
     setHostKeyPrompt(null);
   }
 
-  async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<boolean> {
+  async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
     connectionAttemptGateRef.current.invalidate(sessionId);
     const credentialRequest = credentialResolverRef.current;
     if (credentialRequest?.sessionId === sessionId) {
@@ -2837,8 +2838,8 @@ export default function App() {
       credentialRequest.resolve(null);
     }
     const session = sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return false;
-    if (isBackendAvailable() && session.runtime.status === "disconnected") return true;
+    if (!session) return null;
+    if (isBackendAvailable() && session.runtime.status === "disconnected") return session;
 
     try {
       const saved = isBackendAvailable()
@@ -2855,11 +2856,11 @@ export default function App() {
         saveLocalSessionSummaries(nextSessions);
         return nextSessions;
       });
-      return true;
+      return saved;
     } catch (error) {
       if (reportError) setNotice({ title: "断开会话失败", message: formatError(error) });
       void refreshSessionSummaries();
-      return false;
+      return null;
     }
   }
 

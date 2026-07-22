@@ -749,7 +749,14 @@ try {
           if (index < 0) return null;
           const session = {
             ...window.__sessions[index],
-            runtime: { ...window.__sessions[index].runtime, status: "disconnected" },
+            runtime: {
+              ...window.__sessions[index].runtime,
+              status: "disconnected",
+              connectedSince: null,
+              lastActivity: new Date().toISOString(),
+              lastDisconnect: new Date().toISOString(),
+              lastDisconnectReason: "user closed session",
+            },
           };
           window.__sessions[index] = session;
           return structuredClone(session);
@@ -2919,16 +2926,20 @@ try {
   });
   await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).waitFor();
   await connectionLifecyclePage.waitForTimeout(100);
-  const reconnectLifecycleStart = await connectionLifecyclePage.evaluate(() => window.__invokeCalls.length);
+  const reconnectLifecycleStart = await connectionLifecyclePage.evaluate(() => {
+    window.__deferSessionOpens = true;
+    return window.__invokeCalls.length;
+  });
   await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
   const reconnectContextMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
   await reconnectContextMenu.waitFor();
   const reconnectAction = reconnectContextMenu.locator("button", { hasText: "重新连接会话(R)" });
   assert(!await reconnectAction.isDisabled(), "connected session context menu disabled reconnect");
   await reconnectAction.click();
-  await connectionLifecyclePage.waitForFunction((start) => window.__invokeCalls.slice(start).some((call) => (
-    call.command === "open_session" && call.args.sessionId === "local-shell"
-  )), reconnectLifecycleStart);
+  await connectionLifecyclePage.waitForFunction(() => window.__pendingSessionOpens.length === 1);
+  const reconnectHealth = await connectionLifecyclePage
+    .getByRole("button", { name: "断开 Local Shell", exact: true })
+    .getAttribute("title");
   const reconnectLifecycle = await connectionLifecyclePage.evaluate((start) => ({
     calls: window.__invokeCalls.slice(start)
       .filter((call) => ["close_session", "save_session_profile", "open_session"].includes(call.command))
@@ -2942,8 +2953,19 @@ try {
     { command: "close_session", sessionId: "local-shell" },
     { command: "save_session_profile", sessionId: "local-shell" },
     { command: "open_session", sessionId: "local-shell" },
-  ]) && reconnectLifecycle.status === "connected",
-  `context reconnect did not close before opening: ${JSON.stringify(reconnectLifecycle)}`);
+  ])
+    && reconnectLifecycle.status === "connecting"
+    && reconnectHealth?.includes("正在连接")
+    && reconnectHealth.includes("user closed session"),
+  `context reconnect did not preserve the authoritative disconnect summary: ${JSON.stringify({ reconnectLifecycle, reconnectHealth })}`);
+  await connectionLifecyclePage.evaluate(() => {
+    const pending = window.__pendingSessionOpens.shift();
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    window.__sessions[index] = structuredClone(pending.result);
+    window.__deferSessionOpens = false;
+    pending.resolve(structuredClone(pending.result));
+  });
+  await connectionLifecyclePage.getByRole("button", { name: "断开 Local Shell", exact: true }).waitFor();
   assert(connectionLifecycleErrors.length === 0,
     `connection lifecycle browser exceptions: ${JSON.stringify(connectionLifecycleErrors)}`);
   await connectionLifecyclePage.close();
