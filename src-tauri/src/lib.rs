@@ -14951,19 +14951,12 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
         }
         let target = Path::new(local_destination);
         let temp_target = local_resume_part_path(target);
-        let resume_offset = local_resume_offset(&temp_target, size)?;
-        // A complete-looking part file cannot be trusted without content metadata.
-        // Re-download it so an old same-sized file is never promoted as new data.
-        let copied = if resume_offset == size {
-            0
-        } else {
-            resume_offset
-        };
-        progress.set_rate_baseline(copied);
-        if copied > 0 {
-            progress.update(copied, size).await?;
-        }
-        let mut file = open_local_resume_writer(&temp_target, copied)
+        local_resume_offset(&temp_target, size)?;
+        // Standard scp -f always streams from byte zero and provides no source
+        // identity for validating an existing prefix. Truncate instead of
+        // combining an unverified old prefix with the new remote suffix.
+        progress.set_rate_baseline(0);
+        let mut file = open_local_resume_writer(&temp_target, 0)
             .map_err(|error| format!("创建本地目标文件失败: {error}"))?;
         scp_send_data_with_idle_timeout(
             &channel,
@@ -15009,15 +15002,11 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
                 }
                 continue;
             }
-            let take = pending.len().min((size - received) as usize);
+            let remaining = usize::try_from(size - received).unwrap_or(usize::MAX);
+            let take = pending.len().min(remaining);
             let chunk = pending.drain(..take).collect::<Vec<_>>();
-            let chunk_start = received;
             received += take as u64;
-            if received <= copied {
-                continue;
-            }
-            let write_from = copied.saturating_sub(chunk_start) as usize;
-            file.write_all(&chunk[write_from..])
+            file.write_all(&chunk)
                 .map_err(|error| format!("写入本地目标文件失败: {error}"))?;
             progress.update(received, size).await?;
         }
@@ -42718,7 +42707,7 @@ mod tests {
 
             let target = root.path().join("download-success.bin");
             let part = local_resume_part_path(&target);
-            fs::write(&part, b"old!").unwrap();
+            fs::write(&part, b"zz").unwrap();
             let downloaded = scp_download_with_idle_timeout(
                 Arc::clone(&handle),
                 "/__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__",
