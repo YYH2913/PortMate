@@ -217,6 +217,7 @@ const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
@@ -11384,22 +11385,52 @@ async fn copy_local_file_for_transfer(
 async fn open_sftp_session(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
 ) -> Result<SftpSession, String> {
-    let channel = {
-        let handle = handle.lock().await;
-        handle
+    open_sftp_session_with_timeout(handle, SSH_AUXILIARY_SETUP_TIMEOUT).await
+}
+
+async fn open_sftp_session_with_timeout<H: client::Handler>(
+    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    timeout: Duration,
+) -> Result<SftpSession, String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, handle.lock())
+        .await
+        .map_err(|_| format!("SFTP handle lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("SFTP setup 超时（{} ms）", timeout.as_millis()))?;
+
+    let setup = async {
+        let channel = handle
             .channel_open_session()
             .await
-            .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?
+            .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|error| format!("SFTP subsystem 启动失败: {error}"))?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
+        sftp.set_timeout(20);
+        Ok::<_, String>(sftp)
     };
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .map_err(|error| format!("SFTP subsystem 启动失败: {error}"))?;
-    let sftp = SftpSession::new(channel.into_stream())
-        .await
-        .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
-    sftp.set_timeout(20);
-    Ok(sftp)
+    match bounded_connection_step(setup, remaining).await {
+        Ok(sftp) => Ok(sftp),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning =
+                request_ssh_disconnect_with_timeout(&handle, "PortMate SFTP setup timeout")
+                    .await
+                    .map(|warning| format!("; {warning}"))
+                    .unwrap_or_default();
+            Err(format!(
+                "SFTP setup 超时（{} ms）{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
 }
 
 /// A transfer writes to a temp sibling of the real destination and is only
@@ -11973,17 +12004,13 @@ async fn remote_copy(
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let command = remote_copy_command(remote_source, remote_destination);
-    let mut channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("SSH remote copy 打开 channel 失败: {error}"))?
-    };
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|error| format!("SSH remote copy 启动失败: {error}"))?;
+    let mut channel = open_shared_ssh_exec_channel(
+        &handle,
+        &command,
+        SSH_AUXILIARY_SETUP_TIMEOUT,
+        "SSH remote copy",
+    )
+    .await?;
 
     let mut output = Vec::new();
     let mut stderr = Vec::new();
@@ -13300,21 +13327,17 @@ async fn start_tmux_control_inner(
     }
 
     let handle = ssh_handle_for_transfer(state, session_id)?;
-    let mut channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("Tmux control-mode 打开 SSH channel 失败: {error}"))?
-    };
     let command = format!(
         "tmux -C attach-session -t {}",
         shell_quote(normalize_tmux_target(&target)?)
     );
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|error| format!("Tmux control-mode 启动失败: {error}"))?;
+    let mut channel = open_shared_ssh_exec_channel(
+        &handle,
+        &command,
+        SSH_AUXILIARY_SETUP_TIMEOUT,
+        "Tmux control-mode",
+    )
+    .await?;
 
     let runtime_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -13967,17 +13990,9 @@ async fn scp_upload(
         .filter(|value| !value.is_empty())
         .unwrap_or("portmate-upload.bin");
     let command = scp_upload_command(remote_destination, file_name, size);
-    let mut channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("SCP 打开 SSH channel 失败: {error}"))?
-    };
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|error| format!("SCP 启动远端接收失败: {error}"))?;
+    let mut channel =
+        open_shared_ssh_exec_channel(&handle, &command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
+            .await?;
 
     let mut output = Vec::new();
     let mut stderr = Vec::new();
@@ -14149,17 +14164,14 @@ async fn scp_download(
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let mut channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("SCP 打开 SSH channel 失败: {error}"))?
-    };
-    channel
-        .exec(true, scp_download_command(remote_source))
-        .await
-        .map_err(|error| format!("SCP 启动远端发送失败: {error}"))?;
+    let command = scp_download_command(remote_source);
+    let mut channel = open_shared_ssh_exec_channel(
+        &handle,
+        &command,
+        SSH_AUXILIARY_SETUP_TIMEOUT,
+        "SCP download",
+    )
+    .await?;
     let mut pending = VecDeque::new();
     channel
         .data(&[0_u8][..])
@@ -15325,6 +15337,51 @@ async fn request_ssh_disconnect_with_timeout<H: client::Handler>(
             "SSH disconnect request timed out after {} ms",
             SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
         )),
+    }
+}
+
+async fn open_shared_ssh_exec_channel<H: client::Handler>(
+    shared_handle: &Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    command: &str,
+    timeout: Duration,
+    label: &str,
+) -> Result<Channel<client::Msg>, String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
+        .await
+        .map_err(|_| format!("{label} handle lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} setup 超时（{} ms）", timeout.as_millis()))?;
+
+    let setup = async {
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|error| format!("{label} 打开 SSH channel 失败: {error}"))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|error| format!("{label} 启动 SSH exec 失败: {error}"))?;
+        Ok::<_, String>(channel)
+    };
+    match bounded_connection_step(setup, remaining).await {
+        Ok(channel) => Ok(channel),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning = request_ssh_disconnect_with_timeout(
+                &handle,
+                "PortMate auxiliary SSH exec setup timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+            Err(format!(
+                "{label} setup 超时（{} ms）{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
     }
 }
 
@@ -26123,22 +26180,17 @@ async fn exec_ssh_command_capture(
     command: &str,
     timeout: Duration,
 ) -> Result<String, String> {
-    let mut channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("SSH exec 打开 channel 失败: {error}"))?
-    };
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|error| format!("SSH exec 启动失败: {error}"))?;
+    let started = Instant::now();
+    let mut channel = open_shared_ssh_exec_channel(&handle, command, timeout, "SSH exec").await?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "SSH exec 超时".to_string())?;
 
     let mut output = Vec::new();
     let mut stderr = Vec::new();
     let mut exit_status = None;
-    tokio::time::timeout(timeout, async {
+    tokio::time::timeout(remaining, async {
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
@@ -39581,6 +39633,94 @@ mod tests {
             .expect("delayed SSH session-channel callback did not finish");
 
             drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_auxiliary_setups_timeout_and_disconnect_stalled_russh_sessions() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SSH auxiliary setup timeout test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-auxiliary-setup-user";
+            let secret = "PortMate auxiliary setup secret";
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key,
+                username,
+                secret,
+                None,
+                Some(Duration::from_millis(200)),
+                None,
+            )
+            .await;
+
+            let mut exec_handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(exec_handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let exec_handle = Arc::new(tokio::sync::Mutex::new(exec_handle));
+            let error = open_shared_ssh_exec_channel(
+                &exec_handle,
+                "true",
+                Duration::from_millis(30),
+                "SSH auxiliary exec test",
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, "SSH auxiliary exec test setup 超时（30 ms）");
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.session_channel_completions.load(Ordering::SeqCst) != 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("delayed auxiliary exec channel callback did not finish");
+            drop(exec_handle);
+
+            let mut sftp_handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(sftp_handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let sftp_handle = Arc::new(tokio::sync::Mutex::new(sftp_handle));
+            let error = open_sftp_session_with_timeout(sftp_handle, Duration::from_millis(30))
+                .await
+                .err()
+                .expect("stalled SFTP setup unexpectedly succeeded");
+            assert_eq!(error, "SFTP setup 超时（30 ms）");
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.session_channel_completions.load(Ordering::SeqCst) != 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("delayed SFTP channel callback did not finish");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+
             server_task.abort();
             let _ = server_task.await;
         });
