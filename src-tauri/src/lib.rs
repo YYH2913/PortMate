@@ -12760,7 +12760,9 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
             "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
-            "if [ \"$current\" -le \"$total\" ]; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "if [ \"$current\" -le \"$total\" ]; then ",
+            "if [ \"$current\" -eq 0 ] || head -c \"$current\" -- \"$src\" | cmp -s - \"$part\"; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "printf '__PORTMATE_RESUME__%s\\n' \"$offset\"; ",
@@ -42195,10 +42197,38 @@ mod tests {
         assert!(command.contains("remote_name=${src##*/}"));
         assert!(command.contains("case \"$dst\" in */)"));
         assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
+        assert!(command.contains("head -c \"$current\" -- \"$src\" | cmp -s - \"$part\""));
         assert!(command.contains("tail -c +$((offset + 1)) -- \"$src\" >> \"$part\""));
         assert!(command.contains("mv -f -- \"$part\" \"$target\""));
         assert!(command.contains("src='/tmp/source file.bin'"));
         assert!(command.contains("dst='/tmp/o'\\''clock.bin'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_copy_command_verifies_existing_part_file_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        let target = root.path().join("target.bin");
+        let part = root.path().join("target.bin.portmate-part");
+        fs::write(&source, b"abcdef").unwrap();
+
+        for (prefix, expected_resume) in [(b"abc".as_slice(), 3), (b"xyz".as_slice(), 0)] {
+            fs::write(&part, prefix).unwrap();
+            let command = remote_copy_command(source.to_str().unwrap(), target.to_str().unwrap());
+            let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+            assert!(!part.exists());
+            let markers = remote_copy_markers(&output.stdout);
+            assert_eq!(markers.total, Some(6));
+            assert_eq!(markers.resume, Some(expected_resume));
+            assert_eq!(markers.done, Some(6));
+        }
     }
 
     #[cfg(unix)]
