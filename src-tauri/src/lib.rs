@@ -216,6 +216,8 @@ const MAX_SERIAL_CAPTURE_HISTORY_FRAMES: usize = 4_096;
 const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
@@ -15237,6 +15239,82 @@ fn remote_forward_port_key(port: u16) -> String {
     format!("*:{}", port)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedTunnelSetupError {
+    TimedOut,
+    Failed(String),
+}
+
+async fn bounded_tunnel_setup<T, E, F>(
+    operation: F,
+    timeout: Duration,
+) -> Result<T, BoundedTunnelSetupError>
+where
+    E: std::fmt::Display,
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    match tokio::time::timeout(timeout, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(BoundedTunnelSetupError::Failed(error.to_string())),
+        Err(_) => Err(BoundedTunnelSetupError::TimedOut),
+    }
+}
+
+async fn open_tunnel_direct_tcpip(
+    shared_handle: &Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    target_host: String,
+    target_port: u16,
+    peer: std::net::SocketAddr,
+    label: &str,
+) -> Result<Channel<client::Msg>, String> {
+    let handle = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, shared_handle.lock())
+        .await
+        .map_err(|_| {
+            format!(
+                "{label} handle lock timed out after {} ms",
+                TUNNEL_CONNECT_TIMEOUT.as_millis()
+            )
+        })?;
+    match bounded_tunnel_setup(
+        handle.channel_open_direct_tcpip(
+            target_host,
+            u32::from(target_port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        ),
+        TUNNEL_CONNECT_TIMEOUT,
+    )
+    .await
+    {
+        Ok(channel) => Ok(channel),
+        Err(BoundedTunnelSetupError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(BoundedTunnelSetupError::TimedOut) => {
+            // Cancelling russh's confirmation wait can orphan its channel entry.
+            let cleanup = tokio::time::timeout(
+                TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT,
+                handle.disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate tunnel channel open timeout",
+                    "en",
+                ),
+            )
+            .await;
+            let cleanup_warning = match cleanup {
+                Ok(Ok(())) => String::new(),
+                Ok(Err(error)) => format!("; SSH disconnect request failed: {error}"),
+                Err(_) => format!(
+                    "; SSH disconnect request timed out after {} ms",
+                    TUNNEL_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+                ),
+            };
+            Err(format!(
+                "{label} timed out after {} ms{cleanup_warning}",
+                TUNNEL_CONNECT_TIMEOUT.as_millis()
+            ))
+        }
+    }
+}
+
 async fn handle_local_tunnel_client(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     tunnel: TunnelSpec,
@@ -15244,18 +15322,14 @@ async fn handle_local_tunnel_client(
     peer: std::net::SocketAddr,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
-    let channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_direct_tcpip(
-                tunnel.target_host.clone(),
-                u32::from(tunnel.target_port),
-                peer.ip().to_string(),
-                u32::from(peer.port()),
-            )
-            .await
-            .map_err(|error| format!("direct-tcpip open failed: {error}"))?
-    };
+    let channel = open_tunnel_direct_tcpip(
+        &handle,
+        tunnel.target_host.clone(),
+        tunnel.target_port,
+        peer,
+        "direct-tcpip open",
+    )
+    .await?;
     let (mut remote_read, remote_write) = channel.split();
     let (mut local_read, mut local_write) = local_stream.into_split();
 
@@ -15313,18 +15387,32 @@ async fn handle_remote_tunnel_client(
     originator_port: u16,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
-    let local_stream =
-        match TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port)).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                let _ = channel.eof().await;
-                let _ = channel.close().await;
-                return Err(format!(
+    let target_connect = bounded_tunnel_setup(
+        TcpStream::connect((tunnel.target_host.clone(), tunnel.target_port)),
+        TUNNEL_CONNECT_TIMEOUT,
+    )
+    .await;
+    let local_stream = match target_connect {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return Err(match error {
+                BoundedTunnelSetupError::Failed(error) => format!(
                     "remote tunnel target connect failed {}:{} for {}:{}: {error}",
                     tunnel.target_host, tunnel.target_port, originator_address, originator_port
-                ));
-            }
-        };
+                ),
+                BoundedTunnelSetupError::TimedOut => format!(
+                    "remote tunnel target connect timed out after {} ms {}:{} for {}:{}",
+                    TUNNEL_CONNECT_TIMEOUT.as_millis(),
+                    tunnel.target_host,
+                    tunnel.target_port,
+                    originator_address,
+                    originator_port
+                ),
+            });
+        }
+    };
     pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
 }
 
@@ -15336,22 +15424,19 @@ async fn handle_dynamic_tunnel_client(
 ) -> Result<(), String> {
     let (target_host, target_port) = read_socks5_connect_request(&mut local_stream).await?;
 
-    let channel = {
-        let handle = handle.lock().await;
-        handle
-            .channel_open_direct_tcpip(
-                target_host.clone(),
-                u32::from(target_port),
-                peer.ip().to_string(),
-                u32::from(peer.port()),
-            )
-            .await
-    };
-    let channel = match channel {
+    let channel = match open_tunnel_direct_tcpip(
+        &handle,
+        target_host.clone(),
+        target_port,
+        peer,
+        "dynamic direct-tcpip open",
+    )
+    .await
+    {
         Ok(channel) => channel,
         Err(error) => {
             let _ = local_stream.write_all(&socks5_reply(5)).await;
-            return Err(format!("dynamic direct-tcpip open failed: {error}"));
+            return Err(error);
         }
     };
 
@@ -38840,6 +38925,38 @@ mod tests {
             tunnel_label(TunnelMode::Dynamic, "127.0.0.1", 1080, "", 0),
             "SOCKS5 127.0.0.1:1080"
         );
+    }
+
+    #[test]
+    fn bounded_tunnel_setup_preserves_results_and_stops_pending_operations() {
+        tauri::async_runtime::block_on(async {
+            let success = bounded_tunnel_setup(
+                async { Ok::<_, &'static str>("connected") },
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(success, "connected");
+
+            let failed = bounded_tunnel_setup(
+                async { Err::<(), _>("connection refused") },
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                failed,
+                BoundedTunnelSetupError::Failed("connection refused".to_string())
+            );
+
+            let timed_out = bounded_tunnel_setup(
+                std::future::pending::<Result<(), &'static str>>(),
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(timed_out, BoundedTunnelSetupError::TimedOut);
+        });
     }
 
     #[test]
