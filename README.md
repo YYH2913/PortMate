@@ -42,6 +42,14 @@ PortMate requires Node `>=22.12.0`; `.nvmrc` pins the verified `22.20.0` toolcha
 preview runs at `http://127.0.0.1:1420`. It uses empty local state outside Tauri and the Tauri
 command backend inside the desktop app.
 
+The main window never hydrates authoritative sessions from browser storage. It writes a versioned
+session-summary cache only so detached terminals and the serial analyzer can paint a useful first
+frame while their backend refresh starts. Those windows accept the current v1 envelope and the
+legacy array format only after validating the complete Profile, Runtime, and all six connection
+shapes. Unknown versions, duplicate IDs, incomplete nested data, Profile/Runtime mismatches, invalid
+JSON, or unavailable storage are treated as an empty cache instead of crashing a window; the backend
+Store remains authoritative.
+
 ## How To Use The Current Build
 
 1. Start the desktop app:
