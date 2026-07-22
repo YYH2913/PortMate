@@ -1659,6 +1659,60 @@ try {
     && detachedThemeState.retained === "retained"
     && detachedPageErrors.length === 0,
   `detached profile update did not apply in place: ${JSON.stringify({ detachedThemeState, detachedPageErrors })}`);
+  const detachedHealth = await detachedPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.runtime.status = "reconnecting";
+    updated.runtime.lastDisconnect = "invalid";
+    updated.runtime.lastDisconnectReason = ` transport\n  stalled ${"x".repeat(300)} `;
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+    return updated;
+  });
+  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).waitFor();
+  const detachedRuntimeHealth = await detachedPage.evaluate(() => {
+    const status = document.querySelector(".detached-pane-status > span");
+    const indicator = document.querySelector(".detached-pane-toolbar .tab-status");
+    return {
+      text: status?.textContent ?? "",
+      title: status?.getAttribute("title") ?? "",
+      live: status?.getAttribute("aria-live") ?? "",
+      indicatorTitle: indicator?.getAttribute("title") ?? "",
+      connectButtons: document.querySelectorAll('button[aria-label="连接会话"]').length,
+      disconnectButtons: document.querySelectorAll('button[aria-label="断开会话"]').length,
+    };
+  });
+  assert(detachedRuntimeHealth.text === detachedRuntimeHealth.title
+    && detachedRuntimeHealth.text === detachedRuntimeHealth.indicatorTitle
+    && detachedRuntimeHealth.text.startsWith("正在重连 · 原因: transport stalled ")
+    && !detachedRuntimeHealth.text.includes("Invalid Date")
+    && !detachedRuntimeHealth.text.includes("\n")
+    && detachedRuntimeHealth.live === "polite",
+  `detached terminal did not normalize its runtime health: ${JSON.stringify({ detachedHealth, detachedRuntimeHealth })}`);
+  assert(Array.from(detachedRuntimeHealth.text.split("原因: ")[1]).length === 256
+    && detachedRuntimeHealth.text.endsWith("...")
+    && detachedRuntimeHealth.connectButtons === 0
+    && detachedRuntimeHealth.disconnectButtons === 1,
+  `detached reconnect action or diagnostic boundary is wrong: ${JSON.stringify(detachedRuntimeHealth)}`);
+  const detachedEmitCallsBefore = await detachedPage.evaluate(() => window.__invokeCalls.length);
+  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).click();
+  const detachedDisconnectCommand = await detachedPage.evaluate((start) => (
+    window.__invokeCalls.slice(start).find((call) => call.command === "plugin:event|emit_to") ?? null
+  ), detachedEmitCallsBefore);
+  assert(detachedDisconnectCommand?.args?.target?.label === "main"
+    && detachedDisconnectCommand.args.event === "portmate-detached-pane-command"
+    && detachedDisconnectCommand.args.payload?.action === "disconnect"
+    && detachedDisconnectCommand.args.payload?.sessionId === "local-shell",
+  `detached reconnect control emitted the wrong command: ${JSON.stringify(detachedDisconnectCommand)}`);
+  await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-health.png`, fullPage: true });
+  await detachedPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.runtime.status = "connected";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).waitFor();
   const detachedCatchupMarker = "DETACHED-POLL-CATCHUP";
   const detachedTailCallsBefore = await detachedPage.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "tail_log" && call.args.sessionId === "local-shell"
@@ -3047,6 +3101,7 @@ try {
       `${screenshotPrefix}-terminal-theme-settings.png`,
       `${screenshotPrefix}-terminal-light-theme.png`,
       `${screenshotPrefix}-detached-theme.png`,
+      `${screenshotPrefix}-detached-health.png`,
       `${screenshotPrefix}-serial-analyzer.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-audit.png`,

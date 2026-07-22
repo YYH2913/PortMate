@@ -15,6 +15,7 @@ import {
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
+import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
 import TerminalCanvas from "./TerminalCanvas";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
@@ -32,6 +33,10 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
+  const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
+  const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
+  const statusText = error || runtimeHealth;
+  const statusError = Boolean(error) || session?.runtime.status === "blocked" || session?.runtime.status === "error";
 
   useEffect(() => {
     document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
@@ -221,12 +226,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
         <strong>{request.title || session?.profile.name || "会话不可用"}</strong>
-        <span className={`tab-status ${session?.runtime.status ?? "disconnected"}`} />
+        <span className={`tab-status ${session?.runtime.status ?? "disconnected"}`} title={runtimeHealth} />
         <span className="detached-endpoint">{session ? describeDetachedEndpoint(session) : request.sessionId}</span>
         <button type="button" title="刷新会话" aria-label="刷新会话" onClick={() => window.location.reload()}>
           <RefreshCw size={14} />
         </button>
-        {session?.runtime.status === "connected" ? (
+        {connectionAction === "disconnect" ? (
           <button type="button" title="断开会话" aria-label="断开会话" onClick={() => void sendMainCommand("disconnect")}>
             <Square size={13} />
           </button>
@@ -242,8 +247,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       <section className="detached-pane-terminal">
         <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
-      <footer className={error ? "detached-pane-status error" : "detached-pane-status"}>
-        <span>{error || session?.runtime.status || "missing"}</span>
+      <footer className={statusError ? "detached-pane-status error" : "detached-pane-status"}>
+        <span title={statusText} aria-live="polite">{statusText}</span>
         <button
           type="button"
           data-key-mode={keyMode}
