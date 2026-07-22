@@ -19,6 +19,7 @@ const MAX_TIMELINE_MARKS_PER_SESSION: usize = 2000;
 const MAX_SYSMON_SNAPSHOTS_PER_SESSION: usize = 1024;
 const MAX_TERMINAL_TRANSFERS_PER_SESSION: usize = 1000;
 const AUX_HISTORY_TRIM_BATCH: usize = 128;
+pub const MAX_SESSION_DISCONNECT_REASON_CHARACTERS: usize = 256;
 
 type SystemEventEnvelope = (SessionEvent, Option<SessionProfile>);
 
@@ -1098,13 +1099,63 @@ fn apply_runtime_health(
         if !continuing_outage || runtime.last_disconnect.is_none() {
             runtime.last_disconnect = Some(runtime.last_activity);
         }
-        runtime.last_disconnect_reason = Some(reason.unwrap_or_else(|| match status {
+        let default_reason = match status {
             SessionStatus::Disconnected => "session disconnected".to_string(),
             SessionStatus::Reconnecting => "session reconnecting".to_string(),
             SessionStatus::Error => "connection error".to_string(),
             _ => "runtime status changed".to_string(),
-        }));
+        };
+        runtime.last_disconnect_reason = Some(
+            reason
+                .as_deref()
+                .and_then(normalize_session_disconnect_reason)
+                .unwrap_or(default_reason),
+        );
     }
+}
+
+pub fn normalize_session_disconnect_reason(value: &str) -> Option<String> {
+    const ELLIPSIS_CHARACTERS: usize = 3;
+    let mut normalized = String::with_capacity(MAX_SESSION_DISCONNECT_REASON_CHARACTERS * 4);
+    let mut characters = 0;
+    let mut pending_space = false;
+    let mut truncated = false;
+
+    for character in value.chars() {
+        if character.is_whitespace() {
+            pending_space = characters > 0;
+            continue;
+        }
+        if pending_space {
+            if characters == MAX_SESSION_DISCONNECT_REASON_CHARACTERS {
+                truncated = true;
+                break;
+            }
+            normalized.push(' ');
+            characters += 1;
+            pending_space = false;
+        }
+        if characters == MAX_SESSION_DISCONNECT_REASON_CHARACTERS {
+            truncated = true;
+            break;
+        }
+        normalized.push(character);
+        characters += 1;
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+    if truncated {
+        while characters
+            > MAX_SESSION_DISCONNECT_REASON_CHARACTERS.saturating_sub(ELLIPSIS_CHARACTERS)
+        {
+            normalized.pop();
+            characters -= 1;
+        }
+        normalized.push_str("...");
+    }
+    Some(normalized)
 }
 
 fn runtime_outage_status(status: SessionStatus) -> bool {
@@ -1684,6 +1735,56 @@ mod tests {
             summary.runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
         );
+    }
+
+    #[test]
+    fn runtime_disconnect_reason_is_normalized_and_unicode_bounded() {
+        let mut store = test_store();
+        let summary = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Error,
+                Some(format!("  socket\n  closed  {}  ", "界".repeat(300))),
+            )
+            .unwrap();
+        let reason = summary.runtime.last_disconnect_reason.unwrap();
+
+        assert!(reason.starts_with("socket closed 界"));
+        assert!(reason.ends_with("..."));
+        assert!(!reason.contains('\n'));
+        assert_eq!(
+            reason.chars().count(),
+            MAX_SESSION_DISCONNECT_REASON_CHARACTERS
+        );
+
+        let fallback = store
+            .set_runtime_status_with_reason(
+                "test-session",
+                SessionStatus::Error,
+                Some(" \n\t ".to_string()),
+            )
+            .unwrap();
+        assert_eq!(
+            fallback.runtime.last_disconnect_reason.as_deref(),
+            Some("connection error")
+        );
+
+        let exact = "界".repeat(MAX_SESSION_DISCONNECT_REASON_CHARACTERS);
+        assert_eq!(
+            normalize_session_disconnect_reason(&exact).as_deref(),
+            Some(exact.as_str())
+        );
+        let oversized = format!(
+            "{}{}",
+            " \n\t".repeat(100_000),
+            "界".repeat(MAX_SESSION_DISCONNECT_REASON_CHARACTERS + 1)
+        );
+        let bounded = normalize_session_disconnect_reason(&oversized).unwrap();
+        assert_eq!(
+            bounded.chars().count(),
+            MAX_SESSION_DISCONNECT_REASON_CHARACTERS
+        );
+        assert!(bounded.ends_with("..."));
     }
 
     #[test]

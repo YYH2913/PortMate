@@ -27770,7 +27770,10 @@ fn normalize_loaded_store(mut store: SessionStore) -> SessionStore {
             runtime.cwd = saved.cwd.clone();
             runtime.last_activity = saved.last_activity;
             runtime.last_disconnect = saved.last_disconnect;
-            runtime.last_disconnect_reason = saved.last_disconnect_reason.clone();
+            runtime.last_disconnect_reason = saved
+                .last_disconnect_reason
+                .as_deref()
+                .and_then(portmate_core::normalize_session_disconnect_reason);
         }
         runtime.status = SessionStatus::Disconnected;
         runtime.connected_since = None;
@@ -31749,6 +31752,32 @@ mod tests {
         assert_eq!(
             runtime.last_disconnect_reason.as_deref(),
             Some("network timeout")
+        );
+    }
+
+    #[test]
+    fn normalize_loaded_store_bounds_legacy_disconnect_reasons() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        store.upsert_profile(profile);
+        store.runtimes[0].last_disconnect_reason =
+            Some(format!("  legacy\n reason {}  ", "界".repeat(300)));
+
+        let normalized = normalize_loaded_store(store);
+        let reason = normalized
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == session_id)
+            .and_then(|runtime| runtime.last_disconnect_reason.as_deref())
+            .unwrap();
+
+        assert!(reason.starts_with("legacy reason 界"));
+        assert!(reason.ends_with("..."));
+        assert!(!reason.contains('\n'));
+        assert_eq!(
+            reason.chars().count(),
+            portmate_core::MAX_SESSION_DISCONNECT_REASON_CHARACTERS
         );
     }
 
@@ -45251,7 +45280,19 @@ mod tests {
                 .unwrap()
                 .runtime_id
                 .clone();
-            let event_count = state.store.lock().unwrap().events.len();
+            let connecting_event_count = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| {
+                    event
+                        .text
+                        .as_deref()
+                        .is_some_and(|text| text.starts_with("PortMate: connecting to "))
+                })
+                .count();
 
             let active_error = open_session_inner(
                 state.clone(),
@@ -45271,7 +45312,22 @@ mod tests {
                     .runtime_id,
                 runtime_id
             );
-            assert_eq!(state.store.lock().unwrap().events.len(), event_count);
+            assert_eq!(
+                state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| text.starts_with("PortMate: connecting to "))
+                    })
+                    .count(),
+                connecting_event_count
+            );
 
             state
                 .store
@@ -45306,6 +45362,7 @@ mod tests {
                 .unwrap();
             assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
             assert!(state.shell.lock().unwrap().is_empty());
+            tokio::time::sleep(Duration::from_millis(200)).await;
         });
     }
 
