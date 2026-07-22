@@ -127,7 +127,8 @@ hint during frontend and Store normalization, so historical data cannot re-enabl
 method that the current Profile excludes. Automatic reconnect applies the same rule. The compact
 settings menu exposes all 15 ordered non-empty subsets of public-key, keyboard-interactive, and
 password authentication; an existing Profile containing an external or legacy method keeps a visible
-`当前配置` entry instead of rendering an empty selector or silently rewriting it.
+`当前配置` entry instead of rendering an empty selector or silently rewriting it. The adjacent
+`记住成功方式` toggle controls `recordSuccess` directly and clears the draft hint when disabled.
 
 Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend. PortMate 0.1 changes the bundle identifier from the macOS-conflicting `dev.portmate.app` to `dev.portmate.desktop`; startup atomically renames the legacy app-data directory when the new directory is absent or empty, and refuses to merge two non-empty stores.
 
@@ -301,7 +302,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 498.2 kB of main JS, 467.4 kB of terminal core JS, 120.4 kB of WebGL JS,
+emits approximately 498.5 kB of main JS, 467.4 kB of terminal core JS, 120.4 kB of WebGL JS,
 140.4 kB of main CSS, 13.3 kB for the MCP workspace, 12.1 kB for the OneKeys manager, 4.8 kB for
 session/terminal context menus, 4.2 kB for the transfer dialog, 4.0 kB for the SSH credential prompt, 3.7 kB for one-time MCP approval, 2.9 kB for the lazy workspace
 utility panels, and 4.6 kB for the view
