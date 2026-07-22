@@ -225,7 +225,9 @@ body.serial-analyzer-window {
 
 .serial-analyzer-connection {
   flex: 0 0 auto;
+  width: 60px;
   color: var(--muted);
+  text-align: right;
 }
 
 .serial-analyzer-connection.connected {
@@ -235,6 +237,11 @@ body.serial-analyzer-window {
 .serial-analyzer-connection.reconnecting,
 .serial-analyzer-connection.connecting {
   color: var(--amber);
+}
+
+.serial-analyzer-connection.blocked,
+.serial-analyzer-connection.error {
+  color: var(--red);
 }
 
 .serial-analyzer-titlebar button,

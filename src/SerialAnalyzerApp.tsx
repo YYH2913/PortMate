@@ -38,6 +38,11 @@ import type {
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import { mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import { readSessionSummaryCache } from "./session-summary-cache";
+import {
+  sessionRuntimeDisconnectDescription,
+  sessionRuntimeHealthDescription,
+  sessionRuntimeStatusLabel,
+} from "./session-runtime-state";
 import type {
   ExportSerialCaptureResult,
   SerialCaptureFrame,
@@ -380,9 +385,9 @@ function SerialAnalyzerWorkspace({
   const connectionLabel = serial
     ? `${serial.port || "未选择端口"} · ${serial.baudRate} baud · ${serial.dataBits}${serial.parity.slice(0, 1).toUpperCase()}${serial.stopBits} · ${serial.flowControl}`
     : "Serial";
-  const lastDisconnect = session.runtime.lastDisconnect
-    ? `${new Date(session.runtime.lastDisconnect).toLocaleString()}${session.runtime.lastDisconnectReason ? ` · ${session.runtime.lastDisconnectReason}` : ""}`
-    : "--";
+  const runtimeStatus = sessionRuntimeStatusLabel(session.runtime.status);
+  const runtimeHealth = sessionRuntimeHealthDescription(session.runtime);
+  const disconnectHealth = sessionRuntimeDisconnectDescription(session.runtime);
 
   return (
     <>
@@ -390,7 +395,11 @@ function SerialAnalyzerWorkspace({
         <span className="serial-analyzer-brand">PortMate</span>
         <strong>串口分析器</strong>
         <span className="serial-analyzer-session" title={session.profile.name}>{session.profile.name}</span>
-        <span className={`serial-analyzer-connection ${session.runtime.status}`}>{session.runtime.status}</span>
+        <span
+          className={`serial-analyzer-connection ${session.runtime.status}`}
+          title={runtimeHealth}
+          aria-description={runtimeHealth}
+        >{runtimeStatus}</span>
         <button type="button" title="关闭串口分析器" aria-label="关闭串口分析器" onClick={onClose}><X size={17} /></button>
       </header>
 
@@ -451,7 +460,9 @@ function SerialAnalyzerWorkspace({
         {analysis.droppedFrames ? <span className="warning">窗口外 {analysis.droppedFrames}</span> : null}
         {history?.droppedFrames ? <span className="warning">日志外 {history.droppedFrames}</span> : null}
         {history?.unavailableFrames ? <span className="error">不可用 {history.unavailableFrames}</span> : null}
-        <span className="serial-analyzer-last-disconnect" title={lastDisconnect}>上次断开 {lastDisconnect}</span>
+        {disconnectHealth
+          ? <span className="serial-analyzer-last-disconnect" title={disconnectHealth}>{disconnectHealth}</span>
+          : null}
       </section>
 
       <section

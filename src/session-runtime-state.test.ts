@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   sessionConnectionAction,
+  sessionRuntimeDisconnectDescription,
   sessionRuntimeHealthDescription,
   sessionRuntimeStatusLabel,
   transitionSessionRuntimeStatus,
@@ -60,6 +61,30 @@ describe("session runtime state", () => {
     const description = sessionRuntimeHealthDescription(runtime);
     expect(description.endsWith("...")).toBe(true);
     expect(Array.from(description.split("原因: ")[1]).length).toBe(256);
+  });
+
+  it("provides bounded disconnect details without duplicating the status", () => {
+    const runtime = createRuntime({
+      status: "connected",
+      lastDisconnect: "invalid",
+      lastDisconnectReason: ` serial\n  cable ${"x".repeat(300)} `,
+    });
+    const description = sessionRuntimeDisconnectDescription(runtime);
+    expect(description.startsWith("原因: serial cable ")).toBe(true);
+    expect(description).not.toContain("Invalid Date");
+    expect(description).not.toContain("已连接");
+    expect(description).not.toContain("\n");
+    expect(description.endsWith("...")).toBe(true);
+    expect(Array.from(description.slice("原因: ".length)).length).toBe(256);
+  });
+
+  it("omits disconnect details when no valid diagnostics exist", () => {
+    expect(sessionRuntimeDisconnectDescription(createRuntime({ status: "connected" }))).toBe("");
+    expect(sessionRuntimeDisconnectDescription(createRuntime({
+      status: "connected",
+      lastDisconnect: "invalid",
+      lastDisconnectReason: "  ",
+    }))).toBe("");
   });
 
   it("does not invent a disconnect during the first successful connection", () => {

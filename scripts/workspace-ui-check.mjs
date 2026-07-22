@@ -188,6 +188,8 @@ const sessions = [
 ];
 sessions[0].runtime.lastDisconnect = new Date(recordedAt - 60_000).toISOString();
 sessions[0].runtime.lastDisconnectReason = "SSH keepalive timeout";
+sessions[1].runtime.lastDisconnect = "invalid";
+sessions[1].runtime.lastDisconnectReason = ` serial\n  cable ${"x".repeat(300)} `;
 
 const events = sessions.map((session) => ({
   id: `event-${session.profile.id}`,
@@ -1748,6 +1750,33 @@ try {
       cause: error.message,
     })}`);
   });
+  const serialAnalyzerHealth = await serialAnalyzerPage.evaluate(() => {
+    const status = document.querySelector(".serial-analyzer-connection");
+    const disconnect = document.querySelector(".serial-analyzer-last-disconnect");
+    return {
+      status: status?.textContent ?? "",
+      title: status?.getAttribute("title") ?? "",
+      description: status?.getAttribute("aria-description") ?? "",
+      statusWidth: status?.getBoundingClientRect().width ?? 0,
+      disconnect: disconnect?.textContent ?? "",
+      disconnectTitle: disconnect?.getAttribute("title") ?? "",
+    };
+  });
+  assert(serialAnalyzerHealth.status === "已连接",
+    `serial analyzer exposed an internal runtime status: ${JSON.stringify(serialAnalyzerHealth)}`);
+  assert(serialAnalyzerHealth.title === serialAnalyzerHealth.description
+    && serialAnalyzerHealth.title.startsWith("已连接 · 原因: serial cable ")
+    && !serialAnalyzerHealth.title.includes("Invalid Date")
+    && !serialAnalyzerHealth.title.includes("\n"),
+  `serial analyzer did not normalize its accessible health diagnostic: ${JSON.stringify(serialAnalyzerHealth)}`);
+  assert(serialAnalyzerHealth.disconnect === serialAnalyzerHealth.disconnectTitle
+    && serialAnalyzerHealth.disconnect.startsWith("原因: serial cable ")
+    && serialAnalyzerHealth.disconnect.endsWith("...")
+    && Array.from(serialAnalyzerHealth.disconnect.slice("原因: ".length)).length === 256,
+  `serial analyzer did not bound its disconnect diagnostic: ${JSON.stringify(serialAnalyzerHealth)}`);
+  assert(serialAnalyzerHealth.statusWidth === 60,
+    `serial analyzer runtime status width is unstable: ${JSON.stringify(serialAnalyzerHealth)}`);
+  await serialAnalyzerPage.screenshot({ path: `${screenshotPrefix}-serial-analyzer.png`, fullPage: true });
   await serialAnalyzerPage.evaluate(() => { window.__deferSessionLists = true; });
   await serialAnalyzerPage.waitForFunction(() => window.__pendingSessionLists.length === 1);
   await serialAnalyzerPage.waitForTimeout(3_200);
@@ -3018,6 +3047,7 @@ try {
       `${screenshotPrefix}-terminal-theme-settings.png`,
       `${screenshotPrefix}-terminal-light-theme.png`,
       `${screenshotPrefix}-detached-theme.png`,
+      `${screenshotPrefix}-serial-analyzer.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-audit.png`,
       `${screenshotPrefix}-mcp-audit-mobile.png`,

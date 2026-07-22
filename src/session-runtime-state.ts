@@ -47,7 +47,15 @@ export function sessionRuntimeHealthDescription(
   runtime: SessionRuntime,
   formatTimestamp: (value: string) => string = formatRuntimeTimestamp,
 ): string {
-  const parts = [sessionRuntimeStatusLabel(runtime.status)];
+  const disconnect = sessionRuntimeDisconnectDescription(runtime, formatTimestamp);
+  return [sessionRuntimeStatusLabel(runtime.status), disconnect].filter(Boolean).join(" · ");
+}
+
+export function sessionRuntimeDisconnectDescription(
+  runtime: SessionRuntime,
+  formatTimestamp: (value: string) => string = formatRuntimeTimestamp,
+): string {
+  const parts: string[] = [];
   if (runtime.lastDisconnect && Number.isFinite(Date.parse(runtime.lastDisconnect))) {
     const timestamp = formatTimestamp(runtime.lastDisconnect).trim();
     if (timestamp) parts.push(`上次断开 ${timestamp}`);
