@@ -104,7 +104,7 @@ import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePa
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import { buildProfileSecretMigrationRequest, canExecuteProfileSecretMigration, canRecoverProfileSecretMigration, exportProfileSecretMigrationDiagnostics, getProfileSecretMigrationRecovery, isProfileSecretMigrationRestartRequired, profileSecretMigrationErrorMessage, recoverProfileSecretMigration, sameProfileSecretMigrationRequest, summarizeProfileSecretCleanup } from "./secret-migration-state";
 import type { ProfileSecretMigrationDiagnosticExportResult, ProfileSecretMigrationPreview, ProfileSecretMigrationRecoverySummary, ProfileSecretMigrationRequest, ProfileSecretMigrationResponse, SecretStorage } from "./secret-migration-state";
-import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TunnelStatus, TunnelSpec, TrustedHostKey } from "./types";
+import type { ArchiveLogShardsResult, AuditRecord, AuthMethod, ConnectionConfig, DeleteLogShardsResult, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportSessionBundleArchiveResult, ExportTerminalTextResult, ExternalDropResult, FileEntry, FileProperties, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, IdentityRef, JumpHop, LogShardInfo, LogShardPreview, LogShardSearchMatch, McpApprovalRequest, McpGrant, OneKeySummary, ProxyConfig, SearchLogShardsResult, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionKind, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerAction, TriggerEffect, TriggerSpec, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import type { OneKeyPromptField } from "./one-key-completion-state";
@@ -127,6 +127,7 @@ const LazyCommandHistoryList = lazy(() => import("./WorkspaceUtilityPanels").the
 const LazyWorkspaceViewContextMenu = lazy(() => import("./WorkspaceViewContextMenu"));
 const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDialog"));
 const LazyTransferDialog = lazy(() => import("./TransferDialog"));
+const LazyTunnelDialog = lazy(() => import("./TunnelDialog"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
@@ -3532,10 +3533,14 @@ export default function App() {
           }} />
         </Suspense>
       )}
-      {utilityDialog === "tunnel" && active && <TunnelDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
-        setUtilityDialog(null);
-        setNotice({ title: "端口转发", message: label });
-      }} />}
+      {utilityDialog === "tunnel" && active && (
+        <Suspense fallback={null}>
+          <LazyTunnelDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
+            setUtilityDialog(null);
+            setNotice({ title: "端口转发", message: label });
+          }} />
+        </Suspense>
+      )}
       {utilityDialog === "tmux" && active && (
         <Suspense fallback={null}>
           <LazyTmuxDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
@@ -5436,167 +5441,6 @@ function clearWorkspaceDropIndicators() {
   document.querySelectorAll<HTMLElement>("[data-view-drop-zone]").forEach((element) => {
     delete element.dataset.viewDropZone;
   });
-}
-
-function TunnelDialog({ session, onClose, onDone }: { session: SessionSummary; onClose: () => void; onDone: (message: string) => void }) {
-  const [mode, setMode] = useState<TunnelSpec["mode"]>("local");
-  const [bindHost, setBindHost] = useState("127.0.0.1");
-  const [bindPort, setBindPort] = useState("10022");
-  const [targetHost, setTargetHost] = useState("127.0.0.1");
-  const [targetPort, setTargetPort] = useState("22");
-  const [tunnels, setTunnels] = useState<TunnelStatus[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [stoppingId, setStoppingId] = useState("");
-  const [error, setError] = useState("");
-  const refreshGate = useRef(new KeyedRequestGate<"tunnels">());
-
-  useEffect(() => {
-    refreshGate.current.invalidate("tunnels");
-    setTunnels([]);
-    setStoppingId("");
-    void refreshTunnels();
-    const timer = window.setInterval(() => void refreshTunnels(true), 2000);
-    return () => {
-      refreshGate.current.invalidate("tunnels");
-      window.clearInterval(timer);
-    };
-  }, [session.profile.id]);
-
-  async function refreshTunnels(quiet = false) {
-    const gate = refreshGate.current;
-    const token = gate.begin("tunnels");
-    if (token === null) return;
-    if (!quiet) setLoading(true);
-    if (!quiet) setError("");
-    try {
-      const next = await invokeBackend<TunnelStatus[]>("list_tunnels", { sessionId: session.profile.id });
-      if (!gate.isCurrent("tunnels", token)) return;
-      setTunnels(next);
-    } catch (error) {
-      if (gate.isCurrent("tunnels", token) && !quiet) setError(formatError(error));
-    } finally {
-      const current = gate.isCurrent("tunnels", token);
-      gate.finish("tunnels", token);
-      if (current && !quiet) setLoading(false);
-    }
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    setBusy(true);
-    try {
-      const tunnel = await invokeBackend<TunnelSpec>("create_tunnel", {
-        request: {
-          sessionId: session.profile.id,
-          mode,
-          bindHost,
-          bindPort: Number(bindPort),
-          targetHost: mode === "dynamic" ? "" : targetHost,
-          targetPort: mode === "dynamic" ? 0 : Number(targetPort),
-        },
-      });
-      refreshGate.current.invalidate("tunnels");
-      setTunnels((current) => mergeTunnels(current, emptyTunnelStatus(tunnel)));
-      onDone(`已创建 ${mode} tunnel：${tunnel.label}`);
-    } catch (error) {
-      setError(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function stopTunnel(tunnel: TunnelStatus) {
-    setStoppingId(tunnel.spec.id);
-    setError("");
-    try {
-      await invokeBackend<TunnelStatus>("stop_tunnel", { tunnelId: tunnel.spec.id });
-      refreshGate.current.invalidate("tunnels");
-      setTunnels((current) => current.filter((item) => item.spec.id !== tunnel.spec.id));
-      onDone(`已停止 tunnel：${tunnel.spec.label}`);
-    } catch (error) {
-      setError(formatError(error));
-    } finally {
-      setStoppingId("");
-    }
-  }
-
-  const sessionTunnels = tunnels.filter((tunnel) => tunnel.spec.enabled);
-
-  return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog utility-dialog" onSubmit={submit}>
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>端口转发</strong>
-          <button type="button" onClick={onClose}><X size={20} /></button>
-        </header>
-        <section className="utility-content">
-          <DialogField label="会话:">
-            <input value={session.profile.name} readOnly />
-          </DialogField>
-          <DialogField label="模式:">
-            <select value={mode} onChange={(event) => setMode(event.target.value as TunnelSpec["mode"])}>
-              <option value="local">local</option>
-              <option value="dynamic">dynamic SOCKS5</option>
-              <option value="remote">remote</option>
-            </select>
-          </DialogField>
-          <DialogField label="监听:">
-            <input value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
-          </DialogField>
-          <DialogField label="端口:">
-            <input value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
-          </DialogField>
-          {mode !== "dynamic" ? (
-            <>
-              <DialogField label="目标:">
-                <input value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
-              </DialogField>
-              <DialogField label="目标端口:">
-                <input value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
-              </DialogField>
-            </>
-          ) : null}
-          <div className="tunnel-panel">
-            <header>
-              <strong>运行中</strong>
-              <button type="button" onClick={() => void refreshTunnels()} disabled={loading} title="刷新 tunnel 列表">
-                <RefreshCw size={14} />
-              </button>
-            </header>
-            {sessionTunnels.length ? (
-              <div className="tunnel-list">
-                {sessionTunnels.map((tunnel) => (
-                  <div key={tunnel.spec.id} className={`tunnel-row ${tunnel.lastError ? "degraded" : ""}`}>
-                    <div>
-                      <strong>{tunnel.spec.label}</strong>
-                      <small>{tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? "" : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
-                      <small>
-                        active {tunnel.activeConnections} · total {tunnel.totalConnections} · TCP→SSH {formatBytes(tunnel.tcpToSshBytes)} · SSH→TCP {formatBytes(tunnel.sshToTcpBytes)}
-                      </small>
-                      {tunnel.lastError ? <small className="tunnel-error">{tunnel.lastError}</small> : null}
-                    </div>
-                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingId === tunnel.spec.id} title="停止 tunnel">
-                      <Square size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-pane top">{loading ? "正在读取 tunnel" : "没有运行中的 tunnel"}</div>
-            )}
-          </div>
-          {error ? <div className="utility-error">{error}</div> : null}
-        </section>
-        <footer className="utility-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !bindHost || !bindPort || (mode !== "dynamic" && (!targetHost || !targetPort))}>{busy ? "创建中" : "创建"}</button>
-        </footer>
-      </form>
-    </div>
-  );
 }
 
 function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: () => void }) {
@@ -9947,24 +9791,6 @@ function mergeSessionSummaries(current: SessionSummary[], saved: SessionSummary)
   const index = current.findIndex((session) => session.profile.id === saved.profile.id);
   if (index < 0) return [...current, saved];
   return current.map((session, itemIndex) => itemIndex === index ? saved : session);
-}
-
-function mergeTunnels(current: TunnelStatus[], saved: TunnelStatus) {
-  const index = current.findIndex((tunnel) => tunnel.spec.id === saved.spec.id);
-  if (index < 0) return [...current, saved];
-  return current.map((tunnel, itemIndex) => itemIndex === index ? saved : tunnel);
-}
-
-function emptyTunnelStatus(spec: TunnelSpec): TunnelStatus {
-  return {
-    spec,
-    activeConnections: 0,
-    totalConnections: 0,
-    tcpToSshBytes: 0,
-    sshToTcpBytes: 0,
-    lastActivity: null,
-    lastError: null,
-  };
 }
 
 function saveLocalSessionSummaries(sessions: SessionSummary[]) {
