@@ -292,7 +292,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 497.1 kB of main JS, 467.3 kB of terminal core JS, 120.4 kB of WebGL JS,
+emits approximately 497.4 kB of main JS, 467.3 kB of terminal core JS, 120.4 kB of WebGL JS,
 140.4 kB of main CSS, 13.3 kB for the MCP workspace, 12.1 kB for the OneKeys manager, 4.8 kB for
 session/terminal context menus, 4.2 kB for the transfer dialog, 4.0 kB for the SSH credential prompt, 3.7 kB for one-time MCP approval, 2.9 kB for the lazy workspace
 utility panels, and 4.6 kB for the view
@@ -464,11 +464,18 @@ TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but 
 A successful `Connected` transition ends that outage, so the next transport loss records a new time.
 Browser preview uses the same transition rules as the native Store: entering `Connecting` is not a
 disconnect, the first successful connection does not invent a prior outage, and fallback failures
-retain their concrete error reason instead of replacing it with a generic session error.
+retain their concrete error reason instead of replacing it with a generic session error. Browser
+fallback also normalizes and bounds that reason before updating cacheable runtime state, rather than
+waiting until the health tooltip renders.
 The native Store collapses whitespace and limits every persisted disconnect reason to 256 Unicode
 characters before it reaches snapshots or SQLite. Existing oversized legacy values are normalized
 when the Store loads, using a bounded streaming formatter rather than allocating a second copy of an
-untrusted field.
+untrusted field at its original size.
+Loading a snapshot also converts orphaned active runtimes into explicit disconnect diagnostics.
+Saved `Connected` and `Connecting` states start a new outage at the load time, while a saved
+`Reconnecting` state preserves its original outage timestamp and records that the retry was
+interrupted by the previous PortMate shutdown. Already inactive states retain their existing
+diagnostics, and normalizing the same snapshot again does not move the recorded outage time.
 The standalone serial analyzer uses the same validated diagnostics: its compact title bar shows a
 stable Chinese status label and exposes the full health description accessibly, while the status
 strip omits empty history and bounds malformed or multiline disconnect reasons without rendering an
