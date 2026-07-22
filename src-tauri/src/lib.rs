@@ -12114,10 +12114,13 @@ async fn compare_sftp_and_local_prefix(
         progress.check_cancelled()?;
         let remaining = usize::try_from(length - compared).unwrap_or(usize::MAX);
         let take = remaining.min(remote_buffer.len());
-        if remote.read_exact(&mut remote_buffer[..take]).await.is_err()
-            || std::io::Read::read_exact(local, &mut local_buffer[..take]).is_err()
-        {
-            return Ok(false);
+        match remote.read_exact(&mut remote_buffer[..take]).await {
+            Ok(_) => {}
+            Err(error) => return prefix_read_mismatch_or_error(error, "SFTP 远端断点文件"),
+        }
+        match std::io::Read::read_exact(local, &mut local_buffer[..take]) {
+            Ok(()) => {}
+            Err(error) => return prefix_read_mismatch_or_error(error, "本地源文件"),
         }
         if remote_buffer[..take] != local_buffer[..take] {
             return Ok(false);
@@ -12140,10 +12143,13 @@ async fn compare_sftp_prefixes(
         progress.check_cancelled()?;
         let remaining = usize::try_from(length - compared).unwrap_or(usize::MAX);
         let take = remaining.min(left_buffer.len());
-        if left.read_exact(&mut left_buffer[..take]).await.is_err()
-            || right.read_exact(&mut right_buffer[..take]).await.is_err()
-        {
-            return Ok(false);
+        match left.read_exact(&mut left_buffer[..take]).await {
+            Ok(_) => {}
+            Err(error) => return prefix_read_mismatch_or_error(error, "SFTP 远端源文件"),
+        }
+        match right.read_exact(&mut right_buffer[..take]).await {
+            Ok(_) => {}
+            Err(error) => return prefix_read_mismatch_or_error(error, "SFTP 远端断点文件"),
         }
         if left_buffer[..take] != right_buffer[..take] {
             return Ok(false);
@@ -12151,6 +12157,14 @@ async fn compare_sftp_prefixes(
         compared += take as u64;
     }
     Ok(true)
+}
+
+fn prefix_read_mismatch_or_error(error: std::io::Error, label: &str) -> Result<bool, String> {
+    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+        Ok(false)
+    } else {
+        Err(format!("读取{label}前缀失败: {error}"))
+    }
 }
 
 async fn sftp_regular_file_size(
@@ -39550,6 +39564,22 @@ mod tests {
         let mut full = Vec::new();
         source_file.read_to_end(&mut full).unwrap();
         assert_eq!(full, b"abcdef");
+    }
+
+    #[test]
+    fn sftp_prefix_read_errors_distinguish_short_file_and_io_failure() {
+        assert!(!prefix_read_mismatch_or_error(
+            std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+            "SFTP 远端断点文件",
+        )
+        .unwrap());
+
+        let error = prefix_read_mismatch_or_error(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            "SFTP 远端断点文件",
+        )
+        .unwrap_err();
+        assert!(error.contains("读取SFTP 远端断点文件前缀失败"), "{error}");
     }
 
     #[test]
