@@ -287,7 +287,7 @@ The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Seriali
 
 The terminal runtime is loaded separately from the application shell, and WebGL is another lazy
 chunk so unsupported systems do not pay its startup or failure cost. The current production build
-emits approximately 496.0 kB of main JS, 467.3 kB of terminal core JS, 120.4 kB of WebGL JS,
+emits approximately 496.2 kB of main JS, 467.3 kB of terminal core JS, 120.4 kB of WebGL JS,
 140.3 kB of main CSS, 13.3 kB for the MCP workspace, 12.1 kB for the OneKeys manager, 4.7 kB for
 session/terminal context menus, 4.2 kB for the transfer dialog, 4.0 kB for the SSH credential prompt, 3.7 kB for one-time MCP approval, 2.9 kB for the lazy workspace
 utility panels, and 4.5 kB for the view
@@ -457,6 +457,9 @@ Runtime health timestamps identify the start of an outage rather than the latest
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
 `lastDisconnect` value through `Reconnecting`, reconnect disablement, and an idempotent manual close.
 A successful `Connected` transition ends that outage, so the next transport loss records a new time.
+Browser preview uses the same transition rules as the native Store: entering `Connecting` is not a
+disconnect, the first successful connection does not invent a prior outage, and fallback failures
+retain their concrete error reason instead of replacing it with a generic session error.
 
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP/SCP upload/download and SFTP remote-copy resume from pre-existing `.portmate-part` prefixes, cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets.
 
