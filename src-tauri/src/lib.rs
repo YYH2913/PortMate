@@ -12765,15 +12765,16 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
+            "file_size() {{ value=$(wc -c < \"$1\") || return 1; value=$(printf '%s' \"$value\" | tr -d '[:space:]') || return 1; case \"$value\" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\\n' \"$value\"; }}; ",
             "cleanup() {{ if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || :; fi; }}; ",
             "trap cleanup INT TERM HUP EXIT; ",
             "if ! reject_link \"$src\" || [ ! -f \"$src\" ]; then exit 1; fi; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
-            "if ! total=$(stat -c %s -- \"$src\"); then exit 1; fi; ",
+            "if ! total=$(file_size \"$src\"); then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
-            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "if [ \"$current\" -le \"$total\" ]; then ",
             "if [ \"$current\" -eq 0 ] || head -c \"$current\" -- \"$src\" | cmp -s - \"$part\"; then offset=$current; else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
@@ -12784,19 +12785,19 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "if [ \"$offset\" -lt \"$total\" ]; then ",
             "tail -c +$((offset + 1)) -- \"$src\" >> \"$part\" & pid=$!; ",
             "while kill -0 \"$pid\" 2>/dev/null; do ",
-            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "printf '__PORTMATE_PROGRESS__%s\\n' \"$current\"; ",
             "fi; sleep 0.25; done; ",
             "wait \"$pid\"; status=$?; pid=; ",
             "if [ \"$status\" -ne 0 ]; then exit \"$status\"; fi; ",
             "fi; ",
-            "final=$(stat -c %s -- \"$part\") || exit 1; ",
+            "final=$(file_size \"$part\") || exit 1; ",
             "if [ \"$final\" -ne \"$total\" ]; then ",
             "printf 'PortMate remote copy size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "mv -f -- \"$part\" \"$target\" || exit 1; ",
-            "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
+            "final_target=$(file_size \"$target\") || exit 1; printf '__PORTMATE_DONE__%s\\n' \"$final_target\""
         ),
         shell_quote(remote_source),
         shell_quote(remote_destination)
@@ -15181,12 +15182,13 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
-            "part_sha256() {{ value=$(sha256sum -- \"$1\") || return 1; printf '%s\\n' \"${{value%% *}}\"; }}; ",
+            "file_size() {{ value=$(wc -c < \"$1\") || return 1; value=$(printf '%s' \"$value\" | tr -d '[:space:]') || return 1; case \"$value\" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\\n' \"$value\"; }}; ",
+            "part_sha256() {{ if command -v sha256sum >/dev/null 2>&1; then value=$(sha256sum < \"$1\") || return 1; elif command -v shasum >/dev/null 2>&1; then value=$(shasum -a 256 < \"$1\") || return 1; elif command -v sha256 >/dev/null 2>&1; then value=$(sha256 -q \"$1\") || return 1; else printf 'PortMate SCP upload has no SHA-256 tool\\n' >&2; return 1; fi; value=${{value%% *}}; [ -n \"$value\" ] || return 1; printf '%s\\n' \"$value\"; }}; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
-            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "if [ \"$current\" -eq 0 ]; then offset=0; elif [ \"$current\" -le \"$total\" ]; then ",
             "printf '__PORTMATE_RESUME_CANDIDATE__%s\\n' \"$current\"; ",
             "if ! IFS= read -r expected_prefix_sha256; then exit 1; fi; ",
@@ -15199,17 +15201,17 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "printf '__PORTMATE_PROGRESS__%s\\n' \"$offset\"; ",
             "if [ \"$offset\" -lt \"$total\" ]; then ",
             "cat >> \"$part\" || exit 1; ",
-            "if current=$(stat -c %s -- \"$part\" 2>/dev/null); then ",
+            "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "printf '__PORTMATE_PROGRESS__%s\\n' \"$current\"; ",
             "fi; ",
             "fi; ",
-            "final=$(stat -c %s -- \"$part\") || exit 1; ",
+            "final=$(file_size \"$part\") || exit 1; ",
             "if [ \"$final\" -ne \"$total\" ]; then ",
             "printf 'PortMate SCP upload size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
             "mv -f -- \"$part\" \"$target\" || exit 1; ",
-            "stat -c '__PORTMATE_DONE__%s' -- \"$target\""
+            "final_target=$(file_size \"$target\") || exit 1; printf '__PORTMATE_DONE__%s\\n' \"$final_target\""
         ),
         shell_quote(remote_destination),
         shell_quote(file_name),
@@ -42441,11 +42443,14 @@ mod tests {
         assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
         assert!(command.contains("__PORTMATE_RESUME_CANDIDATE__%s"));
         assert!(command.contains("IFS= read -r expected_prefix_sha256"));
+        assert!(command.contains("file_size()"));
         assert!(command.contains("part_sha256()"));
+        assert!(command.contains("command -v shasum"));
+        assert!(command.contains("command -v sha256"));
         assert!(command.contains("__PORTMATE_PREFIX_SHA256__$actual_prefix_sha256"));
         assert!(command.contains("cat >> \"$part\" || exit 1"));
         assert!(command.contains("mv -f -- \"$part\" \"$target\""));
-        assert!(command.contains("stat -c '__PORTMATE_DONE__%s' -- \"$target\""));
+        assert!(command.contains("final_target=$(file_size \"$target\")"));
     }
 
     #[test]
