@@ -253,6 +253,8 @@ const TRIGGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const TRIGGER_COMMAND_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TRIGGER_COMMAND_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_TRIGGER_COMMAND_STDERR_BYTES: usize = 64 * 1024;
+const MAX_TRIGGER_SEND_BATCH_CONCURRENCY: usize = 8;
+const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
@@ -410,6 +412,7 @@ pub struct AppState {
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     trigger_command_slots: Arc<tokio::sync::Semaphore>,
+    trigger_send_batch_slots: Arc<tokio::sync::Semaphore>,
     pending_mcp_approvals: PendingMcpApprovalMap,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     ipc_publication: Arc<Mutex<IpcPublicationState>>,
@@ -1117,6 +1120,7 @@ struct SessionIo {
     serial_captures: SerialCaptureMap,
     active_commands: ActiveCommandMap,
     trigger_command_slots: Arc<tokio::sync::Semaphore>,
+    trigger_send_batch_slots: Arc<tokio::sync::Semaphore>,
     store_path: PathBuf,
 }
 
@@ -1224,6 +1228,7 @@ impl AppState {
             serial_captures: Arc::clone(&self.serial_captures),
             active_commands: Arc::clone(&self.active_commands),
             trigger_command_slots: Arc::clone(&self.trigger_command_slots),
+            trigger_send_batch_slots: Arc::clone(&self.trigger_send_batch_slots),
             store_path: self.store_path.clone(),
         }
     }
@@ -2897,22 +2902,36 @@ async fn send_text_inner_with_context(
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
-    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
-    clear_active_command(&io, &session_id);
-    write_session_bytes(
+    send_text_under_outbound_lane(&io, &session_id, &text, actor, audit_action, None).await
+}
+
+async fn send_text_under_outbound_lane(
+    io: &SessionIo,
+    session_id: &str,
+    text: &str,
+    actor: &str,
+    audit_action: Option<&str>,
+    expected_runtime_id: Option<&str>,
+) -> Result<SessionEvent, String> {
+    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, session_id, text)?;
+    if expected_runtime_id.is_none() {
+        clear_active_command(io, session_id);
+    }
+    write_session_bytes_for_runtime(
         &io.store,
-        &io.runtimes.ssh,
-        &io.runtimes.shell,
-        &io.runtimes.tcp,
-        &io.runtimes.serial,
-        &session_id,
+        &io.runtimes,
+        session_id,
         wire_text.as_bytes(),
+        expected_runtime_id,
     )
     .await?;
+    if expected_runtime_id.is_some() {
+        clear_active_command(io, session_id);
+    }
     Ok(record_outbound_user_event_with_context(
-        &io,
-        &session_id,
-        &text,
+        io,
+        session_id,
+        text,
         wire_text.as_bytes(),
         actor,
         audit_action,
@@ -3299,10 +3318,29 @@ async fn write_session_bytes(
     session_id: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
+    let runtimes = RuntimeRegistry {
+        ssh: Arc::clone(ssh),
+        shell: Arc::clone(shell),
+        tcp: Arc::clone(tcp),
+        serial: Arc::clone(serial),
+    };
+    write_session_bytes_for_runtime(store, &runtimes, session_id, bytes, None).await
+}
+
+async fn write_session_bytes_for_runtime(
+    store: &Arc<Mutex<SessionStore>>,
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
+    bytes: &[u8],
+    expected_runtime_id: Option<&str>,
+) -> Result<(), String> {
     let writer = {
-        let connections = ssh.lock().map_err(|error| error.to_string())?;
+        let connections = runtimes.ssh.lock().map_err(|error| error.to_string())?;
         connections
             .get(session_id)
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+            })
             .map(|runtime| Arc::clone(&runtime.writer))
     };
 
@@ -3314,9 +3352,12 @@ async fn write_session_bytes(
             .map_err(|error| format!("SSH 写入失败: {error}"))?;
     } else {
         let writer = {
-            let connections = shell.lock().map_err(|error| error.to_string())?;
+            let connections = runtimes.shell.lock().map_err(|error| error.to_string())?;
             connections
                 .get(session_id)
+                .filter(|runtime| {
+                    expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+                })
                 .map(|runtime| Arc::clone(&runtime.writer))
         };
         if let Some(writer) = writer {
@@ -3329,9 +3370,12 @@ async fn write_session_bytes(
                 .map_err(|error| format!("Shell PTY 刷新失败: {error}"))?;
         } else {
             let writer = {
-                let connections = tcp.lock().map_err(|error| error.to_string())?;
+                let connections = runtimes.tcp.lock().map_err(|error| error.to_string())?;
                 connections
                     .get(session_id)
+                    .filter(|runtime| {
+                        expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+                    })
                     .map(|runtime| Arc::clone(&runtime.writer))
             };
             if let Some(writer) = writer {
@@ -3342,13 +3386,19 @@ async fn write_session_bytes(
                     .map_err(|error| format!("TCP/Telnet 写入失败: {error}"))?;
             } else {
                 let serial_writer = {
-                    let connections = serial.lock().map_err(|error| error.to_string())?;
-                    connections.get(session_id).map(|runtime| {
-                        (
-                            runtime.writer.as_ref().map(Arc::clone),
-                            Arc::clone(&runtime.capture),
-                        )
-                    })
+                    let connections = runtimes.serial.lock().map_err(|error| error.to_string())?;
+                    connections
+                        .get(session_id)
+                        .filter(|runtime| {
+                            expected_runtime_id
+                                .is_none_or(|expected| runtime.runtime_id == expected)
+                        })
+                        .map(|runtime| {
+                            (
+                                runtime.writer.as_ref().map(Arc::clone),
+                                Arc::clone(&runtime.capture),
+                            )
+                        })
                 };
                 match serial_writer {
                     Some((Some(writer), capture)) => {
@@ -3362,6 +3412,9 @@ async fn write_session_bytes(
                         record_serial_capture(&capture, EventDirection::Outbound, bytes);
                     }
                     Some((None, _)) => return Err("串口正在重连，无法发送输入".to_string()),
+                    None if expected_runtime_id.is_some() => {
+                        return Err("触发动作来源连接已关闭或被新连接替换".to_string());
+                    }
                     None if profile_requires_runtime(store, session_id)? => {
                         return Err("会话尚未连接，无法发送输入".to_string());
                     }
@@ -21788,6 +21841,7 @@ fn read_ssh_channel(
                     record_channel_bytes(
                         &io,
                         &session_id,
+                        Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -21805,6 +21859,7 @@ fn read_ssh_channel(
                     record_channel_bytes(
                         &io,
                         &session_id,
+                        Some(&runtime_id),
                         stream,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -22586,6 +22641,7 @@ fn read_tcp_stream(
                     record_channel_bytes(
                         &io,
                         &session_id,
+                        Some(&runtime_id),
                         EventStream::Stdout,
                         &buffer[..size],
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -22664,6 +22720,7 @@ fn read_tcp_stream(
                 record_channel_bytes(
                     &io,
                     &session_id,
+                    Some(&runtime_id),
                     EventStream::Stdout,
                     &[],
                     String::from_utf8_lossy(&bytes).to_string(),
@@ -23218,6 +23275,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                     record_channel_bytes(
                         &io,
                         &session_id,
+                        Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -23411,6 +23469,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                     record_channel_bytes(
                         &io,
                         &session_id,
+                        Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -23998,6 +24057,7 @@ fn reconnect_serial_session(
 fn record_channel_bytes(
     io: &SessionIo,
     session_id: &str,
+    source_runtime_id: Option<&str>,
     stream: EventStream,
     raw_bytes: &[u8],
     text: String,
@@ -24049,7 +24109,24 @@ fn record_channel_bytes(
             let _ = app_handle.emit("portmate-session-event", event);
         }
     }
-    let local_commands = if let Ok(mut store) = io.store.lock() {
+    let source_is_current = match source_runtime_id {
+        Some(source_runtime_id) => {
+            match session_runtime_generation_is_current(&io.runtimes, session_id, source_runtime_id)
+            {
+                Ok(current) => current,
+                Err(error) => {
+                    eprintln!(
+                        "PortMate: runtime registry unavailable; dropping trigger actions for {session_id}: {error}"
+                    );
+                    false
+                }
+            }
+        }
+        None => true,
+    };
+    let trigger_dispatch = if !source_is_current {
+        TriggerDispatch::default()
+    } else if let Ok(mut store) = io.store.lock() {
         let (trigger_dispatch, trigger_changed_store) =
             apply_trigger_actions_locked(&mut store, session_id, &text);
         if trigger_changed_store {
@@ -24067,11 +24144,11 @@ fn record_channel_bytes(
         TriggerDispatch::default()
     };
     if let Some(app_handle) = &io.app_handle {
-        for effect in local_commands.effects {
+        for effect in trigger_dispatch.effects {
             let _ = app_handle.emit("portmate-trigger-effect", effect);
         }
     }
-    for command in local_commands.local_commands {
+    for command in trigger_dispatch.local_commands {
         spawn_trigger_command(
             Arc::clone(&io.store),
             io.store_path.clone(),
@@ -24080,9 +24157,46 @@ fn record_channel_bytes(
             command,
         );
     }
-    for text in local_commands.send_texts {
-        spawn_trigger_send_text(io.clone(), session_id.to_string(), text);
+    if let Some(source_runtime_id) = source_runtime_id {
+        spawn_trigger_send_text_batch(
+            io.clone(),
+            session_id.to_string(),
+            source_runtime_id.to_string(),
+            trigger_dispatch.send_texts,
+        );
     }
+}
+
+fn session_runtime_generation_is_current(
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
+    runtime_id: &str,
+) -> Result<bool, String> {
+    let ssh_matches = runtimes
+        .ssh
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
+    let shell_matches = runtimes
+        .shell
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
+    let tcp_matches = runtimes
+        .tcp
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
+    let serial_matches = runtimes
+        .serial
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
+    Ok(ssh_matches || shell_matches || tcp_matches || serial_matches)
 }
 
 fn publish_system_event(
@@ -26042,6 +26156,7 @@ fn apply_trigger_actions_locked(
     let matches = portmate_core::triggers::evaluate_triggers(&profile.triggers, text);
     let mut dispatch = TriggerDispatch::default();
     let mut changed = false;
+    let mut dropped_send_texts = 0_usize;
     for trigger_match in matches {
         changed = true;
         store.record_system_event(
@@ -26067,15 +26182,19 @@ fn apply_trigger_actions_locked(
                     });
                 }
                 TriggerAction::SendText { text } => {
-                    store.record_system_event(
-                        session_id,
-                        format!(
-                            "PortMate: trigger send_text action queued ({}) bytes={}",
-                            trigger_match.label,
-                            text.len()
-                        ),
-                    );
-                    dispatch.send_texts.push(text);
+                    if dispatch.send_texts.len() < MAX_TRIGGER_SEND_TEXTS_PER_BATCH {
+                        store.record_system_event(
+                            session_id,
+                            format!(
+                                "PortMate: trigger send_text action queued ({}) bytes={}",
+                                trigger_match.label,
+                                text.len()
+                            ),
+                        );
+                        dispatch.send_texts.push(text);
+                    } else {
+                        dropped_send_texts = dropped_send_texts.saturating_add(1);
+                    }
                 }
                 TriggerAction::LocalCommand { command } => dispatch.local_commands.push(command),
                 TriggerAction::Notification { message } => {
@@ -26129,6 +26248,14 @@ fn apply_trigger_actions_locked(
                 }
             }
         }
+    }
+    if dropped_send_texts > 0 {
+        store.record_system_event(
+            session_id,
+            format!(
+                "PortMate: trigger send_text batch limit reached ({MAX_TRIGGER_SEND_TEXTS_PER_BATCH}); skipped {dropped_send_texts} actions"
+            ),
+        );
     }
     (dispatch, changed)
 }
@@ -26194,24 +26321,94 @@ fn record_trigger_command_event(
     }
 }
 
-fn spawn_trigger_send_text(io: SessionIo, session_id: String, text: String) {
+fn spawn_trigger_send_text_batch(
+    io: SessionIo,
+    session_id: String,
+    source_runtime_id: String,
+    texts: Vec<String>,
+) {
+    if texts.is_empty() {
+        return;
+    }
+    let permit = match Arc::clone(&io.trigger_send_batch_slots).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            record_trigger_send_text_event(
+                &io.store,
+                &io.store_path,
+                &session_id,
+                format!(
+                    "PortMate: trigger send_text batch skipped: concurrent batch limit reached ({MAX_TRIGGER_SEND_BATCH_CONCURRENCY})"
+                ),
+            );
+            return;
+        }
+    };
     tauri::async_runtime::spawn(async move {
-        let result = send_text_inner(io.clone(), session_id.clone(), text).await;
-
-        if let Err(error) = result {
-            if let Ok(mut store) = io.store.lock() {
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: trigger send_text failed: {error}"),
-                );
-                if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, "trigger send failure event")
-                {
-                    eprintln!("PortMate: failed to persist trigger send_text error: {error}");
-                }
+        let total = texts.len();
+        let mut failure = None;
+        for (index, text) in texts.into_iter().enumerate() {
+            if let Err(error) =
+                send_trigger_text_inner(&io, &session_id, &source_runtime_id, &text).await
+            {
+                failure = Some(format!(
+                    "PortMate: trigger send_text batch failed at {}/{}; skipped {} remaining actions: {error}",
+                    index + 1,
+                    total,
+                    total.saturating_sub(index + 1)
+                ));
+                break;
+            }
+        }
+        drop(permit);
+        if let Some(message) = failure {
+            let store = Arc::clone(&io.store);
+            let store_path = io.store_path.clone();
+            let persist_session_id = session_id.clone();
+            let persist = tauri::async_runtime::spawn_blocking(move || {
+                record_trigger_send_text_event(&store, &store_path, &persist_session_id, message);
+            });
+            if let Err(error) = persist.await {
+                eprintln!("PortMate: trigger send_text result task failed: {error}");
             }
         }
     });
+}
+
+async fn send_trigger_text_inner(
+    io: &SessionIo,
+    session_id: &str,
+    source_runtime_id: &str,
+    text: &str,
+) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, session_id)?;
+    let _lane_guard = lane.lock().await;
+    send_text_under_outbound_lane(
+        io,
+        session_id,
+        text,
+        "trigger",
+        Some("trigger_send_text"),
+        Some(source_runtime_id),
+    )
+    .await
+}
+
+fn record_trigger_send_text_event(
+    store: &Arc<Mutex<SessionStore>>,
+    store_path: &Path,
+    session_id: &str,
+    message: String,
+) {
+    let Ok(mut store) = store.lock() else {
+        eprintln!("PortMate: session store lock poisoned; dropping trigger send_text result");
+        return;
+    };
+    store.record_system_event(session_id, message);
+    if let Err(error) = persist_applied_store(&store, store_path, "trigger send_text result event")
+    {
+        eprintln!("PortMate: failed to persist trigger send_text result: {error}");
+    }
 }
 
 async fn run_shell_command(command: &str) -> Result<(i32, String, String), String> {
@@ -29815,6 +30012,9 @@ pub fn run() {
                 trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                     MAX_TRIGGER_COMMAND_CONCURRENCY,
                 )),
+                trigger_send_batch_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
+                )),
                 pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
@@ -31925,12 +32125,25 @@ mod tests {
                 let _ = release_rx.await;
             });
 
-            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-                host: "127.0.0.1".to_string(),
-                port: address.port(),
-                reconnect: false,
-                ..Default::default()
-            }));
+            let mut profile =
+                test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                    host: "127.0.0.1".to_string(),
+                    port: address.port(),
+                    reconnect: false,
+                    ..Default::default()
+                }));
+            profile.triggers = vec![portmate_core::TriggerSpec {
+                id: "stale-trigger".to_string(),
+                label: "Stale".to_string(),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "STALE".to_string(),
+                    case_sensitive: true,
+                },
+                actions: vec![TriggerAction::TimelineMark {
+                    label: "must-not-run".to_string(),
+                }],
+                enabled: true,
+            }];
             let root =
                 std::env::temp_dir().join(format!("portmate-modem-cancel-{}", Uuid::new_v4()));
             fs::create_dir_all(&root).unwrap();
@@ -38182,6 +38395,7 @@ mod tests {
         record_channel_bytes(
             &state.session_io(),
             &profile.id,
+            None,
             EventStream::Stdout,
             &wire,
             String::from_utf8_lossy(&wire).to_string(),
@@ -38252,6 +38466,7 @@ mod tests {
             record_channel_bytes(
                 &io,
                 &profile.id,
+                None,
                 EventStream::Stdout,
                 b"first output\n",
                 "first output\n".to_string(),
@@ -38277,6 +38492,7 @@ mod tests {
             record_channel_bytes(
                 &io,
                 &profile.id,
+                None,
                 EventStream::Stderr,
                 b"second output\n",
                 "second output\n".to_string(),
@@ -38295,6 +38511,7 @@ mod tests {
             record_channel_bytes(
                 &io,
                 &profile.id,
+                None,
                 EventStream::Stdout,
                 b"manual output\n",
                 "manual output\n".to_string(),
@@ -38496,6 +38713,7 @@ mod tests {
         record_channel_bytes(
             &state.session_io(),
             &profile.id,
+            None,
             EventStream::Stdout,
             b"CAUSE\n",
             "CAUSE\n".to_string(),
@@ -38951,6 +39169,150 @@ mod tests {
         drop(store);
         drop(permits);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trigger_send_text_dispatch_bounds_batches_and_reports_saturation() {
+        let root = std::env::temp_dir().join(format!("portmate-trigger-send-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let mut profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        profile.triggers = (0..3)
+            .map(|trigger_index| portmate_core::TriggerSpec {
+                id: format!("send-{trigger_index}"),
+                label: format!("Send {trigger_index}"),
+                matcher: portmate_core::TriggerMatcher::Contains {
+                    text: "MATCH".to_string(),
+                    case_sensitive: true,
+                },
+                actions: (0..if trigger_index < 2 { 16 } else { 1 })
+                    .map(|action_index| TriggerAction::SendText {
+                        text: format!("{trigger_index}-{action_index}"),
+                    })
+                    .collect(),
+                enabled: true,
+            })
+            .collect();
+        let state = test_app_state(profile, store_path.clone());
+
+        let (dispatch, changed) = {
+            let mut store = state.store.lock().unwrap();
+            apply_trigger_actions_locked(&mut store, &session_id, "MATCH")
+        };
+        assert!(changed);
+        assert_eq!(dispatch.send_texts.len(), MAX_TRIGGER_SEND_TEXTS_PER_BATCH);
+        assert!(state.store.lock().unwrap().events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("skipped 1 actions"))
+        }));
+
+        let permits = (0..MAX_TRIGGER_SEND_BATCH_CONCURRENCY)
+            .map(|_| {
+                Arc::clone(&state.trigger_send_batch_slots)
+                    .try_acquire_owned()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        spawn_trigger_send_text_batch(
+            state.session_io(),
+            session_id,
+            "runtime-current".to_string(),
+            vec!["must-not-run".to_string()],
+        );
+        assert!(state.store.lock().unwrap().events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("concurrent batch limit reached (8)"))
+        }));
+        drop(permits);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = [0_u8; 11];
+                socket.read_exact(&mut received).await.unwrap();
+                received
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root =
+                std::env::temp_dir().join(format!("portmate-trigger-order-{}", Uuid::new_v4()));
+            let store_path = root.join("portmate-store.sqlite3");
+            let state = test_app_state(profile.clone(), store_path);
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: "runtime-current".to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
+                },
+            );
+            let io = state.session_io();
+
+            send_trigger_text_inner(&io, &profile.id, "runtime-current", "first")
+                .await
+                .unwrap();
+            send_trigger_text_inner(&io, &profile.id, "runtime-current", "second")
+                .await
+                .unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("trigger send server timed out")
+                .expect("trigger send server failed");
+            assert_eq!(&received, b"firstsecond");
+            let audit = state.store.lock().unwrap().audit.clone();
+            assert_eq!(
+                audit
+                    .iter()
+                    .filter(|record| {
+                        record.actor == "trigger" && record.action == "trigger_send_text"
+                    })
+                    .count(),
+                2
+            );
+
+            state
+                .tcp
+                .lock()
+                .unwrap()
+                .get_mut(&profile.id)
+                .unwrap()
+                .runtime_id = "runtime-replacement".to_string();
+            let error = send_trigger_text_inner(&io, &profile.id, "runtime-current", "stale")
+                .await
+                .unwrap_err();
+            assert_eq!(error, "触发动作来源连接已关闭或被新连接替换");
+            record_channel_bytes(
+                &io,
+                &profile.id,
+                Some("runtime-current"),
+                EventStream::Stdout,
+                b"STALE",
+                "STALE".to_string(),
+            );
+            assert!(state.store.lock().unwrap().timeline.is_empty());
+
+            state.tcp.lock().unwrap().remove(&profile.id);
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
@@ -47559,6 +47921,9 @@ mod tests {
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
             trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                 MAX_TRIGGER_COMMAND_CONCURRENCY,
+            )),
+            trigger_send_batch_slots: Arc::new(tokio::sync::Semaphore::new(
+                MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
             )),
             pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
