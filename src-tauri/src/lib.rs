@@ -144,6 +144,7 @@ const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
 const SCP_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SCP_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 const REMOTE_COPY_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_COPY_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
 const SFTP_REQUEST_TIMEOUT_SECONDS: u64 = 20;
@@ -14888,6 +14889,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
     .await?;
     let outcome = async {
         let mut pending = VecDeque::new();
+        let mut stderr = Vec::new();
         scp_send_data_with_idle_timeout(
             &channel,
             &[0_u8],
@@ -14901,6 +14903,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
         let first = scp_next_byte(
             &mut channel,
             &mut pending,
+            &mut stderr,
             progress,
             &mut last_progress,
             idle_timeout,
@@ -14912,6 +14915,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
             let message = scp_read_line(
                 &mut channel,
                 &mut pending,
+                &mut stderr,
                 progress,
                 &mut last_progress,
                 idle_timeout,
@@ -14927,6 +14931,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
         let header = scp_read_line(
             &mut channel,
             &mut pending,
+            &mut stderr,
             progress,
             &mut last_progress,
             idle_timeout,
@@ -14982,9 +14987,20 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
                 )
                 .await?
                 {
-                    Some(ChannelMsg::Data { data })
-                    | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    Some(ChannelMsg::Data { data }) => {
                         pending.extend(data.iter().copied());
+                    }
+                    Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
+                        &mut stderr,
+                        &data,
+                        MAX_SSH_EXEC_STDERR_BYTES,
+                        "SCP download stderr",
+                    )?,
+                    Some(ChannelMsg::ExitStatus { exit_status: code }) if code != 0 => {
+                        return Err(format!(
+                            "SCP download remote returned non-zero {code}: {}",
+                            String::from_utf8_lossy(&stderr)
+                        ));
                     }
                     Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
                         return Err("SCP remote closed during file body".to_string());
@@ -15011,6 +15027,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
         scp_wait_ack(
             &mut channel,
             &mut pending,
+            &mut stderr,
             progress,
             &mut last_progress,
             idle_timeout,
@@ -15025,8 +15042,14 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
             "SCP 写入完成确认",
         )
         .await?;
-        scp_wait_download_completion(&mut channel, progress, &mut last_progress, idle_timeout)
-            .await?;
+        scp_wait_download_completion(
+            &mut channel,
+            &mut stderr,
+            progress,
+            &mut last_progress,
+            idle_timeout,
+        )
+        .await?;
         finalize_local_resume_file(&temp_target, target)?;
         Ok(size)
     }
@@ -15037,12 +15060,12 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
 
 async fn scp_wait_download_completion(
     channel: &mut Channel<client::Msg>,
+    stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
     last_progress: &mut Instant,
     idle_timeout: Duration,
 ) -> Result<(), String> {
     let mut output = Vec::new();
-    let mut stderr = Vec::new();
     let mut exit_status = None;
     let mut eof_received_at: Option<Instant> = None;
     loop {
@@ -15080,7 +15103,7 @@ async fn scp_wait_download_completion(
                         "SCP download stdout",
                     )?,
                     ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
-                        &mut stderr,
+                        stderr,
                         &data,
                         MAX_SSH_EXEC_STDERR_BYTES,
                         "SCP download stderr",
@@ -15097,7 +15120,7 @@ async fn scp_wait_download_completion(
         return Err(format!(
             "SCP download remote returned non-zero {code}: {}{}",
             String::from_utf8_lossy(&output),
-            String::from_utf8_lossy(&stderr)
+            String::from_utf8_lossy(stderr)
         ));
     }
     Ok(())
@@ -15113,6 +15136,7 @@ fn scp_download_command(remote_source: &str) -> String {
 async fn scp_wait_ack(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
     last_progress: &mut Instant,
     idle_timeout: Duration,
@@ -15121,6 +15145,7 @@ async fn scp_wait_ack(
     match scp_next_byte(
         channel,
         pending,
+        stderr,
         progress,
         last_progress,
         idle_timeout,
@@ -15133,6 +15158,7 @@ async fn scp_wait_ack(
             let message = scp_read_line(
                 channel,
                 pending,
+                stderr,
                 progress,
                 last_progress,
                 idle_timeout,
@@ -15149,24 +15175,32 @@ async fn scp_wait_ack(
 async fn scp_read_line(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
     last_progress: &mut Instant,
     idle_timeout: Duration,
     stage: &str,
 ) -> Result<String, String> {
     let mut bytes = Vec::new();
-    while let Some(byte) = scp_next_byte(
-        channel,
-        pending,
-        progress,
-        last_progress,
-        idle_timeout,
-        stage,
-    )
-    .await?
-    {
+    loop {
+        let byte = scp_next_byte(
+            channel,
+            pending,
+            stderr,
+            progress,
+            last_progress,
+            idle_timeout,
+            stage,
+        )
+        .await?
+        .ok_or_else(|| format!("{stage}: remote closed before newline"))?;
         if byte == b'\n' {
             break;
+        }
+        if bytes.len() >= MAX_SCP_PROTOCOL_LINE_BYTES {
+            return Err(format!(
+                "{stage} 超过协议行上限（{MAX_SCP_PROTOCOL_LINE_BYTES} bytes）"
+            ));
         }
         bytes.push(byte);
     }
@@ -15176,6 +15210,7 @@ async fn scp_read_line(
 async fn scp_next_byte(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
     last_progress: &mut Instant,
     idle_timeout: Duration,
@@ -15189,8 +15224,20 @@ async fn scp_next_byte(
         match scp_wait_channel_message(channel, progress, last_progress, idle_timeout, stage)
             .await?
         {
-            Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+            Some(ChannelMsg::Data { data }) => {
                 pending.extend(data.iter().copied());
+            }
+            Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
+                stderr,
+                &data,
+                MAX_SSH_EXEC_STDERR_BYTES,
+                "SCP download stderr",
+            )?,
+            Some(ChannelMsg::ExitStatus { exit_status: code }) if code != 0 => {
+                return Err(format!(
+                    "SCP download remote returned non-zero {code}: {}",
+                    String::from_utf8_lossy(stderr)
+                ));
             }
             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => return Ok(None),
             _ => {}
@@ -31188,6 +31235,31 @@ mod tests {
                 }
                 command
                     if command
+                        .windows(b"__PORTMATE_TEST_SCP_DOWNLOAD_STDERR_BEFORE_DATA__".len())
+                        .any(|window| {
+                            window == b"__PORTMATE_TEST_SCP_DOWNLOAD_STDERR_BEFORE_DATA__"
+                        }) =>
+                {
+                    session.extended_data(channel, 1, b"remote login warning".to_vec())?;
+                    session.data(channel, b"C0644 4 file.bin\ndata\0".to_vec())?;
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                command
+                    if command
+                        .windows(b"__PORTMATE_TEST_SCP_DOWNLOAD_OVERSIZED_HEADER__".len())
+                        .any(|window| {
+                            window == b"__PORTMATE_TEST_SCP_DOWNLOAD_OVERSIZED_HEADER__"
+                        }) =>
+                {
+                    let mut header = b"C0644 4 ".to_vec();
+                    header.extend(std::iter::repeat_n(b'x', MAX_SCP_PROTOCOL_LINE_BYTES + 1));
+                    session.data(channel, header)?;
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                command
+                    if command
                         .windows(b"__PORTMATE_TEST_SCP_DOWNLOAD_EOF_BEFORE_NONZERO__".len())
                         .any(|window| {
                             window == b"__PORTMATE_TEST_SCP_DOWNLOAD_EOF_BEFORE_NONZERO__"
@@ -42602,7 +42674,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn scp_download_finalizes_only_after_successful_exit_status() {
+    fn scp_download_validates_completion_and_protocol_streams() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping SCP download completion test: ssh-keygen is not installed");
             return;
@@ -42678,14 +42750,43 @@ mod tests {
             assert!(!failed_target.exists());
             assert_eq!(fs::read(&failed_part).unwrap(), b"data");
 
+            let stderr_target = root.path().join("download-with-stderr.bin");
+            let downloaded = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_SCP_DOWNLOAD_STDERR_BEFORE_DATA__",
+                stderr_target.to_str().unwrap(),
+                &progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(downloaded, 4);
+            assert_eq!(fs::read(&stderr_target).unwrap(), b"data");
+
+            let oversized_target = root.path().join("download-oversized-header.bin");
+            let error = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_SCP_DOWNLOAD_OVERSIZED_HEADER__",
+                oversized_target.to_str().unwrap(),
+                &progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                format!("SCP 读取文件头 超过协议行上限（{MAX_SCP_PROTOCOL_LINE_BYTES} bytes）")
+            );
+            assert!(!oversized_target.exists());
+
             tokio::time::timeout(Duration::from_secs(1), async {
-                while counters.channel_closes.load(Ordering::SeqCst) < 2 {
+                while counters.channel_closes.load(Ordering::SeqCst) < 4 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await
-            .expect("SCP download channels were not closed on success and failure");
-            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+            .expect("SCP download channels were not closed across protocol outcomes");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 4);
 
             drop(handle);
             server_task.abort();
