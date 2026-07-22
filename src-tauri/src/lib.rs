@@ -6,16 +6,17 @@ use iota_stronghold::{KeyProvider, SnapshotPath, Stronghold as IotaStronghold};
 use keyring_core::Entry;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use portmate_core::{
-    compute_ssh_sha256_fingerprint, normalize_triggers, prompt_templates, redact_secrets,
-    redact_session_event, redact_session_events, redact_session_summary, redact_transfer_task,
-    resource_templates, tool_definitions, validate_triggers, AuditRecord, AuthMethod,
-    ConnectionConfig, EventDirection, EventStream, HostKeyDecision, HostKeyEvaluation, HostKeyMode,
-    HostKeyObservation, HostKeyScope, HostKeyStore, IdentityRef, IdentitySource, McpGrant,
-    McpScope, OneKeyCredential, OneKeyIdentity, OneKeyKind, ProxyConfig, ProxyKind, SessionEvent,
-    SessionKind, SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection,
-    SysmonDisk, SysmonNetworkInterface, SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark,
-    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
-    TunnelSpec,
+    compute_ssh_sha256_fingerprint, normalize_triggers, normalize_tunnels, prompt_templates,
+    redact_secrets, redact_session_event, redact_session_events, redact_session_summary,
+    redact_transfer_task, resource_templates, tool_definitions, validate_triggers,
+    validate_tunnels, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
+    HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
+    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential,
+    OneKeyIdentity, OneKeyKind, ProxyConfig, ProxyKind, SessionEvent, SessionKind, SessionProfile,
+    SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface,
+    SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
+    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec, MAX_TUNNELS_PER_PROFILE,
+    MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
 };
 use regex::Regex;
 use rusqlite::{params, Connection as SqliteConnection};
@@ -226,6 +227,7 @@ const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_ACTIVE_TUNNELS: usize = 256;
 const MAX_TUNNEL_CONNECTIONS: usize = 256;
 const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
 const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -3620,6 +3622,13 @@ fn resize_session_profile_in_store(
     Ok(summary)
 }
 
+fn validate_profile_tunnels(profile: &SessionProfile) -> Result<(), String> {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => validate_tunnels(&ssh.tunnels),
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command]
 fn save_session_profile(
     state: State<'_, AppState>,
@@ -3630,6 +3639,7 @@ fn save_session_profile(
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
     validate_triggers(&profile.triggers)?;
+    validate_profile_tunnels(&profile)?;
     let mut profile = normalize_session_profile(profile);
     let expected_profile = expected_profile.map(normalize_session_profile);
     validate_profile_client_identity_ids(&profile)?;
@@ -3649,6 +3659,7 @@ fn save_session_profile(
     validate_logging_retention(&profile)?;
     validate_transfer_default_local_dir(&profile)?;
     validate_triggers(&profile.triggers)?;
+    validate_profile_tunnels(&profile)?;
     let runtime_status = store
         .runtimes
         .iter()
@@ -14836,6 +14847,7 @@ async fn create_tunnel_inner(
     request: CreateTunnelRequest,
 ) -> Result<TunnelSpec, String> {
     let request = normalize_tunnel_request(request)?;
+    ensure_tunnel_creation_capacity(state, &request.session_id)?;
     let tunnel = TunnelSpec {
         id: Uuid::new_v4().to_string(),
         label: request.label.clone().unwrap_or_else(|| {
@@ -14854,6 +14866,7 @@ async fn create_tunnel_inner(
         target_port: request.target_port,
         enabled: true,
     };
+    validate_tunnels(std::slice::from_ref(&tunnel))?;
     let (tunnel, local_addr, ssh_runtime_id) = start_tunnel_runtime(
         state,
         &request.session_id,
@@ -14872,6 +14885,23 @@ async fn create_tunnel_inner(
     .await
 }
 
+fn ensure_tunnel_creation_capacity(state: &AppState, session_id: &str) -> Result<(), String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    let tunnels = match profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.tunnels,
+        _ => return Err("tunnels require an SSH or Tmux session".to_string()),
+    };
+    if tunnels.iter().filter(|tunnel| tunnel.enabled).count() >= MAX_TUNNELS_PER_PROFILE {
+        return Err(format!(
+            "enabled tunnel count has reached {MAX_TUNNELS_PER_PROFILE}"
+        ));
+    }
+    Ok(())
+}
+
 async fn start_tunnel_runtime(
     state: &AppState,
     session_id: &str,
@@ -14879,6 +14909,7 @@ async fn start_tunnel_runtime(
     relabel_assigned_port: bool,
     expected_runtime_id: Option<&str>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, String), String> {
+    validate_tunnels(std::slice::from_ref(&tunnel))?;
     let (handle, remote_forwards, ssh_runtime_id) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         let runtime = connections
@@ -14903,13 +14934,9 @@ async fn start_tunnel_runtime(
     if tunnel.id.trim().is_empty() {
         return Err("tunnel requires an id".to_string());
     }
-    if state
-        .tunnels
-        .lock()
-        .map_err(|error| error.to_string())?
-        .contains_key(&tunnel.id)
     {
-        return Err(format!("tunnel already running: {}", tunnel.id));
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
     }
 
     if tunnel.mode == TunnelMode::Remote {
@@ -14957,9 +14984,7 @@ async fn start_tunnel_runtime(
                 return Err("SSH session disconnected while creating tunnel".to_string());
             }
             let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-            if tunnels.contains_key(&tunnel.id) {
-                return Err(format!("tunnel already running: {}", tunnel.id));
-            }
+            ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
             let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
             let target = TunnelForwardTarget {
                 spec: tunnel.clone(),
@@ -15044,9 +15069,7 @@ async fn start_tunnel_runtime(
             return Err("SSH session disconnected while creating tunnel".to_string());
         }
         let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-        if tunnels.contains_key(&tunnel.id) {
-            return Err(format!("tunnel already running: {}", tunnel.id));
-        }
+        ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
         tunnels.insert(
             tunnel.id.clone(),
             TunnelRuntime {
@@ -15167,6 +15190,21 @@ async fn start_tunnel_runtime(
     });
 
     Ok((tunnel, Some(local_addr), ssh_runtime_id))
+}
+
+fn ensure_tunnel_runtime_slot(
+    tunnels: &HashMap<String, TunnelRuntime>,
+    tunnel_id: &str,
+) -> Result<(), String> {
+    if tunnels.contains_key(tunnel_id) {
+        return Err(format!("tunnel already running: {tunnel_id}"));
+    }
+    if tunnels.len() >= MAX_ACTIVE_TUNNELS {
+        return Err(format!(
+            "active tunnel count has reached {MAX_ACTIVE_TUNNELS}"
+        ));
+    }
+    Ok(())
 }
 
 async fn commit_started_tunnel(
@@ -15436,7 +15474,7 @@ fn enabled_tunnel_specs(state: &AppState, session_id: &str) -> Result<Vec<Tunnel
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.tunnels,
         _ => Vec::new(),
     };
-    Ok(tunnels
+    Ok(normalize_tunnels(tunnels)
         .into_iter()
         .filter(|tunnel| tunnel.enabled)
         .collect())
@@ -15517,6 +15555,24 @@ fn record_tunnel_restore_failure(
 fn normalize_tunnel_request(
     mut request: CreateTunnelRequest,
 ) -> Result<CreateTunnelRequest, String> {
+    for (label, value) in [
+        ("session id", request.session_id.as_str()),
+        ("bind host", request.bind_host.as_str()),
+        ("target host", request.target_host.as_str()),
+    ] {
+        if value.chars().any(char::is_control) {
+            return Err(format!(
+                "tunnel {label} must not contain control characters"
+            ));
+        }
+    }
+    if request
+        .label
+        .as_deref()
+        .is_some_and(|label| label.chars().any(char::is_control))
+    {
+        return Err("tunnel label must not contain control characters".to_string());
+    }
     request.session_id = request.session_id.trim().to_string();
     request.bind_host = request.bind_host.trim().to_string();
     request.target_host = request.target_host.trim().to_string();
@@ -15527,22 +15583,70 @@ fn normalize_tunnel_request(
         .filter(|label| !label.is_empty())
         .map(ToOwned::to_owned);
 
-    if request.session_id.is_empty() {
-        return Err("tunnel requires a session id".to_string());
-    }
-    if request.mode != TunnelMode::Remote && request.bind_host.is_empty() {
-        return Err("local and dynamic tunnels require a bind host".to_string());
-    }
-    if request.mode != TunnelMode::Dynamic
-        && (request.target_host.is_empty() || request.target_port == 0)
-    {
-        return Err("local and remote tunnels require a target host and port".to_string());
-    }
     if request.mode == TunnelMode::Dynamic {
         request.target_host.clear();
         request.target_port = 0;
     }
+    validate_tunnel_request_text(
+        "session id",
+        &request.session_id,
+        MAX_SESSION_PROFILE_ID_CHARACTERS,
+        false,
+        false,
+    )?;
+    validate_tunnel_request_text(
+        "bind host",
+        &request.bind_host,
+        MAX_TUNNEL_HOST_CHARACTERS,
+        request.mode == TunnelMode::Remote,
+        true,
+    )?;
+    if let Some(label) = request.label.as_deref() {
+        validate_tunnel_request_text("label", label, MAX_TUNNEL_LABEL_CHARACTERS, false, false)?;
+    }
+    if request.mode != TunnelMode::Dynamic {
+        if request.target_host.is_empty() || request.target_port == 0 {
+            return Err("local and remote tunnels require a target host and port".to_string());
+        }
+        validate_tunnel_request_text(
+            "target host",
+            &request.target_host,
+            MAX_TUNNEL_HOST_CHARACTERS,
+            false,
+            true,
+        )?;
+    }
     Ok(request)
+}
+
+fn validate_tunnel_request_text(
+    label: &str,
+    value: &str,
+    max_characters: usize,
+    allow_empty: bool,
+    reject_whitespace: bool,
+) -> Result<(), String> {
+    if !allow_empty && value.is_empty() {
+        return Err(format!("tunnel {label} must not be empty"));
+    }
+    let mut count = 0_usize;
+    for character in value.chars() {
+        count = count.saturating_add(1);
+        if count > max_characters {
+            return Err(format!(
+                "tunnel {label} exceeds {max_characters} Unicode characters"
+            ));
+        }
+        if character.is_control() {
+            return Err(format!(
+                "tunnel {label} must not contain control characters"
+            ));
+        }
+        if reject_whitespace && character.is_whitespace() {
+            return Err(format!("tunnel {label} must not contain whitespace"));
+        }
+    }
+    Ok(())
 }
 
 fn list_tunnels_inner(
@@ -15735,7 +15839,7 @@ fn tunnel_label(
     target_host: &str,
     target_port: u16,
 ) -> String {
-    match mode {
+    let label = match mode {
         TunnelMode::Local => {
             format!("{bind_host}:{bind_port} -> {target_host}:{target_port}")
         }
@@ -15743,7 +15847,8 @@ fn tunnel_label(
         TunnelMode::Remote => {
             format!("remote {bind_host}:{bind_port} -> {target_host}:{target_port}")
         }
-    }
+    };
+    label.chars().take(MAX_TUNNEL_LABEL_CHARACTERS).collect()
 }
 
 fn persist_tunnel_to_profile_and_log(
@@ -15754,15 +15859,28 @@ fn persist_tunnel_to_profile_and_log(
 ) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
-        if let Some(mut profile) = next_store.profile(session_id) {
-            match &mut profile.connection {
-                ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-                    ssh.tunnels.retain(|item| item.id != tunnel.id);
-                    ssh.tunnels.push(tunnel.clone());
-                    let _ = next_store.upsert_profile(profile);
+        let mut profile = next_store
+            .profile(session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                ssh.tunnels = normalize_tunnels(std::mem::take(&mut ssh.tunnels));
+                ssh.tunnels.retain(|item| item.id != tunnel.id);
+                if ssh.tunnels.len() >= MAX_TUNNELS_PER_PROFILE {
+                    if let Some(index) = ssh.tunnels.iter().position(|item| !item.enabled) {
+                        ssh.tunnels.remove(index);
+                    }
                 }
-                _ => {}
+                if ssh.tunnels.len() >= MAX_TUNNELS_PER_PROFILE {
+                    return Err(format!(
+                        "enabled tunnel count has reached {MAX_TUNNELS_PER_PROFILE}"
+                    ));
+                }
+                ssh.tunnels.push(tunnel.clone());
+                validate_tunnels(&ssh.tunnels)?;
+                next_store.upsert_profile(profile);
             }
+            _ => return Err("tunnels require an SSH or Tmux session".to_string()),
         }
         let listen = local_addr
             .map(|addr| addr.to_string())
@@ -15804,9 +15922,8 @@ fn mark_tunnel_stopped_in_store(store: &mut SessionStore, session_id: &str, stop
             ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
                 if let Some(saved) = ssh.tunnels.iter_mut().find(|item| item.id == stopped.id) {
                     saved.enabled = false;
-                } else {
-                    ssh.tunnels.push(stopped.clone());
                 }
+                ssh.tunnels = normalize_tunnels(std::mem::take(&mut ssh.tunnels));
                 let _ = store.upsert_profile(profile);
             }
             _ => {}
@@ -28358,6 +28475,7 @@ fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
             ssh.username = ssh.username.trim().to_string();
             ssh.normalize_health_settings();
             ssh.proxy.normalize();
+            ssh.tunnels = normalize_tunnels(std::mem::take(&mut ssh.tunnels));
             let alias = ssh
                 .host_key_policy
                 .alias
@@ -41577,6 +41695,43 @@ mod tests {
         assert!(dynamic.target_host.is_empty());
         assert_eq!(dynamic.target_port, 0);
 
+        let oversized_host = normalize_tunnel_request(CreateTunnelRequest {
+            bind_host: "x".repeat(MAX_TUNNEL_HOST_CHARACTERS + 1),
+            ..dynamic.clone()
+        })
+        .unwrap_err();
+        assert!(oversized_host.contains("bind host exceeds"));
+
+        let invalid_label = normalize_tunnel_request(CreateTunnelRequest {
+            label: Some(format!(
+                "{}\nsecret",
+                "x".repeat(MAX_TUNNEL_LABEL_CHARACTERS)
+            )),
+            ..dynamic.clone()
+        })
+        .unwrap_err();
+        assert!(invalid_label.contains("label must not contain control characters"));
+
+        let whitespace_host = normalize_tunnel_request(CreateTunnelRequest {
+            bind_host: "bad host".to_string(),
+            ..dynamic
+        })
+        .unwrap_err();
+        assert!(whitespace_host.contains("bind host must not contain whitespace"));
+
+        assert_eq!(
+            tunnel_label(
+                TunnelMode::Local,
+                &"b".repeat(MAX_TUNNEL_HOST_CHARACTERS),
+                65_535,
+                &"t".repeat(MAX_TUNNEL_HOST_CHARACTERS),
+                65_535,
+            )
+            .chars()
+            .count(),
+            MAX_TUNNEL_LABEL_CHARACTERS
+        );
+
         assert_eq!(forwarded_tcpip_ports(65_535, 0), Some((65_535, 0)));
         assert_eq!(forwarded_tcpip_ports(65_536, 22), None);
         assert_eq!(forwarded_tcpip_ports(22, 65_536), None);
@@ -41601,6 +41756,129 @@ mod tests {
         drop(permit);
         assert!(try_acquire_tunnel_connection(&slots, &metrics).is_some());
         assert!(metrics.last_error.lock().unwrap().is_none());
+
+        let runtimes = (0..MAX_ACTIVE_TUNNELS)
+            .map(|index| {
+                let id = format!("runtime-{index}");
+                (
+                    id.clone(),
+                    TunnelRuntime {
+                        session_id: "ssh-session".to_string(),
+                        ssh_runtime_id: "ssh-runtime".to_string(),
+                        spec: TunnelSpec {
+                            id,
+                            label: "Tunnel".to_string(),
+                            mode: TunnelMode::Local,
+                            bind_host: "127.0.0.1".to_string(),
+                            bind_port: 10_022,
+                            target_host: "device.internal".to_string(),
+                            target_port: 22,
+                            enabled: true,
+                        },
+                        metrics: Arc::new(TunnelMetrics::default()),
+                        closed: Arc::new(AtomicBool::new(false)),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        assert!(ensure_tunnel_runtime_slot(&runtimes, "next")
+            .unwrap_err()
+            .contains(&MAX_ACTIVE_TUNNELS.to_string()));
+        assert!(ensure_tunnel_runtime_slot(&runtimes, "runtime-0")
+            .unwrap_err()
+            .contains("already running"));
+    }
+
+    #[test]
+    fn profile_tunnel_bounds_reclaim_disabled_entries_without_overwriting_enabled_ones() {
+        let root = std::env::temp_dir().join(format!("portmate-tunnel-bounds-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut profile = test_ssh_profile();
+        let session_id = profile.id.clone();
+        let tunnel = |id: String, enabled: bool| TunnelSpec {
+            id: id.clone(),
+            label: id,
+            mode: TunnelMode::Local,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10_000,
+            target_host: "device.internal".to_string(),
+            target_port: 22,
+            enabled,
+        };
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.tunnels = (0..MAX_TUNNELS_PER_PROFILE - 1)
+            .map(|index| tunnel(format!("enabled-{index}"), true))
+            .chain(std::iter::once(tunnel("disabled-old".to_string(), false)))
+            .collect();
+        validate_profile_tunnels(&profile).unwrap();
+
+        let mut legacy = profile.clone();
+        let ConnectionConfig::Ssh(ssh) = &mut legacy.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.tunnels.push(tunnel("invalid\nid".to_string(), true));
+        let normalized = normalize_session_profile(legacy);
+        let ConnectionConfig::Ssh(ssh) = normalized.connection else {
+            panic!("expected SSH profile");
+        };
+        assert_eq!(ssh.tunnels.len(), MAX_TUNNELS_PER_PROFILE);
+        assert!(!ssh.tunnels.iter().any(|tunnel| tunnel.id.contains('\n')));
+
+        let mut duplicate = profile.clone();
+        let ConnectionConfig::Ssh(ssh) = &mut duplicate.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.tunnels[1].id = ssh.tunnels[0].id.clone();
+        assert!(validate_profile_tunnels(&duplicate)
+            .unwrap_err()
+            .contains("duplicate id"));
+
+        let state = test_app_state(profile, root.join("portmate-store.sqlite3"));
+        ensure_tunnel_creation_capacity(&state, &session_id).unwrap();
+        let replacement = tunnel("replacement".to_string(), true);
+        persist_tunnel_to_profile_and_log(&state, &session_id, &replacement, None).unwrap();
+        let saved = state.store.lock().unwrap().profile(&session_id).unwrap();
+        let ConnectionConfig::Ssh(ssh) = saved.connection else {
+            panic!("expected SSH profile");
+        };
+        assert_eq!(ssh.tunnels.len(), MAX_TUNNELS_PER_PROFILE);
+        assert!(ssh.tunnels.iter().all(|tunnel| tunnel.enabled));
+        assert!(ssh.tunnels.iter().any(|tunnel| tunnel.id == "replacement"));
+        assert!(!ssh.tunnels.iter().any(|tunnel| tunnel.id == "disabled-old"));
+        assert!(ensure_tunnel_creation_capacity(&state, &session_id)
+            .unwrap_err()
+            .contains("has reached"));
+        assert!(persist_tunnel_to_profile_and_log(
+            &state,
+            &session_id,
+            &tunnel("must-not-replace".to_string(), true),
+            None,
+        )
+        .unwrap_err()
+        .contains("has reached"));
+        assert!(persist_tunnel_to_profile_and_log(
+            &state,
+            "deleted-session",
+            &tunnel("orphan".to_string(), true),
+            None,
+        )
+        .unwrap_err()
+        .contains("unknown session"));
+
+        let missing = tunnel("missing-stopped".to_string(), false);
+        let mut store = state.store.lock().unwrap();
+        mark_tunnel_stopped_in_store(&mut store, &session_id, &missing);
+        let saved = store.profile(&session_id).unwrap();
+        let ConnectionConfig::Ssh(ssh) = saved.connection else {
+            panic!("expected SSH profile");
+        };
+        assert_eq!(ssh.tunnels.len(), MAX_TUNNELS_PER_PROFILE);
+        assert!(!ssh.tunnels.iter().any(|tunnel| tunnel.id == missing.id));
+        drop(store);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod models;
 pub mod redaction;
 pub mod store;
 pub mod triggers;
+pub mod tunnels;
 
 pub use host_keys::{
     compute_ssh_sha256_fingerprint, HostKeyEvaluation, HostKeyObservation, HostKeyStore,
@@ -22,4 +23,8 @@ pub use triggers::{
     normalize_triggers, validate_triggers, MAX_TRIGGERS_PER_PROFILE, MAX_TRIGGER_ACTIONS,
     MAX_TRIGGER_ACTION_VALUE_CHARACTERS, MAX_TRIGGER_ID_CHARACTERS, MAX_TRIGGER_LABEL_CHARACTERS,
     MAX_TRIGGER_MATCHER_CHARACTERS,
+};
+pub use tunnels::{
+    normalize_tunnels, validate_tunnels, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
+    MAX_TUNNEL_ID_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
 };
