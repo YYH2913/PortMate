@@ -38,7 +38,16 @@ import {
   TERMINAL_PROFILE_BOUNDS,
 } from "./terminal-settings-state";
 import { normalizeTerminalTheme, TERMINAL_THEME_OPTIONS } from "./terminal-theme";
-import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
+import {
+  canAddTrigger,
+  canAddTriggerAction,
+  defaultTriggerAction,
+  MAX_TRIGGER_ACTION_VALUE_CHARACTERS,
+  MAX_TRIGGER_LABEL_CHARACTERS,
+  MAX_TRIGGER_MATCHER_CHARACTERS,
+  patchTriggerAction,
+  triggerActionValue,
+} from "./trigger-state";
 import type {
   AuthMethod,
   HostKeyPolicy,
@@ -462,7 +471,7 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
                 <input type="checkbox" checked={trigger.enabled} onChange={(event) => updateTrigger(triggerIndex, { enabled: event.target.checked })} />
                 <span>启用</span>
               </label>
-              <input aria-label="触发器名称" value={trigger.label} onChange={(event) => updateTrigger(triggerIndex, { label: event.target.value })} />
+              <input aria-label="触发器名称" maxLength={MAX_TRIGGER_LABEL_CHARACTERS} value={trigger.label} onChange={(event) => updateTrigger(triggerIndex, { label: event.target.value })} />
               <button type="button" className="icon-button" title="删除触发器" aria-label="删除触发器" onClick={() => setTriggers(draft.triggers.filter((_, index) => index !== triggerIndex))}><Trash2 size={14} /></button>
             </header>
             <div className="trigger-matcher-row">
@@ -480,6 +489,7 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
               </select>
               <input
                 aria-label="匹配内容"
+                maxLength={MAX_TRIGGER_MATCHER_CHARACTERS}
                 value={matcherValue}
                 onChange={(event) => updateTrigger(triggerIndex, {
                   matcher: trigger.matcher.type === "regex"
@@ -526,6 +536,7 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
                   ) : (
                     <input
                       aria-label="动作参数"
+                      maxLength={MAX_TRIGGER_ACTION_VALUE_CHARACTERS}
                       value={triggerActionValue(action)}
                       onChange={(event) => updateAction(triggerIndex, actionIndex, patchTriggerAction(action.type, event.target.value))}
                     />
@@ -533,12 +544,12 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
                   <button type="button" className="icon-button" title="删除动作" aria-label="删除动作" onClick={() => updateTrigger(triggerIndex, { actions: trigger.actions.filter((_, index) => index !== actionIndex) })}><Trash2 size={14} /></button>
                 </div>
               ))}
-              <button type="button" className="trigger-add-action" onClick={() => updateTrigger(triggerIndex, { actions: [...trigger.actions, defaultTriggerAction("timeline-mark")] })}><Plus size={14} />添加动作</button>
+              <button type="button" className="trigger-add-action" disabled={!canAddTriggerAction(trigger.actions.length)} title={canAddTriggerAction(trigger.actions.length) ? "添加动作" : "每条触发器最多 16 个动作"} onClick={() => updateTrigger(triggerIndex, { actions: [...trigger.actions, defaultTriggerAction("timeline-mark")] })}><Plus size={14} />添加动作</button>
             </div>
           </section>
         );
       })}
-      <button type="button" className="trigger-add" onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />添加触发器</button>
+      <button type="button" className="trigger-add" disabled={!canAddTrigger(draft.triggers.length)} title={canAddTrigger(draft.triggers.length) ? "添加触发器" : "每个会话最多 64 条触发器"} onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />添加触发器</button>
     </div>
   );
 }

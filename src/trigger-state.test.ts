@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { TriggerAction } from "./types";
-import { defaultTriggerAction, patchTriggerAction, triggerActionValue } from "./trigger-state";
+import {
+  canAddTrigger,
+  canAddTriggerAction,
+  defaultTriggerAction,
+  MAX_TRIGGER_ACTIONS,
+  MAX_TRIGGERS_PER_PROFILE,
+  patchTriggerAction,
+  triggerActionValue,
+} from "./trigger-state";
 
 describe("trigger action state", () => {
   const types: TriggerAction["type"][] = [
@@ -27,5 +35,14 @@ describe("trigger action state", () => {
       expect(action.type).toBe(type);
       expect(triggerActionValue(action)).toBe(`value-${type}`);
     }
+  });
+
+  it("stops adding rules and actions at the shared profile bounds", () => {
+    expect(canAddTrigger(MAX_TRIGGERS_PER_PROFILE - 1)).toBe(true);
+    expect(canAddTrigger(MAX_TRIGGERS_PER_PROFILE)).toBe(false);
+    expect(canAddTriggerAction(MAX_TRIGGER_ACTIONS - 1)).toBe(true);
+    expect(canAddTriggerAction(MAX_TRIGGER_ACTIONS)).toBe(false);
+    expect(canAddTrigger(-1)).toBe(false);
+    expect(canAddTriggerAction(1.5)).toBe(false);
   });
 });

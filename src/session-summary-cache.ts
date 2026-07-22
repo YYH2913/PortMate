@@ -1,5 +1,13 @@
 import type { SessionSummary } from "./types";
 import { normalizeSessionDisconnectReason } from "./session-runtime-state";
+import {
+  MAX_TRIGGER_ACTIONS,
+  MAX_TRIGGER_ACTION_VALUE_CHARACTERS,
+  MAX_TRIGGER_ID_CHARACTERS,
+  MAX_TRIGGER_LABEL_CHARACTERS,
+  MAX_TRIGGER_MATCHER_CHARACTERS,
+  MAX_TRIGGERS_PER_PROFILE,
+} from "./trigger-state";
 
 export const SESSION_SUMMARY_CACHE_STORAGE_KEY = "portmate.sessions";
 
@@ -69,8 +77,7 @@ function isProfile(profile: Record<string, unknown>): boolean {
     && isConnection(profile.connection, kind)
     && isTerminalProfile(profile.terminal)
     && isLoggingProfile(profile.logging)
-    && Array.isArray(profile.triggers)
-    && profile.triggers.every(isTrigger)
+    && isTriggerList(profile.triggers)
     && isTransferProfile(profile.transfer);
 }
 
@@ -278,17 +285,33 @@ function isTunnelSpec(value: unknown): boolean {
     && isBoolean(tunnel.enabled);
 }
 
-function isTrigger(value: unknown): boolean {
-  const trigger = recordValue(value);
+function isTriggerList(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > MAX_TRIGGERS_PER_PROFILE) return false;
+  const ids = new Set<string>();
+  return value.every((trigger) => {
+    const record = recordValue(trigger);
+    if (!isTrigger(record) || ids.has(record.id as string)) return false;
+    ids.add(record.id as string);
+    return true;
+  });
+}
+
+function isTrigger(
+  trigger: Record<string, unknown> | null,
+): trigger is Record<string, unknown> & { id: string } {
   const matcher = recordValue(trigger?.matcher);
   return trigger !== null
-    && isString(trigger.id)
-    && isString(trigger.label)
+    && isBoundedTriggerText(trigger.id, MAX_TRIGGER_ID_CHARACTERS, false)
+    && (trigger.id as string).trim() === trigger.id
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(trigger.id as string)
+    && isBoundedTriggerText(trigger.label, MAX_TRIGGER_LABEL_CHARACTERS, true)
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(trigger.label as string)
     && matcher !== null
     && (matcher.type === "contains"
-      ? isString(matcher.text) && isBoolean(matcher.case_sensitive)
-      : matcher.type === "regex" && isString(matcher.pattern))
+      ? isBoundedTriggerText(matcher.text, MAX_TRIGGER_MATCHER_CHARACTERS, false) && isBoolean(matcher.case_sensitive)
+      : matcher.type === "regex" && isBoundedTriggerText(matcher.pattern, MAX_TRIGGER_MATCHER_CHARACTERS, false))
     && Array.isArray(trigger.actions)
+    && trigger.actions.length <= MAX_TRIGGER_ACTIONS
     && trigger.actions.every(isTriggerAction)
     && isBoolean(trigger.enabled);
 }
@@ -298,22 +321,30 @@ function isTriggerAction(value: unknown): boolean {
   if (!action) return false;
   switch (action.type) {
     case "highlight":
-      return isString(action.color);
+      return typeof action.color === "string" && /^#[0-9a-f]{6}$/i.test(action.color);
     case "send-text":
-      return isString(action.text);
+      return isBoundedTriggerText(action.text, MAX_TRIGGER_ACTION_VALUE_CHARACTERS, true);
     case "local-command":
-      return isString(action.command);
+      return isBoundedTriggerText(action.command, MAX_TRIGGER_ACTION_VALUE_CHARACTERS, false)
+        && (action.command as string).trim().length > 0;
     case "notification":
-      return isString(action.message);
+      return isBoundedTriggerText(action.message, MAX_TRIGGER_ACTION_VALUE_CHARACTERS, true);
     case "timeline-mark":
-      return isString(action.label);
+      return isBoundedTriggerText(action.label, MAX_TRIGGER_ACTION_VALUE_CHARACTERS, true);
     case "custom-link":
-      return isString(action.url_template);
+      return isBoundedTriggerText(action.url_template, MAX_TRIGGER_ACTION_VALUE_CHARACTERS, true);
     case "sound":
-      return isString(action.name);
+      return includes(["bell", "chime", "alert"] as const, action.name);
     default:
       return false;
   }
+}
+
+function isBoundedTriggerText(value: unknown, maxCharacters: number, allowEmpty: boolean): value is string {
+  return typeof value === "string"
+    && (allowEmpty || value.length > 0)
+    && value.length <= maxCharacters
+    && !value.includes("\0");
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

@@ -37,6 +37,31 @@ describe("session summary cache", () => {
     ]))).toEqual([]);
   });
 
+  it("rejects trigger collections and payloads outside runtime bounds", () => {
+    const summary = createSummary("shell-a");
+    const trigger = {
+      id: "trigger-a",
+      label: "Trigger",
+      matcher: { type: "contains" as const, text: "match", case_sensitive: true },
+      actions: [{ type: "timeline-mark" as const, label: "mark" }],
+      enabled: true,
+    };
+    summary.profile.triggers = Array.from({ length: 65 }, (_, index) => ({
+      ...trigger,
+      id: `trigger-${index}`,
+    }));
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.triggers = [{
+      ...trigger,
+      actions: [{ type: "local-command", command: "x".repeat(4_097) }],
+    }];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+
+    summary.profile.triggers = [trigger, { ...trigger }];
+    expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([]);
+  });
+
   it("treats storage failures as a non-authoritative cache miss", () => {
     const sessions = [createSummary("shell-a")];
     expect(readSessionSummaryCache({
