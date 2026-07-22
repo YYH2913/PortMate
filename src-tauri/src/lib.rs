@@ -234,6 +234,7 @@ const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
 const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
 const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+const SSH_EXEC_STATUS_GRACE_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
@@ -12388,7 +12389,7 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
     let mut output = Vec::new();
     let mut stderr = Vec::new();
     let mut exit_status = None;
-    let mut eof_received = false;
+    let mut eof_received_at: Option<Instant> = None;
     let mut reported = RemoteCopyMarkers::default();
     let started = Instant::now();
     let mut last_progress = Instant::now();
@@ -12396,6 +12397,9 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
     let outcome = async {
         loop {
             progress.check_cancelled()?;
+            if ssh_exec_status_grace_expired(eof_received_at) {
+                break;
+            }
             let message = {
                 let wait = channel.wait();
                 tokio::pin!(wait);
@@ -12479,7 +12483,8 @@ async fn remote_copy_with_timeouts<H: client::Handler>(
                     "remote copy stderr",
                 )?,
                 Some(message) => {
-                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received) {
+                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at)
+                    {
                         break;
                     }
                 }
@@ -14637,8 +14642,8 @@ async fn scp_wait_channel_message(
     }
 }
 
-async fn scp_upload(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+async fn scp_upload<H: client::Handler>(
+    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     local_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -14654,142 +14659,166 @@ async fn scp_upload(
         open_shared_ssh_exec_channel(&handle, &command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
             .await?;
 
-    let mut output = Vec::new();
-    let mut stderr = Vec::new();
-    let mut exit_status = None;
-    let mut reported_total = None;
-    let started = Instant::now();
-    let mut copied = loop {
-        if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_channel_bounded(&channel).await;
-            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
-        }
-        if started.elapsed() > Duration::from_secs(30) {
-            close_ssh_channel_bounded(&channel).await;
-            return Err("SCP upload 等待远端续传状态超时".to_string());
-        }
-        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
-            Ok(Some(ChannelMsg::Data { data })) => {
-                output.extend_from_slice(&data);
-                let markers = remote_copy_markers(&output);
-                if markers.total.is_some() && markers.total != reported_total {
-                    let total = markers.total.unwrap_or_default();
-                    progress.update(0, total).await?;
-                    reported_total = Some(total);
-                }
-                if let Some(resume) = markers.resume {
-                    let resume = resume.min(size);
-                    progress.set_rate_baseline(resume);
-                    if resume > 0 {
-                        progress.update(resume, size).await?;
-                    }
-                    break resume;
-                }
+    let outcome = async {
+        let mut output = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
+        let mut reported_total = None;
+        let started = Instant::now();
+        let mut copied = loop {
+            if progress.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
             }
-            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
-            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
-            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => {
+            if started.elapsed() > Duration::from_secs(30) {
+                return Err("SCP upload 等待远端续传状态超时".to_string());
+            }
+            match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
+                Ok(Some(ChannelMsg::Data { data })) => {
+                    append_bounded_ssh_exec_data(
+                        &mut output,
+                        &data,
+                        MAX_SSH_EXEC_STDOUT_BYTES,
+                        "SCP upload stdout",
+                    )?;
+                    let markers = remote_copy_markers(&output);
+                    if markers.total.is_some() && markers.total != reported_total {
+                        let total = markers.total.unwrap_or_default();
+                        progress.update(0, total).await?;
+                        reported_total = Some(total);
+                    }
+                    if let Some(resume) = markers.resume {
+                        let resume = resume.min(size);
+                        progress.set_rate_baseline(resume);
+                        if resume > 0 {
+                            progress.update(resume, size).await?;
+                        }
+                        break resume;
+                    }
+                }
+                Ok(Some(ChannelMsg::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
+                    &mut stderr,
+                    &data,
+                    MAX_SSH_EXEC_STDERR_BYTES,
+                    "SCP upload stderr",
+                )?,
+                Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
+                Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => {
+                    return Err(format!(
+                        "SCP upload remote closed before resume marker: {}{}",
+                        String::from_utf8_lossy(&output),
+                        String::from_utf8_lossy(&stderr)
+                    ));
+                }
+                Ok(Some(_)) => {}
+                Err(_) => {}
+            }
+            if let Some(code) = exit_status.filter(|code| *code != 0) {
                 return Err(format!(
-                    "SCP upload remote closed before resume marker: {}{}",
-                    String::from_utf8_lossy(&output),
+                    "SCP upload remote returned non-zero before upload {code}: {}",
                     String::from_utf8_lossy(&stderr)
                 ));
             }
-            Ok(Some(_)) => {}
-            Err(_) => {}
+        };
+
+        if copied < size {
+            file.seek(std::io::SeekFrom::Start(copied))
+                .map_err(|error| format!("SCP 定位本地续传偏移失败: {error}"))?;
         }
-        if exit_status.is_some_and(|code| code != 0) {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while copied < size {
+            if progress.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| format!("读取本地文件失败: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            scp_send_data_with_idle_timeout(
+                &channel,
+                &buffer[..read],
+                progress,
+                SCP_IO_IDLE_TIMEOUT,
+                "SCP 写入文件内容",
+            )
+            .await?;
+            copied += read as u64;
+            progress.update(copied, size).await?;
+        }
+        match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return Err(format!("SCP 写入 EOF 失败: {error}"));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "SCP 写入 EOF 空闲超时（{} ms）",
+                    SCP_IO_IDLE_TIMEOUT.as_millis()
+                ));
+            }
+        }
+
+        let started = Instant::now();
+        let mut eof_received_at: Option<Instant> = None;
+        loop {
+            if progress.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
+            if ssh_exec_status_grace_expired(eof_received_at) {
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(300) {
+                return Err("SCP upload 等待远端完成超时".to_string());
+            }
+            match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
+                Ok(Some(ChannelMsg::Data { data })) => append_bounded_ssh_exec_data(
+                    &mut output,
+                    &data,
+                    MAX_SSH_EXEC_STDOUT_BYTES,
+                    "SCP upload stdout",
+                )?,
+                Ok(Some(ChannelMsg::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
+                    &mut stderr,
+                    &data,
+                    MAX_SSH_EXEC_STDERR_BYTES,
+                    "SCP upload stderr",
+                )?,
+                Ok(Some(message)) => {
+                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at)
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+
+        if let Some(code) = exit_status.filter(|code| *code != 0) {
             return Err(format!(
-                "SCP upload remote returned non-zero before upload {:?}: {}",
-                exit_status,
+                "SCP upload remote returned non-zero {code}: {}",
                 String::from_utf8_lossy(&stderr)
             ));
         }
-    };
-
-    if copied < size {
-        file.seek(std::io::SeekFrom::Start(copied))
-            .map_err(|error| format!("SCP 定位本地续传偏移失败: {error}"))?;
-    }
-    let mut buffer = vec![0_u8; 64 * 1024];
-    while copied < size {
-        if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_channel_bounded(&channel).await;
-            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
-        }
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| format!("读取本地文件失败: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        scp_send_data_with_idle_timeout(
-            &channel,
-            &buffer[..read],
-            progress,
-            SCP_IO_IDLE_TIMEOUT,
-            "SCP 写入文件内容",
-        )
-        .await?;
-        copied += read as u64;
-        progress.update(copied, size).await?;
-    }
-    match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            close_ssh_channel_bounded(&channel).await;
-            return Err(format!("SCP 写入 EOF 失败: {error}"));
-        }
-        Err(_) => {
-            close_ssh_channel_bounded(&channel).await;
+        let markers = remote_copy_markers(&output);
+        let done = markers.done.ok_or_else(|| {
+            format!(
+                "SCP upload completed but done marker was missing: {}",
+                String::from_utf8_lossy(&output)
+            )
+        })?;
+        if done != size {
             return Err(format!(
-                "SCP 写入 EOF 空闲超时（{} ms）",
-                SCP_IO_IDLE_TIMEOUT.as_millis()
+                "SCP upload size mismatch: remote done {done}, expected {size}"
             ));
         }
+        progress.update(done, size).await?;
+        Ok(done)
     }
-
-    let started = Instant::now();
-    loop {
-        if progress.cancel.load(Ordering::SeqCst) {
-            close_ssh_channel_bounded(&channel).await;
-            return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
-        }
-        if started.elapsed() > Duration::from_secs(300) {
-            close_ssh_channel_bounded(&channel).await;
-            return Err("SCP upload 等待远端完成超时".to_string());
-        }
-        match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
-            Ok(Some(ChannelMsg::Data { data })) => output.extend_from_slice(&data),
-            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => stderr.extend_from_slice(&data),
-            Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
-            Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => break,
-            Ok(Some(_)) => {}
-            Err(_) => {}
-        }
-    }
-
-    if exit_status.is_some_and(|code| code != 0) {
-        return Err(format!(
-            "SCP upload remote returned non-zero {:?}: {}",
-            exit_status,
-            String::from_utf8_lossy(&stderr)
-        ));
-    }
-    let markers = remote_copy_markers(&output);
-    let done = markers.done.ok_or_else(|| {
-        format!(
-            "SCP upload completed but done marker was missing: {}",
-            String::from_utf8_lossy(&output)
-        )
-    })?;
-    if done != size {
-        return Err(format!(
-            "SCP upload size mismatch: remote done {done}, expected {size}"
-        ));
-    }
-    progress.update(done, size).await?;
-    Ok(done)
+    .await;
+    close_ssh_channel_bounded(&channel).await;
+    outcome
 }
 
 fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> String {
@@ -27525,20 +27554,25 @@ fn windows_powershell_encoded_script(script: &str) -> String {
 fn ssh_exec_message_completes(
     message: &ChannelMsg,
     exit_status: &mut Option<u32>,
-    eof_received: &mut bool,
+    eof_received_at: &mut Option<Instant>,
 ) -> bool {
     match message {
         ChannelMsg::ExitStatus { exit_status: code } => {
             *exit_status = Some(*code);
-            *eof_received
+            eof_received_at.is_some()
         }
         ChannelMsg::Eof => {
-            *eof_received = true;
+            eof_received_at.get_or_insert_with(Instant::now);
             exit_status.is_some()
         }
         ChannelMsg::Close => true,
         _ => false,
     }
+}
+
+fn ssh_exec_status_grace_expired(eof_received_at: Option<Instant>) -> bool {
+    eof_received_at
+        .is_some_and(|received_at| received_at.elapsed() >= SSH_EXEC_STATUS_GRACE_TIMEOUT)
 }
 
 async fn exec_ssh_command_capture<H: client::Handler>(
@@ -27557,10 +27591,26 @@ async fn exec_ssh_command_capture<H: client::Handler>(
         let mut output = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_status = None;
-        let mut eof_received = false;
+        let mut eof_received_at: Option<Instant> = None;
         tokio::time::timeout(remaining, async {
-            while let Some(message) = channel.wait().await {
-                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received) {
+            loop {
+                let message = if let Some(received_at) = eof_received_at {
+                    let grace_remaining =
+                        SSH_EXEC_STATUS_GRACE_TIMEOUT.saturating_sub(received_at.elapsed());
+                    if grace_remaining.is_zero() {
+                        break;
+                    }
+                    match tokio::time::timeout(grace_remaining, channel.wait()).await {
+                        Ok(message) => message,
+                        Err(_) => break,
+                    }
+                } else {
+                    channel.wait().await
+                };
+                let Some(message) = message else {
+                    break;
+                };
+                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
                     break;
                 }
                 match message {
@@ -31035,6 +31085,33 @@ mod tests {
                     session.exit_status_request(channel, 9)?;
                 }
                 b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
+                command
+                    if command
+                        .windows(b"__PORTMATE_TEST_SCP_UPLOAD_SUCCESS__".len())
+                        .any(|window| window == b"__PORTMATE_TEST_SCP_UPLOAD_SUCCESS__") =>
+                {
+                    session.data(
+                        channel,
+                        b"__PORTMATE_SIZE__0\n__PORTMATE_RESUME__0\n__PORTMATE_DONE__0\n".to_vec(),
+                    )?;
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                command
+                    if command
+                        .windows(b"__PORTMATE_TEST_SCP_UPLOAD_EOF_BEFORE_NONZERO__".len())
+                        .any(|window| {
+                            window == b"__PORTMATE_TEST_SCP_UPLOAD_EOF_BEFORE_NONZERO__"
+                        }) =>
+                {
+                    session.data(
+                        channel,
+                        b"__PORTMATE_SIZE__0\n__PORTMATE_RESUME__0\n__PORTMATE_DONE__0\n".to_vec(),
+                    )?;
+                    session.extended_data(channel, 1, b"late SCP upload failure".to_vec())?;
+                    session.eof(channel)?;
+                    session.exit_status_request(channel, 12)?;
+                }
                 command
                     if command
                         .windows(b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__".len())
@@ -42355,6 +42432,90 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn scp_upload_closes_success_and_rejects_status_after_eof() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SCP upload completion test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+        let source = root.path().join("empty.bin");
+        fs::write(&source, []).unwrap();
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-scp-upload-completion-user";
+            let secret = "PortMate SCP upload completion secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server(&host_key, username, secret).await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfers
+                .push(test_transfer_task(&profile.id, TransferStatus::Running));
+            let progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+
+            let uploaded = scp_upload(
+                Arc::clone(&handle),
+                source.to_str().unwrap(),
+                "/__PORTMATE_TEST_SCP_UPLOAD_SUCCESS__",
+                &progress,
+            )
+            .await
+            .unwrap();
+            assert_eq!(uploaded, 0);
+
+            let error = scp_upload(
+                Arc::clone(&handle),
+                source.to_str().unwrap(),
+                "/__PORTMATE_TEST_SCP_UPLOAD_EOF_BEFORE_NONZERO__",
+                &progress,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "SCP upload remote returned non-zero 12: late SCP upload failure"
+            );
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.channel_closes.load(Ordering::SeqCst) < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SCP upload channels were not closed on success and failure");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn scp_download_silent_peer_observes_cancellation_and_idle_timeout() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping silent SCP test: ssh-keygen is not installed");
@@ -42551,7 +42712,7 @@ mod tests {
                 "/destination.bin",
                 &late_status_progress,
                 Duration::from_secs(1),
-                Duration::from_secs(2),
+                Duration::from_secs(5),
             )
             .await
             .unwrap_err();
