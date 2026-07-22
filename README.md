@@ -97,7 +97,7 @@ in-memory choices usable and no longer throws from a React effect or explicit se
      multiple tags can be entered normally.
    - SSH host, port, username, `HostKeyAlias`, host key policy, trust scope, identity file, auth order, agent and forwarding behavior
    - SSH profile-vault private key import plus optional saved password/passphrase into the system keyring; saved profiles keep only generated `secretRef` values
-   - SSH/Tmux/TCP/Telnet profile proxy settings for HTTP CONNECT or SOCKS5, with optional HTTP Basic or SOCKS5 username/password authentication. Proxy passwords are transactionally written to the native keyring or unlocked Stronghold fallback and only `secretRef` metadata is persisted. The SOCKS5 client rejects non-zero RFC 1928 reserved fields and empty domain-form bound addresses instead of accepting a malformed success response. SSH host-key scans use the same route as the real connection; with Jump Hosts, the proxy carries only the first physical hop and later hops continue through SSH `direct-tcpip` channels. Every later-hop and final-target channel open is bounded to 12 seconds during a host-key scan and to the configured connection timeout during a live connection. A timed-out russh channel confirmation requests a disconnect on its owning Jump Host session before the remaining chain is closed, preventing the cancelled confirmation receiver from leaving an orphan channel.
+   - SSH/Tmux/TCP/Telnet profile proxy settings for HTTP CONNECT or SOCKS5, with optional HTTP Basic or SOCKS5 username/password authentication. Proxy passwords are transactionally written to the native keyring or unlocked Stronghold fallback and only `secretRef` metadata is persisted. The SOCKS5 client rejects non-zero RFC 1928 reserved fields and empty domain-form bound addresses instead of accepting a malformed success response. SSH host-key scans use the same route as the real connection; with Jump Hosts, the proxy carries only the first physical hop and later hops continue through SSH `direct-tcpip` channels. Every later-hop and final-target channel open is bounded to 12 seconds during a host-key scan and to the live connection's setup timeout, currently 20 seconds in production. A timed-out russh channel confirmation requests a disconnect on its owning Jump Host session before the remaining chain is closed, preventing the cancelled confirmation receiver from leaving an orphan channel.
    - Serial port, baud rate, parity, flow control, DTR/RTS, reconnect delay, and optional receive-idle timeout
    - Shell/TCP/Telnet/Tmux fields when those session types are selected
    - Telnet BINARY and NAWS negotiation switches. Both default on for legacy and new profiles; accepted BINARY directions independently control inbound NVT CR decoding and outbound newline conversion, while NAWS sends the latest terminal dimensions after negotiation and every later resize. TERMINAL-TYPE replies use the profile's configured terminal type.
@@ -124,7 +124,10 @@ SSH/Tmux authentication follows the Profile's configured `authOrder`. When `reco
 the successful method is persisted with the connected state and is tried first next time only while
 that method remains in `authOrder`. Removing a method or disabling success recording clears the stale
 hint during frontend and Store normalization, so historical data cannot re-enable an authentication
-method that the current Profile excludes. Automatic reconnect applies the same rule. The compact
+method that the current Profile excludes. Automatic reconnect applies the same rule. The complete
+ordered authentication sequence shares one 12-second budget during a Jump Host host-key scan and
+one 20-second setup budget for each live Jump Host or target; timeout disconnects the current SSH
+handle and closes the already established Jump Host chain. The compact
 settings menu exposes all 15 ordered non-empty subsets of public-key, keyboard-interactive, and
 password authentication; an existing Profile containing an external or legacy method keeps a visible
 `当前配置` entry instead of rendering an empty selector or silently rewriting it. The adjacent
