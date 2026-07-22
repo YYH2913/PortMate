@@ -14600,10 +14600,7 @@ async fn scp_wait_channel_message(
     idle_timeout: Duration,
     stage: &str,
 ) -> Result<Option<ChannelMsg>, String> {
-    if let Err(error) = progress.check_cancelled() {
-        close_ssh_channel_bounded(channel).await;
-        return Err(error);
-    }
+    progress.check_cancelled()?;
     let outcome = {
         let wait = channel.wait();
         tokio::pin!(wait);
@@ -14635,10 +14632,7 @@ async fn scp_wait_channel_message(
             }
             Ok(message)
         }
-        Err(error) => {
-            close_ssh_channel_bounded(channel).await;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 
@@ -14892,147 +14886,221 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
         "SCP download",
     )
     .await?;
-    let mut pending = VecDeque::new();
-    scp_send_data_with_idle_timeout(
-        &channel,
-        &[0_u8],
-        progress,
-        idle_timeout,
-        "SCP 写入初始确认",
-    )
-    .await?;
-    let mut last_progress = Instant::now();
+    let outcome = async {
+        let mut pending = VecDeque::new();
+        scp_send_data_with_idle_timeout(
+            &channel,
+            &[0_u8],
+            progress,
+            idle_timeout,
+            "SCP 写入初始确认",
+        )
+        .await?;
+        let mut last_progress = Instant::now();
 
-    let first = scp_next_byte(
-        &mut channel,
-        &mut pending,
-        progress,
-        &mut last_progress,
-        idle_timeout,
-        "SCP 等待文件头",
-    )
-    .await?
-    .ok_or_else(|| "SCP remote closed before header".to_string())?;
-    if first == 1 || first == 2 {
-        let message = scp_read_line(
+        let first = scp_next_byte(
             &mut channel,
             &mut pending,
             progress,
             &mut last_progress,
             idle_timeout,
-            "SCP 读取远端错误",
+            "SCP 等待文件头",
         )
-        .await?;
-        return Err(format!("SCP remote error: {message}"));
-    }
-    if first != b'C' {
-        return Err(format!("SCP unexpected header byte: {first}"));
-    }
-
-    let header = scp_read_line(
-        &mut channel,
-        &mut pending,
-        progress,
-        &mut last_progress,
-        idle_timeout,
-        "SCP 读取文件头",
-    )
-    .await?;
-    let parts = header.split_whitespace().collect::<Vec<_>>();
-    if parts.len() < 2 {
-        return Err(format!("SCP invalid file header: C{header}"));
-    }
-    let size = parts[1]
-        .parse::<u64>()
-        .map_err(|error| format!("SCP invalid file size: {error}"))?;
-
-    if let Some(parent) = Path::new(local_destination).parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
-    }
-    let target = Path::new(local_destination);
-    let temp_target = local_resume_part_path(target);
-    let copied = local_resume_offset(&temp_target, size)?;
-    progress.set_rate_baseline(copied);
-    if copied > 0 {
-        progress.update(copied, size).await?;
-    }
-    if copied == size {
-        finalize_local_resume_file(&temp_target, target)?;
-        close_ssh_channel_bounded(&channel).await;
-        return Ok(size);
-    }
-    let mut file = open_local_resume_writer(&temp_target, copied)
-        .map_err(|error| format!("创建本地目标文件失败: {error}"))?;
-    scp_send_data_with_idle_timeout(
-        &channel,
-        &[0_u8],
-        progress,
-        idle_timeout,
-        "SCP 写入文件头确认",
-    )
-    .await?;
-
-    let mut received = 0_u64;
-    while received < size {
-        if let Err(error) = progress.check_cancelled() {
-            close_ssh_channel_bounded(&channel).await;
-            return Err(error);
-        }
-        if pending.is_empty() {
-            match scp_wait_channel_message(
+        .await?
+        .ok_or_else(|| "SCP remote closed before header".to_string())?;
+        if first == 1 || first == 2 {
+            let message = scp_read_line(
                 &mut channel,
+                &mut pending,
                 progress,
                 &mut last_progress,
                 idle_timeout,
-                "SCP 接收文件内容",
+                "SCP 读取远端错误",
             )
-            .await?
-            {
-                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    pending.extend(data.iter().copied());
+            .await?;
+            return Err(format!("SCP remote error: {message}"));
+        }
+        if first != b'C' {
+            return Err(format!("SCP unexpected header byte: {first}"));
+        }
+
+        let header = scp_read_line(
+            &mut channel,
+            &mut pending,
+            progress,
+            &mut last_progress,
+            idle_timeout,
+            "SCP 读取文件头",
+        )
+        .await?;
+        let parts = header.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 2 {
+            return Err(format!("SCP invalid file header: C{header}"));
+        }
+        let size = parts[1]
+            .parse::<u64>()
+            .map_err(|error| format!("SCP invalid file size: {error}"))?;
+
+        if let Some(parent) = Path::new(local_destination).parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
+        }
+        let target = Path::new(local_destination);
+        let temp_target = local_resume_part_path(target);
+        let resume_offset = local_resume_offset(&temp_target, size)?;
+        // A complete-looking part file cannot be trusted without content metadata.
+        // Re-download it so an old same-sized file is never promoted as new data.
+        let copied = if resume_offset == size {
+            0
+        } else {
+            resume_offset
+        };
+        progress.set_rate_baseline(copied);
+        if copied > 0 {
+            progress.update(copied, size).await?;
+        }
+        let mut file = open_local_resume_writer(&temp_target, copied)
+            .map_err(|error| format!("创建本地目标文件失败: {error}"))?;
+        scp_send_data_with_idle_timeout(
+            &channel,
+            &[0_u8],
+            progress,
+            idle_timeout,
+            "SCP 写入文件头确认",
+        )
+        .await?;
+
+        let mut received = 0_u64;
+        while received < size {
+            progress.check_cancelled()?;
+            if pending.is_empty() {
+                match scp_wait_channel_message(
+                    &mut channel,
+                    progress,
+                    &mut last_progress,
+                    idle_timeout,
+                    "SCP 接收文件内容",
+                )
+                .await?
+                {
+                    Some(ChannelMsg::Data { data })
+                    | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        pending.extend(data.iter().copied());
+                    }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                        return Err("SCP remote closed during file body".to_string());
+                    }
+                    _ => {}
                 }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                    return Err("SCP remote closed during file body".to_string());
-                }
-                _ => {}
+                continue;
             }
-            continue;
+            let take = pending.len().min((size - received) as usize);
+            let chunk = pending.drain(..take).collect::<Vec<_>>();
+            let chunk_start = received;
+            received += take as u64;
+            if received <= copied {
+                continue;
+            }
+            let write_from = copied.saturating_sub(chunk_start) as usize;
+            file.write_all(&chunk[write_from..])
+                .map_err(|error| format!("写入本地目标文件失败: {error}"))?;
+            progress.update(received, size).await?;
         }
-        let take = pending.len().min((size - received) as usize);
-        let chunk = pending.drain(..take).collect::<Vec<_>>();
-        let chunk_start = received;
-        received += take as u64;
-        if received <= copied {
-            continue;
-        }
-        let write_from = copied.saturating_sub(chunk_start) as usize;
-        file.write_all(&chunk[write_from..])
-            .map_err(|error| format!("写入本地目标文件失败: {error}"))?;
-        progress.update(received, size).await?;
+        file.flush()
+            .map_err(|error| format!("刷新本地目标文件失败: {error}"))?;
+        drop(file);
+        scp_wait_ack(
+            &mut channel,
+            &mut pending,
+            progress,
+            &mut last_progress,
+            idle_timeout,
+            "SCP 等待完成确认",
+        )
+        .await?;
+        scp_send_data_with_idle_timeout(
+            &channel,
+            &[0_u8],
+            progress,
+            idle_timeout,
+            "SCP 写入完成确认",
+        )
+        .await?;
+        scp_wait_download_completion(&mut channel, progress, &mut last_progress, idle_timeout)
+            .await?;
+        finalize_local_resume_file(&temp_target, target)?;
+        Ok(size)
     }
-    file.flush()
-        .map_err(|error| format!("刷新本地目标文件失败: {error}"))?;
-    drop(file);
-    scp_wait_ack(
-        &mut channel,
-        &mut pending,
-        progress,
-        &mut last_progress,
-        idle_timeout,
-        "SCP 等待完成确认",
-    )
-    .await?;
-    scp_send_data_with_idle_timeout(
-        &channel,
-        &[0_u8],
-        progress,
-        idle_timeout,
-        "SCP 写入完成确认",
-    )
-    .await?;
-    finalize_local_resume_file(&temp_target, target)?;
+    .await;
     close_ssh_channel_bounded(&channel).await;
-    Ok(size)
+    outcome
+}
+
+async fn scp_wait_download_completion(
+    channel: &mut Channel<client::Msg>,
+    progress: &TransferProgressContext,
+    last_progress: &mut Instant,
+    idle_timeout: Duration,
+) -> Result<(), String> {
+    let mut output = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_status = None;
+    let mut eof_received_at: Option<Instant> = None;
+    loop {
+        progress.check_cancelled()?;
+        if ssh_exec_status_grace_expired(eof_received_at) {
+            break;
+        }
+        let remaining = if let Some(received_at) = eof_received_at {
+            SSH_EXEC_STATUS_GRACE_TIMEOUT.saturating_sub(received_at.elapsed())
+        } else {
+            idle_timeout.saturating_sub(last_progress.elapsed())
+        };
+        if remaining.is_zero() {
+            if eof_received_at.is_some() {
+                break;
+            }
+            return Err(format!(
+                "SCP 等待远程完成 空闲超时（{} ms）",
+                idle_timeout.as_millis()
+            ));
+        }
+        match tokio::time::timeout(remaining.min(TRANSFER_CANCEL_POLL_INTERVAL), channel.wait())
+            .await
+        {
+            Ok(Some(message)) => {
+                *last_progress = Instant::now();
+                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
+                    break;
+                }
+                match message {
+                    ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
+                        &mut output,
+                        &data,
+                        MAX_SSH_EXEC_STDOUT_BYTES,
+                        "SCP download stdout",
+                    )?,
+                    ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
+                        &mut stderr,
+                        &data,
+                        MAX_SSH_EXEC_STDERR_BYTES,
+                        "SCP download stderr",
+                    )?,
+                    _ => {}
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    if let Some(code) = exit_status.filter(|code| *code != 0) {
+        return Err(format!(
+            "SCP download remote returned non-zero {code}: {}{}",
+            String::from_utf8_lossy(&output),
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    Ok(())
 }
 
 fn scp_download_command(remote_source: &str) -> String {
@@ -15114,10 +15182,7 @@ async fn scp_next_byte(
     stage: &str,
 ) -> Result<Option<u8>, String> {
     loop {
-        if let Err(error) = progress.check_cancelled() {
-            close_ssh_channel_bounded(channel).await;
-            return Err(error);
-        }
+        progress.check_cancelled()?;
         if let Some(byte) = pending.pop_front() {
             return Ok(Some(byte));
         }
@@ -31114,6 +31179,27 @@ mod tests {
                 }
                 command
                     if command
+                        .windows(b"__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__".len())
+                        .any(|window| window == b"__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__") =>
+                {
+                    session.data(channel, b"C0644 4 file.bin\ndata\0".to_vec())?;
+                    session.exit_status_request(channel, 0)?;
+                    session.eof(channel)?;
+                }
+                command
+                    if command
+                        .windows(b"__PORTMATE_TEST_SCP_DOWNLOAD_EOF_BEFORE_NONZERO__".len())
+                        .any(|window| {
+                            window == b"__PORTMATE_TEST_SCP_DOWNLOAD_EOF_BEFORE_NONZERO__"
+                        }) =>
+                {
+                    session.data(channel, b"C0644 4 file.bin\ndata\0".to_vec())?;
+                    session.extended_data(channel, 1, b"late SCP download failure".to_vec())?;
+                    session.eof(channel)?;
+                    session.exit_status_request(channel, 13)?;
+                }
+                command
+                    if command
                         .windows(b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__".len())
                         .any(|window| {
                             window == b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__"
@@ -42506,6 +42592,99 @@ mod tests {
             })
             .await
             .expect("SCP upload channels were not closed on success and failure");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scp_download_finalizes_only_after_successful_exit_status() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SCP download completion test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-scp-download-completion-user";
+            let secret = "PortMate SCP download completion secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server(&host_key, username, secret).await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfers
+                .push(test_transfer_task(&profile.id, TransferStatus::Running));
+            let progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+
+            let target = root.path().join("download-success.bin");
+            let part = local_resume_part_path(&target);
+            fs::write(&part, b"old!").unwrap();
+            let downloaded = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__",
+                target.to_str().unwrap(),
+                &progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(downloaded, 4);
+            assert_eq!(fs::read(&target).unwrap(), b"data");
+            assert!(!part.exists());
+
+            let failed_target = root.path().join("download-failed.bin");
+            let failed_part = local_resume_part_path(&failed_target);
+            let error = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_SCP_DOWNLOAD_EOF_BEFORE_NONZERO__",
+                failed_target.to_str().unwrap(),
+                &progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "SCP download remote returned non-zero 13: late SCP download failure"
+            );
+            assert!(!failed_target.exists());
+            assert_eq!(fs::read(&failed_part).unwrap(), b"data");
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.channel_closes.load(Ordering::SeqCst) < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SCP download channels were not closed on success and failure");
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
 
             drop(handle);
