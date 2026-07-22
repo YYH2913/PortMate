@@ -38,8 +38,6 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", test))]
-use std::process::Command;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
@@ -248,6 +246,8 @@ const MAX_SYSMON_PROCESSES: usize = 8;
 const MAX_SYSMON_DISKS: usize = 16;
 const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
+const LOCAL_SYSMON_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
 const REMOTE_SYSMON_SAMPLE_SECONDS: f32 = 0.2;
 const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
@@ -458,6 +458,7 @@ pub struct AppState {
     transfer_cancellations: Arc<Mutex<HashMap<String, Arc<TransferCancellation>>>>,
     transfer_task_slots: Arc<tokio::sync::Semaphore>,
     transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    sysmon_slots: Arc<tokio::sync::Semaphore>,
     trigger_command_slots: Arc<tokio::sync::Semaphore>,
     trigger_send_batch_slots: Arc<tokio::sync::Semaphore>,
     pending_mcp_approvals: PendingMcpApprovalMap,
@@ -7086,10 +7087,20 @@ async fn refresh_sysmon(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<SysmonSnapshot, String> {
+    refresh_sysmon_inner(state.inner(), &session_id).await
+}
+
+async fn refresh_sysmon_inner(
+    state: &AppState,
+    session_id: &str,
+) -> Result<SysmonSnapshot, String> {
+    let _permit = Arc::clone(&state.sysmon_slots)
+        .try_acquire_owned()
+        .map_err(|_| format!("Sysmon refresh limit reached ({MAX_CONCURRENT_SYSMON_REFRESHES})"))?;
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store
-            .profile(&session_id)
+            .profile(session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?
     };
 
@@ -7100,19 +7111,19 @@ async fn refresh_sysmon(
         let handle = {
             let connections = state.ssh.lock().map_err(|error| error.to_string())?;
             connections
-                .get(&session_id)
+                .get(session_id)
                 .map(|runtime| Arc::clone(&runtime.handle))
         };
         if let Some(handle) = handle {
-            collect_remote_sysmon(&session_id, handle).await?
+            collect_remote_sysmon(session_id, handle).await?
         } else {
             return Err("需要先连接 SSH/Tmux 会话才能读取远端 Sysmon".to_string());
         }
     } else {
-        collect_local_sysmon(&session_id).await?
+        collect_local_sysmon(session_id).await?
     };
 
-    commit_sysmon_snapshot(state.inner(), &session_id, snapshot)
+    commit_sysmon_snapshot(state, session_id, snapshot)
 }
 
 fn commit_sysmon_snapshot(
@@ -27044,15 +27055,31 @@ async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnapshot, String
     match std::env::consts::OS {
         "linux" => {
             let session_id = session_id.to_string();
-            tauri::async_runtime::spawn_blocking(move || collect_local_linux_sysmon(&session_id))
+            let sample = tauri::async_runtime::spawn_blocking(move || {
+                collect_local_linux_sysmon(&session_id)
+            });
+            let mut snapshot = sample
                 .await
-                .map_err(|error| format!("本机 Linux Sysmon 任务失败: {error}"))
+                .map_err(|error| format!("本机 Linux Sysmon 任务失败: {error}"))?;
+            let (processes, disks) = tokio::join!(
+                exec_local_sysmon_command(
+                    "ps",
+                    &["-eo", "pid=,pcpu=,pmem=,rss=,comm=", "--sort=-pcpu,-rss"],
+                    LOCAL_SYSMON_COMMAND_TIMEOUT,
+                ),
+                exec_local_sysmon_command("df", &["-Pk"], LOCAL_SYSMON_COMMAND_TIMEOUT),
+            );
+            let processes = processes?;
+            let disks = disks?;
+            snapshot.processes = parse_sysmon_processes(&processes);
+            snapshot.disks = parse_sysmon_disks(&disks);
+            Ok(snapshot)
         }
         "macos" => {
             let output = exec_local_sysmon_command(
                 "sh",
                 &["-c", REMOTE_MACOS_SYSMON_COMMAND],
-                Duration::from_secs(12),
+                LOCAL_SYSMON_COMMAND_TIMEOUT,
             )
             .await?;
             parse_remote_macos_sysmon_output(session_id, &output)
@@ -27069,7 +27096,7 @@ async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnapshot, String
                     "-EncodedCommand",
                     &encoded,
                 ],
-                Duration::from_secs(12),
+                LOCAL_SYSMON_COMMAND_TIMEOUT,
             )
             .await?;
             parse_remote_windows_sysmon_output(session_id, &output)
@@ -27110,8 +27137,8 @@ fn collect_local_linux_sysmon(session_id: &str) -> SysmonSnapshot {
         load_average,
         memory_total_bytes,
         memory_available_bytes,
-        processes: read_local_sysmon_processes(),
-        disks: read_local_sysmon_disks(),
+        processes: Vec::new(),
+        disks: Vec::new(),
         network_interfaces,
     }
 }
@@ -27123,6 +27150,7 @@ async fn exec_local_sysmon_command(
 ) -> Result<String, String> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -28206,40 +28234,6 @@ fn bounded_sysmon_label(value: &str, max_chars: usize) -> String {
         .filter(|character| !character.is_control())
         .take(max_chars)
         .collect()
-}
-
-#[cfg(target_os = "linux")]
-fn local_sysmon_command(program: &str, args: &[&str]) -> String {
-    Command::new(program)
-        .args(args)
-        .env("LC_ALL", "C")
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-        .unwrap_or_default()
-}
-
-#[cfg(target_os = "linux")]
-fn read_local_sysmon_processes() -> Vec<SysmonProcess> {
-    parse_sysmon_processes(&local_sysmon_command(
-        "ps",
-        &["-eo", "pid=,pcpu=,pmem=,rss=,comm=", "--sort=-pcpu,-rss"],
-    ))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_local_sysmon_processes() -> Vec<SysmonProcess> {
-    Vec::new()
-}
-
-#[cfg(target_os = "linux")]
-fn read_local_sysmon_disks() -> Vec<SysmonDisk> {
-    parse_sysmon_disks(&local_sysmon_command("df", &["-Pk"]))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_local_sysmon_disks() -> Vec<SysmonDisk> {
-    Vec::new()
 }
 
 fn parse_uptime_seconds(raw: &str) -> Option<u64> {
@@ -30382,6 +30376,9 @@ pub fn run() {
                     MAX_ACTIVE_TRANSFER_TASKS,
                 )),
                 transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+                sysmon_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_CONCURRENT_SYSMON_REFRESHES,
+                )),
                 trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                     MAX_TRIGGER_COMMAND_CONCURRENCY,
                 )),
@@ -30512,6 +30509,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     struct ChildGuard(Option<std::process::Child>);
 
@@ -32824,6 +32822,27 @@ mod tests {
         assert!(
             validate_sysmon_history_query_limit(Some(MAX_SYSMON_HISTORY_QUERY_LIMIT + 1)).is_err()
         );
+    }
+
+    #[test]
+    fn sysmon_refresh_saturation_rejects_before_collection_side_effects() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("portmate-sysmon-refresh-limit-{}", Uuid::new_v4()));
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+            let _permits = Arc::clone(&state.sysmon_slots)
+                .try_acquire_many_owned(MAX_CONCURRENT_SYSMON_REFRESHES as u32)
+                .unwrap();
+
+            let error = refresh_sysmon_inner(&state, &profile.id).await.unwrap_err();
+
+            assert!(error.contains("refresh limit"), "{error}");
+            let store = state.store.lock().unwrap();
+            assert!(store.sysmon.is_empty());
+            assert!(store.events.is_empty());
+            let _ = fs::remove_dir_all(root);
+        });
     }
 
     #[test]
@@ -48694,6 +48713,7 @@ mod tests {
             transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
             transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TRANSFER_TASKS)),
             transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+            sysmon_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYSMON_REFRESHES)),
             trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
                 MAX_TRIGGER_COMMAND_CONCURRENCY,
             )),
