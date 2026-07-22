@@ -217,7 +217,7 @@ const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
@@ -8576,24 +8576,30 @@ async fn scan_ssh_host_key_via_jump(
             }
         };
 
-        if let Err(error) = authenticate_ssh(
+        if let Err(error) = authenticate_ssh_with_timeout(
             &mut jump_session,
-            jump_ssh,
-            jump_username,
-            jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
-            jump_runtime_credential(passphrase, jump.passphrase_secret_ref.as_deref()),
+            SshAuthenticationRequest {
+                ssh: jump_ssh,
+                username: jump_username,
+                password: jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
+                passphrase: jump_runtime_credential(
+                    passphrase,
+                    jump.passphrase_secret_ref.as_deref(),
+                ),
+                agent_socket_path: None,
+                timeout: Duration::from_secs(12),
+                disconnect_description: "PortMate jump host key scan authentication timeout",
+            },
         )
         .await
         {
             disconnect_jump_sessions(jump_sessions, "PortMate jump host key scan auth failed")
                 .await;
-            let _ = jump_session
-                .disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate jump host key scan auth failed",
-                    "en",
-                )
-                .await;
+            let _ = request_ssh_disconnect_with_timeout(
+                &jump_session,
+                "PortMate jump host key scan auth failed",
+            )
+            .await;
             return Err(format!(
                 "Jump Host 第 {} 跳 host key 扫描认证失败: {error}",
                 index + 1
@@ -15303,6 +15309,25 @@ where
     }
 }
 
+async fn request_ssh_disconnect_with_timeout<H: client::Handler>(
+    handle: &client::Handle<H>,
+    disconnect_description: &str,
+) -> Option<String> {
+    match tokio::time::timeout(
+        SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT,
+        handle.disconnect(Disconnect::ByApplication, disconnect_description, "en"),
+    )
+    .await
+    {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("SSH disconnect request failed: {error}")),
+        Err(_) => Some(format!(
+            "SSH disconnect request timed out after {} ms",
+            SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+        )),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum DirectTcpipOpenError {
     TimedOut {
@@ -15336,19 +15361,8 @@ async fn open_direct_tcpip_with_timeout<H: client::Handler>(
         Err(BoundedConnectionStepError::Failed(error)) => Err(DirectTcpipOpenError::Failed(error)),
         Err(BoundedConnectionStepError::TimedOut) => {
             // Cancelling russh's confirmation wait can orphan its channel entry.
-            let cleanup = tokio::time::timeout(
-                DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT,
-                handle.disconnect(Disconnect::ByApplication, disconnect_description, "en"),
-            )
-            .await;
-            let cleanup_warning = match cleanup {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(format!("SSH disconnect request failed: {error}")),
-                Err(_) => Some(format!(
-                    "SSH disconnect request timed out after {} ms",
-                    DIRECT_TCPIP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
-                )),
-            };
+            let cleanup_warning =
+                request_ssh_disconnect_with_timeout(handle, disconnect_description).await;
             Err(DirectTcpipOpenError::TimedOut {
                 timeout_ms: timeout.as_millis(),
                 cleanup_warning,
@@ -15882,7 +15896,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
 
     let config = Arc::new(ssh_client_config(&ssh));
 
-    let (mut session, jump_handles) = connect_ssh_target(
+    let (mut session, jump_sessions) = connect_ssh_target(
         SshConnectRequest {
             config: Arc::clone(&config),
             store: Arc::clone(&state.store),
@@ -15903,16 +15917,45 @@ async fn establish_ssh_runtime_with_timeout_mode(
     )
     .await?;
 
-    let auth_method = authenticate_ssh_with_agent_socket(
+    let auth_method = authenticate_ssh_with_timeout(
         &mut session,
-        ssh.clone(),
-        username.clone(),
-        password,
-        passphrase,
-        agent_socket_path,
+        SshAuthenticationRequest {
+            ssh: ssh.clone(),
+            username: username.clone(),
+            password,
+            passphrase,
+            agent_socket_path,
+            timeout: connect_timeout,
+            disconnect_description: "PortMate target authentication timeout",
+        },
     )
-    .await
-    .map_err(|error| format!("SSH 目标认证失败 {host}:{}: {error}", ssh.endpoint.port))?;
+    .await;
+    let auth_method = match auth_method {
+        Ok(method) => method,
+        Err(error) => {
+            let cleanup_warning = if matches!(error, SshAuthenticationError::Failed(_)) {
+                request_ssh_disconnect_with_timeout(
+                    &session,
+                    "PortMate target authentication failed",
+                )
+                .await
+            } else {
+                None
+            };
+            disconnect_jump_sessions(jump_sessions, "PortMate target authentication failed").await;
+            let cleanup_warning = cleanup_warning
+                .map(|warning| format!("; {warning}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "SSH 目标认证失败 {host}:{}: {error}{cleanup_warning}",
+                ssh.endpoint.port
+            ));
+        }
+    };
+    let jump_handles = jump_sessions
+        .into_iter()
+        .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
+        .collect();
 
     persist_observed_host_key(
         &state.store,
@@ -16003,7 +16046,7 @@ async fn connect_ssh_target(
 ) -> Result<
     (
         client::Handle<PortMateSshHandler>,
-        Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
+        Vec<client::Handle<PortMateSshHandler>>,
     ),
     String,
 > {
@@ -16200,24 +16243,29 @@ async fn connect_ssh_target(
             }
         };
 
-        if let Err(error) = authenticate_ssh_with_agent_socket(
+        if let Err(error) = authenticate_ssh_with_timeout(
             &mut jump_session,
-            jump_ssh,
-            jump_username,
-            jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
-            jump_runtime_credential(passphrase, jump.passphrase_secret_ref.as_deref()),
-            agent_socket_path.map(Path::to_path_buf),
+            SshAuthenticationRequest {
+                ssh: jump_ssh,
+                username: jump_username,
+                password: jump_runtime_credential(password, jump.password_secret_ref.as_deref()),
+                passphrase: jump_runtime_credential(
+                    passphrase,
+                    jump.passphrase_secret_ref.as_deref(),
+                ),
+                agent_socket_path: agent_socket_path.map(Path::to_path_buf),
+                timeout: connect_timeout,
+                disconnect_description: "PortMate jump authentication timeout",
+            },
         )
         .await
         {
             disconnect_jump_sessions(jump_sessions, "PortMate jump authentication failed").await;
-            let _ = jump_session
-                .disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate jump authentication failed",
-                    "en",
-                )
-                .await;
+            let _ = request_ssh_disconnect_with_timeout(
+                &jump_session,
+                "PortMate jump authentication failed",
+            )
+            .await;
             return Err(format!(
                 "Jump Host 第 {} 跳认证失败 {jump_host}:{jump_port}: {error}",
                 index + 1
@@ -16236,13 +16284,11 @@ async fn connect_ssh_target(
             &format!("Jump Host #{}", index + 1),
         ) {
             disconnect_jump_sessions(jump_sessions, "PortMate jump host key rejected").await;
-            let _ = jump_session
-                .disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate jump host key rejected",
-                    "en",
-                )
-                .await;
+            let _ = request_ssh_disconnect_with_timeout(
+                &jump_session,
+                "PortMate jump host key rejected",
+            )
+            .await;
             return Err(format!(
                 "Jump Host 第 {} 跳 host key 处理失败 {jump_host}:{jump_port}: {error}",
                 index + 1
@@ -16310,13 +16356,7 @@ async fn connect_ssh_target(
         }
     };
 
-    Ok((
-        target_session,
-        jump_sessions
-            .into_iter()
-            .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
-            .collect(),
-    ))
+    Ok((target_session, jump_sessions))
 }
 
 fn jump_endpoint_details(
@@ -16342,10 +16382,21 @@ async fn disconnect_jump_sessions(
     jump_sessions: Vec<client::Handle<PortMateSshHandler>>,
     reason: &str,
 ) {
-    for session in jump_sessions {
-        let _ = session
-            .disconnect(Disconnect::ByApplication, reason, "en")
-            .await;
+    let disconnect_all = async {
+        for session in jump_sessions {
+            let _ = session
+                .disconnect(Disconnect::ByApplication, reason, "en")
+                .await;
+        }
+    };
+    if tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, disconnect_all)
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "PortMate: Jump Host cleanup did not finish within {} ms: {reason}",
+            SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+        );
     }
 }
 
@@ -17033,18 +17084,86 @@ fn open_serial_session(
     }
 }
 
-async fn authenticate_ssh(
-    session: &mut client::Handle<PortMateSshHandler>,
+#[derive(Debug, PartialEq, Eq)]
+enum SshAuthenticationError {
+    TimedOut {
+        timeout_ms: u128,
+        cleanup_warning: Option<String>,
+    },
+    Failed(String),
+}
+
+impl std::fmt::Display for SshAuthenticationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut {
+                timeout_ms,
+                cleanup_warning,
+            } => {
+                write!(formatter, "SSH 认证超时（{timeout_ms} ms）")?;
+                if let Some(warning) = cleanup_warning {
+                    write!(formatter, "; {warning}")?;
+                }
+                Ok(())
+            }
+            Self::Failed(error) => formatter.write_str(error),
+        }
+    }
+}
+
+struct SshAuthenticationRequest<'a> {
     ssh: SshConnection,
     username: String,
     password: Option<String>,
     passphrase: Option<String>,
-) -> Result<AuthMethod, String> {
-    authenticate_ssh_with_agent_socket(session, ssh, username, password, passphrase, None).await
+    agent_socket_path: Option<PathBuf>,
+    timeout: Duration,
+    disconnect_description: &'a str,
 }
 
-async fn authenticate_ssh_with_agent_socket(
-    session: &mut client::Handle<PortMateSshHandler>,
+async fn authenticate_ssh_with_timeout<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    request: SshAuthenticationRequest<'_>,
+) -> Result<AuthMethod, SshAuthenticationError> {
+    let SshAuthenticationRequest {
+        ssh,
+        username,
+        password,
+        passphrase,
+        agent_socket_path,
+        timeout,
+        disconnect_description,
+    } = request;
+    match bounded_connection_step(
+        authenticate_ssh_with_agent_socket(
+            session,
+            ssh,
+            username,
+            password,
+            passphrase,
+            agent_socket_path,
+        ),
+        timeout,
+    )
+    .await
+    {
+        Ok(method) => Ok(method),
+        Err(BoundedConnectionStepError::Failed(error)) => {
+            Err(SshAuthenticationError::Failed(error))
+        }
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning =
+                request_ssh_disconnect_with_timeout(session, disconnect_description).await;
+            Err(SshAuthenticationError::TimedOut {
+                timeout_ms: timeout.as_millis(),
+                cleanup_warning,
+            })
+        }
+    }
+}
+
+async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
+    session: &mut client::Handle<H>,
     ssh: SshConnection,
     username: String,
     password: Option<String>,
@@ -17246,8 +17365,8 @@ async fn authenticate_ssh_with_agent_socket(
     Err(message)
 }
 
-async fn authenticate_with_agent(
-    session: &mut client::Handle<PortMateSshHandler>,
+async fn authenticate_with_agent<H: client::Handler>(
+    session: &mut client::Handle<H>,
     username: String,
     identities_only: bool,
     offer_mode: portmate_core::AgentOfferMode,
@@ -17438,8 +17557,8 @@ async fn connect_ssh_agent(
     }
 }
 
-async fn authenticate_keyboard_interactive(
-    session: &mut client::Handle<PortMateSshHandler>,
+async fn authenticate_keyboard_interactive<H: client::Handler>(
+    session: &mut client::Handle<H>,
     username: String,
     password: String,
 ) -> Result<bool, String> {
@@ -29274,6 +29393,8 @@ mod tests {
     #[cfg(unix)]
     #[derive(Default)]
     struct MixedAuthTestCounters {
+        password_attempts: AtomicU64,
+        password_completions: AtomicU64,
         password_successes: AtomicU64,
         keyboard_interactive_successes: AtomicU64,
         direct_tcpip_attempts: AtomicU64,
@@ -29286,6 +29407,7 @@ mod tests {
         username: String,
         secret: String,
         counters: Arc<MixedAuthTestCounters>,
+        password_auth_delay: Option<Duration>,
         direct_tcpip_delay: Option<Duration>,
     }
 
@@ -29298,6 +29420,15 @@ mod tests {
             user: &str,
             password: &str,
         ) -> Result<russh::server::Auth, Self::Error> {
+            self.counters
+                .password_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.password_auth_delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.counters
+                .password_completions
+                .fetch_add(1, Ordering::SeqCst);
             if user == self.username && password == self.secret {
                 self.counters
                     .password_successes
@@ -29392,15 +29523,15 @@ mod tests {
         username: &str,
         secret: &str,
     ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
-        spawn_mixed_auth_test_server_with_direct_tcpip_delay(host_key_path, username, secret, None)
-            .await
+        spawn_mixed_auth_test_server_with_delays(host_key_path, username, secret, None, None).await
     }
 
     #[cfg(unix)]
-    async fn spawn_mixed_auth_test_server_with_direct_tcpip_delay(
+    async fn spawn_mixed_auth_test_server_with_delays(
         host_key_path: &Path,
         username: &str,
         secret: &str,
+        password_auth_delay: Option<Duration>,
         direct_tcpip_delay: Option<Duration>,
     ) -> (u16, Arc<MixedAuthTestCounters>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -29410,6 +29541,7 @@ mod tests {
             username: username.to_string(),
             secret: secret.to_string(),
             counters: Arc::clone(&counters),
+            password_auth_delay,
             direct_tcpip_delay,
         };
         let config = Arc::new(russh::server::Config {
@@ -39134,14 +39266,14 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let username = "portmate-direct-tcpip-user";
             let secret = "PortMate direct-tcpip secret";
-            let (port, counters, server_task) =
-                spawn_mixed_auth_test_server_with_direct_tcpip_delay(
-                    &host_key,
-                    username,
-                    secret,
-                    Some(Duration::from_millis(200)),
-                )
-                .await;
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key,
+                username,
+                secret,
+                None,
+                Some(Duration::from_millis(200)),
+            )
+            .await;
             let mut handle = client::connect(
                 Arc::new(client::Config::default()),
                 ("127.0.0.1", port),
@@ -39181,6 +39313,82 @@ mod tests {
             })
             .await
             .expect("delayed direct-tcpip callback did not finish");
+
+            drop(handle);
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_authentication_timeout_disconnects_a_stalled_russh_session() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping SSH authentication timeout test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-auth-timeout-user";
+            let secret = "PortMate authentication timeout secret";
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key,
+                username,
+                secret,
+                Some(Duration::from_millis(200)),
+                None,
+            )
+            .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            let mut ssh = match test_ssh_profile().connection {
+                ConnectionConfig::Ssh(ssh) => ssh,
+                _ => unreachable!("test SSH profile changed transport"),
+            };
+            ssh.identity_policy.auth_order = vec![AuthMethod::Password];
+            ssh.identity_policy.last_successful = None;
+            ssh.identity_refs.clear();
+            ssh.agent_policy.enabled = false;
+
+            let error = authenticate_ssh_with_timeout(
+                &mut handle,
+                SshAuthenticationRequest {
+                    ssh,
+                    username: username.to_string(),
+                    password: Some(secret.to_string()),
+                    passphrase: None,
+                    agent_socket_path: None,
+                    timeout: Duration::from_millis(30),
+                    disconnect_description: "PortMate authentication timeout test",
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                SshAuthenticationError::TimedOut {
+                    timeout_ms: 30,
+                    cleanup_warning: None,
+                }
+            );
+            assert_eq!(counters.password_attempts.load(Ordering::SeqCst), 1);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while counters.password_completions.load(Ordering::SeqCst) != 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("delayed password authentication callback did not finish");
+            assert_eq!(counters.password_successes.load(Ordering::SeqCst), 1);
 
             drop(handle);
             server_task.abort();
