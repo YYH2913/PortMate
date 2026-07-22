@@ -1132,6 +1132,7 @@ try {
   await togglePanel("文件管理器");
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
   await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').waitFor();
+  await leftDock.locator('.file-browser-pane[data-file-pane="local"]').waitFor();
   const fileDockLayout = await leftDock.evaluate((dock) => ({
     width: dock.getBoundingClientRect().width,
     active: dock.getAttribute("data-active-panel"),
