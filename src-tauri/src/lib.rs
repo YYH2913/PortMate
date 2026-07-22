@@ -227,6 +227,7 @@ const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_TUNNELS: usize = 256;
 const MAX_TUNNEL_CONNECTIONS: usize = 256;
+const MAX_CONCURRENT_SESSION_OPENS: usize = 64;
 const MAX_ACTIVE_TRANSFER_TASKS: usize = 5_000;
 const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
 const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
@@ -378,6 +379,7 @@ static SESSION_OPEN_CANCELLATIONS: OnceLock<SessionOpenCancellations> = OnceLock
 struct SessionOpenCancellation {
     cancelled: AtomicBool,
     changed: tokio::sync::Notify,
+    _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 struct TransferCancellation {
@@ -416,10 +418,11 @@ impl TransferCancellation {
 }
 
 impl SessionOpenCancellation {
-    fn new() -> Self {
+    fn new(slot: tokio::sync::OwnedSemaphorePermit) -> Self {
         Self {
             cancelled: AtomicBool::new(false),
             changed: tokio::sync::Notify::new(),
+            _slot: slot,
         }
     }
 
@@ -448,6 +451,7 @@ pub struct AppState {
     credential_ops: Arc<Mutex<()>>,
     credential_lock_path: PathBuf,
     system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
+    session_open_slots: Arc<tokio::sync::Semaphore>,
     ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
     tmux_controls: TmuxControlMap,
     tmux_control_slots: Arc<tokio::sync::Semaphore>,
@@ -4067,7 +4071,12 @@ fn register_session_open_cancellation(
     session_id: &str,
 ) -> Result<Arc<SessionOpenCancellation>, String> {
     let key = (state.store_path.clone(), session_id.to_string());
-    let cancellation = Arc::new(SessionOpenCancellation::new());
+    let slot = Arc::clone(&state.session_open_slots)
+        .try_acquire_owned()
+        .map_err(|_| {
+            format!("session connection limit reached ({MAX_CONCURRENT_SESSION_OPENS})")
+        })?;
+    let cancellation = Arc::new(SessionOpenCancellation::new(slot));
     let mut cancellations = SESSION_OPEN_CANCELLATIONS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -4076,6 +4085,9 @@ fn register_session_open_cancellation(
         pending.retain(|cancellation| cancellation.strong_count() > 0);
         !pending.is_empty()
     });
+    if cancellations.contains_key(&key) {
+        return Err("session connection is already pending".to_string());
+    }
     cancellations
         .entry(key)
         .or_default()
@@ -4130,9 +4142,10 @@ async fn open_session_with_one_key(
     session_id: String,
     one_key_id: String,
 ) -> Result<SessionSummary, String> {
-    let credentials = resolve_one_key_login_credentials(state.inner(), &session_id, &one_key_id)?;
     let state = state.inner().clone();
-    open_session_inner(
+    let cancellation = register_session_open_cancellation(&state, &session_id)?;
+    let credentials = resolve_one_key_login_credentials(&state, &session_id, &one_key_id)?;
+    open_reserved_session_inner(
         state,
         session_id,
         SessionOpenCredentials {
@@ -4142,6 +4155,7 @@ async fn open_session_with_one_key(
             identity: credentials.identity,
             isolate_saved_ssh_credentials: true,
         },
+        cancellation,
     )
     .await
 }
@@ -4194,6 +4208,15 @@ async fn open_session_inner(
     credentials: SessionOpenCredentials,
 ) -> Result<SessionSummary, String> {
     let cancellation = register_session_open_cancellation(&state, &session_id)?;
+    open_reserved_session_inner(state, session_id, credentials, cancellation).await
+}
+
+async fn open_reserved_session_inner(
+    state: AppState,
+    session_id: String,
+    credentials: SessionOpenCredentials,
+    cancellation: Arc<SessionOpenCancellation>,
+) -> Result<SessionSummary, String> {
     let lifecycle_lane = session_lifecycle_lane(&state, &session_id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;
     if cancellation.is_cancelled() {
@@ -30445,6 +30468,9 @@ pub fn run() {
                 credential_ops: Arc::new(Mutex::new(())),
                 credential_lock_path: data_dir.join("credentials.lock"),
                 system_event_sink: Arc::new(Mutex::new(None)),
+                session_open_slots: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_CONCURRENT_SESSION_OPENS,
+                )),
                 ssh: Arc::new(Mutex::new(HashMap::new())),
                 tmux_controls: Arc::new(Mutex::new(HashMap::new())),
                 tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
@@ -48372,6 +48398,70 @@ mod tests {
     }
 
     #[test]
+    fn session_open_registration_is_single_flight_and_releases_its_slot() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+
+        let first = register_session_open_cancellation(&state, &profile.id).unwrap();
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS - 1
+        );
+        let duplicate = register_session_open_cancellation(&state, &profile.id)
+            .err()
+            .unwrap();
+        assert!(duplicate.contains("already pending"), "{duplicate}");
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS - 1
+        );
+        assert_eq!(
+            cancel_pending_session_opens(&state, &profile.id).unwrap(),
+            1
+        );
+        assert!(first.is_cancelled());
+
+        drop(first);
+        let replacement = register_session_open_cancellation(&state, &profile.id).unwrap();
+        assert!(!replacement.is_cancelled());
+        drop(replacement);
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS
+        );
+    }
+
+    #[test]
+    fn session_open_saturation_rejects_before_store_side_effects() {
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+            let _permits = Arc::clone(&state.session_open_slots)
+                .try_acquire_many_owned(MAX_CONCURRENT_SESSION_OPENS as u32)
+                .unwrap();
+
+            let error = open_session_inner(
+                state.clone(),
+                profile.id.clone(),
+                SessionOpenCredentials::default(),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(error.contains("connection limit"), "{error}");
+            assert!(state.shell.lock().unwrap().is_empty());
+            let store = state.store.lock().unwrap();
+            assert!(store.events.is_empty());
+            assert_eq!(
+                store.summaries()[0].runtime.status,
+                SessionStatus::Disconnected
+            );
+        });
+    }
+
+    #[test]
     fn duplicate_session_open_preserves_the_existing_runtime() {
         tauri::async_runtime::block_on(async {
             let temp = tempfile::tempdir().unwrap();
@@ -48787,6 +48877,7 @@ mod tests {
             credential_ops: Arc::new(Mutex::new(())),
             credential_lock_path: store_path.with_file_name("test-credentials.lock"),
             system_event_sink: Arc::new(Mutex::new(None)),
+            session_open_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SESSION_OPENS)),
             ssh: Arc::new(Mutex::new(HashMap::new())),
             tmux_controls: Arc::new(Mutex::new(HashMap::new())),
             tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
