@@ -154,6 +154,41 @@ describe("session runtime state", () => {
     expect(failed.lastDisconnect).toBe("2026-07-22T00:07:00.000Z");
     expect(failed.lastDisconnectReason).toBe("proxy authentication failed");
   });
+
+  it("normalizes and bounds fallback reasons before storing runtime state", () => {
+    const failed = transitionSessionRuntimeStatus(
+      createRuntime({ status: "connecting", lastDisconnect: null, lastDisconnectReason: null }),
+      "error",
+      "2026-07-22T00:08:00.000Z",
+      `  proxy\n\tauth ${"界".repeat(300)}  `,
+    );
+    expect(failed.lastDisconnectReason?.startsWith("proxy auth 界")).toBe(true);
+    expect(failed.lastDisconnectReason?.endsWith("...")).toBe(true);
+    expect(failed.lastDisconnectReason).not.toContain("\n");
+    expect(Array.from(failed.lastDisconnectReason ?? "")).toHaveLength(256);
+
+    const whitespaceOnly = transitionSessionRuntimeStatus(
+      failed,
+      "error",
+      "2026-07-22T00:09:00.000Z",
+      " \n\t ".repeat(100_000),
+    );
+    expect(whitespaceOnly.lastDisconnectReason).toBe("connection error");
+  });
+
+  it("uses the native Store disconnect defaults in browser fallback", () => {
+    const initial = createRuntime({ status: "connected" });
+    expect(transitionSessionRuntimeStatus(
+      initial,
+      "disconnected",
+      "2026-07-22T00:10:00.000Z",
+    ).lastDisconnectReason).toBe("session disconnected");
+    expect(transitionSessionRuntimeStatus(
+      initial,
+      "reconnecting",
+      "2026-07-22T00:11:00.000Z",
+    ).lastDisconnectReason).toBe("session reconnecting");
+  });
 });
 
 function createRuntime(patch: Partial<SessionRuntime>): SessionRuntime {

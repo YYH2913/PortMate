@@ -10,6 +10,11 @@ const statusLabels: Record<SessionStatus, string> = {
 };
 
 const MAX_DISCONNECT_REASON_CHARS = 256;
+const disconnectReasonDefaults: Partial<Record<SessionStatus, string>> = {
+  disconnected: "session disconnected",
+  reconnecting: "session reconnecting",
+  error: "connection error",
+};
 
 export function sessionConnectionAction(status: SessionStatus): "connect" | "disconnect" {
   return status === "connected" || status === "connecting" || status === "reconnecting"
@@ -38,7 +43,7 @@ export function transitionSessionRuntimeStatus(
       ? now
       : runtime.lastDisconnect ?? null,
     lastDisconnectReason: outage
-      ? reason ?? `session ${status}`
+      ? normalizeDisconnectReason(reason) || disconnectReasonDefaults[status] || "runtime status changed"
       : runtime.lastDisconnectReason ?? null,
   };
 }
@@ -66,10 +71,36 @@ export function sessionRuntimeDisconnectDescription(
 }
 
 function normalizeDisconnectReason(value: string | null | undefined): string {
-  const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
-  const characters = Array.from(normalized);
-  if (characters.length <= MAX_DISCONNECT_REASON_CHARS) return normalized;
-  return `${characters.slice(0, MAX_DISCONNECT_REASON_CHARS - 3).join("")}...`;
+  if (!value) return "";
+  const characters: string[] = [];
+  let pendingSpace = false;
+  let truncated = false;
+
+  for (const character of value) {
+    if (/\s/u.test(character)) {
+      pendingSpace = characters.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      if (characters.length === MAX_DISCONNECT_REASON_CHARS) {
+        truncated = true;
+        break;
+      }
+      characters.push(" ");
+      pendingSpace = false;
+    }
+    if (characters.length === MAX_DISCONNECT_REASON_CHARS) {
+      truncated = true;
+      break;
+    }
+    characters.push(character);
+  }
+
+  if (truncated) {
+    characters.length = MAX_DISCONNECT_REASON_CHARS - 3;
+    characters.push("...");
+  }
+  return characters.join("");
 }
 
 function sessionRuntimeOutageStatus(status: SessionStatus): boolean {
