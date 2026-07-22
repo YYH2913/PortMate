@@ -139,6 +139,7 @@ const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
 const YMODEM_BLOCK_SIZE: usize = 1024;
 const TRANSFER_CANCELLED_MESSAGE: &str = "transfer cancelled";
+const SCP_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ONE_KEYS: usize = 64;
 const MAX_ONE_KEY_LABEL_CHARACTERS: usize = 64;
 const MAX_ONE_KEY_USERNAME_CHARACTERS: usize = 256;
@@ -13977,6 +13978,100 @@ fn sort_file_entries(entries: &mut [FileEntry]) {
     });
 }
 
+async fn close_scp_channel_bounded(channel: &Channel<client::Msg>) {
+    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
+}
+
+async fn scp_send_data_with_idle_timeout(
+    channel: &Channel<client::Msg>,
+    data: &[u8],
+    progress: &TransferProgressContext,
+    idle_timeout: Duration,
+    stage: &str,
+) -> Result<(), String> {
+    if let Err(error) = progress.check_cancelled() {
+        close_scp_channel_bounded(channel).await;
+        return Err(error);
+    }
+    let started = Instant::now();
+    let outcome = {
+        let send = channel.data(data);
+        tokio::pin!(send);
+        loop {
+            let remaining = idle_timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                break Err(format!(
+                    "{stage} 空闲超时（{} ms）",
+                    idle_timeout.as_millis()
+                ));
+            }
+            tokio::select! {
+                result = &mut send => {
+                    break result.map_err(|error| format!("{stage}失败: {error}"));
+                }
+                _ = tokio::time::sleep(remaining.min(TRANSFER_CANCEL_POLL_INTERVAL)) => {
+                    if let Err(error) = progress.check_cancelled() {
+                        break Err(error);
+                    }
+                }
+            }
+        }
+    };
+    if outcome.is_err() {
+        close_scp_channel_bounded(channel).await;
+    }
+    outcome
+}
+
+async fn scp_wait_channel_message(
+    channel: &mut Channel<client::Msg>,
+    progress: &TransferProgressContext,
+    last_progress: &mut Instant,
+    idle_timeout: Duration,
+    stage: &str,
+) -> Result<Option<ChannelMsg>, String> {
+    if let Err(error) = progress.check_cancelled() {
+        close_scp_channel_bounded(channel).await;
+        return Err(error);
+    }
+    let outcome = {
+        let wait = channel.wait();
+        tokio::pin!(wait);
+        loop {
+            let remaining = idle_timeout.saturating_sub(last_progress.elapsed());
+            if remaining.is_zero() {
+                break Err(format!(
+                    "{stage} 空闲超时（{} ms）",
+                    idle_timeout.as_millis()
+                ));
+            }
+            tokio::select! {
+                message = &mut wait => break Ok(message),
+                _ = tokio::time::sleep(remaining.min(TRANSFER_CANCEL_POLL_INTERVAL)) => {
+                    if let Err(error) = progress.check_cancelled() {
+                        break Err(error);
+                    }
+                }
+            }
+        }
+    };
+    match outcome {
+        Ok(message) => {
+            if matches!(
+                message.as_ref(),
+                Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. })
+            ) {
+                *last_progress = Instant::now();
+            }
+            Ok(message)
+        }
+        Err(error) => {
+            close_scp_channel_bounded(channel).await;
+            Err(error)
+        }
+    }
+}
+
 async fn scp_upload(
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
     local_source: &str,
@@ -14001,12 +14096,11 @@ async fn scp_upload(
     let started = Instant::now();
     let mut copied = loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
+            close_scp_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(30) {
-            let _ = channel.close().await;
+            close_scp_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端续传状态超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14055,8 +14149,7 @@ async fn scp_upload(
     let mut buffer = vec![0_u8; 64 * 1024];
     while copied < size {
         if progress.cancel.load(Ordering::SeqCst) {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
+            close_scp_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         let read = file
@@ -14065,24 +14158,40 @@ async fn scp_upload(
         if read == 0 {
             break;
         }
-        channel
-            .data(&buffer[..read])
-            .await
-            .map_err(|error| format!("SCP 写入文件内容失败: {error}"))?;
+        scp_send_data_with_idle_timeout(
+            &channel,
+            &buffer[..read],
+            progress,
+            SCP_IO_IDLE_TIMEOUT,
+            "SCP 写入文件内容",
+        )
+        .await?;
         copied += read as u64;
         progress.update(copied, size).await?;
     }
-    let _ = channel.eof().await;
+    match tokio::time::timeout(SCP_IO_IDLE_TIMEOUT, channel.eof()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            close_scp_channel_bounded(&channel).await;
+            return Err(format!("SCP 写入 EOF 失败: {error}"));
+        }
+        Err(_) => {
+            close_scp_channel_bounded(&channel).await;
+            return Err(format!(
+                "SCP 写入 EOF 空闲超时（{} ms）",
+                SCP_IO_IDLE_TIMEOUT.as_millis()
+            ));
+        }
+    }
 
     let started = Instant::now();
     loop {
         if progress.cancel.load(Ordering::SeqCst) {
-            let _ = channel.eof().await;
-            let _ = channel.close().await;
+            close_scp_channel_bounded(&channel).await;
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
         if started.elapsed() > Duration::from_secs(300) {
-            let _ = channel.close().await;
+            close_scp_channel_bounded(&channel).await;
             return Err("SCP upload 等待远端完成超时".to_string());
         }
         match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
@@ -14164,6 +14273,23 @@ async fn scp_download(
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    scp_download_with_idle_timeout(
+        handle,
+        remote_source,
+        local_destination,
+        progress,
+        SCP_IO_IDLE_TIMEOUT,
+    )
+    .await
+}
+
+async fn scp_download_with_idle_timeout<H: client::Handler>(
+    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    remote_source: &str,
+    local_destination: &str,
+    progress: &TransferProgressContext,
+    idle_timeout: Duration,
+) -> Result<u64, String> {
     let command = scp_download_command(remote_source);
     let mut channel = open_shared_ssh_exec_channel(
         &handle,
@@ -14173,23 +14299,51 @@ async fn scp_download(
     )
     .await?;
     let mut pending = VecDeque::new();
-    channel
-        .data(&[0_u8][..])
-        .await
-        .map_err(|error| format!("SCP 写入初始确认失败: {error}"))?;
+    scp_send_data_with_idle_timeout(
+        &channel,
+        &[0_u8],
+        progress,
+        idle_timeout,
+        "SCP 写入初始确认",
+    )
+    .await?;
+    let mut last_progress = Instant::now();
 
-    let first = scp_next_byte(&mut channel, &mut pending)
-        .await?
-        .ok_or_else(|| "SCP remote closed before header".to_string())?;
+    let first = scp_next_byte(
+        &mut channel,
+        &mut pending,
+        progress,
+        &mut last_progress,
+        idle_timeout,
+        "SCP 等待文件头",
+    )
+    .await?
+    .ok_or_else(|| "SCP remote closed before header".to_string())?;
     if first == 1 || first == 2 {
-        let message = scp_read_line(&mut channel, &mut pending).await?;
+        let message = scp_read_line(
+            &mut channel,
+            &mut pending,
+            progress,
+            &mut last_progress,
+            idle_timeout,
+            "SCP 读取远端错误",
+        )
+        .await?;
         return Err(format!("SCP remote error: {message}"));
     }
     if first != b'C' {
         return Err(format!("SCP unexpected header byte: {first}"));
     }
 
-    let header = scp_read_line(&mut channel, &mut pending).await?;
+    let header = scp_read_line(
+        &mut channel,
+        &mut pending,
+        progress,
+        &mut last_progress,
+        idle_timeout,
+        "SCP 读取文件头",
+    )
+    .await?;
     let parts = header.split_whitespace().collect::<Vec<_>>();
     if parts.len() < 2 {
         return Err(format!("SCP invalid file header: C{header}"));
@@ -14210,21 +14364,36 @@ async fn scp_download(
     }
     if copied == size {
         finalize_local_resume_file(&temp_target, target)?;
-        let _ = channel.close().await;
+        close_scp_channel_bounded(&channel).await;
         return Ok(size);
     }
     let mut file = open_local_resume_writer(&temp_target, copied)
         .map_err(|error| format!("创建本地目标文件失败: {error}"))?;
-    channel
-        .data(&[0_u8][..])
-        .await
-        .map_err(|error| format!("SCP 写入文件头确认失败: {error}"))?;
+    scp_send_data_with_idle_timeout(
+        &channel,
+        &[0_u8],
+        progress,
+        idle_timeout,
+        "SCP 写入文件头确认",
+    )
+    .await?;
 
     let mut received = 0_u64;
     while received < size {
-        progress.check_cancelled()?;
+        if let Err(error) = progress.check_cancelled() {
+            close_scp_channel_bounded(&channel).await;
+            return Err(error);
+        }
         if pending.is_empty() {
-            match channel.wait().await {
+            match scp_wait_channel_message(
+                &mut channel,
+                progress,
+                &mut last_progress,
+                idle_timeout,
+                "SCP 接收文件内容",
+            )
+            .await?
+            {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     pending.extend(data.iter().copied());
                 }
@@ -14250,13 +14419,25 @@ async fn scp_download(
     file.flush()
         .map_err(|error| format!("刷新本地目标文件失败: {error}"))?;
     drop(file);
-    scp_wait_ack(&mut channel, &mut pending).await?;
-    channel
-        .data(&[0_u8][..])
-        .await
-        .map_err(|error| format!("SCP 写入完成确认失败: {error}"))?;
+    scp_wait_ack(
+        &mut channel,
+        &mut pending,
+        progress,
+        &mut last_progress,
+        idle_timeout,
+        "SCP 等待完成确认",
+    )
+    .await?;
+    scp_send_data_with_idle_timeout(
+        &channel,
+        &[0_u8],
+        progress,
+        idle_timeout,
+        "SCP 写入完成确认",
+    )
+    .await?;
     finalize_local_resume_file(&temp_target, target)?;
-    let _ = channel.close().await;
+    close_scp_channel_bounded(&channel).await;
     Ok(size)
 }
 
@@ -14270,11 +14451,32 @@ fn scp_download_command(remote_source: &str) -> String {
 async fn scp_wait_ack(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    progress: &TransferProgressContext,
+    last_progress: &mut Instant,
+    idle_timeout: Duration,
+    stage: &str,
 ) -> Result<(), String> {
-    match scp_next_byte(channel, pending).await? {
+    match scp_next_byte(
+        channel,
+        pending,
+        progress,
+        last_progress,
+        idle_timeout,
+        stage,
+    )
+    .await?
+    {
         Some(0) => Ok(()),
         Some(1) | Some(2) => {
-            let message = scp_read_line(channel, pending).await?;
+            let message = scp_read_line(
+                channel,
+                pending,
+                progress,
+                last_progress,
+                idle_timeout,
+                stage,
+            )
+            .await?;
             Err(format!("SCP remote error: {message}"))
         }
         Some(byte) => Err(format!("SCP unexpected ack byte: {byte}")),
@@ -14285,9 +14487,22 @@ async fn scp_wait_ack(
 async fn scp_read_line(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    progress: &TransferProgressContext,
+    last_progress: &mut Instant,
+    idle_timeout: Duration,
+    stage: &str,
 ) -> Result<String, String> {
     let mut bytes = Vec::new();
-    while let Some(byte) = scp_next_byte(channel, pending).await? {
+    while let Some(byte) = scp_next_byte(
+        channel,
+        pending,
+        progress,
+        last_progress,
+        idle_timeout,
+        stage,
+    )
+    .await?
+    {
         if byte == b'\n' {
             break;
         }
@@ -14299,12 +14514,22 @@ async fn scp_read_line(
 async fn scp_next_byte(
     channel: &mut Channel<client::Msg>,
     pending: &mut VecDeque<u8>,
+    progress: &TransferProgressContext,
+    last_progress: &mut Instant,
+    idle_timeout: Duration,
+    stage: &str,
 ) -> Result<Option<u8>, String> {
     loop {
+        if let Err(error) = progress.check_cancelled() {
+            close_scp_channel_bounded(channel).await;
+            return Err(error);
+        }
         if let Some(byte) = pending.pop_front() {
             return Ok(Some(byte));
         }
-        match channel.wait().await {
+        match scp_wait_channel_message(channel, progress, last_progress, idle_timeout, stage)
+            .await?
+        {
             Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                 pending.extend(data.iter().copied());
             }
@@ -29634,6 +29859,16 @@ mod tests {
             Ok(true)
         }
 
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            _data: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
         async fn channel_open_direct_tcpip(
             &mut self,
             channel: Channel<russh::server::Msg>,
@@ -39721,6 +39956,104 @@ mod tests {
             .expect("delayed SFTP channel callback did not finish");
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
 
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scp_download_silent_peer_observes_cancellation_and_idle_timeout() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping silent SCP test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-silent-scp-user";
+            let secret = "PortMate silent SCP secret";
+            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+                &host_key, username, secret, None, None, None,
+            )
+            .await;
+            let mut handle = client::connect(
+                Arc::new(client::Config::default()),
+                ("127.0.0.1", port),
+                AcceptAnyTestSshClient,
+            )
+            .await
+            .unwrap();
+            assert!(handle
+                .authenticate_password(username, secret)
+                .await
+                .unwrap()
+                .success());
+            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let state = test_app_state(
+                test_shell_profile(),
+                root.path().join("portmate-store.sqlite3"),
+            );
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            let cancellation_progress = TransferProgressContext {
+                state: state.clone(),
+                task_id: "unused-silent-scp-cancel".to_string(),
+                cancel: Arc::clone(&cancel),
+                last_emit: Arc::new(Mutex::new(Instant::now())),
+                started: Instant::now(),
+                rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+                rate_limit_bytes_per_second: None,
+            };
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel.store(true, Ordering::SeqCst);
+            });
+            let started = Instant::now();
+            let error = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/silent-cancel.bin",
+                root.path().join("cancel.bin").to_str().unwrap(),
+                &cancellation_progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            cancel_task.await.unwrap();
+
+            let idle_progress = TransferProgressContext {
+                state,
+                task_id: "unused-silent-scp-idle".to_string(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                last_emit: Arc::new(Mutex::new(Instant::now())),
+                started: Instant::now(),
+                rate_baseline_bytes: Arc::new(AtomicU64::new(0)),
+                rate_limit_bytes_per_second: None,
+            };
+            let started = Instant::now();
+            let error = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/silent-idle.bin",
+                root.path().join("idle.bin").to_str().unwrap(),
+                &idle_progress,
+                Duration::from_millis(30),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, "SCP 等待文件头 空闲超时（30 ms）");
+            assert!(started.elapsed() < Duration::from_millis(500));
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                counters.session_channel_completions.load(Ordering::SeqCst),
+                2
+            );
+
+            drop(handle);
             server_task.abort();
             let _ = server_task.await;
         });
