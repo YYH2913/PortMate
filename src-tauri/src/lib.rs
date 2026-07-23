@@ -280,7 +280,7 @@ const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ip -o addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
@@ -34612,6 +34612,20 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             vec!["10.0.0.2"]
         );
 
+        let busybox_ifconfig_addresses = parse_linux_network_addresses(
+            r#"br-lan    Link encap:Ethernet  HWaddr 02:11:22:33:44:55
+          inet addr:192.168.3.1  Bcast:192.168.3.255  Mask:255.255.255.0
+          inet6 addr:fe80::211:22ff:fe33:4455/64 Scope:Link
+"#,
+        );
+        assert_eq!(
+            busybox_ifconfig_addresses
+                .get("br-lan")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["192.168.3.1", "fe80::211:22ff:fe33:4455/64"]
+        );
+
         let fallback_addresses = first_nonempty_linux_network_addresses([
             "ip: unsupported output".to_string(),
             "br-lan    inet 192.168.2.1  Bcast:192.168.2.255  Mask:255.255.255.0".to_string(),
@@ -34644,6 +34658,9 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             REMOTE_LINUX_SYSMON_COMMAND.contains("addresses=\"$(ip -o addr show 2>/dev/null)\"")
         );
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("ifconfig -a 2>/dev/null"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ip -o addr show 2>/dev/null"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ip addr show 2>/dev/null"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ifconfig -a 2>/dev/null"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 384"));
 
         assert_eq!(
