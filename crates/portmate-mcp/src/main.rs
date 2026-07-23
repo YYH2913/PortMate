@@ -7,7 +7,7 @@ use portmate_core::{
     resource_templates, tool_definitions, McpScope, SessionEvent, SessionStore, SessionSummary,
     TransferTask,
 };
-use rusqlite::{params, Connection as SqliteConnection};
+use rusqlite::{params, Connection as SqliteConnection, OpenFlags as SqliteOpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -666,8 +666,8 @@ impl PortMateMcp {
 
 fn load_store_from_path(path: &std::path::Path) -> Option<SessionStore> {
     let store = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
-        let connection = SqliteConnection::open(path).ok()?;
-        ensure_store_schema(&connection).ok()?;
+        let connection =
+            SqliteConnection::open_with_flags(path, SqliteOpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
         let raw = connection
             .query_row(
                 "select value from kv where key = ?1",
@@ -932,6 +932,7 @@ fn ipc_value_to_text(value: Value) -> Result<String> {
     }
 }
 
+#[cfg(test)]
 fn ensure_store_schema(connection: &SqliteConnection) -> Result<()> {
     connection.execute_batch(
         "create table if not exists kv (
@@ -2175,6 +2176,48 @@ mod tests {
         store.profiles = vec![profile; portmate_core::MAX_SESSION_PROFILES + 1];
 
         assert!(prepare_loaded_store(store).is_none());
+    }
+
+    #[test]
+    fn standalone_sqlite_store_loading_never_creates_or_migrates_a_store() {
+        let root = std::env::temp_dir().join(format!("portmate-mcp-read-only-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let missing_path = root.join("missing.sqlite3");
+        assert!(load_store_from_path(&missing_path).is_none());
+        assert!(!missing_path.exists());
+
+        let empty_path = root.join("empty.sqlite3");
+        drop(SqliteConnection::open(&empty_path).unwrap());
+        assert!(load_store_from_path(&empty_path).is_none());
+        let empty_connection = SqliteConnection::open(&empty_path).unwrap();
+        let has_kv_table: bool = empty_connection
+            .query_row(
+                "select exists(select 1 from sqlite_master where type = 'table' and name = 'kv')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!has_kv_table);
+        drop(empty_connection);
+
+        let snapshot_path = root.join("snapshot.sqlite3");
+        let connection = SqliteConnection::open(&snapshot_path).unwrap();
+        ensure_store_schema(&connection).unwrap();
+        connection
+            .execute(
+                "insert into kv (key, value, updated_at) values (?1, ?2, '2026-07-23T00:00:00Z')",
+                params![
+                    STORE_KEY,
+                    serde_json::to_string(&test_snapshot_store("read-only snapshot")).unwrap(),
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let loaded = load_store_from_path(&snapshot_path).unwrap();
+        assert_eq!(loaded.profiles[0].name, "read-only snapshot");
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn sensitive_snapshot_store() -> SessionStore {
