@@ -25,6 +25,7 @@ import {
   Search,
   SendHorizontal,
   Settings,
+  SlidersHorizontal,
   Square,
   SquareTerminal,
   Trash2,
@@ -252,6 +253,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [sendCount, setSendCount] = useState(1);
   const [sendIntervalMs, setSendIntervalMs] = useState(1000);
   const [sendTarget, setSendTarget] = useState<SendTarget>("active");
+  const [sendAdvancedOpen, setSendAdvancedOpen] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
   const [syncInput, setSyncInput] = useState(false);
   const [syncInputSettings, setSyncInputSettings] = useState<SyncInputSettings>(() => (
@@ -1988,15 +1990,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setActiveId(restored.activeId);
     setTabColors(restored.tabColors);
     setZoomedPaneId("");
-    const paneCount = workspacePaneLeaves(restored.root).length;
-    setNotice({
-      title: "还原布局",
-      message: paneCount === 0
-        ? "已还原空工作区。"
-        : paneCount === 1
-          ? "已还原单窗格工作区。"
-          : `已还原 ${paneCount} 个窗格。`,
-    });
   }
 
   function splitWorkspace(
@@ -3202,35 +3195,53 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         </Suspense>
       );
     }
+    const sendAdvancedActive = sendCount !== 1 || sendIntervalMs !== 1000 || sendTarget !== "active";
     return (
       <>
-        <div className="send-toolbar">
-          <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
-            <Play size={14} className="green" />
-          </button>
-          <label>
-            <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
-          </label>
-          <label>
-            <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
-          </label>
-          <label>
-            计数:
-            <input className="number-input" value={sendCount} onChange={(event) => setSendCount(Math.max(1, Number(event.target.value) || 1))} />
-          </label>
-          <label>
-            间隔:
-            <input className="number-input" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
-          </label>
-          <label>
-            目标:
-            <select className="target-input" value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
-              <option value="active">当前会话</option>
-              <option value="panes">打开窗格</option>
-              <option value="connected">全部已连接</option>
-            </select>
-          </label>
-          {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
+        <div className="send-toolbar" data-advanced-open={sendAdvancedOpen ? "true" : "false"}>
+          <div className="send-toolbar-primary">
+            <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
+              <Play size={14} className="green" />
+            </button>
+            <label className="send-mode-label">
+              <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
+            </label>
+            <label className="send-mode-label">
+              <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
+            </label>
+            <button
+              type="button"
+              className="send-icon-button send-advanced-toggle"
+              title={sendAdvancedActive ? "高级发送选项（已配置）" : "高级发送选项"}
+              aria-label="高级发送选项"
+              aria-expanded={sendAdvancedOpen}
+              data-active={sendAdvancedActive ? "true" : "false"}
+              onClick={() => setSendAdvancedOpen((current) => !current)}
+            >
+              <SlidersHorizontal size={14} />
+            </button>
+            {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
+          </div>
+          {sendAdvancedOpen ? (
+            <div className="send-advanced-controls" role="group" aria-label="高级发送选项">
+              <label>
+                <span>计数</span>
+                <input type="number" min={1} className="number-input" aria-label="发送次数" value={sendCount} onChange={(event) => setSendCount(Math.max(1, Number(event.target.value) || 1))} />
+              </label>
+              <label>
+                <span>间隔</span>
+                <input type="number" min={0} className="number-input" aria-label="发送间隔（毫秒）" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
+              </label>
+              <label>
+                <span>目标</span>
+                <select className="target-input" aria-label="发送目标" value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
+                  <option value="active">当前会话</option>
+                  <option value="panes">打开窗格</option>
+                  <option value="connected">全部已连接</option>
+                </select>
+              </label>
+            </div>
+          ) : null}
         </div>
         <textarea
           className="send-textarea"

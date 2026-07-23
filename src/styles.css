@@ -3445,36 +3445,57 @@ button {
 }
 
 .send-toolbar {
-  display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--line-soft);
   font-size: 12px;
 }
 
-.send-toolbar label {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+.send-toolbar-primary {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
   align-items: center;
   gap: 7px;
-  min-width: 0;
   white-space: nowrap;
 }
 
-.send-toolbar label:nth-of-type(1),
-.send-toolbar label:nth-of-type(2) {
-  display: flex;
+.send-mode-label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
-.send-toolbar label:nth-of-type(n + 3),
-.send-toolbar .sync-badge {
-  grid-column: 1 / -1;
+.send-toolbar-primary .sync-badge {
+  margin-left: auto;
+  white-space: nowrap;
 }
 
-.send-toolbar .number-input,
-.send-toolbar .target-input {
+.send-advanced-controls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.send-advanced-controls label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.send-advanced-controls .number-input,
+.send-advanced-controls .target-input {
   width: 100%;
   min-width: 0;
 }
@@ -3497,6 +3518,16 @@ button {
 
 .send-icon-button:hover {
   background: rgba(94, 234, 212, 0.12);
+}
+
+.send-icon-button:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+.send-advanced-toggle[data-active="true"] {
+  border-color: rgba(94, 234, 212, 0.55);
+  color: var(--cyan);
 }
 
 .green {
@@ -3581,22 +3612,20 @@ button {
 }
 
 .workspace-dock-bottom .send-toolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
   padding: 4px 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  white-space: nowrap;
 }
 
-.workspace-dock-bottom .send-toolbar label,
-.workspace-dock-bottom .send-toolbar label:nth-of-type(n + 3),
-.workspace-dock-bottom .send-toolbar .sync-badge {
+.workspace-dock-bottom .send-toolbar-primary {
+  min-height: 28px;
+}
+
+.workspace-dock-bottom .send-advanced-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-top: 5px;
+}
+
+.workspace-dock-bottom .send-advanced-controls label {
   display: flex;
-  grid-column: auto;
-  flex: 0 0 auto;
   align-items: center;
 }
 

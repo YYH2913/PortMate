@@ -1283,14 +1283,14 @@ try {
     "successful file navigation did not expose the expected history controls");
   await page.evaluate(() => { window.__deferFileLoads = true; });
   await fileBack.click();
-  await page.waitForFunction(() => window.__pendingFileLoads.some((request) => request.args.request.path === "/"));
+  await page.waitForFunction(() => window.__pendingFileLoads.some((request) => request.args.request.path === "~"));
   await page.evaluate(() => {
-    const pending = window.__pendingFileLoads.filter((request) => request.args.request.path === "/").at(-1);
-    pending.resolve([{ name: "ROOT-RESULT", path: "/ROOT-RESULT", isDir: false, size: 4, modified: null }]);
+    const pending = window.__pendingFileLoads.filter((request) => request.args.request.path === "~").at(-1);
+    pending.resolve([{ name: "HOME-RESULT", path: "~/HOME-RESULT", isDir: false, size: 4, modified: null }]);
     window.__deferFileLoads = false;
   });
-  await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "ROOT-RESULT" }).waitFor();
-  assert(await localFilePath.inputValue() === "/"
+  await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "HOME-RESULT" }).waitFor();
+  assert(await localFilePath.inputValue() === "~"
     && await fileBack.isDisabled()
     && !await fileForward.isDisabled(),
   "file history back navigation did not restore the previous loaded path");
@@ -1534,9 +1534,30 @@ try {
 
   const sender = bottomDock;
   assert(!(await sender.textContent()).includes("Shell"), "unused Shell sender tab is visible");
-  assert(await sender.locator(".send-toolbar > button").count() === 1
-    && await sender.locator(".send-toolbar > svg").count() === 0,
-  "sender toolbar contains decorative controls");
+  const advancedSendButton = sender.getByRole("button", { name: "高级发送选项", exact: true });
+  assert(await sender.locator(".send-toolbar-primary > button").count() === 2
+    && await sender.locator(".send-toolbar > svg").count() === 0
+    && await advancedSendButton.getAttribute("aria-expanded") === "false"
+    && await sender.locator(".send-advanced-controls").count() === 0,
+  "sender did not keep low-frequency controls collapsed by default");
+  await advancedSendButton.click();
+  const advancedSendControls = sender.getByRole("group", { name: "高级发送选项", exact: true });
+  await advancedSendControls.waitFor();
+  assert(await advancedSendButton.getAttribute("aria-expanded") === "true"
+    && await sender.getByRole("spinbutton", { name: "发送次数", exact: true }).inputValue() === "1"
+    && await sender.getByRole("spinbutton", { name: "发送间隔（毫秒）", exact: true }).inputValue() === "1000",
+  "sender advanced controls did not expose the existing default values");
+  await page.screenshot({ path: `${screenshotPrefix}-sender-advanced.png`, fullPage: true });
+  await sender.getByRole("combobox", { name: "发送目标", exact: true }).selectOption("connected");
+  await advancedSendButton.click();
+  assert(await advancedSendButton.getAttribute("data-active") === "true"
+    && await sender.locator(".send-advanced-controls").count() === 0,
+  "sender did not retain an active advanced-settings indicator after collapsing");
+  await advancedSendButton.click();
+  await sender.getByRole("combobox", { name: "发送目标", exact: true }).selectOption("active");
+  await advancedSendButton.click();
+  assert(await advancedSendButton.getAttribute("data-active") === "false",
+    "sender advanced-settings indicator did not clear after restoring defaults");
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
 
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
@@ -3454,6 +3475,8 @@ try {
   await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
   await workspaceWindowPage.getByRole("button", { name: "还原布局", exact: true }).click();
   await workspaceWindowPage.waitForFunction(() => document.querySelectorAll(".workspace-pane-tab").length === 0);
+  assert(await workspaceWindowPage.locator(".notice-dialog").count() === 0,
+    "restoring a workspace layout opened a redundant blocking notification");
   await workspaceWindowPage.locator(".tree-session", { hasText: "Edge Router" }).click();
   await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Edge" }).waitFor();
   const workspaceWindowAfterOpen = await workspaceWindowPage.evaluate(() => ({
@@ -3637,6 +3660,7 @@ try {
       `${screenshotPrefix}-file-manager.png`,
       `${screenshotPrefix}-workspace-window.png`,
       `${screenshotPrefix}-sender.png`,
+      `${screenshotPrefix}-sender-advanced.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-terminal-theme-settings.png`,
