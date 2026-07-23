@@ -5057,13 +5057,13 @@ fieldset label {
   width: min(560px, calc(100vw - 40px));
 }
 
-.openssh-config-import-dialog {
+.session-config-import-dialog {
   grid-template-rows: 46px minmax(0, 1fr) 58px;
   width: min(720px, calc(100vw - 40px));
   height: min(640px, calc(100dvh - 40px));
 }
 
-.openssh-config-import-content {
+.session-config-import-content {
   display: grid;
   grid-template-rows: auto 122px auto minmax(120px, 1fr) auto auto;
   min-width: 0;
@@ -5074,29 +5074,29 @@ fieldset label {
   border-bottom: 1px solid var(--line-soft);
 }
 
-.openssh-import-source-header,
-.openssh-import-summary,
-.openssh-import-footer {
+.session-import-source-header,
+.session-import-summary,
+.session-import-footer {
   display: flex;
   align-items: center;
   min-width: 0;
 }
 
-.openssh-import-source-header {
+.session-import-source-header {
   justify-content: space-between;
   gap: 10px;
   font-size: 12px;
   color: var(--muted);
 }
 
-.openssh-import-source-header > span {
+.session-import-source-header > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.openssh-import-file-button {
+.session-import-file-button {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -5110,21 +5110,21 @@ fieldset label {
   font-size: 12px;
 }
 
-.openssh-import-file-button:hover:not(:disabled) {
+.session-import-file-button:hover:not(:disabled) {
   border-color: var(--cyan);
   background: var(--control-hover);
 }
 
-.openssh-import-file-button:disabled {
+.session-import-file-button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
 }
 
-.openssh-import-file-input {
+.session-import-file-input {
   display: none;
 }
 
-.openssh-config-import-content > textarea {
+.session-config-import-content > textarea {
   min-width: 0;
   min-height: 0;
   resize: vertical;
@@ -5138,26 +5138,26 @@ fieldset label {
   line-height: 1.45;
 }
 
-.openssh-config-import-content > textarea:focus {
+.session-config-import-content > textarea:focus {
   border-color: var(--cyan);
   outline: 0;
 }
 
-.openssh-import-summary {
+.session-import-summary {
   justify-content: space-between;
   gap: 10px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.openssh-import-summary .warning {
+.session-import-summary .warning {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: #ffb000;
 }
 
-.openssh-import-list {
+.session-import-list {
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -5165,7 +5165,7 @@ fieldset label {
   border-bottom: 1px solid var(--line-soft);
 }
 
-.openssh-import-row {
+.session-import-row {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
@@ -5177,43 +5177,43 @@ fieldset label {
   cursor: pointer;
 }
 
-.openssh-import-row:last-child {
+.session-import-row:last-child {
   border-bottom: 0;
 }
 
-.openssh-import-row:hover {
+.session-import-row:hover {
   background: rgba(79, 157, 210, 0.08);
 }
 
-.openssh-import-row input {
+.session-import-row input {
   justify-self: center;
 }
 
-.openssh-import-target {
+.session-import-target {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.openssh-import-target strong,
-.openssh-import-target code {
+.session-import-target strong,
+.session-import-target code {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.openssh-import-target strong {
+.session-import-target strong {
   color: var(--text);
   font-size: 13px;
 }
 
-.openssh-import-target code {
+.session-import-target code {
   color: var(--muted);
   font-size: 11px;
 }
 
-.openssh-import-details {
+.session-import-details {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -5223,42 +5223,42 @@ fieldset label {
   white-space: nowrap;
 }
 
-.openssh-import-details svg {
+.session-import-details svg {
   color: #ffb000;
 }
 
-.openssh-import-warnings {
+.session-import-warnings {
   min-width: 0;
   color: #ffb000;
   font-size: 12px;
 }
 
-.openssh-import-warnings summary {
+.session-import-warnings summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
 }
 
-.openssh-import-warnings ul {
+.session-import-warnings ul {
   max-height: 104px;
   margin: 7px 0 0;
   padding-left: 20px;
   overflow: auto;
 }
 
-.openssh-import-warnings li {
+.session-import-warnings li {
   overflow-wrap: anywhere;
 }
 
-.openssh-import-footer {
+.session-import-footer {
   justify-content: space-between;
   gap: 10px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.openssh-import-footer .dialog-actions button {
+.session-import-footer .dialog-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5266,28 +5266,28 @@ fieldset label {
   min-width: 86px;
 }
 
-.openssh-import-footer .dialog-actions .primary {
+.session-import-footer .dialog-actions .primary {
   border-color: var(--blue);
   background: rgba(35, 135, 213, 0.18);
 }
 
 @media (max-width: 720px) {
-  .openssh-config-import-dialog {
+  .session-config-import-dialog {
     width: calc(100vw - 16px);
     height: min(600px, calc(100dvh - 16px));
   }
 
-  .openssh-config-import-content {
+  .session-config-import-content {
     grid-template-rows: auto 118px auto minmax(112px, 1fr) auto auto;
     gap: 8px;
     padding: 11px 12px 0;
   }
 
-  .openssh-import-footer {
+  .session-import-footer {
     padding-inline: 12px;
   }
 
-  .openssh-import-footer .dialog-actions button {
+  .session-import-footer .dialog-actions button {
     min-width: 72px;
   }
 }

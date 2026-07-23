@@ -942,7 +942,7 @@ try {
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
-  const openSshImportDialog = page.locator(".openssh-config-import-dialog");
+  const openSshImportDialog = page.locator(".session-config-import-dialog");
   await openSshImportDialog.waitFor();
   const openSshConfigInput = openSshImportDialog.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true });
   await openSshConfigInput.fill(`Host *
@@ -955,8 +955,8 @@ Host production
 Host staging
   HostName staging.example.test
   Port 2203`);
-  await openSshImportDialog.locator(".openssh-import-row").first().waitFor();
-  assert(await openSshImportDialog.locator(".openssh-import-row").count() === 2
+  await openSshImportDialog.locator(".session-import-row").first().waitFor();
+  assert(await openSshImportDialog.locator(".session-import-row").count() === 2
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 production", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 staging", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
@@ -965,6 +965,40 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });
   await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await openSshImportDialog.waitFor({ state: "detached" });
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入 PuTTY 配置" }).click();
+  const puttyImportDialog = page.locator(".session-config-import-dialog");
+  await puttyImportDialog.waitFor();
+  await puttyImportDialog.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).fill(`Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Gateway%20SSH]
+"HostName"="gateway.example.test"
+"PortNumber"=dword:0000089a
+"Protocol"="ssh"
+"UserName"="operator"
+"ProxyMethod"=dword:00000002
+"ProxyHost"="socks.example.test"
+"ProxyPort"=dword:00000438
+
+[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Bench%20Serial]
+"Protocol"="serial"
+"SerialLine"="COM7"
+"SerialSpeed"=dword:0001c200
+"SerialDataBits"=dword:00000008
+"SerialStopHalfbits"=dword:00000004
+"SerialParity"=dword:00000002
+"SerialFlowControl"=dword:00000002`);
+  await puttyImportDialog.locator(".session-import-row").first().waitFor();
+  assert(await puttyImportDialog.locator(".session-import-row").count() === 2
+    && await puttyImportDialog.getByRole("checkbox", { name: "导入 Gateway SSH", exact: true }).isChecked()
+    && await puttyImportDialog.getByRole("checkbox", { name: "导入 Bench Serial", exact: true }).isChecked()
+    && await puttyImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
+    && (await puttyImportDialog.textContent()).includes("SSH 代理"),
+  "PuTTY import preview did not preserve SSH and serial sessions");
+  await page.screenshot({ path: `${screenshotPrefix}-putty-import.png`, fullPage: true });
+  await puttyImportDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await puttyImportDialog.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
@@ -2451,16 +2485,16 @@ Host staging
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
-  const mobileOpenSshImport = page.locator(".openssh-config-import-dialog");
+  const mobileOpenSshImport = page.locator(".session-config-import-dialog");
   await mobileOpenSshImport.waitFor();
   await mobileOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host mobile
   HostName mobile.example.test
   User operator
   IdentityFile ~/.ssh/id_mobile`);
-  await mobileOpenSshImport.locator(".openssh-import-row").waitFor();
+  await mobileOpenSshImport.locator(".session-import-row").waitFor();
   const mobileOpenSshBounds = await mobileOpenSshImport.evaluate((dialog) => {
     const rect = dialog.getBoundingClientRect();
-    const content = dialog.querySelector(".openssh-config-import-content");
+    const content = dialog.querySelector(".session-config-import-content");
     return {
       left: rect.left,
       right: rect.right,
@@ -3656,7 +3690,7 @@ Host staging
   const openSshImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
-  const savingOpenSshImport = page.locator(".openssh-config-import-dialog");
+  const savingOpenSshImport = page.locator(".session-config-import-dialog");
   await savingOpenSshImport.waitFor();
   await savingOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host saved-profile
   HostName saved.example.test
@@ -3727,6 +3761,80 @@ Host staging
   await savingOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
   await savingOpenSshImport.waitFor({ state: "detached" });
 
+  const puttyImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入 PuTTY 配置" }).click();
+  const savingPuttyImport = page.locator(".session-config-import-dialog");
+  await savingPuttyImport.waitFor();
+  await savingPuttyImport.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).fill(`Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Saved%20PuTTY]
+"HostName"="saved-putty.example.test"
+"PortNumber"=dword:0000089a
+"Protocol"="ssh"
+"UserName"="deploy"
+"TryAgent"=dword:00000001
+"AgentFwd"=dword:00000001
+"ProxyMethod"=dword:00000003
+"ProxyHost"="proxy.example.test"
+"ProxyPort"=dword:00001f90
+"ProxyUsername"="relay"
+"ProxyPassword"="stored-secret"
+"PublicKeyFile"="C:\\\\Users\\\\operator\\\\id_saved.ppk"`);
+  await savingPuttyImport.getByRole("button", { name: "导入", exact: true }).click();
+  await savingPuttyImport.locator(".dialog-note", { hasText: "已导入 1 个会话" }).waitFor();
+  const puttyImportLifecycleState = await page.evaluate((start) => {
+    const call = window.__invokeCalls.slice(start).find((item) => item.command === "save_session_profile");
+    const profile = call?.args?.profile;
+    return {
+      saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
+      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      profile: profile ? {
+        name: profile.name,
+        kind: profile.kind,
+        connection: {
+          kind: profile.connection.kind,
+          endpoint: profile.connection.endpoint,
+          username: profile.connection.username,
+          proxy: profile.connection.proxy,
+          agentPolicy: profile.connection.agentPolicy,
+          identityRefs: profile.connection.identityRefs,
+        },
+      } : null,
+      serializedProfile: JSON.stringify(profile),
+    };
+  }, puttyImportSaveStart);
+  assert(puttyImportLifecycleState.saveCalls === 1
+    && puttyImportLifecycleState.expectedProfile === null
+    && JSON.stringify(puttyImportLifecycleState.profile) === JSON.stringify({
+      name: "Saved PuTTY",
+      kind: "ssh",
+      connection: {
+        kind: "ssh",
+        endpoint: { host: "saved-putty.example.test", port: 2202 },
+        username: "deploy",
+        proxy: {
+          enabled: true,
+          kind: "http-connect",
+          host: "proxy.example.test",
+          port: 8080,
+          username: "relay",
+          passwordSecretRef: null,
+        },
+        agentPolicy: {
+          enabled: true,
+          forwarding: true,
+          offerMode: "after-profile-keys",
+        },
+        identityRefs: [],
+      },
+    })
+    && !puttyImportLifecycleState.serializedProfile.includes("stored-secret")
+    && !puttyImportLifecycleState.serializedProfile.includes("id_saved.ppk"),
+  `PuTTY import did not save a safe, mapped Profile: ${JSON.stringify(puttyImportLifecycleState)}`);
+  await savingPuttyImport.getByRole("button", { name: "取消", exact: true }).click();
+  await savingPuttyImport.waitFor({ state: "detached" });
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -3765,6 +3873,7 @@ Host staging
     profileLifecycle: profileLifecycleState,
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
     openSshImportLifecycle: openSshImportLifecycleState,
+    puttyImportLifecycle: puttyImportLifecycleState,
     connectionCredentialLifecycle: {
       partialWrite: partialCredentialState,
       failedProfileSave: failedProfileCredentialState,
@@ -3812,6 +3921,7 @@ Host staging
       `${screenshotPrefix}-profile-delete.png`,
       `${screenshotPrefix}-openssh-import.png`,
       `${screenshotPrefix}-openssh-import-mobile.png`,
+      `${screenshotPrefix}-putty-import.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],

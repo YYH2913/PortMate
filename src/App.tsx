@@ -53,8 +53,9 @@ import { normalizeSerialConnectionSettings } from "./serial-connection-settings"
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
-import { createOpenSshImportConnection, createSerialConnection, formatSshTarget } from "./session-profile-helpers";
+import { createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, formatSshTarget } from "./session-profile-helpers";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
+import type { PuttySessionImportCandidate } from "./putty-session-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -113,6 +114,7 @@ const LazyKeyManagerDialog = lazy(() => import("./KeyManagerDialog"));
 const LazyTerminalSettingsDialog = lazy(() => import("./TerminalSettingsDialog"));
 const LazySessionSettingsDialog = lazy(() => import("./SessionSettingsDialog"));
 const LazyOpenSshConfigImportDialog = lazy(() => import("./OpenSshConfigImportDialog"));
+const LazyPuttyConfigImportDialog = lazy(() => import("./PuttyConfigImportDialog"));
 const LazyFileManagerPanel = lazy(() => import("./FileManagerPanel"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -164,7 +166,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | "putty-import" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -1410,6 +1412,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "导入 OpenSSH 配置") {
       setUtilityDialog("openssh-import");
+      return;
+    }
+    if (item === "导入 PuTTY 配置") {
+      setUtilityDialog("putty-import");
       return;
     }
     if (item === "新建工作区窗口") {
@@ -2682,16 +2688,28 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function importOpenSshConfigCandidates(candidates: OpenSshImportCandidate[]) {
+    return importSessionCandidates(candidates, createOpenSshImportedProfile, (candidate) => candidate.hostAlias);
+  }
+
+  async function importPuttyConfigCandidates(candidates: PuttySessionImportCandidate[]) {
+    return importSessionCandidates(candidates, createPuttyImportedProfile, (candidate) => candidate.name);
+  }
+
+  async function importSessionCandidates<C extends { id: string }>(
+    candidates: C[],
+    createProfile: (candidate: C) => SessionProfile,
+    candidateName: (candidate: C) => string,
+  ) {
     const savedIds: string[] = [];
     const failures: Array<{ id: string; message: string }> = [];
     for (const candidate of candidates) {
       try {
-        const profile = prepareSessionProfile(createOpenSshImportedProfile(candidate));
+        const profile = prepareSessionProfile(createProfile(candidate));
         const saved = await saveProfile(profile, null);
         applySavedSession(saved, false);
         savedIds.push(candidate.id);
       } catch (error) {
-        failures.push({ id: candidate.id, message: `${candidate.hostAlias}: ${formatError(error)}` });
+        failures.push({ id: candidate.id, message: `${candidateName(candidate)}: ${formatError(error)}` });
       }
     }
     return { savedIds, failures };
@@ -3577,6 +3595,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "openssh-import" && (
         <Suspense fallback={null}>
           <LazyOpenSshConfigImportDialog onImport={importOpenSshConfigCandidates} onClose={() => setUtilityDialog(null)} />
+        </Suspense>
+      )}
+      {utilityDialog === "putty-import" && (
+        <Suspense fallback={null}>
+          <LazyPuttyConfigImportDialog onImport={importPuttyConfigCandidates} onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "transfer" && active && (
@@ -5132,6 +5155,16 @@ function createOpenSshImportedProfile(candidate: OpenSshImportCandidate): Sessio
     name: candidate.hostAlias,
     kind: "ssh",
     connection: createOpenSshImportConnection(candidate),
+  };
+}
+
+function createPuttyImportedProfile(candidate: PuttySessionImportCandidate): SessionProfile {
+  const profile = createSessionDraft();
+  return {
+    ...profile,
+    name: candidate.name,
+    kind: candidate.kind,
+    connection: createPuttyImportConnection(candidate),
   };
 }
 
