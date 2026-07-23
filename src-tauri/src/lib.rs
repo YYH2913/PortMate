@@ -6844,16 +6844,7 @@ fn export_mcp_audit_inner(
         )?;
     }
 
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir).map_err(|error| {
-        format!(
-            "failed to create MCP audit export directory {}: {error}",
-            export_dir.display()
-        )
-    })?;
+    let export_dir = prepare_export_directory(store_path, "MCP audit")?;
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
         "portmate-mcp-audit-{timestamp}-{}.jsonl",
@@ -6974,16 +6965,7 @@ fn export_serial_capture_frames(
         output.push(b'\n');
     }
 
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir).map_err(|error| {
-        format!(
-            "failed to create serial capture export directory {}: {error}",
-            export_dir.display()
-        )
-    })?;
+    let export_dir = prepare_export_directory(store_path, "serial capture")?;
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
         "{}-{timestamp}-serial-{}.jsonl",
@@ -7010,16 +6992,7 @@ fn export_terminal_text_inner(
 ) -> Result<ExportTerminalTextResult, String> {
     validate_terminal_text_export_request(&request, MAX_TERMINAL_TEXT_EXPORT_BYTES)?;
     let created_at = Utc::now();
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir).map_err(|error| {
-        format!(
-            "failed to create terminal text export directory {}: {error}",
-            export_dir.display()
-        )
-    })?;
+    let export_dir = prepare_export_directory(store_path, "terminal text")?;
     let session_name = sanitize_log_path_segment(&request.session_id);
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
@@ -7074,6 +7047,58 @@ fn validate_terminal_text_export_request(
     Ok(())
 }
 
+fn prepare_export_directory(store_path: &Path, label: &str) -> Result<PathBuf, String> {
+    let parent = store_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create {label} export parent directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let export_dir = parent.join("exports");
+    match fs::symlink_metadata(&export_dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(error) = fs::create_dir(&export_dir) {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(format!(
+                        "failed to create {label} export directory {}: {error}",
+                        export_dir.display()
+                    ));
+                }
+            }
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect {label} export directory {}: {error}",
+                export_dir.display()
+            ));
+        }
+    }
+    let metadata = fs::symlink_metadata(&export_dir).map_err(|error| {
+        format!(
+            "failed to inspect {label} export directory {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{label} export directory must not be a symbolic link: {}",
+            export_dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{label} export path is not a directory: {}",
+            export_dir.display()
+        ));
+    }
+    Ok(export_dir)
+}
+
 fn write_atomic_export_with_checksum(
     final_path: &Path,
     bytes: &[u8],
@@ -7087,7 +7112,7 @@ fn write_atomic_export_with_checksum(
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let mut file = options
         .open(&temp_path)
         .map_err(|error| format!("failed to create {label} {}: {error}", temp_path.display()))?;
@@ -7122,7 +7147,7 @@ fn write_atomic_export_with_checksum(
     let mut checksum_options = OpenOptions::new();
     checksum_options.create_new(true).write(true);
     #[cfg(unix)]
-    checksum_options.mode(0o600);
+    checksum_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let mut checksum = match checksum_options.open(&checksum_temp_path) {
         Ok(checksum) => checksum,
         Err(error) => {
@@ -20800,7 +20825,7 @@ fn write_new_synced_profile_secret_migration_diagnostic_file(
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let mut file = options
         .open(path)
         .map_err(|error| format!("无法创建{label} {}: {error}", path.display()))?;
@@ -20828,12 +20853,7 @@ fn write_profile_secret_migration_diagnostic_report(
             MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES
         ));
     }
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir)
-        .map_err(|error| format!("无法创建凭据迁移诊断目录 {}: {error}", export_dir.display()))?;
+    let export_dir = prepare_export_directory(store_path, "credential migration diagnostic")?;
     let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
     let migration_label = report
         .journal
@@ -26180,16 +26200,7 @@ fn archive_log_shards_inner(
     }
 
     let created_at = Utc::now();
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir).map_err(|error| {
-        format!(
-            "failed to create log archive directory {}: {error}",
-            export_dir.display()
-        )
-    })?;
+    let export_dir = prepare_export_directory(store_path, "log archive")?;
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
         "portmate-logs-{timestamp}-{}.tar.gz",
@@ -26417,16 +26428,7 @@ fn export_session_bundle_archive_inner(
             .map_err(|error| format!("failed to serialize bundle manifest: {error}"))?,
     )?;
 
-    let export_dir = store_path
-        .parent()
-        .map(|parent| parent.join("exports"))
-        .unwrap_or_else(|| PathBuf::from("exports"));
-    fs::create_dir_all(&export_dir).map_err(|error| {
-        format!(
-            "failed to create bundle export directory {}: {error}",
-            export_dir.display()
-        )
-    })?;
+    let export_dir = prepare_export_directory(store_path, "session bundle")?;
     let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
     let name = format!(
         "{}-{timestamp}-{}.tar.gz",
@@ -26814,7 +26816,7 @@ fn write_new_synced_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), S
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let mut file = options
         .open(path)
         .map_err(|error| format!("failed to create {label} {}: {error}", path.display()))?;
@@ -37382,6 +37384,29 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             .to_string_lossy()
             .ends_with(".part")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_text_export_rejects_a_symlinked_exports_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let exports = root.path().join("exports");
+        std::os::unix::fs::symlink(outside.path(), &exports).unwrap();
+
+        let error = export_terminal_text_inner(
+            &root.path().join("portmate-store.sqlite3"),
+            ExportTerminalTextRequest {
+                session_id: "shell-a".to_string(),
+                view_id: "view-a".to_string(),
+                source: TerminalTextExportSource::Buffer,
+                text: "sensitive terminal output".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
     }
 
     #[test]
