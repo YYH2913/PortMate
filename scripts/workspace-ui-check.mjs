@@ -3388,6 +3388,30 @@ try {
     `workspace window browser exceptions: ${JSON.stringify(workspaceWindowErrors)}`);
   await workspaceWindowPage.close();
 
+  const lockSyncMainPage = await context.newPage();
+  const lockSyncWorkspacePage = await context.newPage();
+  const lockSyncErrors = [];
+  lockSyncMainPage.on("pageerror", (error) => lockSyncErrors.push(`main: ${error.message}`));
+  lockSyncWorkspacePage.on("pageerror", (error) => lockSyncErrors.push(`workspace: ${error.message}`));
+  await lockSyncMainPage.goto(appUrl);
+  await lockSyncWorkspacePage.goto(`${appUrl}?workspaceWindow=1&windowId=workspace-lock-regression`);
+  await Promise.all([
+    lockSyncMainPage.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor(),
+    lockSyncWorkspacePage.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor(),
+  ]);
+  await lockSyncMainPage.evaluate(() => window.localStorage.removeItem("portmate.screenLock.v1"));
+  await lockSyncMainPage.keyboard.press("Control+Alt+L");
+  await lockSyncMainPage.locator(".screen-lock-overlay").waitFor();
+  await lockSyncWorkspacePage.locator(".screen-lock-overlay").waitFor();
+  await lockSyncWorkspacePage.getByRole("button", { name: "返回工作台", exact: true }).click();
+  await Promise.all([
+    lockSyncMainPage.locator(".screen-lock-overlay").waitFor({ state: "detached" }),
+    lockSyncWorkspacePage.locator(".screen-lock-overlay").waitFor({ state: "detached" }),
+  ]);
+  assert(lockSyncErrors.length === 0, `cross-workspace screen lock browser exceptions: ${JSON.stringify(lockSyncErrors)}`);
+  await lockSyncMainPage.close();
+  await lockSyncWorkspacePage.close();
+
   const cacheRecoveryContext = await browser.newContext({ viewport: { width: 960, height: 680 } });
   await cacheRecoveryContext.addInitScript(() => {
     localStorage.clear();

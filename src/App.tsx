@@ -646,6 +646,31 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }, []);
 
   useEffect(() => {
+    const refreshScreenLock = () => {
+      const current = screenLockRef.current;
+      const next = readStoredScreenLockState(current?.lockedAt ?? Date.now());
+      if (next === undefined) return;
+      if (!next) {
+        if (current) clearScreenLock();
+        return;
+      }
+      if (current?.lockedAt === next.lockedAt) return;
+      clearScreenLockVaultRestoreState();
+      commitScreenLock(next);
+      void prepareScreenLock(next);
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === SCREEN_LOCK_STORAGE_KEY || event.key === null) refreshScreenLock();
+    };
+    const timer = window.setInterval(refreshScreenLock, 500);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
     const handleScreenLockShortcut = (event: KeyboardEvent) => {
       if (!isScreenLockShortcut(event)) return;
       event.preventDefault();
@@ -5480,12 +5505,15 @@ function loadTerminalPrefs(): TerminalPrefs {
 }
 
 function loadInitialScreenLockState(lockOnStartup = false): ScreenLockState {
+  const stored = readStoredScreenLockState();
+  return stored ?? (lockOnStartup ? createStartupScreenLockState() : null);
+}
+
+function readStoredScreenLockState(fallbackLockedAt = Date.now()): ScreenLockState | null | undefined {
   try {
     const raw = window.localStorage.getItem(SCREEN_LOCK_STORAGE_KEY);
-    const decoded = decodeStoredScreenLockMarker(raw);
-    if (!decoded) {
-      return lockOnStartup ? createStartupScreenLockState() : null;
-    }
+    const decoded = decodeStoredScreenLockMarker(raw, fallbackLockedAt);
+    if (!decoded) return null;
     return {
       reason: "restored",
       lockedAt: decoded.marker.lockedAt,
@@ -5495,7 +5523,7 @@ function loadInitialScreenLockState(lockOnStartup = false): ScreenLockState {
       message: "",
     };
   } catch {
-    return lockOnStartup ? createStartupScreenLockState() : null;
+    return undefined;
   }
 }
 
