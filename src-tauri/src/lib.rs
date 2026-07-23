@@ -29298,8 +29298,8 @@ fn sort_sysmon_network_interfaces(interfaces: &mut [SysmonNetworkInterface]) {
 fn remote_linux_sysmon_needs_openwrt_address_fallback(
     interfaces: &[SysmonNetworkInterface],
 ) -> bool {
-    !interfaces.is_empty()
-        && !interfaces
+    interfaces.is_empty()
+        || !interfaces
             .iter()
             .any(|interface| interface.name != "lo" && !interface.addresses.is_empty())
 }
@@ -29324,12 +29324,27 @@ fn merge_remote_linux_sysmon_network_addresses(
     }
     let net1 = section_between(output, "__PORTMATE_NET1__", "__PORTMATE_STAT2__");
     let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_ADDRS__");
-    let refreshed = network_interface_rates(
+    let mut refreshed = network_interface_rates(
         parse_network_interfaces(net1),
         parse_network_interfaces(net2),
-        all_addresses,
+        all_addresses.clone(),
         REMOTE_SYSMON_SAMPLE_SECONDS,
     );
+    for (name, addresses) in all_addresses {
+        if refreshed.iter().any(|interface| interface.name == name) {
+            continue;
+        }
+        refreshed.push(SysmonNetworkInterface {
+            name,
+            addresses,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_kbps: 0.0,
+            tx_kbps: 0.0,
+        });
+    }
+    sort_sysmon_network_interfaces(&mut refreshed);
+    refreshed.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     (*rx_kbps, *tx_kbps) = aggregate_network_rates(&refreshed);
     *interfaces = refreshed;
 }
@@ -34893,6 +34908,56 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert_eq!(interfaces[0].name, "uplink");
         assert_eq!(interfaces[0].addresses, vec!["198.51.100.42/24"]);
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 258 /proc/net/dev"));
+    }
+
+    #[test]
+    fn openwrt_sysmon_fallback_keeps_ubus_addresses_without_proc_net_interfaces() {
+        let output = "1.0 0.0\n\
+__PORTMATE_MEMINFO__\n\
+MemTotal: 1024 kB\n\
+MemAvailable: 512 kB\n\
+__PORTMATE_STAT1__\n\
+cpu 1 0 0 1\n\
+__PORTMATE_NET1__\n\
+Inter-| Receive | Transmit\n\
+ face | bytes | bytes\n\
+__PORTMATE_STAT2__\n\
+cpu 2 0 0 2\n\
+__PORTMATE_NET2__\n\
+Inter-| Receive | Transmit\n\
+ face | bytes | bytes\n\
+__PORTMATE_ADDRS__\n\
+__PORTMATE_LOADAVG__\n\
+0.00 0.00 0.00\n\
+__PORTMATE_PROCESSES__\n\
+__PORTMATE_DISKS__\n";
+        let mut snapshot = parse_remote_sysmon_output("openwrt-session", output).unwrap();
+        assert!(snapshot.network_interfaces.is_empty());
+        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+            &snapshot.network_interfaces
+        ));
+
+        merge_remote_linux_sysmon_network_addresses(
+            &mut snapshot.network_interfaces,
+            &mut snapshot.rx_kbps,
+            &mut snapshot.tx_kbps,
+            output,
+            BTreeMap::from([(
+                "br-lan".to_string(),
+                vec!["192.168.8.1/24".to_string(), "fd12:3456::1/64".to_string()],
+            )]),
+        );
+
+        assert_eq!(snapshot.network_interfaces.len(), 1);
+        assert_eq!(snapshot.network_interfaces[0].name, "br-lan");
+        assert_eq!(
+            snapshot.network_interfaces[0].addresses,
+            vec!["192.168.8.1/24", "fd12:3456::1/64"]
+        );
+        assert_eq!(snapshot.network_interfaces[0].rx_bytes, 0);
+        assert_eq!(snapshot.network_interfaces[0].tx_bytes, 0);
+        assert_eq!(snapshot.rx_kbps, 0.0);
+        assert_eq!(snapshot.tx_kbps, 0.0);
     }
 
     #[test]
