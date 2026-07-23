@@ -733,7 +733,29 @@ fn read_ipc_endpoint_file(path: &Path) -> Result<Vec<u8>> {
             ));
         }
     }
-    let mut file = fs::File::open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    let opened_metadata = file.metadata()?;
+    if !opened_metadata.is_file() || opened_metadata.len() > MAX_IPC_ENDPOINT_BYTES as u64 {
+        return Err(anyhow!(
+            "opened desktop IPC endpoint must be a bounded regular file"
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if opened_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(anyhow!(
+                "desktop IPC endpoint permissions must not allow group or world access"
+            ));
+        }
+    }
     let mut raw = Vec::new();
     Read::by_ref(&mut file)
         .take(MAX_IPC_ENDPOINT_BYTES.saturating_add(1) as u64)
