@@ -11766,10 +11766,7 @@ async fn copy_local_file_for_transfer(
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
     let (mut input, total) = open_local_transfer_source(&source, "local transfer")?;
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create transfer destination: {error}"))?;
-    }
+    prepare_local_transfer_target_path(&destination, "本地传输目标路径")?;
     let temp_destination = local_resume_part_path(&destination);
     let mut copied =
         local_resume_offset_matching_local_source(&mut input, &temp_destination, total, progress)?;
@@ -15385,10 +15382,8 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
             .parse::<u64>()
             .map_err(|error| format!("SCP invalid file size: {error}"))?;
 
-        if let Some(parent) = Path::new(local_destination).parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
-        }
         let target = Path::new(local_destination);
+        prepare_local_transfer_target_path(target, "SCP 本地目标路径")?;
         let temp_target = local_resume_part_path(target);
         local_resume_offset(&temp_target, size)?;
         // Standard scp -f always streams from byte zero and provides no source
@@ -40252,6 +40247,37 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             write_local_transfer_file(nested_target.to_str().unwrap(), b"nested").unwrap_err();
         assert!(error.contains("符号链接"), "{error}");
         assert!(!protected_dir.join("nested.bin").exists());
+
+        let copy_source = root.join("copy-source.bin");
+        fs::write(&copy_source, b"copy payload").unwrap();
+        let copied_target = linked_dir.join("copied.bin");
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .transfers
+            .push(test_transfer_task(&profile.id, TransferStatus::Running));
+        let progress = test_transfer_progress_context(
+            &state,
+            "transfer-commit-test",
+            Arc::new(AtomicBool::new(false)),
+        );
+        let error = tauri::async_runtime::block_on(copy_local_file_for_transfer(
+            copy_source.to_str().unwrap(),
+            copied_target.to_str().unwrap(),
+            &progress,
+        ))
+        .unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert!(!protected_dir.join("copied.bin").exists());
+
+        let scp_target = linked_dir.join("scp.bin");
+        let error =
+            prepare_local_transfer_target_path(&scp_target, "SCP 本地目标路径").unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert!(!protected_dir.join("scp.bin").exists());
 
         let missing_parent = root.join("missing-parent").join("payload.bin");
         prepare_local_transfer_target_path(&missing_parent, "本地传输目标路径").unwrap();
