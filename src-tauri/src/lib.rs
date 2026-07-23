@@ -123,6 +123,7 @@ impl russh::Signer for PortMateAgentSigner {
 
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "4";
+const STATE_FILE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
@@ -720,14 +721,28 @@ fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotVersion, Str
         digest.update(store_json.as_bytes());
         return Ok(StoreSnapshotVersion::Sha256(digest.finalize().into()));
     }
-    let bytes = match fs::read(store_path) {
-        Ok(bytes) => bytes,
+    let digest = match sha256_file_digest(store_path) {
+        Ok(digest) => digest,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(StoreSnapshotVersion::Missing);
         }
         Err(error) => return Err(format!("无法读取 PortMate store 指纹: {error}")),
     };
-    Ok(StoreSnapshotVersion::Sha256(Sha256::digest(bytes).into()))
+    Ok(StoreSnapshotVersion::Sha256(digest))
+}
+
+fn sha256_file_digest(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; STATE_FILE_HASH_BUFFER_BYTES];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn verify_store_snapshot_is_current(store_path: &Path) -> Result<StoreSnapshotVersion, String> {
@@ -771,16 +786,14 @@ fn lock_portable_vault_snapshot(snapshot_path: &Path) -> Result<fs::File, String
 fn portable_vault_snapshot_version(
     snapshot_path: &Path,
 ) -> Result<PortableVaultSnapshotVersion, String> {
-    let bytes = match fs::read(snapshot_path) {
-        Ok(bytes) => bytes,
+    let digest = match sha256_file_digest(snapshot_path) {
+        Ok(digest) => digest,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(PortableVaultSnapshotVersion::Missing);
         }
         Err(error) => return Err(format!("无法读取 portable vault snapshot 指纹: {error}")),
     };
-    Ok(PortableVaultSnapshotVersion::Sha256(
-        Sha256::digest(bytes).into(),
-    ))
+    Ok(PortableVaultSnapshotVersion::Sha256(digest))
 }
 
 impl PortableStronghold {
@@ -22391,8 +22404,12 @@ fn portable_vault_context() -> Result<&'static PortableVaultContext, String> {
 }
 
 fn read_portable_vault_salt(salt_path: &Path) -> Result<Vec<u8>, String> {
-    let salt =
-        fs::read(salt_path).map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
+    let file = fs::File::open(salt_path)
+        .map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
+    let mut salt = Vec::with_capacity(portmate_kdf::SALT_LENGTH.saturating_add(1));
+    file.take(portmate_kdf::SALT_LENGTH.saturating_add(1) as u64)
+        .read_to_end(&mut salt)
+        .map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
     if salt.len() != portmate_kdf::SALT_LENGTH {
         return Err(format!(
             "portable vault salt 长度无效: expected {}, got {}",
@@ -38265,6 +38282,40 @@ __PORTMATE_DISKS__
             "legacy writer"
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn state_file_hash_matches_in_memory_sha256_across_reader_chunks() {
+        let root = std::env::temp_dir().join(format!("portmate-file-hash-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("snapshot.bin");
+        let bytes = (0..STATE_FILE_HASH_BUFFER_BYTES.saturating_add(17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+
+        assert_eq!(
+            sha256_file_digest(&path).unwrap(),
+            <[u8; 32]>::from(Sha256::digest(&bytes))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_vault_salt_rejects_data_after_its_fixed_length() {
+        let root = std::env::temp_dir().join(format!("portmate-salt-length-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+        fs::write(
+            &path,
+            vec![0_u8; portmate_kdf::SALT_LENGTH.saturating_add(1)],
+        )
+        .unwrap();
+
+        let error = read_portable_vault_salt(&path).unwrap_err();
+        assert!(error.contains("长度无效"), "{error}");
+        assert!(error.contains("got"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 
