@@ -1236,6 +1236,40 @@ try {
   "a stale file listing replaced the latest directory response");
 
   const localFilePane = page.locator('.file-browser-pane[data-file-pane="local"]');
+  const fileBack = localFilePane.getByRole("button", { name: "本地后退", exact: true });
+  const fileForward = localFilePane.getByRole("button", { name: "本地前进", exact: true });
+  assert(!await fileBack.isDisabled() && await fileForward.isDisabled(),
+    "successful file navigation did not expose the expected history controls");
+  await page.evaluate(() => { window.__deferFileLoads = true; });
+  await fileBack.click();
+  await page.waitForFunction(() => window.__pendingFileLoads.some((request) => request.args.request.path === "/"));
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.filter((request) => request.args.request.path === "/").at(-1);
+    pending.resolve([{ name: "ROOT-RESULT", path: "/ROOT-RESULT", isDir: false, size: 4, modified: null }]);
+    window.__deferFileLoads = false;
+  });
+  await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "ROOT-RESULT" }).waitFor();
+  assert(await localFilePath.inputValue() === "/"
+    && await fileBack.isDisabled()
+    && !await fileForward.isDisabled(),
+  "file history back navigation did not restore the previous loaded path");
+  await page.evaluate(() => { window.__deferFileLoads = true; });
+  await fileForward.click();
+  await page.waitForFunction(() => window.__pendingFileLoads.filter((request) => request.args.request.path === "/portmate-fast").length >= 2);
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.filter((request) => request.args.request.path === "/portmate-fast").at(-1);
+    pending.resolve([
+      { name: "FAST-RESULT", path: "/portmate-fast/FAST-RESULT", isDir: false, size: 4, modified: null },
+      { name: "SECOND-RESULT", path: "/portmate-fast/SECOND-RESULT", isDir: false, size: 6, modified: null },
+    ]);
+    window.__deferFileLoads = false;
+  });
+  await page.locator('.file-browser-pane[data-file-pane="local"] .file-row', { hasText: "FAST-RESULT" }).waitFor();
+  assert(await localFilePath.inputValue() === "/portmate-fast"
+    && !await fileBack.isDisabled()
+    && await fileForward.isDisabled(),
+  "file history forward navigation did not restore the latest loaded path");
+
   const filePropertiesButton = localFilePane.getByRole("button", { name: "文件属性", exact: true });
   await page.evaluate(() => { window.__deferFileProperties = true; });
   await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
