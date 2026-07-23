@@ -28862,11 +28862,7 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
             current_interface = Some(name);
         }
 
-        let name = if fields.len() >= 4 && (fields[2] == "inet" || fields[2] == "inet6") {
-            Some(normalize_linux_sysmon_interface_name(fields[1]))
-        } else {
-            current_interface.clone()
-        };
+        let name = linux_sysmon_address_line_name(&fields).or_else(|| current_interface.clone());
         let address = fields
             .iter()
             .enumerate()
@@ -28924,7 +28920,35 @@ fn linux_sysmon_interface_header_name(trimmed: &str, fields: &[&str]) -> Option<
     let first = fields.first()?;
     let rest = fields.get(1).copied().unwrap_or_default();
     let name = normalize_linux_sysmon_interface_name(first);
-    (!name.is_empty() && (rest.starts_with("flags=") || rest == "Link")).then_some(name)
+    (!name.is_empty()
+        && (rest.starts_with("flags=") || rest == "Link" || rest == "inet" || rest == "inet6"))
+        .then_some(name)
+}
+
+fn linux_sysmon_address_line_name(fields: &[&str]) -> Option<String> {
+    if fields.len() >= 4
+        && fields[0]
+            .trim_end_matches(':')
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        && (fields[2] == "inet" || fields[2] == "inet6")
+    {
+        let name = normalize_linux_sysmon_interface_name(fields[1]);
+        return (!name.is_empty()).then_some(name);
+    }
+
+    let first = fields.first().copied()?;
+    if first == "inet" || first == "inet6" {
+        return None;
+    }
+    let has_address = fields
+        .iter()
+        .any(|field| *field == "inet" || *field == "inet6");
+    if !has_address {
+        return None;
+    }
+    let name = normalize_linux_sysmon_interface_name(first);
+    (!name.is_empty() && !matches!(name.as_str(), "inet" | "inet6" | "link")).then_some(name)
 }
 
 fn normalize_linux_sysmon_interface_name(value: &str) -> String {
@@ -34296,6 +34320,27 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             vec!["127.0.0.1"]
         );
         assert!(!ifconfig_addresses.contains_key("ether"));
+
+        let compact_ifconfig_addresses = parse_linux_network_addresses(
+            r#"br-lan    Link encap:Ethernet  HWaddr 02:11:22:33:44:55
+br-lan    inet 192.168.1.1  Bcast:192.168.1.255  Mask:255.255.255.0
+br-lan    inet6 fe80::211:22ff:fe33:4455/64 Scope:Link
+eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
+        );
+        assert_eq!(
+            compact_ifconfig_addresses
+                .get("br-lan")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["192.168.1.1", "fe80::211:22ff:fe33:4455/64"]
+        );
+        assert_eq!(
+            compact_ifconfig_addresses
+                .get("eth0")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["10.0.0.2"]
+        );
 
         assert_eq!(
             parse_load_average("1.25 0.50 0.25 1/10 1"),
