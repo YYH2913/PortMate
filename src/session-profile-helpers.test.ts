@@ -3,6 +3,7 @@ import {
   convertDraftProtocol,
   createOpenSshImportConnection,
   createPuttyImportConnection,
+  createShellImportConnection,
   createSerialConnection,
   createSshConnection,
   formatSshTarget,
@@ -207,5 +208,17 @@ describe("session profile helpers", () => {
       flowControl: "hardware",
     });
     expect(raw).toMatchObject({ kind: "tcp", host: "raw.example.test", port: 9000 });
+  });
+
+  it("translates a discovered local Shell into the existing PTY connection model", () => {
+    const connection = createShellImportConnection({
+      id: "shell-1-/usr/bin/zsh",
+      name: "zsh",
+      program: "/usr/bin/zsh",
+      args: [],
+      warnings: [],
+    });
+
+    expect(connection).toEqual({ kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null });
   });
 });

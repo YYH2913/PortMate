@@ -5,6 +5,7 @@ import { sshConnectionDefaults } from "./ssh-connection-settings";
 import { tcpConnectionDefaults } from "./tcp-connection-settings";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
+import type { ShellSessionImportCandidate } from "./shell-session-import";
 import type {
   ConnectionConfig,
   HostKeyPolicy,
@@ -162,6 +163,15 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
     proxy: candidate.proxy
       ? { ...connection.proxy, ...candidate.proxy, enabled: true }
       : connection.proxy,
+  };
+}
+
+export function createShellImportConnection(candidate: ShellSessionImportCandidate): Extract<ConnectionConfig, { kind: "shell" }> {
+  return {
+    ...createShellConnection(),
+    kind: "shell",
+    program: candidate.program,
+    args: [...candidate.args],
   };
 }
 
