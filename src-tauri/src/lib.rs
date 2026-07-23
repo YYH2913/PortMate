@@ -342,29 +342,55 @@ $disks = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -E
 
 $rawNetworks = @{}
 @(Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue) |
-    ForEach-Object { $rawNetworks[[string]$_.Name] = $_ }
+    ForEach-Object { $rawNetworks[([string]$_.Name).Trim()] = $_ }
 $ipAddresses = @{}
 @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue) |
     ForEach-Object {
         $addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 8)
-        if ($addresses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$_.Description)) {
-            $ipAddresses[[string]$_.Description] = $addresses
+        $description = ([string]$_.Description).Trim()
+        if ($addresses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($description)) {
+            $ipAddresses[$description] = $addresses
         }
     }
-$networkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
-    Sort-Object -Property @{Expression = {[uint64]$_.BytesReceivedPersec + [uint64]$_.BytesSentPersec}; Descending = $true} |
-    Select-Object -First 128 |
+$matchedIpAddressNames = @{}
+$performanceNetworkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
     ForEach-Object {
-        $raw = $rawNetworks[[string]$_.Name]
+        $name = ([string]$_.Name).Trim()
+        $raw = $rawNetworks[$name]
+        $addresses = if ($ipAddresses.ContainsKey($name)) {
+            $matchedIpAddressNames[$name] = $true
+            @($ipAddresses[$name])
+        } else {
+            @()
+        }
         [ordered]@{
-            name = [string]$_.Name
-            addresses = if ($ipAddresses.ContainsKey([string]$_.Name)) { @($ipAddresses[[string]$_.Name]) } else { @() }
+            name = $name
+            addresses = $addresses
             rxBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesReceivedPersec }
             txBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesSentPersec }
             rxKbps = [Math]::Max(0.0, [double]$_.BytesReceivedPersec / 1024.0)
             txKbps = [Math]::Max(0.0, [double]$_.BytesSentPersec / 1024.0)
         }
     })
+$addressOnlyNetworkInterfaces = @($ipAddresses.GetEnumerator() |
+    Where-Object { -not $matchedIpAddressNames.ContainsKey([string]$_.Key) } |
+    ForEach-Object {
+        [ordered]@{
+            name = [string]$_.Key
+            addresses = @($_.Value)
+            rxBytes = [uint64]0
+            txBytes = [uint64]0
+            rxKbps = 0.0
+            txKbps = 0.0
+        }
+    })
+$networkInterfaces = @(@($performanceNetworkInterfaces + $addressOnlyNetworkInterfaces) |
+    Sort-Object -Property @(
+        @{Expression = { if (@($_.addresses).Count -gt 0) { 0 } else { 1 } }; Ascending = $true},
+        @{Expression = {[double]$_.rxKbps + [double]$_.txKbps}; Descending = $true},
+        @{Expression = {[string]$_.name}; Ascending = $true}
+    ) |
+    Select-Object -First 128)
 
 $payload = [ordered]@{
     uptimeSeconds = $uptime
@@ -29067,25 +29093,35 @@ fn parse_remote_windows_sysmon_output_at(
     disks.sort_by(|left, right| left.mount_point.cmp(&right.mount_point));
     disks.truncate(MAX_SYSMON_DISKS);
 
-    let mut interface_names = HashSet::new();
-    let mut network_interfaces = sample
-        .network_interfaces
-        .into_iter()
-        .filter_map(|interface| {
-            let name = bounded_sysmon_label(&interface.name, 64);
-            if name.is_empty() || !interface_names.insert(name.to_ascii_lowercase()) {
-                return None;
-            }
-            Some(SysmonNetworkInterface {
-                name,
-                addresses: normalize_sysmon_addresses(interface.addresses),
-                rx_bytes: interface.rx_bytes,
-                tx_bytes: interface.tx_bytes,
-                rx_kbps: bounded_sysmon_rate(interface.rx_kbps),
-                tx_kbps: bounded_sysmon_rate(interface.tx_kbps),
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut interface_indices = HashMap::<String, usize>::new();
+    let mut network_interfaces = Vec::<SysmonNetworkInterface>::new();
+    for interface in sample.network_interfaces {
+        let name = bounded_sysmon_label(&interface.name, 64);
+        if name.is_empty() {
+            continue;
+        }
+        let addresses = normalize_sysmon_addresses(interface.addresses);
+        let key = name.to_ascii_lowercase();
+        if let Some(index) = interface_indices.get(&key).copied() {
+            let merged_addresses = network_interfaces[index]
+                .addresses
+                .iter()
+                .cloned()
+                .chain(addresses)
+                .collect();
+            network_interfaces[index].addresses = normalize_sysmon_addresses(merged_addresses);
+            continue;
+        }
+        interface_indices.insert(key, network_interfaces.len());
+        network_interfaces.push(SysmonNetworkInterface {
+            name,
+            addresses,
+            rx_bytes: interface.rx_bytes,
+            tx_bytes: interface.tx_bytes,
+            rx_kbps: bounded_sysmon_rate(interface.rx_kbps),
+            tx_kbps: bounded_sysmon_rate(interface.tx_kbps),
+        });
+    }
     sort_sysmon_network_interfaces(&mut network_interfaces);
     network_interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
@@ -35891,6 +35927,9 @@ __PORTMATE_DISKS__
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 8"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 16"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 128"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("$matchedIpAddressNames"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("$addressOnlyNetworkInterfaces"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("addresses = @($_.Value)"));
         assert_eq!(
             remote_sysmon_platform_label("\r\nLinux\r\n").as_deref(),
             Some("Linux")
@@ -35941,6 +35980,14 @@ __PORTMATE_DISKS__
             "rxKbps": 999.0,
             "txKbps": 999.0,
         }));
+        network_interfaces.push(serde_json::json!({
+            "name": format!(" nic-0-{} ", "x".repeat(80)),
+            "addresses": ["198.51.100.9", "2001:db8::9", "198.51.100.9"],
+            "rxBytes": 0,
+            "txBytes": 0,
+            "rxKbps": 0.0,
+            "txKbps": 0.0,
+        }));
         let payload = serde_json::json!({
             "uptimeSeconds": 123,
             "cpuPercent": 150.0,
@@ -35990,7 +36037,13 @@ __PORTMATE_DISKS__
                 .len(),
             snapshot.network_interfaces.len()
         );
-        assert_eq!((snapshot.rx_kbps, snapshot.tx_kbps), (560.0, 280.0));
+        let nic_zero = snapshot
+            .network_interfaces
+            .iter()
+            .find(|interface| interface.name.starts_with("nic-0-"))
+            .unwrap();
+        assert_eq!(nic_zero.addresses, vec!["198.51.100.9", "2001:db8::9"]);
+        assert_eq!((snapshot.rx_kbps, snapshot.tx_kbps), (558.0, 279.0));
         assert!(parse_remote_windows_sysmon_output("windows-session", "{}").is_err());
     }
 
