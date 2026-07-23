@@ -32,8 +32,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use socket2::{SockRef, TcpKeepalive};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+#[cfg(target_os = "linux")]
+use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
+#[cfg(target_os = "linux")]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -28808,6 +28812,11 @@ fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
 
 #[cfg(target_os = "linux")]
 fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
+    let native_addresses = read_linux_network_addresses_from_getifaddrs();
+    if !native_addresses.is_empty() {
+        return native_addresses;
+    }
+
     let commands: [(&str, &[&str]); 3] = [
         ("ip", &["-o", "addr", "show"]),
         ("ip", &["addr", "show"]),
@@ -28818,6 +28827,132 @@ fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
             .into_iter()
             .filter_map(|(program, args)| exec_sync_sysmon_command(program, args)),
     )
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxInterfaceAddressList(*mut libc::ifaddrs);
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxInterfaceAddressList {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // A successful getifaddrs call transfers this allocation to freeifaddrs.
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_network_addresses_from_getifaddrs() -> BTreeMap<String, Vec<String>> {
+    let mut raw_addresses = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut raw_addresses) } != 0 || raw_addresses.is_null() {
+        return BTreeMap::new();
+    }
+    let addresses_guard = LinuxInterfaceAddressList(raw_addresses);
+    let mut addresses = BTreeMap::<String, Vec<String>>::new();
+    let mut current = addresses_guard.0;
+    while !current.is_null() {
+        // getifaddrs returns a null-terminated linked list whose entries remain valid until freeifaddrs.
+        let entry = unsafe { &*current };
+        current = entry.ifa_next;
+        if entry.ifa_name.is_null() || entry.ifa_addr.is_null() {
+            continue;
+        }
+        let name = unsafe { CStr::from_ptr(entry.ifa_name) }.to_string_lossy();
+        let name = normalize_linux_sysmon_interface_name(&name);
+        if name.is_empty() {
+            continue;
+        }
+        let Some(address) = linux_sysmon_interface_address(
+            entry.ifa_addr.cast_const(),
+            entry.ifa_netmask.cast_const(),
+        ) else {
+            continue;
+        };
+        let interface_addresses = addresses.entry(name).or_default();
+        if interface_addresses.len() < 8 && !interface_addresses.contains(&address) {
+            interface_addresses.push(address);
+        }
+    }
+    addresses
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sysmon_interface_address(
+    address: *const libc::sockaddr,
+    netmask: *const libc::sockaddr,
+) -> Option<String> {
+    if address.is_null() {
+        return None;
+    }
+    let family = unsafe { (*address).sa_family as libc::c_int };
+    match family {
+        libc::AF_INET => {
+            let socket = unsafe { &*address.cast::<libc::sockaddr_in>() };
+            let address = Ipv4Addr::from(socket.sin_addr.s_addr.to_ne_bytes()).to_string();
+            Some(append_linux_sysmon_prefix(
+                address,
+                linux_sysmon_netmask_prefix(netmask, family),
+            ))
+        }
+        libc::AF_INET6 => {
+            let socket = unsafe { &*address.cast::<libc::sockaddr_in6>() };
+            let address = Ipv6Addr::from(socket.sin6_addr.s6_addr).to_string();
+            Some(append_linux_sysmon_prefix(
+                address,
+                linux_sysmon_netmask_prefix(netmask, family),
+            ))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn append_linux_sysmon_prefix(address: String, prefix: Option<u8>) -> String {
+    match prefix {
+        Some(prefix) => format!("{address}/{prefix}"),
+        None => address,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sysmon_netmask_prefix(
+    netmask: *const libc::sockaddr,
+    expected_family: libc::c_int,
+) -> Option<u8> {
+    if netmask.is_null() || unsafe { (*netmask).sa_family as libc::c_int } != expected_family {
+        return None;
+    }
+    match expected_family {
+        libc::AF_INET => {
+            let socket = unsafe { &*netmask.cast::<libc::sockaddr_in>() };
+            linux_sysmon_prefix_length(&socket.sin_addr.s_addr.to_ne_bytes())
+        }
+        libc::AF_INET6 => {
+            let socket = unsafe { &*netmask.cast::<libc::sockaddr_in6>() };
+            linux_sysmon_prefix_length(&socket.sin6_addr.s6_addr)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sysmon_prefix_length(mask: &[u8]) -> Option<u8> {
+    let mut prefix = 0_u8;
+    let mut encountered_zero = false;
+    for byte in mask {
+        for bit in (0..8).rev() {
+            if byte & (1_u8 << bit) != 0 {
+                if encountered_zero {
+                    return None;
+                }
+                prefix = prefix.checked_add(1)?;
+            } else {
+                encountered_zero = true;
+            }
+        }
+    }
+    Some(prefix)
 }
 
 fn first_nonempty_linux_network_addresses(
@@ -34721,6 +34856,22 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert!(!snapshot.processes.is_empty());
         assert!(!snapshot.disks.is_empty());
         assert!(!snapshot.network_interfaces.is_empty());
+        assert!(snapshot
+            .network_interfaces
+            .iter()
+            .any(|interface| !interface.addresses.is_empty()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_linux_sysmon_native_addresses_do_not_require_cli_tools() {
+        let addresses = read_linux_network_addresses_from_getifaddrs();
+        assert!(addresses
+            .values()
+            .flatten()
+            .any(|address| address == "127.0.0.1/8" || address == "::1/128"));
+        assert_eq!(linux_sysmon_prefix_length(&[255, 255, 255, 0]), Some(24));
+        assert_eq!(linux_sysmon_prefix_length(&[255, 0, 255, 0]), None);
     }
 
     #[cfg(target_os = "linux")]
