@@ -772,6 +772,8 @@ pub struct SysmonDisk {
 #[serde(rename_all = "camelCase")]
 pub struct SysmonNetworkInterface {
     pub name: String,
+    #[serde(default)]
+    pub addresses: Vec<String>,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub rx_kbps: f32,

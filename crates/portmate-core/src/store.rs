@@ -2361,6 +2361,7 @@ mod tests {
                 }],
                 network_interfaces: vec![SysmonNetworkInterface {
                     name: "customer-private-interface".to_string(),
+                    addresses: vec!["10.0.0.25/24".to_string()],
                     rx_bytes: 100,
                     tx_bytes: 200,
                     rx_kbps: 3.5,
@@ -2402,6 +2403,7 @@ mod tests {
                 "/dev/mapper/private-filesystem",
                 "/srv/private-mount",
                 "customer-private-interface",
+                "10.0.0.25/24",
             ];
 
             for sensitive in sensitive_values {
@@ -2443,6 +2445,10 @@ mod tests {
             assert_eq!(
                 redacted["sysmon"]["networkInterfaces"][0]["name"],
                 "<redacted-interface>"
+            );
+            assert_eq!(
+                redacted["sysmon"]["networkInterfaces"][0]["addresses"][0],
+                "<redacted-address>"
             );
             assert_eq!(
                 redacted["summary"]["profile"]["triggers"][0]["actions"][0]["text"],

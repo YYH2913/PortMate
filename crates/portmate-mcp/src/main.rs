@@ -2268,6 +2268,7 @@ mod tests {
             }],
             network_interfaces: vec![portmate_core::SysmonNetworkInterface {
                 name: "customer-private-interface".to_string(),
+                addresses: vec!["10.0.0.25/24".to_string()],
                 rx_bytes: 100,
                 tx_bytes: 200,
                 rx_kbps: 3.5,

@@ -457,6 +457,7 @@ export interface SysmonDisk {
 
 export interface SysmonNetworkInterface {
   name: string;
+  addresses: string[];
   rxBytes: number;
   txBytes: number;
   rxKbps: number;

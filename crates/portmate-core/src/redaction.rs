@@ -144,6 +144,11 @@ pub fn redact_sysmon_snapshot(mut snapshot: SysmonSnapshot) -> SysmonSnapshot {
     }
     for interface in &mut snapshot.network_interfaces {
         interface.name = "<redacted-interface>".to_string();
+        interface.addresses = interface
+            .addresses
+            .iter()
+            .map(|_| "<redacted-address>".to_string())
+            .collect();
     }
     snapshot
 }

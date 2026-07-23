@@ -6798,10 +6798,10 @@ fieldset label {
   .sysmon-disk-table td:nth-child(2),
   .sysmon-disk-table th:nth-child(5),
   .sysmon-disk-table td:nth-child(5),
-  .sysmon-network-table th:nth-child(4),
-  .sysmon-network-table td:nth-child(4),
   .sysmon-network-table th:nth-child(5),
-  .sysmon-network-table td:nth-child(5) {
+  .sysmon-network-table td:nth-child(5),
+  .sysmon-network-table th:nth-child(6),
+  .sysmon-network-table td:nth-child(6) {
     display: none;
   }
 

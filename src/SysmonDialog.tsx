@@ -145,11 +145,11 @@ export default function SysmonDialog({
             ) : null}
             {tab === "network" ? (
               <table className="sysmon-table sysmon-network-table">
-                <thead><tr><th>接口</th><th>接收速率</th><th>发送速率</th><th>已接收</th><th>已发送</th></tr></thead>
+                <thead><tr><th>接口</th><th>IP 地址</th><th>接收速率</th><th>发送速率</th><th>已接收</th><th>已发送</th></tr></thead>
                 <tbody>
                   {interfaces.map((item) => (
                     <tr key={item.name}>
-                      <td title={item.name}>{item.name}</td><td>{item.rxKbps.toFixed(1)} KiB/s</td><td>{item.txKbps.toFixed(1)} KiB/s</td><td>{formatBytes(item.rxBytes)}</td><td>{formatBytes(item.txBytes)}</td>
+                      <td title={item.name}>{item.name}</td><td title={(item.addresses ?? []).join(" / ")}>{formatNetworkAddresses(item.addresses)}</td><td>{item.rxKbps.toFixed(1)} KiB/s</td><td>{item.txKbps.toFixed(1)} KiB/s</td><td>{formatBytes(item.rxBytes)}</td><td>{formatBytes(item.txBytes)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -320,6 +320,13 @@ function formatSysmonUptime(seconds: number) {
   if (hours) return `${hours}h ${minutes}m`;
   if (minutes) return `${minutes}m ${wholeSeconds % 60}s`;
   return `${wholeSeconds}s`;
+}
+
+function formatNetworkAddresses(addresses: string[] | undefined) {
+  const filtered = (addresses ?? []).filter(Boolean);
+  if (!filtered.length) return "-";
+  if (filtered.length <= 2) return filtered.join(" · ");
+  return filtered.slice(0, 2).join(" · ") + " +" + (filtered.length - 2);
 }
 
 function formatSysmonTrendValue(snapshot: SysmonSnapshot, mode: SysmonTrendMode, series: 0 | 1) {

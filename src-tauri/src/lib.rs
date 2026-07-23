@@ -38,7 +38,7 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
@@ -273,7 +273,7 @@ const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; (ip -o addr show 2>/dev/null || ip addr show 2>/dev/null || ifconfig -a 2>/dev/null) | head -n 96; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
@@ -335,6 +335,14 @@ $disks = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -E
 $rawNetworks = @{}
 @(Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue) |
     ForEach-Object { $rawNetworks[[string]$_.Name] = $_ }
+$ipAddresses = @{}
+@(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue) |
+    ForEach-Object {
+        $addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 8)
+        if ($addresses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$_.Description)) {
+            $ipAddresses[[string]$_.Description] = $addresses
+        }
+    }
 $networkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
     Sort-Object -Property @{Expression = {[uint64]$_.BytesReceivedPersec + [uint64]$_.BytesSentPersec}; Descending = $true} |
     Select-Object -First 32 |
@@ -342,6 +350,7 @@ $networkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_
         $raw = $rawNetworks[[string]$_.Name]
         [ordered]@{
             name = [string]$_.Name
+            addresses = if ($ipAddresses.ContainsKey([string]$_.Name)) { @($ipAddresses[[string]$_.Name]) } else { @() }
             rxBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesReceivedPersec }
             txBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesSentPersec }
             rxKbps = [Math]::Max(0.0, [double]$_.BytesReceivedPersec / 1024.0)
@@ -27805,6 +27814,7 @@ fn collect_local_linux_sysmon(session_id: &str) -> SysmonSnapshot {
     let network_interfaces = network_interface_rates(
         net_a.unwrap_or_default(),
         net_b.unwrap_or_default(),
+        read_network_addresses(),
         LOCAL_SYSMON_SAMPLE_SECONDS,
     );
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
@@ -28154,7 +28164,8 @@ fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSn
     let stat1 = section_between(output, "__PORTMATE_STAT1__", "__PORTMATE_NET1__");
     let net1 = section_between(output, "__PORTMATE_NET1__", "__PORTMATE_STAT2__");
     let stat2 = section_between(output, "__PORTMATE_STAT2__", "__PORTMATE_NET2__");
-    let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_LOADAVG__");
+    let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_ADDRS__");
+    let address_output = section_between(output, "__PORTMATE_ADDRS__", "__PORTMATE_LOADAVG__");
     let loadavg = section_between(output, "__PORTMATE_LOADAVG__", "__PORTMATE_PROCESSES__");
     let processes = section_between(output, "__PORTMATE_PROCESSES__", "__PORTMATE_DISKS__");
     let disks = output
@@ -28169,6 +28180,7 @@ fn parse_remote_sysmon_output(session_id: &str, output: &str) -> Result<SysmonSn
     let network_interfaces = network_interface_rates(
         parse_network_interfaces(net1),
         parse_network_interfaces(net2),
+        parse_linux_network_addresses(address_output),
         REMOTE_SYSMON_SAMPLE_SECONDS,
     );
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
@@ -28228,6 +28240,7 @@ fn parse_remote_macos_sysmon_output_at(
     let network_interfaces = network_interface_rates(
         parse_bsd_network_interfaces(net1),
         parse_bsd_network_interfaces(net2),
+        parse_bsd_network_addresses(net2),
         REMOTE_SYSMON_SAMPLE_SECONDS,
     );
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
@@ -28291,6 +28304,7 @@ fn parse_remote_freebsd_sysmon_output_at(
     let network_interfaces = network_interface_rates(
         parse_bsd_network_interfaces(net1),
         parse_bsd_network_interfaces(net2),
+        parse_bsd_network_addresses(net2),
         REMOTE_SYSMON_SAMPLE_SECONDS,
     );
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
@@ -28353,6 +28367,8 @@ struct RemoteWindowsSysmonDisk {
 #[serde(rename_all = "camelCase")]
 struct RemoteWindowsSysmonNetworkInterface {
     name: String,
+    #[serde(default)]
+    addresses: Vec<String>,
     rx_bytes: u64,
     tx_bytes: u64,
     rx_kbps: f32,
@@ -28458,6 +28474,7 @@ fn parse_remote_windows_sysmon_output_at(
             }
             Some(SysmonNetworkInterface {
                 name,
+                addresses: normalize_sysmon_addresses(interface.addresses),
                 rx_bytes: interface.rx_bytes,
                 tx_bytes: interface.tx_bytes,
                 rx_kbps: bounded_sysmon_rate(interface.rx_kbps),
@@ -28743,6 +28760,34 @@ fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
     Some(parse_network_interfaces(&raw))
 }
 
+#[cfg(target_os = "linux")]
+fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
+    exec_sync_sysmon_command("ip", &["-o", "addr", "show"])
+        .or_else(|| exec_sync_sysmon_command("ip", &["addr", "show"]))
+        .map(|raw| parse_linux_network_addresses(&raw))
+        .or_else(|| {
+            exec_sync_sysmon_command("ifconfig", &["-a"])
+                .map(|raw| parse_linux_network_addresses(&raw))
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn exec_sync_sysmon_command(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .chars()
+            .take(MAX_LOCAL_SYSMON_STDOUT_BYTES)
+            .collect()
+    })
+}
+
 fn parse_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
     let mut interfaces = BTreeMap::new();
     for line in raw.lines().skip(2) {
@@ -28761,6 +28806,78 @@ fn parse_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
         }
     }
     interfaces
+}
+
+fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let mut addresses = BTreeMap::<String, Vec<String>>::new();
+    let mut current_interface: Option<String> = None;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        if let Some((_, rest)) = trimmed.split_once(": ") {
+            if let Some(name) = rest.split_whitespace().next() {
+                let name = bounded_sysmon_label(name.trim_end_matches(':'), 64);
+                if !name.is_empty() && !matches!(name.as_str(), "inet" | "inet6" | "link") {
+                    current_interface = Some(name);
+                }
+            }
+        } else if !trimmed.starts_with("inet ") && !trimmed.starts_with("inet6 ") {
+            if let Some(name) = fields.first() {
+                let name = bounded_sysmon_label(name.trim_end_matches(':'), 64);
+                if !name.is_empty() {
+                    current_interface = Some(name);
+                }
+            }
+        }
+
+        let name = if fields.len() >= 4 && (fields[2] == "inet" || fields[2] == "inet6") {
+            Some(fields[1].trim_end_matches(':'))
+        } else {
+            current_interface.as_deref()
+        };
+        let address = fields
+            .iter()
+            .enumerate()
+            .find_map(|(index, field)| {
+                if !(*field == "inet" || *field == "inet6") || index + 1 >= fields.len() {
+                    return None;
+                }
+                let next = fields[index + 1];
+                if next == "addr:" {
+                    fields.get(index + 2).copied()
+                } else {
+                    Some(next)
+                }
+            })
+            .or_else(|| {
+                fields
+                    .iter()
+                    .position(|field| *field == "addr")
+                    .and_then(|index| fields.get(index + 1).copied())
+            })
+            .or_else(|| {
+                fields.iter().find_map(|field| {
+                    field
+                        .strip_prefix("addr:")
+                        .filter(|value| !value.is_empty())
+                })
+            });
+        let (Some(name), Some(address)) = (name, address) else {
+            continue;
+        };
+        let name = bounded_sysmon_label(name, 64);
+        let Some(address) = normalize_sysmon_address(address) else {
+            continue;
+        };
+        let entry = addresses.entry(name).or_default();
+        if entry.len() < 8 && !entry.contains(&address) {
+            entry.push(address);
+        }
+    }
+    addresses
 }
 
 fn parse_bsd_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
@@ -28809,9 +28926,43 @@ fn parse_bsd_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
     interfaces
 }
 
+fn parse_bsd_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let lines = raw.lines().collect::<Vec<_>>();
+    let Some((header_index, header)) = lines.iter().enumerate().find_map(|(index, line)| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        (fields.contains(&"Name") && fields.contains(&"Address")).then_some((index, fields))
+    }) else {
+        return BTreeMap::new();
+    };
+    let Some(name_index) = header.iter().position(|field| *field == "Name") else {
+        return BTreeMap::new();
+    };
+    let Some(address_index) = header.iter().position(|field| *field == "Address") else {
+        return BTreeMap::new();
+    };
+    let minimum_fields = name_index.max(address_index) + 1;
+    let mut addresses = BTreeMap::<String, Vec<String>>::new();
+    for line in lines.into_iter().skip(header_index + 1) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < minimum_fields {
+            continue;
+        }
+        let name = bounded_sysmon_label(fields[name_index].trim_end_matches('*'), 64);
+        let Some(address) = normalize_sysmon_address(fields[address_index]) else {
+            continue;
+        };
+        let entry = addresses.entry(name).or_default();
+        if entry.len() < 8 && !entry.contains(&address) {
+            entry.push(address);
+        }
+    }
+    addresses
+}
+
 fn network_interface_rates(
     before: BTreeMap<String, (u64, u64)>,
     after: BTreeMap<String, (u64, u64)>,
+    addresses: BTreeMap<String, Vec<String>>,
     seconds: f32,
 ) -> Vec<SysmonNetworkInterface> {
     let seconds = if seconds.is_finite() && seconds > 0.0 {
@@ -28823,8 +28974,10 @@ fn network_interface_rates(
         .into_iter()
         .map(|(name, (rx_bytes, tx_bytes))| {
             let (rx_before, tx_before) = before.get(&name).copied().unwrap_or((rx_bytes, tx_bytes));
+            let interface_addresses = addresses.get(&name).cloned().unwrap_or_default();
             SysmonNetworkInterface {
                 name,
+                addresses: interface_addresses,
                 rx_bytes,
                 tx_bytes,
                 rx_kbps: rx_bytes.saturating_sub(rx_before) as f32 / 1024.0 / seconds,
@@ -28841,6 +28994,57 @@ fn network_interface_rates(
     });
     interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     interfaces
+}
+
+fn normalize_sysmon_addresses(addresses: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for address in addresses {
+        let Some(address) = normalize_sysmon_address(&address) else {
+            continue;
+        };
+        if normalized.len() < 8 && !normalized.contains(&address) {
+            normalized.push(address);
+        }
+    }
+    normalized
+}
+
+fn normalize_sysmon_address(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .strip_prefix("addr:")
+        .unwrap_or(value.trim())
+        .trim_matches(|character| matches!(character, ',' | ';' | '(' | ')' | '[' | ']'));
+    if value.is_empty()
+        || value.starts_with('<')
+        || value.contains("::")
+            && value
+                .chars()
+                .all(|character| character == ':' || character == '0')
+    {
+        return None;
+    }
+    let address = value.split('%').next().unwrap_or(value);
+    let address = bounded_sysmon_label(address, 96);
+    if is_mac_like_address(&address) {
+        return None;
+    }
+    if address.is_empty()
+        || !address
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || matches!(character, '.' | ':' | '/'))
+    {
+        return None;
+    }
+    Some(address)
+}
+
+fn is_mac_like_address(value: &str) -> bool {
+    let parts = value.split(':').collect::<Vec<_>>();
+    parts.len() == 6
+        && parts.iter().all(|part| {
+            part.len() == 2 && part.chars().all(|character| character.is_ascii_hexdigit())
+        })
 }
 
 fn aggregate_network_rates(interfaces: &[SysmonNetworkInterface]) -> (f32, f32) {
@@ -33993,10 +34197,18 @@ mod tests {
              eth0: 3072 1 0 0 0 0 0 0 4096 1 0 0 0 0 0 0\n\
              lo: 500 1 0 0 0 0 0 0 500 1 0 0 0 0 0 0\n",
         );
-        let interfaces = network_interface_rates(before, after, 2.0);
+        let addresses = parse_linux_network_addresses(
+            "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\n\
+             2: eth0    inet6 fe80::1/64 scope link\n\
+             lo        Link encap:Local Loopback\n\
+                       inet addr:127.0.0.1  Mask:255.0.0.0\n",
+        );
+        let interfaces = network_interface_rates(before, after, addresses, 2.0);
         assert_eq!(interfaces.len(), 2);
         assert_eq!(interfaces[0].name, "eth0");
+        assert_eq!(interfaces[0].addresses, vec!["192.0.2.10/24", "fe80::1/64"]);
         assert_eq!((interfaces[0].rx_kbps, interfaces[0].tx_kbps), (1.0, 1.0));
+        assert_eq!(interfaces[1].addresses, vec!["127.0.0.1"]);
         assert_eq!((interfaces[1].rx_kbps, interfaces[1].tx_kbps), (0.0, 0.0));
         assert_eq!(aggregate_network_rates(&interfaces), (1.0, 1.0));
 
