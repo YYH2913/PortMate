@@ -9833,6 +9833,12 @@ async fn transfer_file_via_local_or_scp(
     progress.check_cancelled()?;
     let source_remote = remote_path(&request.source);
     let destination_remote = remote_path(&request.destination);
+    if let Some(source) = source_remote {
+        validate_remote_transfer_path(source, "SCP 远端源路径")?;
+    }
+    if let Some(destination) = destination_remote {
+        validate_remote_transfer_path(destination, "SCP 远端目标路径")?;
+    }
 
     match (source_remote, destination_remote) {
         (None, None) => {
@@ -39608,6 +39614,19 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             validate_remote_transfer_path(r"C:\Users\operator\input.bin", "SFTP 远端源路径")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn scp_transfer_paths_reject_root_and_dot_components() {
+        for path in ["/", "//", "~", "/tmp/../input.bin", "/tmp/./input.bin"] {
+            let target_error = validate_remote_transfer_path(path, "SCP 远端目标路径")
+                .expect_err("unsafe SCP destination was accepted");
+            assert!(target_error.contains("SCP 远端目标路径"), "{target_error}");
+            let source_error = validate_remote_transfer_path(path, "SCP 远端源路径")
+                .expect_err("unsafe SCP source was accepted");
+            assert!(source_error.contains("SCP 远端源路径"), "{source_error}");
+        }
+        assert!(validate_remote_transfer_path("/tmp/portmate/", "SCP 远端目标路径").is_ok());
     }
 
     #[test]
