@@ -41,6 +41,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -256,6 +258,8 @@ const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
 #[cfg(target_os = "linux")]
 const LOCAL_LINUX_SYSMON_COMMAND_DIRECTORIES: [&str; 4] =
     ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+#[cfg(target_os = "linux")]
+const LOCAL_LINUX_ADDRESS_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const LOCAL_SYSMON_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
@@ -29553,22 +29557,119 @@ fn first_nonempty_linux_network_addresses(
 
 #[cfg(target_os = "linux")]
 fn exec_sync_sysmon_command(program: &str, args: &[&str]) -> Option<String> {
-    linux_sysmon_command_candidates(program)
-        .into_iter()
-        .find_map(|candidate| {
-            let output = Command::new(candidate)
-                .args(args)
-                .env("LC_ALL", "C")
-                .stdin(Stdio::null())
-                .output()
-                .ok()?;
-            output.status.success().then(|| {
-                String::from_utf8_lossy(&output.stdout)
-                    .chars()
-                    .take(MAX_LOCAL_SYSMON_STDOUT_BYTES)
-                    .collect()
-            })
-        })
+    let deadline = Instant::now() + LOCAL_LINUX_ADDRESS_COMMAND_TIMEOUT;
+    for candidate in linux_sysmon_command_candidates(program) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Some(output) = exec_bounded_sync_sysmon_command(
+            &candidate,
+            args,
+            remaining,
+            MAX_LOCAL_SYSMON_STDOUT_BYTES,
+        ) {
+            return Some(output);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn exec_bounded_sync_sysmon_command(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    max_bytes: usize,
+) -> Option<String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // The fallback command may be a shell wrapper. Isolate it so timeout cleanup also
+    // closes stdout inherited by any descendants before the reader can block indefinitely.
+    command.process_group(0);
+    let mut child = command.spawn().ok()?;
+    let process_id = child.id();
+    let stdout = child.stdout.take()?;
+    let (capture_sender, capture_receiver) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        let result = (|| -> std::io::Result<(Vec<u8>, bool)> {
+            let mut reader = BufReader::new(stdout);
+            let mut output = Vec::with_capacity(max_bytes.min(8192));
+            let mut overflow = false;
+            let mut chunk = [0_u8; 8192];
+            loop {
+                let count = reader.read(&mut chunk)?;
+                if count == 0 {
+                    break;
+                }
+                let available = max_bytes.saturating_sub(output.len());
+                if count > available {
+                    overflow = true;
+                }
+                if available > 0 {
+                    output.extend_from_slice(&chunk[..count.min(available)]);
+                }
+            }
+            Ok((output, overflow))
+        })();
+        let _ = capture_sender.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut status = None;
+    let mut capture = None;
+    let mut timed_out = false;
+    loop {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(next_status) => status = next_status,
+                Err(_) => timed_out = true,
+            }
+        }
+        if capture.is_none() {
+            match capture_receiver.try_recv() {
+                Ok(next_capture) => capture = Some(next_capture),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => timed_out = true,
+            }
+        }
+        if status.is_some() && capture.is_some() {
+            break;
+        }
+        if timed_out || Instant::now() >= deadline {
+            timed_out = true;
+            if process_id <= i32::MAX as u32 {
+                // The child created this process group, so descendants that inherited stdout
+                // are terminated with their command rather than holding the reader open.
+                unsafe {
+                    libc::kill(-(process_id as i32), libc::SIGKILL);
+                }
+            }
+            let _ = child.kill();
+            if status.is_none() {
+                status = child.wait().ok();
+            }
+            if capture.is_none() {
+                capture = capture_receiver
+                    .recv_timeout(Duration::from_millis(250))
+                    .ok();
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let capture = capture?;
+    let _ = reader.join();
+    let (output, overflow) = capture.ok()?;
+    if timed_out || !status.is_some_and(|status| status.success()) || overflow {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output).to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -36155,6 +36256,37 @@ __PORTMATE_DISKS__
             linux_sysmon_command_candidates("ip"),
             vec!["ip", "/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip",]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_linux_address_command_capture_bounds_output_and_runtime() {
+        assert_eq!(
+            exec_bounded_sync_sysmon_command(
+                "sh",
+                &["-c", "printf portmate"],
+                Duration::from_secs(1),
+                32,
+            )
+            .as_deref(),
+            Some("portmate")
+        );
+        assert!(exec_bounded_sync_sysmon_command(
+            "sh",
+            &["-c", "printf 12345"],
+            Duration::from_secs(1),
+            4,
+        )
+        .is_none());
+        let started = Instant::now();
+        assert!(exec_bounded_sync_sysmon_command(
+            "sh",
+            &["-c", "sleep 1"],
+            Duration::from_millis(20),
+            32,
+        )
+        .is_none());
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
