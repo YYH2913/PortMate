@@ -53,9 +53,10 @@ import { normalizeSerialConnectionSettings } from "./serial-connection-settings"
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
-import { createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, formatSshTarget } from "./session-profile-helpers";
+import { createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
+import type { ShellSessionImportCandidate } from "./shell-session-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -115,6 +116,7 @@ const LazyTerminalSettingsDialog = lazy(() => import("./TerminalSettingsDialog")
 const LazySessionSettingsDialog = lazy(() => import("./SessionSettingsDialog"));
 const LazyOpenSshConfigImportDialog = lazy(() => import("./OpenSshConfigImportDialog"));
 const LazyPuttyConfigImportDialog = lazy(() => import("./PuttyConfigImportDialog"));
+const LazyShellConfigImportDialog = lazy(() => import("./ShellConfigImportDialog"));
 const LazyFileManagerPanel = lazy(() => import("./FileManagerPanel"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -166,7 +168,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | "putty-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | "putty-import" | "shell-import" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -1416,6 +1418,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "导入 PuTTY 配置") {
       setUtilityDialog("putty-import");
+      return;
+    }
+    if (item === "导入本地 Shell") {
+      setUtilityDialog("shell-import");
       return;
     }
     if (item === "新建工作区窗口") {
@@ -2695,6 +2701,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return importSessionCandidates(candidates, createPuttyImportedProfile, (candidate) => candidate.name);
   }
 
+  async function importShellConfigCandidates(candidates: ShellSessionImportCandidate[]) {
+    return importSessionCandidates(candidates, createShellImportedProfile, (candidate) => candidate.name);
+  }
+
   async function importSessionCandidates<C extends { id: string }>(
     candidates: C[],
     createProfile: (candidate: C) => SessionProfile,
@@ -3600,6 +3610,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "putty-import" && (
         <Suspense fallback={null}>
           <LazyPuttyConfigImportDialog onImport={importPuttyConfigCandidates} onClose={() => setUtilityDialog(null)} />
+        </Suspense>
+      )}
+      {utilityDialog === "shell-import" && (
+        <Suspense fallback={null}>
+          <LazyShellConfigImportDialog onImport={importShellConfigCandidates} onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "transfer" && active && (
@@ -5165,6 +5180,16 @@ function createPuttyImportedProfile(candidate: PuttySessionImportCandidate): Ses
     name: candidate.name,
     kind: candidate.kind,
     connection: createPuttyImportConnection(candidate),
+  };
+}
+
+function createShellImportedProfile(candidate: ShellSessionImportCandidate): SessionProfile {
+  const profile = createSessionDraft();
+  return {
+    ...profile,
+    name: candidate.name,
+    kind: "shell",
+    connection: createShellImportConnection(candidate),
   };
 }
 

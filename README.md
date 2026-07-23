@@ -78,7 +78,7 @@ display work area falls back to a cascaded default instead of reopening off-scre
 
 3. Use the four top-menu groups:
 
-   - `会话`: create, import literal OpenSSH config entries, edit, connect, disconnect, and duplicate a session; the resource context menu also deletes a Profile with explicit retention boundaries
+   - `会话`: create, import literal OpenSSH config entries, PuTTY exports, or local Shell lists, edit, connect, disconnect, and duplicate a session; the resource context menu also deletes a Profile with explicit retention boundaries
    - `终端`: search, go to line, selection/key modes, synchronized/free input, and text export
    - `工作区`: toggle resource/file/history/sender dock views, Quick Bar, status bar, and layout restore
    - `工具`: transfers, terminal settings, OneKeys, quick commands, forwarding, Tmux, Sysmon, serial analysis, triggers, logs, keys, and MCP
@@ -186,6 +186,10 @@ The default workbench is terminal-first: one 256-pixel resource dock, one pane-l
 `会话 -> 新建工作区窗口` opens an independent full workbench window with its own transient pane and dock layout. It is placed as a native, movable and resizable window without overwriting the main workbench snapshot. Detached terminal panes retain their originating workbench as the command and reattach target, including windows created from another workbench.
 
 `会话 -> 导入 OpenSSH 配置` accepts pasted or selected OpenSSH config text and previews each literal `Host` entry before saving it as a normal SSH Profile. It maps `HostName`, `User`, `Port`, `HostKeyAlias`, `IdentityFile`, `ServerAliveInterval`, `ServerAliveCountMax`, `IdentitiesOnly`, `ForwardAgent`, and literal `ProxyJump` hops. Wildcard hosts, `Match`, `Include`, command-style directives, dynamic tokens, and values outside PortMate's bounds are skipped with an explicit preview warning; no external config is read or directive executed.
+
+`会话 -> 导入 PuTTY 配置` accepts pasted or selected Unix PuTTY session files and Windows `.reg` exports. It previews supported SSH, Telnet, raw TCP, and serial sessions before saving normal PortMate Profiles, mapping host/port/user, agent forwarding, HTTP CONNECT or SOCKS5 proxy metadata, and representable serial settings. It never scans the registry, imports proxy passwords, or imports `PublicKeyFile`/PuTTY `.ppk` paths; unsupported proxy modes and serial settings remain visible as warnings.
+
+`会话 -> 导入本地 Shell` accepts an `/etc/shells`-style list or a newline-separated list of absolute shell paths. It saves one local PTY Profile per safe executable path without starting it. Lines containing command arguments, shell operators, traversal segments, noninteractive programs, or duplicate paths are skipped; Windows `cmd`, `powershell`, and `pwsh` names are accepted explicitly and shown as PATH-based launchers.
 
 `会话 -> 导出终端文本` / `导出选中文本` and the matching pane-tab actions implement WindTerm-style terminal text export against the exact focused view. Full-buffer export reads XTerm's active buffer, removes terminal control sequences through the parsed cell model, joins physical rows marked as wrapped, preserves intermediate blank logical lines, and drops trailing empty rows; selection export preserves the exact selected spaces and line breaks. Both paths count UTF-8 bytes and reject empty data or content above 16 MiB before invoking the backend. The desktop backend requires a saved session, validates bounded session/view identifiers again, and writes a private file under the app data `exports/` directory through an atomic `.part` rename plus a SHA-256 sidecar (`0600` on Unix). Browser preview uses a `.txt` Blob download. Exported terminal content is never inserted into session events, logs, SQLite, or terminal input.
 

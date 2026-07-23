@@ -1001,6 +1001,25 @@ Host staging
   await puttyImportDialog.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入本地 Shell" }).click();
+  const shellImportDialog = page.locator(".session-config-import-dialog");
+  await shellImportDialog.waitFor();
+  await shellImportDialog.getByRole("textbox", { name: "Shell 列表内容", exact: true }).fill(`# /etc/shells
+/bin/zsh
+/usr/bin/bash
+/bin/bash -l`);
+  await shellImportDialog.locator(".session-import-row").first().waitFor();
+  assert(await shellImportDialog.locator(".session-import-row").count() === 2
+    && await shellImportDialog.getByRole("checkbox", { name: "导入 zsh", exact: true }).isChecked()
+    && await shellImportDialog.getByRole("checkbox", { name: "导入 bash", exact: true }).isChecked()
+    && await shellImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
+    && (await shellImportDialog.textContent()).includes("不是可直接导入的 Shell 路径"),
+  "local Shell import preview did not preserve safe shell paths and reject arguments");
+  await page.screenshot({ path: `${screenshotPrefix}-shell-import.png`, fullPage: true });
+  await shellImportDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await shellImportDialog.waitFor({ state: "detached" });
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const concurrentProfileDialog = page.locator(".session-settings-dialog");
   await concurrentProfileDialog.waitFor();
@@ -3835,6 +3854,38 @@ Host staging
   await savingPuttyImport.getByRole("button", { name: "取消", exact: true }).click();
   await savingPuttyImport.waitFor({ state: "detached" });
 
+  const shellImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入本地 Shell" }).click();
+  const savingShellImport = page.locator(".session-config-import-dialog");
+  await savingShellImport.waitFor();
+  await savingShellImport.getByRole("textbox", { name: "Shell 列表内容", exact: true }).fill("/usr/bin/zsh");
+  await savingShellImport.getByRole("button", { name: "导入", exact: true }).click();
+  await savingShellImport.locator(".dialog-note", { hasText: "已导入 1 个会话" }).waitFor();
+  const shellImportLifecycleState = await page.evaluate((start) => {
+    const call = window.__invokeCalls.slice(start).find((item) => item.command === "save_session_profile");
+    const profile = call?.args?.profile;
+    return {
+      saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
+      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      profile: profile ? {
+        name: profile.name,
+        kind: profile.kind,
+        connection: profile.connection,
+      } : null,
+    };
+  }, shellImportSaveStart);
+  assert(shellImportLifecycleState.saveCalls === 1
+    && shellImportLifecycleState.expectedProfile === null
+    && JSON.stringify(shellImportLifecycleState.profile) === JSON.stringify({
+      name: "zsh",
+      kind: "shell",
+      connection: { kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null },
+    }),
+  `local Shell import did not save the expected Profile: ${JSON.stringify(shellImportLifecycleState)}`);
+  await savingShellImport.getByRole("button", { name: "取消", exact: true }).click();
+  await savingShellImport.waitFor({ state: "detached" });
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -3874,6 +3925,7 @@ Host staging
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
     openSshImportLifecycle: openSshImportLifecycleState,
     puttyImportLifecycle: puttyImportLifecycleState,
+    shellImportLifecycle: shellImportLifecycleState,
     connectionCredentialLifecycle: {
       partialWrite: partialCredentialState,
       failedProfileSave: failedProfileCredentialState,
@@ -3922,6 +3974,7 @@ Host staging
       `${screenshotPrefix}-openssh-import.png`,
       `${screenshotPrefix}-openssh-import-mobile.png`,
       `${screenshotPrefix}-putty-import.png`,
+      `${screenshotPrefix}-shell-import.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],

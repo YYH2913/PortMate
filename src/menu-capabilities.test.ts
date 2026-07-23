@@ -32,7 +32,7 @@ describe("top menu capabilities", () => {
     for (const item of ["会话设置", "启动会话", "关闭会话", "查找", "自由输入", "传输任务", "Sysmon", "触发器"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(true);
     }
-    for (const item of ["新建会话", "导入 OpenSSH 配置", "导入 PuTTY 配置", "新建工作区窗口", "资源管理器", "终端设置", "OneKeys", "日志管理", "MCP Bridge", "关于 PortMate"] as MenuItem[]) {
+    for (const item of ["新建会话", "导入 OpenSSH 配置", "导入 PuTTY 配置", "导入本地 Shell", "新建工作区窗口", "资源管理器", "终端设置", "OneKeys", "日志管理", "MCP Bridge", "关于 PortMate"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(false);
     }
   });
