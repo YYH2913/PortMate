@@ -1200,7 +1200,7 @@ try {
       && actions.persistentLabels.every(Boolean)
       && actions.persistentIcons === 5
       && actions.overflowLabel === "更多文件操作"
-      && JSON.stringify(actions.overflowActions) === JSON.stringify(["移动到...", "重命名", "修改权限", "文件属性"])
+      && JSON.stringify(actions.overflowActions) === JSON.stringify(["复制路径", "移动到...", "重命名", "修改权限", "文件属性"])
     )),
   `file manager did not occupy the active left dock view: ${JSON.stringify(fileDockLayout)}`);
 
@@ -1326,6 +1326,11 @@ try {
   assert(filePropertiesText.includes("SECOND-RESULT") && !filePropertiesText.includes("FAST-RESULT"),
     `a stale properties response replaced the reopened inspector: ${filePropertiesText}`);
   await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
+
+  await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
+  await openFileActionOverflow();
+  await localFilePane.getByRole("button", { name: "复制路径", exact: true }).click();
+  await page.waitForFunction(() => window.__clipboardText === "/portmate-fast/FAST-RESULT");
 
   const moveCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "move_paths").length);
   await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();

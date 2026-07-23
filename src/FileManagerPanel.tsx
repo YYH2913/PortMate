@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   File,
   FilePlus,
@@ -336,6 +337,19 @@ export default function FileManagerPanel({
     }
   }
 
+  async function copySelectedPaths(remote: boolean) {
+    const panel = remote ? remotePanel : localPanel;
+    if (!panel.selected.length) return;
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("当前环境不支持写入剪贴板。");
+      }
+      await navigator.clipboard.writeText(panel.selected.map((entry) => entry.path).join("\n"));
+    } catch (error) {
+      updatePanel(remote, { error: formatError(error) });
+    }
+  }
+
   async function chmodSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
@@ -598,6 +612,7 @@ export default function FileManagerPanel({
           onDelete={() => void deleteSelected(false)}
           onRename={() => void renameSelected(false)}
           onMove={() => void moveSelected(false)}
+          onCopyPaths={() => void copySelectedPaths(false)}
           onChmod={() => void chmodSelected(false)}
           onProperties={() => void showProperties(false)}
           onTransfer={() => void (canRemote ? transferBetween(true) : startPromptTransfer(false))}
@@ -635,6 +650,7 @@ export default function FileManagerPanel({
             onDelete={() => void deleteSelected(true)}
             onRename={() => void renameSelected(true)}
             onMove={() => void moveSelected(true)}
+            onCopyPaths={() => void copySelectedPaths(true)}
             onChmod={() => void chmodSelected(true)}
             onProperties={() => void showProperties(true)}
             onTransfer={() => void transferBetween(false)}
@@ -676,6 +692,7 @@ function FileBrowserPane({
   onDelete,
   onRename,
   onMove,
+  onCopyPaths,
   onChmod,
   onProperties,
   onTransfer,
@@ -708,6 +725,7 @@ function FileBrowserPane({
   onDelete: () => void;
   onRename: () => void;
   onMove: () => void;
+  onCopyPaths: () => void;
   onChmod: () => void;
   onProperties: () => void;
   onTransfer: () => void;
@@ -744,6 +762,7 @@ function FileBrowserPane({
         <details className="file-action-overflow">
           <summary title="更多文件操作" aria-label="更多文件操作"><MoreHorizontal size={13} /></summary>
           <div className="file-action-overflow-menu">
+            <button type="button" title="复制路径" aria-label="复制路径" onClick={(event) => closeOverflowAndRun(event, onCopyPaths)} disabled={!panel.selected.length}><Copy size={13} /><span>复制路径</span></button>
             <button type="button" title="移动到..." aria-label="移动到..." onClick={(event) => closeOverflowAndRun(event, onMove)} disabled={!panel.selected.length}><FolderInput size={13} /><span>移动到...</span></button>
             <button type="button" title="重命名" aria-label="重命名" onClick={(event) => closeOverflowAndRun(event, onRename)} disabled={panel.selected.length !== 1}><Pencil size={13} /><span>重命名</span></button>
             <button type="button" title="修改权限" aria-label="修改权限" onClick={(event) => closeOverflowAndRun(event, onChmod)} disabled={panel.selected.length !== 1}><ShieldCheck size={13} /><span>修改权限</span></button>
