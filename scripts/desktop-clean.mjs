@@ -5,11 +5,9 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
 import { isProjectViteCommand, parseWindowsListeningPids, signalProcessIfRunning } from "./desktop-clean-process.mjs";
+import { assertSupportedNodeVersion } from "./ensure-node-version.mjs";
 
-const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) {
-  throw new Error(`PortMate requires Node >=22.12.0; current runtime is ${process.versions.node}. Run \`nvm use\` before starting the desktop app.`);
-}
+assertSupportedNodeVersion();
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const tauriConfig = JSON.parse(readFileSync(resolve(projectRoot, "src-tauri/tauri.conf.json"), "utf8"));
