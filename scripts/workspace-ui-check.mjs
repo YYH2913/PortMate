@@ -3346,6 +3346,9 @@ try {
   }));
   assert(workspaceWindowInitial.tabs === 0,
     `a new workspace window inherited or auto-opened a main-window view: ${JSON.stringify(workspaceWindowInitial)}`);
+  await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "还原布局", exact: true }).click();
+  await workspaceWindowPage.waitForFunction(() => document.querySelectorAll(".workspace-pane-tab").length === 0);
   await workspaceWindowPage.locator(".tree-session", { hasText: "Edge Router" }).click();
   await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Edge" }).waitFor();
   const workspaceWindowAfterOpen = await workspaceWindowPage.evaluate(() => ({

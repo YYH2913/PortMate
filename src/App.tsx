@@ -1076,15 +1076,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (gate.isCurrent("summaries", token)) {
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
         setSessions(nextSessions);
-        const restored = workspaceWindowId && !workspaceRoot
-          ? { ...emptyWorkspaceSnapshot }
-          : reconcileWorkspaceSnapshot({
-            version: 4,
-            root: workspaceRoot,
-            activePaneId,
-            activeId,
-            tabColors,
-          }, nextSessions.map((session) => session.profile.id));
+        const restored = reconcileWorkspaceSnapshot({
+          version: 4,
+          root: workspaceRoot,
+          activePaneId,
+          activeId,
+          tabColors,
+        }, nextSessions.map((session) => session.profile.id), {
+          fallbackToFirst: !workspaceWindowId,
+        });
         setWorkspaceRoot(restored.root);
         setActivePaneId(restored.activePaneId);
         setActiveId(restored.activeId);
@@ -1658,7 +1658,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       activePaneId,
       activeId,
       tabColors,
-    }, remainingSessionIds);
+    }, remainingSessionIds, { fallbackToFirst: !workspaceWindowId });
 
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions(response.sessions);
@@ -1923,17 +1923,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const restored = reconcileWorkspaceSnapshot(
       loadWorkspaceSnapshot(workspaceStorageKey),
       sessions.map((session) => session.profile.id),
+      { fallbackToFirst: !workspaceWindowId },
     );
     setWorkspaceRoot(restored.root);
     setActivePaneId(restored.activePaneId);
     setActiveId(restored.activeId);
     setTabColors(restored.tabColors);
     setZoomedPaneId("");
+    const paneCount = workspacePaneLeaves(restored.root).length;
     setNotice({
       title: "还原布局",
-      message: workspacePaneLeaves(restored.root).length <= 1
-        ? "已还原单窗格工作区。"
-        : `已还原 ${workspacePaneLeaves(restored.root).length} 个窗格。`,
+      message: paneCount === 0
+        ? "已还原空工作区。"
+        : paneCount === 1
+          ? "已还原单窗格工作区。"
+          : `已还原 ${paneCount} 个窗格。`,
     });
   }
 

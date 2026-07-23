@@ -43,6 +43,10 @@ export interface WorkspaceSnapshot {
   tabColors: Record<string, string>;
 }
 
+export interface ReconcileWorkspaceOptions {
+  fallbackToFirst?: boolean;
+}
+
 export type StartupMode = "none" | "last" | "specific";
 
 export const MAX_WORKSPACE_PANES = 16;
@@ -147,11 +151,15 @@ export function sanitizeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   };
 }
 
-export function reconcileWorkspaceSnapshot(snapshot: WorkspaceSnapshot, sessionIds: string[]): WorkspaceSnapshot {
+export function reconcileWorkspaceSnapshot(
+  snapshot: WorkspaceSnapshot,
+  sessionIds: string[],
+  options: ReconcileWorkspaceOptions = {},
+): WorkspaceSnapshot {
   const sanitized = sanitizeWorkspaceSnapshot(snapshot);
   const available = new Set(sessionIds);
   let root = reconcileWorkspaceNode(sanitized.root, available);
-  if (!root) {
+  if (!root && options.fallbackToFirst !== false) {
     const fallbackId = available.has(sanitized.activeId) ? sanitized.activeId : sessionIds[0] ?? "";
     root = fallbackId ? createWorkspacePane(fallbackId, "pane-default") : null;
   }

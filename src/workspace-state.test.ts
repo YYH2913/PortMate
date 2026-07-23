@@ -6,6 +6,7 @@ import {
   canSplitWorkspacePane,
   createWorkspacePane,
   duplicateWorkspacePaneView,
+  emptyWorkspaceSnapshot,
   MAX_WORKSPACE_DEPTH,
   MAX_WORKSPACE_GROUP_TABS,
   mergeWorkspacePaneGroups,
@@ -129,6 +130,21 @@ describe("workspace snapshots", () => {
     expect(workspacePaneLeaves(reconciled.root).map((pane) => pane.sessionId)).toEqual(["b", "c"]);
     expect(reconciled.activeId).toBe("b");
     expect(reconciled.tabColors).toEqual({ b: "#222222" });
+  });
+
+  it("can retain an intentionally empty workspace instead of opening a fallback session", () => {
+    const empty = reconcileWorkspaceSnapshot(emptyWorkspaceSnapshot, ["a", "b"], { fallbackToFirst: false });
+    const defaulted = reconcileWorkspaceSnapshot(emptyWorkspaceSnapshot, ["a", "b"]);
+    const stale = reconcileWorkspaceSnapshot(sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: { kind: "pane", id: "stale", activeViewId: "stale-view", views: [{ id: "stale-view", sessionId: "missing" }] },
+      activePaneId: "stale",
+      activeId: "missing",
+    }), ["a", "b"], { fallbackToFirst: false });
+
+    expect(empty).toEqual(emptyWorkspaceSnapshot);
+    expect(workspacePaneLeaves(defaulted.root).map((pane) => pane.sessionId)).toEqual(["a"]);
+    expect(stale).toMatchObject({ root: null, activePaneId: "", activeId: "" });
   });
 
   it("splits nested active panes, replaces bindings, clamps ratios, and collapses on close", () => {
