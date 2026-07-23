@@ -573,7 +573,7 @@ try {
             window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
           });
         }
-        if (command === "create_file") return null;
+        if (command === "create_file" || command === "move_paths") return null;
         if (command === "file_properties") {
           if (window.__deferFileProperties) {
             return new Promise((resolve) => {
@@ -1180,8 +1180,10 @@ try {
     actions: [...dock.querySelectorAll(".file-actions")].map((actions) => ({
       clientWidth: actions.clientWidth,
       scrollWidth: actions.scrollWidth,
-      labels: [...actions.querySelectorAll("button")].map((button) => button.getAttribute("aria-label")),
-      icons: actions.querySelectorAll("button svg").length,
+      persistentLabels: [...actions.querySelectorAll(":scope > button")].map((button) => button.getAttribute("aria-label")),
+      persistentIcons: actions.querySelectorAll(":scope > button svg").length,
+      overflowLabel: actions.querySelector(".file-action-overflow > summary")?.getAttribute("aria-label") ?? "",
+      overflowActions: [...actions.querySelectorAll(".file-action-overflow-menu button")].map((button) => button.getAttribute("aria-label")),
     })),
   }));
   assert(fileDockLayout.width >= 350 && fileDockLayout.width <= 366
@@ -1194,9 +1196,11 @@ try {
     && fileDockLayout.actions.length === 2
     && fileDockLayout.actions.every((actions) => (
       actions.scrollWidth <= actions.clientWidth + 1
-      && actions.labels.length === 8
-      && actions.labels.every(Boolean)
-      && actions.icons === 8
+      && actions.persistentLabels.length === 5
+      && actions.persistentLabels.every(Boolean)
+      && actions.persistentIcons === 5
+      && actions.overflowLabel === "更多文件操作"
+      && JSON.stringify(actions.overflowActions) === JSON.stringify(["移动到...", "重命名", "修改权限", "文件属性"])
     )),
   `file manager did not occupy the active left dock view: ${JSON.stringify(fileDockLayout)}`);
 
@@ -1237,6 +1241,12 @@ try {
   "a stale file listing replaced the latest directory response");
 
   const localFilePane = page.locator('.file-browser-pane[data-file-pane="local"]');
+  const fileActionOverflow = localFilePane.locator(".file-action-overflow");
+  async function openFileActionOverflow() {
+    if (await fileActionOverflow.getAttribute("open") === null) {
+      await fileActionOverflow.locator("summary").click();
+    }
+  }
   const fileBack = localFilePane.getByRole("button", { name: "本地后退", exact: true });
   const fileForward = localFilePane.getByRole("button", { name: "本地前进", exact: true });
   assert(!await fileBack.isDisabled() && await fileForward.isDisabled(),
@@ -1274,10 +1284,13 @@ try {
   const filePropertiesButton = localFilePane.getByRole("button", { name: "文件属性", exact: true });
   await page.evaluate(() => { window.__deferFileProperties = true; });
   await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
+  await openFileActionOverflow();
+  await page.screenshot({ path: `${screenshotPrefix}-file-manager-menu.png`, fullPage: true });
   await filePropertiesButton.click();
   await page.locator(".file-properties-dialog").waitFor();
   await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
   await localFilePane.locator(".file-row", { hasText: "SECOND-RESULT" }).click();
+  await openFileActionOverflow();
   await filePropertiesButton.click();
   await page.waitForFunction(() => window.__pendingFileProperties.length === 2);
   await page.evaluate(() => {
@@ -1313,6 +1326,26 @@ try {
   assert(filePropertiesText.includes("SECOND-RESULT") && !filePropertiesText.includes("FAST-RESULT"),
     `a stale properties response replaced the reopened inspector: ${filePropertiesText}`);
   await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
+
+  const moveCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "move_paths").length);
+  await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
+  await page.evaluate(() => {
+    window.__originalPrompt = window.prompt;
+    window.prompt = () => "/portmate-target";
+  });
+  await openFileActionOverflow();
+  await localFilePane.getByRole("button", { name: "移动到...", exact: true }).click();
+  await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "move_paths").length === count + 1, moveCallsBefore);
+  const moveRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "move_paths").at(-1)?.args.request);
+  await page.evaluate(() => {
+    window.prompt = window.__originalPrompt;
+    delete window.__originalPrompt;
+  });
+  assert(moveRequest?.destination === "/portmate-target"
+    && JSON.stringify(moveRequest?.paths) === JSON.stringify(["/portmate-fast/FAST-RESULT"])
+    && moveRequest?.remote === false
+    && moveRequest?.sessionId === "edge-router",
+  `Move To did not target the selected local item: ${JSON.stringify(moveRequest)}`);
 
   const newFileCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
   await page.evaluate(() => {

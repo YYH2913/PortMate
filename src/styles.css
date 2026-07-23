@@ -1958,16 +1958,17 @@ button {
 }
 
 .file-actions {
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  position: relative;
+  min-width: 0;
+  overflow: visible;
 }
 
 .file-toolbar select,
 .file-toolbar input,
 .file-toolbar button,
 .file-actions button,
-.file-actions select {
+.file-actions select,
+.file-action-overflow > summary {
   height: 24px;
   border: 1px solid var(--line);
   background: var(--control);
@@ -2005,6 +2006,54 @@ button {
   padding: 0;
   place-items: center;
   cursor: pointer;
+}
+
+.file-action-overflow {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.file-action-overflow > summary {
+  display: grid;
+  width: 26px;
+  padding: 0;
+  place-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.file-action-overflow > summary::-webkit-details-marker {
+  display: none;
+}
+
+.file-action-overflow[open] > summary {
+  border-color: var(--cyan);
+}
+
+.file-action-overflow-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  min-width: 138px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+.file-actions .file-action-overflow-menu button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  text-align: left;
+  white-space: nowrap;
 }
 
 .file-actions select {

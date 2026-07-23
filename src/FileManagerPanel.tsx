@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ChevronLeft,
@@ -8,9 +8,11 @@ import {
   File,
   FilePlus,
   Folder,
+  FolderInput,
   FolderPlus,
   Info,
   ListChecks,
+  MoreHorizontal,
   Pencil,
   RefreshCw,
   ShieldCheck,
@@ -306,6 +308,30 @@ export default function FileManagerPanel({
     }
   }
 
+  async function moveSelected(remote: boolean) {
+    const panel = remote ? remotePanel : localPanel;
+    if (!panel.selected.length) return;
+    const suggestedDestination = parentPath(panel.path, remote);
+    const destination = window.prompt(
+      "移动到目录",
+      suggestedDestination === "/" || suggestedDestination === "." ? "" : suggestedDestination,
+    );
+    if (!destination?.trim()) return;
+    try {
+      await invokeBackend("move_paths", {
+        request: {
+          sessionId: active?.profile.id ?? null,
+          paths: panel.selected.map((entry) => entry.path),
+          destination: destination.trim(),
+          remote,
+        },
+      });
+      await loadFiles(remote, panel.path, "preserve");
+    } catch (error) {
+      updatePanel(remote, { error: formatError(error) });
+    }
+  }
+
   async function chmodSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
@@ -567,6 +593,7 @@ export default function FileManagerPanel({
           onCreateFile={() => void createFile(false)}
           onDelete={() => void deleteSelected(false)}
           onRename={() => void renameSelected(false)}
+          onMove={() => void moveSelected(false)}
           onChmod={() => void chmodSelected(false)}
           onProperties={() => void showProperties(false)}
           onTransfer={() => void (canRemote ? transferBetween(true) : startPromptTransfer(false))}
@@ -603,6 +630,7 @@ export default function FileManagerPanel({
             onCreateFile={() => void createFile(true)}
             onDelete={() => void deleteSelected(true)}
             onRename={() => void renameSelected(true)}
+            onMove={() => void moveSelected(true)}
             onChmod={() => void chmodSelected(true)}
             onProperties={() => void showProperties(true)}
             onTransfer={() => void transferBetween(false)}
@@ -643,6 +671,7 @@ function FileBrowserPane({
   onCreateFile,
   onDelete,
   onRename,
+  onMove,
   onChmod,
   onProperties,
   onTransfer,
@@ -674,10 +703,16 @@ function FileBrowserPane({
   onCreateFile: () => void;
   onDelete: () => void;
   onRename: () => void;
+  onMove: () => void;
   onChmod: () => void;
   onProperties: () => void;
   onTransfer: () => void;
 }) {
+  function closeOverflowAndRun(event: ReactMouseEvent<HTMLButtonElement>, action: () => void) {
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    action();
+  }
+
   return (
     <section
       className={dropActive ? "file-browser-pane drop-active" : "file-browser-pane"}
@@ -701,10 +736,16 @@ function FileBrowserPane({
         <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} onClick={onSelectAll}><ListChecks size={13} /></button>
         <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir}><FolderPlus size={13} /></button>
         <button type="button" title="新建文件" aria-label="新建文件" onClick={onCreateFile}><FilePlus size={13} /></button>
-        <button type="button" title="重命名" aria-label="重命名" onClick={onRename} disabled={panel.selected.length !== 1}><Pencil size={13} /></button>
         <button type="button" title="删除" aria-label="删除" onClick={onDelete} disabled={!panel.selected.length}><Trash2 size={13} /></button>
-        <button type="button" title="修改权限" aria-label="修改权限" onClick={onChmod} disabled={panel.selected.length !== 1}><ShieldCheck size={13} /></button>
-        <button type="button" title="文件属性" aria-label="文件属性" onClick={onProperties} disabled={panel.selected.length !== 1}><Info size={13} /></button>
+        <details className="file-action-overflow">
+          <summary title="更多文件操作" aria-label="更多文件操作"><MoreHorizontal size={13} /></summary>
+          <div className="file-action-overflow-menu">
+            <button type="button" title="移动到..." aria-label="移动到..." onClick={(event) => closeOverflowAndRun(event, onMove)} disabled={!panel.selected.length}><FolderInput size={13} /><span>移动到...</span></button>
+            <button type="button" title="重命名" aria-label="重命名" onClick={(event) => closeOverflowAndRun(event, onRename)} disabled={panel.selected.length !== 1}><Pencil size={13} /><span>重命名</span></button>
+            <button type="button" title="修改权限" aria-label="修改权限" onClick={(event) => closeOverflowAndRun(event, onChmod)} disabled={panel.selected.length !== 1}><ShieldCheck size={13} /><span>修改权限</span></button>
+            <button type="button" title="文件属性" aria-label="文件属性" onClick={(event) => closeOverflowAndRun(event, onProperties)} disabled={panel.selected.length !== 1}><Info size={13} /><span>文件属性</span></button>
+          </div>
+        </details>
         <select value={conflictPolicy} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label="文件冲突策略" title="文件冲突策略">
           <option value="fail">停止</option>
           <option value="overwrite">覆盖</option>
