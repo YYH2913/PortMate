@@ -38,3 +38,29 @@ export function signalProcessIfRunning(pid, signal, kill = process.kill) {
     throw error;
   }
 }
+
+export async function waitForStablePortAvailability(checkAvailable, options) {
+  const {
+    timeoutMs,
+    stableMs,
+    intervalMs = 100,
+    now = Date.now,
+    sleep = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs)),
+  } = options;
+  const deadline = now() + timeoutMs;
+  let stableSince = null;
+  do {
+    if (await checkAvailable()) {
+      const checkedAt = now();
+      stableSince ??= checkedAt;
+      if (checkedAt - stableSince >= stableMs) return true;
+    } else {
+      stableSince = null;
+    }
+
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(intervalMs, remaining));
+  } while (now() <= deadline);
+  return false;
+}

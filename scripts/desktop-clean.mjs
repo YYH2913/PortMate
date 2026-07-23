@@ -4,8 +4,16 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
-import { isProjectViteCommand, parseWindowsListeningPids, signalProcessIfRunning } from "./desktop-clean-process.mjs";
+import {
+  isProjectViteCommand,
+  parseWindowsListeningPids,
+  signalProcessIfRunning,
+  waitForStablePortAvailability,
+} from "./desktop-clean-process.mjs";
 import { assertSupportedNodeVersion } from "./ensure-node-version.mjs";
+
+const PORT_RELEASE_POLL_MS = 100;
+const PORT_RELEASE_STABLE_MS = 750;
 
 assertSupportedNodeVersion();
 
@@ -33,7 +41,7 @@ child.on("exit", (code, signal) => {
 });
 
 async function releaseProjectDevPort() {
-  if (await portAvailable(devHost, devPort)) return;
+  if (await waitForPort(devHost, devPort, PORT_RELEASE_STABLE_MS)) return;
   const listeners = listeningPids(devPort);
   if (!listeners.length) {
     throw new Error(`Port ${devPort} is busy, but its listener could not be identified.`);
@@ -129,10 +137,12 @@ function portAvailable(host, port) {
 }
 
 async function waitForPort(host, port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (await portAvailable(host, port)) return true;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  } while (Date.now() < deadline);
-  return false;
+  return waitForStablePortAvailability(
+    () => portAvailable(host, port),
+    {
+      timeoutMs,
+      stableMs: PORT_RELEASE_STABLE_MS,
+      intervalMs: PORT_RELEASE_POLL_MS,
+    },
+  );
 }

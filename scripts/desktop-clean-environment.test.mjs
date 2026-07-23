@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
-import { isProjectViteCommand, parseWindowsListeningPids, signalProcessIfRunning } from "./desktop-clean-process.mjs";
+import {
+  isProjectViteCommand,
+  parseWindowsListeningPids,
+  signalProcessIfRunning,
+  waitForStablePortAvailability,
+} from "./desktop-clean-process.mjs";
 
 describe("buildDesktopEnvironment", () => {
   it("removes injected desktop variables without dropping build configuration", () => {
@@ -183,5 +188,48 @@ describe("desktop clean process ownership", () => {
     const calls = [];
     expect(signalProcessIfRunning(4210, "SIGKILL", (pid, signal) => calls.push([pid, signal]))).toBe(true);
     expect(calls).toEqual([[4210, "SIGKILL"]]);
+  });
+
+  it("requires the dev port to remain available before restarting Vite", async () => {
+    let clock = 0;
+    const probes = [false, true, true, false, true, true, true];
+    const result = await waitForStablePortAvailability(
+      async () => probes.shift() ?? true,
+      {
+        timeoutMs: 1_000,
+        stableMs: 200,
+        intervalMs: 100,
+        now: () => clock,
+        sleep: async (durationMs) => {
+          clock += durationMs;
+        },
+      },
+    );
+
+    expect(result).toBe(true);
+    expect(clock).toBe(600);
+  });
+
+  it("times out when the dev port keeps flapping", async () => {
+    let clock = 0;
+    let available = true;
+    const result = await waitForStablePortAvailability(
+      async () => {
+        available = !available;
+        return available;
+      },
+      {
+        timeoutMs: 500,
+        stableMs: 200,
+        intervalMs: 100,
+        now: () => clock,
+        sleep: async (durationMs) => {
+          clock += durationMs;
+        },
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(clock).toBe(500);
   });
 });
