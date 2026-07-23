@@ -9770,6 +9770,12 @@ async fn transfer_file_via_sftp(
 ) -> Result<u64, String> {
     let source_remote = remote_path(&request.source);
     let destination_remote = remote_path(&request.destination);
+    if let Some(source) = source_remote {
+        validate_remote_transfer_path(source, "SFTP 远端源路径")?;
+    }
+    if let Some(destination) = destination_remote {
+        validate_remote_transfer_path(destination, "SFTP 远端目标路径")?;
+    }
 
     match (source_remote, destination_remote) {
         (None, None) => {
@@ -11669,6 +11675,22 @@ fn remote_path(value: &str) -> Option<&str> {
         .strip_prefix("remote:")
         .or_else(|| value.strip_prefix("ssh:"))
         .filter(|path| !path.trim().is_empty())
+}
+
+fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    let normalized = trimmed.trim_end_matches('/');
+    if trimmed.is_empty()
+        || normalized.is_empty()
+        || matches!(normalized, "." | ".." | "~" | "/" | "//")
+        || trimmed.contains('\0')
+        || remote_path_has_dot_components(normalized)
+    {
+        return Err(format!(
+            "{label}不能为空、包含 NUL、使用 . / .. 分量或指向根目录"
+        ));
+    }
+    Ok(())
 }
 
 fn ssh_handle_for_auxiliary_operation(
@@ -39569,6 +39591,23 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
         .unwrap();
         assert_eq!(download.source, "ssh:/tmp/download.bin");
         assert_eq!(download.destination, absolute_destination.to_string_lossy());
+    }
+
+    #[test]
+    fn sftp_transfer_paths_reject_root_and_dot_components() {
+        for path in ["/", "//", "~", "/tmp/../input.bin", "/tmp/./input.bin"] {
+            let target_error = validate_remote_transfer_path(path, "SFTP 远端目标路径")
+                .expect_err("unsafe SFTP destination was accepted");
+            assert!(target_error.contains("SFTP 远端目标路径"), "{target_error}");
+            let source_error = validate_remote_transfer_path(path, "SFTP 远端源路径")
+                .expect_err("unsafe SFTP source was accepted");
+            assert!(source_error.contains("SFTP 远端源路径"), "{source_error}");
+        }
+        assert!(validate_remote_transfer_path("/tmp/portmate/", "SFTP 远端目标路径").is_ok());
+        assert!(
+            validate_remote_transfer_path(r"C:\Users\operator\input.bin", "SFTP 远端源路径")
+                .is_ok()
+        );
     }
 
     #[test]
