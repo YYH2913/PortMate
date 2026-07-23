@@ -28447,15 +28447,20 @@ async fn exec_local_sysmon_command(
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
-    let mut child = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(args)
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动本机 Sysmon 命令 {program}: {error}"))?;
+    let process_id = child.id();
     let stdout = child
         .stdout
         .take()
@@ -28464,32 +28469,51 @@ async fn exec_local_sysmon_command(
         .stderr
         .take()
         .ok_or_else(|| "无法捕获本机 Sysmon stderr".to_string())?;
-    let stdout_task = tokio::spawn(read_bounded_local_sysmon_output(
+    let mut stdout_task = tokio::spawn(read_bounded_local_sysmon_output(
         stdout,
         MAX_LOCAL_SYSMON_STDOUT_BYTES,
         "stdout",
     ));
-    let stderr_task = tokio::spawn(read_bounded_local_sysmon_output(
+    let mut stderr_task = tokio::spawn(read_bounded_local_sysmon_output(
         stderr,
         MAX_LOCAL_SYSMON_STDERR_BYTES,
         "stderr",
     ));
 
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => status.map_err(|error| format!("等待本机 Sysmon 命令失败: {error}"))?,
-        Err(_) => {
+    let (status, stdout, stderr) = match tokio::time::timeout(timeout, async {
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("等待本机 Sysmon 命令失败: {error}"))?;
+        let stdout = (&mut stdout_task)
+            .await
+            .map_err(|error| format!("读取本机 Sysmon stdout 任务失败: {error}"))??;
+        let stderr = (&mut stderr_task)
+            .await
+            .map_err(|error| format!("读取本机 Sysmon stderr 任务失败: {error}"))??;
+        Ok::<_, String>((status, stdout, stderr))
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            terminate_local_sysmon_process_group(process_id);
             let _ = child.kill().await;
             stdout_task.abort();
             stderr_task.abort();
-            return Err(format!("本机 Sysmon 命令在 {} 秒后超时", timeout.as_secs()));
+            return Err(error);
+        }
+        Err(_) => {
+            terminate_local_sysmon_process_group(process_id);
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!(
+                "本机 Sysmon 命令在 {} ms 后超时",
+                timeout.as_millis()
+            ));
         }
     };
-    let stdout = stdout_task
-        .await
-        .map_err(|error| format!("读取本机 Sysmon stdout 任务失败: {error}"))??;
-    let stderr = stderr_task
-        .await
-        .map_err(|error| format!("读取本机 Sysmon stderr 任务失败: {error}"))??;
     if !status.success() {
         return Err(format!(
             "本机 Sysmon 命令返回状态 {:?}: {}",
@@ -28499,6 +28523,21 @@ async fn exec_local_sysmon_command(
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
+
+#[cfg(unix)]
+fn terminate_local_sysmon_process_group(process_id: Option<u32>) {
+    let Some(process_id) = process_id.filter(|process_id| *process_id <= i32::MAX as u32) else {
+        return;
+    };
+    // `process_group(0)` gives each local command its own group, so this only reaches
+    // descendants started by the aborted Sysmon command.
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_local_sysmon_process_group(_process_id: Option<u32>) {}
 
 async fn read_bounded_local_sysmon_output<R>(
     mut reader: R,
@@ -36215,6 +36254,48 @@ __PORTMATE_DISKS__
             .unwrap_err();
         assert!(overflow_error.contains("4"));
         assert!(overflow_error.contains("stdout"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_sysmon_timeout_stops_descendants_that_inherit_output() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("child-survived-timeout");
+        let command = format!(
+            "(sleep 0.2; : > {}) & wait",
+            shell_quote(marker.to_str().unwrap())
+        );
+
+        let error = exec_local_sysmon_command("sh", &["-c", &command], Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error.contains("超时"), "{error}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !marker.exists(),
+            "Sysmon timeout left a child process running after its parent was killed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_sysmon_deadline_includes_descendant_output_drain() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("child-held-stdout-after-parent-exit");
+        let command = format!(
+            "(sleep 0.2; : > {}) & exit 0",
+            shell_quote(marker.to_str().unwrap())
+        );
+
+        let error = exec_local_sysmon_command("sh", &["-c", &command], Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error.contains("超时"), "{error}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !marker.exists(),
+            "Sysmon deadline did not terminate a descendant that kept stdout open"
+        );
     }
 
     #[cfg(target_os = "linux")]
