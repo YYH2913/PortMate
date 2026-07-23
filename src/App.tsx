@@ -39,7 +39,7 @@ import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
-import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
+import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage, SESSION_PROFILE_DELETED_EVENT, SESSION_PROFILE_UPDATED_EVENT } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
 import { buildWorkspaceWindowPath } from "./workspace-window-route";
@@ -333,6 +333,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCaptureEpochRef = useRef<Record<string, number>>({});
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
+  const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
+  const profileDeleteHandlerRef = useRef<(sessionId: string) => void>(() => {});
   const screenLockRef = useRef<ScreenLockState>(screenLock);
   const restoredScreenLockPreparedRef = useRef(false);
 
@@ -387,6 +389,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     } else {
       reattachDetachedPane(command);
     }
+  };
+  profileUpdateHandlerRef.current = (summary) => {
+    if (!summary?.profile?.id) return;
+    applySavedSessionState(summary, false);
+  };
+  profileDeleteHandlerRef.current = (sessionId) => {
+    if (!sessionId) return;
+    void refresh();
   };
 
   function updateSyncInput(enabled: boolean) {
@@ -861,6 +871,29 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setCommandHistoryReady(true);
     });
     return () => { disposed = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    const unlisten = new Set<() => void>();
+    void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
+      if (!disposed) profileUpdateHandlerRef.current(event.payload);
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten.add(nextUnlisten);
+    }).catch(() => {});
+    void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
+      if (!disposed) profileDeleteHandlerRef.current(event.payload);
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten.add(nextUnlisten);
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      for (const stopListening of unlisten) stopListening();
+      unlisten.clear();
+    };
   }, []);
 
   useEffect(() => {

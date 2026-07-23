@@ -3412,6 +3412,29 @@ try {
   await lockSyncMainPage.close();
   await lockSyncWorkspacePage.close();
 
+  const profileSyncPage = await context.newPage();
+  const profileSyncErrors = [];
+  profileSyncPage.on("pageerror", (error) => profileSyncErrors.push(error.message));
+  await profileSyncPage.goto(`${appUrl}?workspaceWindow=1&windowId=workspace-profile-sync-regression`);
+  const profileSyncTree = profileSyncPage.locator(".workspace-dock-content.panel-explorer .tree-session");
+  await profileSyncTree.filter({ hasText: "Edge Router" }).waitFor();
+  await profileSyncPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "edge-router");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.name = "Updated edge profile";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor();
+  await profileSyncPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor({ state: "detached" });
+  assert(profileSyncErrors.length === 0,
+    `workspace Profile event synchronization browser exceptions: ${JSON.stringify(profileSyncErrors)}`);
+  await profileSyncPage.close();
+
   const cacheRecoveryContext = await browser.newContext({ viewport: { width: 960, height: 680 } });
   await cacheRecoveryContext.addInitScript(() => {
     localStorage.clear();
