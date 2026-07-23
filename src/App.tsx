@@ -5318,6 +5318,8 @@ async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName:
         storageKey: detachedPaneWindowGeometryKey(request.viewId),
         width: 960,
         height: 680,
+        minWidth: 640,
+        minHeight: 400,
       }).then(() => finish(), (error) => finish(new Error(formatError(error))));
     });
     void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));

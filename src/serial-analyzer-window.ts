@@ -38,6 +38,8 @@ export async function openSerialAnalyzerWindow(request: SerialAnalyzerRequest, s
         storageKey: serialAnalyzerWindowGeometryKey(request.sessionId),
         width: 1180,
         height: 760,
+        minWidth: 720,
+        minHeight: 480,
       }).then(() => finish(), (error) => finish(new Error(formatWindowError(error))));
     });
     void child.once<unknown>("tauri://error", (event) => finish(new Error(formatWindowError(event.payload))));

@@ -8,10 +8,6 @@ import {
 } from "./window-geometry-state";
 import type { WindowGeometry, WindowGeometryConstraints, WindowGeometryStorage } from "./window-geometry-state";
 
-const WINDOW_GEOMETRY_CONSTRAINTS: WindowGeometryConstraints = {
-  minWidth: 160,
-  minHeight: 120,
-};
 const WINDOW_GEOMETRY_SAVE_DELAY_MS = 160;
 const WINDOW_CASCADE_STEP_LOGICAL_PIXELS = 48;
 const WINDOW_CASCADE_STEPS = 6;
@@ -20,6 +16,8 @@ export interface ChildWindowGeometryOptions {
   storageKey: string | null;
   width: number;
   height: number;
+  minWidth: number;
+  minHeight: number;
 }
 
 let childWindowCascadeIndex = 0;
@@ -37,8 +35,9 @@ export async function placeAndTrackChildWindow(
   options: ChildWindowGeometryOptions,
 ): Promise<void> {
   const storage = browserStorage();
+  const constraints = await childWindowGeometryConstraints(child, options);
   const geometry = storage && options.storageKey
-    ? await preferredWindowGeometry(storage, options.storageKey, options)
+    ? await preferredWindowGeometry(storage, options.storageKey, options, constraints)
     : await cascadeWindowGeometry(options);
   if (geometry) {
     try {
@@ -54,7 +53,7 @@ export async function placeAndTrackChildWindow(
   }
   await child.show();
   if (!storage || !options.storageKey) return;
-  const dispose = await trackChildWindowGeometry(child, storage, options.storageKey);
+  const dispose = await trackChildWindowGeometry(child, storage, options.storageKey, constraints);
   void child.once("tauri://destroyed", dispose).catch(() => {});
 }
 
@@ -62,10 +61,28 @@ async function preferredWindowGeometry(
   storage: WindowGeometryStorage,
   key: string,
   options: ChildWindowGeometryOptions,
+  constraints: WindowGeometryConstraints,
 ): Promise<WindowGeometry | null> {
-  const stored = loadWindowGeometry(storage, key, WINDOW_GEOMETRY_CONSTRAINTS);
+  const stored = loadWindowGeometry(storage, key, constraints);
   if (stored && await windowGeometryFitsAvailableDisplays(stored)) return stored;
   return cascadeWindowGeometry(options);
+}
+
+async function childWindowGeometryConstraints(
+  child: WebviewWindow,
+  options: ChildWindowGeometryOptions,
+): Promise<WindowGeometryConstraints> {
+  let scale = 1;
+  try {
+    const scaleFactor = await child.scaleFactor();
+    if (Number.isFinite(scaleFactor) && scaleFactor > 0) scale = scaleFactor;
+  } catch {
+    // A failed scale-factor lookup falls back to logical pixels for a usable new window.
+  }
+  return {
+    minWidth: Math.max(1, Math.round(options.minWidth * scale)),
+    minHeight: Math.max(1, Math.round(options.minHeight * scale)),
+  };
 }
 
 async function cascadeWindowGeometry(options: ChildWindowGeometryOptions): Promise<WindowGeometry | null> {
@@ -106,19 +123,23 @@ async function trackChildWindowGeometry(
   child: WebviewWindow,
   storage: WindowGeometryStorage,
   key: string,
+  constraints: WindowGeometryConstraints,
 ): Promise<() => void> {
   let disposed = false;
   let timeout: number | null = null;
+  let captureGeneration = 0;
   const capture = async () => {
     if (disposed) return;
+    const generation = ++captureGeneration;
     try {
       const [position, size] = await Promise.all([child.outerPosition(), child.innerSize()]);
+      if (disposed || generation !== captureGeneration) return;
       saveWindowGeometry(storage, key, {
         x: position.x,
         y: position.y,
         width: size.width,
         height: size.height,
-      }, WINDOW_GEOMETRY_CONSTRAINTS);
+      }, constraints);
     } catch {
       // Geometry persistence is best-effort and must never affect a usable child window.
     }
@@ -134,10 +155,18 @@ async function trackChildWindowGeometry(
   const listeners = await Promise.allSettled([
     child.onMoved(scheduleCapture),
     child.onResized(scheduleCapture),
+    child.onCloseRequested(async () => {
+      if (timeout !== null) {
+        window.clearTimeout(timeout);
+        timeout = null;
+      }
+      await capture();
+    }),
   ]);
   void capture();
   return () => {
     disposed = true;
+    captureGeneration += 1;
     if (timeout !== null) window.clearTimeout(timeout);
     for (const listener of listeners) {
       if (listener.status === "fulfilled") listener.value();

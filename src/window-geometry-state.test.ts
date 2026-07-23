@@ -23,6 +23,10 @@ describe("window geometry state", () => {
     expect(normalizeWindowGeometry({ x: 0, y: 0, width: 319, height: 680 }, constraints)).toBeNull();
     expect(normalizeWindowGeometry({ x: 0.5, y: 0, width: 960, height: 680 }, constraints)).toBeNull();
     expect(normalizeWindowGeometry({ x: 0, y: 0, width: 960, height: 3_001 }, constraints)).toBeNull();
+    expect(normalizeWindowGeometry({ x: 0, y: 0, width: 960, height: 680 }, {
+      minWidth: 1_280,
+      minHeight: 800,
+    })).toBeNull();
     expect(windowGeometryStorageKey("detached-pane", "view-1")).toBe("detached-pane:view-1");
     expect(windowGeometryStorageKey("detached-pane", "view\n1")).toBeNull();
     expect(windowGeometryStorageKey("Detached Pane", "view-1")).toBeNull();
