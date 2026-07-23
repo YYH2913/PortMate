@@ -49,7 +49,7 @@ export async function waitForStablePortAvailability(checkAvailable, options) {
   } = options;
   const deadline = now() + timeoutMs;
   let stableSince = null;
-  do {
+  while (true) {
     if (await checkAvailable()) {
       const checkedAt = now();
       stableSince ??= checkedAt;
@@ -59,8 +59,7 @@ export async function waitForStablePortAvailability(checkAvailable, options) {
     }
 
     const remaining = deadline - now();
-    if (remaining <= 0) break;
+    if (remaining <= 0) return false;
     await sleep(Math.min(intervalMs, remaining));
-  } while (now() <= deadline);
-  return false;
+  }
 }

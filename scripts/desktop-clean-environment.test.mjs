@@ -210,6 +210,25 @@ describe("desktop clean process ownership", () => {
     expect(clock).toBe(600);
   });
 
+  it("accepts an already-free port when the final timer wakes slightly late", async () => {
+    let clock = 0;
+    const result = await waitForStablePortAvailability(
+      async () => true,
+      {
+        timeoutMs: 750,
+        stableMs: 750,
+        intervalMs: 100,
+        now: () => clock,
+        sleep: async (durationMs) => {
+          clock += durationMs + (durationMs === 50 ? 1 : 0);
+        },
+      },
+    );
+
+    expect(result).toBe(true);
+    expect(clock).toBe(751);
+  });
+
   it("times out when the dev port keeps flapping", async () => {
     let clock = 0;
     let available = true;
