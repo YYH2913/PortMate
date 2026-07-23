@@ -97,17 +97,29 @@ function normalizeShellProgram(value: string): string | null {
 }
 
 function isAbsolutePosixPath(program: string): boolean {
-  return program.startsWith("/") && !hasTraversalSegment(program.split("/"));
+  const segments = program.split("/").filter(Boolean);
+  return program.startsWith("/")
+    && !program.endsWith("/")
+    && segments.length > 0
+    && !hasTraversalSegment(segments);
 }
 
 function isAbsoluteWindowsPath(program: string): boolean {
-  return /^[a-z]:[\\/]/i.test(program) && !hasTraversalSegment(program.slice(3).split(/[\\/]/));
+  const remainder = program.slice(3);
+  const segments = remainder.split(/[\\/]/).filter(Boolean);
+  return /^[a-z]:[\\/]/i.test(program)
+    && Boolean(remainder)
+    && !/[\\/]$/.test(program)
+    && segments.length > 0
+    && !hasTraversalSegment(segments);
 }
 
 function isUncPath(program: string): boolean {
+  const segments = program.split(/\\+/).filter(Boolean);
   return program.startsWith("\\\\")
-    && program.split(/\\+/).filter(Boolean).length >= 2
-    && !hasTraversalSegment(program.split(/\\+/));
+    && !/\\$/.test(program)
+    && segments.length >= 3
+    && !hasTraversalSegment(segments);
 }
 
 function hasTraversalSegment(segments: string[]): boolean {

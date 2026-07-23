@@ -55,6 +55,18 @@ $(whoami)
     ]));
   });
 
+  it("rejects filesystem roots and directory-shaped paths", () => {
+    const result = parseShellSessions(`
+/
+/bin/
+C:\\
+\\\\server\\share\\
+`);
+
+    expect(result.candidates).toEqual([]);
+    expect(result.warnings.filter((warning) => warning.includes("不是可直接导入的 Shell 路径"))).toHaveLength(4);
+  });
+
   it("bounds input before splitting it into lines", () => {
     const result = parseShellSessions("x".repeat(SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS + 1));
 
