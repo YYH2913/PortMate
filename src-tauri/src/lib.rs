@@ -34388,15 +34388,14 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             vec!["192.168.2.1"]
         );
         let source_reads = std::cell::Cell::new(0);
-        let lazy_fallback_addresses =
-            first_nonempty_linux_network_addresses((0..3).filter_map(|index| {
-                source_reads.set(source_reads.get() + 1);
-                match index {
-                    0 => Some("ip: unsupported output".to_string()),
-                    1 => Some("eth0 inet 198.51.100.42/24 scope global".to_string()),
-                    _ => panic!("address lookup continued after a valid source"),
-                }
-            }));
+        let lazy_fallback_addresses = first_nonempty_linux_network_addresses((0..3).map(|index| {
+            source_reads.set(source_reads.get() + 1);
+            match index {
+                0 => "ip: unsupported output".to_string(),
+                1 => "eth0 inet 198.51.100.42/24 scope global".to_string(),
+                _ => panic!("address lookup continued after a valid source"),
+            }
+        }));
         assert_eq!(source_reads.get(), 2);
         assert_eq!(
             lazy_fallback_addresses
