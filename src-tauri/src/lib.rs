@@ -29299,9 +29299,26 @@ fn remote_linux_sysmon_needs_openwrt_address_fallback(
     interfaces: &[SysmonNetworkInterface],
 ) -> bool {
     interfaces.is_empty()
-        || !interfaces
-            .iter()
-            .any(|interface| interface.name != "lo" && !interface.addresses.is_empty())
+        || !interfaces.iter().any(|interface| {
+            interface.name != "lo"
+                && interface
+                    .addresses
+                    .iter()
+                    .any(|address| is_usable_sysmon_network_address(address))
+        })
+}
+
+fn is_usable_sysmon_network_address(value: &str) -> bool {
+    let address = value.split_once('/').map_or(value, |(address, _)| address);
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(address)) => {
+            !address.is_loopback() && !address.is_unspecified() && !address.is_link_local()
+        }
+        Ok(std::net::IpAddr::V6(address)) => {
+            !address.is_loopback() && !address.is_unspecified() && !address.is_unicast_link_local()
+        }
+        Err(_) => false,
+    }
 }
 
 fn merge_remote_linux_sysmon_network_addresses(
@@ -34831,6 +34848,24 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             .any(|interface| interface.name == "br-lan"));
         assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
             &snapshot.network_interfaces
+        ));
+        let link_local_only = [SysmonNetworkInterface {
+            name: "br-lan".to_string(),
+            addresses: vec!["fe80::211:22ff:fe33:4455/64".to_string()],
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_kbps: 0.0,
+            tx_kbps: 0.0,
+        }];
+        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+            &link_local_only
+        ));
+        let lan_address = [SysmonNetworkInterface {
+            addresses: vec!["192.168.8.1/24".to_string()],
+            ..link_local_only[0].clone()
+        }];
+        assert!(!remote_linux_sysmon_needs_openwrt_address_fallback(
+            &lan_address
         ));
         merge_remote_linux_sysmon_network_addresses(
             &mut snapshot.network_interfaces,
