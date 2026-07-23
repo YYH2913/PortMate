@@ -28817,20 +28817,8 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
             continue;
         }
         let fields = trimmed.split_whitespace().collect::<Vec<_>>();
-        if let Some((_, rest)) = trimmed.split_once(": ") {
-            if let Some(name) = rest.split_whitespace().next() {
-                let name = normalize_linux_sysmon_interface_name(name);
-                if !name.is_empty() && !matches!(name.as_str(), "inet" | "inet6" | "link") {
-                    current_interface = Some(name);
-                }
-            }
-        } else if !trimmed.starts_with("inet ") && !trimmed.starts_with("inet6 ") {
-            if let Some(name) = fields.first() {
-                let name = normalize_linux_sysmon_interface_name(name);
-                if !name.is_empty() {
-                    current_interface = Some(name);
-                }
-            }
+        if let Some(name) = linux_sysmon_interface_header_name(trimmed, &fields) {
+            current_interface = Some(name);
         }
 
         let name = if fields.len() >= 4 && (fields[2] == "inet" || fields[2] == "inet6") {
@@ -28880,6 +28868,22 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         }
     }
     addresses
+}
+
+fn linux_sysmon_interface_header_name(trimmed: &str, fields: &[&str]) -> Option<String> {
+    if let Some((index, rest)) = trimmed.split_once(": ") {
+        if index.chars().all(|character| character.is_ascii_digit()) {
+            let name = rest.split_whitespace().next()?;
+            let name = normalize_linux_sysmon_interface_name(name);
+            return (!name.is_empty() && !matches!(name.as_str(), "inet" | "inet6" | "link"))
+                .then_some(name);
+        }
+    }
+
+    let first = fields.first()?;
+    let rest = fields.get(1).copied().unwrap_or_default();
+    let name = normalize_linux_sysmon_interface_name(first);
+    (!name.is_empty() && (rest.starts_with("flags=") || rest == "Link")).then_some(name)
 }
 
 fn normalize_linux_sysmon_interface_name(value: &str) -> String {
@@ -34233,6 +34237,24 @@ mod tests {
             vec!["198.51.100.5/24", "fe80::2/64"]
         );
         assert!(!veth_addresses.contains_key("eth0@if7"));
+
+        let ifconfig_addresses = parse_linux_network_addresses(
+            r#"eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 203.0.113.7  netmask 255.255.255.0  broadcast 203.0.113.255
+        inet6 fe80::3  prefixlen 64  scopeid 0x20<link>
+        ether 02:42:ac:11:00:02  txqueuelen 0  (Ethernet)
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0"#,
+        );
+        assert_eq!(
+            ifconfig_addresses.get("eth0").cloned().unwrap_or_default(),
+            vec!["203.0.113.7", "fe80::3"]
+        );
+        assert_eq!(
+            ifconfig_addresses.get("lo").cloned().unwrap_or_default(),
+            vec!["127.0.0.1"]
+        );
+        assert!(!ifconfig_addresses.contains_key("ether"));
 
         assert_eq!(
             parse_load_average("1.25 0.50 0.25 1/10 1"),
