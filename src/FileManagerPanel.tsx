@@ -319,7 +319,7 @@ export default function FileManagerPanel({
     const suggestedDestination = parentPath(panel.path, remote);
     const destination = window.prompt(
       "移动到目录",
-      suggestedDestination === "/" || suggestedDestination === "." ? "" : suggestedDestination,
+      suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
     );
     if (!destination?.trim()) return;
     try {
@@ -873,10 +873,11 @@ function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & 
 }
 
 function defaultLocalPath() {
-  return "/";
+  return "~";
 }
 
 function joinFilePath(base: string, name: string, remote: boolean) {
+  if (!remote && (base === "~" || base === "~/")) return `~/${name}`;
   const separator = remote || base.includes("/") ? "/" : "\\";
   const cleanBase = base.endsWith("/") || base.endsWith("\\") ? base.slice(0, -1) : base;
   return cleanBase ? `${cleanBase}${separator}${name}` : name;
@@ -892,6 +893,7 @@ function filePaneAtPhysicalPosition(x: number, y: number): boolean | null {
 }
 
 function parentPath(path: string, remote: boolean) {
+  if (!remote && (path === "~" || path === "~/")) return "~";
   const separator = remote || path.includes("/") ? "/" : "\\";
   const trimmed = path.replace(/[\\/]$/, "");
   const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));

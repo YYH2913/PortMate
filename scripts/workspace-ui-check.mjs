@@ -1167,6 +1167,36 @@ try {
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
   await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').waitFor();
   await leftDock.locator('.file-browser-pane[data-file-pane="local"]').waitFor();
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "list_files"
+      && call.args.request.remote === false
+      && call.args.request.path === "~"
+  )));
+  const initialLocalPath = page.getByRole("textbox", { name: "本地路径", exact: true });
+  assert(await initialLocalPath.inputValue() === "~",
+    "file manager did not begin from a cross-platform home path");
+  const initialLocalPane = leftDock.locator('.file-browser-pane[data-file-pane="local"]');
+  const homeCreateCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
+  await page.evaluate(() => {
+    window.__originalPrompt = window.prompt;
+    window.prompt = () => "home-note.txt";
+  });
+  await initialLocalPane.getByRole("button", { name: "新建文件", exact: true }).click();
+  await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "create_file").length === count + 1, homeCreateCallsBefore);
+  const homeCreateRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").at(-1)?.args.request);
+  await page.evaluate(() => {
+    window.prompt = window.__originalPrompt;
+    delete window.__originalPrompt;
+  });
+  assert(homeCreateRequest?.path === "~/home-note.txt" && homeCreateRequest?.remote === false,
+    `home file creation did not preserve the portable path: ${JSON.stringify(homeCreateRequest)}`);
+  const homeListCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "list_files" && call.args.request.remote === false && call.args.request.path === "~"
+  )).length);
+  await initialLocalPane.locator(".file-row.up").click();
+  await page.waitForFunction((count) => window.__invokeCalls.filter((call) => (
+    call.command === "list_files" && call.args.request.remote === false && call.args.request.path === "~"
+  )).length === count + 1, homeListCallsBefore);
   const fileDockLayout = await leftDock.evaluate((dock) => ({
     width: dock.getBoundingClientRect().width,
     active: dock.getAttribute("data-active-panel"),
