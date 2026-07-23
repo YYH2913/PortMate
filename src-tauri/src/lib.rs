@@ -11262,7 +11262,11 @@ async fn xmodem_receive_file(
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut expected = 1_u8;
-    let mut output = Vec::new();
+    let mut output =
+        PendingLocalTransferOutput::create(Path::new(local_destination), "XModem 本地目标文件")?;
+    let mut trailing_padding = 0_u64;
+    let mut bytes_received = 0_u64;
+    let mut bytes_written = 0_u64;
     let mut first_packet = true;
 
     loop {
@@ -11285,18 +11289,23 @@ async fn xmodem_receive_file(
             }
         };
         if packet.block_no == expected {
-            output.extend_from_slice(&packet.data);
-            progress.update(output.len() as u64, 0).await?;
+            append_modem_data_without_trailing_padding(
+                &mut output,
+                &packet.data,
+                &mut trailing_padding,
+                &mut bytes_written,
+            )?;
+            bytes_received = bytes_received
+                .checked_add(packet.data.len() as u64)
+                .ok_or_else(|| "XModem 接收字节数溢出".to_string())?;
+            progress.update(bytes_received, 0).await?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
     }
 
-    while output.last().copied() == Some(MODEM_EOF) {
-        output.pop();
-    }
-    write_local_transfer_file(local_destination, &output)?;
-    Ok(output.len() as u64)
+    output.finish()?;
+    Ok(bytes_written)
 }
 
 async fn ymodem_send_file(
@@ -11425,8 +11434,17 @@ async fn ymodem_receive_file(
     }
     write_runtime_bytes(state, session_id, &[MODEM_ACK, MODEM_CRC_REQUEST]).await?;
 
+    let destination = if Path::new(local_destination).is_dir() {
+        let safe_name = portable_file_name(&name).unwrap_or_else(|| "ymodem-file.bin".to_string());
+        Path::new(local_destination).join(safe_name)
+    } else {
+        PathBuf::from(local_destination)
+    };
     let mut expected = 1_u8;
-    let mut output = Vec::new();
+    let mut output = PendingLocalTransferOutput::create(&destination, "YModem 本地目标文件")?;
+    let mut trailing_padding = 0_u64;
+    let mut bytes_received = 0_u64;
+    let mut bytes_written = 0_u64;
     let total = expected_size.unwrap_or(0) as u64;
     loop {
         check_modem_cancelled(state, session_id, progress).await?;
@@ -11447,31 +11465,32 @@ async fn ymodem_receive_file(
         }
         let packet = modem_read_packet(&mut reader, marker).await?;
         if packet.block_no == expected {
-            output.extend_from_slice(&packet.data);
-            progress.update(output.len() as u64, total).await?;
+            if let Some(expected_size) = expected_size {
+                append_modem_data_with_size_limit(
+                    &mut output,
+                    &packet.data,
+                    expected_size as u64,
+                    &mut bytes_written,
+                )?;
+            } else {
+                append_modem_data_without_trailing_padding(
+                    &mut output,
+                    &packet.data,
+                    &mut trailing_padding,
+                    &mut bytes_written,
+                )?;
+            }
+            bytes_received = bytes_received
+                .checked_add(packet.data.len() as u64)
+                .ok_or_else(|| "YModem 接收字节数溢出".to_string())?;
+            progress.update(bytes_received, total).await?;
             expected = expected.wrapping_add(1);
         }
         write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
     }
 
-    if let Some(size) = expected_size {
-        output.truncate(size.min(output.len()));
-    } else {
-        while output.last().copied() == Some(MODEM_EOF) {
-            output.pop();
-        }
-    }
-    let destination = if Path::new(local_destination).is_dir() {
-        let safe_name = portable_file_name(&name).unwrap_or_else(|| "ymodem-file.bin".to_string());
-        Path::new(local_destination)
-            .join(safe_name)
-            .display()
-            .to_string()
-    } else {
-        local_destination.to_string()
-    };
-    write_local_transfer_file(&destination, &output)?;
-    Ok(output.len() as u64)
+    output.finish()?;
+    Ok(bytes_written)
 }
 
 struct ModemPacket {
@@ -11718,16 +11737,130 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
     crc
 }
 
+#[cfg(test)]
 fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
-    let destination = Path::new(path);
-    prepare_local_transfer_target_path(destination, "本地传输目标路径")?;
-    let (mut file, temp) = open_new_local_transfer_file(destination)?;
-    if let Err(error) = file.write_all(data).and_then(|_| file.sync_all()) {
-        let _ = fs::remove_file(&temp);
-        return Err(format!("写入本地文件失败: {error}"));
+    let mut output = PendingLocalTransferOutput::create(Path::new(path), "本地传输目标路径")?;
+    output
+        .file_mut()?
+        .write_all(data)
+        .map_err(|error| format!("写入本地文件失败: {error}"))?;
+    output.finish()
+}
+
+struct PendingLocalTransferOutput {
+    target: PathBuf,
+    temp: PathBuf,
+    file: Option<fs::File>,
+    finished: bool,
+}
+
+impl PendingLocalTransferOutput {
+    fn create(target: &Path, label: &str) -> Result<Self, String> {
+        prepare_local_transfer_target_path(target, label)?;
+        let (file, temp) = open_new_local_transfer_file(target)?;
+        Ok(Self {
+            target: target.to_path_buf(),
+            temp,
+            file: Some(file),
+            finished: false,
+        })
     }
-    drop(file);
-    finalize_local_resume_file(&temp, destination)
+
+    fn file_mut(&mut self) -> Result<&mut fs::File, String> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| "本地传输临时文件已关闭".to_string())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| "本地传输临时文件已关闭".to_string())?;
+        file.sync_all()
+            .map_err(|error| format!("写入本地文件失败: {error}"))?;
+        drop(file);
+        finalize_local_resume_file(&self.temp, &self.target)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingLocalTransferOutput {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.file.take();
+        let _ = fs::remove_file(&self.temp);
+    }
+}
+
+fn append_modem_data_without_trailing_padding(
+    output: &mut PendingLocalTransferOutput,
+    data: &[u8],
+    trailing_padding: &mut u64,
+    bytes_written: &mut u64,
+) -> Result<(), String> {
+    let Some(last_content) = data.iter().rposition(|byte| *byte != MODEM_EOF) else {
+        *trailing_padding = trailing_padding
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| "Modem 填充字节数溢出".to_string())?;
+        return Ok(());
+    };
+
+    if *trailing_padding > 0 {
+        write_modem_padding(output.file_mut()?, *trailing_padding)
+            .map_err(|error| format!("写入本地 Modem 文件失败: {error}"))?;
+        *bytes_written = bytes_written
+            .checked_add(*trailing_padding)
+            .ok_or_else(|| "Modem 写入字节数溢出".to_string())?;
+        *trailing_padding = 0;
+    }
+
+    let trailing_count = data.len().saturating_sub(last_content.saturating_add(1)) as u64;
+    let data = &data[..=last_content];
+    output
+        .file_mut()?
+        .write_all(data)
+        .map_err(|error| format!("写入本地 Modem 文件失败: {error}"))?;
+    *bytes_written = bytes_written
+        .checked_add(data.len() as u64)
+        .ok_or_else(|| "Modem 写入字节数溢出".to_string())?;
+    *trailing_padding = trailing_count;
+    Ok(())
+}
+
+fn append_modem_data_with_size_limit(
+    output: &mut PendingLocalTransferOutput,
+    data: &[u8],
+    limit: u64,
+    bytes_written: &mut u64,
+) -> Result<(), String> {
+    let remaining = limit.saturating_sub(*bytes_written);
+    let count = remaining.min(data.len() as u64) as usize;
+    if count == 0 {
+        return Ok(());
+    }
+    output
+        .file_mut()?
+        .write_all(&data[..count])
+        .map_err(|error| format!("写入本地 Modem 文件失败: {error}"))?;
+    *bytes_written = bytes_written
+        .checked_add(count as u64)
+        .ok_or_else(|| "Modem 写入字节数溢出".to_string())?;
+    Ok(())
+}
+
+fn write_modem_padding(file: &mut fs::File, count: u64) -> std::io::Result<()> {
+    let padding = [MODEM_EOF; 1024];
+    let mut remaining = count;
+    while remaining > 0 {
+        let count = remaining.min(padding.len() as u64) as usize;
+        file.write_all(&padding[..count])?;
+        remaining -= count as u64;
+    }
+    Ok(())
 }
 
 fn prepare_local_transfer_target_path(path: &Path, label: &str) -> Result<(), String> {
@@ -42617,6 +42750,72 @@ __PORTMATE_DISKS__
         prepare_local_transfer_target_path(&missing_parent, "本地传输目标路径").unwrap();
         assert!(root.join("missing-parent").is_dir());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn streamed_modem_output_preserves_internal_eof_and_discards_final_padding() {
+        let root = std::env::temp_dir().join(format!("portmate-modem-output-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("received.bin");
+        let mut output =
+            PendingLocalTransferOutput::create(&target, "测试 Modem 本地目标文件").unwrap();
+        let mut trailing_padding = 0_u64;
+        let mut bytes_written = 0_u64;
+
+        append_modem_data_without_trailing_padding(
+            &mut output,
+            b"before\x1a\x1a",
+            &mut trailing_padding,
+            &mut bytes_written,
+        )
+        .unwrap();
+        append_modem_data_without_trailing_padding(
+            &mut output,
+            b"\x1aafter\x1a\x1a",
+            &mut trailing_padding,
+            &mut bytes_written,
+        )
+        .unwrap();
+        output.finish().unwrap();
+
+        let expected = b"before\x1a\x1a\x1aafter";
+        assert_eq!(bytes_written, expected.len() as u64);
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn streamed_modem_output_respects_ymodem_declared_length() {
+        let root = std::env::temp_dir().join(format!("portmate-ymodem-output-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("received.bin");
+        let mut output =
+            PendingLocalTransferOutput::create(&target, "测试 Modem 本地目标文件").unwrap();
+        let mut bytes_written = 0_u64;
+
+        append_modem_data_with_size_limit(&mut output, b"abcdef", 4, &mut bytes_written).unwrap();
+        append_modem_data_with_size_limit(&mut output, b"more", 4, &mut bytes_written).unwrap();
+        output.finish().unwrap();
+
+        assert_eq!(bytes_written, 4);
+        assert_eq!(fs::read(&target).unwrap(), b"abcd");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn streamed_modem_output_removes_temp_file_when_not_finalized() {
+        let root = std::env::temp_dir().join(format!("portmate-modem-temp-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("received.bin");
+        let mut output =
+            PendingLocalTransferOutput::create(&target, "测试 Modem 本地目标文件").unwrap();
+        let temp = output.temp.clone();
+        output.file_mut().unwrap().write_all(b"partial").unwrap();
+        drop(output);
+
+        assert!(!target.exists());
+        assert!(!temp.exists());
         let _ = fs::remove_dir_all(root);
     }
 
