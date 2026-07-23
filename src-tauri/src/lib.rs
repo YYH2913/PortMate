@@ -11590,12 +11590,7 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
 
 fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
     let destination = Path::new(path);
-    if let Some(parent) = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|error| format!("创建本地目录失败: {error}"))?;
-    }
+    prepare_local_transfer_target_path(destination, "本地传输目标路径")?;
     let (mut file, temp) = open_new_local_transfer_file(destination)?;
     if let Err(error) = file.write_all(data).and_then(|_| file.sync_all()) {
         let _ = fs::remove_file(&temp);
@@ -11603,6 +11598,18 @@ fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
     }
     drop(file);
     finalize_local_resume_file(&temp, destination)
+}
+
+fn prepare_local_transfer_target_path(path: &Path, label: &str) -> Result<(), String> {
+    reject_local_symlink_components(path, false, label)?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建{label}目录失败 {}: {error}", parent.display()))?;
+    }
+    reject_local_symlink_components(path, false, label)
 }
 
 fn parse_ymodem_metadata(data: &[u8]) -> (String, Option<usize>) {
@@ -12395,10 +12402,7 @@ async fn sftp_download(
         .await
         .map_err(|error| format!("SFTP 打开远端文件失败 {remote_source}: {error}"))?;
     let target = local_destination_file_path(local_destination, remote_source)?;
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建本地目录失败 {}: {error}", parent.display()))?;
-    }
+    prepare_local_transfer_target_path(&target, "SFTP 本地目标路径")?;
     let temp_target = local_resume_part_path(&target);
     let mut copied =
         local_resume_offset_matching_sftp_source(&mut remote_file, &temp_target, total, progress)
@@ -40238,6 +40242,20 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
         assert!(error.contains("符号链接"), "{error}");
         assert_eq!(fs::read(&protected).unwrap(), b"protected");
         assert!(temp.exists());
+
+        let protected_dir = root.join("protected-dir");
+        fs::create_dir(&protected_dir).unwrap();
+        let linked_dir = root.join("linked-dir");
+        std::os::unix::fs::symlink(&protected_dir, &linked_dir).unwrap();
+        let nested_target = linked_dir.join("nested.bin");
+        let error =
+            write_local_transfer_file(nested_target.to_str().unwrap(), b"nested").unwrap_err();
+        assert!(error.contains("符号链接"), "{error}");
+        assert!(!protected_dir.join("nested.bin").exists());
+
+        let missing_parent = root.join("missing-parent").join("payload.bin");
+        prepare_local_transfer_target_path(&missing_parent, "本地传输目标路径").unwrap();
+        assert!(root.join("missing-parent").is_dir());
 
         let _ = fs::remove_dir_all(root);
     }
