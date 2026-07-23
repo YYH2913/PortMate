@@ -153,9 +153,7 @@ impl PortMateMcp {
         let Some(store_path) = self.store_path.clone() else {
             return;
         };
-        if let Some(store) = load_store_from_path(&store_path) {
-            self.store = store;
-        }
+        self.store = load_store_from_path(&store_path).unwrap_or_default();
         self.ipc = load_ipc_endpoint(&store_path);
     }
 
@@ -2867,6 +2865,19 @@ mod tests {
         fs::remove_file(&endpoint_path).unwrap();
         let _ = list_sessions_text(&mut server);
         assert!(server.ipc.is_none());
+
+        fs::remove_file(&store_path).unwrap();
+        let deleted = list_sessions_text(&mut server);
+        assert!(!deleted.contains("second snapshot"));
+        assert!(server.store.profiles.is_empty());
+
+        write_store("third snapshot");
+        let third = list_sessions_text(&mut server);
+        assert!(third.contains("third snapshot"));
+        fs::write(&store_path, b"{not-json").unwrap();
+        let corrupt = list_sessions_text(&mut server);
+        assert!(!corrupt.contains("third snapshot"));
+        assert!(server.store.profiles.is_empty());
 
         let _ = fs::remove_dir_all(root);
     }
