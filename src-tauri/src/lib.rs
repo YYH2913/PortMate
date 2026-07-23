@@ -29944,6 +29944,92 @@ fn normalize_loaded_one_keys(store: &mut SessionStore) {
     }
 }
 
+fn normalize_loaded_mirror_keys(store: &mut SessionStore) {
+    normalize_loaded_record_ids(
+        &mut store.events,
+        "event",
+        |event| &event.id,
+        |event, id| event.id = id,
+    );
+    normalize_loaded_record_ids(
+        &mut store.transfers,
+        "transfer",
+        |transfer| &transfer.id,
+        |transfer, id| transfer.id = id,
+    );
+    normalize_loaded_record_ids(
+        &mut store.audit,
+        "audit",
+        |record| &record.id,
+        |record, id| record.id = id,
+    );
+    normalize_loaded_record_ids(
+        &mut store.timeline,
+        "timeline",
+        |mark| &mark.id,
+        |mark, id| mark.id = id,
+    );
+    normalize_loaded_record_ids(
+        &mut store.host_keys.keys,
+        "host-key",
+        |key| &key.id,
+        |key, id| key.id = id,
+    );
+
+    // The SQLite mirror uses (session_id, ts) as the Sysmon key. A later entry
+    // is also what sysmon_for observes for a duplicate timestamp, so retain it.
+    let snapshots = std::mem::take(&mut store.sysmon);
+    let mut normalized = Vec::with_capacity(snapshots.len());
+    let mut seen = HashSet::with_capacity(snapshots.len());
+    for snapshot in snapshots.into_iter().rev() {
+        let key = (snapshot.session_id.clone(), snapshot.ts.to_rfc3339());
+        if seen.insert(key) {
+            normalized.push(snapshot);
+        }
+    }
+    normalized.reverse();
+    store.sysmon = normalized;
+}
+
+fn normalize_loaded_record_ids<T>(
+    records: &mut [T],
+    record_kind: &str,
+    id: impl Fn(&T) -> &str,
+    set_id: impl Fn(&mut T, String),
+) {
+    let mut used_ids = HashSet::with_capacity(records.len());
+    for (index, record) in records.iter_mut().enumerate() {
+        let assigned_id =
+            reserve_unique_loaded_record_id(id(record), record_kind, index, &mut used_ids);
+        set_id(record, assigned_id);
+    }
+}
+
+fn reserve_unique_loaded_record_id(
+    original_id: &str,
+    record_kind: &str,
+    record_position: usize,
+    used_ids: &mut HashSet<String>,
+) -> String {
+    if !original_id.is_empty() && used_ids.insert(original_id.to_string()) {
+        return original_id.to_string();
+    }
+
+    let base = if original_id.is_empty() {
+        record_kind.to_string()
+    } else {
+        original_id.to_string()
+    };
+    let mut suffix = record_position.saturating_add(1);
+    loop {
+        let candidate = format!("{base}:loaded:{suffix}");
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
 fn prune_orphaned_loaded_session_state(store: &mut SessionStore) {
     let session_ids = store
         .profiles
@@ -30225,6 +30311,7 @@ fn normalize_loaded_store_at(mut store: SessionStore, loaded_at: DateTime<Utc>) 
         let _ = store.upsert_profile(profile);
     }
     prune_orphaned_loaded_session_state(&mut store);
+    normalize_loaded_mirror_keys(&mut store);
     normalize_loaded_mcp_grants(&mut store);
     normalize_loaded_one_keys(&mut store);
     for runtime in &mut store.runtimes {
@@ -35887,6 +35974,165 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             .query_row("select count(*) from mcp_grants", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mirrored, 2);
+        drop(connection);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalize_loaded_store_repairs_duplicate_mirror_keys() {
+        let mut store = SessionStore::default();
+        let profile = test_shell_profile();
+        let session_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let now = Utc::now();
+
+        let event = SessionEvent {
+            id: "duplicate-event".to_string(),
+            session_id: session_id.clone(),
+            pane_id: format!("{session_id}:main"),
+            ts: now,
+            direction: EventDirection::Inbound,
+            stream: EventStream::Stdout,
+            bytes_ref: None,
+            text: Some("first event".to_string()),
+            annotations: BTreeMap::new(),
+        };
+        let mut duplicate_event = event.clone();
+        duplicate_event.text = Some("second event".to_string());
+        store.events.extend([event, duplicate_event]);
+
+        let transfer = TransferTask {
+            id: "duplicate-transfer".to_string(),
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: "first-source".to_string(),
+            destination: "first-destination".to_string(),
+            bytes_total: 1,
+            bytes_done: 1,
+            status: TransferStatus::Completed,
+            message: None,
+            started_at: Some(now),
+            finished_at: Some(now),
+            average_bytes_per_second: Some(1.0),
+        };
+        let mut duplicate_transfer = transfer.clone();
+        duplicate_transfer.source = "second-source".to_string();
+        store.transfers.extend([transfer, duplicate_transfer]);
+
+        let audit = AuditRecord {
+            id: "duplicate-audit".to_string(),
+            ts: now,
+            actor: "desktop-user".to_string(),
+            action: "first-action".to_string(),
+            session_id: Some(session_id.clone()),
+            decision: "recorded".to_string(),
+            details: BTreeMap::new(),
+        };
+        let mut duplicate_audit = audit.clone();
+        duplicate_audit.action = "second-action".to_string();
+        store.audit.extend([audit, duplicate_audit]);
+
+        let timeline = TimelineMark {
+            id: "duplicate-timeline".to_string(),
+            session_id: session_id.clone(),
+            ts: now,
+            label: "first mark".to_string(),
+            details: None,
+        };
+        let mut duplicate_timeline = timeline.clone();
+        duplicate_timeline.label = "second mark".to_string();
+        store.timeline.extend([timeline, duplicate_timeline]);
+
+        let key = TrustedHostKey {
+            id: "duplicate-host-key".to_string(),
+            profile_id: Some(session_id.clone()),
+            alias: "first-host".to_string(),
+            host: "first-host".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:first".to_string(),
+            public_key_base64: "AAAA".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: now,
+            last_seen: now,
+        };
+        let mut duplicate_key = key.clone();
+        duplicate_key.alias = "second-host".to_string();
+        duplicate_key.host = "second-host".to_string();
+        duplicate_key.fingerprint_sha256 = "SHA256:second".to_string();
+        store.host_keys.keys.extend([key, duplicate_key]);
+
+        let snapshot = test_sysmon_snapshot(&session_id);
+        let mut duplicate_snapshot = snapshot.clone();
+        duplicate_snapshot.uptime_seconds = snapshot.uptime_seconds + 1;
+        store.sysmon.extend([snapshot, duplicate_snapshot]);
+
+        let normalized = normalize_loaded_store(store);
+        assert_eq!(
+            normalized
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            ["duplicate-event", "duplicate-event:loaded:2"]
+        );
+        assert_eq!(
+            normalized
+                .transfers
+                .iter()
+                .map(|transfer| transfer.id.as_str())
+                .collect::<Vec<_>>(),
+            ["duplicate-transfer", "duplicate-transfer:loaded:2"]
+        );
+        assert_eq!(
+            normalized
+                .audit
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["duplicate-audit", "duplicate-audit:loaded:2"]
+        );
+        assert_eq!(
+            normalized
+                .timeline
+                .iter()
+                .map(|mark| mark.id.as_str())
+                .collect::<Vec<_>>(),
+            ["duplicate-timeline", "duplicate-timeline:loaded:2"]
+        );
+        assert_eq!(
+            normalized
+                .host_keys
+                .keys
+                .iter()
+                .map(|key| key.id.as_str())
+                .collect::<Vec<_>>(),
+            ["duplicate-host-key", "duplicate-host-key:loaded:2"]
+        );
+        assert_eq!(normalized.sysmon.len(), 1);
+        assert_eq!(normalized.sysmon[0].uptime_seconds, 61);
+
+        let root = std::env::temp_dir().join(format!("portmate-duplicate-load-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("portmate-store.sqlite3");
+        save_store(&store_path, &normalized).unwrap();
+        let connection = SqliteConnection::open(&store_path).unwrap();
+        for (table, expected) in [
+            ("events", 2),
+            ("transfers", 2),
+            ("trusted_host_keys", 2),
+            ("mcp_audit", 2),
+            ("timeline_marks", 2),
+            ("sysmon_snapshots", 1),
+        ] {
+            let count: usize = connection
+                .query_row(&format!("select count(*) from {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected, "{table}");
+        }
         drop(connection);
         let _ = fs::remove_dir_all(root);
     }
