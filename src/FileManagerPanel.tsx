@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Download,
   File,
+  FilePlus,
   Folder,
   FolderPlus,
   Info,
@@ -257,6 +258,19 @@ export default function FileManagerPanel({
     const nextPath = joinFilePath(panel.path, name.trim(), remote);
     try {
       await invokeBackend("create_directory", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
+      await loadFiles(remote, panel.path, "preserve");
+    } catch (error) {
+      updatePanel(remote, { error: formatError(error) });
+    }
+  }
+
+  async function createFile(remote: boolean) {
+    const panel = remote ? remotePanel : localPanel;
+    const name = window.prompt("文件名");
+    if (!name?.trim()) return;
+    const nextPath = joinFilePath(panel.path, name.trim(), remote);
+    try {
+      await invokeBackend("create_file", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
       await loadFiles(remote, panel.path, "preserve");
     } catch (error) {
       updatePanel(remote, { error: formatError(error) });
@@ -550,6 +564,7 @@ export default function FileManagerPanel({
           onDragLeave={() => setDropTarget((current) => (current === false ? null : current))}
           onDrop={(event) => void dropFile(false, event)}
           onCreateDir={() => void createDir(false)}
+          onCreateFile={() => void createFile(false)}
           onDelete={() => void deleteSelected(false)}
           onRename={() => void renameSelected(false)}
           onChmod={() => void chmodSelected(false)}
@@ -585,6 +600,7 @@ export default function FileManagerPanel({
             onDragLeave={() => setDropTarget((current) => (current === true ? null : current))}
             onDrop={(event) => void dropFile(true, event)}
             onCreateDir={() => void createDir(true)}
+            onCreateFile={() => void createFile(true)}
             onDelete={() => void deleteSelected(true)}
             onRename={() => void renameSelected(true)}
             onChmod={() => void chmodSelected(true)}
@@ -624,6 +640,7 @@ function FileBrowserPane({
   onDragLeave,
   onDrop,
   onCreateDir,
+  onCreateFile,
   onDelete,
   onRename,
   onChmod,
@@ -654,6 +671,7 @@ function FileBrowserPane({
   onDragLeave: () => void;
   onDrop: (event: ReactDragEvent<HTMLElement>) => void;
   onCreateDir: () => void;
+  onCreateFile: () => void;
   onDelete: () => void;
   onRename: () => void;
   onChmod: () => void;
@@ -682,6 +700,7 @@ function FileBrowserPane({
       <div className="file-actions">
         <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} onClick={onSelectAll}><ListChecks size={13} /></button>
         <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir}><FolderPlus size={13} /></button>
+        <button type="button" title="新建文件" aria-label="新建文件" onClick={onCreateFile}><FilePlus size={13} /></button>
         <button type="button" title="重命名" aria-label="重命名" onClick={onRename} disabled={panel.selected.length !== 1}><Pencil size={13} /></button>
         <button type="button" title="删除" aria-label="删除" onClick={onDelete} disabled={!panel.selected.length}><Trash2 size={13} /></button>
         <button type="button" title="修改权限" aria-label="修改权限" onClick={onChmod} disabled={panel.selected.length !== 1}><ShieldCheck size={13} /></button>

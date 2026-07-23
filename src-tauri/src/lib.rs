@@ -6408,6 +6408,14 @@ async fn create_directory(
 }
 
 #[tauri::command]
+async fn create_file(
+    state: State<'_, AppState>,
+    request: FileOperationRequest,
+) -> Result<(), String> {
+    file_operation_inner(state.inner(), request, FileOperation::CreateFile).await
+}
+
+#[tauri::command]
 async fn delete_path(
     state: State<'_, AppState>,
     request: FileOperationRequest,
@@ -12997,6 +13005,7 @@ fn remote_copy_markers(output: &[u8]) -> RemoteCopyMarkers {
 
 enum FileOperation {
     CreateDirectory,
+    CreateFile,
     Delete,
 }
 
@@ -14008,6 +14017,20 @@ async fn file_operation_inner(
                         .await?;
                     sftp_create_dir_all(&sftp, &path).await
                 }
+                FileOperation::CreateFile => {
+                    reject_remote_symlink_components(&sftp, &path, false, "远端文件创建路径")
+                        .await?;
+                    let mut file = sftp
+                        .open_with_flags(
+                            path.clone(),
+                            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+                        )
+                        .await
+                        .map_err(|error| format!("SFTP 新建远端文件失败 {path}: {error}"))?;
+                    file.shutdown()
+                        .await
+                        .map_err(|error| format!("SFTP 关闭新建远端文件失败 {path}: {error}"))
+                }
                 FileOperation::Delete => {
                     reject_remote_symlink_components(&sftp, &path, true, "远端删除路径").await?;
                     sftp_remove_recursive(&sftp, &path).await
@@ -14024,6 +14047,18 @@ async fn file_operation_inner(
                 reject_local_symlink_components(&path, false, "本地目录创建路径")?;
                 fs::create_dir_all(&path)
                     .map_err(|error| format!("创建本地目录失败 {}: {error}", path.display()))
+            }
+            FileOperation::CreateFile => {
+                let path = validate_local_mutating_path(&request.path)?;
+                reject_local_symlink_components(&path, false, "本地文件创建路径")?;
+                let mut options = OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                options.custom_flags(libc::O_NOFOLLOW);
+                options
+                    .open(&path)
+                    .map(|_| ())
+                    .map_err(|error| format!("新建本地文件失败 {}: {error}", path.display()))
             }
             FileOperation::Delete => {
                 let path = validate_local_mutating_path(&request.path)?;
@@ -31937,6 +31972,7 @@ pub fn run() {
             list_files,
             file_properties,
             create_directory,
+            create_file,
             delete_path,
             rename_path,
             chmod_path,
@@ -40822,6 +40858,47 @@ __PORTMATE_DISKS__\n";
         );
     }
 
+    #[test]
+    fn file_manager_local_file_creation_is_exclusive() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("new-file.txt");
+        let state = test_app_state(
+            test_ssh_profile(),
+            root.path().join("portmate-store.sqlite3"),
+        );
+
+        tauri::async_runtime::block_on(async {
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: None,
+                    path: file.display().to_string(),
+                    remote: false,
+                },
+                FileOperation::CreateFile,
+            )
+            .await
+            .unwrap();
+            assert_eq!(fs::read(&file).unwrap(), b"");
+
+            fs::write(&file, b"existing contents").unwrap();
+            let error = file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: None,
+                    path: file.display().to_string(),
+                    remote: false,
+                },
+                FileOperation::CreateFile,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("新建本地文件失败"), "{error}");
+        });
+
+        assert_eq!(fs::read(&file).unwrap(), b"existing contents");
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_directory_creation_rejects_symlink_components() {
@@ -40843,6 +40920,18 @@ __PORTMATE_DISKS__\n";
             test_ssh_profile(),
             root.path().join("portmate-store.sqlite3"),
         );
+        let file_error = tauri::async_runtime::block_on(file_operation_inner(
+            &state,
+            FileOperationRequest {
+                session_id: None,
+                path: link.join("new-file.txt").display().to_string(),
+                remote: false,
+            },
+            FileOperation::CreateFile,
+        ))
+        .unwrap_err();
+        assert!(file_error.contains("符号链接"), "{file_error}");
+        assert!(!target.join("new-file.txt").exists());
         tauri::async_runtime::block_on(async {
             rename_path_inner(
                 &state,
@@ -46323,10 +46412,57 @@ __PORTMATE_DISKS__\n";
             .unwrap();
             assert!(sftp_nested.is_dir());
 
+            let sftp_new_file = root.join("sftp-created-file.txt");
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_new_file.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateFile,
+            )
+            .await
+            .unwrap();
+            assert_eq!(fs::read(&sftp_new_file).unwrap(), b"");
+            fs::write(&sftp_new_file, b"existing remote contents").unwrap();
+            let error = file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_new_file.display().to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateFile,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("新建远端文件"), "{error}");
+            assert_eq!(
+                fs::read(&sftp_new_file).unwrap(),
+                b"existing remote contents"
+            );
+
             let sftp_link_target = root.join("sftp-link-target");
             let sftp_directory_link = root.join("sftp-directory-link");
             fs::create_dir(&sftp_link_target).unwrap();
             std::os::unix::fs::symlink(&sftp_link_target, &sftp_directory_link).unwrap();
+            let error = file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: sftp_directory_link
+                        .join("new-file.txt")
+                        .display()
+                        .to_string(),
+                    remote: true,
+                },
+                FileOperation::CreateFile,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("符号链接"), "{error}");
+            assert!(!sftp_link_target.join("new-file.txt").exists());
             let error = file_operation_inner(
                 &state,
                 FileOperationRequest {

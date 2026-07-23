@@ -573,6 +573,7 @@ try {
             window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
           });
         }
+        if (command === "create_file") return null;
         if (command === "file_properties") {
           if (window.__deferFileProperties) {
             return new Promise((resolve) => {
@@ -1193,9 +1194,9 @@ try {
     && fileDockLayout.actions.length === 2
     && fileDockLayout.actions.every((actions) => (
       actions.scrollWidth <= actions.clientWidth + 1
-      && actions.labels.length === 7
+      && actions.labels.length === 8
       && actions.labels.every(Boolean)
-      && actions.icons === 7
+      && actions.icons === 8
     )),
   `file manager did not occupy the active left dock view: ${JSON.stringify(fileDockLayout)}`);
 
@@ -1312,6 +1313,23 @@ try {
   assert(filePropertiesText.includes("SECOND-RESULT") && !filePropertiesText.includes("FAST-RESULT"),
     `a stale properties response replaced the reopened inspector: ${filePropertiesText}`);
   await page.locator(".file-properties-dialog .utility-actions").getByRole("button", { name: "关闭", exact: true }).click();
+
+  const newFileCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
+  await page.evaluate(() => {
+    window.__originalPrompt = window.prompt;
+    window.prompt = () => "workspace-note.txt";
+  });
+  await localFilePane.getByRole("button", { name: "新建文件", exact: true }).click();
+  await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "create_file").length === count + 1, newFileCallsBefore);
+  const newFileRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").at(-1)?.args.request);
+  await page.evaluate(() => {
+    window.prompt = window.__originalPrompt;
+    delete window.__originalPrompt;
+  });
+  assert(newFileRequest?.path === "/portmate-fast/workspace-note.txt"
+    && newFileRequest?.remote === false
+    && newFileRequest?.sessionId === "edge-router",
+  `new file did not target the active local directory: ${JSON.stringify(newFileRequest)}`);
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 
   const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');
