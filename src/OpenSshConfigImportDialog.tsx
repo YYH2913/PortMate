@@ -4,6 +4,7 @@ import {
   parseOpenSshConfig,
 } from "./openssh-config-import";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
+import type { ReactNode } from "react";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
 
 export type OpenSshConfigImportSaveResult = SessionConfigImportSaveResult;
@@ -13,9 +14,11 @@ const parseConfig = (source: string) => parseOpenSshConfig(source);
 export default function OpenSshConfigImportDialog({
   onImport,
   onClose,
+  headerAddon,
 }: {
   onImport: (candidates: OpenSshImportCandidate[]) => Promise<OpenSshConfigImportSaveResult>;
   onClose: () => void;
+  headerAddon?: (busy: boolean) => ReactNode;
 }) {
   return <SessionConfigImportDialog
     title="导入 OpenSSH 会话"
@@ -31,6 +34,7 @@ export default function OpenSshConfigImportDialog({
       candidate.identityFiles.length ? `${candidate.identityFiles.length} 个密钥` : "",
       candidate.jumps.length ? `${candidate.jumps.length} 个跳板` : "",
     ].filter(Boolean).join(" ")}
+    headerAddon={headerAddon}
     onImport={onImport}
     onClose={onClose}
   />;

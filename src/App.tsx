@@ -114,9 +114,7 @@ const LazyLogManagerDialog = lazy(() => import("./LogManagerDialog"));
 const LazyKeyManagerDialog = lazy(() => import("./KeyManagerDialog"));
 const LazyTerminalSettingsDialog = lazy(() => import("./TerminalSettingsDialog"));
 const LazySessionSettingsDialog = lazy(() => import("./SessionSettingsDialog"));
-const LazyOpenSshConfigImportDialog = lazy(() => import("./OpenSshConfigImportDialog"));
-const LazyPuttyConfigImportDialog = lazy(() => import("./PuttyConfigImportDialog"));
-const LazyShellConfigImportDialog = lazy(() => import("./ShellConfigImportDialog"));
+const LazySessionImportDialog = lazy(() => import("./SessionImportDialog"));
 const LazyFileManagerPanel = lazy(() => import("./FileManagerPanel"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -168,7 +166,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | "putty-import" | "shell-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "session-import" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -1412,16 +1410,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       openSessionProfileDialog(createSessionDraft(), null, "会话");
       return;
     }
-    if (item === "导入 OpenSSH 配置") {
-      setUtilityDialog("openssh-import");
-      return;
-    }
-    if (item === "导入 PuTTY 配置") {
-      setUtilityDialog("putty-import");
-      return;
-    }
-    if (item === "导入本地 Shell") {
-      setUtilityDialog("shell-import");
+    if (item === "导入会话") {
+      setUtilityDialog("session-import");
       return;
     }
     if (item === "新建工作区窗口") {
@@ -3602,19 +3592,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           />
         </Suspense>
       )}
-      {utilityDialog === "openssh-import" && (
+      {utilityDialog === "session-import" && (
         <Suspense fallback={null}>
-          <LazyOpenSshConfigImportDialog onImport={importOpenSshConfigCandidates} onClose={() => setUtilityDialog(null)} />
-        </Suspense>
-      )}
-      {utilityDialog === "putty-import" && (
-        <Suspense fallback={null}>
-          <LazyPuttyConfigImportDialog onImport={importPuttyConfigCandidates} onClose={() => setUtilityDialog(null)} />
-        </Suspense>
-      )}
-      {utilityDialog === "shell-import" && (
-        <Suspense fallback={null}>
-          <LazyShellConfigImportDialog onImport={importShellConfigCandidates} onClose={() => setUtilityDialog(null)} />
+          <LazySessionImportDialog
+            onImportOpenSsh={importOpenSshConfigCandidates}
+            onImportPutty={importPuttyConfigCandidates}
+            onImportShell={importShellConfigCandidates}
+            onClose={() => setUtilityDialog(null)}
+          />
         </Suspense>
       )}
       {utilityDialog === "transfer" && active && (

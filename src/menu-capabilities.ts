@@ -1,7 +1,7 @@
 import type { SessionKind, SessionStatus } from "./types";
 
 export const menuGroups = [
-  { label: "会话", items: ["新建会话", "导入 OpenSSH 配置", "导入 PuTTY 配置", "导入本地 Shell", "新建工作区窗口", "会话设置", "启动会话", "关闭会话", "复制会话"] },
+  { label: "会话", items: ["新建会话", "导入会话", "新建工作区窗口", "会话设置", "启动会话", "关闭会话", "复制会话"] },
   { label: "终端", items: ["查找", "跳转到行", "块选择", "远程模式", "本地模式", "Normal 模式", "Command 模式", "同步输入", "自由输入", "导出终端文本", "导出选中文本"] },
   { label: "工作区", items: ["资源管理器", "文件管理器", "历史命令", "发送", "快捷栏", "状态栏", "还原布局"] },
   { label: "工具", items: ["传输任务", "终端设置", "OneKeys", "快速命令", "端口转发", "Tmux", "Sysmon", "串口分析器", "触发器", "日志管理", "密钥管理器", "MCP Bridge", "关于 PortMate"] },

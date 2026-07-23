@@ -5271,8 +5271,64 @@ fieldset label {
   background: rgba(35, 135, 213, 0.18);
 }
 
+.session-config-import-dialog .dialog-title {
+  gap: 8px;
+}
+
+.session-config-import-dialog .dialog-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-import-mode-switch {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #101923;
+}
+
+.session-import-mode-switch button {
+  width: auto;
+  height: 26px;
+  margin-left: 0;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.session-import-mode-switch button:last-child {
+  border-right: 0;
+}
+
+.session-import-mode-switch button[aria-pressed="true"] {
+  background: rgba(94, 234, 212, 0.14);
+  color: var(--cyan);
+}
+
+.session-import-mode-switch button:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.session-import-mode-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
 @media (max-width: 720px) {
   .session-config-import-dialog {
+    grid-template-rows: 70px minmax(0, 1fr) 58px;
     width: calc(100vw - 16px);
     height: min(600px, calc(100dvh - 16px));
   }
@@ -5289,6 +5345,43 @@ fieldset label {
 
   .session-import-footer .dialog-actions button {
     min-width: 72px;
+  }
+
+  .session-config-import-dialog .dialog-title {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) 32px;
+    grid-template-rows: 32px 27px;
+    align-content: center;
+    gap: 2px 6px;
+    padding-inline: 10px;
+  }
+
+  .session-config-import-dialog .dialog-title > svg {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .session-config-import-dialog .dialog-title > strong {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .session-config-import-dialog .dialog-title > button {
+    grid-column: 3;
+    grid-row: 1;
+    margin-left: 0;
+  }
+
+  .session-import-mode-switch {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .session-import-mode-switch button {
+    height: 25px;
+    padding-inline: 6px;
+    font-size: 10px;
   }
 }
 

@@ -29,6 +29,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
   candidateName,
   candidateTarget,
   candidateDetails,
+  headerAddon,
   onImport,
   onClose,
 }: {
@@ -42,6 +43,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
   candidateName: (candidate: C) => string;
   candidateTarget: (candidate: C) => string;
   candidateDetails?: (candidate: C) => ReactNode;
+  headerAddon?: (busy: boolean) => ReactNode;
   onImport: (candidates: C[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
 }) {
@@ -125,6 +127,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
         <header className="dialog-title">
           <FileUp size={17} />
           <strong id="session-config-import-title">{title}</strong>
+          {headerAddon?.(busy)}
           <button type="button" title="关闭" aria-label={`关闭${title}`} onClick={onClose} disabled={busy}><X size={18} /></button>
         </header>
         <section className="session-config-import-content">

@@ -936,12 +936,16 @@ try {
   const sessionMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),
   ));
-  assert(sessionMenuState["启动会话"] && !sessionMenuState["关闭会话"] && !sessionMenuState["会话设置"],
+  assert(sessionMenuState["启动会话"] && !sessionMenuState["关闭会话"] && !sessionMenuState["会话设置"]
+    && sessionMenuState["导入会话"] === false
+    && !Object.hasOwn(sessionMenuState, "导入 OpenSSH 配置")
+    && !Object.hasOwn(sessionMenuState, "导入 PuTTY 配置")
+    && !Object.hasOwn(sessionMenuState, "导入本地 Shell"),
     `connected session menu capabilities are wrong: ${JSON.stringify(sessionMenuState)}`);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const openSshImportDialog = page.locator(".session-config-import-dialog");
   await openSshImportDialog.waitFor();
   const openSshConfigInput = openSshImportDialog.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true });
@@ -956,7 +960,8 @@ Host staging
   HostName staging.example.test
   Port 2203`);
   await openSshImportDialog.locator(".session-import-row").first().waitFor();
-  assert(await openSshImportDialog.locator(".session-import-row").count() === 2
+  assert(await openSshImportDialog.getByRole("button", { name: "OpenSSH", exact: true }).getAttribute("aria-pressed") === "true"
+    && await openSshImportDialog.locator(".session-import-row").count() === 2
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 production", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 staging", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
@@ -967,9 +972,10 @@ Host staging
   await openSshImportDialog.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入 PuTTY 配置" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const puttyImportDialog = page.locator(".session-config-import-dialog");
   await puttyImportDialog.waitFor();
+  await puttyImportDialog.getByRole("button", { name: "PuTTY", exact: true }).click();
   await puttyImportDialog.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).fill(`Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Gateway%20SSH]
@@ -1001,9 +1007,10 @@ Host staging
   await puttyImportDialog.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入本地 Shell" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const shellImportDialog = page.locator(".session-config-import-dialog");
   await shellImportDialog.waitFor();
+  await shellImportDialog.getByRole("button", { name: "Shell", exact: true }).click();
   await shellImportDialog.getByRole("textbox", { name: "Shell 列表内容", exact: true }).fill(`# /etc/shells
 /bin/zsh
 /usr/bin/bash
@@ -2503,7 +2510,7 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const mobileOpenSshImport = page.locator(".session-config-import-dialog");
   await mobileOpenSshImport.waitFor();
   await mobileOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host mobile
@@ -2524,13 +2531,20 @@ Host staging
       clientWidth: dialog.clientWidth,
       contentScrollWidth: content?.scrollWidth ?? 0,
       contentClientWidth: content?.clientWidth ?? 0,
+      modeScrollWidth: dialog.querySelector(".session-import-mode-switch")?.scrollWidth ?? 0,
+      modeClientWidth: dialog.querySelector(".session-import-mode-switch")?.clientWidth ?? 0,
+      modeWidth: dialog.querySelector(".session-import-mode-switch")?.getBoundingClientRect().width ?? 0,
+      modeHeight: dialog.querySelector(".session-import-mode-switch")?.getBoundingClientRect().height ?? 0,
     };
   });
   assert(mobileOpenSshBounds.left >= 0 && mobileOpenSshBounds.right <= 390
     && mobileOpenSshBounds.top >= 0 && mobileOpenSshBounds.bottom <= 844
     && mobileOpenSshBounds.height <= 600
     && mobileOpenSshBounds.scrollWidth <= mobileOpenSshBounds.clientWidth
-    && mobileOpenSshBounds.contentScrollWidth <= mobileOpenSshBounds.contentClientWidth,
+    && mobileOpenSshBounds.contentScrollWidth <= mobileOpenSshBounds.contentClientWidth
+    && mobileOpenSshBounds.modeScrollWidth <= mobileOpenSshBounds.modeClientWidth
+    && mobileOpenSshBounds.modeWidth > 0
+    && mobileOpenSshBounds.modeHeight > 0,
   `mobile OpenSSH import dialog overflows: ${JSON.stringify(mobileOpenSshBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import-mobile.png`, fullPage: true });
   await mobileOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
@@ -3708,7 +3722,7 @@ Host staging
   await page.setViewportSize({ width: 1440, height: 900 });
   const openSshImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const savingOpenSshImport = page.locator(".session-config-import-dialog");
   await savingOpenSshImport.waitFor();
   await savingOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host saved-profile
@@ -3782,9 +3796,10 @@ Host staging
 
   const puttyImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入 PuTTY 配置" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const savingPuttyImport = page.locator(".session-config-import-dialog");
   await savingPuttyImport.waitFor();
+  await savingPuttyImport.getByRole("button", { name: "PuTTY", exact: true }).click();
   await savingPuttyImport.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).fill(`Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Saved%20PuTTY]
@@ -3856,9 +3871,10 @@ Host staging
 
   const shellImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
-  await page.locator(".menu-popover button", { hasText: "导入本地 Shell" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
   const savingShellImport = page.locator(".session-config-import-dialog");
   await savingShellImport.waitFor();
+  await savingShellImport.getByRole("button", { name: "Shell", exact: true }).click();
   await savingShellImport.getByRole("textbox", { name: "Shell 列表内容", exact: true }).fill("/usr/bin/zsh");
   await savingShellImport.getByRole("button", { name: "导入", exact: true }).click();
   await savingShellImport.locator(".dialog-note", { hasText: "已导入 1 个会话" }).waitFor();
