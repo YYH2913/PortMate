@@ -573,7 +573,7 @@ try {
             window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
           });
         }
-        if (command === "create_file" || command === "move_paths") return null;
+        if (command === "create_file" || command === "delete_paths" || command === "move_paths") return null;
         if (command === "file_properties") {
           if (window.__deferFileProperties) {
             return new Promise((resolve) => {
@@ -1363,6 +1363,43 @@ try {
     && newFileRequest?.remote === false
     && newFileRequest?.sessionId === "edge-router",
   `new file did not target the active local directory: ${JSON.stringify(newFileRequest)}`);
+
+  await page.evaluate(() => {
+    window.__deferFileLoads = true;
+    window.__pendingFileLoads = [];
+  });
+  await localFilePath.fill("/portmate-delete");
+  await localFilePath.press("Enter");
+  await page.waitForFunction(() => window.__pendingFileLoads.some((request) => request.args.request.path === "/portmate-delete"));
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.find((request) => request.args.request.path === "/portmate-delete");
+    pending.resolve([
+      { name: "DELETE-ONE", path: "/portmate-delete/DELETE-ONE", isDir: false, size: 4, modified: null },
+      { name: "DELETE-TWO", path: "/portmate-delete/DELETE-TWO", isDir: false, size: 6, modified: null },
+    ]);
+    window.__deferFileLoads = false;
+  });
+  await localFilePane.locator(".file-row", { hasText: "DELETE-ONE" }).waitFor();
+  await localFilePane.locator(".file-row", { hasText: "DELETE-ONE" }).click();
+  await localFilePane.locator(".file-row", { hasText: "DELETE-TWO" }).click({ modifiers: ["Control"] });
+  const deleteCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_paths").length);
+  await page.evaluate(() => {
+    window.__originalConfirm = window.confirm;
+    window.confirm = () => true;
+  });
+  await localFilePane.getByRole("button", { name: "删除", exact: true }).click();
+  await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "delete_paths").length === count + 1, deleteCallsBefore);
+  const deleteRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_paths").at(-1)?.args.request);
+  await page.evaluate(() => {
+    window.confirm = window.__originalConfirm;
+    delete window.__originalConfirm;
+  });
+  assert(JSON.stringify(deleteRequest?.paths) === JSON.stringify([
+    "/portmate-delete/DELETE-ONE",
+    "/portmate-delete/DELETE-TWO",
+  ]) && deleteRequest?.remote === false
+    && deleteRequest?.sessionId === "edge-router",
+  `batch delete did not target the selected local items: ${JSON.stringify(deleteRequest)}`);
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 
   const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');

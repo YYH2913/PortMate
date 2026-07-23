@@ -284,9 +284,13 @@ export default function FileManagerPanel({
     if (!panel.selected.length) return;
     if (!window.confirm(`删除选中的 ${panel.selected.length} 项?`)) return;
     try {
-      for (const entry of panel.selected) {
-        await invokeBackend("delete_path", { request: { sessionId: active?.profile.id ?? null, path: entry.path, remote } });
-      }
+      await invokeBackend("delete_paths", {
+        request: {
+          sessionId: active?.profile.id ?? null,
+          paths: panel.selected.map((entry) => entry.path),
+          remote,
+        },
+      });
       await loadFiles(remote, panel.path, "preserve");
     } catch (error) {
       updatePanel(remote, { error: formatError(error) });

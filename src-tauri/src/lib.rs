@@ -1966,6 +1966,14 @@ pub struct FileOperationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeletePathsRequest {
+    pub session_id: Option<String>,
+    pub paths: Vec<String>,
+    pub remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenamePathRequest {
     pub session_id: Option<String>,
     pub old_path: String,
@@ -6430,6 +6438,14 @@ async fn delete_path(
     request: FileOperationRequest,
 ) -> Result<(), String> {
     file_operation_inner(state.inner(), request, FileOperation::Delete).await
+}
+
+#[tauri::command]
+async fn delete_paths(
+    state: State<'_, AppState>,
+    request: DeletePathsRequest,
+) -> Result<(), String> {
+    delete_paths_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -14091,6 +14107,162 @@ async fn file_operation_inner(
     }
 }
 
+#[derive(Debug)]
+struct LocalDeletePath {
+    source: PathBuf,
+    identity: PathBuf,
+    source_is_dir: bool,
+}
+
+#[derive(Debug)]
+struct RemoteDeletePath {
+    source: String,
+    source_is_dir: bool,
+}
+
+fn prepare_local_delete_paths(paths: &[String]) -> Result<Vec<LocalDeletePath>, String> {
+    validate_file_batch_path_count(paths)?;
+    let mut identities = HashSet::new();
+    let mut plan = Vec::with_capacity(paths.len());
+    for raw_path in paths {
+        let source = validate_local_mutating_path(raw_path)?;
+        reject_local_symlink_components(&source, true, "本地批量删除路径")?;
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("读取本地批量删除路径失败 {}: {error}", source.display()))?;
+        let identity = canonical_local_entry_path(&source, "本地批量删除路径")?;
+        if !identities.insert(identity.clone()) {
+            return Err(format!("批量删除包含重复路径: {}", source.display()));
+        }
+        plan.push(LocalDeletePath {
+            source,
+            identity,
+            source_is_dir: metadata.is_dir() && !metadata.file_type().is_symlink(),
+        });
+    }
+    for directory in plan.iter().filter(|item| item.source_is_dir) {
+        if let Some(nested) = plan.iter().find(|item| {
+            item.identity != directory.identity && item.identity.starts_with(&directory.identity)
+        }) {
+            return Err(format!(
+                "批量删除不能同时包含目录及其子项: {} 和 {}",
+                directory.source.display(),
+                nested.source.display()
+            ));
+        }
+    }
+    Ok(plan)
+}
+
+async fn prepare_remote_delete_paths(
+    sftp: &SftpSession,
+    paths: &[String],
+) -> Result<Vec<RemoteDeletePath>, String> {
+    validate_file_batch_path_count(paths)?;
+    let mut sources = HashSet::new();
+    let mut plan = Vec::with_capacity(paths.len());
+    for raw_path in paths {
+        let source = validate_remote_mutating_path(raw_path)?;
+        let source = source.trim_end_matches('/').to_string();
+        if !sources.insert(source.clone()) {
+            return Err(format!("批量删除包含重复路径: {source}"));
+        }
+        reject_remote_symlink_components(sftp, &source, true, "远端批量删除路径").await?;
+        let metadata = sftp
+            .symlink_metadata(source.clone())
+            .await
+            .map_err(|error| format!("SFTP 读取远端批量删除路径失败 {source}: {error}"))?;
+        plan.push(RemoteDeletePath {
+            source,
+            source_is_dir: metadata.is_dir() && !metadata.is_symlink(),
+        });
+    }
+    for directory in plan.iter().filter(|item| item.source_is_dir) {
+        if let Some(nested) = plan.iter().find(|item| {
+            item.source != directory.source
+                && remote_path_is_within(&item.source, &directory.source)
+        }) {
+            return Err(format!(
+                "批量删除不能同时包含目录及其子项: {} 和 {}",
+                directory.source, nested.source
+            ));
+        }
+    }
+    Ok(plan)
+}
+
+async fn delete_paths_inner(state: &AppState, request: DeletePathsRequest) -> Result<(), String> {
+    validate_file_batch_path_count(&request.paths)?;
+    if request.remote {
+        let session_id = request
+            .session_id
+            .as_deref()
+            .ok_or_else(|| "remote batch delete requires sessionId".to_string())?;
+        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        let handle = auxiliary.handle();
+        let sftp = open_sftp_session(handle).await?;
+        let result = async {
+            let plan = prepare_remote_delete_paths(&sftp, &request.paths).await?;
+            for (completed, item) in plan.into_iter().enumerate() {
+                reject_remote_symlink_components(
+                    &sftp,
+                    &item.source,
+                    true,
+                    "远端批量删除路径",
+                )
+                .await
+                .map_err(|error| {
+                    format!(
+                        "SFTP 批量删除失败 {}: {error}; 已完成 {completed} 项，请刷新目录确认当前状态",
+                        item.source
+                    )
+                })?;
+                sftp_remove_recursive(&sftp, &item.source)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "SFTP 批量删除失败 {}: {error}; 已完成 {completed} 项，请刷新目录确认当前状态",
+                            item.source
+                        )
+                    })?;
+            }
+            Ok(())
+        }
+        .await;
+        let _ = sftp.close().await;
+        result
+    } else {
+        let plan = prepare_local_delete_paths(&request.paths)?;
+        for (completed, item) in plan.into_iter().enumerate() {
+            reject_local_symlink_components(&item.source, true, "本地批量删除路径").map_err(
+                |error| {
+                    format!(
+                        "本地批量删除失败 {}: {error}; 已完成 {completed} 项，请刷新目录确认当前状态",
+                        item.source.display()
+                    )
+                },
+            )?;
+            let metadata = fs::symlink_metadata(&item.source).map_err(|error| {
+                format!(
+                    "本地批量删除失败 {}: 读取路径失败 {error}; 已完成 {completed} 项，请刷新目录确认当前状态",
+                    item.source.display()
+                )
+            })?;
+            let result = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                fs::remove_dir_all(&item.source)
+            } else {
+                fs::remove_file(&item.source)
+            };
+            result.map_err(|error| {
+                format!(
+                    "本地批量删除失败 {}: {error}; 已完成 {completed} 项，请刷新目录确认当前状态",
+                    item.source.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 fn ensure_local_path_missing(path: &Path, label: &str) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(_) => Err(format!("{label}已存在: {}", path.display())),
@@ -14164,13 +14336,13 @@ struct RemoteMovePath {
     source_is_dir: bool,
 }
 
-fn validate_move_path_count(paths: &[String]) -> Result<(), String> {
+fn validate_file_batch_path_count(paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("移动操作没有源路径".to_string());
+        return Err("文件批量操作没有源路径".to_string());
     }
     if paths.len() > MAX_EXTERNAL_DROP_ROOTS {
         return Err(format!(
-            "一次最多移动 {MAX_EXTERNAL_DROP_ROOTS} 个顶层路径，当前为 {} 个",
+            "一次最多处理 {MAX_EXTERNAL_DROP_ROOTS} 个顶层路径，当前为 {} 个",
             paths.len()
         ));
     }
@@ -14196,7 +14368,7 @@ fn prepare_local_move_paths(
     paths: &[String],
     destination: &str,
 ) -> Result<Vec<LocalMovePath>, String> {
-    validate_move_path_count(paths)?;
+    validate_file_batch_path_count(paths)?;
     let destination = validate_local_mutating_path(destination)?;
     reject_local_symlink_components(&destination, false, "本地移动目标目录")?;
     let destination_metadata = fs::symlink_metadata(&destination).map_err(|error| {
@@ -14281,7 +14453,7 @@ async fn prepare_remote_move_paths(
     paths: &[String],
     destination: &str,
 ) -> Result<Vec<RemoteMovePath>, String> {
-    validate_move_path_count(paths)?;
+    validate_file_batch_path_count(paths)?;
     let destination = validate_remote_mutating_path(destination)?;
     let destination = destination.trim_end_matches('/').to_string();
     reject_remote_symlink_components(sftp, &destination, false, "远端移动目标目录").await?;
@@ -32293,6 +32465,7 @@ pub fn run() {
             create_directory,
             create_file,
             delete_path,
+            delete_paths,
             rename_path,
             move_paths,
             chmod_path,
@@ -41220,6 +41393,87 @@ __PORTMATE_DISKS__\n";
     }
 
     #[test]
+    fn file_manager_local_batch_delete_removes_files_and_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("remove.txt");
+        let directory = root.path().join("remove-tree");
+        fs::create_dir_all(directory.join("nested")).unwrap();
+        fs::write(&file, b"remove").unwrap();
+        fs::write(directory.join("nested/value.txt"), b"remove nested").unwrap();
+        let state = test_app_state(
+            test_ssh_profile(),
+            root.path().join("portmate-store.sqlite3"),
+        );
+
+        tauri::async_runtime::block_on(delete_paths_inner(
+            &state,
+            DeletePathsRequest {
+                session_id: None,
+                paths: vec![file.display().to_string(), directory.display().to_string()],
+                remote: false,
+            },
+        ))
+        .unwrap();
+
+        assert!(!file.exists());
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn file_manager_local_batch_delete_preflights_directory_children() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("remove-tree");
+        let child = directory.join("value.txt");
+        fs::create_dir(&directory).unwrap();
+        fs::write(&child, b"keep").unwrap();
+        let state = test_app_state(
+            test_ssh_profile(),
+            root.path().join("portmate-store.sqlite3"),
+        );
+
+        let error = tauri::async_runtime::block_on(delete_paths_inner(
+            &state,
+            DeletePathsRequest {
+                session_id: None,
+                paths: vec![directory.display().to_string(), child.display().to_string()],
+                remote: false,
+            },
+        ))
+        .unwrap_err();
+
+        assert!(error.contains("目录及其子项"), "{error}");
+        assert!(directory.is_dir());
+        assert_eq!(fs::read(&child).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_manager_local_batch_delete_removes_a_final_symlink_only() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("protected.txt");
+        let link = root.path().join("remove-link");
+        fs::write(&target, b"protected").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let state = test_app_state(
+            test_ssh_profile(),
+            root.path().join("portmate-store.sqlite3"),
+        );
+
+        tauri::async_runtime::block_on(delete_paths_inner(
+            &state,
+            DeletePathsRequest {
+                session_id: None,
+                paths: vec![link.display().to_string()],
+                remote: false,
+            },
+        ))
+        .unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"protected");
+    }
+
+    #[test]
     fn file_manager_local_move_moves_multiple_selected_paths() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
@@ -46990,6 +47244,33 @@ __PORTMATE_DISKS__\n";
                 fs::read(sftp_move_destination.join("collision.txt")).unwrap(),
                 b"existing remote target"
             );
+
+            let sftp_delete_root = root.join("sftp-delete-root");
+            let sftp_delete_file = sftp_delete_root.join("single.txt");
+            let sftp_delete_directory = sftp_delete_root.join("nested");
+            fs::create_dir_all(&sftp_delete_directory).unwrap();
+            fs::write(&sftp_delete_file, b"delete remote file").unwrap();
+            fs::write(
+                sftp_delete_directory.join("value.txt"),
+                b"delete remote nested",
+            )
+            .unwrap();
+            delete_paths_inner(
+                &state,
+                DeletePathsRequest {
+                    session_id: Some(profile.id.clone()),
+                    paths: vec![
+                        sftp_delete_file.display().to_string(),
+                        sftp_delete_directory.display().to_string(),
+                    ],
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(!sftp_delete_file.exists());
+            assert!(!sftp_delete_directory.exists());
+            fs::remove_dir(&sftp_delete_root).unwrap();
 
             let sftp_link_target = root.join("sftp-link-target");
             let sftp_directory_link = root.join("sftp-directory-link");
