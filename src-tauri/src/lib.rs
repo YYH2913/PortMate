@@ -281,7 +281,7 @@ const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; ubus call network.interface dump 2>/dev/null'"#;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; { ip -o addr show 2>/dev/null | head -n 64; ip addr show 2>/dev/null | head -n 64; ifconfig -a 2>/dev/null | head -n 64; busybox ip -o addr show 2>/dev/null | head -n 64; busybox ip addr show 2>/dev/null | head -n 64; busybox ifconfig -a 2>/dev/null | head -n 64; } | head -n 384; echo __PORTMATE_KERNEL_IPV6__; head -n 128 /proc/net/if_inet6 2>/dev/null; echo __PORTMATE_KERNEL_IPV4__; head -n 384 /proc/net/fib_trie 2>/dev/null; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; { ip -o addr show 2>/dev/null | head -n 64; ip addr show 2>/dev/null | head -n 64; ifconfig -a 2>/dev/null | head -n 64; busybox ip -o addr show 2>/dev/null | head -n 64; busybox ip addr show 2>/dev/null | head -n 64; busybox ifconfig -a 2>/dev/null | head -n 64; } | head -n 384; echo __PORTMATE_KERNEL_IPV6__; head -n 128 /proc/net/if_inet6 2>/dev/null; echo __PORTMATE_KERNEL_IPV4__; head -n 384 /proc/net/fib_trie 2>/dev/null; echo __PORTMATE_HOSTNAME_ADDRS__; { hostname -I 2>/dev/null; hostname -i 2>/dev/null; busybox hostname -i 2>/dev/null; } | head -n 32; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
@@ -28553,7 +28553,16 @@ async fn collect_remote_sysmon(
             )
             .await?;
             let mut snapshot = parse_remote_sysmon_output(session_id, &output)?;
-            if remote_linux_sysmon_needs_openwrt_address_fallback(&snapshot.network_interfaces) {
+            if remote_linux_sysmon_needs_network_address_fallback(&snapshot.network_interfaces) {
+                merge_remote_linux_sysmon_network_addresses(
+                    &mut snapshot.network_interfaces,
+                    &mut snapshot.rx_kbps,
+                    &mut snapshot.tx_kbps,
+                    &output,
+                    parse_remote_linux_kernel_network_addresses(&output),
+                );
+            }
+            if remote_linux_sysmon_needs_network_address_fallback(&snapshot.network_interfaces) {
                 if let Ok(ubus_output) = exec_ssh_command_capture(
                     handle,
                     REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND,
@@ -28569,15 +28578,6 @@ async fn collect_remote_sysmon(
                         parse_openwrt_network_interface_dump(&ubus_output),
                     );
                 }
-            }
-            if remote_linux_sysmon_needs_openwrt_address_fallback(&snapshot.network_interfaces) {
-                merge_remote_linux_sysmon_network_addresses(
-                    &mut snapshot.network_interfaces,
-                    &mut snapshot.rx_kbps,
-                    &mut snapshot.tx_kbps,
-                    &output,
-                    parse_remote_linux_kernel_network_addresses(&output),
-                );
             }
             Ok(snapshot)
         }
@@ -29866,7 +29866,7 @@ fn sort_sysmon_network_interfaces(interfaces: &mut [SysmonNetworkInterface]) {
     });
 }
 
-fn remote_linux_sysmon_needs_openwrt_address_fallback(
+fn remote_linux_sysmon_needs_network_address_fallback(
     interfaces: &[SysmonNetworkInterface],
 ) -> bool {
     interfaces.is_empty()
@@ -29898,11 +29898,43 @@ fn parse_remote_linux_kernel_network_addresses(output: &str) -> BTreeMap<String,
         "__PORTMATE_KERNEL_IPV6__",
         "__PORTMATE_KERNEL_IPV4__",
     );
-    let ipv4 = section_between(output, "__PORTMATE_KERNEL_IPV4__", "__PORTMATE_LOADAVG__");
+    let ipv4 = section_between(
+        output,
+        "__PORTMATE_KERNEL_IPV4__",
+        "__PORTMATE_HOSTNAME_ADDRS__",
+    );
+    let ipv4 = if ipv4.is_empty() {
+        section_between(output, "__PORTMATE_KERNEL_IPV4__", "__PORTMATE_LOADAVG__")
+    } else {
+        ipv4
+    };
+    let hostname = section_between(
+        output,
+        "__PORTMATE_HOSTNAME_ADDRS__",
+        "__PORTMATE_LOADAVG__",
+    );
     let mut addresses = parse_linux_if_inet6_addresses(ipv6);
-    let kernel_ipv4 = parse_linux_fib_trie_local_addresses(ipv4);
-    if !kernel_ipv4.is_empty() {
-        addresses.insert("kernel".to_string(), kernel_ipv4);
+    let mut kernel_addresses = parse_linux_fib_trie_local_addresses(ipv4);
+    kernel_addresses.extend(parse_linux_hostname_network_addresses(hostname));
+    let kernel_addresses = normalize_sysmon_addresses(kernel_addresses);
+    if !kernel_addresses.is_empty() {
+        addresses.insert("kernel".to_string(), kernel_addresses);
+    }
+    addresses
+}
+
+fn parse_linux_hostname_network_addresses(raw: &str) -> Vec<String> {
+    let mut addresses = Vec::new();
+    for value in raw.split_whitespace() {
+        let Some(address) = normalize_sysmon_address(value) else {
+            continue;
+        };
+        if !is_usable_sysmon_network_address(&address) {
+            continue;
+        }
+        if addresses.len() < 8 && !addresses.contains(&address) {
+            addresses.push(address);
+        }
     }
     addresses
 }
@@ -35500,7 +35532,7 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             .network_interfaces
             .iter()
             .any(|interface| interface.name == "br-lan"));
-        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
         let link_local_only = [SysmonNetworkInterface {
@@ -35511,14 +35543,14 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             rx_kbps: 0.0,
             tx_kbps: 0.0,
         }];
-        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(remote_linux_sysmon_needs_network_address_fallback(
             &link_local_only
         ));
         let lan_address = [SysmonNetworkInterface {
             addresses: vec!["192.168.8.1/24".to_string()],
             ..link_local_only[0].clone()
         }];
-        assert!(!remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(!remote_linux_sysmon_needs_network_address_fallback(
             &lan_address
         ));
         merge_remote_linux_sysmon_network_addresses(
@@ -35533,7 +35565,7 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             snapshot.network_interfaces[0].addresses,
             vec!["192.168.8.1/24", "fd12:3456::1/64"]
         );
-        assert!(!remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(!remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
 
@@ -35574,6 +35606,8 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("/proc/net/if_inet6"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("__PORTMATE_KERNEL_IPV4__"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("/proc/net/fib_trie"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("__PORTMATE_HOSTNAME_ADDRS__"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("hostname -I 2>/dev/null"));
         assert!(REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND
             .contains("ubus call network.interface dump 2>/dev/null"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 384"));
@@ -35675,7 +35709,7 @@ __PORTMATE_PROCESSES__\n\
 __PORTMATE_DISKS__\n";
         let mut snapshot = parse_remote_sysmon_output("openwrt-session", output).unwrap();
         assert!(snapshot.network_interfaces.is_empty());
-        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
 
@@ -35735,6 +35769,8 @@ Main:
            /32 host LOCAL
         |-- 192.0.2.255
            /32 link BROADCAST
+__PORTMATE_HOSTNAME_ADDRS__
+127.0.0.1 192.0.2.99 2001:db8::99 fe80::99
 __PORTMATE_LOADAVG__
 0.00 0.00 0.00
 __PORTMATE_PROCESSES__
@@ -35742,7 +35778,7 @@ __PORTMATE_DISKS__
 "#;
 
         let mut snapshot = parse_remote_sysmon_output("remote-session", output).unwrap();
-        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
 
@@ -35753,7 +35789,7 @@ __PORTMATE_DISKS__
         );
         assert_eq!(
             kernel_addresses.get("kernel").cloned().unwrap_or_default(),
-            vec!["192.0.2.42"]
+            vec!["192.0.2.42", "192.0.2.99", "2001:db8::99"]
         );
 
         merge_remote_linux_sysmon_network_addresses(
@@ -35768,9 +35804,10 @@ __PORTMATE_DISKS__
             interface.name == "wan0" && interface.addresses == ["fe80::1/64", "2001:db8::42/64"]
         }));
         assert!(snapshot.network_interfaces.iter().any(|interface| {
-            interface.name == "kernel" && interface.addresses == ["192.0.2.42"]
+            interface.name == "kernel"
+                && interface.addresses == ["192.0.2.42", "192.0.2.99", "2001:db8::99"]
         }));
-        assert!(!remote_linux_sysmon_needs_openwrt_address_fallback(
+        assert!(!remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
     }
