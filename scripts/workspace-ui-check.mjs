@@ -922,6 +922,15 @@ try {
   await page.locator(".center-workspace").click({ position: { x: 400, y: 160 } });
   await workspaceViewMenu.waitFor({ state: "detached" });
 
+  const edgeTabLabel = page.locator('.workspace-pane-tab[data-view-id="view-edge"] .workspace-pane-tab-label');
+  await edgeTabLabel.dispatchEvent("auxclick", { button: 1 });
+  const middleClickRename = page.locator(".workspace-view-rename-dialog");
+  await middleClickRename.waitFor();
+  assert(await middleClickRename.getByLabel("视图名称", { exact: true }).inputValue() === "Edge",
+    "middle-clicking a workspace view tab did not open its rename dialog");
+  await middleClickRename.getByRole("button", { name: "取消", exact: true }).click();
+  await middleClickRename.waitFor({ state: "detached" });
+
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   const sessionMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),

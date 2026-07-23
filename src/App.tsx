@@ -4431,6 +4431,12 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                     event.stopPropagation();
                     props.onRenameView(node.id, view.id);
                   }}
+                  onAuxClick={(event) => {
+                    if (event.button !== 1) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    props.onRenameView(node.id, view.id);
+                  }}
                   onClick={(event) => {
                     event.stopPropagation();
                     props.onActivate(node.id, view.id);
