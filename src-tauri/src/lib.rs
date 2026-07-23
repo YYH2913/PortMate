@@ -286,7 +286,7 @@ const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; ubus call network.interface dump 2>/dev/null'"#;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; { ip -o addr show 2>/dev/null | head -n 64; ip addr show 2>/dev/null | head -n 64; ifconfig -a 2>/dev/null | head -n 64; busybox ip -o addr show 2>/dev/null | head -n 64; busybox ip addr show 2>/dev/null | head -n 64; busybox ifconfig -a 2>/dev/null | head -n 64; } | head -n 384; echo __PORTMATE_KERNEL_IPV6__; head -n 128 /proc/net/if_inet6 2>/dev/null; echo __PORTMATE_KERNEL_IPV4__; head -n 384 /proc/net/fib_trie 2>/dev/null; echo __PORTMATE_HOSTNAME_ADDRS__; { hostname -I 2>/dev/null; hostname -i 2>/dev/null; busybox hostname -i 2>/dev/null; } | head -n 32; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; { ip -o addr show 2>/dev/null | head -n 64; ip addr show 2>/dev/null | head -n 64; ifconfig -a 2>/dev/null | head -n 64; busybox ip -o addr show 2>/dev/null | head -n 64; busybox ip addr show 2>/dev/null | head -n 64; busybox ifconfig -a 2>/dev/null | head -n 64; } | head -n 384; echo __PORTMATE_KERNEL_IPV6__; head -n 128 /proc/net/if_inet6 2>/dev/null; echo __PORTMATE_KERNEL_IPV4__; head -n 384 /proc/net/fib_trie 2>/dev/null; echo __PORTMATE_KERNEL_ROUTE__; head -n 64 /proc/net/route 2>/dev/null; echo __PORTMATE_HOSTNAME_ADDRS__; { hostname -I 2>/dev/null; hostname -i 2>/dev/null; busybox hostname -i 2>/dev/null; } | head -n 32; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
@@ -28769,13 +28769,19 @@ async fn collect_remote_sysmon(
             )
             .await?;
             let mut snapshot = parse_remote_sysmon_output(session_id, &output)?;
-            if remote_linux_sysmon_needs_network_address_fallback(&snapshot.network_interfaces) {
+            let kernel_addresses = parse_remote_linux_kernel_network_addresses(&output);
+            if remote_linux_sysmon_needs_network_address_fallback(&snapshot.network_interfaces)
+                || remote_linux_kernel_addresses_need_merge(
+                    &snapshot.network_interfaces,
+                    &kernel_addresses,
+                )
+            {
                 merge_remote_linux_sysmon_network_addresses(
                     &mut snapshot.network_interfaces,
                     &mut snapshot.rx_kbps,
                     &mut snapshot.tx_kbps,
                     &output,
-                    parse_remote_linux_kernel_network_addresses(&output),
+                    kernel_addresses,
                 );
             }
             if remote_linux_sysmon_needs_network_address_fallback(&snapshot.network_interfaces) {
@@ -30211,16 +30217,19 @@ fn parse_remote_linux_kernel_network_addresses(output: &str) -> BTreeMap<String,
         "__PORTMATE_KERNEL_IPV6__",
         "__PORTMATE_KERNEL_IPV4__",
     );
-    let ipv4 = section_between(
+    let ipv4_end = if output.contains("__PORTMATE_KERNEL_ROUTE__") {
+        "__PORTMATE_KERNEL_ROUTE__"
+    } else if output.contains("__PORTMATE_HOSTNAME_ADDRS__") {
+        "__PORTMATE_HOSTNAME_ADDRS__"
+    } else {
+        "__PORTMATE_LOADAVG__"
+    };
+    let ipv4 = section_between(output, "__PORTMATE_KERNEL_IPV4__", ipv4_end);
+    let route = section_between(
         output,
-        "__PORTMATE_KERNEL_IPV4__",
+        "__PORTMATE_KERNEL_ROUTE__",
         "__PORTMATE_HOSTNAME_ADDRS__",
     );
-    let ipv4 = if ipv4.is_empty() {
-        section_between(output, "__PORTMATE_KERNEL_IPV4__", "__PORTMATE_LOADAVG__")
-    } else {
-        ipv4
-    };
     let hostname = section_between(
         output,
         "__PORTMATE_HOSTNAME_ADDRS__",
@@ -30231,9 +30240,36 @@ fn parse_remote_linux_kernel_network_addresses(output: &str) -> BTreeMap<String,
     kernel_addresses.extend(parse_linux_hostname_network_addresses(hostname));
     let kernel_addresses = normalize_sysmon_addresses(kernel_addresses);
     if !kernel_addresses.is_empty() {
-        addresses.insert("kernel".to_string(), kernel_addresses);
+        if let Some(interface) = parse_linux_default_route_interface(route) {
+            let entry = addresses.entry(interface).or_default();
+            let mut combined = std::mem::take(entry);
+            combined.extend(kernel_addresses);
+            *entry = normalize_sysmon_addresses(combined);
+        } else {
+            addresses.insert("kernel".to_string(), kernel_addresses);
+        }
     }
     addresses
+}
+
+fn parse_linux_default_route_interface(raw: &str) -> Option<String> {
+    for line in raw.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 4 || !fields[1].eq_ignore_ascii_case("00000000") {
+            continue;
+        }
+        let Ok(flags) = u32::from_str_radix(fields[3], 16) else {
+            continue;
+        };
+        if flags & 0x1 == 0 {
+            continue;
+        }
+        let interface = normalize_linux_sysmon_interface_name(fields[0]);
+        if !interface.is_empty() && interface != "lo" {
+            return Some(interface);
+        }
+    }
+    None
 }
 
 fn parse_linux_hostname_network_addresses(raw: &str) -> Vec<String> {
@@ -30315,6 +30351,27 @@ fn parse_linux_fib_trie_local_addresses(raw: &str) -> Vec<String> {
         }
     }
     addresses
+}
+
+fn remote_linux_kernel_addresses_need_merge(
+    interfaces: &[SysmonNetworkInterface],
+    addresses: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    addresses.iter().any(|(name, candidates)| {
+        if name == "kernel" || name == "lo" {
+            return false;
+        }
+        candidates
+            .iter()
+            .any(|address| is_usable_sysmon_network_address(address))
+            && !interfaces.iter().any(|interface| {
+                interface.name == *name
+                    && interface
+                        .addresses
+                        .iter()
+                        .any(|address| is_usable_sysmon_network_address(address))
+            })
+    })
 }
 
 fn merge_remote_linux_sysmon_network_addresses(
@@ -35919,6 +35976,8 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("/proc/net/if_inet6"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("__PORTMATE_KERNEL_IPV4__"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("/proc/net/fib_trie"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("__PORTMATE_KERNEL_ROUTE__"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("/proc/net/route"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("__PORTMATE_HOSTNAME_ADDRS__"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("hostname -I 2>/dev/null"));
         assert!(REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND
@@ -36082,6 +36141,9 @@ Main:
            /32 host LOCAL
         |-- 192.0.2.255
            /32 link BROADCAST
+__PORTMATE_KERNEL_ROUTE__
+Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask	MTU	Window	IRTT
+wan0	00000000	00000000	0003	0	0	0	00000000	0	0	0
 __PORTMATE_HOSTNAME_ADDRS__
 127.0.0.1 192.0.2.99 2001:db8::99 fe80::99
 __PORTMATE_LOADAVG__
@@ -36098,11 +36160,12 @@ __PORTMATE_DISKS__
         let kernel_addresses = parse_remote_linux_kernel_network_addresses(output);
         assert_eq!(
             kernel_addresses.get("wan0").cloned().unwrap_or_default(),
-            vec!["2001:db8::42/64"]
-        );
-        assert_eq!(
-            kernel_addresses.get("kernel").cloned().unwrap_or_default(),
-            vec!["192.0.2.42", "192.0.2.99", "2001:db8::99"]
+            vec![
+                "2001:db8::42/64",
+                "192.0.2.42",
+                "192.0.2.99",
+                "2001:db8::99",
+            ]
         );
 
         merge_remote_linux_sysmon_network_addresses(
@@ -36114,15 +36177,85 @@ __PORTMATE_DISKS__
         );
 
         assert!(snapshot.network_interfaces.iter().any(|interface| {
-            interface.name == "wan0" && interface.addresses == ["fe80::1/64", "2001:db8::42/64"]
-        }));
-        assert!(snapshot.network_interfaces.iter().any(|interface| {
-            interface.name == "kernel"
-                && interface.addresses == ["192.0.2.42", "192.0.2.99", "2001:db8::99"]
+            interface.name == "wan0"
+                && interface.addresses
+                    == [
+                        "fe80::1/64",
+                        "2001:db8::42/64",
+                        "192.0.2.42",
+                        "192.0.2.99",
+                        "2001:db8::99",
+                    ]
         }));
         assert!(!remote_linux_sysmon_needs_network_address_fallback(
             &snapshot.network_interfaces
         ));
+    }
+
+    #[test]
+    fn remote_linux_kernel_addresses_fill_a_missing_default_interface() {
+        let output = r#"__PORTMATE_KERNEL_IPV6__
+__PORTMATE_KERNEL_IPV4__
+__PORTMATE_KERNEL_ROUTE__
+Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask	MTU	Window	IRTT
+eth0	00000000	00000000	0003	0	0	0	00000000	0	0	0
+__PORTMATE_HOSTNAME_ADDRS__
+192.0.2.77
+__PORTMATE_LOADAVG__
+"#;
+        let addresses = parse_remote_linux_kernel_network_addresses(output);
+        assert_eq!(
+            addresses.get("eth0").cloned().unwrap_or_default(),
+            vec!["192.0.2.77"]
+        );
+
+        let docker = SysmonNetworkInterface {
+            name: "docker0".to_string(),
+            addresses: vec!["172.17.0.1/16".to_string()],
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_kbps: 0.0,
+            tx_kbps: 0.0,
+        };
+        let missing_default = SysmonNetworkInterface {
+            name: "eth0".to_string(),
+            addresses: Vec::new(),
+            ..docker.clone()
+        };
+        assert!(!remote_linux_sysmon_needs_network_address_fallback(&[
+            docker.clone(),
+            missing_default.clone(),
+        ]));
+        assert!(remote_linux_kernel_addresses_need_merge(
+            &[docker.clone(), missing_default],
+            &addresses
+        ));
+
+        let addressed_default = SysmonNetworkInterface {
+            name: "eth0".to_string(),
+            addresses: vec!["192.0.2.77".to_string()],
+            ..docker.clone()
+        };
+        assert!(!remote_linux_kernel_addresses_need_merge(
+            &[docker.clone(), addressed_default],
+            &addresses
+        ));
+        assert!(!remote_linux_kernel_addresses_need_merge(
+            &[docker],
+            &BTreeMap::from([("kernel".to_string(), vec!["192.0.2.88".to_string()])])
+        ));
+        assert_eq!(
+            parse_linux_default_route_interface(
+                "Iface\tDestination\tGateway \tFlags\neth0\t00000000\t00000000\t0001\n"
+            ),
+            Some("eth0".to_string())
+        );
+        assert_eq!(
+            parse_linux_default_route_interface(
+                "Iface\tDestination\tGateway \tFlags\nlo\t00000000\t00000000\t0001\n"
+            ),
+            None
+        );
     }
 
     #[test]
