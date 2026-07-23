@@ -11642,7 +11642,11 @@ fn remote_parent_and_file_name(path: &str) -> (String, String) {
             portable_file_name(normalized).unwrap_or_default(),
         );
     };
-    let parent = normalized[..index].to_string();
+    let parent = if index == 0 {
+        "/".to_string()
+    } else {
+        normalized[..index].to_string()
+    };
     let name_start = index + separator.len_utf8();
     let name = portable_file_name(&normalized[name_start..]).unwrap_or_default();
     (parent, name)
@@ -39930,6 +39934,10 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             remote_parent_and_file_name(r"C:\Users\operator\report.bin"),
             (r"C:\Users\operator".to_string(), "report.bin".to_string())
         );
+        assert_eq!(
+            remote_parent_and_file_name("/report.bin"),
+            ("/".to_string(), "report.bin".to_string())
+        );
 
         let root = std::env::temp_dir().join(format!("portmate-modem-name-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -44818,6 +44826,11 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
         assert!(command.contains(token));
         assert!(!command.contains("__PORTMATE_MODEM_modem-token-1_READY__"));
         assert!(!command.contains("__PORTMATE_MODEM_modem-token-1_DONE__"));
+
+        let root_command = modem_remote_command(TransferProtocol::Zmodem, true, "/file.bin", token);
+        assert!(root_command.contains("mkdir -p '/'"), "{root_command}");
+        assert!(root_command.contains("cd '/'"), "{root_command}");
+        assert!(root_command.contains("rz -y"), "{root_command}");
 
         let finalize = xmodem_remote_finalize_command("/tmp/file.bin", 37, token);
         assert!(finalize.contains("portable_path()"));
