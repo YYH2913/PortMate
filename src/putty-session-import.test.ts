@@ -40,6 +40,75 @@ ProxyUsername=relay
     }]);
   });
 
+  it("imports safe TCP local, remote, and dynamic SSH forwarding rules", () => {
+    const result = parsePuttySessions(`
+HostName=app.example.test
+PortNumber=2202
+Protocol=ssh
+UserName=deploy
+PortForwardings=L15432=db.example.test:5432,R[::1]:2200=[::1]:22,D1080=,L[::1]:1081=D
+`, "forwarding.session");
+
+    expect(result.error).toBeNull();
+    expect(result.warnings).toEqual([]);
+    expect(result.candidates).toEqual([expect.objectContaining({
+      id: "putty-1-forwarding",
+      kind: "ssh",
+      forwards: [
+        { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+        { mode: "remote", bindHost: "::1", bindPort: 2200, targetHost: "::1", targetPort: 22 },
+        { mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1080, targetHost: "", targetPort: 0 },
+        { mode: "dynamic", bindHost: "::1", bindPort: 1081, targetHost: "", targetPort: 0 },
+      ],
+      warnings: [],
+    })]);
+  });
+
+  it("preserves PuTTY accept-all forwarding intent within PortMate's TCP listener model", () => {
+    const result = parsePuttySessions(`
+HostName=relay.example.test
+Protocol=ssh
+LocalPortAcceptAll=1
+RemotePortAcceptAll=1
+PortForwardings=L15432=db.example.test:5432,R2200=127.0.0.1:22,D1080=
+`, "relay");
+
+    expect(result.candidates).toEqual([expect.objectContaining({
+      kind: "ssh",
+      forwards: [
+        { mode: "local", bindHost: "0.0.0.0", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+        { mode: "remote", bindHost: "", bindPort: 2200, targetHost: "127.0.0.1", targetPort: 22 },
+        { mode: "dynamic", bindHost: "0.0.0.0", bindPort: 1080, targetHost: "", targetPort: 0 },
+      ],
+      warnings: ["LocalPortAcceptAll=1 已映射为 0.0.0.0；IPv6 公网监听请在会话设置中另行添加"],
+    })]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("LocalPortAcceptAll=1 已映射为 0.0.0.0"),
+    ]));
+  });
+
+  it("keeps valid PuTTY forwards while warning about unrepresentable forwarding forms", () => {
+    const result = parsePuttySessions(`
+HostName=bounded.example.test
+Protocol=ssh
+PortForwardings=4L15432=db.example.test:5432,L*:15433=db.example.test:5432,R2200=/run/service.sock,D1080=target,D1081=,L15434=db.example.test:5432
+`, "bounded");
+
+    expect(result.candidates).toEqual([expect.objectContaining({
+      kind: "ssh",
+      forwards: [
+        { mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1081, targetHost: "", targetPort: 0 },
+        { mode: "local", bindHost: "127.0.0.1", bindPort: 15434, targetHost: "db.example.test", targetPort: 5432 },
+      ],
+      warnings: expect.arrayContaining([
+        "PortForwardings 第 1 条：IPv4/IPv6 强制地址族未导入",
+        "PortForwardings 第 2 条：仅支持字面 TCP 监听地址与端口",
+        "PortForwardings 第 3 条：仅支持字面 TCP 目标 host:port",
+        "PortForwardings 第 4 条：动态转发不能包含目标地址",
+      ]),
+    })]);
+  });
+
   it("parses Windows registry exports and decodes session names and DWORD values", () => {
     const result = parsePuttySessions(`Windows Registry Editor Version 5.00
 
@@ -54,6 +123,7 @@ ProxyUsername=relay
 "ProxyHost"="proxy.example.test"
 "ProxyPort"=dword:00001f90
 "ProxyUsername"="proxy-user"
+"PortForwardings"="L15432=db.example.test:5432,D1080="
 
 [HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\Bench%20Serial]
 "Protocol"="serial"
@@ -83,6 +153,10 @@ ProxyUsername=relay
           port: 8080,
           username: "proxy-user",
         },
+        forwards: [
+          { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+          { mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1080, targetHost: "", targetPort: 0 },
+        ],
         warnings: [],
       },
       {

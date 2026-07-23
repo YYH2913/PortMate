@@ -45,5 +45,6 @@ function formatDetails(candidate: PuttySessionImportCandidate) {
   const details = [protocol];
   if (candidate.kind !== "serial" && candidate.proxy) details.push("代理");
   if (candidate.kind === "ssh" && candidate.tryAgent) details.push("Agent");
+  if (candidate.kind === "ssh" && candidate.forwards?.length) details.push(`${candidate.forwards.length} 个转发`);
   return details.join(" ");
 }

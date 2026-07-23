@@ -191,6 +191,10 @@ describe("session profile helpers", () => {
       tryAgent: true,
       forwardAgent: true,
       proxy: { kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
+      forwards: [
+        { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+        { mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1080, targetHost: "", targetPort: 0 },
+      ],
       warnings: [],
     });
     const serial = createPuttyImportConnection({
@@ -223,6 +227,28 @@ describe("session profile helpers", () => {
       username: "operator",
       proxy: { enabled: true, kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       agentPolicy: { enabled: true, forwarding: true },
+      tunnels: [
+        {
+          id: "putty-forward-1",
+          label: "PuTTY Local 1",
+          mode: "local",
+          bindHost: "127.0.0.1",
+          bindPort: 15432,
+          targetHost: "db.example.test",
+          targetPort: 5432,
+          enabled: true,
+        },
+        {
+          id: "putty-forward-2",
+          label: "PuTTY Dynamic 2",
+          mode: "dynamic",
+          bindHost: "127.0.0.1",
+          bindPort: 1080,
+          targetHost: "",
+          targetPort: 0,
+          enabled: true,
+        },
+      ],
     });
     expect(serial).toMatchObject({
       kind: "serial",

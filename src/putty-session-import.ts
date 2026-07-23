@@ -7,6 +7,9 @@ const MAX_CONFIG_LINES = 16_384;
 const MAX_WARNINGS = 128;
 const MAX_CANDIDATE_WARNINGS = 24;
 const MAX_SESSION_SETTINGS = 512;
+const MAX_FORWARDS = 64;
+const MAX_FORWARDING_ENTRIES = 256;
+const MAX_FORWARD_HOST_CHARACTERS = 255;
 const PUTTY_REGISTRY_SESSION_PREFIX = "hkey_current_user\\software\\simontatham\\putty\\sessions\\";
 
 export type PuttyProxyImport = {
@@ -14,6 +17,14 @@ export type PuttyProxyImport = {
   host: string;
   port: number;
   username: string;
+};
+
+export type PuttyForwardImport = {
+  mode: "local" | "remote" | "dynamic";
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
 };
 
 type PuttyCandidateBase = {
@@ -30,6 +41,7 @@ export type PuttyNetworkImportCandidate = PuttyCandidateBase & {
   proxy?: PuttyProxyImport;
   tryAgent?: boolean;
   forwardAgent?: boolean;
+  forwards?: PuttyForwardImport[];
 };
 
 export type PuttySerialImportCandidate = PuttyCandidateBase & {
@@ -306,6 +318,245 @@ function applySshSettings(
     if (forwardAgent === null) addWarning("AgentFwd 仅支持 0 或 1");
     else candidate.forwardAgent = forwardAgent;
   }
+  applyForwardingSettings(candidate, settings, addWarning);
+}
+
+function applyForwardingSettings(
+  candidate: PuttyNetworkImportCandidate,
+  settings: Map<string, string>,
+  addWarning: (message: string) => void,
+) {
+  const rawForwardings = settings.get("portforwardings");
+  if (rawForwardings === undefined || !rawForwardings.trim()) return;
+
+  const forwardingMap = parsePuttyForwardingMap(rawForwardings);
+  if (!forwardingMap) {
+    addWarning("PortForwardings 格式无效，未导入端口转发");
+    return;
+  }
+  if (forwardingMap.truncated) {
+    addWarning(`PortForwardings 项目过多，最多检查 ${MAX_FORWARDING_ENTRIES} 条`);
+  }
+
+  const localPortAcceptAll = readForwardingBoolean(
+    settings.get("localportacceptall"),
+    "LocalPortAcceptAll",
+    addWarning,
+  );
+  const remotePortAcceptAll = readForwardingBoolean(
+    settings.get("remoteportacceptall"),
+    "RemotePortAcceptAll",
+    addWarning,
+  );
+  const forwards: PuttyForwardImport[] = [];
+  let warnedLocalAcceptAllMapping = false;
+  let warnedLimit = false;
+
+  for (let index = 0; index < forwardingMap.entries.length; index += 1) {
+    if (forwards.length >= MAX_FORWARDS) {
+      if (!warnedLimit) {
+        addWarning(`PortForwardings 最多导入 ${MAX_FORWARDS} 条，后续项已跳过`);
+        warnedLimit = true;
+      }
+      break;
+    }
+    const parsed = parsePuttyForwarding(
+      forwardingMap.entries[index],
+      localPortAcceptAll,
+      remotePortAcceptAll,
+    );
+    if ("error" in parsed) {
+      addWarning(`PortForwardings 第 ${index + 1} 条：${parsed.error}`);
+      continue;
+    }
+    if (forwards.some((existing) => puttyForwardKey(existing) === puttyForwardKey(parsed.forward))) {
+      continue;
+    }
+    forwards.push(parsed.forward);
+    if (parsed.localAcceptAllMapped && !warnedLocalAcceptAllMapping) {
+      addWarning("LocalPortAcceptAll=1 已映射为 0.0.0.0；IPv6 公网监听请在会话设置中另行添加");
+      warnedLocalAcceptAllMapping = true;
+    }
+  }
+
+  candidate.forwards = forwards;
+}
+
+function readForwardingBoolean(
+  value: string | undefined,
+  setting: string,
+  addWarning: (message: string) => void,
+): boolean {
+  if (value === undefined) return false;
+  const parsed = readBoolean(value);
+  if (parsed !== null) return parsed;
+  addWarning(`${setting} 仅支持布尔值，已按关闭处理`);
+  return false;
+}
+
+type PuttyForwardingMapEntry = {
+  key: string;
+  value: string;
+};
+
+type PuttyForwardingMap = {
+  entries: PuttyForwardingMapEntry[];
+  truncated: boolean;
+};
+
+function parsePuttyForwardingMap(value: string): PuttyForwardingMap | null {
+  const entries: PuttyForwardingMapEntry[] = [];
+  let key = "";
+  let entryValue = "";
+  let readingValue = false;
+  let escaped = false;
+  let truncated = false;
+
+  const commit = () => {
+    if (!key) return false;
+    if (entries.length < MAX_FORWARDING_ENTRIES) {
+      entries.push({ key, value: entryValue });
+    } else {
+      truncated = true;
+    }
+    key = "";
+    entryValue = "";
+    readingValue = false;
+    return true;
+  };
+
+  for (const character of value) {
+    if (escaped) {
+      if (readingValue) entryValue += character;
+      else key += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === ",") {
+      if (!commit()) return null;
+      continue;
+    }
+    if (character === "=" && !readingValue) {
+      readingValue = true;
+      continue;
+    }
+    if (readingValue) entryValue += character;
+    else key += character;
+  }
+
+  if (escaped) return null;
+  if (key || entryValue || readingValue) {
+    if (!commit()) return null;
+  }
+  return { entries, truncated };
+}
+
+function parsePuttyForwarding(
+  entry: PuttyForwardingMapEntry,
+  localPortAcceptAll: boolean,
+  remotePortAcceptAll: boolean,
+): { forward: PuttyForwardImport; localAcceptAllMapped: boolean } | { error: string } {
+  let key = entry.key;
+  let addressFamily = "A";
+  if (key[0] === "A" || key[0] === "4" || key[0] === "6") {
+    addressFamily = key[0];
+    key = key.slice(1);
+  }
+  if (addressFamily !== "A") {
+    return { error: "IPv4/IPv6 强制地址族未导入" };
+  }
+
+  const type = key[0];
+  const source = key.slice(1);
+  if (type !== "L" && type !== "R" && type !== "D") {
+    return { error: "转发类型仅支持 L、R 或 D" };
+  }
+  if (!source) return { error: "缺少源端口" };
+
+  const dynamic = type === "D" || (type === "L" && entry.value === "D");
+  if (type === "D" && entry.value) {
+    return { error: "动态转发不能包含目标地址" };
+  }
+  const mode = dynamic ? "dynamic" : type === "L" ? "local" : "remote";
+  const defaultBindHost = mode === "remote"
+    ? (remotePortAcceptAll ? "" : "localhost")
+    : (localPortAcceptAll ? "0.0.0.0" : "127.0.0.1");
+  const bind = parsePuttyForwardEndpoint(source, defaultBindHost);
+  if (!bind) {
+    return { error: "仅支持字面 TCP 监听地址与端口" };
+  }
+
+  if (mode === "dynamic") {
+    return {
+      forward: {
+        mode,
+        bindHost: bind.host,
+        bindPort: bind.port,
+        targetHost: "",
+        targetPort: 0,
+      },
+      localAcceptAllMapped: localPortAcceptAll && /^\d+$/.test(source),
+    };
+  }
+
+  const target = parsePuttyForwardEndpoint(entry.value, null);
+  if (!target) {
+    return { error: "仅支持字面 TCP 目标 host:port" };
+  }
+  return {
+    forward: {
+      mode,
+      bindHost: bind.host,
+      bindPort: bind.port,
+      targetHost: target.host,
+      targetPort: target.port,
+    },
+    localAcceptAllMapped: localPortAcceptAll && mode === "local" && /^\d+$/.test(source),
+  };
+}
+
+function parsePuttyForwardEndpoint(
+  value: string,
+  defaultHost: string | null,
+): { host: string; port: number } | null {
+  if (!value || value.trim() !== value || value.includes("%") || /[\0\s]/.test(value)) return null;
+  if (/^\d+$/.test(value)) {
+    const port = parsePort(value);
+    return defaultHost !== null && port !== null ? { host: defaultHost, port } : null;
+  }
+
+  const bracketed = value.match(/^\[([^\[\]]+)]:(\d+)$/);
+  if (bracketed) {
+    const host = normalizePuttyForwardHost(bracketed[1]);
+    const port = parsePort(bracketed[2]);
+    return host && port !== null ? { host, port } : null;
+  }
+
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0 || value.indexOf(":") !== separator) return null;
+  const host = normalizePuttyForwardHost(value.slice(0, separator));
+  const port = parsePort(value.slice(separator + 1));
+  return host && port !== null ? { host, port } : null;
+}
+
+function normalizePuttyForwardHost(value: string): string | null {
+  const host = normalizeText(value);
+  if (!host || host.length > MAX_FORWARD_HOST_CHARACTERS) return null;
+  return /[\\/@[\]*?!,=]/.test(host) ? null : host;
+}
+
+function puttyForwardKey(forward: PuttyForwardImport): string {
+  return [
+    forward.mode,
+    forward.bindHost,
+    forward.bindPort,
+    forward.targetHost,
+    forward.targetPort,
+  ].join("\0");
 }
 
 function applyProxySettings(

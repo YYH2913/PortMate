@@ -167,6 +167,16 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
         enabled: candidate.tryAgent ?? connection.agentPolicy.enabled,
         forwarding: candidate.forwardAgent ?? connection.agentPolicy.forwarding,
       },
+      tunnels: (candidate.forwards ?? []).map((forward, index) => ({
+        id: `putty-forward-${index + 1}`,
+        label: `PuTTY ${puttyForwardLabel(forward.mode)} ${index + 1}`,
+        mode: forward.mode,
+        bindHost: forward.bindHost,
+        bindPort: forward.bindPort,
+        targetHost: forward.targetHost,
+        targetPort: forward.targetPort,
+        enabled: true,
+      })),
     };
   }
 
@@ -180,6 +190,12 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
       ? { ...connection.proxy, ...candidate.proxy, enabled: true }
       : connection.proxy,
   };
+}
+
+function puttyForwardLabel(mode: "local" | "remote" | "dynamic"): string {
+  if (mode === "local") return "Local";
+  if (mode === "remote") return "Remote";
+  return "Dynamic";
 }
 
 export function createShellImportConnection(candidate: ShellSessionImportCandidate): Extract<ConnectionConfig, { kind: "shell" }> {
