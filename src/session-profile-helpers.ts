@@ -4,6 +4,7 @@ import type { ProtocolTab } from "./session-settings-state";
 import { sshConnectionDefaults } from "./ssh-connection-settings";
 import { tcpConnectionDefaults } from "./tcp-connection-settings";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
+import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type {
   ConnectionConfig,
   HostKeyPolicy,
@@ -121,6 +122,46 @@ export function createOpenSshImportConnection(candidate: OpenSshImportCandidate)
       identityRef: null,
       hostKeyPolicy: null,
     })),
+  };
+}
+
+export function createPuttyImportConnection(candidate: PuttySessionImportCandidate): ConnectionConfig {
+  if (candidate.kind === "serial") {
+    const connection = createSerialConnection();
+    return {
+      ...connection,
+      kind: "serial",
+      ...candidate.serial,
+    };
+  }
+
+  if (candidate.kind === "ssh") {
+    const connection = createSshConnection();
+    return {
+      ...connection,
+      kind: "ssh",
+      endpoint: { host: candidate.host, port: candidate.port },
+      username: candidate.username,
+      proxy: candidate.proxy
+        ? { ...connection.proxy, ...candidate.proxy, enabled: true }
+        : connection.proxy,
+      agentPolicy: {
+        ...connection.agentPolicy,
+        enabled: candidate.tryAgent ?? connection.agentPolicy.enabled,
+        forwarding: candidate.forwardAgent ?? connection.agentPolicy.forwarding,
+      },
+    };
+  }
+
+  const connection = createTcpConnection(candidate.kind);
+  return {
+    ...connection,
+    kind: candidate.kind,
+    host: candidate.host,
+    port: candidate.port,
+    proxy: candidate.proxy
+      ? { ...connection.proxy, ...candidate.proxy, enabled: true }
+      : connection.proxy,
   };
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   convertDraftProtocol,
   createOpenSshImportConnection,
+  createPuttyImportConnection,
   createSerialConnection,
   createSshConnection,
   formatSshTarget,
@@ -150,5 +151,61 @@ describe("session profile helpers", () => {
       expect.objectContaining({ label: "id_fallback", source: "system-file", path: "~/.ssh/id_fallback" }),
     ]));
     expect(new Set(connection.identityRefs.map((identity) => identity.id)).size).toBe(2);
+  });
+
+  it("translates PuTTY network and serial candidates into supported connection models", () => {
+    const ssh = createPuttyImportConnection({
+      id: "putty-1-ops",
+      name: "Ops",
+      kind: "ssh",
+      host: "ops.example.test",
+      port: 2202,
+      username: "operator",
+      tryAgent: true,
+      forwardAgent: true,
+      proxy: { kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
+      warnings: [],
+    });
+    const serial = createPuttyImportConnection({
+      id: "putty-2-bench",
+      name: "Bench",
+      kind: "serial",
+      serial: {
+        port: "/dev/ttyUSB0",
+        baudRate: 115200,
+        dataBits: 7,
+        stopBits: 2,
+        parity: "even",
+        flowControl: "hardware",
+      },
+      warnings: [],
+    });
+    const raw = createPuttyImportConnection({
+      id: "putty-3-raw",
+      name: "Raw",
+      kind: "tcp",
+      host: "raw.example.test",
+      port: 9000,
+      username: "",
+      warnings: [],
+    });
+
+    expect(ssh).toMatchObject({
+      kind: "ssh",
+      endpoint: { host: "ops.example.test", port: 2202 },
+      username: "operator",
+      proxy: { enabled: true, kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
+      agentPolicy: { enabled: true, forwarding: true },
+    });
+    expect(serial).toMatchObject({
+      kind: "serial",
+      port: "/dev/ttyUSB0",
+      baudRate: 115200,
+      dataBits: 7,
+      stopBits: 2,
+      parity: "even",
+      flowControl: "hardware",
+    });
+    expect(raw).toMatchObject({ kind: "tcp", host: "raw.example.test", port: 9000 });
   });
 });
