@@ -3812,11 +3812,26 @@ function WorkspaceDock({
     onResize(nextSize);
   }
 
+  function handleDockTabKey(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex = index;
+    if (event.key === "ArrowLeft") nextIndex = (index - 1 + panels.length) % panels.length;
+    else if (event.key === "ArrowRight") nextIndex = (index + 1) % panels.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = panels.length - 1;
+    else return;
+
+    event.preventDefault();
+    onActivate(panels[nextIndex]);
+    const tabs = event.currentTarget.closest(".workspace-dock-tabs")?.querySelectorAll<HTMLButtonElement>(".workspace-dock-tab-label");
+    tabs?.[nextIndex]?.focus();
+  }
+
   return (
     <aside className={`workspace-dock workspace-dock-${dock}`} data-dock={dock} data-active-panel={activePanel}>
       <div
-        className="workspace-dock-windows"
-        aria-label={`${workspaceDockMeta[dock].label}停靠区`}
+        className="workspace-dock-tabs"
+        role="tablist"
+        aria-label={`${workspaceDockMeta[dock].label}停靠区工具`}
         data-panel-count={panels.length}
         onDragOver={(event) => {
           if (event.target === event.currentTarget) onDragOver(event);
@@ -3829,70 +3844,92 @@ function WorkspaceDock({
           const metadata = workspaceDockPanelMeta[panel];
           const PanelIcon = metadata.icon;
           const active = panel === activePanel;
+          const tabId = `workspace-dock-${dock}-tab-${panel}`;
+          const panelId = `workspace-dock-${dock}-panel-${panel}`;
+          return (
+            <header
+              key={panel}
+              className={active ? "workspace-dock-tab active" : "workspace-dock-tab"}
+              data-panel={panel}
+              draggable
+              onDragStart={(event) => onDragStart(event, panel)}
+              onDragEnd={(event) => {
+                delete event.currentTarget.dataset.panelDropPosition;
+                onDragEnd();
+              }}
+              onDragOver={(event) => {
+                event.stopPropagation();
+                onDragOver(event);
+                const bounds = event.currentTarget.getBoundingClientRect();
+                const after = event.clientX >= bounds.left + bounds.width / 2;
+                event.currentTarget.dataset.panelDropPosition = after ? "after" : "before";
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  delete event.currentTarget.dataset.panelDropPosition;
+                }
+              }}
+              onDrop={(event) => {
+                const after = event.currentTarget.dataset.panelDropPosition === "after";
+                delete event.currentTarget.dataset.panelDropPosition;
+                onDrop(event, dock, index + (after ? 1 : 0));
+              }}
+            >
+              <button
+                id={tabId}
+                type="button"
+                className="workspace-dock-tab-label"
+                role="tab"
+                aria-selected={active}
+                aria-controls={panelId}
+                tabIndex={active ? 0 : -1}
+                title={`聚焦${metadata.label}`}
+                onClick={() => onActivate(panel)}
+                onKeyDown={(event) => handleDockTabKey(event, index)}
+              >
+                <PanelIcon size={13} />
+                <span>{metadata.label}</span>
+              </button>
+              <button
+                type="button"
+                className="workspace-dock-tab-close"
+                title={`隐藏${metadata.label}`}
+                aria-label={`隐藏${metadata.label}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onClose(panel);
+                }}
+              >
+                <X size={12} />
+              </button>
+            </header>
+          );
+        })}
+      </div>
+      <div
+        className="workspace-dock-panels"
+        onDragOver={(event) => {
+          if (event.target === event.currentTarget) onDragOver(event);
+        }}
+        onDrop={(event) => {
+          if (event.target === event.currentTarget) onDrop(event, dock, panels.length);
+        }}
+      >
+        {panels.map((panel) => {
+          const active = panel === activePanel;
+          const tabId = `workspace-dock-${dock}-tab-${panel}`;
+          const panelId = `workspace-dock-${dock}-panel-${panel}`;
           return (
             <section
               key={panel}
-              className={active ? "workspace-panel-window active" : "workspace-panel-window"}
+              id={panelId}
+              className={`workspace-dock-content panel-${panel}`}
               data-panel={panel}
-              onPointerDownCapture={() => onActivate(panel)}
+              role="tabpanel"
+              aria-labelledby={tabId}
+              hidden={!active}
             >
-              <header
-                className="workspace-dock-tab"
-                draggable
-                data-panel={panel}
-                onDragStart={(event) => onDragStart(event, panel)}
-                onDragEnd={(event) => {
-                  delete event.currentTarget.dataset.panelDropPosition;
-                  onDragEnd();
-                }}
-                onDragOver={(event) => {
-                  event.stopPropagation();
-                  onDragOver(event);
-                  const bounds = event.currentTarget.getBoundingClientRect();
-                  const after = dock === "bottom"
-                    ? event.clientX >= bounds.left + bounds.width / 2
-                    : event.clientY >= bounds.top + bounds.height / 2;
-                  event.currentTarget.dataset.panelDropPosition = after ? "after" : "before";
-                }}
-                onDragLeave={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                    delete event.currentTarget.dataset.panelDropPosition;
-                  }
-                }}
-                onDrop={(event) => {
-                  const after = event.currentTarget.dataset.panelDropPosition === "after";
-                  delete event.currentTarget.dataset.panelDropPosition;
-                  onDrop(event, dock, index + (after ? 1 : 0));
-                }}
-              >
-                <button
-                  type="button"
-                  className="workspace-dock-tab-label"
-                  aria-pressed={active}
-                  title={`聚焦${metadata.label}`}
-                  onClick={() => onActivate(panel)}
-                >
-                  <PanelIcon size={13} />
-                  <span>{metadata.label}</span>
-                </button>
-                <button
-                  type="button"
-                  className="workspace-dock-tab-close"
-                  title={`隐藏${metadata.label}`}
-                  aria-label={`隐藏${metadata.label}`}
-                  onClick={() => onClose(panel)}
-                >
-                  <X size={12} />
-                </button>
-              </header>
-              <section
-                className={`workspace-dock-content panel-${panel}`}
-                data-panel={panel}
-                role="region"
-                aria-label={metadata.label}
-              >
-                {renderPanel(panel)}
-              </section>
+              {renderPanel(panel)}
             </section>
           );
         })}

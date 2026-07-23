@@ -1162,6 +1162,7 @@ try {
     active: dock.getAttribute("data-active-panel"),
     tabs: [...dock.querySelectorAll(".workspace-dock-tab")].map((tab) => tab.getAttribute("data-panel")),
     panels: [...dock.querySelectorAll(".workspace-dock-content")].map((panel) => panel.getAttribute("data-panel")),
+    visiblePanels: [...dock.querySelectorAll(".workspace-dock-content:not([hidden])")].map((panel) => panel.getAttribute("data-panel")),
     panes: [...dock.querySelectorAll(".file-browser-pane")].map((pane) => {
       const rect = pane.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
@@ -1177,6 +1178,7 @@ try {
     && fileDockLayout.active === "fileManager"
     && JSON.stringify(fileDockLayout.tabs) === JSON.stringify(["explorer", "fileManager"])
     && JSON.stringify(fileDockLayout.panels) === JSON.stringify(["explorer", "fileManager"])
+    && JSON.stringify(fileDockLayout.visiblePanels) === JSON.stringify(["fileManager"])
     && fileDockLayout.panes.length === 2
     && fileDockLayout.panes[1].top >= fileDockLayout.panes[0].bottom - 1
     && fileDockLayout.actions.length === 2
@@ -1186,7 +1188,17 @@ try {
       && actions.labels.every(Boolean)
       && actions.icons === 7
     )),
-  `file manager and explorer are not simultaneously visible in the left dock: ${JSON.stringify(fileDockLayout)}`);
+  `file manager did not occupy the active left dock view: ${JSON.stringify(fileDockLayout)}`);
+
+  const fileManagerTab = leftDock.getByRole("tab", { name: "文件管理器", exact: true });
+  const explorerTab = leftDock.getByRole("tab", { name: "资源管理器", exact: true });
+  await fileManagerTab.press("ArrowLeft");
+  await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="left"]')?.getAttribute("data-active-panel") === "explorer");
+  assert(await explorerTab.getAttribute("aria-selected") === "true"
+    && await fileManagerTab.getAttribute("aria-selected") === "false",
+  "left-arrow did not switch the active dock tab");
+  await explorerTab.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="left"]')?.getAttribute("data-active-panel") === "fileManager");
 
   const localFilePath = page.getByRole("textbox", { name: "本地路径", exact: true });
   await page.evaluate(() => { window.__deferFileLoads = true; });
@@ -1267,19 +1279,19 @@ try {
   await fileTitle.dispatchEvent("dragstart", { dataTransfer: reorderTransfer });
   await explorerTitle.dispatchEvent("dragover", {
     dataTransfer: reorderTransfer,
-    clientY: explorerTitleBox.y + 2,
+    clientX: explorerTitleBox.x + 2,
   });
   await explorerTitle.dispatchEvent("drop", {
     dataTransfer: reorderTransfer,
-    clientY: explorerTitleBox.y + 2,
+    clientX: explorerTitleBox.x + 2,
   });
   await page.waitForFunction(() => {
     const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
     return JSON.stringify(snapshot?.docks?.left) === JSON.stringify(["fileManager", "explorer"]);
   });
-  assert(JSON.stringify(await leftDock.locator(".workspace-panel-window").evaluateAll(
-    (panels) => panels.map((panel) => panel.getAttribute("data-panel")),
-  )) === JSON.stringify(["fileManager", "explorer"]), "same-dock title drag did not reorder visible windows");
+  assert(JSON.stringify(await leftDock.locator(".workspace-dock-tab").evaluateAll(
+    (tabs) => tabs.map((tab) => tab.getAttribute("data-panel")),
+  )) === JSON.stringify(["fileManager", "explorer"]), "same-dock title drag did not reorder dock tabs");
   await reorderTransfer.dispose();
 
   await togglePanel("历史命令");
@@ -1363,10 +1375,13 @@ try {
 
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
   await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').waitFor();
+  const focusedDockPanels = await leftDock.evaluate((dock) => Object.fromEntries(
+    [...dock.querySelectorAll(".workspace-dock-content")].map((panel) => [panel.getAttribute("data-panel"), panel.hasAttribute("hidden")]),
+  ));
   assert(await leftDock.getAttribute("data-active-panel") === "explorer"
-    && await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').count() === 1
-    && await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').count() === 1,
-  "focusing one dock window hid another visible dock window");
+    && focusedDockPanels.explorer === false
+    && focusedDockPanels.fileManager === true,
+  `dock tab switch did not collapse inactive content: ${JSON.stringify(focusedDockPanels)}`);
   const uart = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
   await uart.click();
   await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART"));
@@ -2128,6 +2143,8 @@ try {
         .map((tab) => tab.getAttribute("data-panel")),
       rightPanels: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-content')]
         .map((panel) => panel.getAttribute("data-panel")),
+      rightVisiblePanels: [...document.querySelectorAll('.workspace-dock[data-dock="right"] .workspace-dock-content:not([hidden])')]
+        .map((panel) => panel.getAttribute("data-panel")),
       bottomDock: document.querySelector('.workspace-dock[data-dock="bottom"]') !== null,
       docks: snapshot.docks,
     };
@@ -2135,9 +2152,10 @@ try {
   assert(movedDockLayout.dockCount === 2
     && JSON.stringify(movedDockLayout.rightTabs) === JSON.stringify(["history", "sender"])
     && JSON.stringify(movedDockLayout.rightPanels) === JSON.stringify(["history", "sender"])
+    && JSON.stringify(movedDockLayout.rightVisiblePanels) === JSON.stringify(["sender"])
     && !movedDockLayout.bottomDock
     && movedDockLayout.docks.active.right === "sender",
-  `cross-dock drag did not keep both right-side windows visible: ${JSON.stringify(movedDockLayout)}`);
+  `cross-dock drag did not preserve the right dock tabs: ${JSON.stringify(movedDockLayout)}`);
 
   await page.reload();
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
