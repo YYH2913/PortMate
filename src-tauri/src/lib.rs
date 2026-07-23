@@ -249,6 +249,9 @@ const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SYSMON_PROCESSES: usize = 8;
 const MAX_SYSMON_DISKS: usize = 16;
 const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
+#[cfg(target_os = "linux")]
+const LOCAL_LINUX_SYSMON_COMMAND_DIRECTORIES: [&str; 4] =
+    ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const LOCAL_SYSMON_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
@@ -273,7 +276,7 @@ const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; (ip -o addr show 2>/dev/null || ip addr show 2>/dev/null || ifconfig -a 2>/dev/null) | head -n 96; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
 const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
@@ -28803,30 +28806,59 @@ fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
 
 #[cfg(target_os = "linux")]
 fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
-    exec_sync_sysmon_command("ip", &["-o", "addr", "show"])
-        .or_else(|| exec_sync_sysmon_command("ip", &["addr", "show"]))
-        .map(|raw| parse_linux_network_addresses(&raw))
-        .or_else(|| {
-            exec_sync_sysmon_command("ifconfig", &["-a"])
-                .map(|raw| parse_linux_network_addresses(&raw))
-        })
-        .unwrap_or_default()
+    let commands: [(&str, &[&str]); 3] = [
+        ("ip", &["-o", "addr", "show"]),
+        ("ip", &["addr", "show"]),
+        ("ifconfig", &["-a"]),
+    ];
+    first_nonempty_linux_network_addresses(
+        commands
+            .into_iter()
+            .filter_map(|(program, args)| exec_sync_sysmon_command(program, args)),
+    )
+}
+
+fn first_nonempty_linux_network_addresses(
+    sources: impl IntoIterator<Item = String>,
+) -> BTreeMap<String, Vec<String>> {
+    for source in sources {
+        let addresses = parse_linux_network_addresses(&source);
+        if !addresses.is_empty() {
+            return addresses;
+        }
+    }
+    BTreeMap::new()
 }
 
 #[cfg(target_os = "linux")]
 fn exec_sync_sysmon_command(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
-        .args(args)
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .chars()
-            .take(MAX_LOCAL_SYSMON_STDOUT_BYTES)
-            .collect()
-    })
+    linux_sysmon_command_candidates(program)
+        .into_iter()
+        .find_map(|candidate| {
+            let output = Command::new(candidate)
+                .args(args)
+                .env("LC_ALL", "C")
+                .stdin(Stdio::null())
+                .output()
+                .ok()?;
+            output.status.success().then(|| {
+                String::from_utf8_lossy(&output.stdout)
+                    .chars()
+                    .take(MAX_LOCAL_SYSMON_STDOUT_BYTES)
+                    .collect()
+            })
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sysmon_command_candidates(program: &str) -> Vec<String> {
+    std::iter::once(program.to_string())
+        .chain(
+            LOCAL_LINUX_SYSMON_COMMAND_DIRECTORIES
+                .iter()
+                .map(|directory| format!("{directory}/{program}")),
+        )
+        .collect()
 }
 
 fn parse_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
@@ -34342,6 +34374,41 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             vec!["10.0.0.2"]
         );
 
+        let fallback_addresses = first_nonempty_linux_network_addresses([
+            "ip: unsupported output".to_string(),
+            "br-lan    inet 192.168.2.1  Bcast:192.168.2.255  Mask:255.255.255.0".to_string(),
+        ]);
+        assert_eq!(
+            fallback_addresses
+                .get("br-lan")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["192.168.2.1"]
+        );
+        let source_reads = std::cell::Cell::new(0);
+        let lazy_fallback_addresses =
+            first_nonempty_linux_network_addresses((0..3).filter_map(|index| {
+                source_reads.set(source_reads.get() + 1);
+                match index {
+                    0 => Some("ip: unsupported output".to_string()),
+                    1 => Some("eth0 inet 198.51.100.42/24 scope global".to_string()),
+                    _ => panic!("address lookup continued after a valid source"),
+                }
+            }));
+        assert_eq!(source_reads.get(), 2);
+        assert_eq!(
+            lazy_fallback_addresses
+                .get("eth0")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["198.51.100.42/24"]
+        );
+        assert!(
+            REMOTE_LINUX_SYSMON_COMMAND.contains("addresses=\"$(ip -o addr show 2>/dev/null)\"")
+        );
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("ifconfig -a 2>/dev/null"));
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 384"));
+
         assert_eq!(
             parse_load_average("1.25 0.50 0.25 1/10 1"),
             Some([1.25, 0.5, 0.25])
@@ -34653,6 +34720,15 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert!(!snapshot.processes.is_empty());
         assert!(!snapshot.disks.is_empty());
         assert!(!snapshot.network_interfaces.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_linux_sysmon_command_candidates_include_system_sbin_paths() {
+        assert_eq!(
+            linux_sysmon_command_candidates("ip"),
+            vec!["ip", "/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip",]
+        );
     }
 
     #[test]
