@@ -10217,15 +10217,16 @@ fn xmodem_remote_finalize_command(
     format!(
         concat!(
             "target={}; portmate_status=0; ",
-            "if command -v truncate >/dev/null 2>&1; then ",
-            "truncate -s {} -- \"$target\"; portmate_status=$?; ",
+            "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
+            "target=$(portable_path \"$target\") || exit 1; ",
+            "if command -v truncate >/dev/null 2>&1 && truncate -s {} \"$target\"; then :; ",
             "else part=\"$target.portmate-trim\"; ",
             "dd if=\"$target\" of=\"$part\" bs=1 count={} 2>/dev/null ",
-            "&& mv -f -- \"$part\" \"$target\"; portmate_status=$?; ",
-            "if [ \"$portmate_status\" -ne 0 ]; then rm -f -- \"$part\"; fi; fi; ",
+            "&& mv -f \"$part\" \"$target\"; portmate_status=$?; ",
+            "if [ \"$portmate_status\" -ne 0 ]; then rm -f \"$part\"; fi; fi; ",
             "if [ \"$portmate_status\" -eq 0 ]; then ",
             "printf '\\n__PORTMATE_XMODEM_%s_DONE__\\n' {}; ",
-            "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi\r"
+            "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi"
         ),
         shell_quote(remote_path),
         source_size,
@@ -12764,6 +12765,8 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$remote_name\"; else target=\"$dst\"; fi ;; esac; ",
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
+            "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
+            "src=$(portable_path \"$src\") || exit 1; target=$(portable_path \"$target\") || exit 1; part=$(portable_path \"$part\") || exit 1; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
             "file_size() {{ value=$(wc -c < \"$1\") || return 1; value=$(printf '%s' \"$value\" | tr -d '[:space:]') || return 1; case \"$value\" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\\n' \"$value\"; }}; ",
             "cleanup() {{ if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || :; fi; }}; ",
@@ -12776,14 +12779,14 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "if [ -e \"$part\" ]; then ",
             "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "if [ \"$current\" -le \"$total\" ]; then ",
-            "if [ \"$current\" -eq 0 ] || head -c \"$current\" -- \"$src\" | cmp -s - \"$part\"; then offset=$current; else : > \"$part\" || exit 1; fi; ",
+            "if [ \"$current\" -eq 0 ] || head -c \"$current\" \"$src\" | cmp -s - \"$part\"; then offset=$current; else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "else : > \"$part\" || exit 1; fi; ",
             "printf '__PORTMATE_RESUME__%s\\n' \"$offset\"; ",
             "printf '__PORTMATE_PROGRESS__%s\\n' \"$offset\"; ",
             "if [ \"$offset\" -lt \"$total\" ]; then ",
-            "tail -c +$((offset + 1)) -- \"$src\" >> \"$part\" & pid=$!; ",
+            "tail -c +$((offset + 1)) \"$src\" >> \"$part\" & pid=$!; ",
             "while kill -0 \"$pid\" 2>/dev/null; do ",
             "if current=$(file_size \"$part\" 2>/dev/null); then ",
             "printf '__PORTMATE_PROGRESS__%s\\n' \"$current\"; ",
@@ -12796,7 +12799,7 @@ fn remote_copy_command(remote_source: &str, remote_destination: &str) -> String 
             "printf 'PortMate remote copy size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
-            "mv -f -- \"$part\" \"$target\" || exit 1; ",
+            "mv -f \"$part\" \"$target\" || exit 1; ",
             "final_target=$(file_size \"$target\") || exit 1; printf '__PORTMATE_DONE__%s\\n' \"$final_target\""
         ),
         shell_quote(remote_source),
@@ -15181,6 +15184,8 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "*) if [ -d \"$dst\" ]; then target=\"${{dst%/}}/$source_name\"; else target=\"$dst\"; fi ;; esac; ",
             "case \"$target\" in */*) part=\"${{target%/*}}/${{target##*/}}.portmate-part\" ;; ",
             "*) part=\"$target.portmate-part\" ;; esac; ",
+            "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
+            "target=$(portable_path \"$target\") || exit 1; part=$(portable_path \"$part\") || exit 1; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
             "file_size() {{ value=$(wc -c < \"$1\") || return 1; value=$(printf '%s' \"$value\" | tr -d '[:space:]') || return 1; case \"$value\" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\\n' \"$value\"; }}; ",
             "part_sha256() {{ if command -v sha256sum >/dev/null 2>&1; then value=$(sha256sum < \"$1\") || return 1; elif command -v shasum >/dev/null 2>&1; then value=$(shasum -a 256 < \"$1\") || return 1; elif command -v sha256 >/dev/null 2>&1; then value=$(sha256 -q \"$1\") || return 1; else printf 'PortMate SCP upload has no SHA-256 tool\\n' >&2; return 1; fi; value=${{value%% *}}; [ -n \"$value\" ] || return 1; printf '%s\\n' \"$value\"; }}; ",
@@ -15210,7 +15215,7 @@ fn scp_upload_command(remote_destination: &str, file_name: &str, total: u64) -> 
             "printf 'PortMate SCP upload size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
             "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
-            "mv -f -- \"$part\" \"$target\" || exit 1; ",
+            "mv -f \"$part\" \"$target\" || exit 1; ",
             "final_target=$(file_size \"$target\") || exit 1; printf '__PORTMATE_DONE__%s\\n' \"$final_target\""
         ),
         shell_quote(remote_destination),
@@ -42353,9 +42358,13 @@ mod tests {
         assert!(command.contains("remote_name=${src##*/}"));
         assert!(command.contains("case \"$dst\" in */)"));
         assert!(command.contains("part=\"${target%/*}/${target##*/}.portmate-part\""));
-        assert!(command.contains("head -c \"$current\" -- \"$src\" | cmp -s - \"$part\""));
-        assert!(command.contains("tail -c +$((offset + 1)) -- \"$src\" >> \"$part\""));
-        assert!(command.contains("mv -f -- \"$part\" \"$target\""));
+        assert!(command.contains("portable_path()"));
+        assert!(command.contains("src=$(portable_path \"$src\")"));
+        assert!(command.contains("head -c \"$current\" \"$src\" | cmp -s - \"$part\""));
+        assert!(command.contains("tail -c +$((offset + 1)) \"$src\" >> \"$part\""));
+        assert!(command.contains("mv -f \"$part\" \"$target\""));
+        assert!(!command.contains(" -- \"$src\""));
+        assert!(!command.contains("mv -f --"));
         assert!(command.contains("src='/tmp/source file.bin'"));
         assert!(command.contains("dst='/tmp/o'\\''clock.bin'"));
     }
@@ -42385,6 +42394,33 @@ mod tests {
             assert_eq!(markers.resume, Some(expected_resume));
             assert_eq!(markers.done, Some(6));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_copy_command_handles_dash_prefixed_relative_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("-source.bin");
+        let target = root.path().join("-target.bin");
+        let part = root.path().join("-target.bin.portmate-part");
+        fs::write(&source, b"abcdef").unwrap();
+        fs::write(&part, b"abc").unwrap();
+
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(remote_copy_command("-source.bin", "-target.bin"))
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+        assert!(!part.exists());
+        assert_eq!(remote_copy_markers(&output.stdout).resume, Some(3));
     }
 
     #[cfg(unix)]
@@ -42449,7 +42485,10 @@ mod tests {
         assert!(command.contains("command -v sha256"));
         assert!(command.contains("__PORTMATE_PREFIX_SHA256__$actual_prefix_sha256"));
         assert!(command.contains("cat >> \"$part\" || exit 1"));
-        assert!(command.contains("mv -f -- \"$part\" \"$target\""));
+        assert!(command.contains("portable_path()"));
+        assert!(command.contains("target=$(portable_path \"$target\")"));
+        assert!(command.contains("mv -f \"$part\" \"$target\""));
+        assert!(!command.contains("mv -f --"));
         assert!(command.contains("final_target=$(file_size \"$target\")"));
     }
 
@@ -42496,6 +42535,37 @@ mod tests {
         assert_eq!(markers.done, Some(6));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scp_upload_command_handles_dash_prefixed_target() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("-source.bin");
+        let command = scp_upload_command(".", "-source.bin", 6);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(root.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(b"abcdef").unwrap();
+        drop(child.stdin.take());
+
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+        assert!(!root.path().join("-source.bin.portmate-part").exists());
+        let markers = remote_copy_markers(&output.stdout);
+        assert_eq!(markers.resume, Some(0));
+        assert_eq!(markers.done, Some(6));
     }
 
     #[test]
@@ -44329,12 +44399,86 @@ mod tests {
         assert!(!command.contains("__PORTMATE_MODEM_modem-token-1_DONE__"));
 
         let finalize = xmodem_remote_finalize_command("/tmp/file.bin", 37, token);
+        assert!(finalize.contains("portable_path()"));
         assert!(finalize.contains("truncate -s 37"));
         assert!(finalize.contains("count=37"));
         assert!(finalize.contains("portmate_status"));
         assert!(!finalize.contains(" status="));
+        assert!(!finalize.contains(" -- \"$target\""));
+        assert!(!finalize.contains("mv -f --"));
+        assert!(!finalize.contains("rm -f --"));
         assert!(is_modem_timeout("modem byte timeout"));
         assert!(is_modem_timeout("timed out waiting for modem ACK"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xmodem_remote_finalize_command_handles_dash_prefixed_path() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("-received.bin");
+        fs::write(&target, b"abcdef").unwrap();
+        let tools = root.path().join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        for tool in ["dd", "mv", "rm"] {
+            std::os::unix::fs::symlink("/usr/bin/busybox", tools.join(tool)).unwrap();
+        }
+
+        let command = xmodem_remote_finalize_command("-received.bin", 3, "modem-token");
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(root.path())
+            .env("PATH", format!("{}:/bin:/usr/bin", tools.display()))
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abc");
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .contains("__PORTMATE_XMODEM_modem-token_DONE__"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xmodem_remote_finalize_falls_back_when_truncate_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("received.bin");
+        fs::write(&target, b"abcdef").unwrap();
+        let tools = root.path().join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        for tool in ["dd", "mv", "rm"] {
+            std::os::unix::fs::symlink("/usr/bin/busybox", tools.join(tool)).unwrap();
+        }
+        fs::write(tools.join("truncate"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::os::unix::fs::PermissionsExt::set_mode(
+            &mut fs::metadata(tools.join("truncate")).unwrap().permissions(),
+            0o755,
+        );
+
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(xmodem_remote_finalize_command(
+                "received.bin",
+                3,
+                "modem-token",
+            ))
+            .current_dir(root.path())
+            .env("PATH", format!("{}:/bin:/usr/bin", tools.display()))
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abc");
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .contains("__PORTMATE_XMODEM_modem-token_DONE__"));
     }
 
     #[test]
