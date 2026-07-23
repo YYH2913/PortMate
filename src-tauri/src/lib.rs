@@ -11194,29 +11194,37 @@ async fn xmodem_send_file(
     auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let data = read_local_transfer_source(local_source, "XModem")?;
+    let (mut file, total) = open_local_transfer_source(Path::new(local_source), "XModem 本地源")?;
     let crc = modem_wait_for_receiver(&mut reader).await?;
     let mut block_no = 1_u8;
-    let total = data.len() as u64;
     let mut bytes_done = 0_u64;
+    let mut buffer = [0_u8; XMODEM_BLOCK_SIZE];
 
-    for chunk in data.chunks(XMODEM_BLOCK_SIZE) {
+    while bytes_done < total {
         check_modem_cancelled(state, session_id, progress).await?;
+        let limit = (total - bytes_done).min(buffer.len() as u64) as usize;
+        let read = file
+            .read(&mut buffer[..limit])
+            .map_err(|error| format!("读取 XModem 本地文件失败: {error}"))?;
+        if read == 0 {
+            return Err("XModem 本地文件在传输期间提前结束".to_string());
+        }
         modem_send_packet_with_retries(
             state,
             session_id,
             &mut reader,
             MODEM_SOH,
             block_no,
-            chunk,
+            &buffer[..read],
             crc,
         )
         .await
         .map_err(|error| format!("XModem data block {block_no} failed: {error}"))?;
-        bytes_done += chunk.len() as u64;
+        bytes_done += read as u64;
         progress.update(bytes_done, total).await?;
         block_no = block_no.wrapping_add(1);
     }
+    ensure_local_transfer_source_size(&file, total, "XModem 本地源")?;
     if auto_remote_receiver {
         modem_finish_auto_remote_xmodem(state, session_id, &mut reader)
             .await
@@ -11226,7 +11234,7 @@ async fn xmodem_send_file(
             .await
             .map_err(|error| format!("XModem EOT handshake failed: {error}"))?;
     }
-    Ok(data.len() as u64)
+    Ok(bytes_done)
 }
 
 async fn modem_finish_auto_remote_xmodem(
@@ -11300,7 +11308,7 @@ async fn ymodem_send_file(
     auto_remote_receiver: bool,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
-    let data = read_local_transfer_source(local_source, "YModem")?;
+    let (mut file, total) = open_local_transfer_source(Path::new(local_source), "YModem 本地源")?;
     if !modem_wait_for_receiver(&mut reader).await? {
         return Err("YModem receiver did not request CRC mode".to_string());
     }
@@ -11314,7 +11322,7 @@ async fn ymodem_send_file(
         remote_name
     };
     let mut metadata = vec![0_u8; XMODEM_BLOCK_SIZE];
-    let metadata_text = format!("{}\0{} ", name, data.len());
+    let metadata_text = format!("{}\0{} ", name, total);
     let metadata_bytes = metadata_text.as_bytes();
     let metadata_len = metadata_bytes.len().min(metadata.len());
     metadata[..metadata_len].copy_from_slice(&metadata_bytes[..metadata_len]);
@@ -11332,25 +11340,33 @@ async fn ymodem_send_file(
     let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
 
     let mut block_no = 1_u8;
-    let total = data.len() as u64;
     let mut bytes_done = 0_u64;
-    for chunk in data.chunks(YMODEM_BLOCK_SIZE) {
+    let mut buffer = [0_u8; YMODEM_BLOCK_SIZE];
+    while bytes_done < total {
         check_modem_cancelled(state, session_id, progress).await?;
+        let limit = (total - bytes_done).min(buffer.len() as u64) as usize;
+        let read = file
+            .read(&mut buffer[..limit])
+            .map_err(|error| format!("读取 YModem 本地文件失败: {error}"))?;
+        if read == 0 {
+            return Err("YModem 本地文件在传输期间提前结束".to_string());
+        }
         modem_send_packet_with_retries(
             state,
             session_id,
             &mut reader,
             MODEM_STX,
             block_no,
-            chunk,
+            &buffer[..read],
             true,
         )
         .await
         .map_err(|error| format!("YModem data block {block_no} failed: {error}"))?;
-        bytes_done += chunk.len() as u64;
+        bytes_done += read as u64;
         progress.update(bytes_done, total).await?;
         block_no = block_no.wrapping_add(1);
     }
+    ensure_local_transfer_source_size(&file, total, "YModem 本地源")?;
     modem_finish_eot(state, session_id, &mut reader)
         .await
         .map_err(|error| format!("YModem EOT handshake failed: {error}"))?;
@@ -11365,7 +11381,7 @@ async fn ymodem_send_file(
             .await
             .map_err(|error| format!("YModem final empty block failed: {error}"))?;
     }
-    Ok(data.len() as u64)
+    Ok(bytes_done)
 }
 
 async fn modem_finish_auto_remote_ymodem_batch(
@@ -12147,18 +12163,25 @@ fn open_local_transfer_source(path: &Path, label: &str) -> Result<(fs::File, u64
     Ok((file, metadata.len()))
 }
 
+fn ensure_local_transfer_source_size(
+    file: &fs::File,
+    expected_size: u64,
+    label: &str,
+) -> Result<(), String> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("检查{label}失败: {error}"))?;
+    if metadata.is_file() && metadata.len() == expected_size {
+        Ok(())
+    } else {
+        Err(format!("{label}在传输期间发生变化"))
+    }
+}
+
 fn local_transfer_source_size(path: &str) -> Result<u64, String> {
     local_transfer_entry(Path::new(path), "本地传输源")?
         .map(|metadata| metadata.len())
         .ok_or_else(|| format!("本地传输源不存在: {path}"))
-}
-
-fn read_local_transfer_source(path: &str, protocol: &str) -> Result<Vec<u8>, String> {
-    let (mut file, _) = open_local_transfer_source(Path::new(path), &format!("{protocol} 本地源"))?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)
-        .map_err(|error| format!("读取 {protocol} 本地文件失败: {error}"))?;
-    Ok(data)
 }
 
 fn open_new_local_transfer_file(target: &Path) -> Result<(fs::File, PathBuf), String> {
@@ -42609,7 +42632,6 @@ __PORTMATE_DISKS__
         std::os::unix::fs::symlink(&protected, &source).unwrap();
 
         assert!(open_local_transfer_source(&source, "source").is_err());
-        assert!(read_local_transfer_source(source.to_str().unwrap(), "XModem").is_err());
         let error = match modem_direction(&StartTransferRequest {
             session_id: "session".to_string(),
             protocol: TransferProtocol::Xmodem,
@@ -48597,8 +48619,9 @@ __PORTMATE_DISKS__
                 let xmodem_source = root.join("xmodem-upload-source.bin");
                 let xmodem_remote = root.join("xmodem-remote.bin");
                 let xmodem_download = root.join("xmodem-download-target.bin");
-                let xmodem_payload = b"PortMate XModem integration payload\n";
-                fs::write(&xmodem_source, xmodem_payload).unwrap();
+                let xmodem_payload = b"PortMate XModem integration payload\n".repeat(8);
+                assert!(xmodem_payload.len() > XMODEM_BLOCK_SIZE);
+                fs::write(&xmodem_source, &xmodem_payload).unwrap();
                 let upload = start_transfer_inner(
                     &state,
                     StartTransferRequest {
@@ -48650,8 +48673,9 @@ __PORTMATE_DISKS__
                 let ymodem_source = root.join("ymodem-upload-source.bin");
                 let ymodem_remote = root.join("ymodem-remote.bin");
                 let ymodem_download = root.join("ymodem-download-target.bin");
-                let ymodem_payload = b"PortMate YModem\x00binary\xffpayload\n";
-                fs::write(&ymodem_source, ymodem_payload).unwrap();
+                let ymodem_payload = b"PortMate YModem\x00binary\xffpayload\n".repeat(40);
+                assert!(ymodem_payload.len() > YMODEM_BLOCK_SIZE);
+                fs::write(&ymodem_source, &ymodem_payload).unwrap();
                 let upload = start_transfer_inner(
                     &state,
                     StartTransferRequest {
