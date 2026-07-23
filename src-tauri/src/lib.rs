@@ -280,9 +280,9 @@ const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
-const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 34 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 34 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
-const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
-const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 66; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 66; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
+const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
+const REMOTE_MACOS_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_CPU__; top -l 2 -s 1 -F -n 0 2>/dev/null | grep "CPU usage" | tail -n 1; echo __PORTMATE_MEMORY__; sysctl -n hw.memsize 2>/dev/null | head -n 1; vm_stat 2>/dev/null | head -n 32; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -Arcwwwxo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
+const REMOTE_FREEBSD_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; echo __PORTMATE_BOOT__; sysctl -n kern.boottime 2>/dev/null | head -n 1; echo __PORTMATE_STAT1__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET1__; netstat -ibn 2>/dev/null | head -n 258; sleep 0.2; echo __PORTMATE_STAT2__; sysctl -n kern.cp_time 2>/dev/null | head -n 1; echo __PORTMATE_NET2__; netstat -ibn 2>/dev/null | head -n 258; echo __PORTMATE_MEMORY__; printf "total %s\n" "$(sysctl -n hw.physmem 2>/dev/null | head -n 1)"; printf "page_size %s\n" "$(sysctl -n hw.pagesize 2>/dev/null | head -n 1)"; printf "free %s\n" "$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null | head -n 1)"; printf "inactive %s\n" "$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null | head -n 1)"; printf "cache %s\n" "$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null | head -n 1)"; echo __PORTMATE_LOADAVG__; sysctl -n vm.loadavg 2>/dev/null | head -n 1; echo __PORTMATE_PROCESSES__; ps -axr -o pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; df -Pk 2>/dev/null | head -n 17'"#;
 const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -352,7 +352,7 @@ $ipAddresses = @{}
     }
 $networkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
     Sort-Object -Property @{Expression = {[uint64]$_.BytesReceivedPersec + [uint64]$_.BytesSentPersec}; Descending = $true} |
-    Select-Object -First 32 |
+    Select-Object -First 128 |
     ForEach-Object {
         $raw = $rawNetworks[[string]$_.Name]
         [ordered]@{
@@ -28532,13 +28532,7 @@ fn parse_remote_windows_sysmon_output_at(
             })
         })
         .collect::<Vec<_>>();
-    network_interfaces.sort_by(|left, right| {
-        let left_rate = left.rx_kbps + left.tx_kbps;
-        let right_rate = right.rx_kbps + right.tx_kbps;
-        right_rate
-            .total_cmp(&left_rate)
-            .then_with(|| left.name.cmp(&right.name))
-    });
+    sort_sysmon_network_interfaces(&mut network_interfaces);
     network_interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     let (rx_kbps, tx_kbps) = aggregate_network_rates(&network_interfaces);
 
@@ -29209,6 +29203,20 @@ fn parse_bsd_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
     addresses
 }
 
+fn sort_sysmon_network_interfaces(interfaces: &mut [SysmonNetworkInterface]) {
+    interfaces.sort_by(|left, right| {
+        left.addresses
+            .is_empty()
+            .cmp(&right.addresses.is_empty())
+            .then_with(|| {
+                let left_rate = left.rx_kbps + left.tx_kbps;
+                let right_rate = right.rx_kbps + right.tx_kbps;
+                right_rate.total_cmp(&left_rate)
+            })
+            .then_with(|| left.name.cmp(&right.name))
+    });
+}
+
 fn network_interface_rates(
     before: BTreeMap<String, (u64, u64)>,
     after: BTreeMap<String, (u64, u64)>,
@@ -29235,13 +29243,7 @@ fn network_interface_rates(
             }
         })
         .collect::<Vec<_>>();
-    interfaces.sort_by(|left, right| {
-        let left_rate = left.rx_kbps + left.tx_kbps;
-        let right_rate = right.rx_kbps + right.tx_kbps;
-        right_rate
-            .total_cmp(&left_rate)
-            .then_with(|| left.name.cmp(&right.name))
-    });
+    sort_sysmon_network_interfaces(&mut interfaces);
     interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     interfaces
 }
@@ -34556,6 +34558,32 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
     }
 
     #[test]
+    fn sysmon_network_interfaces_keep_addressed_interfaces_within_the_display_limit() {
+        let before = (0..=MAX_SYSMON_NETWORK_INTERFACES)
+            .map(|index| (format!("veth-{index}"), (0, 0)))
+            .chain(std::iter::once(("uplink".to_string(), (0, 0))))
+            .collect::<BTreeMap<_, _>>();
+        let after = (0..=MAX_SYSMON_NETWORK_INTERFACES)
+            .map(|index| {
+                (
+                    format!("veth-{index}"),
+                    ((index as u64 + 1) * 1024, (index as u64 + 1) * 1024),
+                )
+            })
+            .chain(std::iter::once(("uplink".to_string(), (1, 1))))
+            .collect::<BTreeMap<_, _>>();
+        let addresses =
+            BTreeMap::from([("uplink".to_string(), vec!["198.51.100.42/24".to_string()])]);
+
+        let interfaces = network_interface_rates(before, after, addresses, 1.0);
+
+        assert_eq!(interfaces.len(), MAX_SYSMON_NETWORK_INTERFACES);
+        assert_eq!(interfaces[0].name, "uplink");
+        assert_eq!(interfaces[0].addresses, vec!["198.51.100.42/24"]);
+        assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 258 /proc/net/dev"));
+    }
+
+    #[test]
     fn sysmon_commit_failure_rolls_back_snapshot_and_success_event() {
         let root =
             std::env::temp_dir().join(format!("portmate-sysmon-commit-failure-{}", Uuid::new_v4()));
@@ -34706,7 +34734,7 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             .contains("commandline"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 8"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 16"));
-        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 32"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 128"));
         assert_eq!(
             remote_sysmon_platform_label("\r\nLinux\r\n").as_deref(),
             Some("Linux")
