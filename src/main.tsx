@@ -4,11 +4,13 @@ import "./styles.css";
 import App from "./App";
 import { parseDetachedPaneRequest } from "./detached-pane-state";
 import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
+import { parseWorkspaceWindowRequest } from "./workspace-window-route";
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));
 const detachedPaneRequest = parseDetachedPaneRequest(window.location.search);
-const serialAnalyzerRequest = detachedPaneRequest ? null : parseSerialAnalyzerRequest(window.location.search);
+const workspaceWindowRequest = detachedPaneRequest ? null : parseWorkspaceWindowRequest(window.location.search);
+const serialAnalyzerRequest = detachedPaneRequest || workspaceWindowRequest ? null : parseSerialAnalyzerRequest(window.location.search);
 if (detachedPaneRequest) document.body.classList.add("detached-window");
 if (serialAnalyzerRequest) document.body.classList.add("serial-analyzer-window");
 
@@ -22,6 +24,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
         <SerialAnalyzerApp request={serialAnalyzerRequest} />
       </Suspense>
-    ) : <App />}
+    ) : <App workspaceWindowId={workspaceWindowRequest?.windowId} />}
   </React.StrictMode>,
 );

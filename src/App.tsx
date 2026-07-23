@@ -42,6 +42,7 @@ import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
+import { buildWorkspaceWindowPath } from "./workspace-window-route";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
@@ -78,7 +79,7 @@ import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
 import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import type { AuditRecord, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
@@ -112,6 +113,10 @@ const LazySessionSettingsDialog = lazy(() => import("./SessionSettingsDialog"));
 const LazyFileManagerPanel = lazy(() => import("./FileManagerPanel"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
+const WORKSPACE_WINDOW_WIDTH = 1280;
+const WORKSPACE_WINDOW_HEIGHT = 820;
+const WORKSPACE_WINDOW_MIN_WIDTH = 1100;
+const WORKSPACE_WINDOW_MIN_HEIGHT = 720;
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
@@ -216,8 +221,11 @@ const tabColorChoices = [
   { label: "水鸭", value: "#008080" },
 ];
 
-export default function App() {
-  const [initialWorkspace] = useState(loadWorkspaceSnapshot);
+export default function App({ workspaceWindowId }: { workspaceWindowId?: string }) {
+  const workspaceStorageKey = workspaceWindowId ? null : WORKSPACE_STORAGE_KEY;
+  const workspacePanelStorageKey = workspaceWindowId ? null : WORKSPACE_PANEL_STORAGE_KEY;
+  const ownerWindowId = workspaceWindowId ?? "main";
+  const [initialWorkspace] = useState(() => loadWorkspaceSnapshot(workspaceStorageKey));
   const [terminalPrefs, setTerminalPrefs] = useState(loadTerminalPrefs);
   const [screenLock, setScreenLock] = useState<ScreenLockState>(() => loadInitialScreenLockState(terminalPrefs.requireMasterPassword));
   const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
@@ -265,17 +273,20 @@ export default function App() {
   const [quickBarVisible, setQuickBarVisible] = useState(() => (
     loadLocalValue<unknown>(QUICK_BAR_VISIBLE_STORAGE_KEY, false) === true
   ));
-  const [workspacePanels, setWorkspacePanels] = useState(() => (
-    normalizeWorkspacePanelVisibility(loadLocalValue<unknown>(
-      WORKSPACE_PANEL_STORAGE_KEY,
-      loadLocalValue<unknown>(LEGACY_WORKSPACE_PANEL_STORAGE_KEY, null),
-    ))
-  ));
+  const [workspacePanels, setWorkspacePanels] = useState(() => {
+    const stored = workspacePanelStorageKey
+      ? loadLocalValue<unknown>(
+        workspacePanelStorageKey,
+        loadLocalValue<unknown>(LEGACY_WORKSPACE_PANEL_STORAGE_KEY, null),
+      )
+      : null;
+    return normalizeWorkspacePanelVisibility(stored);
+  });
   const [workspaceDockLayout, setWorkspaceDockLayout] = useState<WorkspaceDockLayout>(() => (
-    normalizeWorkspaceDockLayout(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
+    normalizeWorkspaceDockLayout(workspacePanelStorageKey ? loadLocalValue<unknown>(workspacePanelStorageKey, null) : null)
   ));
   const [workspaceDockSizes, setWorkspaceDockSizes] = useState<WorkspaceDockSizes>(() => (
-    normalizeWorkspaceDockSizes(loadLocalValue<unknown>(WORKSPACE_PANEL_STORAGE_KEY, null))
+    normalizeWorkspaceDockSizes(workspacePanelStorageKey ? loadLocalValue<unknown>(workspacePanelStorageKey, null) : null)
   ));
   const [draggedWorkspacePanel, setDraggedWorkspacePanel] = useState<WorkspaceDockPanelId | null>(null);
   const [focusMode, setFocusMode] = useState(false);
@@ -687,7 +698,7 @@ export default function App() {
   }, [screenLock, terminalPrefs.lockOnIdle, terminalPrefs.lockScreenTimeoutMinutes]);
 
   useEffect(() => {
-    if (startupAppliedRef.current || !sessions.length) return;
+    if (workspaceWindowId || startupAppliedRef.current || !sessions.length) return;
     startupAppliedRef.current = true;
     const prefs = terminalPrefs;
     const workspace = reconcileWorkspaceSnapshot({
@@ -709,17 +720,18 @@ export default function App() {
         }
       }
     })();
-  }, [sessions]);
+  }, [sessions, workspaceWindowId]);
 
   useEffect(() => {
-    saveLocalValue<WorkspaceSnapshot>(WORKSPACE_STORAGE_KEY, {
+    if (!workspaceStorageKey) return;
+    saveLocalValue<WorkspaceSnapshot>(workspaceStorageKey, {
       version: 4,
       root: workspaceRoot,
       activePaneId,
       activeId,
       tabColors,
     });
-  }, [workspaceRoot, activePaneId, activeId, tabColors]);
+  }, [workspaceStorageKey, workspaceRoot, activePaneId, activeId, tabColors]);
 
   useEffect(() => {
     if (zoomedPaneId && !findWorkspacePane(workspaceRoot, zoomedPaneId)) setZoomedPaneId("");
@@ -861,13 +873,14 @@ export default function App() {
   }, [quickBarVisible]);
 
   useEffect(() => {
-    saveLocalValue(WORKSPACE_PANEL_STORAGE_KEY, {
+    if (!workspacePanelStorageKey) return;
+    saveLocalValue(workspacePanelStorageKey, {
       version: 6,
       panels: workspacePanels,
       docks: workspaceDockLayout,
       sizes: workspaceDockSizes,
     });
-  }, [workspaceDockLayout, workspaceDockSizes, workspacePanels]);
+  }, [workspacePanelStorageKey, workspaceDockLayout, workspaceDockSizes, workspacePanels]);
 
   useEffect(() => {
     const preventNativeContextMenu = (event: MouseEvent) => {
@@ -1063,13 +1076,15 @@ export default function App() {
       if (gate.isCurrent("summaries", token)) {
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
         setSessions(nextSessions);
-        const restored = reconcileWorkspaceSnapshot({
-          version: 4,
-          root: workspaceRoot,
-          activePaneId,
-          activeId,
-          tabColors,
-        }, nextSessions.map((session) => session.profile.id));
+        const restored = workspaceWindowId && !workspaceRoot
+          ? { ...emptyWorkspaceSnapshot }
+          : reconcileWorkspaceSnapshot({
+            version: 4,
+            root: workspaceRoot,
+            activePaneId,
+            activeId,
+            tabColors,
+          }, nextSessions.map((session) => session.profile.id));
         setWorkspaceRoot(restored.root);
         setActivePaneId(restored.activePaneId);
         setActiveId(restored.activeId);
@@ -1329,6 +1344,10 @@ export default function App() {
     }
     if (item === "新建会话") {
       openSessionProfileDialog(createSessionDraft(), null, "会话");
+      return;
+    }
+    if (item === "新建工作区窗口") {
+      void openNewWorkspaceWindow();
       return;
     }
     if (item === "启动会话") {
@@ -1902,7 +1921,7 @@ export default function App() {
 
   function restoreWorkspaceLayout() {
     const restored = reconcileWorkspaceSnapshot(
-      loadWorkspaceSnapshot(),
+      loadWorkspaceSnapshot(workspaceStorageKey),
       sessions.map((session) => session.profile.id),
     );
     setWorkspaceRoot(restored.root);
@@ -2392,6 +2411,17 @@ export default function App() {
     focusWorkspacePaneInput(targetPaneId);
   }
 
+  async function openNewWorkspaceWindow() {
+    const windowId = createWorkspaceNodeId("pane")
+      .replace(/^pane-/, "workspace-")
+      .replace(/[^A-Za-z0-9_-]/g, "-");
+    try {
+      await openWorkspaceWindow(windowId);
+    } catch (error) {
+      setNotice({ title: "新建工作区窗口失败", message: formatError(error) });
+    }
+  }
+
   async function detachWorkspacePane(paneId = activePaneId) {
     const panes = workspacePaneLeaves(workspaceRoot);
     const pane = panes.find((item) => item.id === paneId);
@@ -2404,6 +2434,7 @@ export default function App() {
     }
     const request: DetachedPaneRequest = {
       windowId: createWorkspaceNodeId("pane").replace(/[^A-Za-z0-9_-]/g, "-"),
+      ownerWindowId,
       paneId: pane.id,
       viewId: activeView!.id,
       sessionId: activeView!.sessionId,
@@ -5285,6 +5316,55 @@ function saveLocalSessionSummaries(sessions: SessionSummary[]) {
   }
 }
 
+async function openWorkspaceWindow(windowId: string): Promise<void> {
+  const path = buildWorkspaceWindowPath({ windowId });
+  if (!isBackendAvailable()) {
+    const popup = window.open(
+      path,
+      windowId,
+      `popup,width=${WORKSPACE_WINDOW_WIDTH},height=${WORKSPACE_WINDOW_HEIGHT},resizable=yes`,
+    );
+    if (!popup) throw new Error("浏览器阻止了工作区窗口，请允许 PortMate 打开弹出窗口。");
+    popup.focus();
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = window.setTimeout(() => finish(new Error("创建工作区窗口超时")), 8_000);
+    const child = new WebviewWindow(windowId, {
+      url: path,
+      title: "PortMate",
+      center: true,
+      visible: false,
+      width: WORKSPACE_WINDOW_WIDTH,
+      height: WORKSPACE_WINDOW_HEIGHT,
+      minWidth: WORKSPACE_WINDOW_MIN_WIDTH,
+      minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
+      preventOverflow: true,
+    });
+    void child.once("tauri://created", () => {
+      void placeAndTrackChildWindow(child, {
+        storageKey: null,
+        width: WORKSPACE_WINDOW_WIDTH,
+        height: WORKSPACE_WINDOW_HEIGHT,
+        minWidth: WORKSPACE_WINDOW_MIN_WIDTH,
+        minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
+      }).then(() => {
+        void child.setFocus().catch(() => {});
+        finish();
+      }, (error) => finish(new Error(formatError(error))));
+    });
+    void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));
+  });
+}
+
 async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName: string): Promise<void> {
   const path = buildDetachedPanePath(request);
   if (!isBackendAvailable()) {
@@ -5326,9 +5406,10 @@ async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName:
   });
 }
 
-function loadWorkspaceSnapshot(): WorkspaceSnapshot {
-  const stored = loadLocalValue<unknown>(WORKSPACE_STORAGE_KEY, null);
+function loadWorkspaceSnapshot(storageKey: string | null = WORKSPACE_STORAGE_KEY): WorkspaceSnapshot {
+  const stored = storageKey ? loadLocalValue<unknown>(storageKey, null) : null;
   if (stored) return sanitizeWorkspaceSnapshot(stored);
+  if (!storageKey) return { ...emptyWorkspaceSnapshot };
   return sanitizeWorkspaceSnapshot({
     version: 1,
     layout: loadLocalValue<unknown>("portmate.workspaceLayout", "single"),

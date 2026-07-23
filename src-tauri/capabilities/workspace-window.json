@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "workspace-window",
+  "description": "PortMate workspace window permissions",
+  "windows": ["workspace-*"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-show"
+  ]
+}

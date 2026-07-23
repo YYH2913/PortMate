@@ -11,13 +11,14 @@ import type { SessionSummary } from "./types";
 
 describe("detached pane state", () => {
   it("round-trips an encoded detached pane route", () => {
-    const request = { windowId: "pane-123", paneId: "pane/a", viewId: "view/1", sessionId: "ssh host", title: "Router Copy", color: "#228B22", keyMode: "command" as const };
+    const request = { windowId: "pane-123", ownerWindowId: "workspace-123", paneId: "pane/a", viewId: "view/1", sessionId: "ssh host", title: "Router Copy", color: "#228B22", keyMode: "command" as const };
     const path = buildDetachedPanePath(request);
 
     expect(path).toContain("detachedPane=1");
     expect(parseDetachedPaneRequest(new URL(path, "http://localhost").search)).toEqual(request);
     expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-old&paneId=a&viewId=v&sessionId=b&title=Old")).toEqual({
       windowId: "pane-old",
+      ownerWindowId: "main",
       paneId: "a",
       viewId: "v",
       sessionId: "b",
@@ -32,13 +33,17 @@ describe("detached pane state", () => {
     expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a%0A&viewId=v&sessionId=b&title=x")).toBeNull();
     expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a&viewId=v&sessionId=b&title=x%0A")).toBeNull();
     expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a&viewId=v&sessionId=b&title=x&color=red")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&ownerWindowId=pane-owner&paneId=a&viewId=v&sessionId=b&title=x")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&ownerWindowId=undefined&paneId=a&viewId=v&sessionId=b&title=x")).toBeNull();
     expect(parseDetachedPaneRequest("?windowId=pane-ok&paneId=a&sessionId=b")).toBeNull();
   });
 
   it("normalizes only supported cross-window commands", () => {
-    const payload = { action: "reattach", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
+    const payload = { action: "reattach", windowId: "pane-123", ownerWindowId: "workspace-owner", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
+    const { ownerWindowId: _, ...legacyPayload } = payload;
+    expect(normalizeDetachedPaneCommand(legacyPayload)).toMatchObject({ ownerWindowId: "main" });
     expect(normalizeDetachedPaneCommand({ ...payload, keyMode: "invalid" })).toMatchObject({ keyMode: "remote" });
     expect(normalizeDetachedPaneCommand({ ...payload, action: "remove" })).toBeNull();
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
@@ -49,7 +54,7 @@ describe("detached pane state", () => {
   });
 
   it("accepts a global lock request from a detached window", () => {
-    const payload = { action: "lock-screen", windowId: "pane-123", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
+    const payload = { action: "lock-screen", windowId: "pane-123", ownerWindowId: "main", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({

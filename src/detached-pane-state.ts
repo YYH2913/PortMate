@@ -9,6 +9,7 @@ export const SESSION_PROFILE_UPDATED_EVENT = "portmate-session-profile-updated";
 
 export type DetachedPaneRequest = {
   windowId: string;
+  ownerWindowId: string;
   paneId: string;
   viewId: string;
   sessionId: string;
@@ -27,11 +28,13 @@ export type DetachedPaneMessage = {
 };
 
 const windowIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
+const ownerWindowIdPattern = /^(?:main|workspace-[A-Za-z0-9_-]{1,118})$/;
 
 export function buildDetachedPanePath(request: DetachedPaneRequest): string {
   const params = new URLSearchParams({
     detachedPane: "1",
     windowId: request.windowId,
+    ownerWindowId: request.ownerWindowId,
     paneId: request.paneId,
     viewId: request.viewId,
     sessionId: request.sessionId,
@@ -46,14 +49,15 @@ export function parseDetachedPaneRequest(search: string): DetachedPaneRequest | 
   const params = new URLSearchParams(search);
   if (params.get("detachedPane") !== "1") return null;
   const windowId = params.get("windowId") ?? "";
+  const ownerWindowId = params.get("ownerWindowId") ?? "main";
   const paneId = cleanRouteId(params.get("paneId"));
   const viewId = cleanRouteId(params.get("viewId"));
   const sessionId = cleanRouteId(params.get("sessionId"));
   const title = cleanRouteTitle(params.get("title"));
   const color = cleanRouteColor(params.get("color"));
   const keyMode = normalizeTerminalKeyMode(params.get("keyMode"));
-  if (!windowIdPattern.test(windowId) || !paneId || !viewId || !sessionId || title === null || color === null) return null;
-  return { windowId, paneId, viewId, sessionId, title, color, keyMode };
+  if (!windowIdPattern.test(windowId) || !ownerWindowIdPattern.test(ownerWindowId) || !paneId || !viewId || !sessionId || title === null || color === null) return null;
+  return { windowId, ownerWindowId, paneId, viewId, sessionId, title, color, keyMode };
 }
 
 export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneCommand | null {
@@ -63,6 +67,7 @@ export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneComman
   const request = parseDetachedPaneRequest(`?${new URLSearchParams({
     detachedPane: "1",
     windowId: typeof source.windowId === "string" ? source.windowId : "",
+    ownerWindowId: typeof source.ownerWindowId === "string" ? source.ownerWindowId : "main",
     paneId: typeof source.paneId === "string" ? source.paneId : "",
     viewId: typeof source.viewId === "string" ? source.viewId : "",
     sessionId: typeof source.sessionId === "string" ? source.sessionId : "",

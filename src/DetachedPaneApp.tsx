@@ -161,7 +161,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       if (!isScreenLockShortcut(event)) return;
       event.preventDefault();
       event.stopPropagation();
-      void sendMainCommand("lock-screen");
+      void sendOwnerCommand("lock-screen");
     };
     window.addEventListener("keydown", handleScreenLockShortcut, true);
     return () => window.removeEventListener("keydown", handleScreenLockShortcut, true);
@@ -195,15 +195,15 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     });
   }
 
-  async function sendMainCommand(action: DetachedPaneCommand["action"]) {
+  async function sendOwnerCommand(action: DetachedPaneCommand["action"]) {
     const command: DetachedPaneCommand = { ...request, keyMode, action };
     try {
       if (isBackendAvailable()) {
-        await emitTo("main", DETACHED_PANE_EVENT, command);
+        await emitTo(request.ownerWindowId, DETACHED_PANE_EVENT, command);
       } else if (window.opener && !window.opener.closed) {
         window.opener.postMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload: command }, window.location.origin);
       } else {
-        throw new Error("主窗口不可用");
+        throw new Error("来源工作区不可用");
       }
       setError("");
       if (action === "reattach") {
@@ -232,15 +232,15 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           <RefreshCw size={14} />
         </button>
         {connectionAction === "disconnect" ? (
-          <button type="button" title="断开会话" aria-label="断开会话" onClick={() => void sendMainCommand("disconnect")}>
+          <button type="button" title="断开会话" aria-label="断开会话" onClick={() => void sendOwnerCommand("disconnect")}>
             <Square size={13} />
           </button>
         ) : (
-          <button type="button" title="连接会话" aria-label="连接会话" disabled={!session} onClick={() => void sendMainCommand("connect")}>
+          <button type="button" title="连接会话" aria-label="连接会话" disabled={!session} onClick={() => void sendOwnerCommand("connect")}>
             <Play size={14} />
           </button>
         )}
-        <button type="button" title="返回主窗口" aria-label="返回主窗口" onClick={() => void sendMainCommand("reattach")}>
+        <button type="button" title="返回工作区" aria-label="返回工作区" onClick={() => void sendOwnerCommand("reattach")}>
           <PanelLeftOpen size={15} />
         </button>
       </header>
@@ -258,12 +258,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           {terminalKeyModeLabel(keyMode)}
         </button>
       </footer>
-      {screenLock ? <DetachedScreenLockOverlay marker={screenLock} /> : null}
+      {screenLock ? <DetachedScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
     </main>
   );
 }
 
-function DetachedScreenLockOverlay({ marker }: { marker: ScreenLockMarker }) {
+function DetachedScreenLockOverlay({ marker, ownerWindowId }: { marker: ScreenLockMarker; ownerWindowId: string }) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -286,11 +286,11 @@ function DetachedScreenLockOverlay({ marker }: { marker: ScreenLockMarker }) {
     };
   }, []);
 
-  async function focusMainWindow() {
+  async function focusOwnerWorkspace() {
     try {
       if (isBackendAvailable()) {
-        const main = await WebviewWindow.getByLabel("main");
-        await main?.setFocus();
+        const owner = await WebviewWindow.getByLabel(ownerWindowId);
+        await owner?.setFocus();
         return;
       }
       window.opener?.focus();
@@ -325,10 +325,10 @@ function DetachedScreenLockOverlay({ marker }: { marker: ScreenLockMarker }) {
           <span>{reason} · {new Date(marker.lockedAt).toLocaleTimeString()}</span>
         </div>
         <div className="screen-lock-rule" />
-        <p className="screen-lock-message">请在主窗口完成解锁</p>
-        <button ref={buttonRef} className="screen-lock-primary" type="button" onClick={() => void focusMainWindow()}>
+        <p className="screen-lock-message">请在来源工作区完成解锁</p>
+        <button ref={buttonRef} className="screen-lock-primary" type="button" onClick={() => void focusOwnerWorkspace()}>
           <PanelLeftOpen size={15} />
-          <span>切换到主窗口</span>
+          <span>切换到来源工作区</span>
         </button>
       </section>
     </div>
