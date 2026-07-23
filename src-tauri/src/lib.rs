@@ -29997,10 +29997,21 @@ fn normalize_loaded_record_ids<T>(
     id: impl Fn(&T) -> &str,
     set_id: impl Fn(&mut T, String),
 ) {
+    let reserved_ids = records
+        .iter()
+        .map(&id)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<HashSet<_>>();
     let mut used_ids = HashSet::with_capacity(records.len());
     for (index, record) in records.iter_mut().enumerate() {
-        let assigned_id =
-            reserve_unique_loaded_record_id(id(record), record_kind, index, &mut used_ids);
+        let assigned_id = reserve_unique_loaded_record_id(
+            id(record),
+            record_kind,
+            index,
+            &reserved_ids,
+            &mut used_ids,
+        );
         set_id(record, assigned_id);
     }
 }
@@ -30009,6 +30020,7 @@ fn reserve_unique_loaded_record_id(
     original_id: &str,
     record_kind: &str,
     record_position: usize,
+    reserved_ids: &HashSet<String>,
     used_ids: &mut HashSet<String>,
 ) -> String {
     if !original_id.is_empty() && used_ids.insert(original_id.to_string()) {
@@ -30023,7 +30035,7 @@ fn reserve_unique_loaded_record_id(
     let mut suffix = record_position.saturating_add(1);
     loop {
         let candidate = format!("{base}:loaded:{suffix}");
-        if used_ids.insert(candidate.clone()) {
+        if !reserved_ids.contains(&candidate) && used_ids.insert(candidate.clone()) {
             return candidate;
         }
         suffix = suffix.saturating_add(1);
@@ -36135,6 +36147,27 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         }
         drop(connection);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loaded_mirror_id_repair_preserves_unique_suffix_ids() {
+        let mut ids = vec![
+            "duplicate".to_string(),
+            "duplicate".to_string(),
+            "duplicate:loaded:2".to_string(),
+        ];
+
+        normalize_loaded_record_ids(
+            &mut ids,
+            "event",
+            |id| id.as_str(),
+            |id, normalized| *id = normalized,
+        );
+
+        assert_eq!(
+            ids,
+            ["duplicate", "duplicate:loaded:3", "duplicate:loaded:2",]
+        );
     }
 
     #[test]
