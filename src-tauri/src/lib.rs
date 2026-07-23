@@ -15415,14 +15415,7 @@ async fn scp_download_with_idle_timeout<H: client::Handler>(
             "SCP 写入完成确认",
         )
         .await?;
-        scp_wait_download_completion(
-            &mut channel,
-            &mut stderr,
-            progress,
-            &mut last_progress,
-            idle_timeout,
-        )
-        .await?;
+        scp_wait_download_completion(&mut channel, &mut stderr, progress, idle_timeout).await?;
         finalize_local_resume_file(&temp_target, target)?;
         Ok(size)
     }
@@ -15435,12 +15428,12 @@ async fn scp_wait_download_completion(
     channel: &mut Channel<client::Msg>,
     stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
-    last_progress: &mut Instant,
     idle_timeout: Duration,
 ) -> Result<(), String> {
     let mut output = Vec::new();
     let mut exit_status = None;
     let mut eof_received_at: Option<Instant> = None;
+    let completion_started = Instant::now();
     loop {
         progress.check_cancelled()?;
         if ssh_exec_status_grace_expired(eof_received_at) {
@@ -15449,7 +15442,10 @@ async fn scp_wait_download_completion(
         let remaining = if let Some(received_at) = eof_received_at {
             SSH_EXEC_STATUS_GRACE_TIMEOUT.saturating_sub(received_at.elapsed())
         } else {
-            idle_timeout.saturating_sub(last_progress.elapsed())
+            // The SCP payload has already completed at this point. A remote
+            // exit status is control-plane completion, so start a fresh idle
+            // window instead of reusing the timestamp of the last data chunk.
+            idle_timeout.saturating_sub(completion_started.elapsed())
         };
         if remaining.is_zero() {
             if eof_received_at.is_some() {
@@ -15464,7 +15460,6 @@ async fn scp_wait_download_completion(
             .await
         {
             Ok(Some(message)) => {
-                *last_progress = Instant::now();
                 if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
                     break;
                 }
