@@ -278,6 +278,7 @@ const MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH: usize = 8;
 const MAX_TRIGGER_SEND_BATCH_CONCURRENCY: usize = 8;
 const MAX_TRIGGER_SEND_TEXTS_PER_BATCH: usize = 32;
 const MAX_TRIGGER_CUSTOM_LINK_CHARACTERS: usize = 8_192;
+const REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; ubus call network.interface dump 2>/dev/null'"#;
 const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
 const REMOTE_SYSMON_PLATFORM_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; uname -s 2>/dev/null | head -n 1'"#;
 const REMOTE_LINUX_SYSMON_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH LC_ALL=C; head -n 1 /proc/uptime 2>/dev/null; echo __PORTMATE_MEMINFO__; head -n 64 /proc/meminfo 2>/dev/null; echo __PORTMATE_STAT1__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET1__; head -n 258 /proc/net/dev 2>/dev/null; sleep 0.2; echo __PORTMATE_STAT2__; head -n 1 /proc/stat 2>/dev/null; echo __PORTMATE_NET2__; head -n 258 /proc/net/dev 2>/dev/null; echo __PORTMATE_ADDRS__; addresses="$(ip -o addr show 2>/dev/null)"; if [ -z "$addresses" ]; then addresses="$(ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(ifconfig -a 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ip -o addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ip addr show 2>/dev/null)"; fi; if [ -z "$addresses" ]; then addresses="$(busybox ifconfig -a 2>/dev/null)"; fi; printf "%s\n" "$addresses" | head -n 384; echo __PORTMATE_LOADAVG__; head -n 1 /proc/loadavg 2>/dev/null; echo __PORTMATE_PROCESSES__; ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu,-rss 2>/dev/null | head -n 8; echo __PORTMATE_DISKS__; (df -Pk -x tmpfs -x devtmpfs 2>/dev/null || df -Pk 2>/dev/null) | head -n 17'"#;
@@ -27994,12 +27995,30 @@ async fn collect_remote_sysmon(
     {
         Some("Linux") => {
             let output = exec_ssh_command_capture(
-                handle,
+                handle.clone(),
                 REMOTE_LINUX_SYSMON_COMMAND,
                 Duration::from_secs(8),
             )
             .await?;
-            parse_remote_sysmon_output(session_id, &output)
+            let mut snapshot = parse_remote_sysmon_output(session_id, &output)?;
+            if remote_linux_sysmon_needs_openwrt_address_fallback(&snapshot.network_interfaces) {
+                if let Ok(ubus_output) = exec_ssh_command_capture(
+                    handle,
+                    REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND,
+                    Duration::from_secs(3),
+                )
+                .await
+                {
+                    merge_remote_linux_sysmon_network_addresses(
+                        &mut snapshot.network_interfaces,
+                        &mut snapshot.rx_kbps,
+                        &mut snapshot.tx_kbps,
+                        &output,
+                        parse_openwrt_network_interface_dump(&ubus_output),
+                    );
+                }
+            }
+            Ok(snapshot)
         }
         Some("Darwin") => {
             let output = exec_ssh_command_capture(
@@ -29070,6 +29089,65 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
     addresses
 }
 
+fn parse_openwrt_network_interface_dump(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return BTreeMap::new();
+    };
+    let Some(interfaces) = root.get("interface").and_then(serde_json::Value::as_array) else {
+        return BTreeMap::new();
+    };
+
+    let mut addresses = BTreeMap::<String, Vec<String>>::new();
+    for interface in interfaces {
+        let Some(name) = ["l3_device", "device", "interface"]
+            .into_iter()
+            .filter_map(|field| interface.get(field).and_then(serde_json::Value::as_str))
+            .map(normalize_linux_sysmon_interface_name)
+            .find(|name| !name.is_empty())
+        else {
+            continue;
+        };
+
+        let entry = addresses.entry(name).or_default();
+        for (field, max_prefix) in [("ipv4-address", 32_u8), ("ipv6-address", 128_u8)] {
+            let Some(items) = interface.get(field).and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                let Some(address) = openwrt_sysmon_interface_address(item, max_prefix) else {
+                    continue;
+                };
+                if entry.len() < 8 && !entry.contains(&address) {
+                    entry.push(address);
+                }
+            }
+        }
+    }
+    addresses
+}
+
+fn openwrt_sysmon_interface_address(value: &serde_json::Value, max_prefix: u8) -> Option<String> {
+    let raw_address = value
+        .as_str()
+        .or_else(|| value.get("address").and_then(serde_json::Value::as_str))?;
+    let address = normalize_sysmon_address(raw_address)?;
+    if address.contains(':') != (max_prefix == 128) {
+        return None;
+    }
+    if address.contains('/') {
+        return Some(address);
+    }
+    let prefix = value
+        .get("mask")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|prefix| *prefix <= max_prefix);
+    match prefix {
+        Some(prefix) => Some(format!("{address}/{prefix}")),
+        None => Some(address),
+    }
+}
+
 fn linux_sysmon_interface_header_name(trimmed: &str, fields: &[&str]) -> Option<String> {
     if let Some((index, rest)) = trimmed.split_once(": ") {
         if index.chars().all(|character| character.is_ascii_digit()) {
@@ -29215,6 +29293,45 @@ fn sort_sysmon_network_interfaces(interfaces: &mut [SysmonNetworkInterface]) {
             })
             .then_with(|| left.name.cmp(&right.name))
     });
+}
+
+fn remote_linux_sysmon_needs_openwrt_address_fallback(
+    interfaces: &[SysmonNetworkInterface],
+) -> bool {
+    !interfaces.is_empty()
+        && !interfaces
+            .iter()
+            .any(|interface| interface.name != "lo" && !interface.addresses.is_empty())
+}
+
+fn merge_remote_linux_sysmon_network_addresses(
+    interfaces: &mut Vec<SysmonNetworkInterface>,
+    rx_kbps: &mut f32,
+    tx_kbps: &mut f32,
+    output: &str,
+    addresses: BTreeMap<String, Vec<String>>,
+) {
+    if addresses.is_empty() {
+        return;
+    }
+    let address_output = section_between(output, "__PORTMATE_ADDRS__", "__PORTMATE_LOADAVG__");
+    let mut all_addresses = parse_linux_network_addresses(address_output);
+    for (name, extra_addresses) in addresses {
+        let entry = all_addresses.entry(name).or_default();
+        let mut combined = std::mem::take(entry);
+        combined.extend(extra_addresses);
+        *entry = normalize_sysmon_addresses(combined);
+    }
+    let net1 = section_between(output, "__PORTMATE_NET1__", "__PORTMATE_STAT2__");
+    let net2 = section_between(output, "__PORTMATE_NET2__", "__PORTMATE_ADDRS__");
+    let refreshed = network_interface_rates(
+        parse_network_interfaces(net1),
+        parse_network_interfaces(net2),
+        all_addresses,
+        REMOTE_SYSMON_SAMPLE_SECONDS,
+    );
+    (*rx_kbps, *tx_kbps) = aggregate_network_rates(&refreshed);
+    *interfaces = refreshed;
 }
 
 fn network_interface_rates(
@@ -34626,6 +34743,83 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
             vec!["192.168.3.1", "fe80::211:22ff:fe33:4455/64"]
         );
 
+        let openwrt_addresses = parse_openwrt_network_interface_dump(
+            r#"{
+  "interface": [
+    {
+      "interface": "lan",
+      "device": "br-lan",
+      "l3_device": "br-lan",
+      "ipv4-address": [{"address": "192.168.8.1", "mask": 24}],
+      "ipv6-address": [{"address": "fd12:3456::1", "mask": 64}]
+    },
+    {
+      "interface": "wan",
+      "l3_device": "pppoe-wan",
+      "ipv4-address": [{"address": "198.51.100.42", "mask": 32}]
+    }
+  ]
+}"#,
+        );
+        assert_eq!(
+            openwrt_addresses.get("br-lan").cloned().unwrap_or_default(),
+            vec!["192.168.8.1/24", "fd12:3456::1/64"]
+        );
+        assert_eq!(
+            openwrt_addresses
+                .get("pppoe-wan")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["198.51.100.42/32"]
+        );
+        assert!(parse_openwrt_network_interface_dump("{not-json").is_empty());
+
+        let before_rows = (0..=MAX_SYSMON_NETWORK_INTERFACES)
+            .map(|index| format!("veth-{index}: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"))
+            .chain(std::iter::once(
+                "br-lan: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n".to_string(),
+            ))
+            .collect::<String>();
+        let after_rows = (0..=MAX_SYSMON_NETWORK_INTERFACES)
+            .map(|index| {
+                let bytes = (index as u64 + 1) * 1024;
+                format!("veth-{index}: {bytes} 0 0 0 0 0 0 0 {bytes} 0 0 0 0 0 0 0\n")
+            })
+            .chain(std::iter::once(
+                "br-lan: 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0\n".to_string(),
+            ))
+            .collect::<String>();
+        let output = format!(
+            "1.0 0.0\n__PORTMATE_MEMINFO__\nMemTotal: 1 kB\nMemAvailable: 1 kB\n__PORTMATE_STAT1__\ncpu 1 0 0 1\n__PORTMATE_NET1__\nInter-| Receive | Transmit\n face | bytes | bytes\n{before_rows}__PORTMATE_STAT2__\ncpu 2 0 0 2\n__PORTMATE_NET2__\nInter-| Receive | Transmit\n face | bytes | bytes\n{after_rows}__PORTMATE_ADDRS__\n__PORTMATE_LOADAVG__\n0 0 0\n__PORTMATE_PROCESSES__\n__PORTMATE_DISKS__\n"
+        );
+        let mut snapshot = parse_remote_sysmon_output("openwrt-session", &output).unwrap();
+        assert_eq!(
+            snapshot.network_interfaces.len(),
+            MAX_SYSMON_NETWORK_INTERFACES
+        );
+        assert!(!snapshot
+            .network_interfaces
+            .iter()
+            .any(|interface| interface.name == "br-lan"));
+        assert!(remote_linux_sysmon_needs_openwrt_address_fallback(
+            &snapshot.network_interfaces
+        ));
+        merge_remote_linux_sysmon_network_addresses(
+            &mut snapshot.network_interfaces,
+            &mut snapshot.rx_kbps,
+            &mut snapshot.tx_kbps,
+            &output,
+            openwrt_addresses,
+        );
+        assert_eq!(snapshot.network_interfaces[0].name, "br-lan");
+        assert_eq!(
+            snapshot.network_interfaces[0].addresses,
+            vec!["192.168.8.1/24", "fd12:3456::1/64"]
+        );
+        assert!(!remote_linux_sysmon_needs_openwrt_address_fallback(
+            &snapshot.network_interfaces
+        ));
+
         let fallback_addresses = first_nonempty_linux_network_addresses([
             "ip: unsupported output".to_string(),
             "br-lan    inet 192.168.2.1  Bcast:192.168.2.255  Mask:255.255.255.0".to_string(),
@@ -34661,6 +34855,8 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ip -o addr show 2>/dev/null"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ip addr show 2>/dev/null"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("busybox ifconfig -a 2>/dev/null"));
+        assert!(REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND
+            .contains("ubus call network.interface dump 2>/dev/null"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 384"));
 
         assert_eq!(
