@@ -13637,9 +13637,14 @@ async fn start_external_drop_inner(
 }
 
 fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
-    let path = path.trim();
-    if path.is_empty() || path.contains('\0') || remote_path_has_dot_components(path) {
-        return Err("远端拖放目标路径不能为空、包含 NUL 或使用 . / .. 分量".to_string());
+    let path = path.trim().trim_end_matches('/');
+    if path.is_empty()
+        || matches!(path, "." | ".." | "~")
+        || path.contains('\0')
+        || path == "/"
+        || remote_path_has_dot_components(path)
+    {
+        return Err("远端拖放目标路径不能为空、包含 NUL、使用 . / .. 分量或指向根目录".to_string());
     }
     Ok(())
 }
@@ -39691,7 +39696,15 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
 
     #[test]
     fn file_manager_remote_mutating_paths_reject_parent_components() {
-        for path in ["/tmp/..", "/tmp/./file", "nested/../outside", "../outside"] {
+        for path in [
+            "/tmp/..",
+            "/tmp/./file",
+            "nested/../outside",
+            "../outside",
+            "/",
+            "//",
+            "~",
+        ] {
             assert!(
                 validate_remote_mutating_path(path).is_err(),
                 "unsafe remote path was accepted: {path}"
@@ -39699,6 +39712,7 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             assert!(normalize_remote_batch_source(path).is_err());
             assert!(validate_remote_drop_destination(path).is_err());
         }
+        assert!(validate_remote_drop_destination("/tmp/portmate/").is_ok());
         assert_eq!(
             validate_remote_mutating_path("/tmp/portmate/file").unwrap(),
             "/tmp/portmate/file"
