@@ -941,6 +941,32 @@ try {
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  const openSshImportDialog = page.locator(".openssh-config-import-dialog");
+  await openSshImportDialog.waitFor();
+  const openSshConfigInput = openSshImportDialog.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true });
+  await openSshConfigInput.fill(`Host *
+  ServerAliveInterval 60
+Host production
+  HostName app.example.test
+  User deploy
+  IdentityFile ~/.ssh/id_deploy
+  ProxyJump ops@bastion.example.test:2222
+Host staging
+  HostName staging.example.test
+  Port 2203`);
+  await openSshImportDialog.locator(".openssh-import-row").first().waitFor();
+  assert(await openSshImportDialog.locator(".openssh-import-row").count() === 2
+    && await openSshImportDialog.getByRole("checkbox", { name: "导入 production", exact: true }).isChecked()
+    && await openSshImportDialog.getByRole("checkbox", { name: "导入 staging", exact: true }).isChecked()
+    && await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
+    && (await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
+  "OpenSSH config import preview did not preserve selectable literal Host entries and warnings");
+  await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });
+  await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await openSshImportDialog.waitFor({ state: "detached" });
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const concurrentProfileDialog = page.locator(".session-settings-dialog");
   await concurrentProfileDialog.waitFor();
@@ -2423,6 +2449,40 @@ try {
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
 
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  const mobileOpenSshImport = page.locator(".openssh-config-import-dialog");
+  await mobileOpenSshImport.waitFor();
+  await mobileOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host mobile
+  HostName mobile.example.test
+  User operator
+  IdentityFile ~/.ssh/id_mobile`);
+  await mobileOpenSshImport.locator(".openssh-import-row").waitFor();
+  const mobileOpenSshBounds = await mobileOpenSshImport.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    const content = dialog.querySelector(".openssh-config-import-content");
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      height: rect.height,
+      scrollWidth: dialog.scrollWidth,
+      clientWidth: dialog.clientWidth,
+      contentScrollWidth: content?.scrollWidth ?? 0,
+      contentClientWidth: content?.clientWidth ?? 0,
+    };
+  });
+  assert(mobileOpenSshBounds.left >= 0 && mobileOpenSshBounds.right <= 390
+    && mobileOpenSshBounds.top >= 0 && mobileOpenSshBounds.bottom <= 844
+    && mobileOpenSshBounds.height <= 600
+    && mobileOpenSshBounds.scrollWidth <= mobileOpenSshBounds.clientWidth
+    && mobileOpenSshBounds.contentScrollWidth <= mobileOpenSshBounds.contentClientWidth,
+  `mobile OpenSSH import dialog overflows: ${JSON.stringify(mobileOpenSshBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-openssh-import-mobile.png`, fullPage: true });
+  await mobileOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
+  await mobileOpenSshImport.waitFor({ state: "detached" });
+
   await page.evaluate(() => {
     const now = Date.now();
     window.__emitTauriEvent("portmate-mcp-approval", {
@@ -3592,6 +3652,81 @@ try {
     `invalid session cache or denied preference writes caused browser exceptions: ${JSON.stringify(cacheRecoveryErrors)}`);
   await cacheRecoveryContext.close();
 
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const openSshImportSaveStart = await page.evaluate(() => window.__invokeCalls.length);
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "导入 OpenSSH 配置" }).click();
+  const savingOpenSshImport = page.locator(".openssh-config-import-dialog");
+  await savingOpenSshImport.waitFor();
+  await savingOpenSshImport.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true }).fill(`Host saved-profile
+  HostName saved.example.test
+  User deploy
+  Port 2202
+  HostKeyAlias saved-device
+  IdentityFile ~/.ssh/id_saved
+  ServerAliveInterval 45
+  ServerAliveCountMax 5
+  IdentitiesOnly no
+  ForwardAgent yes
+  ProxyJump ops@bastion.example.test:2222`);
+  await savingOpenSshImport.getByRole("button", { name: "导入", exact: true }).click();
+  await savingOpenSshImport.locator(".dialog-note", { hasText: "已导入 1 个会话" }).waitFor();
+  const openSshImportLifecycleState = await page.evaluate((start) => {
+    const call = window.__invokeCalls.slice(start).find((item) => item.command === "save_session_profile");
+    const profile = call?.args?.profile;
+    return {
+      saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
+      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      profile: profile ? {
+        name: profile.name,
+        kind: profile.kind,
+        connection: {
+          kind: profile.connection.kind,
+          endpoint: profile.connection.endpoint,
+          username: profile.connection.username,
+          keepaliveEnabled: profile.connection.keepaliveEnabled,
+          keepaliveIntervalSeconds: profile.connection.keepaliveIntervalSeconds,
+          keepaliveMaxMissed: profile.connection.keepaliveMaxMissed,
+          hostKeyAlias: profile.connection.hostKeyPolicy.alias,
+          identitiesOnly: profile.connection.identityPolicy.identitiesOnly,
+          forwarding: profile.connection.agentPolicy.forwarding,
+          identityPaths: profile.connection.identityRefs.map((identity) => identity.path),
+          jumps: profile.connection.jumps,
+        },
+      } : null,
+    };
+  }, openSshImportSaveStart);
+  assert(openSshImportLifecycleState.saveCalls === 1
+    && openSshImportLifecycleState.expectedProfile === null
+    && JSON.stringify(openSshImportLifecycleState.profile) === JSON.stringify({
+      name: "saved-profile",
+      kind: "ssh",
+      connection: {
+        kind: "ssh",
+        endpoint: { host: "saved.example.test", port: 2202 },
+        username: "deploy",
+        keepaliveEnabled: true,
+        keepaliveIntervalSeconds: 45,
+        keepaliveMaxMissed: 5,
+        hostKeyAlias: "saved-device",
+        identitiesOnly: false,
+        forwarding: true,
+        identityPaths: ["~/.ssh/id_saved"],
+        jumps: [{
+          host: "bastion.example.test",
+          port: 2222,
+          username: "ops",
+          passwordSecretRef: null,
+          passphraseSecretRef: null,
+          identityRef: null,
+          hostKeyPolicy: null,
+        }],
+      },
+    }),
+  `OpenSSH config import did not save the expected Profile: ${JSON.stringify(openSshImportLifecycleState)}`);
+  await savingOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
+  await savingOpenSshImport.waitFor({ state: "detached" });
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -3629,6 +3764,7 @@ try {
     hostKeyLifecycle: hostKeyLifecycleState,
     profileLifecycle: profileLifecycleState,
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
+    openSshImportLifecycle: openSshImportLifecycleState,
     connectionCredentialLifecycle: {
       partialWrite: partialCredentialState,
       failedProfileSave: failedProfileCredentialState,
@@ -3674,6 +3810,8 @@ try {
       `${screenshotPrefix}-mcp-approval.png`,
       `${screenshotPrefix}-mcp-approval-mobile.png`,
       `${screenshotPrefix}-profile-delete.png`,
+      `${screenshotPrefix}-openssh-import.png`,
+      `${screenshotPrefix}-openssh-import-mobile.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
     ],

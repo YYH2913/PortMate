@@ -53,7 +53,8 @@ import { normalizeSerialConnectionSettings } from "./serial-connection-settings"
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
-import { createSerialConnection, formatSshTarget } from "./session-profile-helpers";
+import { createOpenSshImportConnection, createSerialConnection, formatSshTarget } from "./session-profile-helpers";
+import type { OpenSshImportCandidate } from "./openssh-config-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
 import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
 import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
@@ -111,6 +112,7 @@ const LazyLogManagerDialog = lazy(() => import("./LogManagerDialog"));
 const LazyKeyManagerDialog = lazy(() => import("./KeyManagerDialog"));
 const LazyTerminalSettingsDialog = lazy(() => import("./TerminalSettingsDialog"));
 const LazySessionSettingsDialog = lazy(() => import("./SessionSettingsDialog"));
+const LazyOpenSshConfigImportDialog = lazy(() => import("./OpenSshConfigImportDialog"));
 const LazyFileManagerPanel = lazy(() => import("./FileManagerPanel"));
 
 const WORKSPACE_STORAGE_KEY = "portmate.workspace.v1";
@@ -162,7 +164,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 };
 
 type SettingsDialog = "terminal" | "session" | null;
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "openssh-import" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -1404,6 +1406,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "新建会话") {
       openSessionProfileDialog(createSessionDraft(), null, "会话");
+      return;
+    }
+    if (item === "导入 OpenSSH 配置") {
+      setUtilityDialog("openssh-import");
       return;
     }
     if (item === "新建工作区窗口") {
@@ -2675,6 +2681,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return createSessionSummary(profile);
   }
 
+  async function importOpenSshConfigCandidates(candidates: OpenSshImportCandidate[]) {
+    const savedIds: string[] = [];
+    const failures: Array<{ id: string; message: string }> = [];
+    for (const candidate of candidates) {
+      try {
+        const profile = prepareSessionProfile(createOpenSshImportedProfile(candidate));
+        const saved = await saveProfile(profile, null);
+        applySavedSession(saved, false);
+        savedIds.push(candidate.id);
+      } catch (error) {
+        failures.push({ id: candidate.id, message: `${candidate.hostAlias}: ${formatError(error)}` });
+      }
+    }
+    return { savedIds, failures };
+  }
+
   function applySavedSessionState(saved: SessionSummary, activateWorkspace = true) {
     if (activateWorkspace) activateSession(saved.profile.id);
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
@@ -3550,6 +3572,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               setDialog(null);
             }}
           />
+        </Suspense>
+      )}
+      {utilityDialog === "openssh-import" && (
+        <Suspense fallback={null}>
+          <LazyOpenSshConfigImportDialog onImport={importOpenSshConfigCandidates} onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "transfer" && active && (
@@ -5095,6 +5122,16 @@ function createSessionDraft(): SessionProfile {
     },
     triggers: [],
     transfer: { sftp: true, scp: true, xmodem: true, ymodem: true, zmodem: true, rateLimitBytesPerSecond: null, defaultLocalDir: null },
+  };
+}
+
+function createOpenSshImportedProfile(candidate: OpenSshImportCandidate): SessionProfile {
+  const profile = createSessionDraft();
+  return {
+    ...profile,
+    name: candidate.hostAlias,
+    kind: "ssh",
+    connection: createOpenSshImportConnection(candidate),
   };
 }
 

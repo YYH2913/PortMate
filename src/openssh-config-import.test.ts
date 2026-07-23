@@ -11,6 +11,7 @@ Host production
   HostName app.example.test
   User deploy
   Port 2202
+  HostKeyAlias production-device
   IdentityFile ~/.ssh/id_deploy
   IdentityFile ~/.ssh/id_fallback
   ServerAliveInterval 45
@@ -28,6 +29,7 @@ Host production
       host: "app.example.test",
       port: 2202,
       username: "deploy",
+      hostKeyAlias: "production-device",
       identityFiles: ["~/.ssh/id_deploy", "~/.ssh/id_fallback"],
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 45,

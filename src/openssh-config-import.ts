@@ -18,6 +18,7 @@ export type OpenSshImportCandidate = {
   host: string;
   port: number;
   username: string;
+  hostKeyAlias?: string;
   identityFiles: string[];
   keepaliveEnabled?: boolean;
   keepaliveIntervalSeconds?: number;
@@ -135,7 +136,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       continue;
     }
     if (!activeAliases.length) {
-      if (!inactiveConditionalBlock && directive.keyword !== "hostkeyalias") {
+      if (!inactiveConditionalBlock) {
         addWarning(`第 ${lineNumber} 行：${directive.keyword} 不在字面 Host 条目中，未导入`);
       }
       continue;
@@ -172,6 +173,17 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
             return;
           }
           setFirst(candidate, "port", port);
+        });
+        break;
+      }
+      case "hostkeyalias": {
+        const alias = normalizeValue(directive.values[0]);
+        withActiveCandidates(lineNumber, (candidate) => {
+          if (!alias) {
+            addCandidateWarning(candidate, lineNumber, "HostKeyAlias 为空或包含动态标记");
+            return;
+          }
+          setFirst(candidate, "hostKeyAlias", alias);
         });
         break;
       }

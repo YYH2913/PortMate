@@ -5057,6 +5057,241 @@ fieldset label {
   width: min(560px, calc(100vw - 40px));
 }
 
+.openssh-config-import-dialog {
+  grid-template-rows: 46px minmax(0, 1fr) 58px;
+  width: min(720px, calc(100vw - 40px));
+  height: min(640px, calc(100dvh - 40px));
+}
+
+.openssh-config-import-content {
+  display: grid;
+  grid-template-rows: auto 122px auto minmax(120px, 1fr) auto auto;
+  min-width: 0;
+  min-height: 0;
+  gap: 9px;
+  padding: 13px 16px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.openssh-import-source-header,
+.openssh-import-summary,
+.openssh-import-footer {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.openssh-import-source-header {
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.openssh-import-source-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openssh-import-file-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.openssh-import-file-button:hover:not(:disabled) {
+  border-color: var(--cyan);
+  background: var(--control-hover);
+}
+
+.openssh-import-file-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.openssh-import-file-input {
+  display: none;
+}
+
+.openssh-config-import-content > textarea {
+  min-width: 0;
+  min-height: 0;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #0d141c;
+  color: var(--text);
+  padding: 9px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.openssh-config-import-content > textarea:focus {
+  border-color: var(--cyan);
+  outline: 0;
+}
+
+.openssh-import-summary {
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.openssh-import-summary .warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #ffb000;
+}
+
+.openssh-import-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.openssh-import-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(107, 128, 148, 0.18);
+  cursor: pointer;
+}
+
+.openssh-import-row:last-child {
+  border-bottom: 0;
+}
+
+.openssh-import-row:hover {
+  background: rgba(79, 157, 210, 0.08);
+}
+
+.openssh-import-row input {
+  justify-self: center;
+}
+
+.openssh-import-target {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.openssh-import-target strong,
+.openssh-import-target code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openssh-import-target strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.openssh-import-target code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.openssh-import-details {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.openssh-import-details svg {
+  color: #ffb000;
+}
+
+.openssh-import-warnings {
+  min-width: 0;
+  color: #ffb000;
+  font-size: 12px;
+}
+
+.openssh-import-warnings summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.openssh-import-warnings ul {
+  max-height: 104px;
+  margin: 7px 0 0;
+  padding-left: 20px;
+  overflow: auto;
+}
+
+.openssh-import-warnings li {
+  overflow-wrap: anywhere;
+}
+
+.openssh-import-footer {
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.openssh-import-footer .dialog-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 86px;
+}
+
+.openssh-import-footer .dialog-actions .primary {
+  border-color: var(--blue);
+  background: rgba(35, 135, 213, 0.18);
+}
+
+@media (max-width: 720px) {
+  .openssh-config-import-dialog {
+    width: calc(100vw - 16px);
+    height: min(600px, calc(100dvh - 16px));
+  }
+
+  .openssh-config-import-content {
+    grid-template-rows: auto 118px auto minmax(112px, 1fr) auto auto;
+    gap: 8px;
+    padding: 11px 12px 0;
+  }
+
+  .openssh-import-footer {
+    padding-inline: 12px;
+  }
+
+  .openssh-import-footer .dialog-actions button {
+    min-width: 72px;
+  }
+}
+
 .quick-command-dialog {
   grid-template-rows: 46px minmax(0, 1fr) 58px;
   width: min(760px, calc(100vw - 40px));

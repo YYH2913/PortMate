@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   convertDraftProtocol,
+  createOpenSshImportConnection,
   createSerialConnection,
   createSshConnection,
   formatSshTarget,
@@ -112,5 +113,42 @@ describe("session profile helpers", () => {
       .toEqual(expect.arrayContaining(["/dev/ttyUSB0", "/dev/ttyACM0", "COM1"]));
     expect(serialPortOptions("/dev/ttyUSB0", ["/dev/ttyUSB0"]).filter((port) => port === "/dev/ttyUSB0"))
       .toHaveLength(1);
+  });
+
+  it("translates OpenSSH import candidates into the existing SSH connection model", () => {
+    const connection = createOpenSshImportConnection({
+      id: "production",
+      hostAlias: "production",
+      host: "app.example.test",
+      port: 2202,
+      username: "deploy",
+      hostKeyAlias: "production-device",
+      identityFiles: ["~/.ssh/id_deploy", "~/.ssh/id_fallback"],
+      keepaliveEnabled: true,
+      keepaliveIntervalSeconds: 45,
+      keepaliveMaxMissed: 5,
+      identitiesOnly: false,
+      forwardAgent: true,
+      jumps: [{ host: "bastion.example.test", port: 2222, username: "ops" }],
+      warnings: [],
+    });
+
+    expect(connection).toMatchObject({
+      kind: "ssh",
+      endpoint: { host: "app.example.test", port: 2202 },
+      username: "deploy",
+      keepaliveEnabled: true,
+      keepaliveIntervalSeconds: 45,
+      keepaliveMaxMissed: 5,
+      hostKeyPolicy: { alias: "production-device" },
+      identityPolicy: { identitiesOnly: false },
+      agentPolicy: { forwarding: true },
+      jumps: [{ host: "bastion.example.test", port: 2222, username: "ops" }],
+    });
+    expect(connection.identityRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "id_deploy", source: "system-file", path: "~/.ssh/id_deploy" }),
+      expect.objectContaining({ label: "id_fallback", source: "system-file", path: "~/.ssh/id_fallback" }),
+    ]));
+    expect(new Set(connection.identityRefs.map((identity) => identity.id)).size).toBe(2);
   });
 });

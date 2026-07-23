@@ -3,6 +3,7 @@ import { serialConnectionDefaults } from "./serial-connection-settings";
 import type { ProtocolTab } from "./session-settings-state";
 import { sshConnectionDefaults } from "./ssh-connection-settings";
 import { tcpConnectionDefaults } from "./tcp-connection-settings";
+import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type {
   ConnectionConfig,
   HostKeyPolicy,
@@ -83,6 +84,49 @@ export function createSshConnection(): Extract<ConnectionConfig, { kind: "ssh" |
     jumps: [],
     tunnels: [],
   };
+}
+
+export function createOpenSshImportConnection(candidate: OpenSshImportCandidate): Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> {
+  const connection = createSshConnection();
+  return {
+    ...connection,
+    kind: "ssh",
+    endpoint: { host: candidate.host, port: candidate.port },
+    username: candidate.username,
+    keepaliveEnabled: candidate.keepaliveEnabled ?? connection.keepaliveEnabled,
+    keepaliveIntervalSeconds: candidate.keepaliveIntervalSeconds ?? connection.keepaliveIntervalSeconds,
+    keepaliveMaxMissed: candidate.keepaliveMaxMissed ?? connection.keepaliveMaxMissed,
+    hostKeyPolicy: { ...connection.hostKeyPolicy, alias: candidate.hostKeyAlias ?? candidate.hostAlias },
+    identityPolicy: {
+      ...connection.identityPolicy,
+      identitiesOnly: candidate.identitiesOnly ?? connection.identityPolicy.identitiesOnly,
+    },
+    identityRefs: candidate.identityFiles.map((path, index) => ({
+      ...createIdentityRef(),
+      label: importedIdentityLabel(path, index),
+      source: "system-file",
+      path,
+      secretRef: null,
+    })),
+    agentPolicy: {
+      ...connection.agentPolicy,
+      forwarding: candidate.forwardAgent ?? connection.agentPolicy.forwarding,
+    },
+    jumps: candidate.jumps.map((jump) => ({
+      host: jump.host,
+      port: jump.port,
+      username: jump.username || candidate.username,
+      passwordSecretRef: null,
+      passphraseSecretRef: null,
+      identityRef: null,
+      hostKeyPolicy: null,
+    })),
+  };
+}
+
+function importedIdentityLabel(path: string, index: number) {
+  const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || `identity ${index + 1}`;
 }
 
 export function createIdentityRef(): IdentityRef {
