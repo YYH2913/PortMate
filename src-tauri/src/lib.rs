@@ -10170,6 +10170,7 @@ fn modem_direction(request: &StartTransferRequest) -> Result<ModemDirection, Str
 
     match (source_remote, destination_remote) {
         (None, Some(remote_destination)) => {
+            validate_remote_transfer_path(remote_destination, "Modem 远端目标路径")?;
             if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_none() {
                 return Err("本地传输源不存在".to_string());
             }
@@ -10178,12 +10179,16 @@ fn modem_direction(request: &StartTransferRequest) -> Result<ModemDirection, Str
                 remote_destination: remote_destination.to_string(),
             })
         }
-        (Some(remote_source), None) => Ok(ModemDirection::Download {
-            remote_source: remote_source.to_string(),
-            local_destination: request.destination.clone(),
-        }),
+        (Some(remote_source), None) => {
+            validate_remote_transfer_path(remote_source, "Modem 远端源路径")?;
+            Ok(ModemDirection::Download {
+                remote_source: remote_source.to_string(),
+                local_destination: request.destination.clone(),
+            })
+        }
         (None, None) => {
             if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_some() {
+                validate_remote_transfer_path(&request.destination, "Modem 远端目标路径")?;
                 Ok(ModemDirection::Upload {
                     local_source: request.source.clone(),
                     remote_destination: request.destination.clone(),
@@ -39627,6 +39632,76 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             assert!(source_error.contains("SCP 远端源路径"), "{source_error}");
         }
         assert!(validate_remote_transfer_path("/tmp/portmate/", "SCP 远端目标路径").is_ok());
+    }
+
+    #[test]
+    fn modem_transfer_paths_reject_root_and_dot_components() {
+        let root = std::env::temp_dir().join(format!("portmate-modem-paths-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.bin");
+        fs::write(&source, b"payload").unwrap();
+
+        for path in ["/", "//", "~", "/tmp/../input.bin", "/tmp/./input.bin"] {
+            let upload_error = match modem_direction(&StartTransferRequest {
+                session_id: "session".to_string(),
+                protocol: TransferProtocol::Zmodem,
+                source: source.display().to_string(),
+                destination: format!("remote:{path}"),
+            }) {
+                Err(error) => error,
+                Ok(_) => panic!("unsafe Modem upload destination was accepted"),
+            };
+            assert!(
+                upload_error.contains("Modem 远端目标路径"),
+                "{upload_error}"
+            );
+
+            let download_error = match modem_direction(&StartTransferRequest {
+                session_id: "session".to_string(),
+                protocol: TransferProtocol::Zmodem,
+                source: format!("remote:{path}"),
+                destination: root.join("download.bin").display().to_string(),
+            }) {
+                Err(error) => error,
+                Ok(_) => panic!("unsafe Modem download source was accepted"),
+            };
+            assert!(
+                download_error.contains("Modem 远端源路径"),
+                "{download_error}"
+            );
+
+            let implicit_error = match modem_direction(&StartTransferRequest {
+                session_id: "session".to_string(),
+                protocol: TransferProtocol::Xmodem,
+                source: source.display().to_string(),
+                destination: path.to_string(),
+            }) {
+                Err(error) => error,
+                Ok(_) => panic!("unsafe implicit Modem upload destination was accepted"),
+            };
+            assert!(
+                implicit_error.contains("Modem 远端目标路径"),
+                "{implicit_error}"
+            );
+        }
+
+        let accepted = modem_direction(&StartTransferRequest {
+            session_id: "session".to_string(),
+            protocol: TransferProtocol::Ymodem,
+            source: source.display().to_string(),
+            destination: "remote:/tmp/portmate/".to_string(),
+        })
+        .unwrap();
+        match accepted {
+            ModemDirection::Upload {
+                remote_destination, ..
+            } => {
+                assert_eq!(remote_destination, "/tmp/portmate/")
+            }
+            _ => panic!("expected Modem upload direction"),
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
