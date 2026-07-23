@@ -39,6 +39,43 @@ export function signalProcessIfRunning(pid, signal, kill = process.kill) {
   }
 }
 
+export async function releaseProjectDevPort({
+  host,
+  port,
+  initialWaitMs,
+  terminateWaitMs,
+  forceWaitMs,
+  waitForPort,
+  listeningPids,
+  isProjectVite,
+  signalProcess = signalProcessIfRunning,
+  onStopped = () => {},
+}) {
+  if (await waitForPort(host, port, initialWaitMs)) return;
+  const listeners = listeningPids(port);
+  if (!listeners.length) {
+    if (await waitForPort(host, port, initialWaitMs)) return;
+    throw new Error(`Port ${port} is busy, but its listener could not be identified.`);
+  }
+
+  const foreign = listeners.filter((pid) => !isProjectVite(pid));
+  if (foreign.length) {
+    throw new Error(`Port ${port} is owned by another process (PID ${foreign.join(", ")}); it was not terminated.`);
+  }
+
+  for (const pid of listeners) signalProcess(pid, "SIGTERM");
+  if (await waitForPort(host, port, terminateWaitMs)) {
+    onStopped(`Stopped stale PortMate Vite listener on ${host}:${port}.`);
+    return;
+  }
+
+  for (const pid of listeners) signalProcess(pid, "SIGKILL");
+  if (!await waitForPort(host, port, forceWaitMs)) {
+    throw new Error(`Port ${port} remained busy after stopping stale PortMate Vite (PID ${listeners.join(", ")}).`);
+  }
+  onStopped(`Force-stopped stale PortMate Vite listener on ${host}:${port}.`);
+}
+
 export async function waitForStablePortAvailability(checkAvailable, options) {
   const {
     timeoutMs,

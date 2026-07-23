@@ -3,6 +3,7 @@ import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
 import {
   isProjectViteCommand,
   parseWindowsListeningPids,
+  releaseProjectDevPort,
   signalProcessIfRunning,
   waitForStablePortAvailability,
 } from "./desktop-clean-process.mjs";
@@ -188,6 +189,38 @@ describe("desktop clean process ownership", () => {
     const calls = [];
     expect(signalProcessIfRunning(4210, "SIGKILL", (pid, signal) => calls.push([pid, signal]))).toBe(true);
     expect(calls).toEqual([[4210, "SIGKILL"]]);
+  });
+
+  it("accepts a listener that disappears before its PID can be inspected", async () => {
+    const waits = [];
+    await releaseProjectDevPort({
+      host: "127.0.0.1",
+      port: 1420,
+      initialWaitMs: 750,
+      terminateWaitMs: 2_000,
+      forceWaitMs: 1_000,
+      waitForPort: async (_host, _port, timeoutMs) => {
+        waits.push(timeoutMs);
+        return waits.length === 2;
+      },
+      listeningPids: () => [],
+      isProjectVite: () => false,
+    });
+
+    expect(waits).toEqual([750, 750]);
+  });
+
+  it("keeps an unidentified listener fail-closed after the retry", async () => {
+    await expect(releaseProjectDevPort({
+      host: "127.0.0.1",
+      port: 1420,
+      initialWaitMs: 750,
+      terminateWaitMs: 2_000,
+      forceWaitMs: 1_000,
+      waitForPort: async () => false,
+      listeningPids: () => [],
+      isProjectVite: () => false,
+    })).rejects.toThrow("Port 1420 is busy, but its listener could not be identified.");
   });
 
   it("requires the dev port to remain available before restarting Vite", async () => {

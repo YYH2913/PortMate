@@ -7,6 +7,7 @@ import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
 import {
   isProjectViteCommand,
   parseWindowsListeningPids,
+  releaseProjectDevPort,
   signalProcessIfRunning,
   waitForStablePortAvailability,
 } from "./desktop-clean-process.mjs";
@@ -25,7 +26,7 @@ const devPort = Number(devUrl.port || (devUrl.protocol === "https:" ? 443 : 80))
 
 const env = buildDesktopEnvironment(process.env);
 
-await releaseProjectDevPort();
+await releaseConfiguredDevPort();
 
 const child = spawn("npm", ["run", "desktop"], {
   stdio: "inherit",
@@ -40,29 +41,19 @@ child.on("exit", (code, signal) => {
   process.exit(code ?? 0);
 });
 
-async function releaseProjectDevPort() {
-  if (await waitForPort(devHost, devPort, PORT_RELEASE_STABLE_MS)) return;
-  const listeners = listeningPids(devPort);
-  if (!listeners.length) {
-    throw new Error(`Port ${devPort} is busy, but its listener could not be identified.`);
-  }
-
-  const foreign = listeners.filter((pid) => !isProjectVite(pid));
-  if (foreign.length) {
-    throw new Error(`Port ${devPort} is owned by another process (PID ${foreign.join(", ")}); it was not terminated.`);
-  }
-
-  for (const pid of listeners) signalProcessIfRunning(pid, "SIGTERM");
-  if (await waitForPort(devHost, devPort, 2_000)) {
-    console.log(`Stopped stale PortMate Vite listener on ${devHost}:${devPort}.`);
-    return;
-  }
-
-  for (const pid of listeners) signalProcessIfRunning(pid, "SIGKILL");
-  if (!await waitForPort(devHost, devPort, 1_000)) {
-    throw new Error(`Port ${devPort} remained busy after stopping stale PortMate Vite (PID ${listeners.join(", ")}).`);
-  }
-  console.log(`Force-stopped stale PortMate Vite listener on ${devHost}:${devPort}.`);
+async function releaseConfiguredDevPort() {
+  await releaseProjectDevPort({
+    host: devHost,
+    port: devPort,
+    initialWaitMs: PORT_RELEASE_STABLE_MS,
+    terminateWaitMs: 2_000,
+    forceWaitMs: 1_000,
+    waitForPort,
+    listeningPids,
+    isProjectVite,
+    signalProcess: signalProcessIfRunning,
+    onStopped: console.log,
+  });
 }
 
 function listeningPids(port) {
