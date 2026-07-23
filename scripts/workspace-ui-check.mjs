@@ -952,6 +952,7 @@ try {
   await openSshConfigInput.fill(`Host *
   ServerAliveInterval 60
   User imported-default
+  DynamicForward 1080
 Host production
   HostName app.example.test
   IdentityFile ~/.ssh/id_deploy
@@ -966,6 +967,7 @@ Host staging
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 staging", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
     && await openSshImportDialog.locator(".session-import-row", { hasText: "production" }).locator("code").textContent() === "imported-default@app.example.test:22"
+    && (await openSshImportDialog.locator(".session-import-row", { hasText: "production" }).textContent()).includes("1 个转发")
     && !(await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
   "OpenSSH config import preview did not apply safe Host * defaults to literal Host entries");
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });

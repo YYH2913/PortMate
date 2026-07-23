@@ -123,7 +123,23 @@ export function createOpenSshImportConnection(candidate: OpenSshImportCandidate)
       identityRef: null,
       hostKeyPolicy: null,
     })),
+    tunnels: candidate.forwards.map((forward, index) => ({
+      id: `openssh-forward-${index + 1}`,
+      label: `OpenSSH ${openSshForwardLabel(forward.mode)} ${index + 1}`,
+      mode: forward.mode,
+      bindHost: forward.bindHost,
+      bindPort: forward.bindPort,
+      targetHost: forward.targetHost,
+      targetPort: forward.targetPort,
+      enabled: true,
+    })),
   };
+}
+
+function openSshForwardLabel(mode: "local" | "remote" | "dynamic"): string {
+  if (mode === "local") return "LocalForward";
+  if (mode === "remote") return "RemoteForward";
+  return "DynamicForward";
 }
 
 export function createPuttyImportConnection(candidate: PuttySessionImportCandidate): ConnectionConfig {

@@ -132,6 +132,10 @@ describe("session profile helpers", () => {
       identitiesOnly: false,
       forwardAgent: true,
       jumps: [{ host: "bastion.example.test", port: 2222, username: "ops" }],
+      forwards: [
+        { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+        { mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1080, targetHost: "", targetPort: 0 },
+      ],
       warnings: [],
     });
 
@@ -146,6 +150,28 @@ describe("session profile helpers", () => {
       identityPolicy: { identitiesOnly: false },
       agentPolicy: { forwarding: true },
       jumps: [{ host: "bastion.example.test", port: 2222, username: "ops" }],
+      tunnels: [
+        {
+          id: "openssh-forward-1",
+          label: "OpenSSH LocalForward 1",
+          mode: "local",
+          bindHost: "127.0.0.1",
+          bindPort: 15432,
+          targetHost: "db.example.test",
+          targetPort: 5432,
+          enabled: true,
+        },
+        {
+          id: "openssh-forward-2",
+          label: "OpenSSH DynamicForward 2",
+          mode: "dynamic",
+          bindHost: "127.0.0.1",
+          bindPort: 1080,
+          targetHost: "",
+          targetPort: 0,
+          enabled: true,
+        },
+      ],
     });
     expect(connection.identityRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "id_deploy", source: "system-file", path: "~/.ssh/id_deploy" }),

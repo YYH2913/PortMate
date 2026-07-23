@@ -33,6 +33,7 @@ export default function OpenSshConfigImportDialog({
     candidateDetails={(candidate) => [
       candidate.identityFiles.length ? `${candidate.identityFiles.length} 个密钥` : "",
       candidate.jumps.length ? `${candidate.jumps.length} 个跳板` : "",
+      candidate.forwards.length ? `${candidate.forwards.length} 个转发` : "",
     ].filter(Boolean).join(" ")}
     headerAddon={headerAddon}
     onImport={onImport}

@@ -19,6 +19,9 @@ Host production
   IdentitiesOnly yes
   ForwardAgent no
   ProxyJump ops@bastion.example.test:2222,edge.example.test
+  LocalForward 127.0.0.1:15432 db.example.test:5432
+  RemoteForward 0 127.0.0.1:22
+  DynamicForward [::1]:1080
 `);
 
     expect(result.error).toBeNull();
@@ -39,6 +42,11 @@ Host production
       jumps: [
         { host: "bastion.example.test", port: 2222, username: "ops" },
         { host: "edge.example.test", port: 22, username: "" },
+      ],
+      forwards: [
+        { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
+        { mode: "remote", bindHost: "", bindPort: 0, targetHost: "127.0.0.1", targetPort: 22 },
+        { mode: "dynamic", bindHost: "::1", bindPort: 1080, targetHost: "", targetPort: 0 },
       ],
       warnings: [],
     }]);
@@ -119,6 +127,7 @@ Host *
   IdentitiesOnly yes
   ForwardAgent no
   ProxyJump ops@jump.example.test:2222
+  LocalForward 15432 db.example.test:5432
 Host later
   HostName later.example.test
   User ignored-after-default
@@ -141,6 +150,7 @@ Host *.example.test
         identitiesOnly: true,
         forwardAgent: false,
         jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
+        forwards: [{ mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 }],
       }),
       expect.objectContaining({
         hostAlias: "later",
@@ -155,12 +165,34 @@ Host *.example.test
         identitiesOnly: true,
         forwardAgent: false,
         jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
+        forwards: [{ mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 }],
       }),
     ]));
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining("Host *.example.test 不是字面条目"),
     ]));
     expect(result.candidates).toHaveLength(2);
+  });
+
+  it("rejects Unix-socket, dynamic, wildcard, and incomplete forwarding forms", () => {
+    const result = parseOpenSshConfig(`
+Host bounded
+  LocalForward 15432 /run/postgresql/.s.PGSQL.5432
+  RemoteForward *:2200 127.0.0.1:22
+  DynamicForward %h:1080
+  LocalForward 8080
+  DynamicForward 1080
+`);
+
+    expect(result.candidates).toEqual([expect.objectContaining({
+      hostAlias: "bounded",
+      forwards: [{ mode: "dynamic", bindHost: "127.0.0.1", bindPort: 1080, targetHost: "", targetPort: 0 }],
+      warnings: expect.arrayContaining([
+        "localforward 仅支持安全的 TCP [bind_host:]port 和 host:port 字面地址",
+        "remoteforward 仅支持安全的 TCP [bind_host:]port 和 host:port 字面地址",
+        "dynamicforward 仅支持安全的 TCP [bind_host:]port 和 host:port 字面地址",
+      ]),
+    })]);
   });
 
   it("rejects unsupported dynamic values and invalid numeric ranges instead of changing them", () => {

@@ -5,12 +5,21 @@ const MAX_CONFIG_LINES = 16_384;
 const MAX_WARNINGS = 128;
 const MAX_CANDIDATE_WARNINGS = 24;
 const MAX_IDENTITY_FILES = 32;
+const MAX_FORWARDS = 64;
 const GLOBAL_DEFAULT_HOST_ALIAS = "*";
 
 export type OpenSshImportJump = {
   host: string;
   port: number;
   username: string;
+};
+
+export type OpenSshImportForward = {
+  mode: "local" | "remote" | "dynamic";
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
 };
 
 export type OpenSshImportCandidate = {
@@ -27,6 +36,7 @@ export type OpenSshImportCandidate = {
   identitiesOnly?: boolean;
   forwardAgent?: boolean;
   jumps: OpenSshImportJump[];
+  forwards: OpenSshImportForward[];
   warnings: string[];
 };
 
@@ -68,6 +78,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
     username: "",
     identityFiles: [],
     jumps: [],
+    forwards: [],
     warnings: [],
     defined: new Set(),
   };
@@ -85,6 +96,21 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       candidate.warnings.push(message);
     }
     addWarning(`${hostLabel}，第 ${lineNumber} 行：${message}`);
+  };
+  const addForward = (
+    candidate: MutableCandidate,
+    forward: OpenSshImportForward,
+    lineNumber: number | null,
+    source = "转发",
+  ) => {
+    if (candidate.forwards.some((existing) => forwardKey(existing) === forwardKey(forward))) return;
+    if (candidate.forwards.length >= MAX_FORWARDS) {
+      if (lineNumber !== null) {
+        addCandidateWarning(candidate, lineNumber, `${source}超过 ${MAX_FORWARDS} 条，后续未导入`);
+      }
+      return;
+    }
+    candidate.forwards.push({ ...forward });
   };
   const applyGlobalDefaults = (candidate: MutableCandidate, lineNumber: number | null) => {
     if (candidate === globalDefaults) return;
@@ -122,6 +148,9 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       }
       candidate.identityFiles.push(path);
     }
+    for (const forward of globalDefaults.forwards) {
+      addForward(candidate, forward, lineNumber, "继承 Host * 的转发");
+    }
   };
   const applyGlobalDefaultsToExistingCandidates = (lineNumber: number) => {
     for (const candidate of candidates.values()) applyGlobalDefaults(candidate, lineNumber);
@@ -141,6 +170,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       username: "",
       identityFiles: [],
       jumps: [],
+      forwards: [],
       warnings: [],
       defined: new Set(),
     };
@@ -335,6 +365,19 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         });
         break;
       }
+      case "localforward":
+      case "remoteforward":
+      case "dynamicforward": {
+        const forward = parseOpenSshForward(directive.keyword, directive.values);
+        withActiveCandidates(lineNumber, (candidate) => {
+          if (!forward) {
+            addCandidateWarning(candidate, lineNumber, `${directive.keyword} 仅支持安全的 TCP [bind_host:]port 和 host:port 字面地址`);
+            return;
+          }
+          addForward(candidate, forward, lineNumber);
+        });
+        break;
+      }
       default:
         withActiveCandidates(lineNumber, (candidate) => {
           addCandidateWarning(candidate, lineNumber, `${directive.keyword} 未导入`);
@@ -514,4 +557,96 @@ function parseProxyJumpHop(raw: string): OpenSshImportJump | null {
   const host = normalizeEndpointHost(hasPort ? endpoint.slice(0, colon) : endpoint);
   const port = hasPort ? parsePort(endpoint.slice(colon + 1)) : 22;
   return host && port !== null ? { host, port, username } : null;
+}
+
+function forwardKey(forward: OpenSshImportForward): string {
+  return [
+    forward.mode,
+    forward.bindHost,
+    forward.bindPort,
+    forward.targetHost,
+    forward.targetPort,
+  ].join("\0");
+}
+
+function parseOpenSshForward(
+  keyword: string,
+  values: string[],
+): OpenSshImportForward | null {
+  if (keyword === "dynamicforward") {
+    const bind = values.length === 1
+      ? parseOpenSshForwardBind(values[0], "127.0.0.1")
+      : null;
+    return bind ? {
+      mode: "dynamic",
+      bindHost: bind.host,
+      bindPort: bind.port,
+      targetHost: "",
+      targetPort: 0,
+    } : null;
+  }
+
+  const mode = keyword === "localforward"
+    ? "local"
+    : keyword === "remoteforward"
+      ? "remote"
+      : null;
+  if (!mode || values.length !== 2) return null;
+
+  const bind = parseOpenSshForwardBind(values[0], mode === "remote" ? "" : "127.0.0.1");
+  const target = parseOpenSshForwardTarget(values[1]);
+  if (!bind || !target) return null;
+  return {
+    mode,
+    bindHost: bind.host,
+    bindPort: bind.port,
+    targetHost: target.host,
+    targetPort: target.port,
+  };
+}
+
+function parseOpenSshForwardBind(
+  value: string | undefined,
+  defaultHost: string,
+): { host: string; port: number } | null {
+  return parseOpenSshForwardEndpoint(value, defaultHost, true);
+}
+
+function parseOpenSshForwardTarget(
+  value: string | undefined,
+): { host: string; port: number } | null {
+  return parseOpenSshForwardEndpoint(value, null, false);
+}
+
+function parseOpenSshForwardEndpoint(
+  value: string | undefined,
+  defaultHost: string | null,
+  allowPortZero: boolean,
+): { host: string; port: number } | null {
+  if (!value || value.includes("%")) return null;
+  const port = (raw: string) => parseInteger(raw, allowPortZero ? 0 : 1, 65_535);
+  if (/^\d+$/.test(value)) {
+    const parsedPort = port(value);
+    return defaultHost !== null && parsedPort !== null
+      ? { host: defaultHost, port: parsedPort }
+      : null;
+  }
+
+  const bracketed = value.match(/^\[([^\]]+)]:(\d+)$/);
+  if (bracketed) {
+    const host = normalizeOpenSshForwardHost(bracketed[1]);
+    const parsedPort = port(bracketed[2]);
+    return host && parsedPort !== null ? { host, port: parsedPort } : null;
+  }
+
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0 || value.indexOf(":") !== separator) return null;
+  const host = normalizeOpenSshForwardHost(value.slice(0, separator));
+  const parsedPort = port(value.slice(separator + 1));
+  return host && parsedPort !== null ? { host, port: parsedPort } : null;
+}
+
+function normalizeOpenSshForwardHost(value: string): string | null {
+  const host = normalizeEndpointHost(value);
+  return host && !/[\\/@[\]*?!]/.test(host) ? host : null;
 }
