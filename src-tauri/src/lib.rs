@@ -10226,7 +10226,7 @@ fn xmodem_remote_finalize_command(
             "if [ \"$portmate_status\" -ne 0 ]; then rm -f \"$part\"; fi; fi; ",
             "if [ \"$portmate_status\" -eq 0 ]; then ",
             "printf '\\n__PORTMATE_XMODEM_%s_DONE__\\n' {}; ",
-            "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi"
+            "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi\r"
         ),
         shell_quote(remote_path),
         source_size,
@@ -44407,6 +44407,7 @@ mod tests {
         assert!(!finalize.contains(" -- \"$target\""));
         assert!(!finalize.contains("mv -f --"));
         assert!(!finalize.contains("rm -f --"));
+        assert!(finalize.ends_with('\r'));
         assert!(is_modem_timeout("modem byte timeout"));
         assert!(is_modem_timeout("timed out waiting for modem ACK"));
     }
@@ -44417,18 +44418,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("-received.bin");
         fs::write(&target, b"abcdef").unwrap();
-        let tools = root.path().join("tools");
-        fs::create_dir_all(&tools).unwrap();
-        for tool in ["dd", "mv", "rm"] {
-            std::os::unix::fs::symlink("/usr/bin/busybox", tools.join(tool)).unwrap();
-        }
 
         let command = xmodem_remote_finalize_command("-received.bin", 3, "modem-token");
         let output = Command::new("sh")
             .arg("-c")
-            .arg(command)
+            .arg(command.trim_end_matches('\r'))
             .current_dir(root.path())
-            .env("PATH", format!("{}:/bin:/usr/bin", tools.display()))
             .output()
             .unwrap();
 
@@ -44445,29 +44440,32 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn xmodem_remote_finalize_falls_back_when_truncate_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("received.bin");
         fs::write(&target, b"abcdef").unwrap();
         let tools = root.path().join("tools");
         fs::create_dir_all(&tools).unwrap();
-        for tool in ["dd", "mv", "rm"] {
-            std::os::unix::fs::symlink("/usr/bin/busybox", tools.join(tool)).unwrap();
-        }
-        fs::write(tools.join("truncate"), "#!/bin/sh\nexit 1\n").unwrap();
-        std::os::unix::fs::PermissionsExt::set_mode(
-            &mut fs::metadata(tools.join("truncate")).unwrap().permissions(),
-            0o755,
-        );
+        let truncate = tools.join("truncate");
+        fs::write(&truncate, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut permissions = fs::metadata(&truncate).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&truncate, permissions).unwrap();
+        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(tools).chain(std::env::split_paths(&inherited_path)),
+        )
+        .unwrap();
 
         let output = Command::new("sh")
             .arg("-c")
-            .arg(xmodem_remote_finalize_command(
-                "received.bin",
-                3,
-                "modem-token",
-            ))
+            .arg(
+                xmodem_remote_finalize_command("received.bin", 3, "modem-token")
+                    .trim_end_matches('\r'),
+            )
             .current_dir(root.path())
-            .env("PATH", format!("{}:/bin:/usr/bin", tools.display()))
+            .env("PATH", path)
             .output()
             .unwrap();
 
