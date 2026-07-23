@@ -5,6 +5,7 @@ const MAX_CONFIG_LINES = 16_384;
 const MAX_WARNINGS = 128;
 const MAX_CANDIDATE_WARNINGS = 24;
 const MAX_IDENTITY_FILES = 32;
+const GLOBAL_DEFAULT_HOST_ALIAS = "*";
 
 export type OpenSshImportJump = {
   host: string;
@@ -57,12 +58,75 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
   const candidates = new Map<string, MutableCandidate>();
   const lines = source.replace(/^\uFEFF/, "").split(/\r\n?|\n/);
   let activeAliases: string[] = [];
+  let activeGlobalDefaults = false;
   let inactiveConditionalBlock = false;
+  const globalDefaults: MutableCandidate = {
+    id: GLOBAL_DEFAULT_HOST_ALIAS,
+    hostAlias: GLOBAL_DEFAULT_HOST_ALIAS,
+    host: GLOBAL_DEFAULT_HOST_ALIAS,
+    port: 22,
+    username: "",
+    identityFiles: [],
+    jumps: [],
+    warnings: [],
+    defined: new Set(),
+  };
 
   const addWarning = (message: string) => {
     if (warnings.length < MAX_WARNINGS && !warnings.includes(message)) warnings.push(message);
   };
-  const getCandidate = (alias: string) => {
+  const addCandidateWarning = (candidate: MutableCandidate, lineNumber: number, message: string) => {
+    const hostLabel = candidate === globalDefaults
+      ? `Host ${GLOBAL_DEFAULT_HOST_ALIAS}`
+      : `Host ${candidate.hostAlias}`;
+    if (candidate !== globalDefaults
+      && candidate.warnings.length < MAX_CANDIDATE_WARNINGS
+      && !candidate.warnings.includes(message)) {
+      candidate.warnings.push(message);
+    }
+    addWarning(`${hostLabel}，第 ${lineNumber} 行：${message}`);
+  };
+  const applyGlobalDefaults = (candidate: MutableCandidate, lineNumber: number | null) => {
+    if (candidate === globalDefaults) return;
+    if (globalDefaults.defined.has("host")) setFirst(candidate, "host", globalDefaults.host);
+    if (globalDefaults.defined.has("port")) setFirst(candidate, "port", globalDefaults.port);
+    if (globalDefaults.defined.has("username")) setFirst(candidate, "username", globalDefaults.username);
+    if (globalDefaults.defined.has("hostKeyAlias")) {
+      setFirst(candidate, "hostKeyAlias", globalDefaults.hostKeyAlias!);
+    }
+    if (globalDefaults.defined.has("keepaliveEnabled")) {
+      setFirst(candidate, "keepaliveEnabled", globalDefaults.keepaliveEnabled!);
+    }
+    if (globalDefaults.defined.has("keepaliveIntervalSeconds")) {
+      setFirst(candidate, "keepaliveIntervalSeconds", globalDefaults.keepaliveIntervalSeconds!);
+    }
+    if (globalDefaults.defined.has("keepaliveMaxMissed")) {
+      setFirst(candidate, "keepaliveMaxMissed", globalDefaults.keepaliveMaxMissed!);
+    }
+    if (globalDefaults.defined.has("identitiesOnly")) {
+      setFirst(candidate, "identitiesOnly", globalDefaults.identitiesOnly!);
+    }
+    if (globalDefaults.defined.has("forwardAgent")) {
+      setFirst(candidate, "forwardAgent", globalDefaults.forwardAgent!);
+    }
+    if (globalDefaults.defined.has("jumps")) {
+      setFirst(candidate, "jumps", globalDefaults.jumps.map((jump) => ({ ...jump })));
+    }
+    for (const path of globalDefaults.identityFiles) {
+      if (candidate.identityFiles.includes(path)) continue;
+      if (candidate.identityFiles.length >= MAX_IDENTITY_FILES) {
+        if (lineNumber !== null) {
+          addCandidateWarning(candidate, lineNumber, `继承 Host * 的 IdentityFile 超过 ${MAX_IDENTITY_FILES} 个，后续未导入`);
+        }
+        break;
+      }
+      candidate.identityFiles.push(path);
+    }
+  };
+  const applyGlobalDefaultsToExistingCandidates = (lineNumber: number) => {
+    for (const candidate of candidates.values()) applyGlobalDefaults(candidate, lineNumber);
+  };
+  const getCandidate = (alias: string, lineNumber: number | null = null) => {
     const existing = candidates.get(alias);
     if (existing) return existing;
     if (candidates.size >= OPENSSH_CONFIG_IMPORT_MAX_CANDIDATES) {
@@ -81,18 +145,17 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       defined: new Set(),
     };
     candidates.set(alias, candidate);
+    applyGlobalDefaults(candidate, lineNumber);
     return candidate;
   };
-  const addCandidateWarning = (candidate: MutableCandidate, lineNumber: number, message: string) => {
-    const fullMessage = `Host ${candidate.hostAlias}，第 ${lineNumber} 行：${message}`;
-    if (candidate.warnings.length < MAX_CANDIDATE_WARNINGS && !candidate.warnings.includes(message)) {
-      candidate.warnings.push(message);
-    }
-    addWarning(fullMessage);
-  };
   const withActiveCandidates = (lineNumber: number, apply: (candidate: MutableCandidate) => void) => {
+    if (activeGlobalDefaults) {
+      apply(globalDefaults);
+      applyGlobalDefaultsToExistingCandidates(lineNumber);
+      return;
+    }
     for (const alias of activeAliases) {
-      const candidate = getCandidate(alias);
+      const candidate = getCandidate(alias, lineNumber);
       if (candidate) apply(candidate);
     }
   };
@@ -108,9 +171,14 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
 
     if (directive.keyword === "host") {
       activeAliases = [];
+      activeGlobalDefaults = false;
       inactiveConditionalBlock = false;
       if (!directive.values.length) {
         addWarning(`第 ${lineNumber} 行：Host 缺少名称，已跳过`);
+        continue;
+      }
+      if (directive.values.length === 1 && directive.values[0] === GLOBAL_DEFAULT_HOST_ALIAS) {
+        activeGlobalDefaults = true;
         continue;
       }
       for (const alias of directive.values) {
@@ -119,7 +187,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
           continue;
         }
         activeAliases.push(alias);
-        getCandidate(alias);
+        getCandidate(alias, lineNumber);
       }
       inactiveConditionalBlock = activeAliases.length === 0;
       continue;
@@ -127,6 +195,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
 
     if (directive.keyword === "match") {
       activeAliases = [];
+      activeGlobalDefaults = false;
       inactiveConditionalBlock = true;
       addWarning(`第 ${lineNumber} 行：Match 条件块未导入`);
       continue;
@@ -135,7 +204,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       addWarning(`第 ${lineNumber} 行：Include 未读取外部文件`);
       continue;
     }
-    if (!activeAliases.length) {
+    if (!activeAliases.length && !activeGlobalDefaults) {
       if (!inactiveConditionalBlock) {
         addWarning(`第 ${lineNumber} 行：${directive.keyword} 不在字面 Host 条目中，未导入`);
       }

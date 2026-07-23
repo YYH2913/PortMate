@@ -951,9 +951,9 @@ try {
   const openSshConfigInput = openSshImportDialog.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true });
   await openSshConfigInput.fill(`Host *
   ServerAliveInterval 60
+  User imported-default
 Host production
   HostName app.example.test
-  User deploy
   IdentityFile ~/.ssh/id_deploy
   ProxyJump ops@bastion.example.test:2222
 Host staging
@@ -965,8 +965,9 @@ Host staging
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 production", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("checkbox", { name: "导入 staging", exact: true }).isChecked()
     && await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
-    && (await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
-  "OpenSSH config import preview did not preserve selectable literal Host entries and warnings");
+    && await openSshImportDialog.locator(".session-import-row", { hasText: "production" }).locator("code").textContent() === "imported-default@app.example.test:22"
+    && !(await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
+  "OpenSSH config import preview did not apply safe Host * defaults to literal Host entries");
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });
   await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await openSshImportDialog.waitFor({ state: "detached" });

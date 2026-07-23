@@ -75,7 +75,7 @@ Host staging
     ]));
   });
 
-  it("skips wildcard and conditional configuration while retaining actionable warnings", () => {
+  it("applies standalone Host * defaults while retaining conditional and external-config warnings", () => {
     const result = parseOpenSshConfig(`
 Host *
   ServerAliveInterval 60
@@ -91,14 +91,76 @@ Include ~/.ssh/config.d/*
       hostAlias: "safe",
       host: "safe.example.test",
       username: "",
+      keepaliveEnabled: true,
+      keepaliveIntervalSeconds: 60,
       warnings: ["proxycommand 未导入"],
     })]);
     expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining("Host * 不是字面条目"),
       expect.stringContaining("proxycommand"),
       expect.stringContaining("Match 条件块未导入"),
       expect.stringContaining("Include 未读取外部文件"),
     ]));
+  });
+
+  it("uses Host * defaults in OpenSSH configuration order without treating complex patterns as defaults", () => {
+    const result = parseOpenSshConfig(`
+Host specific
+  HostName specific.example.test
+  User profile-user
+  Port 2202
+  IdentityFile ~/.ssh/id_specific
+Host *
+  User default-user
+  Port 2222
+  HostKeyAlias lab-default
+  IdentityFile ~/.ssh/id_default
+  ServerAliveInterval 45
+  ServerAliveCountMax 5
+  IdentitiesOnly yes
+  ForwardAgent no
+  ProxyJump ops@jump.example.test:2222
+Host later
+  HostName later.example.test
+  User ignored-after-default
+  IdentityFile ~/.ssh/id_later
+Host *.example.test
+  User ignored-pattern
+`);
+
+    expect(result.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        hostAlias: "specific",
+        host: "specific.example.test",
+        username: "profile-user",
+        port: 2202,
+        hostKeyAlias: "lab-default",
+        identityFiles: ["~/.ssh/id_specific", "~/.ssh/id_default"],
+        keepaliveEnabled: true,
+        keepaliveIntervalSeconds: 45,
+        keepaliveMaxMissed: 5,
+        identitiesOnly: true,
+        forwardAgent: false,
+        jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
+      }),
+      expect.objectContaining({
+        hostAlias: "later",
+        host: "later.example.test",
+        username: "default-user",
+        port: 2222,
+        hostKeyAlias: "lab-default",
+        identityFiles: ["~/.ssh/id_default", "~/.ssh/id_later"],
+        keepaliveEnabled: true,
+        keepaliveIntervalSeconds: 45,
+        keepaliveMaxMissed: 5,
+        identitiesOnly: true,
+        forwardAgent: false,
+        jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
+      }),
+    ]));
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Host *.example.test 不是字面条目"),
+    ]));
+    expect(result.candidates).toHaveLength(2);
   });
 
   it("rejects unsupported dynamic values and invalid numeric ranges instead of changing them", () => {

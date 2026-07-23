@@ -187,7 +187,7 @@ The default workbench is terminal-first: one 256-pixel resource dock, one pane-l
 
 `会话 -> 导入会话` keeps OpenSSH, PuTTY, and local Shell imports behind one compact mode selector. It accepts pasted or selected source text and previews every candidate before saving normal PortMate Profiles.
 
-OpenSSH mode maps each literal `Host` entry's `HostName`, `User`, `Port`, `HostKeyAlias`, `IdentityFile`, `ServerAliveInterval`, `ServerAliveCountMax`, `IdentitiesOnly`, `ForwardAgent`, and literal `ProxyJump` hops. Wildcard hosts, `Match`, `Include`, command-style directives, dynamic tokens, and values outside PortMate's bounds are skipped with an explicit preview warning; no external config is read or directive executed.
+OpenSSH mode maps each literal `Host` entry's `HostName`, `User`, `Port`, `HostKeyAlias`, `IdentityFile`, `ServerAliveInterval`, `ServerAliveCountMax`, `IdentitiesOnly`, `ForwardAgent`, and literal `ProxyJump` hops. A standalone `Host *` block safely supplies missing defaults in OpenSSH configuration order; `IdentityFile` values remain additive. Other wildcard patterns, `Match`, `Include`, command-style directives, dynamic tokens, and values outside PortMate's bounds are skipped with an explicit preview warning; no external config is read or directive executed.
 
 PuTTY mode accepts Unix session files and Windows `.reg` exports. It previews supported SSH, Telnet, raw TCP, and serial sessions before saving normal PortMate Profiles, mapping host/port/user, agent forwarding, HTTP CONNECT or SOCKS5 proxy metadata, and representable serial settings. It never scans the registry, imports proxy passwords, or imports `PublicKeyFile`/PuTTY `.ppk` paths; unsupported proxy modes and serial settings remain visible as warnings.
 
