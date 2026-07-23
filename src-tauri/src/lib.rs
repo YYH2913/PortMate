@@ -29375,6 +29375,19 @@ fn network_interface_rates(
             }
         })
         .collect::<Vec<_>>();
+    for (name, addresses) in addresses {
+        if addresses.is_empty() || interfaces.iter().any(|interface| interface.name == name) {
+            continue;
+        }
+        interfaces.push(SysmonNetworkInterface {
+            name,
+            addresses,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_kbps: 0.0,
+            tx_kbps: 0.0,
+        });
+    }
     sort_sysmon_network_interfaces(&mut interfaces);
     interfaces.truncate(MAX_SYSMON_NETWORK_INTERFACES);
     interfaces
@@ -34908,6 +34921,44 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
         assert_eq!(interfaces[0].name, "uplink");
         assert_eq!(interfaces[0].addresses, vec!["198.51.100.42/24"]);
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("head -n 258 /proc/net/dev"));
+    }
+
+    #[test]
+    fn remote_linux_sysmon_keeps_addressed_interface_without_proc_net_counter() {
+        let output = r#"1.0 0.0
+__PORTMATE_MEMINFO__
+MemTotal: 1024 kB
+MemAvailable: 512 kB
+__PORTMATE_STAT1__
+cpu 1 0 0 1
+__PORTMATE_NET1__
+Inter-| Receive | Transmit
+ face | bytes | bytes
+__PORTMATE_STAT2__
+cpu 2 0 0 2
+__PORTMATE_NET2__
+Inter-| Receive | Transmit
+ face | bytes | bytes
+__PORTMATE_ADDRS__
+7: br-lan    inet 192.168.8.1/24 brd 192.168.8.255 scope global br-lan
+__PORTMATE_LOADAVG__
+0.00 0.00 0.00
+__PORTMATE_PROCESSES__
+__PORTMATE_DISKS__
+"#;
+
+        let snapshot = parse_remote_sysmon_output("remote-session", output).unwrap();
+
+        assert_eq!(snapshot.network_interfaces.len(), 1);
+        assert_eq!(snapshot.network_interfaces[0].name, "br-lan");
+        assert_eq!(
+            snapshot.network_interfaces[0].addresses,
+            vec!["192.168.8.1/24"]
+        );
+        assert_eq!(snapshot.network_interfaces[0].rx_bytes, 0);
+        assert_eq!(snapshot.network_interfaces[0].tx_bytes, 0);
+        assert_eq!(snapshot.rx_kbps, 0.0);
+        assert_eq!(snapshot.tx_kbps, 0.0);
     }
 
     #[test]
