@@ -28819,14 +28819,14 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         let fields = trimmed.split_whitespace().collect::<Vec<_>>();
         if let Some((_, rest)) = trimmed.split_once(": ") {
             if let Some(name) = rest.split_whitespace().next() {
-                let name = bounded_sysmon_label(name.trim_end_matches(':'), 64);
+                let name = normalize_linux_sysmon_interface_name(name);
                 if !name.is_empty() && !matches!(name.as_str(), "inet" | "inet6" | "link") {
                     current_interface = Some(name);
                 }
             }
         } else if !trimmed.starts_with("inet ") && !trimmed.starts_with("inet6 ") {
             if let Some(name) = fields.first() {
-                let name = bounded_sysmon_label(name.trim_end_matches(':'), 64);
+                let name = normalize_linux_sysmon_interface_name(name);
                 if !name.is_empty() {
                     current_interface = Some(name);
                 }
@@ -28834,9 +28834,9 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         }
 
         let name = if fields.len() >= 4 && (fields[2] == "inet" || fields[2] == "inet6") {
-            Some(fields[1].trim_end_matches(':'))
+            Some(normalize_linux_sysmon_interface_name(fields[1]))
         } else {
-            current_interface.as_deref()
+            current_interface.clone()
         };
         let address = fields
             .iter()
@@ -28868,7 +28868,9 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         let (Some(name), Some(address)) = (name, address) else {
             continue;
         };
-        let name = bounded_sysmon_label(name, 64);
+        if name.is_empty() {
+            continue;
+        }
         let Some(address) = normalize_sysmon_address(address) else {
             continue;
         };
@@ -28878,6 +28880,16 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         }
     }
     addresses
+}
+
+fn normalize_linux_sysmon_interface_name(value: &str) -> String {
+    let name = value
+        .trim()
+        .trim_end_matches(':')
+        .split('@')
+        .next()
+        .unwrap_or("");
+    bounded_sysmon_label(name, 64)
 }
 
 fn parse_bsd_network_interfaces(raw: &str) -> BTreeMap<String, (u64, u64)> {
@@ -34211,6 +34223,16 @@ mod tests {
         assert_eq!(interfaces[1].addresses, vec!["127.0.0.1"]);
         assert_eq!((interfaces[1].rx_kbps, interfaces[1].tx_kbps), (0.0, 0.0));
         assert_eq!(aggregate_network_rates(&interfaces), (1.0, 1.0));
+
+        let veth_addresses = parse_linux_network_addresses(
+            r#"2: eth0@if7    inet 198.51.100.5/24 brd 198.51.100.255 scope global eth0
+2: eth0@if7    inet6 fe80::2/64 scope link"#,
+        );
+        assert_eq!(
+            veth_addresses.get("eth0").cloned().unwrap_or_default(),
+            vec!["198.51.100.5/24", "fe80::2/64"]
+        );
+        assert!(!veth_addresses.contains_key("eth0@if7"));
 
         assert_eq!(
             parse_load_average("1.25 0.50 0.25 1/10 1"),
