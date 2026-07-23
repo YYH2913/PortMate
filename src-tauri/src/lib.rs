@@ -4318,7 +4318,15 @@ async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Serial(_)) {
-        let result = open_serial_session(&state, profile);
+        let opening_state = state.clone();
+        let result = match tauri::async_runtime::spawn_blocking(move || {
+            open_serial_session(&opening_state, profile)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(format!("串口打开任务失败: {error}")),
+        };
         if cancellation.is_cancelled() {
             return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
         }
@@ -4332,7 +4340,15 @@ async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Shell(_)) {
-        let result = open_shell_session(&state, profile);
+        let opening_state = state.clone();
+        let result = match tauri::async_runtime::spawn_blocking(move || {
+            open_shell_session(&opening_state, profile)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(format!("Shell 启动任务失败: {error}")),
+        };
         if cancellation.is_cancelled() {
             return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
         }
