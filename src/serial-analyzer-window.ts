@@ -2,6 +2,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isBackendAvailable } from "./api";
 import { buildSerialAnalyzerPath } from "./serial-analyzer-route";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
+import { placeAndTrackChildWindow, serialAnalyzerWindowGeometryKey } from "./window-geometry";
 
 export async function openSerialAnalyzerWindow(request: SerialAnalyzerRequest, sessionName: string): Promise<void> {
   const path = buildSerialAnalyzerPath(request);
@@ -25,13 +26,20 @@ export async function openSerialAnalyzerWindow(request: SerialAnalyzerRequest, s
       url: path,
       title: `${sessionName} - PortMate 串口分析器`,
       center: true,
+      visible: false,
       width: 1180,
       height: 760,
       minWidth: 720,
       minHeight: 480,
       preventOverflow: true,
     });
-    void child.once("tauri://created", () => finish());
+    void child.once("tauri://created", () => {
+      void placeAndTrackChildWindow(child, {
+        storageKey: serialAnalyzerWindowGeometryKey(request.sessionId),
+        width: 1180,
+        height: 760,
+      }).then(() => finish(), (error) => finish(new Error(formatWindowError(error))));
+    });
     void child.once<unknown>("tauri://error", (event) => finish(new Error(formatWindowError(event.payload))));
   });
 }

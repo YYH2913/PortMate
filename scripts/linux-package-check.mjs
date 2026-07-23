@@ -169,7 +169,14 @@ function assertDesktopEntry(path) {
 function assertPackagedMain(kind, path, identifier, csp) {
   assertExecutable(path);
   const binary = readFileSync(path);
-  for (const marker of [identifier, csp, "pane-*", "allow-create-webview-window"]) {
+  for (const marker of [
+    identifier,
+    csp,
+    "pane-*",
+    "allow-create-webview-window",
+    "allow-set-position",
+    "allow-set-size",
+  ]) {
     if (!binary.includes(Buffer.from(marker))) {
       throw new Error(`${kind} main binary does not embed required Tauri metadata: ${marker}`);
     }
@@ -237,6 +244,9 @@ function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability
   assertExactArray("main capability permissions", mainCapability.permissions, [
     "core:default",
     "core:webview:allow-create-webview-window",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-show",
   ]);
   assertExactArray("detached capability windows", paneCapability.windows, ["pane-*"]);
   assertExactArray("detached capability permissions", paneCapability.permissions, [

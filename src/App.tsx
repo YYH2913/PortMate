@@ -41,6 +41,7 @@ import { menuGroups, menuItemDisabled } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
+import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
@@ -5299,13 +5300,20 @@ async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName:
       url: path,
       title: `${sessionName} - PortMate`,
       center: true,
+      visible: false,
       width: 960,
       height: 680,
       minWidth: 640,
       minHeight: 400,
       preventOverflow: true,
     });
-    void child.once("tauri://created", () => finish());
+    void child.once("tauri://created", () => {
+      void placeAndTrackChildWindow(child, {
+        storageKey: detachedPaneWindowGeometryKey(request.viewId),
+        width: 960,
+        height: 680,
+      }).then(() => finish(), (error) => finish(new Error(formatError(error))));
+    });
     void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));
   });
 }

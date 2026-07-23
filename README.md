@@ -53,6 +53,9 @@ Store remains authoritative.
 Workspace layout, keymap, Quick Commands, synchronized-input preferences, and terminal preferences
 also treat browser storage as best-effort. A denied or exhausted localStorage keeps the current
 in-memory choices usable and no longer throws from a React effect or explicit settings save.
+In the desktop app, detached terminal and serial-analyzer windows likewise retain a bounded,
+validated physical position and content size. A saved geometry that no longer intersects an available
+display work area falls back to a cascaded default instead of reopening off-screen.
 
 ## How To Use The Current Build
 
