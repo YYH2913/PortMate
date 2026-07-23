@@ -237,7 +237,7 @@ const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const SSH_EXEC_STATUS_GRACE_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
-const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46ln 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
 const LOG_RETENTION_DATE_TOKEN: &str = "PORTMATE_RETENTION_DATE_5A8F";
 const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str = "PORTMATE_MIGRATION_RESTART_REQUIRED:";
 const PROFILE_SECRET_MIGRATION_JOURNAL_VERSION: u32 = 1;
@@ -44476,6 +44476,12 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
             RemoteListenerProbe::Missing
         );
 
+        let sockstat_service_output = "__PORTMATE_SOCKSTAT__\nUSER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\nroot sshd 431 7 tcp4 127.0.0.1:ssh *:*\n";
+        assert_eq!(
+            parse_remote_listener_probe(sockstat_service_output, 22),
+            RemoteListenerProbe::Missing
+        );
+
         let lsof_output = "__PORTMATE_LSOF__\nCOMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nsshd 912 root 5u IPv4 0x1 0t0 TCP *:2200 (LISTEN)\n";
         assert_eq!(
             parse_remote_listener_probe(lsof_output, 2_200),
@@ -44505,8 +44511,9 @@ lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
     fn remote_tunnel_probe_only_marks_successful_cross_platform_tools() {
         assert!(REMOTE_TUNNEL_PROBE_COMMAND
             .contains("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true"));
-        assert!(REMOTE_TUNNEL_PROBE_COMMAND
-            .contains("command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46l 2>/dev/null)"));
+        assert!(REMOTE_TUNNEL_PROBE_COMMAND.contains(
+            "command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46ln 2>/dev/null)"
+        ));
         assert!(REMOTE_TUNNEL_PROBE_COMMAND.contains(
             "command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null)"
         ));
