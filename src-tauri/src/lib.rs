@@ -30358,20 +30358,28 @@ fn remote_linux_kernel_addresses_need_merge(
     addresses: &BTreeMap<String, Vec<String>>,
 ) -> bool {
     addresses.iter().any(|(name, candidates)| {
-        if name == "kernel" || name == "lo" {
+        if name == "lo" {
             return false;
         }
-        candidates
-            .iter()
-            .any(|address| is_usable_sysmon_network_address(address))
-            && !interfaces.iter().any(|interface| {
-                interface.name == *name
-                    && interface
-                        .addresses
-                        .iter()
-                        .any(|address| is_usable_sysmon_network_address(address))
-            })
+        candidates.iter().any(|candidate| {
+            is_usable_sysmon_network_address(candidate)
+                && !interfaces.iter().any(|interface| {
+                    (name == "kernel" || interface.name == *name)
+                        && interface
+                            .addresses
+                            .iter()
+                            .any(|existing| same_sysmon_network_address(existing, candidate))
+                })
+        })
     })
+}
+
+fn same_sysmon_network_address(existing: &str, candidate: &str) -> bool {
+    sysmon_network_address_host(existing) == sysmon_network_address_host(candidate)
+}
+
+fn sysmon_network_address_host(value: &str) -> &str {
+    value.split_once('/').map_or(value, |(address, _)| address)
 }
 
 fn merge_remote_linux_sysmon_network_addresses(
@@ -36240,7 +36248,25 @@ __PORTMATE_LOADAVG__
             &[docker.clone(), addressed_default],
             &addresses
         ));
+        let ipv6_only_default = SysmonNetworkInterface {
+            name: "eth0".to_string(),
+            addresses: vec!["2001:db8::77/64".to_string()],
+            ..docker.clone()
+        };
+        assert!(remote_linux_kernel_addresses_need_merge(
+            &[docker.clone(), ipv6_only_default],
+            &addresses
+        ));
+        let prefixed_default = SysmonNetworkInterface {
+            name: "eth0".to_string(),
+            addresses: vec!["192.0.2.77/24".to_string()],
+            ..docker.clone()
+        };
         assert!(!remote_linux_kernel_addresses_need_merge(
+            &[docker.clone(), prefixed_default],
+            &addresses
+        ));
+        assert!(remote_linux_kernel_addresses_need_merge(
             &[docker],
             &BTreeMap::from([("kernel".to_string(), vec!["192.0.2.88".to_string()])])
         ));
