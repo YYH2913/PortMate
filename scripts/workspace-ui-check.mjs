@@ -3332,6 +3332,59 @@ try {
     `empty Profile compensation browser exceptions: ${JSON.stringify(emptyProfileRecoveryErrors)}`);
   await emptyProfileRecoveryPage.close();
 
+  const workspaceWindowPage = await context.newPage();
+  const workspaceWindowErrors = [];
+  workspaceWindowPage.on("pageerror", (error) => workspaceWindowErrors.push(error.message));
+  await workspaceWindowPage.goto(`${appUrl}?workspaceWindow=1&windowId=workspace-ui-regression`);
+  await workspaceWindowPage.locator(".wind-root").waitFor();
+  await workspaceWindowPage.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor();
+  const workspaceWindowInitial = await workspaceWindowPage.evaluate(() => ({
+    tabs: document.querySelectorAll(".workspace-pane-tab").length,
+    workspace: localStorage.getItem("portmate.workspace.v1"),
+    panelsV1: localStorage.getItem("portmate.workspacePanels.v1"),
+    panelsV2: localStorage.getItem("portmate.workspacePanels.v2"),
+  }));
+  assert(workspaceWindowInitial.tabs === 0,
+    `a new workspace window inherited or auto-opened a main-window view: ${JSON.stringify(workspaceWindowInitial)}`);
+  await workspaceWindowPage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Edge" }).waitFor();
+  const workspaceWindowAfterOpen = await workspaceWindowPage.evaluate(() => ({
+    tabs: document.querySelectorAll(".workspace-pane-tab").length,
+    workspace: localStorage.getItem("portmate.workspace.v1"),
+    panelsV1: localStorage.getItem("portmate.workspacePanels.v1"),
+    panelsV2: localStorage.getItem("portmate.workspacePanels.v2"),
+  }));
+  assert(workspaceWindowAfterOpen.tabs === 1
+    && workspaceWindowAfterOpen.workspace === workspaceWindowInitial.workspace
+    && workspaceWindowAfterOpen.panelsV1 === workspaceWindowInitial.panelsV1
+    && workspaceWindowAfterOpen.panelsV2 === workspaceWindowInitial.panelsV2,
+  `workspace window persisted into the main workspace snapshot: ${JSON.stringify({ before: workspaceWindowInitial, after: workspaceWindowAfterOpen })}`);
+  await workspaceWindowPage.screenshot({ path: `${screenshotPrefix}-workspace-window.png`, fullPage: true });
+  await workspaceWindowPage.evaluate(() => {
+    window.__workspaceWindowPopupCalls = [];
+    Object.defineProperty(window, "open", {
+      configurable: true,
+      value: (path, name, features) => {
+        window.__workspaceWindowPopupCalls.push({ path, name, features });
+        return { focus: () => {} };
+      },
+    });
+    delete window.__TAURI_INTERNALS__;
+  });
+  await workspaceWindowPage.getByRole("button", { name: "会话", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "新建工作区窗口", exact: true }).click();
+  await workspaceWindowPage.waitForFunction(() => window.__workspaceWindowPopupCalls.length === 1);
+  const workspaceWindowPopup = await workspaceWindowPage.evaluate(() => window.__workspaceWindowPopupCalls[0]);
+  assert(typeof workspaceWindowPopup?.name === "string"
+    && /^workspace-[A-Za-z0-9_-]+$/.test(workspaceWindowPopup.name)
+    && typeof workspaceWindowPopup?.path === "string"
+    && workspaceWindowPopup.path.includes("workspaceWindow=1")
+    && workspaceWindowPopup.path.includes(`windowId=${workspaceWindowPopup.name}`),
+  `new workspace window used an invalid browser route: ${JSON.stringify(workspaceWindowPopup)}`);
+  assert(workspaceWindowErrors.length === 0,
+    `workspace window browser exceptions: ${JSON.stringify(workspaceWindowErrors)}`);
+  await workspaceWindowPage.close();
+
   const cacheRecoveryContext = await browser.newContext({ viewport: { width: 960, height: 680 } });
   await cacheRecoveryContext.addInitScript(() => {
     localStorage.clear();
@@ -3412,6 +3465,10 @@ try {
       empty: emptyProfileRecoveryState,
     },
     sessionCacheRecovery: ["main", "detached", "serial-analyzer", "storage-write-denied"],
+    workspaceWindow: {
+      tabs: workspaceWindowAfterOpen.tabs,
+      popup: workspaceWindowPopup,
+    },
     terminalWrites,
     desktop,
     mobile,
@@ -3423,6 +3480,7 @@ try {
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-tunnel.png`,
       `${screenshotPrefix}-file-manager.png`,
+      `${screenshotPrefix}-workspace-window.png`,
       `${screenshotPrefix}-sender.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,
