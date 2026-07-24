@@ -260,7 +260,7 @@ export default function McpDialog({
               <textarea readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? "portmate-mcp --http"} />
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
-                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || (!httpConfig && !error)}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
                 <button type="button" onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig}>复制启动命令</button>
               </div>
             </div>
