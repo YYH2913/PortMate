@@ -24451,6 +24451,8 @@ fn read_tcp_stream(
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
         let mut telnet = telnet.map(TelnetNegotiator::new);
+        let mut disconnect_reason = None;
+        let mut disconnect_reason_recorded = false;
 
         'read_loop: loop {
             match read_half.read(&mut buffer).await {
@@ -24460,6 +24462,9 @@ fn read_tcp_stream(
                         match outbound_lane(&io.store_path, &session_id) {
                             Ok(lane) => Some(lane),
                             Err(error) => {
+                                disconnect_reason = Some(format!(
+                                    "{label} Telnet negotiation outbound lane failed: {error}"
+                                ));
                                 eprintln!(
                                     "PortMate: Telnet negotiation outbound lane failed: {error}"
                                 );
@@ -24497,11 +24502,15 @@ fn read_tcp_stream(
                             writer.write_all(&reply).await
                         };
                         if let Err(error) = write_result {
+                            let reason =
+                                format!("{label} Telnet negotiation reply failed: {error}");
+                            disconnect_reason = Some(reason.clone());
                             if let Ok(mut store) = io.store.lock() {
                                 store.record_system_event(
                                     &session_id,
-                                    format!("PortMate: Telnet negotiation reply failed: {error}"),
+                                    format!("PortMate: {reason}"),
                                 );
+                                disconnect_reason_recorded = true;
                                 if let Err(error) = persist_applied_store(
                                     &store,
                                     &io.store_path,
@@ -24528,11 +24537,11 @@ fn read_tcp_stream(
                     }
                 }
                 Err(error) => {
+                    let reason = format!("{label} read failed: {error}");
+                    disconnect_reason = Some(reason.clone());
                     if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!("PortMate: {label} read failed: {error}"),
-                        );
+                        store.record_system_event(&session_id, format!("PortMate: {reason}"));
+                        disconnect_reason_recorded = true;
                         if let Err(error) = persist_applied_store(
                             &store,
                             &io.store_path,
@@ -24575,6 +24584,11 @@ fn read_tcp_stream(
                 eprintln!("PortMate: failed to persist final {label} stream data: {error}");
             }
         }
+
+        let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
+            &disconnect_reason.unwrap_or_else(|| format!("{label} socket closed")),
+        )
+        .unwrap_or_else(|| format!("{label} socket closed"));
 
         let reconnect_profile = (!closed.load(Ordering::SeqCst))
             .then(|| {
@@ -24622,12 +24636,12 @@ fn read_tcp_stream(
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Reconnecting,
-                    Some(format!("{label} socket closed")),
+                    Some(disconnect_reason.clone()),
                 );
                 store.record_system_event(
                     &session_id,
                     format!(
-                        "PortMate: {label} socket closed; reconnecting in {reconnect_delay_ms}ms"
+                        "PortMate: {disconnect_reason}; reconnecting in {reconnect_delay_ms}ms"
                     ),
                 );
                 if let Err(error) =
@@ -24647,9 +24661,12 @@ fn read_tcp_stream(
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
-                    Some(format!("{label} socket closed")),
+                    Some(disconnect_reason.clone()),
                 );
-                store.record_system_event(&session_id, format!("PortMate: {label} socket closed"));
+                if !disconnect_reason_recorded {
+                    store
+                        .record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
+                }
                 if let Err(error) = persist_applied_store(
                     &store,
                     &io.store_path,
@@ -35075,6 +35092,79 @@ mod tests {
             let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
             assert!(screen.contains("socket closed; reconnecting"));
             assert!(screen.contains("socket reconnected"));
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tcp_read_failure_preserves_the_socket_error_as_the_disconnect_reason() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (reset_tx, reset_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let _ = reset_rx.await;
+                SockRef::from(&socket)
+                    .set_linger(Some(Duration::ZERO))
+                    .unwrap();
+                drop(socket);
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root = std::env::temp_dir()
+                .join(format!("portmate-tcp-read-error-test-{}", Uuid::new_v4()));
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            let _ = reset_tx.send(());
+            server.await.unwrap();
+            let reason = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let runtime = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .map(|summary| summary.runtime);
+                    if let Some(runtime) =
+                        runtime.filter(|runtime| runtime.status == SessionStatus::Disconnected)
+                    {
+                        break runtime.last_disconnect_reason;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP read failure did not transition to disconnected");
+
+            assert!(
+                reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("TCP read failed")),
+                "unexpected TCP disconnect reason: {reason:?}"
+            );
+            let read_error_events = state
+                .store
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| {
+                    event
+                        .text
+                        .as_deref()
+                        .is_some_and(|text| text.contains("TCP read failed"))
+                })
+                .count();
+            assert_eq!(read_error_events, 1);
             let _ = fs::remove_dir_all(root);
         });
     }
