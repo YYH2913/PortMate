@@ -9625,6 +9625,12 @@ fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
+    match state.transfer_cancellations.lock() {
+        Ok(mut cancellations) => {
+            cancellations.remove(task_id);
+        }
+        Err(error) => eprintln!("PortMate: failed to clean up transfer cancellation: {error}"),
+    }
     let mut status = status;
     let mut message = truncate_for_log(&message, 2_000);
     let task = {
@@ -9669,12 +9675,6 @@ fn finish_transfer_task(
         }
         task
     };
-    match state.transfer_cancellations.lock() {
-        Ok(mut cancellations) => {
-            cancellations.remove(&task.id);
-        }
-        Err(error) => eprintln!("PortMate: failed to clean up transfer cancellation: {error}"),
-    }
     emit_transfer_task(state, &task);
 }
 
@@ -42318,6 +42318,65 @@ __PORTMATE_LOADAVG__
         assert!(state.transfer_cancellations.lock().unwrap().is_empty());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transfer_terminal_state_is_not_visible_before_cancellation_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), temp.path().join("store.sqlite3"));
+        let task = test_transfer_task(&profile.id, TransferStatus::Running);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        state
+            .transfer_cancellations
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), Arc::new(TransferCancellation::new()));
+
+        let cancellations = state.transfer_cancellations.lock().unwrap();
+        let worker_state = state.clone();
+        let worker_task_id = task.id.clone();
+        let worker_session_id = profile.id.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            finish_transfer_task(
+                &worker_state,
+                &worker_task_id,
+                &worker_session_id,
+                TransferStatus::Completed,
+                "completed".to_string(),
+                Some(512),
+            );
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .status,
+            TransferStatus::Running
+        );
+        assert!(!worker.is_finished());
+
+        drop(cancellations);
+        worker.join().unwrap();
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .status,
+            TransferStatus::Completed
+        );
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
     }
 
     #[test]
