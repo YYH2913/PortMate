@@ -3746,7 +3746,9 @@ Host staging
     const profile = call?.args?.profile;
     return {
       saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
-      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      expectedProfile: call?.args && Object.hasOwn(call.args, "expectedProfile")
+        ? call.args.expectedProfile
+        : "missing",
       profile: profile ? {
         name: profile.name,
         kind: profile.kind,
@@ -3825,7 +3827,9 @@ Host staging
     const profile = call?.args?.profile;
     return {
       saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
-      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      expectedProfile: call?.args && Object.hasOwn(call.args, "expectedProfile")
+        ? call.args.expectedProfile
+        : "missing",
       profile: profile ? {
         name: profile.name,
         kind: profile.kind,
@@ -3886,7 +3890,9 @@ Host staging
     const profile = call?.args?.profile;
     return {
       saveCalls: window.__invokeCalls.slice(start).filter((item) => item.command === "save_session_profile").length,
-      expectedProfile: call?.args?.expectedProfile ?? "missing",
+      expectedProfile: call?.args && Object.hasOwn(call.args, "expectedProfile")
+        ? call.args.expectedProfile
+        : "missing",
       profile: profile ? {
         name: profile.name,
         kind: profile.kind,
