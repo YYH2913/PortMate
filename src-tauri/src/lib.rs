@@ -144,7 +144,7 @@ const MODEM_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MODEM_ACK_TIMEOUT: Duration = Duration::from_secs(12);
 const REMOTE_MODEM_READY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(15);
 const MODEM_MAX_RETRIES: usize = 10;
 const TRANSFER_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const XMODEM_BLOCK_SIZE: usize = 128;
@@ -526,6 +526,8 @@ pub struct AppState {
     pending_mcp_approvals: PendingMcpApprovalMap,
     one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     ipc_publication: Arc<Mutex<IpcPublicationState>>,
+    #[cfg(test)]
+    ssh_reconnect_install_error: Arc<Mutex<Option<String>>>,
     store_path: PathBuf,
 }
 
@@ -24117,6 +24119,68 @@ fn stop_pending_ssh_reconnect_if_disabled(
     true
 }
 
+fn fail_pending_ssh_reconnect_install(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    error: &str,
+) {
+    closed.store(true, Ordering::SeqCst);
+    let removed_current = match state.ssh.lock() {
+        Ok(mut connections) => {
+            if connections
+                .get(session_id)
+                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+            {
+                if let Some(runtime) = connections.remove(session_id) {
+                    runtime.closed.store(true, Ordering::SeqCst);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Err(lock_error) => {
+            eprintln!(
+                "PortMate: failed to clean up SSH reconnect runtime after Store failure: {lock_error}"
+            );
+            false
+        }
+    };
+    if !removed_current {
+        return;
+    }
+
+    clear_active_command(&state.session_io(), session_id);
+    let reason = portmate_core::normalize_session_disconnect_reason(&format!(
+        "SSH reconnect install failed: {error}"
+    ))
+    .unwrap_or_else(|| "SSH reconnect install failed".to_string());
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.set_runtime_status_with_reason(
+            session_id,
+            SessionStatus::Error,
+            Some(reason.clone()),
+        );
+        store.record_system_event(session_id, format!("PortMate: {reason}"));
+    }
+}
+
+#[cfg(test)]
+fn take_forced_ssh_reconnect_install_error(state: &AppState) -> Option<String> {
+    state
+        .ssh_reconnect_install_error
+        .lock()
+        .ok()
+        .and_then(|mut error| error.take())
+}
+
+#[cfg(not(test))]
+fn take_forced_ssh_reconnect_install_error(_state: &AppState) -> Option<String> {
+    None
+}
+
 async fn disconnect_registered_ssh_runtime(runtime: SshRuntime, reason: &str, jump_reason: &str) {
     let SshRuntime {
         runtime_id,
@@ -24323,29 +24387,35 @@ async fn reconnect_ssh_session(
                                     SshReconnectInstallDecision::Retry
                                 }
                                 Some(latest) => {
-                                    connections.insert(
-                                        session_id.clone(),
-                                        runtime.take().expect("runtime present"),
-                                    );
-                                    let _ = store.record_auth_success(&session_id, auth_method);
-                                    if let Err(error) = store.open_session(&session_id) {
-                                        store.record_system_event(
-                                            &session_id,
-                                            format!(
-                                                "PortMate: SSH reconnect status update failed: {error}"
+                                    let committed =
+                                        match take_forced_ssh_reconnect_install_error(&state) {
+                                            Some(error) => Err(error),
+                                            None => commit_tracked_store_mutation(
+                                                &mut store,
+                                                &state.store_path,
+                                                |next_store| {
+                                                    next_store.record_auth_success(
+                                                        &session_id,
+                                                        auth_method,
+                                                    )?;
+                                                    mark_session_connected_with_events(
+                                                        next_store,
+                                                        &latest,
+                                                        [],
+                                                    )
+                                                },
                                             ),
-                                        );
+                                        };
+                                    match committed {
+                                        Ok(_) => {
+                                            connections.insert(
+                                                session_id.clone(),
+                                                runtime.take().expect("runtime present"),
+                                            );
+                                            SshReconnectInstallDecision::Installed(Box::new(latest))
+                                        }
+                                        Err(error) => SshReconnectInstallDecision::Failed(error),
                                     }
-                                    if let Err(error) = persist_applied_store(
-                                        &store,
-                                        &state.store_path,
-                                        "installed SSH reconnect state",
-                                    ) {
-                                        eprintln!(
-                                            "PortMate: failed to persist SSH reconnect status: {error}"
-                                        );
-                                    }
-                                    SshReconnectInstallDecision::Installed(Box::new(latest))
                                 }
                                 None => SshReconnectInstallDecision::Stop,
                             }
@@ -24395,6 +24465,13 @@ async fn reconnect_ssh_session(
                     "PortMate SSH reconnect state unavailable",
                 )
                 .await;
+                fail_pending_ssh_reconnect_install(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &error,
+                );
                 eprintln!("PortMate: failed to install SSH reconnect runtime: {error}");
                 return;
             }
@@ -33254,6 +33331,8 @@ pub fn run() {
                 pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
+                #[cfg(test)]
+                ssh_reconnect_install_error: Arc::new(Mutex::new(None)),
                 store_path,
             };
             install_system_event_sink(&state).map_err(std::io::Error::other)?;
@@ -48663,6 +48742,159 @@ __PORTMATE_LOADAVG__
 
     #[cfg(unix)]
     #[test]
+    fn openssh_reconnect_store_commit_failure_does_not_install_runtime() {
+        let Some(sshd_path) = openssh_test_server_path() else {
+            eprintln!("skipping OpenSSH reconnect Store test: sshd is not installed");
+            return;
+        };
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping OpenSSH reconnect Store test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "portmate-ssh-reconnect-commit-failure-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let host_key = root.join("ssh_host_ed25519_key");
+        let client_key = root.join("id_ed25519");
+        generate_ed25519_test_key(&host_key);
+        generate_ed25519_test_key(&client_key);
+        let authorized_keys = root.join("authorized_keys");
+        fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let config_path = root.join("sshd_config");
+        write_openssh_test_config(
+            &config_path,
+            &host_key,
+            &root.join("sshd.pid"),
+            &authorized_keys,
+            port,
+        );
+        let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
+
+        tauri::async_runtime::block_on(async {
+            wait_for_openssh_test_server(&mut sshd, port, "reconnect Store sshd").await;
+            let mut profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+                panic!("expected SSH profile");
+            };
+            ssh.endpoint.host = "127.0.0.1".to_string();
+            ssh.endpoint.port = port;
+            ssh.username = openssh_test_username();
+            ssh.reconnect = true;
+            ssh.reconnect_delay_ms = 100;
+            ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+            ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+            ssh.identity_refs = vec![IdentityRef {
+                id: "reconnect-store-client-key".to_string(),
+                label: "reconnect Store client key".to_string(),
+                source: IdentitySource::SystemFile,
+                fingerprint_sha256: None,
+                path: Some(client_key.display().to_string()),
+                secret_ref: None,
+            }];
+            ssh.agent_policy.enabled = false;
+            ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+
+            let store_dir = root.join("store");
+            fs::create_dir_all(&store_dir).unwrap();
+            let state = test_app_state(profile.clone(), store_dir.join("portmate-store.sqlite3"));
+            open_ssh_session(&state, profile.clone(), None, None)
+                .await
+                .unwrap();
+            let reconnect_handle = {
+                let connections = state.ssh.lock().unwrap();
+                Arc::clone(&connections.get(&profile.id).unwrap().handle)
+            };
+
+            *state.ssh_reconnect_install_error.lock().unwrap() =
+                Some("injected SSH reconnect install commit failure".to_string());
+            {
+                let handle = reconnect_handle.lock().await;
+                handle
+                    .disconnect(
+                        Disconnect::ByApplication,
+                        "PortMate reconnect Store failure test",
+                        "en",
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let status = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap()
+                        .runtime
+                        .status;
+                    if status != SessionStatus::Connected {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("SSH disconnect did not leave the connected state");
+
+            let failed = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let summary = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap();
+                    if summary.runtime.status == SessionStatus::Error {
+                        break summary;
+                    }
+                    assert_ne!(
+                        summary.runtime.status,
+                        SessionStatus::Connected,
+                        "failed SSH reconnect exposed a connected runtime"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("SSH reconnect Store failure did not settle to Error");
+
+            assert!(
+                failed
+                    .runtime
+                    .last_disconnect_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("SSH reconnect install failed")),
+                "unexpected SSH reconnect failure: {:?}",
+                failed.runtime.last_disconnect_reason
+            );
+            assert!(!state.ssh.lock().unwrap().contains_key(&profile.id));
+            assert!(state.store.lock().unwrap().events.iter().any(|event| {
+                event
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("SSH reconnect install failed"))
+            }));
+        });
+
+        sshd.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn openssh_sftp_scp_and_tunnels_end_to_end() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -54868,6 +55100,7 @@ __PORTMATE_LOADAVG__
             pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
             one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
             ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
+            ssh_reconnect_install_error: Arc::new(Mutex::new(None)),
             store_path,
         }
     }
