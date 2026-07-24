@@ -23673,8 +23673,12 @@ fn read_ssh_channel(
         let session_id = profile.id.clone();
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
+        let mut disconnect_reason = None;
 
         while let Some(message) = read_half.wait().await {
+            if let Some(reason) = ssh_channel_disconnect_reason(&message) {
+                disconnect_reason = Some(reason);
+            }
             match message {
                 ChannelMsg::Data { data } => {
                     let bytes = data.to_vec();
@@ -23760,6 +23764,11 @@ fn read_ssh_channel(
             }
         }
 
+        let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
+            &disconnect_reason.unwrap_or_else(|| "SSH channel closed".to_string()),
+        )
+        .unwrap_or_else(|| "SSH channel closed".to_string());
+
         let should_reconnect = {
             let mut connections = match io.runtimes.ssh.lock() {
                 Ok(connections) => connections,
@@ -23780,17 +23789,15 @@ fn read_ssh_channel(
                     return;
                 }
             };
-            let stopped_tunnels = match fail_session_tunnel_runtimes(
-                &state.tunnels,
-                &session_id,
-                "SSH channel closed",
-            ) {
-                Ok(count) => count,
-                Err(error) => {
-                    eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
-                    0
-                }
-            };
+            let stopped_tunnels =
+                match fail_session_tunnel_runtimes(&state.tunnels, &session_id, &disconnect_reason)
+                {
+                    Ok(count) => count,
+                    Err(error) => {
+                        eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
+                        0
+                    }
+                };
             let reconnect_profile = (!closed.load(Ordering::SeqCst))
                 .then(|| store.profile(&session_id).map(normalize_session_profile))
                 .flatten()
@@ -23799,12 +23806,12 @@ fn read_ssh_channel(
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Reconnecting,
-                    Some("SSH channel closed".to_string()),
+                    Some(disconnect_reason.clone()),
                 );
                 store.record_system_event(
                     &session_id,
                     format!(
-                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s); reconnecting in {}ms",
+                        "PortMate: {disconnect_reason}; stopped {stopped_tunnels} tunnel runtime(s); reconnecting in {}ms",
                         ssh_reconnect_delay(&reconnect_profile).as_millis()
                     ),
                 );
@@ -23821,12 +23828,12 @@ fn read_ssh_channel(
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
-                    Some("SSH channel closed".to_string()),
+                    Some(disconnect_reason.clone()),
                 );
                 store.record_system_event(
                     &session_id,
                     format!(
-                        "PortMate: SSH channel closed; stopped {stopped_tunnels} tunnel runtime(s)"
+                        "PortMate: {disconnect_reason}; stopped {stopped_tunnels} tunnel runtime(s)"
                     ),
                 );
                 if let Err(error) =
@@ -23844,6 +23851,27 @@ fn read_ssh_channel(
             ));
         }
     })
+}
+
+fn ssh_channel_disconnect_reason(message: &ChannelMsg) -> Option<String> {
+    match message {
+        ChannelMsg::ExitStatus { exit_status } => Some(format!(
+            "SSH remote process exited with status {exit_status}"
+        )),
+        ChannelMsg::ExitSignal {
+            signal_name,
+            error_message,
+            ..
+        } => {
+            let detail = error_message.trim();
+            let suffix = (!detail.is_empty()).then(|| format!(": {detail}"));
+            Some(format!(
+                "SSH remote process exited by signal {signal_name:?}{}",
+                suffix.unwrap_or_default()
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn ssh_reconnect_enabled(profile: &SessionProfile) -> bool {
@@ -40285,6 +40313,15 @@ __PORTMATE_LOADAVG__
         });
         profile.kind = SessionKind::Tmux;
         assert!(ssh_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn ssh_channel_exit_status_preserves_remote_disconnect_diagnostic() {
+        assert_eq!(
+            ssh_channel_disconnect_reason(&ChannelMsg::ExitStatus { exit_status: 7 }).as_deref(),
+            Some("SSH remote process exited with status 7")
+        );
+        assert_eq!(ssh_channel_disconnect_reason(&ChannelMsg::Eof), None);
     }
 
     #[test]
