@@ -24859,6 +24859,55 @@ fn stop_pending_tcp_reconnect_if_disabled(
     true
 }
 
+fn fail_pending_tcp_reconnect_install(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    label: &str,
+    error: &str,
+) {
+    closed.store(true, Ordering::SeqCst);
+    let removed_current = match state.tcp.lock() {
+        Ok(mut connections) => {
+            if connections
+                .get(session_id)
+                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+            {
+                if let Some(runtime) = connections.remove(session_id) {
+                    runtime.closed.store(true, Ordering::SeqCst);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Err(lock_error) => {
+            eprintln!(
+                "PortMate: failed to clean up {label} reconnect runtime after Store failure: {lock_error}"
+            );
+            false
+        }
+    };
+    if !removed_current {
+        return;
+    }
+
+    clear_active_command(&state.session_io(), session_id);
+    let reason = portmate_core::normalize_session_disconnect_reason(&format!(
+        "{label} reconnect install failed: {error}"
+    ))
+    .unwrap_or_else(|| format!("{label} reconnect install failed"));
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.set_runtime_status_with_reason(
+            session_id,
+            SessionStatus::Error,
+            Some(reason.clone()),
+        );
+        store.record_system_event(session_id, format!("PortMate: {reason}"));
+    }
+}
+
 enum TcpReconnectInstallDecision {
     Installed,
     Retry,
@@ -25053,38 +25102,33 @@ async fn reconnect_tcp_session(
                                     TcpReconnectInstallDecision::Stop
                                 }
                                 TcpReconnectProfileState::Current => {
-                                    connections.insert(
-                                        session_id.clone(),
-                                        TcpRuntime {
-                                            runtime_id: runtime_id.clone(),
-                                            writer: Arc::clone(&writer),
-                                            tap: tap.clone(),
-                                            closed: Arc::clone(&next_closed),
-                                            telnet: telnet.as_ref().map(Arc::clone),
+                                    let committed = commit_tracked_store_mutation(
+                                        &mut store,
+                                        &state.store_path,
+                                        |next_store| {
+                                            mark_session_connected_with_events(
+                                                next_store,
+                                                &profile,
+                                                [format!("PortMate: {label} socket reconnected")],
+                                            )
                                         },
                                     );
-                                    store.record_system_event(
-                                        &session_id,
-                                        format!("PortMate: {label} socket reconnected"),
-                                    );
-                                    if let Err(error) = store.open_session(&session_id) {
-                                        store.record_system_event(
-                                            &session_id,
-                                            format!(
-                                                "PortMate: reconnect status update failed: {error}"
-                                            ),
-                                        );
+                                    match committed {
+                                        Ok(_) => {
+                                            connections.insert(
+                                                session_id.clone(),
+                                                TcpRuntime {
+                                                    runtime_id: runtime_id.clone(),
+                                                    writer: Arc::clone(&writer),
+                                                    tap: tap.clone(),
+                                                    closed: Arc::clone(&next_closed),
+                                                    telnet: telnet.as_ref().map(Arc::clone),
+                                                },
+                                            );
+                                            TcpReconnectInstallDecision::Installed
+                                        }
+                                        Err(error) => TcpReconnectInstallDecision::Failed(error),
                                     }
-                                    if let Err(error) = persist_applied_store(
-                                        &store,
-                                        &state.store_path,
-                                        "installed TCP/Telnet reconnect state",
-                                    ) {
-                                        eprintln!(
-                                            "PortMate: failed to persist {label} reconnect success: {error}"
-                                        );
-                                    }
-                                    TcpReconnectInstallDecision::Installed
                                 }
                             }
                         }
@@ -25103,6 +25147,14 @@ async fn reconnect_tcp_session(
                     return
                 }
                 TcpReconnectInstallDecision::Failed(error) => {
+                    fail_pending_tcp_reconnect_install(
+                        &state,
+                        &session_id,
+                        &previous_runtime_id,
+                        closed.as_ref(),
+                        label,
+                        &error,
+                    );
                     eprintln!("PortMate: failed to install TCP/Telnet reconnect runtime: {error}");
                     return;
                 }
@@ -35440,6 +35492,96 @@ mod tests {
             proxy_task.abort();
             let _ = proxy_task.await;
             let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn tcp_reconnect_store_commit_failure_does_not_install_runtime() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (drop_first_tx, drop_first_rx) = tokio::sync::oneshot::channel();
+            let (second_connected_tx, second_connected_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (first, _) = listener.accept().await.unwrap();
+                let _ = drop_first_rx.await;
+                drop(first);
+
+                let (mut second, _) = listener.accept().await.unwrap();
+                let _ = second_connected_tx.send(());
+                let mut byte = [0_u8; 1];
+                tokio::time::timeout(Duration::from_secs(5), second.read(&mut byte))
+                    .await
+                    .expect("failed reconnect socket was not closed")
+                    .unwrap()
+            });
+
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: true,
+                reconnect_delay_ms: 100,
+                ..Default::default()
+            }));
+            let root = std::env::temp_dir().join(format!(
+                "portmate-tcp-reconnect-commit-failure-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+
+            fs::remove_dir_all(&root).unwrap();
+            fs::write(&root, b"blocked").unwrap();
+            let _ = drop_first_tx.send(());
+            tokio::time::timeout(Duration::from_secs(5), second_connected_rx)
+                .await
+                .expect("TCP reconnect did not reach the replacement socket")
+                .unwrap();
+
+            let failed = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let summary = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .summaries()
+                        .into_iter()
+                        .find(|summary| summary.profile.id == profile.id)
+                        .unwrap();
+                    if summary.runtime.status == SessionStatus::Error {
+                        break summary;
+                    }
+                    assert_ne!(
+                        summary.runtime.status,
+                        SessionStatus::Connected,
+                        "failed TCP reconnect exposed a connected runtime"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("TCP reconnect Store failure did not settle to Error");
+
+            assert!(
+                failed
+                    .runtime
+                    .last_disconnect_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("TCP reconnect install failed")),
+                "unexpected reconnect failure: {:?}",
+                failed.runtime.last_disconnect_reason
+            );
+            assert!(!state.tcp.lock().unwrap().contains_key(&profile.id));
+            assert_eq!(server.await.unwrap(), 0);
+            assert!(state.store.lock().unwrap().events.iter().any(|event| {
+                event
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("TCP reconnect install failed"))
+            }));
+
+            fs::remove_file(root).unwrap();
         });
     }
 
