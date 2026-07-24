@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   convertDraftProtocol,
+  applyPuttyImportTerminal,
   createOpenSshImportConnection,
   createPuttyImportConnection,
   createShellImportConnection,
@@ -266,6 +267,28 @@ describe("session profile helpers", () => {
       flowControl: "hardware",
     });
     expect(raw).toMatchObject({ kind: "tcp", host: "raw.example.test", port: 9000 });
+  });
+
+  it("applies imported PuTTY terminal settings without replacing unrelated profile defaults", () => {
+    const terminal = applyPuttyImportTerminal(profile(createSshConnection()).terminal, {
+      id: "putty-terminal",
+      name: "Terminal",
+      kind: "ssh",
+      host: "terminal.example.test",
+      port: 22,
+      username: "operator",
+      terminal: { term: "xterm-256color", rows: 40, cols: 180, scrollback: 5_000 },
+      warnings: [],
+    });
+
+    expect(terminal).toMatchObject({
+      term: "xterm-256color",
+      rows: 40,
+      cols: 180,
+      scrollback: 5_000,
+      fontFamily: "monospace",
+      fontSize: 13,
+    });
   });
 
   it("translates a discovered local Shell into the existing PTY connection model", () => {

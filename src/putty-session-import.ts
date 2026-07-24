@@ -1,4 +1,5 @@
 import type { ProxyKind } from "./types";
+import { normalizeTerminalName, TERMINAL_PROFILE_BOUNDS } from "./terminal-settings-state";
 
 export const PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS = 1_000_000;
 export const PUTTY_SESSION_IMPORT_MAX_CANDIDATES = 256;
@@ -27,9 +28,17 @@ export type PuttyForwardImport = {
   targetPort: number;
 };
 
+export type PuttyTerminalImport = {
+  term?: string;
+  rows?: number;
+  cols?: number;
+  scrollback?: number;
+};
+
 type PuttyCandidateBase = {
   id: string;
   name: string;
+  terminal?: PuttyTerminalImport;
   warnings: string[];
 };
 
@@ -281,6 +290,7 @@ function buildCandidate(
       warnings,
     };
     applySerialSettings(candidate, raw.settings, addCandidateWarning);
+    applyTerminalSettings(candidate, raw.settings, addCandidateWarning);
     return candidate;
   }
 
@@ -303,7 +313,67 @@ function buildCandidate(
   };
   applyProxySettings(candidate, raw.settings, addCandidateWarning);
   if (kind === "ssh") applySshSettings(candidate, raw.settings, addCandidateWarning);
+  applyTerminalSettings(candidate, raw.settings, addCandidateWarning);
   return candidate;
+}
+
+function applyTerminalSettings(
+  candidate: PuttyCandidateBase,
+  settings: Map<string, string>,
+  addWarning: (message: string) => void,
+) {
+  const terminal: PuttyTerminalImport = {};
+  const rawTerm = settings.get("terminaltype");
+  if (rawTerm !== undefined) {
+    const term = normalizeTerminalName(rawTerm);
+    if (!term) addWarning("TerminalType 必须是 64 字节以内的标准终端名称，未导入");
+    else terminal.term = term;
+  }
+
+  const numericSettings: Array<{
+    key: string;
+    field: keyof Omit<PuttyTerminalImport, "term">;
+    min: number;
+    max: number;
+    label: string;
+    description: string;
+  }> = [
+    {
+      key: "termheight",
+      field: "rows",
+      min: TERMINAL_PROFILE_BOUNDS.rows.min,
+      max: TERMINAL_PROFILE_BOUNDS.rows.max,
+      label: "TermHeight",
+      description: "终端行数",
+    },
+    {
+      key: "termwidth",
+      field: "cols",
+      min: TERMINAL_PROFILE_BOUNDS.cols.min,
+      max: TERMINAL_PROFILE_BOUNDS.cols.max,
+      label: "TermWidth",
+      description: "终端列数",
+    },
+    {
+      key: "scrollbacklines",
+      field: "scrollback",
+      min: TERMINAL_PROFILE_BOUNDS.scrollback.min,
+      max: TERMINAL_PROFILE_BOUNDS.scrollback.max,
+      label: "ScrollbackLines",
+      description: "终端滚屏",
+    },
+  ];
+  for (const setting of numericSettings) {
+    const rawValue = settings.get(setting.key);
+    if (rawValue === undefined) continue;
+    const value = parseIntegerInRange(rawValue, setting.min, setting.max);
+    if (value === null) {
+      addWarning(`${setting.label} 必须是 ${setting.min} 到 ${setting.max} 的整数，未导入${setting.description}`);
+      continue;
+    }
+    terminal[setting.field] = value;
+  }
+  if (Object.keys(terminal).length) candidate.terminal = terminal;
 }
 
 function applySshSettings(

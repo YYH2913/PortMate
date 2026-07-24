@@ -19,6 +19,10 @@ ProxyPort=1081
 ProxyUsername=relay
 PingInterval=1
 PingIntervalSecs=15
+TerminalType=xterm-256color
+TermWidth=180
+TermHeight=40
+ScrollbackLines=5000
 `, "production.session");
 
     expect(result.error).toBeNull();
@@ -35,6 +39,12 @@ PingIntervalSecs=15
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 0,
+      terminal: {
+        term: "xterm-256color",
+        rows: 40,
+        cols: 180,
+        scrollback: 5000,
+      },
       proxy: {
         kind: "socks5",
         host: "socks.example.test",
@@ -62,11 +72,19 @@ HostName=bounded.example.test
 Protocol=ssh
 PingInterval=60
 PingIntervalSecs=1
+TerminalType=xterm invalid
+TermWidth=0
+TermHeight=513
+ScrollbackLines=10000001
 `, "bounded");
     expect(invalid.candidates).toEqual([expect.objectContaining({
       kind: "ssh",
       warnings: expect.arrayContaining([
         "PingInterval 总间隔必须是 0 到 3600 秒，未导入 SSH 保活",
+        "TerminalType 必须是 64 字节以内的标准终端名称，未导入",
+        "TermWidth 必须是 1 到 1024 的整数，未导入终端列数",
+        "TermHeight 必须是 1 到 512 的整数，未导入终端行数",
+        "ScrollbackLines 必须是 0 到 10000000 的整数，未导入终端滚屏",
       ]),
     })]);
     expect(invalid.warnings).toEqual(expect.arrayContaining([

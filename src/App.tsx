@@ -53,7 +53,7 @@ import { normalizeSerialConnectionSettings } from "./serial-connection-settings"
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
-import { createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
+import { applyPuttyImportTerminal, createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
@@ -5165,6 +5165,7 @@ function createPuttyImportedProfile(candidate: PuttySessionImportCandidate): Ses
     name: candidate.name,
     kind: candidate.kind,
     connection: createPuttyImportConnection(candidate),
+    terminal: applyPuttyImportTerminal(profile.terminal, candidate),
   };
 }
 

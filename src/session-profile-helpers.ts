@@ -195,6 +195,13 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
   };
 }
 
+export function applyPuttyImportTerminal(
+  terminal: SessionProfile["terminal"],
+  candidate: PuttySessionImportCandidate,
+): SessionProfile["terminal"] {
+  return { ...terminal, ...candidate.terminal };
+}
+
 function puttyForwardLabel(mode: "local" | "remote" | "dynamic"): string {
   if (mode === "local") return "Local";
   if (mode === "remote") return "Remote";

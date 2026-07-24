@@ -24,13 +24,10 @@ export type TerminalStartupSessionOption = {
 export function normalizeTerminalProfileSettings(
   value: SessionProfile["terminal"],
 ): SessionProfile["terminal"] {
-  const term = typeof value.term === "string" ? value.term.trim() : "";
   const fontFamily = typeof value.fontFamily === "string" ? value.fontFamily.trim() : "";
   return {
     ...value,
-    term: terminalNamePattern.test(term) && term.length <= MAX_TERMINAL_NAME_BYTES
-      ? term
-      : DEFAULT_TERMINAL_NAME,
+    term: normalizeTerminalName(value.term) ?? DEFAULT_TERMINAL_NAME,
     rows: boundedInteger(value.rows, TERMINAL_PROFILE_BOUNDS.rows),
     cols: boundedInteger(value.cols, TERMINAL_PROFILE_BOUNDS.cols),
     scrollback: boundedInteger(value.scrollback, TERMINAL_PROFILE_BOUNDS.scrollback),
@@ -42,6 +39,13 @@ export function normalizeTerminalProfileSettings(
     fontSize: boundedInteger(value.fontSize, TERMINAL_PROFILE_BOUNDS.fontSize),
     backgroundOpacity: normalizeTerminalBackgroundOpacity(value.backgroundOpacity),
   };
+}
+
+export function normalizeTerminalName(value: unknown): string | null {
+  const term = typeof value === "string" ? value.trim() : "";
+  return terminalNamePattern.test(term) && term.length <= MAX_TERMINAL_NAME_BYTES
+    ? term
+    : null;
 }
 
 export function normalizeTerminalBackgroundOpacity(value: unknown): number {
