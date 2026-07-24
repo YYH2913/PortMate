@@ -202,7 +202,7 @@ Host bounded
   Port 70000
   IdentityFile ~other/id_ed25519
   ServerAliveInterval 3601
-  ServerAliveCountMax 0
+  ServerAliveCountMax 21
   IdentitiesOnly ask
   ForwardAgent confirm
   ProxyJump ssh://jump.example.test
@@ -219,12 +219,32 @@ Host bounded
         "Port 必须是 1 到 65535 的整数",
         "IdentityFile 不是可直接导入的本地路径",
         "ServerAliveInterval 必须是 0 到 3600 的整数",
-        "ServerAliveCountMax 必须是 1 到 20 的整数",
+        "ServerAliveCountMax 必须是 0 到 20 的整数",
         "IdentitiesOnly 仅支持 yes 或 no",
         "ForwardAgent 仅支持 yes 或 no",
         "ProxyJump 仅支持逗号分隔的 [user@]host[:port] 字面地址",
       ]),
     })]);
+  });
+
+  it("skips ServerAliveCountMax zero because its immediate-timeout behavior is not representable", () => {
+    const result = parseOpenSshConfig(`
+Host long-lived
+  HostName long-lived.example.test
+  ServerAliveInterval 45
+  ServerAliveCountMax 0
+`);
+
+    expect(result.candidates).toEqual([expect.objectContaining({
+      hostAlias: "long-lived",
+      keepaliveEnabled: true,
+      keepaliveIntervalSeconds: 45,
+      warnings: ["ServerAliveCountMax=0 会在首个保活探测前断开，PortMate 未导入该值"],
+    })]);
+    expect(result.candidates[0]).not.toHaveProperty("keepaliveMaxMissed");
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("ServerAliveCountMax=0 会在首个保活探测前断开"),
+    ]));
   });
 
   it("bounds source input before splitting it into lines", () => {

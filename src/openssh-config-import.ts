@@ -320,10 +320,14 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         break;
       }
       case "serveralivecountmax": {
-        const maxMissed = parseInteger(directive.values[0], 1, 20);
+        const maxMissed = parseInteger(directive.values[0], 0, 20);
         withActiveCandidates(lineNumber, (candidate) => {
           if (maxMissed === null) {
-            addCandidateWarning(candidate, lineNumber, "ServerAliveCountMax 必须是 1 到 20 的整数");
+            addCandidateWarning(candidate, lineNumber, "ServerAliveCountMax 必须是 0 到 20 的整数");
+            return;
+          }
+          if (maxMissed === 0) {
+            addCandidateWarning(candidate, lineNumber, "ServerAliveCountMax=0 会在首个保活探测前断开，PortMate 未导入该值");
             return;
           }
           setFirst(candidate, "keepaliveMaxMissed", maxMissed);

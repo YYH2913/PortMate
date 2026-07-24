@@ -192,6 +192,7 @@ describe("session profile helpers", () => {
       forwardAgent: true,
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
+      keepaliveMaxMissed: 0,
       proxy: { kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       forwards: [
         { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
@@ -229,6 +230,7 @@ describe("session profile helpers", () => {
       username: "operator",
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
+      keepaliveMaxMissed: 0,
       proxy: { enabled: true, kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       agentPolicy: { enabled: true, forwarding: true },
       tunnels: [

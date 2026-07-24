@@ -10,7 +10,7 @@ export const sshConnectionDefaults = {
 export const sshConnectionBounds = {
   reconnectDelayMs: { min: 100, max: 60_000 },
   keepaliveIntervalSeconds: { min: 1, max: 3_600 },
-  keepaliveMaxMissed: { min: 1, max: 20 },
+  keepaliveMaxMissed: { min: 0, max: 20 },
 } as const;
 
 const defaultAuthOrder: AuthMethod[] = ["public-key", "keyboard-interactive", "password"];

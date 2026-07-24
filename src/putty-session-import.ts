@@ -43,6 +43,7 @@ export type PuttyNetworkImportCandidate = PuttyCandidateBase & {
   forwardAgent?: boolean;
   keepaliveEnabled?: boolean;
   keepaliveIntervalSeconds?: number;
+  keepaliveMaxMissed?: number;
   forwards?: PuttyForwardImport[];
 };
 
@@ -345,7 +346,11 @@ function applyKeepaliveSettings(
     return;
   }
   candidate.keepaliveEnabled = intervalSeconds > 0;
-  if (intervalSeconds > 0) candidate.keepaliveIntervalSeconds = intervalSeconds;
+  if (intervalSeconds > 0) {
+    candidate.keepaliveIntervalSeconds = intervalSeconds;
+    // PuTTY sends SSH_MSG_IGNORE indefinitely instead of timing out on missed replies.
+    candidate.keepaliveMaxMissed = 0;
+  }
 }
 
 function applyForwardingSettings(

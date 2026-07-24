@@ -161,6 +161,7 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
       username: candidate.username,
       keepaliveEnabled: candidate.keepaliveEnabled ?? connection.keepaliveEnabled,
       keepaliveIntervalSeconds: candidate.keepaliveIntervalSeconds ?? connection.keepaliveIntervalSeconds,
+      keepaliveMaxMissed: candidate.keepaliveMaxMissed ?? connection.keepaliveMaxMissed,
       proxy: candidate.proxy
         ? { ...connection.proxy, ...candidate.proxy, enabled: true }
         : connection.proxy,

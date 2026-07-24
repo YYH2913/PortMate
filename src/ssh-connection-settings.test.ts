@@ -78,6 +78,15 @@ describe("SSH connection settings", () => {
     });
   });
 
+  it("allows zero missed replies to keep the session alive without a health timeout", () => {
+    const normalized = normalizeSshConnectionSettings({
+      ...baseConnection(),
+      keepaliveMaxMissed: 0,
+    });
+
+    expect(normalized.keepaliveMaxMissed).toBe(0);
+  });
+
   it("keeps the successful-auth hint inside the current authentication policy", () => {
     const disabledMethod = normalizeSshConnectionSettings({
       ...baseConnection(),

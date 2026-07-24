@@ -34,6 +34,7 @@ PingIntervalSecs=15
       forwardAgent: false,
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 75,
+      keepaliveMaxMissed: 0,
       proxy: {
         kind: "socks5",
         host: "socks.example.test",

@@ -39991,6 +39991,12 @@ __PORTMATE_LOADAVG__
         let config = ssh_client_config(ssh);
         assert_eq!(config.keepalive_interval, None);
         assert_eq!(config.keepalive_max, 7);
+
+        ssh.keepalive_enabled = true;
+        ssh.keepalive_max_missed = 0;
+        let config = ssh_client_config(ssh);
+        assert_eq!(config.keepalive_interval, Some(Duration::from_secs(75)));
+        assert_eq!(config.keepalive_max, 0);
     }
 
     #[test]

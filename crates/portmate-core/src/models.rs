@@ -361,7 +361,7 @@ pub const DEFAULT_SSH_RECONNECT_DELAY_MS: u64 = 1_000;
 pub const MIN_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 1;
 pub const MAX_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 3_600;
 pub const DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS: u64 = 30;
-pub const MIN_SSH_KEEPALIVE_MAX_MISSED: u32 = 1;
+pub const MIN_SSH_KEEPALIVE_MAX_MISSED: u32 = 0;
 pub const MAX_SSH_KEEPALIVE_MAX_MISSED: u32 = 20;
 pub const DEFAULT_SSH_KEEPALIVE_MAX_MISSED: u32 = 3;
 
@@ -1062,6 +1062,10 @@ mod tests {
             MIN_SSH_KEEPALIVE_INTERVAL_SECONDS
         );
         assert_eq!(legacy.keepalive_max_missed, MAX_SSH_KEEPALIVE_MAX_MISSED);
+
+        legacy.keepalive_max_missed = 0;
+        legacy.normalize_health_settings();
+        assert_eq!(legacy.keepalive_max_missed, 0);
     }
 
     #[test]

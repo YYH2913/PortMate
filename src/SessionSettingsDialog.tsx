@@ -746,7 +746,7 @@ function SshAdvancedFields({
                 onChange={(event) => updateSsh({ keepaliveIntervalSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label="未响应上限:">
+            <DialogField label="未响应上限 (0=不自动断开):">
               <input
                 type="number"
                 min={sshConnectionBounds.keepaliveMaxMissed.min}
