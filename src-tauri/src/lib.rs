@@ -354,7 +354,7 @@ $rawNetworks = @{}
 $ipAddresses = @{}
 @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue) |
     ForEach-Object {
-        $addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 8)
+        $addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         $description = ([string]$_.Description).Trim()
         if ($addresses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($description)) {
             $ipAddresses[$description] = $addresses
@@ -36673,6 +36673,12 @@ __PORTMATE_LOADAVG__
             .to_ascii_lowercase()
             .contains("commandline"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 8"));
+        assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains(
+            "$addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })"
+        ));
+        assert!(!REMOTE_WINDOWS_SYSMON_SCRIPT.contains(
+            "IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 8"
+        ));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 16"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("Select-Object -First 128"));
         assert!(REMOTE_WINDOWS_SYSMON_SCRIPT.contains("$matchedIpAddressNames"));
