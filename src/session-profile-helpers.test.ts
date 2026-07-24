@@ -190,6 +190,8 @@ describe("session profile helpers", () => {
       username: "operator",
       tryAgent: true,
       forwardAgent: true,
+      keepaliveEnabled: false,
+      keepaliveIntervalSeconds: 75,
       proxy: { kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       forwards: [
         { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
@@ -225,6 +227,8 @@ describe("session profile helpers", () => {
       kind: "ssh",
       endpoint: { host: "ops.example.test", port: 2202 },
       username: "operator",
+      keepaliveEnabled: false,
+      keepaliveIntervalSeconds: 75,
       proxy: { enabled: true, kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       agentPolicy: { enabled: true, forwarding: true },
       tunnels: [

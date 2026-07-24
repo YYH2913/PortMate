@@ -159,6 +159,8 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
       kind: "ssh",
       endpoint: { host: candidate.host, port: candidate.port },
       username: candidate.username,
+      keepaliveEnabled: candidate.keepaliveEnabled ?? connection.keepaliveEnabled,
+      keepaliveIntervalSeconds: candidate.keepaliveIntervalSeconds ?? connection.keepaliveIntervalSeconds,
       proxy: candidate.proxy
         ? { ...connection.proxy, ...candidate.proxy, enabled: true }
         : connection.proxy,

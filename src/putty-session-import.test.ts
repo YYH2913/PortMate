@@ -17,6 +17,8 @@ ProxyMethod=2
 ProxyHost=socks.example.test
 ProxyPort=1081
 ProxyUsername=relay
+PingInterval=1
+PingIntervalSecs=15
 `, "production.session");
 
     expect(result.error).toBeNull();
@@ -30,6 +32,8 @@ ProxyUsername=relay
       username: "deploy",
       tryAgent: true,
       forwardAgent: false,
+      keepaliveEnabled: true,
+      keepaliveIntervalSeconds: 75,
       proxy: {
         kind: "socks5",
         host: "socks.example.test",
@@ -38,6 +42,35 @@ ProxyUsername=relay
       },
       warnings: [],
     }]);
+  });
+
+  it("maps bounded PuTTY keepalive intervals and rejects invalid values", () => {
+    const disabled = parsePuttySessions(`
+HostName=disabled.example.test
+Protocol=ssh
+PingInterval=0
+PingIntervalSecs=0
+`, "disabled");
+    expect(disabled.candidates).toEqual([expect.objectContaining({
+      kind: "ssh",
+      keepaliveEnabled: false,
+    })]);
+
+    const invalid = parsePuttySessions(`
+HostName=bounded.example.test
+Protocol=ssh
+PingInterval=60
+PingIntervalSecs=1
+`, "bounded");
+    expect(invalid.candidates).toEqual([expect.objectContaining({
+      kind: "ssh",
+      warnings: expect.arrayContaining([
+        "PingInterval 总间隔必须是 0 到 3600 秒，未导入 SSH 保活",
+      ]),
+    })]);
+    expect(invalid.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("PingInterval 总间隔必须是 0 到 3600 秒"),
+    ]));
   });
 
   it("imports safe TCP local, remote, and dynamic SSH forwarding rules", () => {

@@ -41,6 +41,8 @@ export type PuttyNetworkImportCandidate = PuttyCandidateBase & {
   proxy?: PuttyProxyImport;
   tryAgent?: boolean;
   forwardAgent?: boolean;
+  keepaliveEnabled?: boolean;
+  keepaliveIntervalSeconds?: number;
   forwards?: PuttyForwardImport[];
 };
 
@@ -318,7 +320,32 @@ function applySshSettings(
     if (forwardAgent === null) addWarning("AgentFwd 仅支持 0 或 1");
     else candidate.forwardAgent = forwardAgent;
   }
+  applyKeepaliveSettings(candidate, settings, addWarning);
   applyForwardingSettings(candidate, settings, addWarning);
+}
+
+function applyKeepaliveSettings(
+  candidate: PuttyNetworkImportCandidate,
+  settings: Map<string, string>,
+  addWarning: (message: string) => void,
+) {
+  const minutes = settings.get("pinginterval");
+  const seconds = settings.get("pingintervalsecs");
+  if (minutes === undefined && seconds === undefined) return;
+
+  const parsedMinutes = parsePuttyInteger(minutes ?? "0");
+  const parsedSeconds = parsePuttyInteger(seconds ?? "0");
+  if (parsedMinutes === null || parsedSeconds === null) {
+    addWarning("PingInterval 与 PingIntervalSecs 必须是非负整数，未导入 SSH 保活");
+    return;
+  }
+  const intervalSeconds = parsedMinutes * 60 + parsedSeconds;
+  if (!Number.isSafeInteger(intervalSeconds) || intervalSeconds > 3_600) {
+    addWarning("PingInterval 总间隔必须是 0 到 3600 秒，未导入 SSH 保活");
+    return;
+  }
+  candidate.keepaliveEnabled = intervalSeconds > 0;
+  if (intervalSeconds > 0) candidate.keepaliveIntervalSeconds = intervalSeconds;
 }
 
 function applyForwardingSettings(
