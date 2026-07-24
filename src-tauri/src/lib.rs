@@ -18902,6 +18902,7 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
 
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
+    let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
     let child = Arc::new(Mutex::new(child));
     let master = Arc::new(Mutex::new(pair.master));
@@ -18930,11 +18931,13 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
             program: program.clone(),
             tap,
             closed: Arc::clone(&closed),
+            start_gate: Arc::clone(&reader_start_gate),
             child: Arc::clone(&child),
             reader,
         }))
     {
         closed.store(true, Ordering::SeqCst);
+        reader_start_gate.cancel();
         if let Ok(mut child) = child.lock() {
             let _ = child.kill();
         }
@@ -18957,9 +18960,13 @@ fn open_shell_session(state: &AppState, profile: SessionProfile) -> Result<Sessi
         Err(error) => Err(error.to_string()),
     };
     match finalize_result {
-        Ok(summary) => Ok(summary),
+        Ok(summary) => {
+            reader_start_gate.start();
+            Ok(summary)
+        }
         Err(error) => {
             closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
             if let Ok(mut child) = child.lock() {
                 let _ = child.kill();
             }
@@ -19337,7 +19344,7 @@ fn open_serial_session(
     let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
-    let reader_start_gate = Arc::new(SerialReaderStartGate::default());
+    let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
     let writer = Arc::new(Mutex::new(port));
     let capture = serial_capture_for_session(&state.serial_captures, &profile.id)?;
@@ -25125,6 +25132,7 @@ struct ShellReadTask {
     program: String,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
+    start_gate: Arc<ReaderStartGate>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     reader: Box<dyn Read + Send>,
 }
@@ -25138,20 +25146,24 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             program,
             tap,
             closed,
+            start_gate,
             child,
             mut reader,
         } = task;
+        if !start_gate.wait() {
+            return;
+        }
         let mut buffer = vec![0_u8; 8192];
         let mut last_persist = Instant::now();
         let mut has_unpersisted_stream = false;
+        let mut disconnect_reason = None;
 
         while !closed.load(Ordering::SeqCst) {
             match reader.read(&mut buffer) {
                 Ok(0) => {
-                    if let Ok(mut child) = child.lock() {
-                        if child.try_wait().ok().flatten().is_some() {
-                            break;
-                        }
+                    if let Some(reason) = shell_child_disconnect_reason(&child, &program) {
+                        disconnect_reason = Some(reason);
+                        break;
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -25170,19 +25182,10 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => {
-                    if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!("PortMate: shell read failed on {program}: {error}"),
-                        );
-                        if let Err(error) = persist_applied_store(
-                            &store,
-                            &io.store_path,
-                            "shell read failure event",
-                        ) {
-                            eprintln!("PortMate: failed to persist shell read error: {error}");
-                        }
-                    }
+                    disconnect_reason = Some(
+                        wait_for_shell_child_disconnect_reason(&child, &program)
+                            .unwrap_or_else(|| format!("shell read failed on {program}: {error}")),
+                    );
                     break;
                 }
             }
@@ -25201,6 +25204,11 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 eprintln!("PortMate: failed to persist final shell stream data: {error}");
             }
         }
+
+        let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
+            &disconnect_reason.unwrap_or_else(|| format!("shell closed ({program})")),
+        )
+        .unwrap_or_else(|| format!("shell closed ({program})"));
 
         let removed_current = {
             let mut connections = match io.runtimes.shell.lock() {
@@ -25224,12 +25232,9 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
-                    Some(format!("shell closed ({program})")),
+                    Some(disconnect_reason.clone()),
                 );
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: shell closed ({program})"),
-                );
+                store.record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
                 if let Err(error) =
                     persist_applied_store(&store, &io.store_path, "shell disconnect state")
                 {
@@ -25240,8 +25245,57 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
     }
 }
 
+fn shell_child_disconnect_reason(
+    child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    program: &str,
+) -> Option<String> {
+    let mut child = match child.lock() {
+        Ok(child) => child,
+        Err(error) => {
+            return Some(format!(
+                "shell process status lock failed on {program}: {error}"
+            ));
+        }
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => Some(shell_exit_status_disconnect_reason(program, &status)),
+        Ok(None) => None,
+        Err(error) => Some(format!(
+            "shell process status query failed on {program}: {error}"
+        )),
+    }
+}
+
+fn wait_for_shell_child_disconnect_reason(
+    child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    program: &str,
+) -> Option<String> {
+    let started = Instant::now();
+    let timeout = Duration::from_millis(200);
+    loop {
+        if let Some(reason) = shell_child_disconnect_reason(child, program) {
+            return Some(reason);
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return None;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
+fn shell_exit_status_disconnect_reason(program: &str, status: &portable_pty::ExitStatus) -> String {
+    match status.signal() {
+        Some(signal) => format!("shell process exited by signal {signal} ({program})"),
+        None => format!(
+            "shell process exited with status {} ({program})",
+            status.exit_code()
+        ),
+    }
+}
+
 #[derive(Debug, Default)]
-enum SerialReaderStartState {
+enum ReaderStartState {
     #[default]
     Pending,
     Started,
@@ -25249,15 +25303,15 @@ enum SerialReaderStartState {
 }
 
 #[derive(Debug, Default)]
-struct SerialReaderStartGate {
-    state: Mutex<SerialReaderStartState>,
+struct ReaderStartGate {
+    state: Mutex<ReaderStartState>,
     changed: Condvar,
 }
 
-impl SerialReaderStartGate {
+impl ReaderStartGate {
     fn started() -> Self {
         Self {
-            state: Mutex::new(SerialReaderStartState::Started),
+            state: Mutex::new(ReaderStartState::Started),
             changed: Condvar::new(),
         }
     }
@@ -25267,7 +25321,7 @@ impl SerialReaderStartGate {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *state = SerialReaderStartState::Started;
+        *state = ReaderStartState::Started;
         self.changed.notify_all();
     }
 
@@ -25276,7 +25330,7 @@ impl SerialReaderStartGate {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *state = SerialReaderStartState::Cancelled;
+        *state = ReaderStartState::Cancelled;
         self.changed.notify_all();
     }
 
@@ -25287,14 +25341,14 @@ impl SerialReaderStartGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             match *state {
-                SerialReaderStartState::Pending => {
+                ReaderStartState::Pending => {
                     state = self
                         .changed
                         .wait(state)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
-                SerialReaderStartState::Started => return true,
-                SerialReaderStartState::Cancelled => return false,
+                ReaderStartState::Started => return true,
+                ReaderStartState::Cancelled => return false,
             }
         }
     }
@@ -25307,7 +25361,7 @@ struct SerialReadTask {
     port_name: String,
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
-    start_gate: Arc<SerialReaderStartGate>,
+    start_gate: Arc<ReaderStartGate>,
     reader: SerialPortHandle,
     capture: Arc<Mutex<SerialCaptureBuffer>>,
     receive_idle_timeout: Option<Duration>,
@@ -25878,7 +25932,7 @@ fn reconnect_serial_session(
             port_name: port_name.clone(),
             tap,
             closed: next_closed,
-            start_gate: Arc::new(SerialReaderStartGate::started()),
+            start_gate: Arc::new(ReaderStartGate::started()),
             reader,
             capture,
             receive_idle_timeout: serial
@@ -51190,8 +51244,82 @@ __PORTMATE_LOADAVG__
     }
 
     #[test]
-    fn serial_reader_start_gate_waits_for_the_connected_commit() {
-        let gate = Arc::new(SerialReaderStartGate::default());
+    fn shell_exit_status_disconnect_reason_preserves_code_and_signal() {
+        assert_eq!(
+            shell_exit_status_disconnect_reason("sh", &portable_pty::ExitStatus::with_exit_code(7)),
+            "shell process exited with status 7 (sh)"
+        );
+        assert_eq!(
+            shell_exit_status_disconnect_reason(
+                "sh",
+                &portable_pty::ExitStatus::with_signal("TERM")
+            ),
+            "shell process exited by signal TERM (sh)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_fast_exit_cannot_leave_a_stale_connected_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut profile = test_shell_profile();
+        let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+            panic!("expected Shell profile");
+        };
+        shell.args = vec!["-c".to_string(), "exit 7".to_string()];
+        let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+
+        let opened = open_shell_session(&state, profile.clone()).unwrap();
+        assert_eq!(opened.runtime.status, SessionStatus::Connected);
+
+        let started = Instant::now();
+        let disconnected = loop {
+            let summary = state
+                .store
+                .lock()
+                .unwrap()
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == profile.id)
+                .unwrap();
+            if summary.runtime.status == SessionStatus::Disconnected {
+                break summary;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "fast Shell exit left the session connected"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        assert_eq!(
+            disconnected.runtime.last_disconnect_reason.as_deref(),
+            Some("shell process exited with status 7 (sh)")
+        );
+        assert!(!state.shell.lock().unwrap().contains_key(&profile.id));
+        let store = state.store.lock().unwrap();
+        assert_eq!(
+            store
+                .events
+                .iter()
+                .filter(|event| {
+                    event.text.as_deref()
+                        == Some("PortMate: shell process exited with status 7 (sh)")
+                })
+                .count(),
+            1
+        );
+        assert!(store.events.iter().all(|event| {
+            event
+                .text
+                .as_deref()
+                .is_none_or(|text| !text.contains("shell closed"))
+        }));
+    }
+
+    #[test]
+    fn reader_start_gate_waits_for_the_connected_commit() {
+        let gate = Arc::new(ReaderStartGate::default());
         let (sender, receiver) = std::sync::mpsc::channel();
         let task_gate = Arc::clone(&gate);
         let worker = std::thread::spawn(move || {
@@ -51206,7 +51334,7 @@ __PORTMATE_LOADAVG__
         assert!(receiver.recv_timeout(Duration::from_secs(1)).unwrap());
         worker.join().unwrap();
 
-        let gate = SerialReaderStartGate::default();
+        let gate = ReaderStartGate::default();
         gate.cancel();
         assert!(!gate.wait());
     }
