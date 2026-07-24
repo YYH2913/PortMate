@@ -98,6 +98,7 @@ export function createOpenSshImportConnection(candidate: OpenSshImportCandidate)
     keepaliveEnabled: candidate.keepaliveEnabled ?? connection.keepaliveEnabled,
     keepaliveIntervalSeconds: candidate.keepaliveIntervalSeconds ?? connection.keepaliveIntervalSeconds,
     keepaliveMaxMissed: candidate.keepaliveMaxMissed ?? connection.keepaliveMaxMissed,
+    tcpKeepaliveEnabled: candidate.tcpKeepaliveEnabled ?? connection.tcpKeepaliveEnabled,
     hostKeyPolicy: { ...connection.hostKeyPolicy, alias: candidate.hostKeyAlias ?? candidate.hostAlias },
     identityPolicy: {
       ...connection.identityPolicy,
@@ -162,6 +163,7 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
       keepaliveEnabled: candidate.keepaliveEnabled ?? connection.keepaliveEnabled,
       keepaliveIntervalSeconds: candidate.keepaliveIntervalSeconds ?? connection.keepaliveIntervalSeconds,
       keepaliveMaxMissed: candidate.keepaliveMaxMissed ?? connection.keepaliveMaxMissed,
+      tcpKeepaliveEnabled: candidate.tcpKeepaliveEnabled ?? connection.tcpKeepaliveEnabled,
       proxy: candidate.proxy
         ? { ...connection.proxy, ...candidate.proxy, enabled: true }
         : connection.proxy,
@@ -189,6 +191,7 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
     kind: candidate.kind,
     host: candidate.host,
     port: candidate.port,
+    keepaliveEnabled: candidate.tcpKeepaliveEnabled ?? connection.keepaliveEnabled,
     proxy: candidate.proxy
       ? { ...connection.proxy, ...candidate.proxy, enabled: true }
       : connection.proxy,

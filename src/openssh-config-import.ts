@@ -33,6 +33,7 @@ export type OpenSshImportCandidate = {
   keepaliveEnabled?: boolean;
   keepaliveIntervalSeconds?: number;
   keepaliveMaxMissed?: number;
+  tcpKeepaliveEnabled?: boolean;
   identitiesOnly?: boolean;
   forwardAgent?: boolean;
   jumps: OpenSshImportJump[];
@@ -128,6 +129,9 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
     }
     if (globalDefaults.defined.has("keepaliveMaxMissed")) {
       setFirst(candidate, "keepaliveMaxMissed", globalDefaults.keepaliveMaxMissed!);
+    }
+    if (globalDefaults.defined.has("tcpKeepaliveEnabled")) {
+      setFirst(candidate, "tcpKeepaliveEnabled", globalDefaults.tcpKeepaliveEnabled!);
     }
     if (globalDefaults.defined.has("identitiesOnly")) {
       setFirst(candidate, "identitiesOnly", globalDefaults.identitiesOnly!);
@@ -331,6 +335,17 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
             return;
           }
           setFirst(candidate, "keepaliveMaxMissed", maxMissed);
+        });
+        break;
+      }
+      case "tcpkeepalive": {
+        const value = parseBoolean(directive.values[0]);
+        withActiveCandidates(lineNumber, (candidate) => {
+          if (value === null) {
+            addCandidateWarning(candidate, lineNumber, "TCPKeepAlive 仅支持 yes 或 no");
+            return;
+          }
+          setFirst(candidate, "tcpKeepaliveEnabled", value);
         });
         break;
       }

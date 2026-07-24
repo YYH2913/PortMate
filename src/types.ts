@@ -89,6 +89,7 @@ export interface SshConnection {
   keepaliveEnabled: boolean;
   keepaliveIntervalSeconds: number;
   keepaliveMaxMissed: number;
+  tcpKeepaliveEnabled: boolean | null;
   proxy: ProxyConfig;
   passwordSecretRef?: string | null;
   passphraseSecretRef?: string | null;

@@ -16,6 +16,7 @@ Host production
   IdentityFile ~/.ssh/id_fallback
   ServerAliveInterval 45
   ServerAliveCountMax 5
+  TCPKeepAlive no
   IdentitiesOnly yes
   ForwardAgent no
   ProxyJump ops@bastion.example.test:2222,edge.example.test
@@ -37,6 +38,7 @@ Host production
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 45,
       keepaliveMaxMissed: 5,
+      tcpKeepaliveEnabled: false,
       identitiesOnly: true,
       forwardAgent: false,
       jumps: [
@@ -124,6 +126,7 @@ Host *
   IdentityFile ~/.ssh/id_default
   ServerAliveInterval 45
   ServerAliveCountMax 5
+  TCPKeepAlive yes
   IdentitiesOnly yes
   ForwardAgent no
   ProxyJump ops@jump.example.test:2222
@@ -147,6 +150,7 @@ Host *.example.test
         keepaliveEnabled: true,
         keepaliveIntervalSeconds: 45,
         keepaliveMaxMissed: 5,
+        tcpKeepaliveEnabled: true,
         identitiesOnly: true,
         forwardAgent: false,
         jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
@@ -162,6 +166,7 @@ Host *.example.test
         keepaliveEnabled: true,
         keepaliveIntervalSeconds: 45,
         keepaliveMaxMissed: 5,
+        tcpKeepaliveEnabled: true,
         identitiesOnly: true,
         forwardAgent: false,
         jumps: [{ host: "jump.example.test", port: 2222, username: "ops" }],
@@ -203,6 +208,7 @@ Host bounded
   IdentityFile ~other/id_ed25519
   ServerAliveInterval 3601
   ServerAliveCountMax 21
+  TCPKeepAlive maybe
   IdentitiesOnly ask
   ForwardAgent confirm
   ProxyJump ssh://jump.example.test
@@ -220,6 +226,7 @@ Host bounded
         "IdentityFile 不是可直接导入的本地路径",
         "ServerAliveInterval 必须是 0 到 3600 的整数",
         "ServerAliveCountMax 必须是 0 到 20 的整数",
+        "TCPKeepAlive 仅支持 yes 或 no",
         "IdentitiesOnly 仅支持 yes 或 no",
         "ForwardAgent 仅支持 yes 或 no",
         "ProxyJump 仅支持逗号分隔的 [user@]host[:port] 字面地址",

@@ -130,6 +130,7 @@ describe("session profile helpers", () => {
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 45,
       keepaliveMaxMissed: 5,
+      tcpKeepaliveEnabled: false,
       identitiesOnly: false,
       forwardAgent: true,
       jumps: [{ host: "bastion.example.test", port: 2222, username: "ops" }],
@@ -147,6 +148,7 @@ describe("session profile helpers", () => {
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 45,
       keepaliveMaxMissed: 5,
+      tcpKeepaliveEnabled: false,
       hostKeyPolicy: { alias: "production-device" },
       identityPolicy: { identitiesOnly: false },
       agentPolicy: { forwarding: true },
@@ -194,6 +196,7 @@ describe("session profile helpers", () => {
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 0,
+      tcpKeepaliveEnabled: true,
       proxy: { kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       forwards: [
         { mode: "local", bindHost: "127.0.0.1", bindPort: 15432, targetHost: "db.example.test", targetPort: 5432 },
@@ -222,6 +225,7 @@ describe("session profile helpers", () => {
       host: "raw.example.test",
       port: 9000,
       username: "",
+      tcpKeepaliveEnabled: false,
       warnings: [],
     });
 
@@ -232,6 +236,7 @@ describe("session profile helpers", () => {
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 0,
+      tcpKeepaliveEnabled: true,
       proxy: { enabled: true, kind: "http-connect", host: "proxy.example.test", port: 8080, username: "relay" },
       agentPolicy: { enabled: true, forwarding: true },
       tunnels: [
@@ -266,7 +271,7 @@ describe("session profile helpers", () => {
       parity: "even",
       flowControl: "hardware",
     });
-    expect(raw).toMatchObject({ kind: "tcp", host: "raw.example.test", port: 9000 });
+    expect(raw).toMatchObject({ kind: "tcp", host: "raw.example.test", port: 9000, keepaliveEnabled: false });
   });
 
   it("applies imported PuTTY terminal settings without replacing unrelated profile defaults", () => {

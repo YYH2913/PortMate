@@ -5,6 +5,7 @@ export const sshConnectionDefaults = {
   keepaliveEnabled: true,
   keepaliveIntervalSeconds: 30,
   keepaliveMaxMissed: 3,
+  tcpKeepaliveEnabled: null,
 } as const;
 
 export const sshConnectionBounds = {
@@ -66,6 +67,9 @@ export function normalizeSshConnectionSettings<T extends SshConnection>(connecti
       sshConnectionBounds.keepaliveMaxMissed.min,
       sshConnectionBounds.keepaliveMaxMissed.max,
     ),
+    tcpKeepaliveEnabled: typeof connection.tcpKeepaliveEnabled === "boolean"
+      ? connection.tcpKeepaliveEnabled
+      : null,
     identityPolicy: {
       ...connection.identityPolicy,
       identitiesOnly: typeof connection.identityPolicy.identitiesOnly === "boolean"

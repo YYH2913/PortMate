@@ -129,6 +129,7 @@ const sessions = [
     keepaliveEnabled: true,
     keepaliveIntervalSeconds: 30,
     keepaliveMaxMissed: 3,
+    tcpKeepaliveEnabled: null,
     proxy: {
       enabled: false,
       kind: "socks5",
@@ -3736,6 +3737,7 @@ Host staging
   IdentityFile ~/.ssh/id_saved
   ServerAliveInterval 45
   ServerAliveCountMax 5
+  TCPKeepAlive no
   IdentitiesOnly no
   ForwardAgent yes
   ProxyJump ops@bastion.example.test:2222`);
@@ -3759,6 +3761,7 @@ Host staging
           keepaliveEnabled: profile.connection.keepaliveEnabled,
           keepaliveIntervalSeconds: profile.connection.keepaliveIntervalSeconds,
           keepaliveMaxMissed: profile.connection.keepaliveMaxMissed,
+          tcpKeepaliveEnabled: profile.connection.tcpKeepaliveEnabled,
           hostKeyAlias: profile.connection.hostKeyPolicy.alias,
           identitiesOnly: profile.connection.identityPolicy.identitiesOnly,
           forwarding: profile.connection.agentPolicy.forwarding,
@@ -3780,6 +3783,7 @@ Host staging
         keepaliveEnabled: true,
         keepaliveIntervalSeconds: 45,
         keepaliveMaxMissed: 5,
+        tcpKeepaliveEnabled: false,
         hostKeyAlias: "saved-device",
         identitiesOnly: false,
         forwarding: true,
@@ -3812,6 +3816,7 @@ Host staging
 "PortNumber"=dword:0000089a
 "Protocol"="ssh"
 "UserName"="deploy"
+"TCPKeepalives"=dword:00000001
 "TryAgent"=dword:00000001
 "AgentFwd"=dword:00000001
 "ProxyMethod"=dword:00000003
@@ -3837,6 +3842,7 @@ Host staging
           kind: profile.connection.kind,
           endpoint: profile.connection.endpoint,
           username: profile.connection.username,
+          tcpKeepaliveEnabled: profile.connection.tcpKeepaliveEnabled,
           proxy: profile.connection.proxy,
           agentPolicy: profile.connection.agentPolicy,
           identityRefs: profile.connection.identityRefs,
@@ -3854,6 +3860,7 @@ Host staging
         kind: "ssh",
         endpoint: { host: "saved-putty.example.test", port: 2202 },
         username: "deploy",
+        tcpKeepaliveEnabled: true,
         proxy: {
           enabled: true,
           kind: "http-connect",

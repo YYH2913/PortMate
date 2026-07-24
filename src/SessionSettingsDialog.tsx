@@ -757,6 +757,20 @@ function SshAdvancedFields({
             </DialogField>
           </>
         ) : null}
+        <DialogField label="TCP KeepAlive:">
+          <select
+            value={ssh.tcpKeepaliveEnabled === null ? "system" : ssh.tcpKeepaliveEnabled ? "enabled" : "disabled"}
+            onChange={(event) => updateSsh({
+              tcpKeepaliveEnabled: event.target.value === "system"
+                ? null
+                : event.target.value === "enabled",
+            })}
+          >
+            <option value="system">系统默认</option>
+            <option value="enabled">开启</option>
+            <option value="disabled">关闭</option>
+          </select>
+        </DialogField>
         <DialogToggleField label="自动重连:" checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
         <DialogField label="重连延迟(ms):">
           <input

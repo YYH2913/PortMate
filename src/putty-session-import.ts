@@ -53,6 +53,7 @@ export type PuttyNetworkImportCandidate = PuttyCandidateBase & {
   keepaliveEnabled?: boolean;
   keepaliveIntervalSeconds?: number;
   keepaliveMaxMissed?: number;
+  tcpKeepaliveEnabled?: boolean;
   forwards?: PuttyForwardImport[];
 };
 
@@ -312,9 +313,24 @@ function buildCandidate(
     warnings,
   };
   applyProxySettings(candidate, raw.settings, addCandidateWarning);
+  applyTcpKeepaliveSettings(candidate, raw.settings, addCandidateWarning);
   if (kind === "ssh") applySshSettings(candidate, raw.settings, addCandidateWarning);
   applyTerminalSettings(candidate, raw.settings, addCandidateWarning);
   return candidate;
+}
+
+function applyTcpKeepaliveSettings(
+  candidate: PuttyNetworkImportCandidate,
+  settings: Map<string, string>,
+  addWarning: (message: string) => void,
+) {
+  if (!settings.has("tcpkeepalives")) return;
+  const enabled = readBoolean(settings.get("tcpkeepalives"));
+  if (enabled === null) {
+    addWarning("TCPKeepalives 仅支持 0 或 1");
+    return;
+  }
+  candidate.tcpKeepaliveEnabled = enabled;
 }
 
 function applyTerminalSettings(

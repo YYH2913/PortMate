@@ -19,6 +19,7 @@ ProxyPort=1081
 ProxyUsername=relay
 PingInterval=1
 PingIntervalSecs=15
+TCPKeepalives=1
 TerminalType=xterm-256color
 TermWidth=180
 TermHeight=40
@@ -39,6 +40,7 @@ ScrollbackLines=5000
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 0,
+      tcpKeepaliveEnabled: true,
       terminal: {
         term: "xterm-256color",
         rows: 40,
@@ -72,6 +74,7 @@ HostName=bounded.example.test
 Protocol=ssh
 PingInterval=60
 PingIntervalSecs=1
+TCPKeepalives=2
 TerminalType=xterm invalid
 TermWidth=0
 TermHeight=513
@@ -81,6 +84,7 @@ ScrollbackLines=10000001
       kind: "ssh",
       warnings: expect.arrayContaining([
         "PingInterval 总间隔必须是 0 到 3600 秒，未导入 SSH 保活",
+        "TCPKeepalives 仅支持 0 或 1",
         "TerminalType 必须是 64 字节以内的标准终端名称，未导入",
         "TermWidth 必须是 1 到 1024 的整数，未导入终端列数",
         "TermHeight 必须是 1 到 512 的整数，未导入终端行数",

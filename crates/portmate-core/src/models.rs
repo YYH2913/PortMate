@@ -341,6 +341,8 @@ pub struct SshConnection {
     #[serde(default = "default_ssh_keepalive_max_missed")]
     pub keepalive_max_missed: u32,
     #[serde(default)]
+    pub tcp_keepalive_enabled: Option<bool>,
+    #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub password_secret_ref: Option<String>,
@@ -1052,6 +1054,7 @@ mod tests {
             legacy.keepalive_max_missed,
             DEFAULT_SSH_KEEPALIVE_MAX_MISSED
         );
+        assert_eq!(legacy.tcp_keepalive_enabled, None);
         legacy.reconnect_delay_ms = 0;
         legacy.keepalive_interval_seconds = 0;
         legacy.keepalive_max_missed = u32::MAX;

@@ -8658,6 +8658,7 @@ async fn connect_ssh_transport<H>(
     target_host: &str,
     target_port: u16,
     proxy: &ProxyConfig,
+    tcp_keepalive_enabled: Option<bool>,
     handler: H,
     timeout: Duration,
     label: &str,
@@ -8675,12 +8676,27 @@ where
                 .set_nodelay(true)
                 .map_err(|error| SshTransportConnectError::Transport(error.to_string()))?;
         }
+        configure_ssh_tcp_keepalive(&stream, label, tcp_keepalive_enabled)
+            .map_err(SshTransportConnectError::Transport)?;
         client::connect_stream(config, stream, handler)
             .await
             .map_err(|error| SshTransportConnectError::Handshake(error.to_string()))
     })
     .await
     .map_err(|_| SshTransportConnectError::Timeout)?
+}
+
+fn configure_ssh_tcp_keepalive(
+    stream: &TcpStream,
+    label: &str,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    let Some(enabled) = enabled else {
+        return Ok(());
+    };
+    SockRef::from(stream)
+        .set_keepalive(enabled)
+        .map_err(|error| format!("{label} 设置 TCP keepalive 失败: {error}"))
 }
 
 async fn scan_ssh_host_key_inner(
@@ -8741,6 +8757,7 @@ async fn scan_ssh_host_key_inner(
             &host,
             ssh.endpoint.port,
             &ssh.proxy,
+            ssh.tcp_keepalive_enabled,
             handler,
             Duration::from_secs(12),
             "SSH host key 扫描",
@@ -8932,6 +8949,7 @@ async fn scan_ssh_host_key_via_jump(
                 &jump_host,
                 jump_port,
                 &ssh.proxy,
+                ssh.tcp_keepalive_enabled,
                 jump_handler,
                 Duration::from_secs(12),
                 &jump_label,
@@ -18388,6 +18406,7 @@ async fn connect_ssh_target(
             &target_host,
             ssh.endpoint.port,
             &ssh.proxy,
+            ssh.tcp_keepalive_enabled,
             target_handler,
             connect_timeout,
             "SSH",
@@ -18501,6 +18520,7 @@ async fn connect_ssh_target(
                 &jump_host,
                 jump_port,
                 &ssh.proxy,
+                ssh.tcp_keepalive_enabled,
                 jump_handler,
                 connect_timeout,
                 &jump_transport_label,
@@ -18760,6 +18780,7 @@ fn jump_ssh_connection(
         keepalive_enabled: ssh.keepalive_enabled,
         keepalive_interval_seconds: ssh.keepalive_interval_seconds,
         keepalive_max_missed: ssh.keepalive_max_missed,
+        tcp_keepalive_enabled: ssh.tcp_keepalive_enabled,
         proxy: ssh.proxy.clone(),
         password_secret_ref: jump
             .password_secret_ref
@@ -38789,6 +38810,32 @@ __PORTMATE_LOADAVG__
     }
 
     #[test]
+    fn ssh_socket_applies_explicit_tcp_keepalive_only() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let _ = release_rx.await;
+                drop(socket);
+            });
+
+            let stream = TcpStream::connect(address).await.unwrap();
+            configure_ssh_tcp_keepalive(&stream, "SSH", None).unwrap();
+            configure_ssh_tcp_keepalive(&stream, "SSH", Some(true)).unwrap();
+            let socket = SockRef::from(&stream);
+            assert!(socket.keepalive().unwrap());
+            configure_ssh_tcp_keepalive(&stream, "SSH", Some(false)).unwrap();
+            assert!(!socket.keepalive().unwrap());
+
+            drop(stream);
+            let _ = release_tx.send(());
+            server.await.unwrap();
+        });
+    }
+
+    #[test]
     fn authenticated_proxy_handshakes_accept_valid_credentials_and_reject_invalid_ones() {
         tauri::async_runtime::block_on(async {
             let expected_http = format!(
@@ -40129,6 +40176,7 @@ __PORTMATE_LOADAVG__
             Some("keychain:jump-passphrase")
         );
         assert_eq!(jump_ssh.host_key_policy, policy);
+        assert_eq!(jump_ssh.tcp_keepalive_enabled, ssh.tcp_keepalive_enabled);
         assert_eq!(jump_ssh.identity_refs.len(), 1);
         assert_eq!(jump_ssh.identity_refs[0].id, "jump-key");
     }
@@ -54611,6 +54659,7 @@ __PORTMATE_LOADAVG__
                 keepalive_enabled: true,
                 keepalive_interval_seconds: portmate_core::DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
                 keepalive_max_missed: portmate_core::DEFAULT_SSH_KEEPALIVE_MAX_MISSED,
+                tcp_keepalive_enabled: None,
                 proxy: portmate_core::ProxyConfig::default(),
                 password_secret_ref: None,
                 passphrase_secret_ref: None,

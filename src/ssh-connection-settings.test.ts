@@ -42,6 +42,7 @@ describe("SSH connection settings", () => {
     delete legacy.keepaliveEnabled;
     delete legacy.keepaliveIntervalSeconds;
     delete legacy.keepaliveMaxMissed;
+    delete legacy.tcpKeepaliveEnabled;
 
     expect(normalizeSshConnectionSettings(legacy as SshConnection)).toMatchObject(sshConnectionDefaults);
   });
@@ -67,6 +68,7 @@ describe("SSH connection settings", () => {
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 7,
+      tcpKeepaliveEnabled: false,
     });
 
     expect(normalized).toMatchObject({
@@ -75,6 +77,7 @@ describe("SSH connection settings", () => {
       keepaliveEnabled: false,
       keepaliveIntervalSeconds: 75,
       keepaliveMaxMissed: 7,
+      tcpKeepaliveEnabled: false,
     });
   });
 

@@ -53,8 +53,17 @@ export function parseSessionSummaryCache(raw: string | null): SessionSummary[] {
 
 function normalizeCachedSessionSummary(session: SessionSummary): SessionSummary {
   const lastDisconnectReason = normalizeSessionDisconnectReason(session.runtime.lastDisconnectReason);
+  const connection = session.profile.connection;
+  const profile = (connection.kind === "ssh" || connection.kind === "tmux")
+    && (connection as { tcpKeepaliveEnabled?: unknown }).tcpKeepaliveEnabled === undefined
+    ? {
+        ...session.profile,
+        connection: { ...connection, tcpKeepaliveEnabled: null },
+      }
+    : session.profile;
   return {
     ...session,
+    profile,
     runtime: {
       ...session.runtime,
       lastDisconnectReason: lastDisconnectReason || null,
@@ -148,6 +157,7 @@ function isConnection(value: unknown, expectedKind: unknown): boolean {
         && isBoolean(connection.keepaliveEnabled)
         && isFiniteNumber(connection.keepaliveIntervalSeconds)
         && isFiniteNumber(connection.keepaliveMaxMissed)
+        && isOptionalNullableBoolean(connection.tcpKeepaliveEnabled)
         && isProxy(connection.proxy)
         && isOptionalString(connection.passwordSecretRef)
         && isOptionalString(connection.passphraseSecretRef)
@@ -430,6 +440,14 @@ function isStringArray(value: unknown): value is string[] {
 
 function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean";
+}
+
+function isNullableBoolean(value: unknown): value is boolean | null {
+  return value === null || isBoolean(value);
+}
+
+function isOptionalNullableBoolean(value: unknown): value is boolean | null | undefined {
+  return value === undefined || isNullableBoolean(value);
 }
 
 function isFiniteNumber(value: unknown): value is number {

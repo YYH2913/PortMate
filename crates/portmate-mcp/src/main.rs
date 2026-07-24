@@ -2262,6 +2262,7 @@ mod tests {
                 keepalive_enabled: true,
                 keepalive_interval_seconds: 30,
                 keepalive_max_missed: 3,
+                tcp_keepalive_enabled: None,
                 proxy: portmate_core::ProxyConfig {
                     password_secret_ref: Some("keyring:proxy-credential-ref".to_string()),
                     ..Default::default()

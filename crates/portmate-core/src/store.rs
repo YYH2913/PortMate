@@ -2524,6 +2524,7 @@ mod tests {
             keepalive_enabled: true,
             keepalive_interval_seconds: DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
             keepalive_max_missed: DEFAULT_SSH_KEEPALIVE_MAX_MISSED,
+            tcp_keepalive_enabled: None,
             proxy: ProxyConfig {
                 enabled: true,
                 password_secret_ref: Some("keyring:proxy-password-ref".to_string()),

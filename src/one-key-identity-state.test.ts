@@ -27,6 +27,7 @@ function session(
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 30,
       keepaliveMaxMissed: 3,
+      tcpKeepaliveEnabled: null,
       proxy: { enabled: false, kind: "socks5" as const, host: "", port: 1080, username: "" },
       hostKeyPolicy: {
         mode: "strict" as const,

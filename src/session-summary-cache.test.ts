@@ -18,6 +18,15 @@ describe("session summary cache", () => {
     expect(parseSessionSummaryCache(JSON.stringify({ version: 1, sessions }))).toEqual(sessions);
   });
 
+  it("migrates cached SSH profiles that predate the TCP keepalive preference", () => {
+    const summary = createSummary("ssh-a", "ssh");
+    if (summary.profile.connection.kind !== "ssh") throw new Error("expected SSH profile");
+    delete (summary.profile.connection as { tcpKeepaliveEnabled?: boolean | null }).tcpKeepaliveEnabled;
+
+    const [cached] = parseSessionSummaryCache(JSON.stringify([summary]));
+    expect(cached.profile.connection).toMatchObject({ tcpKeepaliveEnabled: null });
+  });
+
   it("rejects malformed, partial, inconsistent and duplicate snapshots as a whole", () => {
     const valid = createSummary("shell-a");
     expect(parseSessionSummaryCache("{")).toEqual([]);
@@ -212,6 +221,7 @@ function createConnection(kind: SessionKind): ConnectionConfig {
         keepaliveEnabled: true,
         keepaliveIntervalSeconds: 30,
         keepaliveMaxMissed: 3,
+        tcpKeepaliveEnabled: null,
         proxy: { enabled: false, kind: "socks5" as const, host: "127.0.0.1", port: 1080, username: "", passwordSecretRef: null },
         passwordSecretRef: null,
         passphraseSecretRef: null,
