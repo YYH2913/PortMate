@@ -29672,6 +29672,18 @@ fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
         return addresses;
     }
 
+    merge_linux_network_address_maps(
+        &mut addresses,
+        read_local_linux_hostname_network_addresses(),
+    );
+    if addresses
+        .values()
+        .flatten()
+        .any(|address| is_usable_sysmon_network_address(address))
+    {
+        return addresses;
+    }
+
     let commands: [(&str, &[&str]); 3] = [
         ("ip", &["-o", "addr", "show"]),
         ("ip", &["addr", "show"]),
@@ -29706,6 +29718,30 @@ fn read_local_linux_kernel_network_addresses() -> BTreeMap<String, Vec<String>> 
     )
     .unwrap_or_default();
     collect_linux_kernel_network_addresses(&ipv6, &ipv4, &route, "")
+}
+
+#[cfg(target_os = "linux")]
+fn read_local_linux_hostname_network_addresses() -> BTreeMap<String, Vec<String>> {
+    let commands: [(&str, &[&str]); 4] = [
+        ("hostname", &["-I"]),
+        ("hostname", &["-i"]),
+        ("busybox", &["hostname", "-I"]),
+        ("busybox", &["hostname", "-i"]),
+    ];
+    let hostname = first_nonempty_linux_hostname_address_output(
+        commands
+            .into_iter()
+            .filter_map(|(program, args)| exec_sync_sysmon_command(program, args)),
+    );
+    if hostname.is_empty() {
+        return BTreeMap::new();
+    }
+    let route = read_bounded_local_linux_proc_file(
+        Path::new("/proc/net/route"),
+        MAX_LOCAL_LINUX_KERNEL_ADDRESS_BYTES,
+    )
+    .unwrap_or_default();
+    collect_linux_kernel_network_addresses("", "", &route, &hostname)
 }
 
 #[cfg(target_os = "linux")]
@@ -29857,6 +29893,15 @@ fn first_nonempty_linux_network_addresses(
         }
     }
     BTreeMap::new()
+}
+
+fn first_nonempty_linux_hostname_address_output(
+    sources: impl IntoIterator<Item = String>,
+) -> String {
+    sources
+        .into_iter()
+        .find(|source| !parse_linux_hostname_network_addresses(source).is_empty())
+        .unwrap_or_default()
 }
 
 fn merge_linux_network_address_maps(
@@ -36092,6 +36137,20 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
                 .cloned()
                 .unwrap_or_default(),
             vec!["198.51.100.42/24"]
+        );
+        let hostname_source_reads = std::cell::Cell::new(0);
+        let hostname_output = first_nonempty_linux_hostname_address_output((0..3).map(|index| {
+            hostname_source_reads.set(hostname_source_reads.get() + 1);
+            match index {
+                0 => "127.0.0.1 ::1".to_string(),
+                1 => "127.0.0.1 198.51.100.42 2001:db8::42".to_string(),
+                _ => panic!("hostname lookup continued after a usable address"),
+            }
+        }));
+        assert_eq!(hostname_source_reads.get(), 2);
+        assert_eq!(
+            parse_linux_hostname_network_addresses(&hostname_output),
+            vec!["198.51.100.42", "2001:db8::42"]
         );
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("ip -o addr show 2>/dev/null | head -n 64"));
         assert!(REMOTE_LINUX_SYSMON_COMMAND.contains("ifconfig -a 2>/dev/null"));
