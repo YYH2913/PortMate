@@ -36801,6 +36801,49 @@ __PORTMATE_LOADAVG__
         assert!(parse_remote_windows_sysmon_output("windows-session", "{}").is_err());
     }
 
+    #[test]
+    fn remote_windows_sysmon_keeps_usable_addresses_before_interface_address_limit() {
+        let link_local = (0..MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE)
+            .map(|index| format!("fe80::{index}"))
+            .collect::<Vec<_>>();
+        let payload = serde_json::json!({
+            "uptimeSeconds": 1,
+            "cpuPercent": 1.0,
+            "memoryTotalBytes": 1024,
+            "memoryAvailableBytes": 512,
+            "networkInterfaces": [{
+                "name": "Ethernet",
+                "addresses": [
+                    link_local[0], link_local[1], link_local[2], link_local[3],
+                    link_local[4], link_local[5], link_local[6], link_local[7],
+                    "192.0.2.42", "2001:db8::42"
+                ],
+                "rxBytes": 0,
+                "txBytes": 0,
+                "rxKbps": 0.0,
+                "txKbps": 0.0,
+            }],
+        });
+        let output = format!("{REMOTE_WINDOWS_SYSMON_JSON_MARKER}\n{payload}");
+        let snapshot = parse_remote_windows_sysmon_output("windows-session", &output).unwrap();
+
+        assert_eq!(snapshot.network_interfaces.len(), 1);
+        assert_eq!(
+            &snapshot.network_interfaces[0].addresses[..2],
+            ["192.0.2.42".to_string(), "2001:db8::42".to_string()]
+        );
+        assert_eq!(
+            snapshot.network_interfaces[0].addresses.len(),
+            MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE
+        );
+        assert!(!snapshot.network_interfaces[0]
+            .addresses
+            .contains(&"fe80::6".to_string()));
+        assert!(!snapshot.network_interfaces[0]
+            .addresses
+            .contains(&"fe80::7".to_string()));
+    }
+
     #[tokio::test]
     async fn local_sysmon_command_capture_enforces_exit_timeout_and_stream_bounds() {
         assert_eq!(
