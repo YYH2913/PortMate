@@ -1292,6 +1292,16 @@ struct SshConnectRequest<'a> {
     enforce_profile_snapshot: bool,
 }
 
+struct SshTransportConnectParams<'a> {
+    config: Arc<client::Config>,
+    target_host: &'a str,
+    target_port: u16,
+    proxy: &'a ProxyConfig,
+    tcp_keepalive_enabled: Option<bool>,
+    timeout: Duration,
+    label: &'a str,
+}
+
 #[derive(Clone, Copy)]
 struct HostKeyPersistenceGuard<'a> {
     profile_id: &'a str,
@@ -8656,19 +8666,22 @@ enum SshTransportConnectError {
 }
 
 async fn connect_ssh_transport<H>(
-    config: Arc<client::Config>,
-    target_host: &str,
-    target_port: u16,
-    proxy: &ProxyConfig,
-    tcp_keepalive_enabled: Option<bool>,
+    params: SshTransportConnectParams<'_>,
     handler: H,
-    timeout: Duration,
-    label: &str,
 ) -> Result<client::Handle<H>, SshTransportConnectError>
 where
     H: client::Handler + Send + 'static,
     H::Error: std::fmt::Display,
 {
+    let SshTransportConnectParams {
+        config,
+        target_host,
+        target_port,
+        proxy,
+        tcp_keepalive_enabled,
+        timeout,
+        label,
+    } = params;
     tokio::time::timeout(timeout, async {
         let stream = connect_target_stream(target_host, target_port, proxy, label)
             .await
@@ -8755,14 +8768,16 @@ async fn scan_ssh_host_key_inner(
         }
     } else {
         let session = connect_ssh_transport(
-            config,
-            &host,
-            ssh.endpoint.port,
-            &ssh.proxy,
-            ssh.tcp_keepalive_enabled,
+            SshTransportConnectParams {
+                config,
+                target_host: &host,
+                target_port: ssh.endpoint.port,
+                proxy: &ssh.proxy,
+                tcp_keepalive_enabled: ssh.tcp_keepalive_enabled,
+                timeout: Duration::from_secs(12),
+                label: "SSH host key 扫描",
+            },
             handler,
-            Duration::from_secs(12),
-            "SSH host key 扫描",
         )
         .await;
         let session = match session {
@@ -8947,14 +8962,16 @@ async fn scan_ssh_host_key_via_jump(
             }
         } else {
             match connect_ssh_transport(
-                config.clone(),
-                &jump_host,
-                jump_port,
-                &ssh.proxy,
-                ssh.tcp_keepalive_enabled,
+                SshTransportConnectParams {
+                    config: config.clone(),
+                    target_host: &jump_host,
+                    target_port: jump_port,
+                    proxy: &ssh.proxy,
+                    tcp_keepalive_enabled: ssh.tcp_keepalive_enabled,
+                    timeout: Duration::from_secs(12),
+                    label: &jump_label,
+                },
                 jump_handler,
-                Duration::from_secs(12),
-                &jump_label,
             )
             .await
             {
@@ -18404,14 +18421,16 @@ async fn connect_ssh_target(
 
     if ssh.jumps.is_empty() {
         let session = connect_ssh_transport(
-            config,
-            &target_host,
-            ssh.endpoint.port,
-            &ssh.proxy,
-            ssh.tcp_keepalive_enabled,
+            SshTransportConnectParams {
+                config,
+                target_host: &target_host,
+                target_port: ssh.endpoint.port,
+                proxy: &ssh.proxy,
+                tcp_keepalive_enabled: ssh.tcp_keepalive_enabled,
+                timeout: connect_timeout,
+                label: "SSH",
+            },
             target_handler,
-            connect_timeout,
-            "SSH",
         )
         .await;
         let session = match session {
@@ -18518,14 +18537,16 @@ async fn connect_ssh_target(
         } else {
             let jump_transport_label = format!("Jump Host 第 {} 跳", index + 1);
             match connect_ssh_transport(
-                config.clone(),
-                &jump_host,
-                jump_port,
-                &ssh.proxy,
-                ssh.tcp_keepalive_enabled,
+                SshTransportConnectParams {
+                    config: config.clone(),
+                    target_host: &jump_host,
+                    target_port: jump_port,
+                    proxy: &ssh.proxy,
+                    tcp_keepalive_enabled: ssh.tcp_keepalive_enabled,
+                    timeout: connect_timeout,
+                    label: &jump_transport_label,
+                },
                 jump_handler,
-                connect_timeout,
-                &jump_transport_label,
             )
             .await
             {
