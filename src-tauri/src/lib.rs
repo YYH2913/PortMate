@@ -25309,13 +25309,6 @@ struct ReaderStartGate {
 }
 
 impl ReaderStartGate {
-    fn started() -> Self {
-        Self {
-            state: Mutex::new(ReaderStartState::Started),
-            changed: Condvar::new(),
-        }
-    }
-
     fn start(&self) {
         let mut state = self
             .state
@@ -25925,20 +25918,23 @@ fn reconnect_serial_session(
             }
         }
 
+        let reader_start_gate = Arc::new(ReaderStartGate::default());
         if let Err(error) = spawn_serial_reader(SerialReadTask {
             io: io.clone(),
             profile: profile.clone(),
             runtime_id: runtime_id.clone(),
             port_name: port_name.clone(),
             tap,
-            closed: next_closed,
-            start_gate: Arc::new(ReaderStartGate::started()),
+            closed: Arc::clone(&next_closed),
+            start_gate: Arc::clone(&reader_start_gate),
             reader,
             capture,
             receive_idle_timeout: serial
                 .receive_idle_timeout_enabled
                 .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
         }) {
+            next_closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
             if let Ok(mut connections) = io.runtimes.serial.lock() {
                 if connections
                     .get(&session_id)
@@ -25970,27 +25966,50 @@ fn reconnect_serial_session(
             return;
         }
 
-        if let Ok(mut store) = io.store.lock() {
-            store.record_system_event(
-                &session_id,
-                format!(
-                    "PortMate: serial port reconnected ({port_name}, {} baud)",
-                    serial.baud_rate
-                ),
-            );
-            if let Err(error) = store.open_session(&session_id) {
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: serial reconnect status update failed: {error}"),
-                );
+        let finalize_result = match io.store.lock() {
+            Ok(mut store) => {
+                commit_tracked_store_mutation(&mut store, &io.store_path, |next_store| {
+                    mark_session_connected_with_events(
+                        next_store,
+                        &profile,
+                        [format!(
+                            "PortMate: serial port reconnected ({port_name}, {} baud)",
+                            serial.baud_rate
+                        )],
+                    )
+                })
             }
-            if let Err(error) =
-                persist_applied_store(&store, &io.store_path, "completed serial reconnect state")
-            {
-                eprintln!("PortMate: failed to persist serial reconnect success: {error}");
+            Err(error) => Err(error.to_string()),
+        };
+        match finalize_result {
+            Ok(_) => {
+                reader_start_gate.start();
+                return;
+            }
+            Err(error) => {
+                next_closed.store(true, Ordering::SeqCst);
+                reader_start_gate.cancel();
+                if let Ok(mut connections) = io.runtimes.serial.lock() {
+                    if connections
+                        .get(&session_id)
+                        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+                    {
+                        connections.remove(&session_id);
+                    }
+                }
+                if let Ok(mut store) = io.store.lock() {
+                    let reason = format!("serial reconnect completion failed: {error}");
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Error,
+                        Some(reason.clone()),
+                    );
+                    store.record_system_event(&session_id, format!("PortMate: {reason}"));
+                }
+                eprintln!("PortMate: failed to complete serial reconnect: {error}");
+                return;
             }
         }
-        return;
     }
 }
 
