@@ -256,6 +256,7 @@ const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SYSMON_PROCESSES: usize = 8;
 const MAX_SYSMON_DISKS: usize = 16;
 const MAX_SYSMON_NETWORK_INTERFACES: usize = 32;
+const MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE: usize = 8;
 #[cfg(target_os = "linux")]
 const LOCAL_LINUX_SYSMON_COMMAND_DIRECTORIES: [&str; 4] =
     ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
@@ -29797,10 +29798,7 @@ fn read_linux_network_addresses_from_getifaddrs() -> BTreeMap<String, Vec<String
         ) else {
             continue;
         };
-        let interface_addresses = addresses.entry(name).or_default();
-        if interface_addresses.len() < 8 && !interface_addresses.contains(&address) {
-            interface_addresses.push(address);
-        }
+        push_sysmon_network_address(addresses.entry(name).or_default(), address);
     }
     addresses
 }
@@ -29914,15 +29912,7 @@ fn merge_linux_network_address_maps(
             let Some(candidate) = normalize_sysmon_address(&candidate) else {
                 continue;
             };
-            if entry.len() >= 8 {
-                break;
-            }
-            if !entry
-                .iter()
-                .any(|existing| same_sysmon_network_address(existing, &candidate))
-            {
-                entry.push(candidate);
-            }
+            push_sysmon_network_address(entry, candidate);
         }
     }
 }
@@ -30125,10 +30115,7 @@ fn parse_linux_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         let Some(address) = normalize_sysmon_address(address) else {
             continue;
         };
-        let entry = addresses.entry(name).or_default();
-        if entry.len() < 8 && !entry.contains(&address) {
-            entry.push(address);
-        }
+        push_sysmon_network_address(addresses.entry(name).or_default(), address);
     }
     addresses
 }
@@ -30161,9 +30148,7 @@ fn parse_openwrt_network_interface_dump(raw: &str) -> BTreeMap<String, Vec<Strin
                 let Some(address) = openwrt_sysmon_interface_address(item, max_prefix) else {
                     continue;
                 };
-                if entry.len() < 8 && !entry.contains(&address) {
-                    entry.push(address);
-                }
+                push_sysmon_network_address(entry, address);
             }
         }
     }
@@ -30317,10 +30302,7 @@ fn parse_bsd_network_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         let Some(address) = normalize_sysmon_address(fields[address_index]) else {
             continue;
         };
-        let entry = addresses.entry(name).or_default();
-        if entry.len() < 8 && !entry.contains(&address) {
-            entry.push(address);
-        }
+        push_sysmon_network_address(addresses.entry(name).or_default(), address);
     }
     addresses
 }
@@ -30444,9 +30426,7 @@ fn parse_linux_hostname_network_addresses(raw: &str) -> Vec<String> {
         if !is_usable_sysmon_network_address(&address) {
             continue;
         }
-        if addresses.len() < 8 && !addresses.contains(&address) {
-            addresses.push(address);
-        }
+        push_sysmon_network_address(&mut addresses, address);
     }
     addresses
 }
@@ -30479,10 +30459,7 @@ fn parse_linux_if_inet6_addresses(raw: &str) -> BTreeMap<String, Vec<String>> {
         if !is_usable_sysmon_network_address(&address) {
             continue;
         }
-        let entry = addresses.entry(name).or_default();
-        if entry.len() < 8 && !entry.contains(&address) {
-            entry.push(address);
-        }
+        push_sysmon_network_address(addresses.entry(name).or_default(), address);
     }
     addresses
 }
@@ -30509,9 +30486,7 @@ fn parse_linux_fib_trie_local_addresses(raw: &str) -> Vec<String> {
         {
             continue;
         }
-        if addresses.len() < 8 && !addresses.iter().any(|address| address == candidate) {
-            addresses.push(candidate.to_string());
-        }
+        push_sysmon_network_address(&mut addresses, candidate.to_string());
     }
     addresses
 }
@@ -30640,11 +30615,49 @@ fn normalize_sysmon_addresses(addresses: Vec<String>) -> Vec<String> {
         let Some(address) = normalize_sysmon_address(&address) else {
             continue;
         };
-        if normalized.len() < 8 && !normalized.contains(&address) {
-            normalized.push(address);
-        }
+        push_sysmon_network_address(&mut normalized, address);
     }
     normalized
+}
+
+fn push_sysmon_network_address(addresses: &mut Vec<String>, candidate: String) {
+    if addresses
+        .iter()
+        .any(|existing| same_sysmon_network_address(existing, &candidate))
+    {
+        return;
+    }
+    addresses.push(candidate);
+    addresses.sort_by_key(|address| sysmon_network_address_priority(address));
+    addresses.truncate(MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE);
+}
+
+fn sysmon_network_address_priority(value: &str) -> u8 {
+    let address = sysmon_network_address_host(value);
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(address)) => {
+            if !address.is_loopback() && !address.is_unspecified() && !address.is_link_local() {
+                0
+            } else if address.is_link_local() {
+                2
+            } else {
+                4
+            }
+        }
+        Ok(std::net::IpAddr::V6(address)) => {
+            if !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_unicast_link_local()
+            {
+                1
+            } else if address.is_unicast_link_local() {
+                3
+            } else {
+                5
+            }
+        }
+        Err(_) => 6,
+    }
 }
 
 fn normalize_sysmon_address(value: &str) -> Option<String> {
@@ -36206,6 +36219,25 @@ eth0      inet addr:10.0.0.2  Bcast:10.0.0.255  Mask:255.255.255.0"#,
     }
 
     #[test]
+    fn sysmon_network_address_limit_keeps_usable_addresses_before_link_local_entries() {
+        let link_local = (0..MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE)
+            .map(|index| format!("2: eth0 inet6 fe80::{index}/64 scope link\n"))
+            .collect::<String>();
+        let addresses = parse_linux_network_addresses(&format!(
+            "{link_local}2: eth0 inet 192.0.2.42/24 scope global eth0\n2: eth0 inet6 2001:db8::42/64 scope global\n"
+        ));
+        let eth0 = addresses.get("eth0").cloned().unwrap_or_default();
+
+        assert_eq!(eth0.len(), MAX_SYSMON_NETWORK_ADDRESSES_PER_INTERFACE);
+        assert_eq!(
+            &eth0[..2],
+            ["192.0.2.42/24".to_string(), "2001:db8::42/64".to_string()]
+        );
+        assert!(!eth0.contains(&"fe80::6/64".to_string()));
+        assert!(!eth0.contains(&"fe80::7/64".to_string()));
+    }
+
+    #[test]
     fn remote_linux_sysmon_keeps_addressed_interface_without_proc_net_counter() {
         let output = r#"1.0 0.0
 __PORTMATE_MEMINFO__
@@ -36346,9 +36378,9 @@ __PORTMATE_DISKS__
         assert_eq!(
             kernel_addresses.get("wan0").cloned().unwrap_or_default(),
             vec![
-                "2001:db8::42/64",
                 "192.0.2.42",
                 "192.0.2.99",
+                "2001:db8::42/64",
                 "2001:db8::99",
             ]
         );
@@ -36365,11 +36397,11 @@ __PORTMATE_DISKS__
             interface.name == "wan0"
                 && interface.addresses
                     == [
-                        "fe80::1/64",
-                        "2001:db8::42/64",
                         "192.0.2.42",
                         "192.0.2.99",
+                        "2001:db8::42/64",
                         "2001:db8::99",
+                        "fe80::1/64",
                     ]
         }));
         assert!(!remote_linux_sysmon_needs_network_address_fallback(
