@@ -1142,7 +1142,7 @@ Host staging
     bench.click();
   });
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "bench-uart"));
-  const sysmonSnapshot = (sessionId, cpuPercent) => ({
+  const sysmonSnapshot = (sessionId, cpuPercent, networkInterfaces = []) => ({
     sessionId,
     ts: new Date().toISOString(),
     uptimeSeconds: 60,
@@ -1155,14 +1155,28 @@ Host staging
     memoryAvailableBytes: 768,
     processes: [],
     disks: [],
-    networkInterfaces: [],
+    networkInterfaces,
   });
   await page.evaluate(({ bench }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
       pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
     }
-  }, { bench: sysmonSnapshot("bench-uart", 22.2) });
+  }, { bench: sysmonSnapshot("bench-uart", 22.2, [{
+    name: "eth0",
+    addresses: ["fe80::25/64", "127.0.0.1/8", "192.168.33.121/24", "2001:db8::42/64"],
+    rxBytes: 1024,
+    txBytes: 2048,
+    rxKbps: 1,
+    txKbps: 2,
+  }]) });
   await page.waitForFunction(() => document.querySelector(".sysmon-dialog")?.textContent?.includes("22.2%"));
+  await sysmonDialog.getByRole("button", { name: /^网络/ }).click();
+  const sysmonNetworkAddress = await sysmonDialog.locator(".sysmon-network-table tbody tr td").nth(1).textContent();
+  const sysmonNetworkTitle = await sysmonDialog.locator(".sysmon-network-table tbody tr td").nth(1).getAttribute("title");
+  assert(sysmonNetworkAddress === "192.168.33.121/24 · 2001:db8::42/64 +2",
+    `Sysmon table did not prioritize usable addresses: ${JSON.stringify(sysmonNetworkAddress)}`);
+  assert(sysmonNetworkTitle === "192.168.33.121/24 / 2001:db8::42/64 / fe80::25/64 / 127.0.0.1/8",
+    `Sysmon address tooltip order is wrong: ${JSON.stringify(sysmonNetworkTitle)}`);
   await page.evaluate(({ edge }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
       pending.resolve(pending.command === "list_sysmon_history" ? [edge] : edge);
