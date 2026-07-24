@@ -261,6 +261,8 @@ const LOCAL_LINUX_SYSMON_COMMAND_DIRECTORIES: [&str; 4] =
     ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 #[cfg(target_os = "linux")]
 const LOCAL_LINUX_ADDRESS_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
+const MAX_LOCAL_LINUX_KERNEL_ADDRESS_BYTES: usize = 64 * 1024;
 const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 const LOCAL_SYSMON_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
@@ -29639,9 +29641,14 @@ fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
 
 #[cfg(target_os = "linux")]
 fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
-    let native_addresses = read_linux_network_addresses_from_getifaddrs();
-    if !native_addresses.is_empty() {
-        return native_addresses;
+    let mut addresses = read_linux_network_addresses_from_getifaddrs();
+    merge_linux_network_address_maps(&mut addresses, read_local_linux_kernel_network_addresses());
+    if addresses
+        .values()
+        .flatten()
+        .any(|address| is_usable_sysmon_network_address(address))
+    {
+        return addresses;
     }
 
     let commands: [(&str, &[&str]); 3] = [
@@ -29649,11 +29656,48 @@ fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
         ("ip", &["addr", "show"]),
         ("ifconfig", &["-a"]),
     ];
-    first_nonempty_linux_network_addresses(
-        commands
-            .into_iter()
-            .filter_map(|(program, args)| exec_sync_sysmon_command(program, args)),
+    merge_linux_network_address_maps(
+        &mut addresses,
+        first_nonempty_linux_network_addresses(
+            commands
+                .into_iter()
+                .filter_map(|(program, args)| exec_sync_sysmon_command(program, args)),
+        ),
+    );
+    addresses
+}
+
+#[cfg(target_os = "linux")]
+fn read_local_linux_kernel_network_addresses() -> BTreeMap<String, Vec<String>> {
+    let ipv6 = read_bounded_local_linux_proc_file(
+        Path::new("/proc/net/if_inet6"),
+        MAX_LOCAL_LINUX_KERNEL_ADDRESS_BYTES,
     )
+    .unwrap_or_default();
+    let ipv4 = read_bounded_local_linux_proc_file(
+        Path::new("/proc/net/fib_trie"),
+        MAX_LOCAL_LINUX_KERNEL_ADDRESS_BYTES,
+    )
+    .unwrap_or_default();
+    let route = read_bounded_local_linux_proc_file(
+        Path::new("/proc/net/route"),
+        MAX_LOCAL_LINUX_KERNEL_ADDRESS_BYTES,
+    )
+    .unwrap_or_default();
+    collect_linux_kernel_network_addresses(&ipv6, &ipv4, &route, "")
+}
+
+#[cfg(target_os = "linux")]
+fn read_bounded_local_linux_proc_file(path: &Path, max_bytes: usize) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192).saturating_add(1));
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > max_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -29792,6 +29836,29 @@ fn first_nonempty_linux_network_addresses(
         }
     }
     BTreeMap::new()
+}
+
+fn merge_linux_network_address_maps(
+    target: &mut BTreeMap<String, Vec<String>>,
+    source: BTreeMap<String, Vec<String>>,
+) {
+    for (name, candidates) in source {
+        let entry = target.entry(name).or_default();
+        for candidate in candidates {
+            let Some(candidate) = normalize_sysmon_address(&candidate) else {
+                continue;
+            };
+            if entry.len() >= 8 {
+                break;
+            }
+            if !entry
+                .iter()
+                .any(|existing| same_sysmon_network_address(existing, &candidate))
+            {
+                entry.push(candidate);
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -30256,6 +30323,15 @@ fn parse_remote_linux_kernel_network_addresses(output: &str) -> BTreeMap<String,
         "__PORTMATE_HOSTNAME_ADDRS__",
         "__PORTMATE_LOADAVG__",
     );
+    collect_linux_kernel_network_addresses(ipv6, ipv4, route, hostname)
+}
+
+fn collect_linux_kernel_network_addresses(
+    ipv6: &str,
+    ipv4: &str,
+    route: &str,
+    hostname: &str,
+) -> BTreeMap<String, Vec<String>> {
     let mut addresses = parse_linux_if_inet6_addresses(ipv6);
     let mut kernel_addresses = parse_linux_fib_trie_local_addresses(ipv4);
     kernel_addresses.extend(parse_linux_hostname_network_addresses(hostname));
@@ -36306,6 +36382,36 @@ __PORTMATE_LOADAVG__
     }
 
     #[test]
+    fn linux_kernel_address_fallback_fills_partial_native_enumeration() {
+        let ipv4 = r#"Main:
+  +-- 0.0.0.0/0 3 0 4
+     |-- 0.0.0.0
+        /0 universe UNICAST
+     +-- 192.0.2.0/24 2 0 1
+        |-- 192.0.2.0
+           /24 link UNICAST
+        |-- 192.0.2.77
+           /32 host LOCAL
+        |-- 192.0.2.255
+           /32 link BROADCAST
+"#;
+        let route = "Iface\tDestination\tGateway \tFlags\neth0\t00000000\t00000000\t0003\n";
+        let mut native = BTreeMap::from([
+            ("lo".to_string(), vec!["127.0.0.1/8".to_string()]),
+            ("eth0".to_string(), vec!["198.51.100.12/24".to_string()]),
+        ]);
+
+        let fallback = collect_linux_kernel_network_addresses("", ipv4, route, "");
+        merge_linux_network_address_maps(&mut native, fallback.clone());
+        merge_linux_network_address_maps(&mut native, fallback);
+
+        assert_eq!(
+            native.get("eth0").cloned().unwrap_or_default(),
+            vec!["198.51.100.12/24", "192.0.2.77"]
+        );
+    }
+
+    #[test]
     fn sysmon_commit_failure_rolls_back_snapshot_and_success_event() {
         let root =
             std::env::temp_dir().join(format!("portmate-sysmon-commit-failure-{}", Uuid::new_v4()));
@@ -36681,6 +36787,21 @@ __PORTMATE_LOADAVG__
             .any(|address| address == "127.0.0.1/8" || address == "::1/128"));
         assert_eq!(linux_sysmon_prefix_length(&[255, 255, 255, 0]), Some(24));
         assert_eq!(linux_sysmon_prefix_length(&[255, 0, 255, 0]), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_linux_kernel_address_files_are_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("fib_trie");
+        fs::write(&path, b"safe").unwrap();
+        assert_eq!(
+            read_bounded_local_linux_proc_file(&path, 4).as_deref(),
+            Some("safe")
+        );
+
+        fs::write(&path, b"oversized").unwrap();
+        assert!(read_bounded_local_linux_proc_file(&path, 4).is_none());
     }
 
     #[cfg(target_os = "linux")]
