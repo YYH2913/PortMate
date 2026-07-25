@@ -41,8 +41,10 @@ authentication filtering, one-shot trust, TOFU persistence, and Host Key observa
 `one_key_prompt.rs` owns terminal escape cleanup, credential-prompt recognition, and event-freshness
 validation. `state_snapshot.rs` owns Store and Portable Stronghold file locks, SHA-256 snapshot
 versions, cross-process stale-write checks, and Stronghold commit/rekey guards. `sqlite_schema.rs`
-owns the SQLite tables, indexes, schema version, and backward-compatible column migrations. Proxy,
-Telnet, Tmux protocol parsing, and app-data migration already have their own modules as well.
+owns the SQLite tables, indexes, schema version, and backward-compatible column migrations;
+`sqlite_mirror.rs` owns typed profile/runtime mirrors and incremental event, audit, timeline, and
+Sysmon reconciliation. Proxy, Telnet, Tmux protocol parsing, and app-data migration already have
+their own modules as well.
 
 ## Development
 
