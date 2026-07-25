@@ -43,8 +43,9 @@ validation. `state_snapshot.rs` owns Store and Portable Stronghold file locks, S
 versions, cross-process stale-write checks, and Stronghold commit/rekey guards. `sqlite_schema.rs`
 owns the SQLite tables, indexes, schema version, and backward-compatible column migrations;
 `sqlite_mirror.rs` owns typed profile/runtime mirrors and incremental event, audit, timeline, and
-Sysmon reconciliation. Proxy, Telnet, Tmux protocol parsing, and app-data migration already have
-their own modules as well.
+Sysmon reconciliation; `sqlite_store.rs` owns SQLite loading, FULL-sync transactions, migration
+checkpoints, revision updates, and post-commit read-back verification. Proxy, Telnet, Tmux protocol
+parsing, and app-data migration already have their own modules as well.
 
 ## Development
 
