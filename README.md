@@ -34,7 +34,8 @@ src-tauri              Tauri desktop shell and backend commands
 ```
 
 The Tauri backend keeps the application orchestration in `src-tauri/src/lib.rs`, while protocol and
-security boundaries are being extracted incrementally. `ssh_security.rs` owns ssh-agent signing,
+security boundaries are being extracted incrementally. `serial_capture.rs` owns bounded Serial
+capture frames, history snapshots, and the per-session registry. `ssh_security.rs` owns ssh-agent signing,
 authentication filtering, one-shot trust, TOFU persistence, and Host Key observation updates;
 `ssh_health.rs` owns the three-stage health command and its stable report contract. Proxy, Telnet,
 Tmux protocol parsing, and app-data migration already have their own modules as well.
