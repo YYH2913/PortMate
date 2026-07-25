@@ -110,6 +110,7 @@ const LazyWorkspaceViewRenameDialog = lazy(() => import("./WorkspaceViewRenameDi
 const LazyTransferDialog = lazy(() => import("./TransferDialog"));
 const LazyTunnelDialog = lazy(() => import("./TunnelDialog"));
 const LazySysmonDialog = lazy(() => import("./SysmonDialog"));
+const LazySysmonSidebar = lazy(() => import("./SysmonSidebar"));
 const LazyLogManagerDialog = lazy(() => import("./LogManagerDialog"));
 const LazyKeyManagerDialog = lazy(() => import("./KeyManagerDialog"));
 const LazyTerminalSettingsDialog = lazy(() => import("./TerminalSettingsDialog"));
@@ -133,6 +134,7 @@ const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon
   explorer: { label: "资源管理器", icon: Folder },
   fileManager: { label: "文件管理器", icon: Files },
   history: { label: "历史命令", icon: Clock3 },
+  sysmon: { label: "Sysmon", icon: Activity },
   sender: { label: "发送", icon: SendHorizontal },
 };
 const workspaceDockMeta: Record<WorkspaceDockId, { label: string; icon: LucideIcon }> = {
@@ -145,6 +147,7 @@ const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
   资源管理器: "explorer",
   文件管理器: "fileManager",
   历史命令: "history",
+  "Sysmon 侧栏": "sysmon",
   发送: "sender",
   状态栏: "statusBar",
 };
@@ -939,7 +942,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     if (!workspacePanelStorageKey) return;
     saveLocalValue(workspacePanelStorageKey, {
-      version: 6,
+      version: 7,
       panels: workspacePanels,
       docks: workspaceDockLayout,
       sizes: workspaceDockSizes,
@@ -3231,6 +3234,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                 canExport={isBackendAvailable()}
               />
             ) : null}
+          />
+        </Suspense>
+      );
+    }
+    if (panel === "sysmon") {
+      return (
+        <Suspense fallback={null}>
+          <LazySysmonSidebar
+            session={active ?? null}
+            enabled={workspaceDockIds.some((dock) => activeDockPanels[dock] === "sysmon")}
+            onOpenDetails={() => active && setUtilityDialog("sysmon")}
           />
         </Suspense>
       );

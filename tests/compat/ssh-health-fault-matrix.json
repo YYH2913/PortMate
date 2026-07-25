@@ -1,0 +1,37 @@
+[
+  {
+    "name": "ping-unresponsive",
+    "probeSftp": false,
+    "expectedStatus": "unresponsive",
+    "expectedErrorField": "transportError"
+  },
+  {
+    "name": "exec-rejected",
+    "probeSftp": false,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "channelError"
+  },
+  {
+    "name": "exec-silent",
+    "probeSftp": false,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "channelError"
+  },
+  {
+    "name": "sftp-missing",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError"
+  },
+  {
+    "name": "sftp-rejected",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError"
+  },
+  {
+    "name": "runtime-replaced",
+    "probeSftp": false,
+    "expectedErrorContains": "runtime 在健康检查期间已变化"
+  }
+]

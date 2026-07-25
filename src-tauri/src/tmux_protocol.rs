@@ -6,6 +6,7 @@ use super::{
 };
 
 pub(super) const MAX_TMUX_CONTROL_LINE_BYTES: usize = 64 * 1024;
+pub(super) const TMUX_FIELD_SEPARATOR: &str = "|PORTMATE:8f41c2d7:|";
 
 pub(super) fn bounded_tmux_control_error(error: &str) -> String {
     const MAX_ERROR_CHARS: usize = 512;
@@ -266,7 +267,7 @@ pub(super) fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
 }
 
 pub(super) fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
-    let mut parts = line.split('\t');
+    let mut parts = tmux_fields(line);
     let name = parts.next()?.to_string();
     if name.is_empty() {
         return None;
@@ -293,7 +294,7 @@ pub(super) fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
 }
 
 pub(super) fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
-    let mut parts = line.split('\t');
+    let mut parts = tmux_fields(line);
     let session = parts.next()?.to_string();
     if session.is_empty() {
         return None;
@@ -316,7 +317,7 @@ pub(super) fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
 }
 
 pub(super) fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
-    let mut parts = line.split('\t');
+    let mut parts = tmux_fields(line);
     let session = parts.next()?.to_string();
     if session.is_empty() {
         return None;
@@ -336,5 +337,13 @@ pub(super) fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
         command: parts.next().unwrap_or_default().to_string(),
         title: parts.next().unwrap_or_default().to_string(),
         synchronized: parts.next().unwrap_or_default() == "1",
+    })
+}
+
+fn tmux_fields(line: &str) -> std::str::Split<'_, &str> {
+    line.split(if line.contains(TMUX_FIELD_SEPARATOR) {
+        TMUX_FIELD_SEPARATOR
+    } else {
+        "\t"
     })
 }

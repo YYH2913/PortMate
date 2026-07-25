@@ -59,67 +59,16 @@ use zeroize::{Zeroize, Zeroizing};
 
 mod app_data_migration;
 mod proxy_protocol;
+mod ssh_health;
+mod ssh_security;
 mod telnet_protocol;
 mod tmux_protocol;
 
 use app_data_migration::*;
 use proxy_protocol::*;
+use ssh_security::*;
 use telnet_protocol::*;
 use tmux_protocol::*;
-
-#[derive(Clone)]
-struct AgentIdentityFilter {
-    label: String,
-    fingerprint_sha256: Option<String>,
-    path: Option<String>,
-}
-
-#[derive(Clone, Default)]
-struct PortMateAgentSigner {
-    socket_path: Option<PathBuf>,
-}
-
-#[derive(Debug)]
-enum PortMateAgentAuthError {
-    Send(russh::SendError),
-    Agent(String),
-}
-
-impl From<russh::SendError> for PortMateAgentAuthError {
-    fn from(error: russh::SendError) -> Self {
-        Self::Send(error)
-    }
-}
-
-impl std::fmt::Display for PortMateAgentAuthError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Send(error) => write!(formatter, "{error}"),
-            Self::Agent(error) => write!(formatter, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for PortMateAgentAuthError {}
-
-impl russh::Signer for PortMateAgentSigner {
-    type Error = PortMateAgentAuthError;
-
-    fn auth_sign(
-        &mut self,
-        key: &AgentIdentity,
-        hash_alg: Option<HashAlg>,
-        to_sign: Vec<u8>,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
-        let key = key.clone();
-        let socket_path = self.socket_path.clone();
-        async move {
-            sign_with_ssh_agent_on_thread(key, hash_alg, to_sign, socket_path)
-                .await
-                .map_err(PortMateAgentAuthError::Agent)
-        }
-    }
-}
 
 const STORE_KEY: &str = "session-store";
 const SQLITE_SCHEMA_VERSION: &str = "4";
@@ -898,6 +847,7 @@ static PORTABLE_VAULT: OnceLock<PortableVaultContext> = OnceLock::new();
 struct SshRuntime {
     runtime_id: String,
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
     jump_handles: Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
     writer: Arc<tokio::sync::Mutex<ChannelWriteHalf<client::Msg>>>,
     tap: broadcast::Sender<Vec<u8>>,
@@ -4727,7 +4677,8 @@ fn apply_host_key_decision(
         return Ok(Some(trusted));
     }
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        next_store.apply_host_key_decision(
+        apply_persistent_host_key_decision(
+            next_store,
             &request.profile_id,
             &request.observation,
             request.decision,
@@ -4769,10 +4720,13 @@ fn trust_scanned_host_key(
         return Ok(Some(trusted));
     }
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        next_store
-            .host_keys
-            .apply_decision(&profile_id, &policy, &request.observation, request.decision)
-            .map_err(|error| error.to_string())
+        apply_persistent_host_key_decision_with_policy(
+            next_store,
+            &profile_id,
+            &policy,
+            &request.observation,
+            request.decision,
+        )
     })
 }
 
@@ -4786,9 +4740,12 @@ fn import_known_hosts(
         if next_store.profile(&request.profile_id).is_none() {
             return Err(format!("unknown session: {}", request.profile_id));
         }
+        let previous_count = next_store.host_keys.keys.len();
         next_store
             .host_keys
             .import_known_hosts(&request.profile_id, &request.contents);
+        let imported = next_store.host_keys.keys[previous_count..].to_vec();
+        mirror_persistent_host_keys(next_store, &imported)?;
         Ok(next_store.host_keys.clone())
     })
 }
@@ -9937,8 +9894,7 @@ async fn transfer_file_via_sftp(
         }
         remote_paths => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-            let handle = auxiliary.handle();
-            let sftp = open_sftp_session(handle).await?;
+            let sftp = auxiliary.sftp().await?;
             let transfer = async {
                 match remote_paths {
                     (None, Some(remote_destination)) => {
@@ -9954,7 +9910,6 @@ async fn transfer_file_via_sftp(
                 }
             };
             let result = await_sftp_transfer_with_cancellation(transfer, progress).await;
-            let _ = sftp.close().await;
             result
         }
     }
@@ -12018,25 +11973,66 @@ fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn ssh_handle_for_auxiliary_operation(
+struct SshAuxiliaryResources {
+    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+}
+
+fn ssh_resources_for_auxiliary_operation(
     state: &AppState,
     session_id: &str,
-) -> Result<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>, String> {
+) -> Result<SshAuxiliaryResources, String> {
     let connections = state.ssh.lock().map_err(|error| error.to_string())?;
     connections
         .get(session_id)
-        .map(|runtime| Arc::clone(&runtime.handle))
+        .map(|runtime| SshAuxiliaryResources {
+            handle: Arc::clone(&runtime.handle),
+            sftp: Arc::clone(&runtime.sftp),
+        })
         .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行远端操作".to_string())
 }
 
 struct SshAuxiliaryLease {
     handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl SshAuxiliaryLease {
     fn handle(&self) -> Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>> {
         Arc::clone(&self.handle)
+    }
+
+    async fn sftp(&self) -> Result<SftpSessionLease, String> {
+        let mut session = tokio::time::timeout(
+            SSH_AUXILIARY_SETUP_TIMEOUT,
+            Arc::clone(&self.sftp).lock_owned(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "SFTP operation lock timed out after {} ms",
+                SSH_AUXILIARY_SETUP_TIMEOUT.as_millis()
+            )
+        })?;
+        if session.is_none() {
+            *session = Some(open_sftp_session(self.handle()).await?);
+        }
+        Ok(SftpSessionLease { session })
+    }
+}
+
+struct SftpSessionLease {
+    session: tokio::sync::OwnedMutexGuard<Option<SftpSession>>,
+}
+
+impl Deref for SftpSessionLease {
+    type Target = SftpSession;
+
+    fn deref(&self) -> &Self::Target {
+        self.session
+            .as_ref()
+            .expect("SFTP session lease must contain an initialized session")
     }
 }
 
@@ -12054,9 +12050,10 @@ fn acquire_ssh_auxiliary_slot(
 
 fn ssh_auxiliary_lease(state: &AppState, session_id: &str) -> Result<SshAuxiliaryLease, String> {
     let slot = acquire_ssh_auxiliary_slot(state)?;
-    let handle = ssh_handle_for_auxiliary_operation(state, session_id)?;
+    let resources = ssh_resources_for_auxiliary_operation(state, session_id)?;
     Ok(SshAuxiliaryLease {
-        handle,
+        handle: resources.handle,
+        sftp: resources.sftp,
         _slot: slot,
     })
 }
@@ -13348,8 +13345,7 @@ async fn start_file_batch_inner(
     }
 
     let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-    let handle = auxiliary.handle();
-    let sftp = open_sftp_session(handle).await?;
+    let sftp = auxiliary.sftp().await?;
     let result = async {
         let mut plan = if request.source_remote {
             plan_remote_file_batch(&sftp, &request.paths).await?
@@ -13470,7 +13466,6 @@ async fn start_file_batch_inner(
         ))
     }
     .await;
-    let _ = sftp.close().await;
     let (prepared_files, directories_prepared, mut skipped, total_bytes) = result?;
 
     let mut tasks = Vec::with_capacity(prepared_files.len());
@@ -13892,8 +13887,7 @@ async fn start_external_drop_inner(
     if request.remote {
         if !plan.directories.is_empty() || !plan.files.is_empty() {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-            let handle = auxiliary.handle();
-            let sftp = open_sftp_session(handle).await?;
+            let sftp = auxiliary.sftp().await?;
             let result = async {
                 apply_external_drop_conflicts(
                     &mut plan,
@@ -13916,7 +13910,6 @@ async fn start_external_drop_inner(
                 Ok::<(), String>(())
             }
             .await;
-            let _ = sftp.close().await;
             result?;
         }
     } else if let Some(destination) = &local_destination {
@@ -14235,8 +14228,8 @@ async fn list_files_inner(
             .as_deref()
             .ok_or_else(|| "remote file list requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        list_remote_files(handle, &request.path).await
+        let sftp = auxiliary.sftp().await?;
+        list_remote_files(&sftp, &request.path).await
     } else {
         list_local_files(&request.path)
     }
@@ -14255,10 +14248,8 @@ async fn file_properties_inner(
             .as_deref()
             .ok_or_else(|| "remote file properties require sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = remote_file_properties(&sftp, request.path.trim()).await;
-        let _ = sftp.close().await;
         result
     } else {
         local_file_properties(request.path.trim())
@@ -14277,8 +14268,7 @@ async fn file_operation_inner(
             .ok_or_else(|| "remote file operation requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = async {
             match operation {
                 FileOperation::CreateDirectory => {
@@ -14307,7 +14297,6 @@ async fn file_operation_inner(
             }
         }
         .await;
-        let _ = sftp.close().await;
         result
     } else {
         match operation {
@@ -14437,8 +14426,7 @@ async fn delete_paths_inner(state: &AppState, request: DeletePathsRequest) -> Re
             .as_deref()
             .ok_or_else(|| "remote batch delete requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = async {
             let plan = prepare_remote_delete_paths(&sftp, &request.paths).await?;
             for (completed, item) in plan.into_iter().enumerate() {
@@ -14467,7 +14455,6 @@ async fn delete_paths_inner(state: &AppState, request: DeletePathsRequest) -> Re
             Ok(())
         }
         .await;
-        let _ = sftp.close().await;
         result
     } else {
         let plan = prepare_local_delete_paths(&request.paths)?;
@@ -14765,8 +14752,7 @@ async fn move_paths_inner(state: &AppState, request: MovePathsRequest) -> Result
             .as_deref()
             .ok_or_else(|| "remote move requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = async {
             let plan = prepare_remote_move_paths(&sftp, &request.paths, &request.destination).await?;
             for (completed, item) in plan.into_iter().enumerate() {
@@ -14782,7 +14768,6 @@ async fn move_paths_inner(state: &AppState, request: MovePathsRequest) -> Result
             Ok(())
         }
         .await;
-        let _ = sftp.close().await;
         result
     } else {
         let plan = prepare_local_move_paths(&request.paths, &request.destination)?;
@@ -14814,8 +14799,7 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
             return Ok(());
         }
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &old_path, true, "远端重命名源路径").await?;
             reject_remote_symlink_components(&sftp, &new_path, false, "远端重命名目标路径").await?;
@@ -14825,7 +14809,6 @@ async fn rename_path_inner(state: &AppState, request: RenamePathRequest) -> Resu
                 .map_err(|error| format!("SFTP 重命名失败 {} -> {}: {error}", old_path, new_path))
         }
         .await;
-        let _ = sftp.close().await;
         result
     } else {
         let old_path = validate_local_mutating_path(&request.old_path)?;
@@ -14860,8 +14843,7 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
             .ok_or_else(|| "remote chmod requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        let handle = auxiliary.handle();
-        let sftp = open_sftp_session(handle).await?;
+        let sftp = auxiliary.sftp().await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &path, false, "远端 chmod 路径").await?;
             let mut metadata = sftp
@@ -14878,7 +14860,6 @@ async fn chmod_path_inner(state: &AppState, request: ChmodPathRequest) -> Result
                 .map_err(|error| format!("SFTP 设置权限失败 {path}: {error}"))
         }
         .await;
-        let _ = sftp.close().await;
         result
     } else {
         #[cfg(unix)]
@@ -15254,19 +15235,25 @@ async fn list_tmux_state_with_handle(
 ) -> Result<TmuxState, String> {
     let sessions_output = exec_ssh_command_capture(
         Arc::clone(&handle),
-        "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}' 2>/dev/null || true",
+        &format!(
+            "tmux list-sessions -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{session_windows}}{TMUX_FIELD_SEPARATOR}#{{session_attached}}{TMUX_FIELD_SEPARATOR}#{{session_created}}' 2>/dev/null || true"
+        ),
         Duration::from_secs(8),
     )
     .await?;
     let windows_output = exec_ssh_command_capture(
         Arc::clone(&handle),
-        "tmux list-windows -a -F '#{session_name}\t#{window_index}\t#{window_id}\t#{window_name}\t#{window_panes}\t#{window_active}' 2>/dev/null || true",
+        &format!(
+            "tmux list-windows -a -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{window_index}}{TMUX_FIELD_SEPARATOR}#{{window_id}}{TMUX_FIELD_SEPARATOR}#{{window_name}}{TMUX_FIELD_SEPARATOR}#{{window_panes}}{TMUX_FIELD_SEPARATOR}#{{window_active}}' 2>/dev/null || true"
+        ),
         Duration::from_secs(8),
     )
     .await?;
     let panes_output = exec_ssh_command_capture(
         handle,
-        "tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_title}\t#{pane_synchronized}' 2>/dev/null || true",
+        &format!(
+            "tmux list-panes -a -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{window_index}}{TMUX_FIELD_SEPARATOR}#{{pane_index}}{TMUX_FIELD_SEPARATOR}#{{pane_id}}{TMUX_FIELD_SEPARATOR}#{{pane_active}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}{TMUX_FIELD_SEPARATOR}#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_synchronized}}' 2>/dev/null || true"
+        ),
         Duration::from_secs(8),
     )
     .await?;
@@ -15416,19 +15403,13 @@ fn local_file_properties(path: &str) -> Result<FileProperties, String> {
     })
 }
 
-async fn list_remote_files(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
-    path: &str,
-) -> Result<Vec<FileEntry>, String> {
+async fn list_remote_files(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>, String> {
     let path = if path.trim().is_empty() {
         "."
     } else {
         path.trim()
     };
-    let sftp = open_sftp_session(handle).await?;
-    let result = list_remote_files_via_sftp(&sftp, path).await;
-    let _ = sftp.close().await;
-    result
+    list_remote_files_via_sftp(sftp, path).await
 }
 
 async fn list_remote_files_via_sftp(
@@ -18339,6 +18320,7 @@ async fn establish_ssh_runtime_with_timeout_mode(
         runtime: SshRuntime {
             runtime_id: runtime_id.clone(),
             handle: Arc::new(tokio::sync::Mutex::new(session)),
+            sftp: Arc::new(tokio::sync::Mutex::new(None)),
             jump_handles,
             writer,
             tap: tap.clone(),
@@ -19788,198 +19770,6 @@ async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
         message.push_str("；当前按 IdentitiesOnly 处理，不会遍历系统 ssh-agent 的全部密钥");
     }
     Err(message)
-}
-
-async fn authenticate_with_agent<H: client::Handler>(
-    session: &mut client::Handle<H>,
-    username: String,
-    identities_only: bool,
-    offer_mode: portmate_core::AgentOfferMode,
-    identity_refs: Vec<IdentityRef>,
-    agent_socket_path: Option<PathBuf>,
-) -> Result<bool, String> {
-    if offer_mode == portmate_core::AgentOfferMode::Disabled {
-        return Ok(false);
-    }
-
-    let agent_refs = identity_refs
-        .into_iter()
-        .filter(|identity| identity.source == IdentitySource::Agent)
-        .map(|identity| AgentIdentityFilter {
-            label: identity.label,
-            fingerprint_sha256: identity.fingerprint_sha256,
-            path: identity.path,
-        })
-        .collect::<Vec<_>>();
-    let allow_unfiltered_agent = !identities_only && agent_refs.is_empty();
-    let identities = list_ssh_agent_identities_on_thread(agent_socket_path.clone()).await?;
-    if identities.is_empty() {
-        return Ok(false);
-    }
-
-    let rsa_hash = session
-        .best_supported_rsa_hash()
-        .await
-        .map_err(|error| format!("SSH 查询 RSA 签名算法失败: {error}"))?
-        .flatten();
-    let mut tried = 0_usize;
-    let max_agent_attempts = if allow_unfiltered_agent {
-        6
-    } else {
-        usize::MAX
-    };
-    let mut signer = PortMateAgentSigner {
-        socket_path: agent_socket_path,
-    };
-
-    for identity in identities {
-        if !allow_unfiltered_agent && !agent_identity_matches(&identity, &agent_refs) {
-            continue;
-        }
-        if tried >= max_agent_attempts {
-            break;
-        }
-        tried += 1;
-        let public_key = identity.public_key().into_owned();
-        let result = session
-            .authenticate_publickey_with(username.clone(), public_key, rsa_hash, &mut signer)
-            .await
-            .map_err(|error| format!("ssh-agent 认证失败: {error}"))?;
-        if result.success() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-async fn list_ssh_agent_identities_on_thread(
-    socket_path: Option<PathBuf>,
-) -> Result<Vec<AgentIdentity>, String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("portmate-ssh-agent-list".to_string())
-        .spawn(move || {
-            let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
-                agent
-                    .request_identities()
-                    .await
-                    .map_err(|error| format!("读取 ssh-agent identities 失败: {error}"))
-            });
-            let _ = sender.send(result);
-        })
-        .map_err(|error| format!("启动 ssh-agent 查询线程失败: {error}"))?;
-    receiver
-        .await
-        .map_err(|error| format!("ssh-agent 查询线程未返回: {error}"))?
-}
-
-async fn sign_with_ssh_agent_on_thread(
-    identity: AgentIdentity,
-    hash_alg: Option<HashAlg>,
-    data: Vec<u8>,
-    socket_path: Option<PathBuf>,
-) -> Result<Vec<u8>, String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("portmate-ssh-agent-sign".to_string())
-        .spawn(move || {
-            let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
-                agent
-                    .sign_request(&identity, hash_alg, data)
-                    .await
-                    .map_err(|error| format!("ssh-agent 签名失败: {error}"))
-            });
-            let _ = sender.send(result);
-        })
-        .map_err(|error| format!("启动 ssh-agent 签名线程失败: {error}"))?;
-    receiver
-        .await
-        .map_err(|error| format!("ssh-agent 签名线程未返回: {error}"))?
-}
-
-fn run_agent_runtime<T>(
-    future: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("创建 ssh-agent runtime 失败: {error}"))?
-        .block_on(future)
-}
-
-fn agent_identity_matches(identity: &AgentIdentity, refs: &[AgentIdentityFilter]) -> bool {
-    let comment = identity.comment();
-    let public_key = identity.public_key();
-    let fingerprint = compute_ssh_sha256_fingerprint(&public_key.public_key_base64()).ok();
-    refs.iter().any(|identity_ref| {
-        if let Some(expected) = identity_ref
-            .fingerprint_sha256
-            .as_deref()
-            .map(str::trim)
-            .filter(|expected| !expected.is_empty())
-        {
-            return fingerprint.as_deref() == Some(expected);
-        }
-        if let Some(path) = identity_ref
-            .path
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-        {
-            return path == comment;
-        }
-        !identity_ref.label.trim().is_empty() && identity_ref.label == comment
-    })
-}
-
-async fn connect_ssh_agent(
-    socket_path: Option<&Path>,
-) -> Result<AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>, String> {
-    #[cfg(unix)]
-    {
-        if let Some(path) = socket_path {
-            return AgentClient::connect_uds(path)
-                .await
-                .map(|client| client.dynamic())
-                .map_err(|error| format!("无法连接 SSH agent socket {}: {error}", path.display()));
-        }
-        AgentClient::connect_env()
-            .await
-            .map(|client| client.dynamic())
-            .map_err(|error| format!("无法连接 SSH_AUTH_SOCK: {error}"))
-    }
-
-    #[cfg(windows)]
-    {
-        if let Some(path) = socket_path {
-            return AgentClient::connect_named_pipe(path)
-                .await
-                .map(|client| client.dynamic())
-                .map_err(|error| {
-                    format!("无法连接 Windows OpenSSH agent {}: {error}", path.display())
-                });
-        }
-        if let Ok(path) = std::env::var("SSH_AUTH_SOCK") {
-            if !path.trim().is_empty() {
-                return AgentClient::connect_named_pipe(path)
-                    .await
-                    .map(|client| client.dynamic())
-                    .map_err(|error| format!("无法连接 Windows OpenSSH agent: {error}"));
-            }
-        }
-        AgentClient::connect_pageant()
-            .await
-            .map(|client| client.dynamic())
-            .map_err(|error| format!("无法连接 Pageant: {error}"))
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        Err("当前平台不支持 ssh-agent".to_string())
-    }
 }
 
 async fn authenticate_keyboard_interactive<H: client::Handler>(
@@ -23367,303 +23157,6 @@ fn expand_identity_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn persist_observed_host_key(
-    store: &Arc<Mutex<SessionStore>>,
-    store_path: &Path,
-    guard: HostKeyPersistenceGuard<'_>,
-    observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
-    one_time_host_keys: &[TrustedHostKey],
-) -> Result<(), String> {
-    let profile_id = guard.profile_id;
-    let observation = observed_key
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone()
-        .ok_or_else(|| "SSH 未收到服务器 host key".to_string())?;
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    let profile = store
-        .profile(profile_id)
-        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-    if let Some(expected_profile) = guard.expected_profile {
-        if !ssh_establishment_profile_matches(expected_profile, &profile) {
-            return Err(format!(
-                "SSH profile changed while establishing session: {profile_id}"
-            ));
-        }
-    }
-    let policy = match profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
-    };
-    commit_tracked_store_mutation(&mut store, store_path, |next_store| {
-        let message =
-            if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                format!(
-                    "PortMate: SSH host key trusted for this connection only ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else if profile_trusts_observation(next_store, profile_id, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                format!(
-                    "PortMate: SSH host key verified by profile trust ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else {
-                match next_store.evaluate_host_key(profile_id, &observation)? {
-                    HostKeyEvaluation::Trusted {
-                        fingerprint_sha256, ..
-                    } => format!(
-                        "PortMate: SSH host key verified ({}, {})",
-                        observation.algorithm, fingerprint_sha256
-                    ),
-                    HostKeyEvaluation::Unknown {
-                        fingerprint_sha256, ..
-                    } => {
-                        if policy.mode != HostKeyMode::TrustOnFirstUse {
-                            return Err(format!(
-                                "SSH host key 未受信任: {} {}",
-                                observation.algorithm, fingerprint_sha256
-                            ));
-                        }
-                        next_store.apply_host_key_decision(
-                            profile_id,
-                            &observation,
-                            HostKeyDecision::AppendToProfile,
-                        )?;
-                        format!(
-                            "PortMate: SSH host key trusted for this profile ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    mismatch @ HostKeyEvaluation::Mismatch { .. } => {
-                        return Err(describe_host_key_rejection(&mismatch));
-                    }
-                }
-            };
-        let event_ids = next_store
-            .record_system_event_tracked(profile_id, message)
-            .into_iter()
-            .collect();
-        Ok(((), event_ids))
-    })
-}
-
-fn temporary_trusted_host_key(
-    store: &SessionStore,
-    profile_id: &str,
-    observation: &HostKeyObservation,
-) -> Result<portmate_core::TrustedHostKey, String> {
-    let profile = store
-        .profile(profile_id)
-        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-    let policy = match profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
-    };
-    temporary_trusted_host_key_for_policy(profile_id, &policy, observation)
-}
-
-fn temporary_trusted_host_key_for_policy(
-    profile_id: &str,
-    policy: &portmate_core::HostKeyPolicy,
-    observation: &HostKeyObservation,
-) -> Result<portmate_core::TrustedHostKey, String> {
-    Ok(portmate_core::TrustedHostKey {
-        id: Uuid::new_v4().to_string(),
-        profile_id: Some(profile_id.to_string()),
-        alias: observation.target_alias(policy).to_string(),
-        host: observation.host.clone(),
-        port: observation.port,
-        algorithm: observation.algorithm.clone(),
-        fingerprint_sha256: observation
-            .fingerprint_sha256()
-            .map_err(|error| error.to_string())?,
-        public_key_base64: observation.public_key_base64.clone(),
-        scope: HostKeyScope::Profile,
-        label: Some("trust once".to_string()),
-        first_seen: Utc::now(),
-        last_seen: Utc::now(),
-    })
-}
-
-fn remember_one_time_host_key(
-    state: &AppState,
-    profile_id: &str,
-    key: portmate_core::TrustedHostKey,
-) -> Result<(), String> {
-    remember_one_time_host_key_in(&state.one_time_host_keys, profile_id, key)
-}
-
-fn take_one_time_host_keys(
-    state: &AppState,
-    profile_id: &str,
-) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
-    take_one_time_host_keys_from(&state.one_time_host_keys, profile_id)
-}
-
-fn one_time_host_keys_snapshot(
-    state: &AppState,
-    profile_id: &str,
-) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
-    one_time_host_keys_snapshot_from(&state.one_time_host_keys, profile_id)
-}
-
-fn remember_one_time_host_key_in(
-    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
-    profile_id: &str,
-    key: portmate_core::TrustedHostKey,
-) -> Result<(), String> {
-    let mut one_time = one_time.lock().map_err(|error| error.to_string())?;
-    one_time
-        .entry(profile_id.to_string())
-        .or_default()
-        .push(key);
-    Ok(())
-}
-
-fn take_one_time_host_keys_from(
-    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
-    profile_id: &str,
-) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
-    let mut one_time = one_time.lock().map_err(|error| error.to_string())?;
-    Ok(one_time.remove(profile_id).unwrap_or_default())
-}
-
-fn one_time_host_keys_snapshot_from(
-    one_time: &Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
-    profile_id: &str,
-) -> Result<Vec<portmate_core::TrustedHostKey>, String> {
-    let one_time = one_time.lock().map_err(|error| error.to_string())?;
-    Ok(one_time.get(profile_id).cloned().unwrap_or_default())
-}
-
-fn persist_observed_host_key_with_policy(
-    store: &Arc<Mutex<SessionStore>>,
-    store_path: &Path,
-    guard: HostKeyPersistenceGuard<'_>,
-    policy: &portmate_core::HostKeyPolicy,
-    observed_key: &Arc<Mutex<Option<HostKeyObservation>>>,
-    one_time_host_keys: &[TrustedHostKey],
-    label: &str,
-) -> Result<(), String> {
-    let profile_id = guard.profile_id;
-    let observation = observed_key
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone()
-        .ok_or_else(|| format!("{label} 未收到服务器 host key"))?;
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    if let Some(expected_profile) = guard.expected_profile {
-        let latest_profile = store
-            .profile(profile_id)
-            .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-        if !ssh_establishment_profile_matches(expected_profile, &latest_profile) {
-            return Err(format!(
-                "SSH profile changed while establishing session: {profile_id}"
-            ));
-        }
-    }
-    commit_tracked_store_mutation(&mut store, store_path, |next_store| {
-        let message =
-            if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                format!(
-                    "PortMate: {label} host key trusted for this connection only ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else {
-                match next_store
-                    .host_keys
-                    .evaluate(profile_id, policy, &observation)
-                {
-                    Ok(HostKeyEvaluation::Trusted {
-                        fingerprint_sha256, ..
-                    }) => format!(
-                        "PortMate: {label} host key verified ({}, {})",
-                        observation.algorithm, fingerprint_sha256
-                    ),
-                    Ok(HostKeyEvaluation::Unknown {
-                        fingerprint_sha256, ..
-                    }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
-                        next_store
-                            .host_keys
-                            .apply_decision(
-                                profile_id,
-                                policy,
-                                &observation,
-                                HostKeyDecision::AppendToProfile,
-                            )
-                            .map_err(|error| error.to_string())?;
-                        format!(
-                            "PortMate: {label} host key trusted for this profile ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    Ok(other) => return Err(describe_host_key_rejection(&other)),
-                    Err(error) => return Err(error.to_string()),
-                }
-            };
-        let event_ids = next_store
-            .record_system_event_tracked(profile_id, message)
-            .into_iter()
-            .collect();
-        Ok(((), event_ids))
-    })
-}
-
-fn one_time_trusts_observation(
-    one_time_host_keys: &[TrustedHostKey],
-    profile_id: &str,
-    policy: &portmate_core::HostKeyPolicy,
-    observation: &HostKeyObservation,
-) -> bool {
-    let Ok(fingerprint) = observation.fingerprint_sha256() else {
-        return false;
-    };
-    let alias = observation.target_alias(policy);
-    one_time_host_keys.iter().any(|key| {
-        key.profile_id.as_deref() == Some(profile_id)
-            && key.alias == alias
-            && key.host == observation.host
-            && key.port == observation.port
-            && key.algorithm == observation.algorithm
-            && key.fingerprint_sha256 == fingerprint
-    })
-}
-
-fn profile_trusts_observation(
-    store: &SessionStore,
-    profile_id: &str,
-    observation: &HostKeyObservation,
-) -> bool {
-    let Some(profile) = store.profile(profile_id) else {
-        return false;
-    };
-    let (policy, trusted_host_keys) = match profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-            (ssh.host_key_policy, ssh.trusted_host_keys)
-        }
-        _ => return false,
-    };
-    let Ok(fingerprint) = observation.fingerprint_sha256() else {
-        return false;
-    };
-    let alias = observation.target_alias(&policy);
-    trusted_host_keys.iter().any(|key| {
-        key.alias == alias
-            && key.port == observation.port
-            && key.algorithm == observation.algorithm
-            && key.fingerprint_sha256 == fingerprint
-    })
-}
-
 fn read_ssh_channel(
     task: SshReadTask,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
@@ -23903,9 +23396,21 @@ fn ssh_reconnect_delay(profile: &SessionProfile) -> Duration {
 }
 
 fn ssh_establishment_profile_matches(attempt: &SessionProfile, latest: &SessionProfile) -> bool {
-    let attempt = normalize_session_profile(attempt.clone());
-    let latest = normalize_session_profile(latest.clone());
+    let mut attempt = normalize_session_profile(attempt.clone());
+    let mut latest = normalize_session_profile(latest.clone());
+    ignore_host_key_last_seen_for_establishment(&mut attempt);
+    ignore_host_key_last_seen_for_establishment(&mut latest);
     attempt.connection == latest.connection && attempt.terminal == latest.terminal
+}
+
+fn ignore_host_key_last_seen_for_establishment(profile: &mut SessionProfile) {
+    let ssh = match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh,
+        _ => return,
+    };
+    for key in &mut ssh.trusted_host_keys {
+        key.last_seen = key.first_seen;
+    }
 }
 
 fn ssh_reconnect_attempt_matches_profile(
@@ -33365,6 +32870,7 @@ pub fn run() {
             open_session,
             open_session_with_one_key,
             close_session,
+            ssh_health::check_ssh_health,
             evaluate_host_key,
             apply_host_key_decision,
             scan_ssh_host_key,
@@ -35206,6 +34712,212 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn external_tcp_telnet_server_compatibility() {
+        let Ok(label) = std::env::var("PORTMATE_COMPAT_SOCKET_LABEL") else {
+            eprintln!(
+                "skipping external TCP/Telnet compatibility test: matrix environment is not set"
+            );
+            return;
+        };
+        let host = std::env::var("PORTMATE_COMPAT_SOCKET_HOST").unwrap();
+        let port = std::env::var("PORTMATE_COMPAT_SOCKET_PORT")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let protocol = std::env::var("PORTMATE_COMPAT_SOCKET_PROTOCOL").unwrap();
+        let mode = std::env::var("PORTMATE_COMPAT_SOCKET_MODE").unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "portmate-external-socket-compat-{}-{}",
+            label,
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        tauri::async_runtime::block_on(async {
+            let tcp = TcpConnection {
+                host,
+                port,
+                reconnect: false,
+                telnet_binary: true,
+                telnet_naws: true,
+                ..Default::default()
+            };
+            let connection = match protocol.as_str() {
+                "tcp" => ConnectionConfig::Tcp(tcp),
+                "telnet" => ConnectionConfig::Telnet(tcp),
+                other => panic!("unsupported external socket protocol: {other}"),
+            };
+            let mut profile = test_tcp_profile(connection);
+            profile.terminal.term = "xterm-256color".to_string();
+            profile.terminal.cols = 120;
+            profile.terminal.rows = 40;
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let opened = open_tcp_session(&state, profile.clone())
+                .await
+                .unwrap_or_else(|error| panic!("{label} open failed: {error}"));
+            assert_eq!(opened.runtime.status, SessionStatus::Connected);
+
+            match (protocol.as_str(), mode.as_str()) {
+                ("telnet", "shell") => {
+                    send_text_inner(
+                        state.session_io(),
+                        profile.id.clone(),
+                        "printf '__PORTMATE_TELNET_COMPAT__\\n'\n".to_string(),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} shell write failed: {error}"));
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let (screen_ready, negotiation_ready) = {
+                                let store = state.store.lock().unwrap();
+                                let screen_ready =
+                                    store.screen(&profile.id).is_some_and(|screen| {
+                                        screen.contains("__PORTMATE_TELNET_COMPAT__")
+                                    });
+                                let negotiation_ready = store.events.iter().any(|event| {
+                                    event.session_id == profile.id
+                                        && event.direction == EventDirection::Outbound
+                                        && event.stream == EventStream::Control
+                                        && event
+                                            .annotations
+                                            .get("origin")
+                                            .is_some_and(|origin| origin == "telnet-negotiation")
+                                });
+                                (screen_ready, negotiation_ready)
+                            };
+                            if screen_ready && negotiation_ready {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} shell or negotiation output timed out"));
+                    resize_session_inner(&state, profile.id.clone(), 132, 43)
+                        .await
+                        .unwrap_or_else(|error| panic!("{label} resize failed: {error}"));
+                    send_text_inner(state.session_io(), profile.id.clone(), "exit\n".to_string())
+                        .await
+                        .unwrap_or_else(|error| panic!("{label} shell exit failed: {error}"));
+                }
+                ("tcp", "echo") => {
+                    let mut tap = state
+                        .tcp
+                        .lock()
+                        .unwrap()
+                        .get(&profile.id)
+                        .unwrap()
+                        .tap
+                        .subscribe();
+                    let raw = vec![0x00, 0x01, TELNET_IAC, 0x7f, b'P', b'M'];
+                    send_bytes_inner(state.session_io(), profile.id.clone(), raw.clone())
+                        .await
+                        .unwrap_or_else(|error| panic!("{label} raw write failed: {error}"));
+                    let echoed = tokio::time::timeout(Duration::from_secs(5), tap.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("{label} raw echo timed out"))
+                        .unwrap_or_else(|error| panic!("{label} raw echo tap failed: {error}"));
+                    assert_eq!(echoed, raw, "{label} changed raw TCP bytes");
+                    close_session_inner(&state, profile.id.clone())
+                        .await
+                        .unwrap_or_else(|error| panic!("{label} close failed: {error}"));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                ("tcp", "burst-close") => {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            if state
+                                .store
+                                .lock()
+                                .unwrap()
+                                .screen(&profile.id)
+                                .is_some_and(|screen| screen.contains("__PORTMATE_TCP_BURST__"))
+                            {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} burst marker timed out"));
+                    let bytes = state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .events
+                        .iter()
+                        .filter(|event| {
+                            event.session_id == profile.id
+                                && event.direction == EventDirection::Inbound
+                                && event.stream == EventStream::Stdout
+                        })
+                        .map(|event| event.text.as_deref().map_or(0, |text| text.len() as u64))
+                        .sum::<u64>();
+                    assert!(bytes >= 256 * 1024, "{label} lost burst bytes: {bytes}");
+                }
+                ("tcp", "close") => {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            if state
+                                .store
+                                .lock()
+                                .unwrap()
+                                .screen(&profile.id)
+                                .is_some_and(|screen| screen.contains("__PORTMATE_TCP_CLOSE__"))
+                            {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} close marker timed out"));
+                }
+                pair => panic!("unsupported external socket compatibility case: {pair:?}"),
+            }
+
+            if mode != "echo" {
+                let disconnected = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let runtime = state
+                            .store
+                            .lock()
+                            .unwrap()
+                            .summaries()
+                            .into_iter()
+                            .find(|summary| summary.profile.id == profile.id)
+                            .unwrap()
+                            .runtime;
+                        if runtime.status == SessionStatus::Disconnected {
+                            break runtime;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{label} did not settle to disconnected"));
+                let reason = disconnected.last_disconnect_reason.unwrap_or_default();
+                if protocol == "telnet" {
+                    assert!(
+                        reason.starts_with("Telnet ")
+                            && (reason.contains("socket closed")
+                                || reason.contains("negotiation reply failed")),
+                        "{label} unexpected disconnect reason: {reason}"
+                    );
+                } else {
+                    assert!(
+                        reason.contains("socket closed"),
+                        "{label} unexpected disconnect reason: {reason}"
+                    );
+                }
+            }
+        });
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn tcp_loopback_reconnects_after_remote_disconnect() {
         tauri::async_runtime::block_on(async {
@@ -36268,6 +35980,7 @@ mod tests {
                 SshRuntime {
                     runtime_id: "tmux-lease-runtime".to_string(),
                     handle: Arc::clone(&handle),
+                    sftp: Arc::new(tokio::sync::Mutex::new(None)),
                     jump_handles: Vec::new(),
                     writer: Arc::new(tokio::sync::Mutex::new(writer)),
                     tap,
@@ -40607,6 +40320,40 @@ __PORTMATE_LOADAVG__
         });
         profile.kind = SessionKind::Tmux;
         assert!(ssh_reconnect_enabled(&profile));
+    }
+
+    #[test]
+    fn ssh_establishment_comparison_ignores_only_host_key_last_seen() {
+        let mut attempt = test_ssh_profile();
+        let now = Utc::now();
+        let key = TrustedHostKey {
+            id: "host-key-generation".to_string(),
+            profile_id: Some(attempt.id.clone()),
+            alias: "bench-device".to_string(),
+            host: "192.0.2.10".to_string(),
+            port: 22,
+            algorithm: "ssh-ed25519".to_string(),
+            fingerprint_sha256: "SHA256:original".to_string(),
+            public_key_base64: "YWJj".to_string(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen: now,
+            last_seen: now,
+        };
+        if let ConnectionConfig::Ssh(ssh) = &mut attempt.connection {
+            ssh.trusted_host_keys.push(key);
+        }
+
+        let mut observed = attempt.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut observed.connection {
+            ssh.trusted_host_keys[0].last_seen = now + chrono::Duration::seconds(1);
+        }
+        assert!(ssh_establishment_profile_matches(&attempt, &observed));
+
+        if let ConnectionConfig::Ssh(ssh) = &mut observed.connection {
+            ssh.trusted_host_keys[0].fingerprint_sha256 = "SHA256:changed".to_string();
+        }
+        assert!(!ssh_establishment_profile_matches(&attempt, &observed));
     }
 
     #[test]
@@ -45813,6 +45560,159 @@ __PORTMATE_LOADAVG__
             &policy,
             &different_host
         ));
+        assert!(store.host_keys.keys.is_empty());
+    }
+
+    #[test]
+    fn persistent_host_key_decisions_add_and_replace_profile_mirrors() {
+        let mut store = SessionStore::default();
+        let profile = test_ssh_profile();
+        let profile_id = profile.id.clone();
+        store.upsert_profile(profile);
+        let first_observation = HostKeyObservation {
+            host: "192.0.2.10".to_string(),
+            port: 22,
+            alias: Some("bench-device".to_string()),
+            algorithm: "ssh-ed25519".to_string(),
+            public_key_base64: "YWJj".to_string(),
+        };
+
+        let first = apply_persistent_host_key_decision(
+            &mut store,
+            &profile_id,
+            &first_observation,
+            HostKeyDecision::AppendToProfile,
+        )
+        .unwrap()
+        .unwrap();
+        let profile_keys = match &store.profile(&profile_id).unwrap().connection {
+            ConnectionConfig::Ssh(ssh) => ssh.trusted_host_keys.clone(),
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(store.host_keys.keys, vec![first.clone()]);
+        assert_eq!(profile_keys, vec![first.clone()]);
+
+        let mut replacement_observation = first_observation;
+        replacement_observation.public_key_base64 = "ZGVm".to_string();
+        let replacement = apply_persistent_host_key_decision(
+            &mut store,
+            &profile_id,
+            &replacement_observation,
+            HostKeyDecision::ReplaceForProfile,
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(replacement.id, first.id);
+        let profile_keys = match &store.profile(&profile_id).unwrap().connection {
+            ConnectionConfig::Ssh(ssh) => ssh.trusted_host_keys.clone(),
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(store.host_keys.keys, vec![replacement.clone()]);
+        assert_eq!(profile_keys, vec![replacement]);
+    }
+
+    #[test]
+    fn successful_host_key_verification_touches_store_and_profile_copies() {
+        let mut store = SessionStore::default();
+        let mut profile = test_ssh_profile();
+        let profile_id = profile.id.clone();
+        let observation = HostKeyObservation {
+            host: "192.0.2.10".to_string(),
+            port: 22,
+            alias: Some("bench-device".to_string()),
+            algorithm: "ssh-ed25519".to_string(),
+            public_key_base64: "YWJj".to_string(),
+        };
+        let fingerprint = observation.fingerprint_sha256().unwrap();
+        let first_seen = Utc::now() - chrono::Duration::days(2);
+        let previous_seen = first_seen + chrono::Duration::hours(1);
+        let seen_at = previous_seen + chrono::Duration::hours(1);
+        let key = TrustedHostKey {
+            id: "host-key-match".to_string(),
+            profile_id: Some(profile_id.clone()),
+            alias: "bench-device".to_string(),
+            host: observation.host.clone(),
+            port: observation.port,
+            algorithm: observation.algorithm.clone(),
+            fingerprint_sha256: fingerprint.clone(),
+            public_key_base64: observation.public_key_base64.clone(),
+            scope: HostKeyScope::Profile,
+            label: None,
+            first_seen,
+            last_seen: previous_seen,
+        };
+        let mut other_algorithm = key.clone();
+        other_algorithm.id = "host-key-other-algorithm".to_string();
+        other_algorithm.algorithm = "rsa-sha2-512".to_string();
+        let mut other_alias = key.clone();
+        other_alias.id = "host-key-other-alias".to_string();
+        other_alias.alias = "other-device".to_string();
+
+        if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+            ssh.trusted_host_keys = vec![key.clone(), other_algorithm.clone(), other_alias.clone()];
+        }
+        let policy = match &profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh.host_key_policy.clone(),
+            _ => panic!("expected SSH profile"),
+        };
+        store.upsert_profile(profile);
+        store.host_keys.keys = vec![key, other_algorithm, other_alias];
+
+        assert!(
+            touch_observed_host_key(&mut store, &profile_id, &policy, &observation, seen_at,)
+                .unwrap()
+        );
+
+        let matching = store
+            .host_keys
+            .keys
+            .iter()
+            .find(|key| key.id == "host-key-match")
+            .unwrap();
+        assert_eq!(matching.first_seen, first_seen);
+        assert_eq!(matching.last_seen, seen_at);
+        assert_eq!(
+            store
+                .host_keys
+                .keys
+                .iter()
+                .find(|key| key.id == "host-key-other-algorithm")
+                .unwrap()
+                .last_seen,
+            previous_seen
+        );
+        assert_eq!(
+            store
+                .host_keys
+                .keys
+                .iter()
+                .find(|key| key.id == "host-key-other-alias")
+                .unwrap()
+                .last_seen,
+            previous_seen
+        );
+
+        let saved_profile = store.profile(&profile_id).unwrap();
+        let profile_keys = match saved_profile.connection {
+            ConnectionConfig::Ssh(ssh) => ssh.trusted_host_keys,
+            _ => panic!("expected SSH profile"),
+        };
+        assert_eq!(
+            profile_keys
+                .iter()
+                .find(|key| key.id == "host-key-match")
+                .unwrap()
+                .last_seen,
+            seen_at
+        );
+        assert_eq!(
+            profile_keys
+                .iter()
+                .find(|key| key.id == "host-key-other-algorithm")
+                .unwrap()
+                .last_seen,
+            previous_seen
+        );
     }
 
     #[test]
@@ -48895,6 +48795,359 @@ __PORTMATE_LOADAVG__
 
     #[cfg(unix)]
     #[test]
+    fn external_ssh_server_sftp_scp_compatibility() {
+        let Ok(label) = std::env::var("PORTMATE_COMPAT_SSH_LABEL") else {
+            eprintln!("skipping external SSH compatibility test: matrix environment is not set");
+            return;
+        };
+        let host = std::env::var("PORTMATE_COMPAT_SSH_HOST").unwrap();
+        let port = std::env::var("PORTMATE_COMPAT_SSH_PORT")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let username = std::env::var("PORTMATE_COMPAT_SSH_USERNAME").unwrap();
+        let password = std::env::var("PORTMATE_COMPAT_SSH_PASSWORD").unwrap();
+        let local_root = std::env::temp_dir().join(format!(
+            "portmate-external-ssh-compat-{}-{}",
+            label,
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&local_root).unwrap();
+
+        tauri::async_runtime::block_on(async {
+            let mut profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+                panic!("expected SSH profile");
+            };
+            ssh.endpoint.host = host;
+            ssh.endpoint.port = port;
+            ssh.username = username.clone();
+            ssh.reconnect = false;
+            ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+            ssh.identity_policy.auth_order = vec![AuthMethod::Password];
+            ssh.identity_refs.clear();
+            ssh.agent_policy.enabled = false;
+            ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+
+            let state = test_app_state(profile.clone(), local_root.join("portmate-store.sqlite3"));
+            let connected = open_ssh_session(&state, profile.clone(), Some(password.clone()), None)
+                .await
+                .unwrap_or_else(|error| panic!("{label} SSH open failed: {error}"));
+            assert_eq!(connected.runtime.status, SessionStatus::Connected);
+            let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
+                .await
+                .unwrap_or_else(|error| panic!("{label} SSH health check failed: {error}"));
+            assert_eq!(
+                health.status,
+                ssh_health::SshHealthStatus::Healthy,
+                "{label} SSH health degraded: {:?}",
+                health
+            );
+            assert!(health.transport_round_trip_ms.is_some());
+            assert!(health.channel_round_trip_ms.is_some());
+            assert!(health.sftp_round_trip_ms.is_some());
+
+            send_text_inner(
+                state.session_io(),
+                profile.id.clone(),
+                "printf '__PORTMATE_COMPAT_PTY__\\n'\n".to_string(),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .screen(&profile.id)
+                        .is_some_and(|screen| screen.contains("__PORTMATE_COMPAT_PTY__"))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{label} PTY output timed out"));
+
+            let remote_root = format!("/home/{username}/compat/portmate-{}", Uuid::new_v4());
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: remote_root.clone(),
+                    remote: true,
+                },
+                FileOperation::CreateDirectory,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP mkdir failed: {error}"));
+
+            let entries = list_files_inner(
+                &state,
+                ListFilesRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: format!("/home/{username}/compat"),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP list failed: {error}"));
+            assert!(entries.iter().any(|entry| entry.path == remote_root));
+
+            for (name, protocol) in [
+                ("sftp", TransferProtocol::Sftp),
+                ("scp", TransferProtocol::Scp),
+            ] {
+                let source = local_root.join(format!("{name}-source.bin"));
+                let download = local_root.join(format!("{name}-download.bin"));
+                let payload = format!("PortMate {label} {name} compatibility\n").repeat(32);
+                fs::write(&source, payload.as_bytes()).unwrap();
+                let remote_file = format!("{remote_root}/{name}-source.bin");
+
+                let upload = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol: protocol.clone(),
+                        source: source.display().to_string(),
+                        destination: format!("remote:{remote_root}/"),
+                    },
+                )
+                .await
+                .unwrap();
+                let upload = wait_for_transfer_terminal_state(&state, &upload.id).await;
+                assert_eq!(
+                    upload.status,
+                    TransferStatus::Completed,
+                    "{label} {name} upload failed: {:?}",
+                    upload.message
+                );
+
+                let downloaded = start_transfer_inner(
+                    &state,
+                    StartTransferRequest {
+                        session_id: profile.id.clone(),
+                        protocol,
+                        source: format!("remote:{remote_file}"),
+                        destination: download.display().to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+                let downloaded = wait_for_transfer_terminal_state(&state, &downloaded.id).await;
+                assert_eq!(
+                    downloaded.status,
+                    TransferStatus::Completed,
+                    "{label} {name} download failed: {:?}",
+                    downloaded.message
+                );
+                assert_eq!(fs::read(&download).unwrap(), payload.as_bytes());
+            }
+
+            let copied = format!("{remote_root}/sftp-copied.bin");
+            let copy = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Sftp,
+                    source: format!("remote:{remote_root}/sftp-source.bin"),
+                    destination: format!("remote:{copied}"),
+                },
+            )
+            .await
+            .unwrap();
+            let copy = wait_for_transfer_terminal_state(&state, &copy.id).await;
+            assert_eq!(
+                copy.status,
+                TransferStatus::Completed,
+                "{label} SFTP remote copy failed: {:?}",
+                copy.message
+            );
+
+            let renamed = format!("{remote_root}/sftp-renamed.bin");
+            rename_path_inner(
+                &state,
+                RenamePathRequest {
+                    session_id: Some(profile.id.clone()),
+                    old_path: copied,
+                    new_path: renamed.clone(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP rename failed: {error}"));
+            chmod_path_inner(
+                &state,
+                ChmodPathRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: renamed.clone(),
+                    mode: 0o640,
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP chmod failed: {error}"));
+            let properties = file_properties_inner(
+                &state,
+                FilePropertiesRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: renamed,
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(properties.is_file);
+            assert_eq!(properties.permissions.unwrap() & 0o777, 0o640);
+
+            file_operation_inner(
+                &state,
+                FileOperationRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: remote_root,
+                    remote: true,
+                },
+                FileOperation::Delete,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP cleanup failed: {error}"));
+            let closed = close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+            assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+        });
+
+        let _ = fs::remove_dir_all(local_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_ssh_health_fault_matrix_case() {
+        let Ok(fault) = std::env::var("PORTMATE_COMPAT_SSH_HEALTH_FAULT") else {
+            eprintln!("skipping external SSH health fault test: matrix environment is not set");
+            return;
+        };
+        let host = std::env::var("PORTMATE_COMPAT_SSH_HOST").unwrap();
+        let port = std::env::var("PORTMATE_COMPAT_SSH_PORT")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let username = std::env::var("PORTMATE_COMPAT_SSH_USERNAME").unwrap();
+        let password = std::env::var("PORTMATE_COMPAT_SSH_PASSWORD").unwrap();
+        let probe_sftp = std::env::var("PORTMATE_COMPAT_SSH_PROBE_SFTP")
+            .unwrap()
+            .parse::<bool>()
+            .unwrap();
+        let expected_status = std::env::var("PORTMATE_COMPAT_SSH_EXPECTED_STATUS").unwrap();
+        let expected_error_field =
+            std::env::var("PORTMATE_COMPAT_SSH_EXPECTED_ERROR_FIELD").unwrap();
+        let expected_error_contains =
+            std::env::var("PORTMATE_COMPAT_SSH_EXPECTED_ERROR_CONTAINS").unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "portmate-external-ssh-health-fault-{}-{}",
+            fault,
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        tauri::async_runtime::block_on(async {
+            let mut profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+                panic!("expected SSH profile");
+            };
+            ssh.endpoint.host = host;
+            ssh.endpoint.port = port;
+            ssh.username = username;
+            ssh.reconnect = false;
+            ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+            ssh.identity_policy.auth_order = vec![AuthMethod::Password];
+            ssh.identity_refs.clear();
+            ssh.agent_policy.enabled = false;
+            ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let connected = open_ssh_session(&state, profile.clone(), Some(password), None)
+                .await
+                .unwrap_or_else(|error| panic!("{fault} SSH open failed: {error}"));
+            assert_eq!(connected.runtime.status, SessionStatus::Connected);
+
+            if fault == "runtime-replaced" {
+                let mut check = Box::pin(ssh_health::check_ssh_health_inner(
+                    &state,
+                    &profile.id,
+                    probe_sftp,
+                ));
+                tokio::select! {
+                    result = &mut check => panic!("runtime replacement health check completed before injection: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                }
+                state
+                    .ssh
+                    .lock()
+                    .unwrap()
+                    .get_mut(&profile.id)
+                    .unwrap()
+                    .runtime_id = format!("replacement-{}", Uuid::new_v4());
+                let error = check.await.unwrap_err();
+                assert!(
+                    error.contains(&expected_error_contains),
+                    "{fault} returned an unexpected generation error: {error}"
+                );
+            } else {
+                let paused_container = if fault == "ping-unresponsive" {
+                    let container = std::env::var("PORTMATE_COMPAT_SSH_CONTAINER").unwrap();
+                    let paused = Command::new("docker")
+                        .args(["pause", &container])
+                        .status()
+                        .unwrap();
+                    assert!(paused.success(), "failed to pause {container}");
+                    Some(container)
+                } else {
+                    None
+                };
+
+                let result =
+                    ssh_health::check_ssh_health_inner(&state, &profile.id, probe_sftp).await;
+                if let Some(container) = paused_container {
+                    let unpaused = Command::new("docker")
+                        .args(["unpause", &container])
+                        .status()
+                        .unwrap();
+                    assert!(unpaused.success(), "failed to unpause {container}");
+                }
+                let health = result
+                    .unwrap_or_else(|error| panic!("{fault} SSH health command failed: {error}"));
+                let expected_health_status = match expected_status.as_str() {
+                    "degraded" => ssh_health::SshHealthStatus::Degraded,
+                    "unresponsive" => ssh_health::SshHealthStatus::Unresponsive,
+                    value => panic!("unsupported expected SSH health status: {value}"),
+                };
+                assert_eq!(health.status, expected_health_status, "{fault}: {health:?}");
+                match expected_error_field.as_str() {
+                    "transportError" => assert!(health.transport_error.is_some(), "{health:?}"),
+                    "channelError" => assert!(health.channel_error.is_some(), "{health:?}"),
+                    "sftpError" => assert!(health.sftp_error.is_some(), "{health:?}"),
+                    value => panic!("unsupported SSH health error field: {value}"),
+                }
+                if expected_health_status != ssh_health::SshHealthStatus::Unresponsive {
+                    assert!(health.transport_round_trip_ms.is_some(), "{health:?}");
+                }
+                if expected_error_field == "sftpError" {
+                    assert!(health.channel_round_trip_ms.is_some(), "{health:?}");
+                    assert!(health.sftp_probed, "{health:?}");
+                }
+            }
+
+            let _ = close_session_inner(&state, profile.id.clone()).await;
+        });
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn openssh_sftp_scp_and_tunnels_end_to_end() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -48991,14 +49244,16 @@ __PORTMATE_LOADAVG__
             .await
             .expect("SSH PTY command output was not recorded");
 
-            let ssh_handle = state
-                .ssh
-                .lock()
-                .unwrap()
-                .get(&profile.id)
-                .map(|runtime| Arc::clone(&runtime.handle))
-                .unwrap();
-            let entries = list_remote_files(ssh_handle, ".").await.unwrap();
+            let entries = list_files_inner(
+                &state,
+                ListFilesRequest {
+                    session_id: Some(profile.id.clone()),
+                    path: ".".to_string(),
+                    remote: true,
+                },
+            )
+            .await
+            .unwrap();
             assert!(entries.iter().all(|entry| !entry.name.is_empty()));
 
             let sftp_root = root.join("sftp-workspace");
@@ -51126,7 +51381,33 @@ __PORTMATE_LOADAVG__
             assert!(mismatch.contains("alias=integration-jump-2"), "{mismatch}");
             assert!(mismatch.contains("observed="), "{mismatch}");
             assert!(mismatch.contains("expected=["), "{mismatch}");
-            assert_eq!(state.store.lock().unwrap().host_keys.keys, trusted_before);
+            let store = state.store.lock().unwrap();
+            let trusted_after = &store.host_keys.keys;
+            assert_eq!(trusted_after.len(), trusted_before.len());
+            for before in &trusted_before {
+                let after = trusted_after
+                    .iter()
+                    .find(|key| key.id == before.id)
+                    .expect("host key mismatch must not replace trusted keys");
+                if before.alias == "integration-jump-1" {
+                    assert!(after.last_seen > before.last_seen);
+                    let mut expected = before.clone();
+                    expected.last_seen = after.last_seen;
+                    assert_eq!(after, &expected);
+                } else {
+                    assert_eq!(after, before);
+                }
+            }
+            let profile_keys = store
+                .profiles
+                .iter()
+                .find(|stored| stored.id == profile.id)
+                .and_then(|stored| match &stored.connection {
+                    ConnectionConfig::Ssh(ssh) => Some(&ssh.trusted_host_keys),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(profile_keys, trusted_after);
         });
 
         jump_one_sshd.stop();
@@ -55377,6 +55658,12 @@ __PORTMATE_LOADAVG__
         assert!(pane.synchronized);
         assert_eq!(pane.command, "vim");
         assert_eq!(pane.title, "editor");
+
+        let separated = format!(
+            "lab{0}2{0}1{0}%7{0}1{0}vim{0}editor{0}1",
+            TMUX_FIELD_SEPARATOR
+        );
+        assert_eq!(parse_tmux_pane(&separated).unwrap().pane_id, "%7");
 
         let legacy = parse_tmux_pane("lab\t0\t0\t%1\t0\tbash\tshell").unwrap();
         assert!(!legacy.synchronized);

@@ -5,6 +5,7 @@ export const workspacePanelIds = [
   "explorer",
   "fileManager",
   "history",
+  "sysmon",
   "sender",
   "statusBar",
 ] as const;
@@ -13,6 +14,7 @@ export const workspaceDockPanelIds = [
   "explorer",
   "fileManager",
   "history",
+  "sysmon",
   "sender",
 ] as const;
 
@@ -43,17 +45,18 @@ export const defaultWorkspacePanelVisibility: WorkspacePanelVisibility = {
   explorer: true,
   fileManager: false,
   history: false,
+  sysmon: false,
   sender: false,
   statusBar: true,
 };
 
 export const defaultWorkspaceDockLayout: WorkspaceDockLayout = {
   left: ["explorer", "fileManager"],
-  right: ["history"],
+  right: ["sysmon", "history"],
   bottom: ["sender"],
   active: {
     left: "explorer",
-    right: "history",
+    right: "sysmon",
     bottom: "sender",
   },
 };
@@ -62,6 +65,7 @@ const legacyWorkspacePanelVisibility: WorkspacePanelVisibility = {
   explorer: true,
   fileManager: true,
   history: true,
+  sysmon: false,
   sender: true,
   statusBar: true,
 };
@@ -70,7 +74,7 @@ export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePane
   const root = recordValue(value);
   if (!root) return { ...defaultWorkspacePanelVisibility };
   const version = root.version;
-  const source = [1, 2, 3, 4, 5, 6].includes(Number(version))
+  const source = [1, 2, 3, 4, 5, 6, 7].includes(Number(version))
     ? recordValue(root.panels)
     : version === undefined ? root : null;
   const fallback = version === 1 || version === undefined
@@ -87,7 +91,7 @@ export function normalizeWorkspacePanelVisibility(value: unknown): WorkspacePane
 
 export function normalizeWorkspaceDockLayout(value: unknown): WorkspaceDockLayout {
   const root = recordValue(value);
-  const source = root && [4, 5, 6].includes(Number(root.version)) ? recordValue(root.docks) : null;
+  const source = root && [4, 5, 6, 7].includes(Number(root.version)) ? recordValue(root.docks) : null;
   const seen = new Set<WorkspaceDockPanelId>();
   const order = Object.fromEntries(workspaceDockIds.map((dock) => {
     const candidate = Array.isArray(source?.[dock]) ? source[dock] : defaultWorkspaceDockLayout[dock];
@@ -121,7 +125,7 @@ export function normalizeWorkspaceDockLayout(value: unknown): WorkspaceDockLayou
 
 export function normalizeWorkspaceDockSizes(value: unknown): WorkspaceDockSizes {
   const root = recordValue(value);
-  const source = root && [5, 6].includes(Number(root.version)) ? recordValue(root.sizes) : null;
+  const source = root && [5, 6, 7].includes(Number(root.version)) ? recordValue(root.sizes) : null;
   return Object.fromEntries(workspaceDockIds.map((dock) => [
     dock,
     normalizeWorkspaceDockSize(dock, source?.[dock]),

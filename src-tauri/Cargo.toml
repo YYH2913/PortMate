@@ -5,6 +5,7 @@ description = "MCP-ready serial and SSH co-debugging assistant"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+default-run = "portmate"
 
 [lib]
 name = "portmate_lib"

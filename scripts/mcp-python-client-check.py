@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from collections.abc import AsyncIterator
+from urllib.request import Request, urlopen
+
+import anyio
+import httpx
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from pydantic import AnyUrl
+
+try:
+    from mcp.client.streamable_http import streamable_http_client
+
+    MODERN_STREAMABLE_HTTP = True
+except ImportError:
+    from mcp.client.streamable_http import streamablehttp_client as streamable_http_client
+
+    MODERN_STREAMABLE_HTTP = False
+
+
+HTTP_TOKEN = "portmate-mcp-python-http-client-check"
+SDK_VERSION = os.environ.get("PORTMATE_MCP_PYTHON_SDK_VERSION", "unknown")
+EXPECTED_PROTOCOL_VERSION = os.environ.get("PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION", "2025-06-18")
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def bridge_binary() -> Path:
+    configured = os.environ.get("PORTMATE_MCP_BINARY", "").strip()
+    if configured:
+        return Path(configured).resolve()
+    name = "portmate-mcp.exe" if os.name == "nt" else "portmate-mcp"
+    return (Path.cwd() / "target" / "debug" / name).resolve()
+
+
+async def exercise_session(session: ClientSession, transport: str) -> int:
+    initialized = await session.initialize()
+    require(
+        initialized.protocolVersion == EXPECTED_PROTOCOL_VERSION,
+        f"{transport} negotiated {initialized.protocolVersion}; expected {EXPECTED_PROTOCOL_VERSION}",
+    )
+    require(initialized.serverInfo.name == "portmate-mcp", f"{transport} initialized the wrong server")
+
+    await session.send_ping()
+    tools = await session.list_tools()
+    require(any(tool.name == "list_sessions" for tool in tools.tools), f"{transport} tools/list omitted list_sessions")
+    resources = await session.list_resources()
+    require(any(str(resource.uri) == "portmate://sessions" for resource in resources.resources), f"{transport} resources/list omitted sessions")
+    templates = await session.list_resource_templates()
+    require(
+        any(str(template.uriTemplate).startswith("portmate://sessions/{id}/") for template in templates.resourceTemplates),
+        f"{transport} resources/templates/list omitted session templates",
+    )
+    prompts = await session.list_prompts()
+    require(prompts.prompts, f"{transport} prompts/list returned no prompts")
+    sessions = await session.read_resource(AnyUrl("portmate://sessions"))
+    require(sessions.contents[0].mimeType == "application/json", f"{transport} returned the wrong sessions MIME type")
+    return 8
+
+
+async def check_stdio(binary: Path) -> None:
+    environment = {
+        **os.environ,
+        "PORTMATE_MCP_HTTP": "0",
+        "PORTMATE_MCP_CLIENT_ID": "official-python-sdk-stdio-check",
+        "PORTMATE_STORE_PATH": "",
+    }
+    server = StdioServerParameters(command=str(binary), cwd=Path.cwd(), env=environment)
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(
+            read_stream,
+            write_stream,
+            read_timeout_seconds=timedelta(seconds=10),
+        ) as session:
+            messages = await exercise_session(session, "stdio")
+    print(f"MCP Python SDK {SDK_VERSION} stdio check passed ({messages} messages)")
+
+
+def reserve_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def wait_for_http(endpoint: str, server: subprocess.Popen[str]) -> None:
+    for _ in range(120):
+        if server.poll() is not None:
+            stdout, stderr = server.communicate()
+            raise RuntimeError(f"PortMate HTTP bridge exited during startup\n{stdout}\n{stderr}")
+        try:
+            with urlopen(Request(endpoint, method="OPTIONS"), timeout=0.2) as response:
+                if response.status == 204:
+                    return
+        except Exception:
+            time.sleep(0.05)
+    raise RuntimeError(f"timed out waiting for {endpoint}")
+
+
+async def check_http(binary: Path) -> None:
+    port = reserve_port()
+    endpoint = f"http://127.0.0.1:{port}/mcp"
+    environment = {
+        **os.environ,
+        "PORTMATE_MCP_HTTP_ADDR": f"127.0.0.1:{port}",
+        "PORTMATE_MCP_HTTP_TOKEN": HTTP_TOKEN,
+        "PORTMATE_MCP_CLIENT_ID": "official-python-sdk-http-check",
+        "PORTMATE_STORE_PATH": "",
+    }
+    server = subprocess.Popen(
+        [str(binary), "--http"],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for_http(endpoint, server)
+        async with open_http_streams(endpoint) as streams:
+            read_stream, write_stream, session_id = streams
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                read_timeout_seconds=timedelta(seconds=10),
+            ) as session:
+                requests = await exercise_session(session, "HTTP")
+                require(session_id() is None, "PortMate stateless HTTP unexpectedly created a session")
+        print(f"MCP Python SDK {SDK_VERSION} HTTP check passed ({requests} requests)")
+    finally:
+        server.terminate()
+        try:
+            stdout, stderr = server.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            stdout, stderr = server.communicate()
+        if server.returncode not in (0, -15):
+            print(f"PortMate HTTP bridge exited with {server.returncode}\n{stdout}\n{stderr}", file=sys.stderr)
+
+
+@asynccontextmanager
+async def open_http_streams(endpoint: str) -> AsyncIterator[tuple]:
+    headers = {"Authorization": f"Bearer {HTTP_TOKEN}"}
+    if MODERN_STREAMABLE_HTTP:
+        async with httpx.AsyncClient(headers=headers, timeout=10) as http_client:
+            async with streamable_http_client(endpoint, http_client=http_client) as streams:
+                yield streams
+    else:
+        async with streamable_http_client(
+            endpoint,
+            headers=headers,
+            timeout=10,
+            sse_read_timeout=10,
+        ) as streams:
+            yield streams
+
+
+async def main() -> None:
+    binary = bridge_binary()
+    require(binary.is_file(), f"PortMate MCP bridge does not exist: {binary}")
+    await check_stdio(binary)
+    await check_http(binary)
+
+
+if __name__ == "__main__":
+    anyio.run(main)

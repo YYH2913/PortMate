@@ -1,0 +1,65 @@
+[
+  {
+    "name": "busybox-telnetd-alpine-3.19",
+    "dockerfile": "tests/compat/busybox-telnetd-alpine.Dockerfile",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.19"
+    },
+    "protocol": "telnet",
+    "mode": "shell"
+  },
+  {
+    "name": "busybox-telnetd-alpine-3.21",
+    "dockerfile": "tests/compat/busybox-telnetd-alpine.Dockerfile",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.21"
+    },
+    "protocol": "telnet",
+    "mode": "shell"
+  },
+  {
+    "name": "inetutils-telnetd-debian-bookworm",
+    "dockerfile": "tests/compat/inetutils-telnetd-debian.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_VERSION": "bookworm-slim"
+    },
+    "protocol": "telnet",
+    "mode": "shell"
+  },
+  {
+    "name": "ncat-echo-alpine-3.20",
+    "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.20"
+    },
+    "containerEnv": {
+      "PORTMATE_TCP_MODE": "echo"
+    },
+    "protocol": "tcp",
+    "mode": "echo"
+  },
+  {
+    "name": "socat-burst-close-alpine-3.20",
+    "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.20"
+    },
+    "containerEnv": {
+      "PORTMATE_TCP_MODE": "burst-close"
+    },
+    "protocol": "tcp",
+    "mode": "burst-close"
+  },
+  {
+    "name": "socat-close-alpine-3.20",
+    "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.20"
+    },
+    "containerEnv": {
+      "PORTMATE_TCP_MODE": "close"
+    },
+    "protocol": "tcp",
+    "mode": "close"
+  }
+]

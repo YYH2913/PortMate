@@ -543,6 +543,20 @@ export interface HostKeyScanResult {
   evaluation: HostKeyEvaluation;
 }
 
+export interface SshHealthReport {
+  sessionId: string;
+  runtimeId: string;
+  checkedAt: string;
+  status: "healthy" | "degraded" | "unresponsive";
+  transportRoundTripMs?: number | null;
+  channelRoundTripMs?: number | null;
+  sftpRoundTripMs?: number | null;
+  transportError?: string | null;
+  channelError?: string | null;
+  sftpError?: string | null;
+  sftpProbed: boolean;
+}
+
 export interface FileEntry {
   name: string;
   path: string;

@@ -12,11 +12,14 @@ This repository currently contains the active desktop implementation slice:
 - WindTerm-style OneKeys manager for encrypted Account/SSH credentials, bound public-key identities, session binding, terminal-prompt completion, and explicit injection
 - Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
 - Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
+- Host Key Manager filtering, grouped inspection, field-safe concurrent editing, batch delete/copy, persisted `lastSeen`, and Profile/Store mirror synchronization
 - Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux session/window/pane management, layout, and synchronization paths in the Tauri backend
 - Standalone serial analyzer window with live/persistent Raw-log sources, capture/delimiter/fixed-length/idle-gap framing, RFC 1055 SLIP, COBS, and Modbus RTU decoding, bookmarks, filtering, paging, and exact source-frame export
 - SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
 - Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
 - Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
+- A persistent current-session Sysmon sidebar with process, disk, network, and trend drill-down
+- Three-stage SSH health reports for transport keepalive, exec-channel round trips, and optional SFTP initialization
 - SSH `profile-vault` private keys, optional saved passwords/passphrases, and the live MCP IPC token stored in a persistent OS keyring with only `secretRef` metadata persisted in files/SQLite
 - SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a private atomic JSON compatibility export
 - Standalone `portmate-mcp` stdio bridge exposing MCP resources, tools, prompts, and local IPC control over JSON-RPC
@@ -29,6 +32,12 @@ crates/portmate-mcp    MCP stdio bridge for external AI/MCP hosts
 src                    React workbench UI
 src-tauri              Tauri desktop shell and backend commands
 ```
+
+The Tauri backend keeps the application orchestration in `src-tauri/src/lib.rs`, while protocol and
+security boundaries are being extracted incrementally. `ssh_security.rs` owns ssh-agent signing,
+authentication filtering, one-shot trust, TOFU persistence, and Host Key observation updates;
+`ssh_health.rs` owns the three-stage health command and its stable report contract. Proxy, Telnet,
+Tmux protocol parsing, and app-data migration already have their own modules as well.
 
 ## Development
 
@@ -410,6 +419,11 @@ server's `2025-06-18` protocol version, completes initialize/initialized, ping, 
 templates, prompts, and a resource read, then verifies that closing the client also terminates the
 bridge process.
 
+The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4 and 1.28.1 virtual
+environments over both stdio and stateless Streamable HTTP. Each version completes the same
+8-message/request lifecycle over both transports, covering the legacy `2024-11-05` negotiation used
+by 1.9.4 and the current `2025-06-18` negotiation used by 1.28.1 without sharing site packages.
+
 Read tools remain available by default while the grant store is empty. After any grant is saved,
 the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`
 scope for the requested operation. An empty allowed-session list means all sessions; otherwise
@@ -477,10 +491,15 @@ cargo run -p portmate-mcp -- --http
 ```bash
 npm test
 npm run test:terminal-compat
+npm run test:vttest-compat
 npm run test:tmux-workflow
+npm run test:tmux-version-compat
 npm run test:workspace-ui
 npm run test:mcp-http-client
 npm run test:mcp-stdio-client
+npm run test:mcp-python-client
+npm run test:ssh-server-compat
+npm run test:tcp-telnet-server-compat
 npm run build
 npm run desktop:build
 npm run test:linux-package
@@ -489,6 +508,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The terminal compatibility, Tmux workflow, and workspace UI checks use the installed `/usr/bin/google-chrome` without downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The terminal suite also requires the system `script`, `vim`, `less`, and procps `top` commands: it captures real PTY sessions, verifies alternate-screen isolation for Vim/less and clear-screen/cursor restoration for top, then renders and searches a bounded 6,000-line log under a 15-second regression limit. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, verifies simultaneous left/right/bottom docks, same-dock tab switching with inactive content collapsed, cross-dock drag placement, reload persistence, full-width terminal recovery, and transactional Profile deletion, exercises reverse-order file listing/properties, detached-terminal catch-up and poll-failure retention, serialized serial-analyzer and tunnel refreshes, cross-session Sysmon isolation, and deleted-Profile session/log poll invalidation, checks real filters, compact top-menu capability states, exact contextual view actions, protocol-filtered transfers, Profile-backed startup selectors, and queued one-time MCP approvals, confirms that non-input UI operations produce no terminal writes, and captures focused desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix. Repository Cargo configuration defaults libtest to four threads because the desktop matrix concurrently launches OpenSSH, socat, Stronghold, and SQLite workers; an explicit `RUST_TEST_THREADS` environment value still overrides it.
+
+`npm run test:vttest-compat` drives 13 automated vttest suites through real bidirectional PTYs on
+Debian bookworm (`20221229`), Ubuntu 24.04 (`20230201`), and Debian trixie (`20241208`). The same
+browser terminal renders Vim, less, top, and dialog from Debian, Ubuntu, and Alpine containers and
+checks alternate-screen or cursor/SGR restoration according to each program's real behavior. SRM is
+not automated because vttest requires unpredictable human key input, and DECREQTPARM is not claimed
+because xterm.js does not answer it.
+
+`npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
+3.3a, and 3.5a, including session/window/pane state, synchronization, layout mutations, and
+control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
+health path against OpenSSH 9.6/9.7/9.9 and Dropbear, then injects six health failures: paused
+transport, rejected and silent exec channels, missing and rejected SFTP subsystems, and runtime
+replacement. The TCP/Telnet matrix covers BusyBox telnetd, inetutils telnetd, Ncat, and Socat.
 
 The workspace suite also resolves two log previews in reverse order, holds MCP HTTP configuration across repeated tab activation, closes and reopens the OneKey manager while resolving two saves in reverse order, and exercises three-stage Host Key import and Client Identity edit lifecycles. It opens Session Settings, applies a newer Profile through the normal background poll, then verifies that the save request still carries the dialog's edit-time baseline so the backend can preserve the concurrent field. The Client Identity sequence first proves that a response released after close still reaches the parent list, then holds an older edit across another close/reopen cycle while a newer manager commits the final value before that stale response is released. A private-key import lifecycle freezes Secret creation across the same close/reopen boundary, lets the replacement manager commit the current identity, then verifies that releasing the old write performs no Profile save and removes the orphan Secret. Connection-credential checks fail the second of two Secret writes and then fail the Profile commit after one successful write, proving both cleanup paths leave no retained Secret and no false saved-password state. Session Settings checks freeze a staged Vault-key write to prove every close/submit control remains disabled, then separately prove cancellation deletes the ref while a successful Profile commit retains it without an erroneous cleanup call. A separate Vault lifecycle freezes an unlock across close/reopen, verifies that the replacement manager remains disabled without issuing a duplicate mutation, then confirms automatic state convergence before locking the Vault again. Profile-mutation failure checks additionally prove that a complete compensation read accepts both changed Profile fields with unchanged runtime counters and an authoritative empty session list. These checks cover dialog and app-lifetime request gates rather than relying only on unit-level gate behavior.
 
@@ -516,9 +549,20 @@ PortMate intentionally does not use the system `known_hosts` file as the source 
 
 This prevents common embedded lab failures where several devices reuse `192.168.1.10:22` but have different host keys.
 
+For an active SSH/Tmux runtime, Session Settings can request a health report without opening another
+transport. A keepalive failure is `unresponsive`; a successful keepalive followed by exec-marker or
+optional SFTP failure is `degraded`; all requested stages succeeding is `healthy`. Every report is
+bound to the runtime generation captured at the start, so reconnect or replacement during the probe
+returns an explicit retry error instead of publishing stale latency data.
+
 ## Current Implementation Boundary
 
 The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, profile-level SSH reconnect delay and protocol KeepAlive thresholds, profile-level HTTP CONNECT/SOCKS5 routing with optional authentication for SSH/Tmux/TCP/Telnet, multi-hop SSH Jump Host backend connection chains with per-hop host-key verification, per-hop independent password/passphrase `secretRef`, per-hop identity selection, per-hop inherited or custom host-key mode/alias/trust scope/rotation/IP-check policy, target host-key scan over multi-hop chains, Jump Host host-key confirmation for the first untrusted or changed hop in the chain, session-settings editing, and initial SSH reconnect loops, local Shell PTY with resize, raw TCP, Telnet socket mode with directional BINARY, NAWS, profile TERMINAL-TYPE and NVT negotiation, profile-configurable reconnect delay and bounded OS TCP keepalive, Telnet CRLF/raw byte IAC handling plus Raw TCP byte preservation with loopback mock regressions, TCP/Telnet and Serial automatic reconnect with latest-profile reload and stale-attempt rejection, runtime `lastDisconnect` and `lastDisconnectReason` diagnostics surfaced in summaries, SQLite, and bounded resource-tree/pane-control tooltips and accessible descriptions, serial open/read/write with runtime port enumeration, configurable reconnect delay and receive-idle detection, DTR/RTS, Break, real Hex byte sending, exact bounded Serial RX/TX capture with direction/Hex/ASCII filtering and atomic JSONL export, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels with running-list, stop controls, connection counters, byte counters, last-error status, enabled-tunnel reconstruction after SSH reconnect, and passive remote-listener health checks that restore revoked forwards while preserving IDs, labels, and ports, bounded local Linux/macOS/Windows and remote Linux/macOS/FreeBSD/Windows Sysmon summaries with process/disk/interface detail views and CPU/memory/RX/TX history trends, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks with retry/speed metadata, profile-level B/s rate limits, per-session background queued scheduling, `.portmate-part` offset resume for local copy, SFTP upload/download/remote copy, SCP upload, and remote-command SCP copy, plus from-zero temporary-file retries for SCP download, full session queue view, batch cancel/retry controls, and live progress/cancel for local/SFTP/SCP copy loops, remote-command SCP copy with target-size polling, and X/Y/ZModem block loops, append-only raw/text/jsonl log shards, profile-vault private key/password/passphrase/proxy-password storage through the OS keyring or Stronghold, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust with connection-failure confirmation dialog and one-shot trust, host/client key manager workflows for known_hosts import/export, host-key scope/profile filtering, host-key field editing, batch host-key delete/copy-to-profile, grouped and filtered client identities, cross-profile client-key copy/reorder/reference removal, protected Jump Host references, profile-vault private-key import, and individual or batch ssh-agent identity addition, modal settings, MCP manifests/tools/resources, stdio/loopback HTTP MCP bridge, and live desktop IPC for trusted MCP control. Automated integration coverage includes isolated OpenSSH TOFU, same-endpoint host-key mismatch blocking, public-key/PTY/native-SFTP write and transfer/SCP workflows, live SSH reconnect-delay changes with tunnel restoration, authenticated and unauthenticated HTTP CONNECT/SOCKS5 transport forwarding and rejection handling, a real two-hop Jump Host direct-tcpip chain with per-endpoint TOFU and second-hop key-mismatch blocking, all three SSH tunnel modes, SOCKS5 protocol negotiation, `socat` virtual serial PTY exact binary capture/I/O, no-probe receive-idle detection, and reconnect migration to a different PTY path with live delay changes, plus Telnet/raw TCP loopback, configurable keepalive, and reconnect-delay behavior.
+
+GSSAPI authentication is not implemented. The pinned `russh` 0.60 client API exposes password,
+public-key, keyboard-interactive, and agent authentication but no client GSSAPI exchange. Adding it
+requires a separately reviewed SSH transport integration or upstream client support; a profile flag
+alone would not constitute working GSSAPI.
 
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
@@ -563,4 +607,11 @@ disconnect timestamp and reason remain visible throughout the new handshake.
 
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP upload/download/remote-copy and SCP upload resume from pre-existing `.portmate-part` prefixes; SCP download safely replaces stale prefixes from byte zero. The matrix also covers cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets; delayed russh direct-tcpip and session-channel confirmations verify the terminal, auxiliary exec, SFTP, and tunnel setup deadlines plus owning-session disconnect paths. A delayed russh-sftp `LSTAT` verifies that an in-flight request is issued only once, cancellation returns promptly, and the following exec channel reuses the same SSH connection. A silent russh `scp -f` peer verifies prompt download cancellation and the SCP idle deadline; a separate silent remote-copy exec peer verifies cancellation, idle timeout, bounded cleanup, and reuse of the same SSH connection for the following channel.
 
-Still pending: real FreeBSD/macOS SSH hosts in the remote-forward integration matrix, real macOS/Windows desktop builds and a Windows OpenSSH host for Sysmon, broader vttest protocol baselines beyond the automated Vim/less/top and long-log terminal suite, MCP HTTP clients beyond the pinned official TypeScript SDK, broader transfer/serial integration matrices, cross-platform file-path coverage outside the validated transfer source/destination/default-directory and file-manager local-path surfaces, and native keyring/Stronghold fault-injection matrices on Windows/macOS/Linux. MCP IPC/HTTP tokens remain native-keyring records and are outside profile credential migration.
+Still pending: GSSAPI, real FreeBSD/macOS SSH hosts in the remote-forward integration matrix, a
+Windows OpenSSH host for remote Sysmon, SDK matrices beyond the pinned TypeScript and Python clients,
+broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
+validated transfer and file-manager surfaces, and native keyring/Stronghold fault injection. The
+`Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
+compatibility job, but a successful workflow run and retained artifacts are still required as native
+platform evidence. Signing, Apple notarization, and installed-application smoke tests remain release
+gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile credential migration.

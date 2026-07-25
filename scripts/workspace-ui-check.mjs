@@ -362,6 +362,7 @@ try {
     window.__oneKeys = [];
     window.__hostKeys = [];
     window.__hostKeySequence = 0;
+    window.__hostKeyScanMode = "unknown";
     window.__deferHostKeyMutations = false;
     window.__pendingHostKeyMutations = [];
     window.__deferProfileMutations = false;
@@ -596,6 +597,21 @@ try {
             window.__pendingSysmon.push({ command, args: structuredClone(args), resolve });
           });
         }
+        if (command === "check_ssh_health") {
+          return {
+            sessionId: args.sessionId,
+            runtimeId: "runtime-health-check",
+            checkedAt: new Date().toISOString(),
+            status: "healthy",
+            transportRoundTripMs: 7,
+            channelRoundTripMs: 11,
+            sftpRoundTripMs: args.probeSftp ? 13 : null,
+            transportError: null,
+            channelError: null,
+            sftpError: null,
+            sftpProbed: Boolean(args.probeSftp),
+          };
+        }
         if (command === "list_mcp_grants") {
           const result = structuredClone(window.__mcpGrants);
           if (!window.__deferGrantLists) return result;
@@ -642,6 +658,78 @@ try {
           return new Promise((resolve) => window.__pendingOneKeyMutations.push({ result, resolve }));
         }
         if (command === "list_host_keys") return { keys: structuredClone(window.__hostKeys) };
+        if (command === "scan_ssh_host_key") {
+          const profile = args.profile;
+          const mismatch = window.__hostKeyScanMode === "mismatch";
+          const observation = {
+            host: profile.connection.endpoint.host,
+            port: profile.connection.endpoint.port,
+            alias: profile.connection.hostKeyPolicy.alias || profile.id,
+            algorithm: "ssh-ed25519",
+            publicKeyBase64: mismatch ? "U0NBTi1TRUNPTkQ=" : "U0NBTi1GSVJTVA==",
+          };
+          const fingerprint = mismatch ? "SHA256:scan-second" : "SHA256:scan-first";
+          const expected = window.__hostKeys.filter((key) => (
+            key.profileId === profile.id
+              && key.alias === observation.alias
+              && key.port === observation.port
+              && key.algorithm === observation.algorithm
+          ));
+          return {
+            label: "目标 SSH",
+            observation,
+            evaluation: mismatch
+              ? {
+                status: "mismatch",
+                alias: observation.alias,
+                host: observation.host,
+                port: observation.port,
+                algorithm: observation.algorithm,
+                expected: structuredClone(expected),
+                observedFingerprintSha256: fingerprint,
+                reason: "simulated host key rotation",
+              }
+              : {
+                status: "unknown",
+                alias: observation.alias,
+                host: observation.host,
+                port: observation.port,
+                algorithm: observation.algorithm,
+                fingerprintSha256: fingerprint,
+                reason: "simulated first observation",
+              },
+          };
+        }
+        if (command === "trust_scanned_host_key") {
+          const { profile, observation, decision } = args.request;
+          if (decision === "replace-for-profile") {
+            window.__hostKeys = window.__hostKeys.filter((key) => !(
+              key.profileId === profile.id
+                && key.alias === observation.alias
+                && key.port === observation.port
+                && key.algorithm === observation.algorithm
+            ));
+          }
+          const now = new Date().toISOString();
+          const key = {
+            id: `host-key-${++window.__hostKeySequence}`,
+            profileId: profile.id,
+            alias: observation.alias || profile.connection.hostKeyPolicy.alias || profile.id,
+            host: observation.host,
+            port: observation.port,
+            algorithm: observation.algorithm,
+            fingerprintSha256: observation.publicKeyBase64 === "U0NBTi1TRUNPTkQ="
+              ? "SHA256:scan-second"
+              : "SHA256:scan-first",
+            publicKeyBase64: observation.publicKeyBase64,
+            scope: decision === "append-to-project" ? "project" : "profile",
+            label: "scanned host key",
+            firstSeen: now,
+            lastSeen: now,
+          };
+          window.__hostKeys.push(key);
+          return structuredClone(key);
+        }
         if (command === "list_ssh_agent_identities") return [];
         if (command === "portable_vault_status") return structuredClone(window.__portableVault);
         if (command === "unlock_portable_vault") {
@@ -872,12 +960,12 @@ try {
     `resource dock is not using the compact width: ${initial.leftDockWidth}`);
   assert(initial.docks.active.left === "explorer"
     && JSON.stringify(initial.docks.left) === JSON.stringify(["explorer", "fileManager"])
-    && JSON.stringify(initial.docks.right) === JSON.stringify(["history"])
+    && JSON.stringify(initial.docks.right) === JSON.stringify(["sysmon", "history"])
     && JSON.stringify(initial.docks.bottom) === JSON.stringify(["sender"]),
   `default dock layout is wrong: ${JSON.stringify(initial.docks)}`);
-  assert(initial.snapshotVersion === 6
+  assert(initial.snapshotVersion === 7
     && initial.sizes.left === null && initial.sizes.right === null && initial.sizes.bottom === null,
-  `legacy panel snapshot did not migrate to bounded v6 sizes: ${JSON.stringify(initial)}`);
+  `legacy panel snapshot did not migrate to bounded v7 sizes: ${JSON.stringify(initial)}`);
   assert(initial.connectionSummaryRows === 0 && initial.connectionControls === 1,
     `connection context is still duplicated: ${JSON.stringify(initial)}`);
   assert(JSON.stringify(initial.paneHeaderActions) === JSON.stringify(["断开 Edge Router"]),
@@ -906,8 +994,13 @@ try {
     `placeholder status text survived: ${initial.status}`);
   assert(initial.panels.explorer && initial.panels.statusBar
     && !initial.panels.fileManager && !Object.hasOwn(initial.panels, "sessions")
-    && !initial.panels.history && !initial.panels.sender,
+    && !initial.panels.history && !initial.panels.sysmon && !initial.panels.sender,
   `migrated v2 panel snapshot is wrong: ${JSON.stringify(initial.panels)}`);
+
+  async function togglePanel(label) {
+    await page.locator(".menu-trigger", { hasText: "工作区" }).click();
+    await page.locator(".menu-popover button", { hasText: label }).click();
+  }
 
   await page.locator('.workspace-pane-tab[data-view-id="view-edge"]').click({ button: "right" });
   const workspaceViewMenu = page.locator(".workspace-view-context-menu");
@@ -1127,21 +1220,6 @@ Host staging
   await tunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
   await tunnelDialog.waitFor({ state: "detached" });
 
-  await page.evaluate(() => {
-    window.__deferSysmon = true;
-    window.__pendingSysmon = [];
-  });
-  await page.locator(".menu-trigger", { hasText: "工具" }).click();
-  await page.locator(".menu-popover button", { hasText: "Sysmon" }).click();
-  const sysmonDialog = page.locator(".sysmon-dialog");
-  await sysmonDialog.waitFor();
-  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "edge-router"));
-  await page.evaluate(() => {
-    const bench = [...document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session")]
-      .find((button) => button.textContent?.includes("Bench UART"));
-    bench.click();
-  });
-  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "bench-uart"));
   const sysmonSnapshot = (sessionId, cpuPercent, networkInterfaces = []) => ({
     sessionId,
     ts: new Date().toISOString(),
@@ -1153,22 +1231,61 @@ Host staging
     loadAverage: [0.1, 0.2, 0.3],
     memoryTotalBytes: 1024,
     memoryAvailableBytes: 768,
-    processes: [],
+    processes: [{ pid: 42, name: `${sessionId}-worker`, cpuPercent: 4.2, memoryPercent: 2.5, rssBytes: 52_428_800 }],
     disks: [],
     networkInterfaces,
   });
-  await page.evaluate(({ bench }) => {
-    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
-      pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
-    }
-  }, { bench: sysmonSnapshot("bench-uart", 22.2, [{
+  const benchSysmon = sysmonSnapshot("bench-uart", 22.2, [{
     name: "eth0",
     addresses: ["fe80::25/64", "127.0.0.1/8", "192.168.33.121/24", "2001:db8::42/64"],
     rxBytes: 1024,
     txBytes: 2048,
     rxKbps: 1,
     txKbps: 2,
-  }]) });
+  }]);
+  await page.evaluate(() => {
+    window.__deferSysmon = true;
+    window.__pendingSysmon = [];
+  });
+  await togglePanel("Sysmon 侧栏");
+  const sysmonSidebar = page.locator('.workspace-dock-content[data-panel="sysmon"]');
+  await sysmonSidebar.waitFor();
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => (
+    request.command === "refresh_sysmon" && request.args.sessionId === "edge-router"
+  )));
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => (
+    request.command === "refresh_sysmon" && request.args.sessionId === "bench-uart"
+  )));
+  await page.evaluate(({ bench, staleEdge }) => {
+    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
+    }
+    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [staleEdge] : staleEdge);
+    }
+    window.__pendingSysmon = [];
+  }, { bench: benchSysmon, staleEdge: sysmonSnapshot("edge-router", 99.9) });
+  await page.waitForFunction(() => document.querySelector('.workspace-dock-content[data-panel="sysmon"]')?.textContent?.includes("22.2%"));
+  const sysmonSidebarText = await sysmonSidebar.textContent();
+  assert(sysmonSidebarText.includes("Bench UART")
+    && sysmonSidebarText.includes("22.2%")
+    && sysmonSidebarText.includes("25.0%")
+    && sysmonSidebarText.includes("bench-uart-worker")
+    && !sysmonSidebarText.includes("99.9%"),
+  `Sysmon sidebar accepted stale data or omitted metrics: ${sysmonSidebarText}`);
+  await page.screenshot({ path: `${screenshotPrefix}-sysmon-sidebar.png`, fullPage: true });
+
+  await sysmonSidebar.getByRole("button", { name: "打开 Sysmon 详情", exact: true }).click();
+  const sysmonDialog = page.locator(".sysmon-dialog");
+  await sysmonDialog.waitFor();
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "bench-uart"));
+  await page.evaluate(({ bench }) => {
+    for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
+    }
+    window.__pendingSysmon = [];
+  }, { bench: benchSysmon });
   await page.waitForFunction(() => document.querySelector(".sysmon-dialog")?.textContent?.includes("22.2%"));
   await sysmonDialog.getByRole("button", { name: /^网络/ }).click();
   const sysmonNetworkAddress = await sysmonDialog.locator(".sysmon-network-table tbody tr td").nth(1).textContent();
@@ -1177,20 +1294,57 @@ Host staging
     `Sysmon table did not prioritize usable addresses: ${JSON.stringify(sysmonNetworkAddress)}`);
   assert(sysmonNetworkTitle === "192.168.33.121/24 / 2001:db8::42/64 / fe80::25/64 / 127.0.0.1/8",
     `Sysmon address tooltip order is wrong: ${JSON.stringify(sysmonNetworkTitle)}`);
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" })
+    .evaluate((button) => button.click());
+  await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "edge-router"));
   await page.evaluate(({ edge }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
       pending.resolve(pending.command === "list_sysmon_history" ? [edge] : edge);
     }
     window.__pendingSysmon = [];
-    window.__deferSysmon = false;
-  }, { edge: sysmonSnapshot("edge-router", 99.9) });
-  await page.waitForTimeout(100);
+  }, { edge: sysmonSnapshot("edge-router", 33.3) });
+  await page.waitForFunction(() => document.querySelector(".sysmon-dialog")?.textContent?.includes("33.3%"));
   const sysmonText = await sysmonDialog.textContent();
-  assert(sysmonText.includes("Bench UART") && sysmonText.includes("22.2%") && !sysmonText.includes("99.9%"),
-    `a stale Sysmon response crossed active sessions: ${sysmonText}`);
+  assert(sysmonText.includes("Edge Router") && sysmonText.includes("33.3%") && !sysmonText.includes("22.2%"),
+    `Sysmon details did not follow the active session: ${sysmonText}`);
   await sysmonDialog.getByRole("button", { name: "关闭 Sysmon", exact: true }).click();
   await sysmonDialog.waitFor({ state: "detached" });
-  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
+
+  const sysmonRightResizer = page.getByRole("separator", { name: "调整右侧停靠区宽度", exact: true });
+  await sysmonRightResizer.focus();
+  await sysmonRightResizer.press("ArrowLeft");
+  await sysmonRightResizer.press("ArrowLeft");
+  await page.waitForFunction(() => JSON.parse(
+    localStorage.getItem("portmate.workspacePanels.v2") || "null",
+  )?.sizes?.right === 312);
+  await togglePanel("Sysmon 侧栏");
+  await sysmonSidebar.waitFor({ state: "detached" });
+  await togglePanel("Sysmon 侧栏");
+  await sysmonSidebar.waitFor();
+  const restoredSysmonSidebar = await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
+    return {
+      active: document.querySelector('.workspace-dock[data-dock="right"]')?.getAttribute("data-active-panel"),
+      width: document.querySelector('.workspace-dock[data-dock="right"]')?.getBoundingClientRect().width ?? 0,
+      right: snapshot.docks.right,
+      visible: snapshot.panels.sysmon,
+    };
+  });
+  assert(restoredSysmonSidebar.active === "sysmon"
+    && restoredSysmonSidebar.width >= 311 && restoredSysmonSidebar.width <= 313
+    && restoredSysmonSidebar.right[0] === "sysmon"
+    && restoredSysmonSidebar.visible,
+  `Sysmon dock position or width did not survive hide/reopen: ${JSON.stringify(restoredSysmonSidebar)}`);
+  await page.getByRole("separator", { name: "调整右侧停靠区宽度", exact: true }).dblclick();
+  await page.waitForFunction(() => JSON.parse(
+    localStorage.getItem("portmate.workspacePanels.v2") || "null",
+  )?.sizes?.right === null);
+  await togglePanel("Sysmon 侧栏");
+  await sysmonSidebar.waitFor({ state: "detached" });
+  await page.evaluate(() => {
+    window.__pendingSysmon = [];
+    window.__deferSysmon = false;
+  });
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
@@ -1261,11 +1415,6 @@ Host staging
   await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
   assert(await page.evaluate(() => window.__clipboardText) === "Edge Router",
     "resource context menu targeted a different session");
-
-  async function togglePanel(label) {
-    await page.locator(".menu-trigger", { hasText: "工作区" }).click();
-    await page.locator(".menu-popover button", { hasText: label }).click();
-  }
 
   await togglePanel("文件管理器");
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
@@ -1614,7 +1763,7 @@ Host staging
   await bottomResizer.press("ArrowUp");
   await page.waitForFunction(() => {
     const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
-    return snapshot?.version === 6
+    return snapshot?.version === 7
       && snapshot.sizes?.left === 420
       && snapshot.sizes?.right === 296
       && snapshot.sizes?.bottom === 226;
@@ -1925,6 +2074,24 @@ Host staging
   assert(await recordAuthSuccess.getAttribute("aria-pressed") === "true", "SSH successful-auth recording is not enabled by default");
   await recordAuthSuccess.click();
   assert(await recordAuthSuccess.getAttribute("aria-pressed") === "false", "SSH successful-auth recording cannot be disabled from Session Settings");
+  await sectionSelect.selectOption("验证");
+  await page.waitForFunction(() => (
+    document.querySelector('select[aria-label="会话类型"]')?.value === "SSH"
+      && document.querySelector('select[aria-label="会话配置项"]')?.value === "验证"
+  ));
+  const sshHealthButton = page.locator(".session-settings-dialog .ssh-health-check")
+    .getByRole("button", { name: "检查 SSH 健康", exact: true });
+  assert(await sshHealthButton.count() === 1, `SSH health action is unavailable: ${JSON.stringify({
+    protocol: await protocolSelect.inputValue(),
+    section: await sectionSelect.inputValue(),
+    form: await page.locator(".session-settings-dialog .session-form").textContent(),
+  })}`);
+  await sshHealthButton.click();
+  await page.getByText("健康 · SSH 7 ms · Channel 11 ms · SFTP 13 ms", { exact: true }).waitFor();
+  const sshHealthCall = await page.evaluate(() => window.__invokeCalls.findLast((call) => call.command === "check_ssh_health"));
+  assert(sshHealthCall?.args?.probeSftp === true,
+    `SSH health UI omitted the SFTP probe: ${JSON.stringify(sshHealthCall)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-ssh-health.png`, fullPage: true });
   await protocolSelect.selectOption("SSH");
   await sectionSelect.selectOption("传输");
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1
@@ -2421,8 +2588,8 @@ Host staging
   await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="right"]')?.getAttribute("data-active-panel") === "sender");
   await page.waitForFunction(() => {
     const snapshot = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
-    return snapshot?.version === 6
-      && JSON.stringify(snapshot.docks?.right) === JSON.stringify(["history", "sender"])
+    return snapshot?.version === 7
+      && JSON.stringify(snapshot.docks?.right) === JSON.stringify(["sysmon", "history", "sender"])
       && snapshot.docks?.bottom?.length === 0;
   });
   await dataTransfer.dispose();
@@ -2504,6 +2671,7 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
 
   await togglePanel("历史命令");
+  await togglePanel("Sysmon 侧栏");
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await page.evaluate(() => {
     const center = document.querySelector(".center-workspace")?.getBoundingClientRect();
@@ -3060,6 +3228,45 @@ Host staging
     && hostKeyLifecycleState.updateCalls === 1
     && JSON.stringify(hostKeyLifecycleState.expectedAliases) === JSON.stringify(["first.example"]),
   `a stale host-key mutation replaced the latest manager state: ${JSON.stringify(hostKeyLifecycleState)}`);
+
+  await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).click();
+  const hostKeyScanResult = thirdKeyManager.locator(".host-key-scan-result");
+  await hostKeyScanResult.waitFor();
+  assert((await hostKeyScanResult.textContent()).includes("尚未信任此 Host Key")
+    && (await hostKeyScanResult.textContent()).includes("SHA256:scan-first")
+    && (await thirdKeyManager.locator(".host-key-scan-panel > header").textContent()).includes("10.0.0.1:2222"),
+  "unknown Host Key scan did not expose the target and observed fingerprint");
+  await hostKeyScanResult.getByRole("button", { name: "加入 Profile", exact: true }).click();
+  await thirdKeyManager.locator(".key-row", { hasText: "edge-router:2222" }).waitFor();
+  await hostKeyLifecyclePage.evaluate(() => { window.__hostKeyScanMode = "mismatch"; });
+  await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).click();
+  await hostKeyScanResult.waitFor();
+  const mismatchScanText = await hostKeyScanResult.textContent();
+  assert(mismatchScanText.includes("Host Key 与已保存记录不一致")
+    && mismatchScanText.includes("SHA256:scan-second")
+    && mismatchScanText.includes("SHA256:scan-first"),
+  `Host Key mismatch comparison is incomplete: ${mismatchScanText}`);
+  await hostKeyLifecyclePage.screenshot({ path: `${screenshotPrefix}-host-key-scan.png`, fullPage: true });
+  await hostKeyScanResult.getByRole("button", { name: "替换 Profile", exact: true }).click();
+  await hostKeyLifecyclePage.waitForFunction(() => (
+    window.__hostKeys.filter((key) => key.alias === "edge-router").length === 1
+      && window.__hostKeys.find((key) => key.alias === "edge-router")?.fingerprintSha256 === "SHA256:scan-second"
+  ));
+  const hostKeyScanState = await hostKeyLifecyclePage.evaluate(() => ({
+    scanCalls: window.__invokeCalls.filter((call) => call.command === "scan_ssh_host_key").length,
+    decisions: window.__invokeCalls
+      .filter((call) => call.command === "trust_scanned_host_key")
+      .map((call) => call.args.request.decision),
+    saved: window.__hostKeys
+      .filter((key) => key.alias === "edge-router")
+      .map((key) => ({ fingerprint: key.fingerprintSha256, lastSeen: key.lastSeen })),
+  }));
+  assert(hostKeyScanState.scanCalls === 2
+    && JSON.stringify(hostKeyScanState.decisions) === JSON.stringify(["append-to-profile", "replace-for-profile"])
+    && hostKeyScanState.saved.length === 1
+    && hostKeyScanState.saved[0].fingerprint === "SHA256:scan-second"
+    && !Number.isNaN(Date.parse(hostKeyScanState.saved[0].lastSeen)),
+  `Host Key scan trust/replace lifecycle is wrong: ${JSON.stringify(hostKeyScanState)}`);
   assert(hostKeyLifecycleErrors.length === 0,
     `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);
   await hostKeyLifecyclePage.close();
@@ -3967,6 +4174,7 @@ Host staging
     grantLifecycle: grantLifecycleState,
     oneKeyLifecycle: oneKeyLifecycleState,
     hostKeyLifecycle: hostKeyLifecycleState,
+    hostKeyScan: hostKeyScanState,
     profileLifecycle: profileLifecycleState,
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
     openSshImportLifecycle: openSshImportLifecycleState,
@@ -4000,6 +4208,9 @@ Host staging
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-tunnel.png`,
+      `${screenshotPrefix}-sysmon-sidebar.png`,
+      `${screenshotPrefix}-host-key-scan.png`,
+      `${screenshotPrefix}-ssh-health.png`,
       `${screenshotPrefix}-file-manager.png`,
       `${screenshotPrefix}-workspace-window.png`,
       `${screenshotPrefix}-sender.png`,

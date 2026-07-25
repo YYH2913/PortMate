@@ -43,6 +43,7 @@ import type {
 } from "./secret-migration-state";
 import type {
   ConnectionConfig,
+  HostKeyScanResult,
   HostKeyStore,
   IdentityRef,
   SessionProfile,
@@ -199,9 +200,12 @@ export default function KeyManagerDialog({
   const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
   const [editingKeyId, setEditingKeyId] = useState("");
   const [editDraft, setEditDraft] = useState<HostKeyEditDraft | null>(null);
+  const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
+  const [hostKeyScanBusy, setHostKeyScanBusy] = useState(false);
+  const [hostKeyScanError, setHostKeyScanError] = useState("");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery">());
+  const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery" | "host-scan">());
   const mountedRef = useRef(true);
   const credentialSyncRevisionRef = useRef(credentialSyncRevision);
 
@@ -269,6 +273,13 @@ export default function KeyManagerDialog({
       setMigrationPreviewState(null);
     }
   }, [profileId, sessions, migrationScopeProfileId]);
+
+  useEffect(() => {
+    refreshGate.current.invalidate("host-scan");
+    setHostKeyScan(null);
+    setHostKeyScanError("");
+    setHostKeyScanBusy(false);
+  }, [profileId]);
 
   useEffect(() => {
     if (editingKeyId && !hostKeys.keys.some((key) => key.id === editingKeyId)) {
@@ -658,6 +669,61 @@ export default function KeyManagerDialog({
       setExportText(await invokeBackend<string>("export_known_hosts", {}));
     } catch (error) {
       setError(formatError(error));
+    }
+  }
+
+  async function scanSelectedProfileHostKey() {
+    if (!selectedProfile) return;
+    const token = refreshGate.current.begin("host-scan");
+    if (token === null) return;
+    setHostKeyScanBusy(true);
+    setHostKeyScanError("");
+    try {
+      const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
+        profile: prepareProfile(selectedProfile),
+        password: null,
+        passphrase: null,
+      });
+      if (!refreshGate.current.isCurrent("host-scan", token)) return;
+      setHostKeyScan(scan);
+    } catch (error) {
+      if (refreshGate.current.isCurrent("host-scan", token)) {
+        setHostKeyScan(null);
+        setHostKeyScanError(formatError(error));
+      }
+    } finally {
+      const current = refreshGate.current.isCurrent("host-scan", token);
+      refreshGate.current.finish("host-scan", token);
+      if (current) setHostKeyScanBusy(false);
+    }
+  }
+
+  async function trustHostKeyScan(decision: "append-to-profile" | "append-to-project" | "replace-for-profile") {
+    if (!selectedProfile || !hostKeyScan) return;
+    const mutationToken = onHostKeyMutationStart();
+    refreshGate.current.invalidate("host-scan");
+    setHostKeyScanBusy(true);
+    setHostKeyScanError("");
+    setError("");
+    setStatus("");
+    try {
+      await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
+        request: {
+          profile: prepareProfile(selectedProfile),
+          observation: hostKeyScan.observation,
+          decision,
+        },
+      });
+      const nextStore = await invokeBackend<HostKeyStore>("list_host_keys", {});
+      const accepted = onChange(nextStore, mutationToken);
+      if (!accepted || !mountedRef.current) return;
+      setHostKeyScan(null);
+      setStatus(decision === "replace-for-profile" ? "Profile Host key 已替换" : "扫描到的 Host key 已加入信任 Store");
+    } catch (error) {
+      if (mountedRef.current) setHostKeyScanError(formatError(error));
+    } finally {
+      onHostKeyMutationFinish(mutationToken);
+      if (mountedRef.current) setHostKeyScanBusy(false);
     }
   }
 
@@ -1317,7 +1383,7 @@ export default function KeyManagerDialog({
                 </label>
                 <strong>{key.alias}:{key.port}</strong>
                 <span>{key.algorithm} · {key.fingerprintSha256}</span>
-                <small>{key.scope} · {key.label ?? key.host}</small>
+                <small>{key.scope} · {key.label ?? key.host} · 最近验证 {formatHostKeyDate(key.lastSeen)}</small>
                 <div className="key-row-actions">
                   <button onClick={() => startEditKey(key)}>编辑</button>
                   <button onClick={() => void copyHostKeyToProfile(key)} disabled={credentialMutationControlsDisabled || !selectedProfile}>复制到 Profile</button>
@@ -1336,6 +1402,36 @@ export default function KeyManagerDialog({
                 ))}
               </select>
             </DialogField>
+            <section className="host-key-scan-panel" aria-live="polite">
+              <header>
+                <div><strong>当前 Host Key</strong><small>{selectedProfile ? describeSshProfileTarget(selectedProfile) : "未选择 Profile"}</small></div>
+                <button type="button" onClick={() => void scanSelectedProfileHostKey()} disabled={!selectedProfile || hostKeyScanBusy}>
+                  <RefreshCw size={14} className={hostKeyScanBusy ? "loading" : ""} />{hostKeyScanBusy ? "扫描中" : "扫描"}
+                </button>
+              </header>
+              {hostKeyScan ? (
+                <div className={`host-key-scan-result ${hostKeyScan.evaluation.status}`}>
+                  <div className="host-key-scan-status">
+                    {hostKeyScan.evaluation.status === "trusted" ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+                    <strong>{hostKeyScanStatus(hostKeyScan)}</strong>
+                  </div>
+                  <dl>
+                    <div><dt>目标</dt><dd>{hostKeyScan.observation.alias || hostKeyScan.observation.host}:{hostKeyScan.observation.port}</dd></div>
+                    <div><dt>算法</dt><dd>{hostKeyScan.observation.algorithm}</dd></div>
+                    <div><dt>指纹</dt><dd>{hostKeyScanFingerprint(hostKeyScan)}</dd></div>
+                    {hostKeyScan.evaluation.status === "mismatch" ? <div><dt>已保存</dt><dd>{hostKeyScan.evaluation.expected.map((key) => key.fingerprintSha256).join(" · ")}</dd></div> : null}
+                  </dl>
+                  {hostKeyScan.evaluation.status !== "trusted" ? (
+                    <div className="host-key-scan-actions">
+                      <button type="button" onClick={() => void trustHostKeyScan("append-to-profile")} disabled={hostKeyScanBusy}>加入 Profile</button>
+                      <button type="button" onClick={() => void trustHostKeyScan("append-to-project")} disabled={hostKeyScanBusy}>加入 Project</button>
+                      {hostKeyScan.evaluation.status === "mismatch" ? <button type="button" className="danger" onClick={() => void trustHostKeyScan("replace-for-profile")} disabled={hostKeyScanBusy}>替换 Profile</button> : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {hostKeyScanError ? <div className="host-key-scan-error">{hostKeyScanError}</div> : null}
+            </section>
             {editDraft ? (
               <section className="key-edit-panel">
                 <div className="key-edit-heading">
@@ -1372,6 +1468,7 @@ export default function KeyManagerDialog({
                 <div className="key-edit-meta">
                   <span>{editingKey?.algorithm ?? ""}</span>
                   <span>{editingKey?.fingerprintSha256 ?? ""}</span>
+                  <span>首次 {formatHostKeyDate(editingKey?.firstSeen)} · 最近 {formatHostKeyDate(editingKey?.lastSeen)}</span>
                 </div>
                 <div className="key-actions">
                   <button type="button" onClick={() => void saveEditedHostKey()}>保存编辑</button>
@@ -1627,6 +1724,36 @@ function DialogField({ label, children }: { label: string; children: ReactNode }
 
 function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & { connection: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> } {
   return profile.connection.kind === "ssh" || profile.connection.kind === "tmux";
+}
+
+function describeSshProfileTarget(profile: SessionProfile) {
+  if (!isSshLikeProfile(profile)) return profile.name;
+  const alias = profile.connection.hostKeyPolicy.alias?.trim();
+  const host = alias || profile.connection.endpoint.host;
+  return `${host}:${profile.connection.endpoint.port}`;
+}
+
+function hostKeyScanStatus(scan: HostKeyScanResult) {
+  switch (scan.evaluation.status) {
+    case "trusted":
+      return "与已信任 Host Key 一致";
+    case "unknown":
+      return "尚未信任此 Host Key";
+    case "mismatch":
+      return "Host Key 与已保存记录不一致";
+  }
+}
+
+function hostKeyScanFingerprint(scan: HostKeyScanResult) {
+  return scan.evaluation.status === "mismatch"
+    ? scan.evaluation.observedFingerprintSha256
+    : scan.evaluation.fingerprintSha256;
+}
+
+function formatHostKeyDate(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
 }
 
 function identityStableKey(identity: IdentityRef) {

@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION];
 const STORE_KEY: &str = "session-store";
 const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -164,7 +165,7 @@ impl PortMateMcp {
         }
 
         let result = match request.method.as_str() {
-            "initialize" => self.initialize_result(),
+            "initialize" => self.initialize_result(&request.params),
             "ping" | "notifications/initialized" | "notifications/cancelled" => json!({}),
             "tools/list" => json!({
                 "tools": tool_definitions().into_iter().map(|tool| json!({
@@ -212,9 +213,10 @@ impl PortMateMcp {
         }))
     }
 
-    fn initialize_result(&self) -> Value {
+    fn initialize_result(&self, params: &Value) -> Value {
+        let protocol_version = negotiated_mcp_protocol_version(params);
         json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "protocolVersion": protocol_version,
             "capabilities": {
                 "tools": { "listChanged": false },
                 "resources": { "subscribe": false, "listChanged": false },
@@ -605,9 +607,9 @@ impl PortMateMcp {
             .collect()
     }
 
-    fn sse_state_payload(&self) -> Value {
+    fn sse_state_payload(&self, protocol_version: &str) -> Value {
         json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "protocolVersion": protocol_version,
             "serverInfo": {
                 "name": "portmate-mcp",
                 "title": "PortMate MCP Bridge",
@@ -1620,6 +1622,7 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
             origin.as_deref(),
         );
     }
+    let protocol_version = http_protocol_version(&request).to_string();
     if !has_json_http_content_type(&request) {
         return http_response(
             415,
@@ -1664,13 +1667,25 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
                     "message": format!("parse error: {parse_error}")
                 }
             });
-            return http_response(200, "OK", &json_rpc_http_body(&response), origin.as_deref());
+            return http_response_with_protocol(
+                200,
+                "OK",
+                &json_rpc_http_body(&response),
+                origin.as_deref(),
+                &protocol_version,
+            );
         }
     };
     let body = match handle_http_json_rpc(value) {
         Ok(Some(value)) => json_rpc_http_body(&value),
         Ok(None) => {
-            return http_response(202, "Accepted", "", origin.as_deref());
+            return http_response_with_protocol(
+                202,
+                "Accepted",
+                "",
+                origin.as_deref(),
+                &protocol_version,
+            );
         }
         Err(error) => json_rpc_http_body(&json!({
             "jsonrpc": "2.0",
@@ -1679,9 +1694,9 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
         })),
     };
     if accepts_sse && !accepts_json {
-        http_sse_message_response(&body, origin.as_deref())
+        http_sse_message_response(&body, origin.as_deref(), &protocol_version)
     } else {
-        http_response(200, "OK", &body, origin.as_deref())
+        http_response_with_protocol(200, "OK", &body, origin.as_deref(), &protocol_version)
     }
 }
 
@@ -1809,15 +1824,33 @@ fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
         .is_some_and(|candidate| constant_time_str_eq(candidate.trim(), token))
 }
 
+fn negotiated_mcp_protocol_version(params: &Value) -> &str {
+    params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .filter(|version| MCP_PROTOCOL_VERSIONS.contains(version))
+        .unwrap_or(MCP_PROTOCOL_VERSION)
+}
+
+fn http_protocol_version(request: &HttpRequest) -> &str {
+    request
+        .headers
+        .get("mcp-protocol-version")
+        .map(String::as_str)
+        .filter(|version| MCP_PROTOCOL_VERSIONS.contains(version))
+        .unwrap_or(MCP_PROTOCOL_VERSION)
+}
+
 fn validate_mcp_protocol_version(request: &HttpRequest) -> Result<()> {
     let Some(version) = request.headers.get("mcp-protocol-version") else {
         return Ok(());
     };
-    if version == MCP_PROTOCOL_VERSION {
+    if MCP_PROTOCOL_VERSIONS.contains(&version.as_str()) {
         Ok(())
     } else {
         Err(anyhow!(
-            "unsupported MCP-Protocol-Version `{version}`; expected `{MCP_PROTOCOL_VERSION}`"
+            "unsupported MCP-Protocol-Version `{version}`; supported versions: {}",
+            MCP_PROTOCOL_VERSIONS.join(", ")
         ))
     }
 }
@@ -1882,6 +1915,16 @@ fn constant_time_str_eq(a: &str, b: &str) -> bool {
 }
 
 fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
+    http_response_with_protocol(status, reason, body, origin, MCP_PROTOCOL_VERSION)
+}
+
+fn http_response_with_protocol(
+    status: u16,
+    reason: &str,
+    body: &str,
+    origin: Option<&str>,
+    protocol_version: &str,
+) -> String {
     let content_type = if body.is_empty() {
         "text/plain"
     } else {
@@ -1896,7 +1939,7 @@ fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) ->
             "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
         ));
     }
-    response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
+    response.push_str(&format!("MCP-Protocol-Version: {protocol_version}\r\n"));
     response.push_str(
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
     );
@@ -1930,16 +1973,20 @@ fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) ->
             origin.as_deref(),
         );
     }
-    let mut response = http_sse_headers(origin.as_deref(), None);
+    let protocol_version = http_protocol_version(request);
+    let mut response = http_sse_headers(origin.as_deref(), None, protocol_version);
     response.push_str(&sse_event(
         "endpoint",
         &json!({
             "uri": "/mcp",
             "method": "POST",
-            "protocolVersion": MCP_PROTOCOL_VERSION
+            "protocolVersion": protocol_version
         }),
     ));
-    response.push_str(&sse_event("portmate.state", &mcp_sse_state_payload()));
+    response.push_str(&sse_event(
+        "portmate.state",
+        &mcp_sse_state_payload(protocol_version),
+    ));
     response
 }
 
@@ -1948,6 +1995,7 @@ fn write_http_sse_stream(
     request: HttpRequest,
     config: &HttpConfig,
 ) -> Result<()> {
+    let protocol_version = http_protocol_version(&request).to_string();
     let response = http_sse_stream_start_response(&request, config);
     stream.write_all(response.as_bytes())?;
     stream.flush()?;
@@ -1960,24 +2008,28 @@ fn write_http_sse_stream(
         thread::sleep(Duration::from_secs(5));
         let event = format!(
             ": keep-alive\n\n{}",
-            sse_event("portmate.state", &mcp_sse_state_payload())
+            sse_event("portmate.state", &mcp_sse_state_payload(&protocol_version))
         );
         stream.write_all(event.as_bytes())?;
         stream.flush()?;
     }
 }
 
-fn http_sse_message_response(body: &str, origin: Option<&str>) -> String {
+fn http_sse_message_response(body: &str, origin: Option<&str>, protocol_version: &str) -> String {
     let event = sse_event(
         "message",
         &serde_json::from_str::<Value>(body).unwrap_or_else(|_| json!({ "text": body })),
     );
-    let mut response = http_sse_headers(origin, Some(event.len()));
+    let mut response = http_sse_headers(origin, Some(event.len()), protocol_version);
     response.push_str(&event);
     response
 }
 
-fn http_sse_headers(origin: Option<&str>, content_length: Option<usize>) -> String {
+fn http_sse_headers(
+    origin: Option<&str>,
+    content_length: Option<usize>,
+    protocol_version: &str,
+) -> String {
     let mut response =
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
             .to_string();
@@ -1991,7 +2043,7 @@ fn http_sse_headers(origin: Option<&str>, content_length: Option<usize>) -> Stri
             "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
         ));
     }
-    response.push_str(&format!("MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n"));
+    response.push_str(&format!("MCP-Protocol-Version: {protocol_version}\r\n"));
     response.push_str(
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
     );
@@ -2023,8 +2075,8 @@ fn sse_event_with_limit(event: &str, data: &Value, max_data_bytes: usize) -> Str
     output
 }
 
-fn mcp_sse_state_payload() -> Value {
-    PortMateMcp::new().sse_state_payload()
+fn mcp_sse_state_payload(protocol_version: &str) -> Value {
+    PortMateMcp::new().sse_state_payload(protocol_version)
 }
 
 fn error(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse {
@@ -2452,7 +2504,7 @@ mod tests {
         let resources = server.resources_list_result().to_string();
         assert!(resources.contains("refresh-session"));
         assert!(!resources.contains("hidden-session"));
-        let sse_state = server.sse_state_payload().to_string();
+        let sse_state = server.sse_state_payload(MCP_PROTOCOL_VERSION).to_string();
         assert!(sse_state.contains("visible snapshot"));
         assert!(!sse_state.contains("hidden snapshot"));
 
@@ -2586,7 +2638,7 @@ mod tests {
             list_sessions_text(&mut server),
             resource_text(&server, "portmate://sessions"),
             resource_text(&server, "portmate://sessions/refresh-session/state"),
-            server.sse_state_payload().to_string(),
+            server.sse_state_payload(MCP_PROTOCOL_VERSION).to_string(),
             server
                 .prompt_get(&json!({
                     "name": "diagnose_session",
@@ -3167,10 +3219,18 @@ mod tests {
         let mut unsupported_version = test_http_request(headers.clone());
         unsupported_version
             .headers
-            .insert("mcp-protocol-version".to_string(), "2025-03-26".to_string());
+            .insert("mcp-protocol-version".to_string(), "2099-01-01".to_string());
         let response = handle_http_request(unsupported_version, &config);
         assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
-        assert!(response.contains("expected `2025-06-18`"));
+        assert!(response.contains("2024-11-05, 2025-03-26, 2025-06-18"));
+
+        let mut historical = test_http_request(headers.clone());
+        historical
+            .headers
+            .insert("mcp-protocol-version".to_string(), "2025-03-26".to_string());
+        let response = handle_http_request(historical, &config);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("MCP-Protocol-Version: 2025-03-26"));
 
         let mut compatible = test_http_request(headers);
         compatible.headers.insert(
@@ -3194,7 +3254,7 @@ mod tests {
             "Bearer secret-token".to_string(),
         );
         headers.insert("accept".to_string(), "text/event-stream".to_string());
-        headers.insert("mcp-protocol-version".to_string(), "2025-03-26".to_string());
+        headers.insert("mcp-protocol-version".to_string(), "2099-01-01".to_string());
 
         let response = handle_http_request(test_http_get_request(headers), &config);
         assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
@@ -3240,6 +3300,31 @@ mod tests {
         .unwrap();
         assert_eq!(response["id"], json!(1));
         assert_eq!(response["result"]["serverInfo"]["name"], "portmate-mcp");
+    }
+
+    #[test]
+    fn initialize_negotiates_supported_historical_versions_and_falls_back_to_latest() {
+        for version in MCP_PROTOCOL_VERSIONS {
+            let response = handle_http_json_rpc(json!({
+                "jsonrpc": "2.0",
+                "id": version,
+                "method": "initialize",
+                "params": { "protocolVersion": version }
+            }))
+            .unwrap()
+            .unwrap();
+            assert_eq!(response["result"]["protocolVersion"], version);
+        }
+
+        let response = handle_http_json_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "future",
+            "method": "initialize",
+            "params": { "protocolVersion": "2099-01-01" }
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
     }
 
     #[test]

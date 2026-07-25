@@ -14,8 +14,9 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 
 - [ ] `npm ci` succeeds with the Node version in `.nvmrc`.
 - [ ] `npm test` and `npm run build` pass.
-- [ ] `npm run test:terminal-compat`, `npm run test:tmux-workflow`, and `npm run test:workspace-ui` pass.
-- [ ] `npm run test:mcp-stdio-client` and `npm run test:mcp-http-client` pass.
+- [ ] `npm run test:terminal-compat`, `npm run test:vttest-compat`, `npm run test:tmux-workflow`, `npm run test:tmux-version-compat`, and `npm run test:workspace-ui` pass.
+- [ ] `npm run test:mcp-stdio-client`, `npm run test:mcp-http-client`, and `npm run test:mcp-python-client` pass.
+- [ ] `npm run test:ssh-server-compat` and `npm run test:tcp-telnet-server-compat` pass on a Linux Docker host.
 - [ ] `cargo fmt --all -- --check` passes.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace -- --test-threads=4` passes without unexpected skipped integration tools.
@@ -23,6 +24,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 ## Packaging
 
 - [ ] `npm run desktop:build` succeeds on clean Linux, Windows, and macOS runners.
+- [ ] The `Native CI` workflow succeeds for `ubuntu-24.04`, `windows-2022`, `macos-14`, and the Linux compatibility job; retain its bundle artifacts with the release evidence.
 - [ ] Linux produces DEB, RPM, and AppImage; Windows produces signed MSI/NSIS; macOS produces signed and notarized app/DMG.
 - [ ] Every package contains the main executable, target-specific `portmate-mcp` sidecar, standard icons, and license metadata.
 - [ ] On Linux, `npm run test:linux-package` passes against the freshly built DEB, RPM, and AppImage, including full file/symlink permission checks.

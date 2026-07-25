@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Lock, Plus, Trash2, X } from "lucide-react";
+import { Activity, Lock, Plus, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import {
@@ -57,6 +57,7 @@ import type {
   ProxyConfig,
   SessionProfile,
   SessionSummary,
+  SshHealthReport,
   TriggerAction,
   TriggerSpec,
   TrustedHostKey,
@@ -585,6 +586,9 @@ function SshAdvancedFields({
   const [secretStatus, setSecretStatus] = useState("");
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
   const [hostKeyStatus, setHostKeyStatus] = useState("");
+  const [sshHealth, setSshHealth] = useState<SshHealthReport | null>(null);
+  const [sshHealthBusy, setSshHealthBusy] = useState(false);
+  const [sshHealthError, setSshHealthError] = useState("");
   const [jumpSecretDrafts, setJumpSecretDrafts] = useState<Record<string, string>>({});
   const [jumpStatus, setJumpStatus] = useState("");
 
@@ -792,6 +796,22 @@ function SshAdvancedFields({
   }
 
   if (section === "验证") {
+    const checkHealth = async () => {
+      if (sshHealthBusy) return;
+      setSshHealthBusy(true);
+      setSshHealth(null);
+      setSshHealthError("");
+      try {
+        setSshHealth(await invokeBackend<SshHealthReport>("check_ssh_health", {
+          sessionId: draft.id,
+          probeSftp: true,
+        }));
+      } catch (error) {
+        setSshHealthError(formatError(error));
+      } finally {
+        setSshHealthBusy(false);
+      }
+    };
     const scanHostKey = async () => {
       setHostKeyStatus("");
       setHostKeyScan(null);
@@ -849,6 +869,16 @@ function SshAdvancedFields({
           <div className="inline-actions">
             <button type="button" onClick={() => void scanHostKey()}>扫描 Host Key</button>
             <span>{hostKeyScan ? describeHostKeyEvaluation(hostKeyScan) : hostKeyStatus}</span>
+          </div>
+        </DialogField>
+        <DialogField label="健康:">
+          <div className="inline-actions ssh-health-check">
+            <button type="button" aria-label="检查 SSH 健康" onClick={() => void checkHealth()} disabled={sshHealthBusy}>
+              <Activity size={14} />{sshHealthBusy ? "检查中" : "检查 SSH 健康"}
+            </button>
+            <span className={sshHealth?.status === "healthy" ? "healthy" : sshHealth ? "degraded" : ""} title={sshHealth ? sshHealthDiagnostic(sshHealth) : sshHealthError}>
+              {sshHealth ? sshHealthSummary(sshHealth) : sshHealthError}
+            </span>
           </div>
         </DialogField>
         {hostKeyScan ? (
@@ -1325,6 +1355,22 @@ function DialogToggleField({ label, checked, onChange }: { label: string; checke
       </button>
     </label>
   );
+}
+
+function sshHealthSummary(report: SshHealthReport) {
+  const label = report.status === "healthy" ? "健康" : report.status === "degraded" ? "部分降级" : "无响应";
+  const timings = [
+    report.transportRoundTripMs == null ? null : `SSH ${report.transportRoundTripMs} ms`,
+    report.channelRoundTripMs == null ? null : `Channel ${report.channelRoundTripMs} ms`,
+    report.sftpRoundTripMs == null ? null : `SFTP ${report.sftpRoundTripMs} ms`,
+  ].filter(Boolean);
+  return timings.length ? `${label} · ${timings.join(" · ")}` : label;
+}
+
+function sshHealthDiagnostic(report: SshHealthReport) {
+  return [report.transportError, report.channelError, report.sftpError]
+    .filter((value): value is string => Boolean(value))
+    .join("；") || sshHealthSummary(report);
 }
 
 function formatError(error: unknown) {

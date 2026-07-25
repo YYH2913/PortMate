@@ -1,0 +1,10 @@
+PORTMATE FULLSCREEN PROBE
+
+This fixture is rendered by real full-screen terminal programs in the
+automated compatibility matrix.
+
+Line 01: cursor placement
+Line 02: alternate screen
+Line 03: color and attributes
+Line 04: resize stability
+Line 05: primary screen restoration

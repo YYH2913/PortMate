@@ -22,13 +22,14 @@ import {
 describe("workspace panel state", () => {
   it("uses compact defaults for missing or invalid state", () => {
     expect(normalizeWorkspacePanelVisibility(null)).toEqual(defaultWorkspacePanelVisibility);
-    expect(normalizeWorkspacePanelVisibility({ version: 7, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
+    expect(normalizeWorkspacePanelVisibility({ version: 8, panels: { explorer: false } })).toEqual(defaultWorkspacePanelVisibility);
     expect(normalizeWorkspaceDockLayout(null)).toEqual(defaultWorkspaceDockLayout);
     expect(normalizeWorkspaceDockSizes(null)).toEqual(defaultWorkspaceDockSizes);
     expect(defaultWorkspacePanelVisibility).toEqual({
       explorer: true,
       fileManager: false,
       history: false,
+      sysmon: false,
       sender: false,
       statusBar: true,
     });
@@ -46,6 +47,7 @@ describe("workspace panel state", () => {
       explorer: true,
       fileManager: true,
       history: true,
+      sysmon: false,
       sender: false,
       statusBar: true,
     });
@@ -70,13 +72,13 @@ describe("workspace panel state", () => {
       },
     })).toEqual({
       left: ["sender", "fileManager"],
-      right: ["explorer", "history"],
+      right: ["explorer", "history", "sysmon"],
       bottom: [],
       active: { left: "sender", right: "explorer", bottom: null },
     });
   });
 
-  it("migrates v4/v5 dock layouts and bounds v6 dock sizes", () => {
+  it("migrates v4/v5 dock layouts and bounds v6/v7 dock sizes", () => {
     expect(normalizeWorkspaceDockSizes({
       version: 4,
       sizes: { left: 400, right: 400, bottom: 400 },
@@ -90,7 +92,7 @@ describe("workspace panel state", () => {
       sizes: { left: "320", right: Number.NaN, bottom: null },
     })).toEqual(defaultWorkspaceDockSizes);
     expect(normalizeWorkspaceDockSizes({
-      version: 6,
+      version: 7,
       sizes: { left: 360, right: 280, bottom: 210 },
     })).toEqual({ left: 360, right: 280, bottom: 210 });
   });
@@ -118,7 +120,7 @@ describe("workspace panel state", () => {
 
   it("moves and activates dock tabs without losing panel identity", () => {
     const moved = moveWorkspacePanelToDock(defaultWorkspaceDockLayout, "sender", "right", 0);
-    expect(moved.right).toEqual(["sender", "history"]);
+    expect(moved.right).toEqual(["sender", "sysmon", "history"]);
     expect(moved.bottom).toEqual([]);
     expect(moved.active).toEqual({ left: "explorer", right: "sender", bottom: null });
     expect(workspaceDockForPanel(moved, "sender")).toBe("right");
@@ -149,6 +151,7 @@ describe("workspace panel state", () => {
       explorer: false,
       fileManager: false,
       history: false,
+      sysmon: false,
       sender: false,
       statusBar: false,
     });

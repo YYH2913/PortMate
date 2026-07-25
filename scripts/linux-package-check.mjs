@@ -95,8 +95,8 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
-      "stdio SDK per package",
-      "HTTP SDK per package",
+      "TypeScript/Python stdio SDK per package",
+      "TypeScript/Python HTTP SDK per package",
     ],
   }, null, 2));
 } finally {
@@ -312,6 +312,10 @@ function checkPackagedBridge(kind, bridge) {
       env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
     });
   }
+  run(process.execPath, ["scripts/mcp-python-client-check.mjs"], {
+    cwd: projectRoot,
+    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+  });
   console.log(`${kind} MCP sidecar protocol checks passed`);
 }
 
