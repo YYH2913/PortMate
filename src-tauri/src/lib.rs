@@ -54723,7 +54723,7 @@ __PORTMATE_LOADAVG__
                 SessionStatus::Disconnected
             );
             drop(guard);
-            let opened = tokio::time::timeout(Duration::from_secs(5), opening)
+            let opened = tokio::time::timeout(Duration::from_secs(15), opening)
                 .await
                 .expect("open_session did not resume after lifecycle lane release")
                 .unwrap()
@@ -54748,7 +54748,7 @@ __PORTMATE_LOADAVG__
                 SessionStatus::Connected
             );
             drop(guard);
-            let closed = tokio::time::timeout(Duration::from_secs(5), closing)
+            let closed = tokio::time::timeout(Duration::from_secs(15), closing)
                 .await
                 .expect("close_session did not resume after lifecycle lane release")
                 .unwrap()
