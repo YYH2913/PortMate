@@ -370,7 +370,7 @@ npm run build
 
 ### P3：架构整理与发布准备
 
-1. `tmux_protocol.rs`、`telnet_protocol.rs`、`proxy_protocol.rs` 已承接对应协议状态机；`serial_capture.rs` 迁出有界 Serial capture 模型、增量快照和 session registry；`ssh_security.rs` 进一步迁出 ssh-agent signer/auth、一次性信任、TOFU/Host Key 持久化、`lastSeen` 和 Profile 镜像同步，`ssh_health.rs` 迁出三层健康命令与报告。`lib.rs` 已减少约 760 行，但 TCP/Telnet 生命周期、transport、transfer、MCP、storage/Stronghold orchestration 仍需继续按所有权边界机械拆分。
+1. `tmux_protocol.rs`、`telnet_protocol.rs`、`proxy_protocol.rs` 已承接对应协议状态机；`serial_capture.rs` 迁出有界 Serial capture 模型、增量快照和 session registry；`ssh_security.rs` 进一步迁出 ssh-agent signer/auth、一次性信任、TOFU/Host Key 持久化、`lastSeen` 和 Profile 镜像同步，`ssh_health.rs` 迁出三层健康命令与报告；`one_key_prompt.rs` 迁出终端转义清洗、凭据提示识别、事件时效和字段匹配验证。`lib.rs` 已累计减少约 950 行，但 TCP/Telnet 生命周期、transport、transfer、MCP、storage/Stronghold orchestration 仍需继续按所有权边界机械拆分。
 2. Bundle identifier 数据目录迁移、PortMate 自有状态判定和 Store/legacy JSON/vault 路径常量已从启动主文件提取到 `app_data_migration.rs`，保留 bootstrap-only WebView 目录替换和双活 Store fail-closed 回归。SQLite 大型追加表已改为增量写入并有 INSERT/DELETE 触发器回归；继续拆分其余存储模块并评估 kv/JSON 兼容快照的异步化。
 3. Stronghold portable vault 已覆盖 OS keyring 不可用/禁用场景、主密码轮换、SSH/Tmux 凭据批量迁移和保守的跨重启恢复；继续把 journal/recovery 与 provider 适配从 `src-tauri/src/lib.rs` 拆为独立 security/storage 模块。
 4. Linux DEB/RPM/AppImage 打包与逐包检查已完成；`.github/workflows/native-ci.yml` 已定义 Ubuntu/Windows/macOS 原生测试和 Tauri bundle artifact，以及 Linux 全兼容矩阵。仍需实际 CI 成功证据、Windows/macOS 包结构专项检查、签名和 Apple notarization。
