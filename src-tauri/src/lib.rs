@@ -32764,7 +32764,7 @@ mod tests {
             let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
             open_tcp_session(&state, profile.clone()).await.unwrap();
 
-            tokio::time::timeout(Duration::from_secs(2), server)
+            tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, server)
                 .await
                 .expect("fragmented Telnet server timed out")
                 .expect("fragmented Telnet server failed");
@@ -47072,13 +47072,14 @@ __PORTMATE_LOADAVG__
             .unwrap();
 
             let _ = release_tx.send(());
-            let (first_packet, retry_packet) = tokio::time::timeout(Duration::from_secs(2), server)
-                .await
-                .expect("modem retry server timed out")
-                .expect("modem retry server failed");
+            let (first_packet, retry_packet) =
+                tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, server)
+                    .await
+                    .expect("modem retry server timed out")
+                    .expect("modem retry server failed");
             assert_eq!(first_packet, expected_packet);
             assert_eq!(retry_packet, first_packet);
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, async {
                 loop {
                     if !state.tcp.lock().unwrap().contains_key(&profile.id) {
                         break;
