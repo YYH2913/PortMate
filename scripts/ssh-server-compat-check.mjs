@@ -25,8 +25,11 @@ for (const entry of matrix) {
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
-    run("docker", ["run", "--detach", "--rm", "--name", container, "--publish", "127.0.0.1::22", image], { quiet: true });
-    const published = run("docker", ["port", container, "22/tcp"], { capture: true }).stdout.trim();
+    run("docker", ["run", "--detach", "--rm", "--name", container, "--publish", "127.0.0.1::22", image], {
+      quiet: true,
+      timeout: 30_000,
+    });
+    const published = run("docker", ["port", container, "22/tcp"], { capture: true, timeout: 10_000 }).stdout.trim();
     const port = Number(published.match(/:(\d+)$/)?.[1]);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error(`Docker returned an invalid SSH port for ${entry.name}: ${published}`);
@@ -52,7 +55,7 @@ for (const entry of matrix) {
     });
     results.push({ name: entry.name, port });
   } finally {
-    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true });
+    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: 10_000 });
   }
 }
 
@@ -81,8 +84,11 @@ for (const entry of healthFaultMatrix) {
       "--publish",
       "127.0.0.1::22",
       healthFaultImage,
-    ], { quiet: true });
-    const published = run("docker", ["port", container, "22/tcp"], { capture: true }).stdout.trim();
+    ], {
+      quiet: true,
+      timeout: 30_000,
+    });
+    const published = run("docker", ["port", container, "22/tcp"], { capture: true, timeout: 10_000 }).stdout.trim();
     const port = Number(published.match(/:(\d+)$/)?.[1]);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error(`Docker returned an invalid SSH health fault port for ${entry.name}: ${published}`);
@@ -113,8 +119,8 @@ for (const entry of healthFaultMatrix) {
     });
     verifiedHealthFaults.push(entry.name);
   } finally {
-    run("docker", ["unpause", container], { quiet: true, allowFailure: true });
-    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true });
+    run("docker", ["unpause", container], { quiet: true, allowFailure: true, timeout: 10_000 });
+    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: 10_000 });
   }
 }
 
@@ -196,8 +202,14 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     stdio: options.capture || options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout ?? 300_000,
   });
-  if (result.error && !options.allowFailure) throw result.error;
+  if (result.error && !options.allowFailure) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(`${command} ${args.join(" ")} exceeded its ${options.timeout ?? 300_000} ms timeout`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
     const details = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);

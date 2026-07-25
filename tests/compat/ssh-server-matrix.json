@@ -21,6 +21,10 @@
     }
   },
   {
+    "name": "openssh-debian-bookworm",
+    "dockerfile": "tests/compat/openssh-debian.Dockerfile"
+  },
+  {
     "name": "dropbear-alpine-3.20",
     "dockerfile": "tests/compat/dropbear-alpine.Dockerfile",
     "buildArgs": {
