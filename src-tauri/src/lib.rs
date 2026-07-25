@@ -47468,7 +47468,7 @@ __PORTMATE_LOADAVG__
                 "/destination.bin",
                 &late_status_progress,
                 Duration::from_secs(1),
-                Duration::from_secs(5),
+                Duration::from_secs(15),
             )
             .await
             .unwrap_err();
