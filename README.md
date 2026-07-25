@@ -39,7 +39,8 @@ capture frames, history snapshots, and the per-session registry. `ssh_security.r
 authentication filtering, one-shot trust, TOFU persistence, and Host Key observation updates;
 `ssh_health.rs` owns the three-stage health command and its stable report contract.
 `one_key_prompt.rs` owns terminal escape cleanup, credential-prompt recognition, and event-freshness
-validation. `state_snapshot.rs` owns Store and Portable Stronghold file locks, SHA-256 snapshot
+validation. `profile_normalization.rs` owns terminal/Profile metadata cleanup, legacy connection
+defaults, and trust/authentication normalization. `state_snapshot.rs` owns Store and Portable Stronghold file locks, SHA-256 snapshot
 versions, cross-process stale-write checks, and Stronghold commit/rekey guards. `sqlite_schema.rs`
 owns the SQLite tables, indexes, schema version, and backward-compatible column migrations;
 `sqlite_mirror.rs` owns typed profile/runtime mirrors and incremental event, audit, timeline, and
