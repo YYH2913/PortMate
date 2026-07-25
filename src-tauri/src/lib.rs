@@ -59,6 +59,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 mod app_data_migration;
 mod proxy_protocol;
+mod serial_capture;
 mod ssh_health;
 mod ssh_security;
 mod telnet_protocol;
@@ -66,6 +67,7 @@ mod tmux_protocol;
 
 use app_data_migration::*;
 use proxy_protocol::*;
+use serial_capture::*;
 use ssh_security::*;
 use telnet_protocol::*;
 use tmux_protocol::*;
@@ -174,11 +176,6 @@ const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
     "solarized-dark",
     "portmate-light",
 ];
-const MAX_SERIAL_CAPTURE_FRAMES: usize = 512;
-const MAX_SERIAL_CAPTURE_BYTES: usize = 1024 * 1024;
-const MAX_SERIAL_CAPTURE_FRAME_BYTES: usize = 64 * 1024;
-const MAX_SERIAL_CAPTURE_HISTORY_FRAMES: usize = 4_096;
-const MAX_SERIAL_CAPTURE_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
 const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -924,119 +921,6 @@ struct SerialRuntime {
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
     capture: Arc<Mutex<SerialCaptureBuffer>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SerialCaptureFrame {
-    pub id: String,
-    pub ts: DateTime<Utc>,
-    pub direction: EventDirection,
-    pub bytes: Vec<u8>,
-    pub original_length: usize,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Default)]
-struct SerialCaptureBuffer {
-    frames: VecDeque<SerialCaptureFrame>,
-    captured_bytes: usize,
-}
-
-impl SerialCaptureBuffer {
-    fn push(&mut self, direction: EventDirection, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        let captured_length = bytes.len().min(MAX_SERIAL_CAPTURE_FRAME_BYTES);
-        let frame = SerialCaptureFrame {
-            id: Uuid::new_v4().to_string(),
-            ts: Utc::now(),
-            direction,
-            bytes: bytes[..captured_length].to_vec(),
-            original_length: bytes.len(),
-            truncated: captured_length != bytes.len(),
-        };
-        while self.frames.len() >= MAX_SERIAL_CAPTURE_FRAMES
-            || self.captured_bytes.saturating_add(captured_length) > MAX_SERIAL_CAPTURE_BYTES
-        {
-            let Some(removed) = self.frames.pop_front() else {
-                break;
-            };
-            self.captured_bytes = self.captured_bytes.saturating_sub(removed.bytes.len());
-        }
-        self.captured_bytes = self.captured_bytes.saturating_add(captured_length);
-        self.frames.push_back(frame);
-    }
-
-    fn clear(&mut self) {
-        self.frames.clear();
-        self.captured_bytes = 0;
-    }
-
-    fn snapshot_since(&self, after_id: Option<&str>) -> SerialCaptureSnapshot {
-        let start = after_id
-            .and_then(|id| self.frames.iter().position(|frame| frame.id == id))
-            .map(|index| index + 1);
-        let reset = after_id.is_none() || start.is_none();
-        let frames = if reset {
-            self.frames.iter().cloned().collect()
-        } else {
-            self.frames
-                .iter()
-                .skip(start.unwrap_or_default())
-                .cloned()
-                .collect()
-        };
-        SerialCaptureSnapshot {
-            frames,
-            reset,
-            total_frames: self.frames.len(),
-            captured_bytes: self.captured_bytes,
-        }
-    }
-}
-
-fn serial_capture_for_session(
-    captures: &SerialCaptureMap,
-    session_id: &str,
-) -> Result<Arc<Mutex<SerialCaptureBuffer>>, String> {
-    let mut captures = captures.lock().map_err(|error| error.to_string())?;
-    Ok(Arc::clone(
-        captures
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(SerialCaptureBuffer::default()))),
-    ))
-}
-
-fn record_serial_capture(
-    capture: &Arc<Mutex<SerialCaptureBuffer>>,
-    direction: EventDirection,
-    bytes: &[u8],
-) {
-    if let Ok(mut capture) = capture.lock() {
-        capture.push(direction, bytes);
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SerialCaptureSnapshot {
-    pub frames: Vec<SerialCaptureFrame>,
-    pub reset: bool,
-    pub total_frames: usize,
-    pub captured_bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SerialCaptureHistorySnapshot {
-    pub frames: Vec<SerialCaptureFrame>,
-    pub enabled: bool,
-    pub total_frames: usize,
-    pub captured_bytes: usize,
-    pub dropped_frames: usize,
-    pub unavailable_frames: usize,
 }
 
 type SerialPortHandle = Box<dyn serialport::SerialPort>;
