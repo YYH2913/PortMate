@@ -424,6 +424,11 @@ environments over both stdio and stateless Streamable HTTP. Each version complet
 8-message/request lifecycle over both transports, covering the legacy `2024-11-05` negotiation used
 by 1.9.4 and the current `2025-06-18` negotiation used by 1.28.1 without sharing site packages.
 
+The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.6.1 from an isolated
+module and runs the same 8-message/request lifecycle over stdio and stateless Streamable HTTP. The
+server's `2025-06-18` fallback is verified explicitly; the Go module has its own locked dependency
+checksums and never shares Python site packages.
+
 Read tools remain available by default while the grant store is empty. After any grant is saved,
 the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`
 scope for the requested operation. An empty allowed-session list means all sessions; otherwise
@@ -498,6 +503,7 @@ npm run test:workspace-ui
 npm run test:mcp-http-client
 npm run test:mcp-stdio-client
 npm run test:mcp-python-client
+npm run test:mcp-go-client
 npm run test:ssh-server-compat
 npm run test:tcp-telnet-server-compat
 npm run build
@@ -527,7 +533,7 @@ The workspace suite also resolves two log previews in reverse order, holds MCP H
 
 The workspace suite also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures a focused 1440x900 Tunnel screenshot.
 
-`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact license, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs both official MCP SDK protocol checks against the bridge extracted from every package. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
+`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact license, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs the TypeScript, Python, and Go MCP SDK protocol checks against the bridge extracted from every package. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 
@@ -608,7 +614,7 @@ disconnect timestamp and reason remain visible throughout the new handshake.
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP upload/download/remote-copy and SCP upload resume from pre-existing `.portmate-part` prefixes; SCP download safely replaces stale prefixes from byte zero. The matrix also covers cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets; delayed russh direct-tcpip and session-channel confirmations verify the terminal, auxiliary exec, SFTP, and tunnel setup deadlines plus owning-session disconnect paths. A delayed russh-sftp `LSTAT` verifies that an in-flight request is issued only once, cancellation returns promptly, and the following exec channel reuses the same SSH connection. A silent russh `scp -f` peer verifies prompt download cancellation and the SCP idle deadline; a separate silent remote-copy exec peer verifies cancellation, idle timeout, bounded cleanup, and reuse of the same SSH connection for the following channel.
 
 Still pending: GSSAPI, real FreeBSD/macOS SSH hosts in the remote-forward integration matrix, a
-Windows OpenSSH host for remote Sysmon, SDK matrices beyond the pinned TypeScript and Python clients,
+Windows OpenSSH host for remote Sysmon, SDK matrices beyond the pinned TypeScript, Python, and Go clients,
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
 validated transfer and file-manager surfaces, and native keyring/Stronghold fault injection. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux

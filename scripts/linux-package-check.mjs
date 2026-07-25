@@ -95,8 +95,8 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
-      "TypeScript/Python stdio SDK per package",
-      "TypeScript/Python HTTP SDK per package",
+      "TypeScript/Python/Go stdio SDK per package",
+      "TypeScript/Python/Go HTTP SDK per package",
     ],
   }, null, 2));
 } finally {
@@ -313,6 +313,10 @@ function checkPackagedBridge(kind, bridge) {
     });
   }
   run(process.execPath, ["scripts/mcp-python-client-check.mjs"], {
+    cwd: projectRoot,
+    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+  });
+  run(process.execPath, ["scripts/mcp-go-client-check.mjs"], {
     cwd: projectRoot,
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
   });
