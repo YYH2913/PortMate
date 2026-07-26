@@ -110,7 +110,7 @@ public final class PortMateMcpJavaClientCheck {
 
     private static int exercise(McpClientTransport transport, String name) {
         McpSyncClient client = McpClient.sync(transport)
-            .clientInfo(McpSchema.Implementation.builder("portmate-java-sdk-check", SDK_VERSION).build())
+            .clientInfo(new McpSchema.Implementation("portmate-java-sdk-check", SDK_VERSION))
             .initializationTimeout(Duration.ofSeconds(10))
             .requestTimeout(Duration.ofSeconds(10))
             .build();
@@ -131,7 +131,7 @@ public final class PortMateMcpJavaClientCheck {
                 name + " resources/templates/list omitted session templates");
             require(!client.listPrompts().prompts().isEmpty(), name + " prompts/list returned no prompts");
             McpSchema.ReadResourceResult resource = client.readResource(
-                McpSchema.ReadResourceRequest.builder("portmate://sessions").build());
+                new McpSchema.ReadResourceRequest("portmate://sessions"));
             require(!resource.contents().isEmpty()
                     && "application/json".equals(resource.contents().get(0).mimeType()),
                 name + " returned the wrong sessions MIME type");

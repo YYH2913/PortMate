@@ -37,6 +37,7 @@ for (const entry of matrix) {
     `-Dmcp.sdk.version=${entry.version}`,
     `-Dportmate.mcp.protocol.version=${entry.protocolVersion}`,
     `-Dportmate.mcp.binary=${resolve(binary)}`,
+    "clean",
     "compile",
     "exec:java",
   ], { timeout: 180_000 });

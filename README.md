@@ -460,11 +460,12 @@ The official Ruby SDK matrix uses `mcp` 1.0.0 with pinned Faraday 2.14.3 and
 same 8-message/request lifecycle, explicitly negotiate `2025-06-18`, verify the server identity and
 all read surfaces, and confirm that stateless HTTP does not invent a session ID.
 
-The official Java SDK matrix uses `io.modelcontextprotocol.sdk:mcp` 2.0.0 on JDK 17 or newer. A
-SHA-512-pinned Apache Maven 3.9.9 distribution is bootstrapped below `target/`, so the check does not
-depend on a system Maven installation. The SDK's Stdio and JDK Streamable HTTP transports run the
-same 8-message/request lifecycle; the HTTP transport advertises PortMate's `2025-06-18` protocol
-header and both paths verify negotiation fallback, server identity, and every read surface.
+The official Java SDK matrix uses `io.modelcontextprotocol.sdk:mcp` 1.0.0, 1.1.3, and 2.0.0 on JDK
+17 or newer. A SHA-512-pinned Apache Maven 3.9.9 distribution is bootstrapped below `target/`, so the
+check does not depend on a system Maven installation. Each version is clean-compiled before its
+Stdio and JDK Streamable HTTP 8-message/request lifecycle, preventing stale cross-version classes;
+the matrix verifies `2024-11-05` negotiation for 1.x, `2025-06-18` for 2.0.0, server identity, and
+every read surface.
 
 The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.14.0, Kotlin 2.3.21, Ktor 3.4.3, and
 the SDK's required coroutines 1.11.0 on the same pinned JDK/Maven bootstrap. Its stream-backed Stdio
