@@ -74,6 +74,7 @@ mod migration_journal_store;
 mod migration_planning;
 mod migration_recovery;
 mod migration_runtime;
+mod migration_types;
 mod modem_transfer;
 mod one_key_commands;
 mod one_key_prompt;
@@ -138,6 +139,7 @@ use migration_journal_store::*;
 use migration_planning::*;
 use migration_recovery::*;
 use migration_runtime::*;
+use migration_types::*;
 use modem_transfer::*;
 use one_key_prompt::*;
 use outbound_events::*;
@@ -5324,131 +5326,6 @@ fn profile_secret_refs(profile: &SessionProfile) -> HashSet<String> {
     profile_secret_ref_occurrences(profile)
         .into_iter()
         .collect()
-}
-
-#[derive(Debug, Clone)]
-struct ProfileSecretMigrationPlan {
-    preview: ProfileSecretMigrationPreview,
-    selected_profile_ids: Vec<String>,
-    affected_profile_ids: Vec<String>,
-    source_ref_counts: BTreeMap<String, usize>,
-    in_flight_source_refs: HashSet<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileSecretMigrationJournalProfile {
-    profile_id: String,
-    before: ProfileSecretMigrationJournalProjection,
-    after: ProfileSecretMigrationJournalProjection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileSecretMigrationJournalProjection {
-    #[serde(default)]
-    proxy_password_secret_ref: Option<String>,
-    password_secret_ref: Option<String>,
-    passphrase_secret_ref: Option<String>,
-    identity_secret_refs: BTreeMap<String, String>,
-    jumps: Vec<ProfileSecretMigrationJournalJumpProjection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileSecretMigrationJournalJumpProjection {
-    password_secret_ref: Option<String>,
-    passphrase_secret_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileSecretMigrationJournalItem {
-    source_ref: String,
-    target_ref: String,
-    reference_count: usize,
-    in_flight_at_start: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileSecretMigrationJournalPayload {
-    version: u32,
-    migration_id: String,
-    target_storage: SecretStorage,
-    cleanup_source: bool,
-    plan_token: String,
-    selected_profile_ids: Vec<String>,
-    profiles: Vec<ProfileSecretMigrationJournalProfile>,
-    items: Vec<ProfileSecretMigrationJournalItem>,
-}
-
-#[derive(Debug, Clone)]
-struct LoadedProfileSecretMigrationJournal {
-    state: ProfileSecretMigrationJournalState,
-    payload: ProfileSecretMigrationJournalPayload,
-    created_at: chrono::DateTime<Utc>,
-    updated_at: chrono::DateTime<Utc>,
-}
-
-enum ProfileSecretMigrationJournalEvent {
-    Prepared(ProfileSecretMigrationJournalPayload),
-    Transition {
-        migration_id: String,
-        state: ProfileSecretMigrationJournalState,
-    },
-    Clear {
-        migration_id: String,
-    },
-}
-
-enum ProfileSecretMigrationJournalVerification {
-    Active {
-        migration_id: String,
-        state: ProfileSecretMigrationJournalState,
-        payload_json: Option<String>,
-    },
-    Cleared {
-        migration_id: String,
-    },
-}
-
-struct PreparedProfileSecretMigration {
-    source_ref: String,
-    target_ref: String,
-    secret: Zeroizing<String>,
-}
-
-#[derive(Debug)]
-enum ProfileSecretStoreCommit {
-    Committed { warning: Option<String> },
-    NotCommitted(String),
-    Unknown(String),
-}
-
-struct SecretBatchDeleteOutcome {
-    results: BTreeMap<String, Result<(), String>>,
-    portable_vault_requires_reunlock: bool,
-}
-
-enum SecretProbeResult {
-    Present(Zeroizing<String>),
-    Missing,
-    Unavailable(String),
-}
-
-struct ProfileSecretMigrationRecoveryOutcome {
-    resolved: bool,
-    action: String,
-    warnings: Vec<String>,
-}
-
-struct ActiveProfileSecretMigrationJournalMetadata {
-    row_id: String,
-    state: String,
-    payload_bytes: u64,
-    created_at: String,
-    updated_at: String,
 }
 
 fn client_identity_mutation_response<F>(
