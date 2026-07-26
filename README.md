@@ -469,10 +469,12 @@ Stdio and JDK Streamable HTTP 8-message/request lifecycle, preventing stale cros
 the matrix verifies `2024-11-05` negotiation for 1.x, `2025-06-18` for 2.0.0, server identity, and
 every read surface.
 
-The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.14.0, Kotlin 2.3.21, Ktor 3.4.3, and
-the SDK's required coroutines 1.11.0 on the same pinned JDK/Maven bootstrap. Its stream-backed Stdio
-and Ktor CIO Streamable HTTP transports run the same lifecycle, reject unsupported negotiation,
-verify server identity and all read surfaces, and confirm that PortMate HTTP remains stateless.
+The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.12.0, 0.13.0, and 0.14.0 with Kotlin
+2.3.21 on the same pinned JDK/Maven bootstrap. Version 0.12.0 uses its published Ktor 3.3.3 and
+coroutines 1.10.2 runtime; later versions use Ktor 3.4.3 and coroutines 1.11.0. Each version is
+clean-compiled before its stream-backed Stdio and Ktor CIO Streamable HTTP lifecycle, rejects
+unsupported negotiation, verifies server identity and all read surfaces, and confirms that
+PortMate HTTP remains stateless.
 
 The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, and 1.4.1. Each version
 has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot mask

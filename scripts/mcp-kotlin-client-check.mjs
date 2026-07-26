@@ -44,6 +44,7 @@ for (const entry of matrix) {
     `-Dkotlinx.coroutines.version=${entry.coroutinesVersion}`,
     `-Dportmate.mcp.protocol.version=${entry.protocolVersion}`,
     `-Dportmate.mcp.binary=${resolve(binary)}`,
+    "clean",
     "compile",
     "exec:java",
   ], { timeout: 240_000 });
