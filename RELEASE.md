@@ -15,7 +15,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 - [ ] `npm ci` succeeds with the Node version in `.nvmrc`.
 - [ ] `npm test` and `npm run build` pass.
 - [ ] `npm run test:terminal-compat`, `npm run test:vttest-compat`, `npm run test:tmux-workflow`, `npm run test:tmux-version-compat`, and `npm run test:workspace-ui` pass.
-- [ ] `npm run test:mcp-stdio-client`, `npm run test:mcp-http-client`, `npm run test:mcp-python-client`, `npm run test:mcp-go-client`, `npm run test:mcp-rust-client`, `npm run test:mcp-ruby-client`, `npm run test:mcp-java-client`, and `npm run test:mcp-kotlin-client` pass.
+- [ ] `npm run test:mcp-stdio-client`, `npm run test:mcp-http-client`, `npm run test:mcp-python-client`, `npm run test:mcp-go-client`, `npm run test:mcp-rust-client`, `npm run test:mcp-ruby-client`, `npm run test:mcp-java-client`, `npm run test:mcp-kotlin-client`, and `npm run test:mcp-csharp-client` pass.
 - [ ] `npm run test:ssh-server-compat` and `npm run test:tcp-telnet-server-compat` pass on a Linux Docker host.
 - [ ] `cargo fmt --all -- --check` passes.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
@@ -28,7 +28,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 - [ ] Linux produces DEB, RPM, and AppImage; Windows produces signed MSI/NSIS; macOS produces signed and notarized app/DMG.
 - [ ] Every package contains the main executable, target-specific `portmate-mcp` sidecar, standard icons, and license metadata.
 - [ ] On Linux, `npm run test:linux-package` passes against the freshly built DEB, RPM, and AppImage, including full file/symlink permission checks.
-- [ ] Run every official TypeScript/Python/Go/Rust/Ruby/Java/Kotlin MCP SDK check with `PORTMATE_MCP_BINARY` set to the bridge extracted from each package.
+- [ ] Run every official TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C# MCP SDK check with `PORTMATE_MCP_BINARY` set to the bridge extracted from each package.
 - [ ] Launch the installed application, create a disposable session, restart it, and verify the same Store is loaded.
 - [ ] Verify main and detached-window Tauri capabilities and the production CSP against the packaged application (automated for all three Linux packages by `npm run test:linux-package`).
 

@@ -95,8 +95,8 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
-      "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin stdio SDK per package",
-      "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin HTTP SDK per package",
+      "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C# stdio SDK per package",
+      "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C# HTTP SDK per package",
     ],
   }, null, 2));
 } finally {
@@ -333,6 +333,10 @@ function checkPackagedBridge(kind, bridge) {
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
   });
   run(process.execPath, ["scripts/mcp-kotlin-client-check.mjs"], {
+    cwd: projectRoot,
+    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+  });
+  run(process.execPath, ["scripts/mcp-csharp-client-check.mjs"], {
     cwd: projectRoot,
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
   });
