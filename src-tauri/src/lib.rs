@@ -62,6 +62,7 @@ mod bundle_signing;
 mod file_batch;
 mod file_commands;
 mod file_transfer;
+mod log_commands;
 mod log_storage;
 mod mcp_authorization;
 mod mcp_commands;
@@ -82,6 +83,7 @@ mod secret_provider;
 mod serial_capture;
 mod serial_commands;
 mod serial_transport;
+mod session_commands;
 mod session_events;
 mod shell_transport;
 mod sqlite_mirror;
@@ -1561,97 +1563,6 @@ pub struct TrustScannedHostKeyRequest {
 }
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.summaries())
-}
-
-#[tauri::command]
-fn read_screen(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    store
-        .screen(&session_id)
-        .ok_or_else(|| format!("no screen data for session: {session_id}"))
-}
-
-#[tauri::command]
-fn tail_log(
-    state: State<'_, AppState>,
-    session_id: String,
-    limit: Option<u64>,
-) -> Result<Vec<SessionEvent>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.tail_log(&session_id, bounded_log_query_limit(limit)))
-}
-
-#[tauri::command]
-fn search_logs(
-    state: State<'_, AppState>,
-    query: String,
-    session_id: Option<String>,
-    limit: Option<u64>,
-) -> Result<Vec<SessionEvent>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.search_logs(
-        &query,
-        session_id.as_deref(),
-        bounded_log_query_limit(limit),
-    ))
-}
-
-#[tauri::command]
-fn list_log_shards(state: State<'_, AppState>) -> Result<Vec<LogShardInfo>, String> {
-    list_log_shards_inner(&state.store_path)
-}
-
-#[tauri::command]
-fn read_log_shard(
-    state: State<'_, AppState>,
-    path: String,
-    max_bytes: Option<u64>,
-) -> Result<LogShardPreview, String> {
-    read_log_shard_inner(&state.store_path, &path, max_bytes)
-}
-
-#[tauri::command]
-fn delete_log_shards(
-    state: State<'_, AppState>,
-    paths: Vec<String>,
-) -> Result<DeleteLogShardsResult, String> {
-    delete_log_shards_inner(&state.store_path, &paths)
-}
-
-#[tauri::command]
-fn search_log_shards(
-    state: State<'_, AppState>,
-    request: SearchLogShardsRequest,
-) -> Result<SearchLogShardsResult, String> {
-    search_log_shards_inner(&state.store_path, request)
-}
-
-#[tauri::command]
-fn archive_log_shards(
-    state: State<'_, AppState>,
-    request: ArchiveLogShardsRequest,
-) -> Result<ArchiveLogShardsResult, String> {
-    archive_log_shards_inner(&state.store_path, request)
-}
-
-#[tauri::command]
-fn export_session_bundle_archive(
-    state: State<'_, AppState>,
-    request: ExportSessionBundleArchiveRequest,
-) -> Result<ExportSessionBundleArchiveResult, String> {
-    let signing_key = load_or_create_bundle_signing_key()?;
-    let snapshot = state
-        .store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
-    export_session_bundle_archive_inner(&state.store_path, &snapshot, request, &signing_key)
-}
-
-#[tauri::command]
 async fn send_text(
     state: State<'_, AppState>,
     session_id: String,
@@ -2841,28 +2752,6 @@ async fn close_session_under_lifecycle_lock(
     persist_applied_store(&store, &state.store_path, "session disconnect state")
         .map_err(|error| format!("会话传输已在本地关闭，但断开状态无法持久化: {error}"))?;
     Ok(summary)
-}
-
-#[tauri::command]
-fn list_transfers(state: State<'_, AppState>) -> Result<Vec<TransferTask>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.transfers.clone())
-}
-
-#[tauri::command]
-async fn retry_transfer(
-    state: State<'_, AppState>,
-    transfer_id: String,
-) -> Result<TransferTask, String> {
-    retry_transfer_inner(state.inner(), &transfer_id).await
-}
-
-#[tauri::command]
-fn cancel_transfer(
-    state: State<'_, AppState>,
-    transfer_id: String,
-) -> Result<TransferTask, String> {
-    cancel_transfer_inner(state.inner(), &transfer_id)
 }
 
 #[tauri::command]
@@ -10767,16 +10656,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            list_sessions,
-            read_screen,
-            tail_log,
-            search_logs,
-            list_log_shards,
-            read_log_shard,
-            delete_log_shards,
-            search_log_shards,
-            archive_log_shards,
-            export_session_bundle_archive,
+            session_commands::list_sessions,
+            session_commands::read_screen,
+            log_commands::tail_log,
+            log_commands::search_logs,
+            log_commands::list_log_shards,
+            log_commands::read_log_shard,
+            log_commands::delete_log_shards,
+            log_commands::search_log_shards,
+            log_commands::archive_log_shards,
+            log_commands::export_session_bundle_archive,
             send_text,
             send_bytes,
             send_key,
@@ -10797,9 +10686,9 @@ pub fn run() {
             ssh_host_key_commands::delete_host_key,
             ssh_host_key_commands::delete_host_keys,
             ssh_host_key_commands::update_host_key,
-            list_transfers,
-            retry_transfer,
-            cancel_transfer,
+            transfer_commands::list_transfers,
+            transfer_commands::retry_transfer,
+            transfer_commands::cancel_transfer,
             mcp_commands::list_mcp_audit,
             mcp_commands::export_mcp_audit,
             mcp_commands::list_mcp_grants,
