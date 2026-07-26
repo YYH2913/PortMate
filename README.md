@@ -455,10 +455,10 @@ HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, pi
 resources, templates, prompts, and resource reads without adding compatibility clients to
 PortMate's production workspace.
 
-The official Ruby SDK matrix uses `mcp` 1.0.0 with pinned Faraday 2.14.3 and
-`event_stream_parser` 1.0.0 in an isolated gem home. Its bundled Stdio and HTTP transports run the
-same 8-message/request lifecycle, explicitly negotiate `2025-06-18`, verify the server identity and
-all read surfaces, and confirm that stateless HTTP does not invent a session ID.
+The official Ruby SDK matrix uses `mcp` 0.25.0 and 1.0.0 with pinned Faraday 2.14.3 and
+`event_stream_parser` 1.0.0 in version-isolated gem homes. Their bundled Stdio and HTTP transports
+run the same 8-message/request lifecycle, explicitly negotiate `2025-06-18`, verify the server
+identity and all read surfaces, and confirm that stateless HTTP does not invent a session ID.
 
 The official Java SDK matrix uses `io.modelcontextprotocol.sdk:mcp` 1.0.0, 1.1.3, and 2.0.0 on JDK
 17 or newer. A SHA-512-pinned Apache Maven 3.9.9 distribution is bootstrapped below `target/`, so the

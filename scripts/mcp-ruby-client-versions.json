@@ -1,5 +1,11 @@
 [
   {
+    "version": "0.25.0",
+    "protocolVersion": "2025-06-18",
+    "faradayVersion": "2.14.3",
+    "eventStreamParserVersion": "1.0.0"
+  },
+  {
     "version": "1.0.0",
     "protocolVersion": "2025-06-18",
     "faradayVersion": "2.14.3",
