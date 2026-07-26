@@ -438,10 +438,11 @@ server's `2025-06-18` protocol version, completes initialize/initialized, ping, 
 templates, prompts, and a resource read, then verifies that closing the client also terminates the
 bridge process.
 
-The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4 and 1.28.1 virtual
-environments over both stdio and stateless Streamable HTTP. Each version completes the same
-8-message/request lifecycle over both transports, covering the legacy `2024-11-05` negotiation used
-by 1.9.4 and the current `2025-06-18` negotiation used by 1.28.1 without sharing site packages.
+The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.15.0, 1.23.3, and
+1.28.1 virtual environments over both stdio and stateless Streamable HTTP. Each version completes
+the same 8-message/request lifecycle over both transports, covering the `2025-03-26` negotiation
+used by 1.9.4 and the current `2025-06-18` negotiation used by the later versions without sharing
+site packages.
 
 The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.6.1 from an isolated
 module and runs the same 8-message/request lifecycle over stdio and stateless Streamable HTTP. The

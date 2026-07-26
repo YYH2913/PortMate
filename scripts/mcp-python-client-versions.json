@@ -4,6 +4,14 @@
     "protocolVersion": "2025-03-26"
   },
   {
+    "version": "1.15.0",
+    "protocolVersion": "2025-06-18"
+  },
+  {
+    "version": "1.23.3",
+    "protocolVersion": "2025-06-18"
+  },
+  {
     "version": "1.28.1",
     "protocolVersion": "2025-06-18"
   }
