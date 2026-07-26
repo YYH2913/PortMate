@@ -1,5 +1,111 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ProfileSecretMigrationDiagnosticProjectionStatus {
+    Before,
+    After,
+    Conflict,
+    Missing,
+    Invalid,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationDiagnosticProfile {
+    profile_id: String,
+    profile_name: Option<String>,
+    status: ProfileSecretMigrationDiagnosticProjectionStatus,
+    before: ProfileSecretMigrationJournalProjection,
+    current: Option<ProfileSecretMigrationJournalProjection>,
+    after: ProfileSecretMigrationJournalProjection,
+    projection_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ProfileSecretMigrationDiagnosticProbeStatus {
+    Present,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationDiagnosticProbe {
+    status: ProfileSecretMigrationDiagnosticProbeStatus,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationDiagnosticSecret {
+    source_ref: String,
+    target_ref: String,
+    source_storage: SecretStorage,
+    target_storage: SecretStorage,
+    expected_reference_count: usize,
+    current_source_references: usize,
+    current_target_references: usize,
+    in_flight_at_start: bool,
+    currently_in_flight: bool,
+    source: ProfileSecretMigrationDiagnosticProbe,
+    target: ProfileSecretMigrationDiagnosticProbe,
+    contents_match: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProfileSecretMigrationDiagnosticPortableVault {
+    pub(super) exists: Option<bool>,
+    pub(super) unlocked: Option<bool>,
+    pub(super) recovery_ready: Option<bool>,
+    pub(super) error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationDiagnosticJournal {
+    valid: bool,
+    migration_id: Option<String>,
+    row_id_valid: bool,
+    state: Option<ProfileSecretMigrationJournalState>,
+    state_valid: bool,
+    disposition: Option<ProfileSecretMigrationRecoveryDisposition>,
+    target_storage: Option<SecretStorage>,
+    cleanup_source: Option<bool>,
+    selected_profile_ids: Vec<String>,
+    payload_bytes: u64,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    load_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSecretMigrationDiagnosticPlatform {
+    os: &'static str,
+    arch: &'static str,
+    family: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProfileSecretMigrationDiagnosticReport {
+    format: &'static str,
+    version: u32,
+    created_at: String,
+    portmate_version: &'static str,
+    store_schema_version: &'static str,
+    platform: ProfileSecretMigrationDiagnosticPlatform,
+    contains_secret_material: bool,
+    journal: ProfileSecretMigrationDiagnosticJournal,
+    portable_vault: ProfileSecretMigrationDiagnosticPortableVault,
+    profiles: Vec<ProfileSecretMigrationDiagnosticProfile>,
+    secrets: Vec<ProfileSecretMigrationDiagnosticSecret>,
+    warnings: Vec<String>,
+}
+
 fn bounded_profile_secret_migration_diagnostic_error(error: &str) -> String {
     const MAX_ERROR_CHARS: usize = 2_048;
     let redacted = redact_secrets(error);
