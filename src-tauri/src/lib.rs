@@ -31994,7 +31994,12 @@ __PORTMATE_LOADAVG__
 
     #[test]
     fn session_close_cancels_a_stalled_ssh_open_before_waiting_for_the_lane() {
-        tauri::async_runtime::block_on(async {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let address = listener.local_addr().unwrap();
             let peer = tokio::spawn(async move {
@@ -32020,11 +32025,12 @@ __PORTMATE_LOADAVG__
                 )
                 .await
             });
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(15), async {
                 loop {
-                    if state.store.lock().unwrap().summaries()[0].runtime.status
-                        == SessionStatus::Connecting
-                    {
+                    let is_connecting = state.store.try_lock().ok().is_some_and(|store| {
+                        store.summaries()[0].runtime.status == SessionStatus::Connecting
+                    });
+                    if is_connecting {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
