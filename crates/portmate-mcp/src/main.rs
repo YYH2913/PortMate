@@ -30,6 +30,7 @@ const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HTTP_CHUNK_FRAMING_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1480,22 +1481,56 @@ fn read_http_request_with_timeout(
             .map_err(|_| anyhow!("HTTP header `{}` is not valid UTF-8", header.name))?;
         insert_http_header(&mut headers, header.name, value)?;
     }
-    if headers.contains_key("transfer-encoding") {
-        return Err(anyhow!(
-            "Transfer-Encoding is not supported; send a Content-Length body"
-        ));
-    }
+    let initial_body = raw.get(body_start..).unwrap_or_default();
+    let body = match headers.get("transfer-encoding") {
+        Some(transfer_encoding) => {
+            if headers.contains_key("content-length") {
+                return Err(anyhow!(
+                    "HTTP request cannot combine Transfer-Encoding and Content-Length"
+                ));
+            }
+            if !transfer_encoding.eq_ignore_ascii_case("chunked") {
+                return Err(anyhow!(
+                    "unsupported Transfer-Encoding; only chunked is accepted"
+                ));
+            }
+            read_http_chunked_body(stream, initial_body, &mut buffer, deadline)?
+        }
+        None => {
+            let content_length = headers
+                .get("content-length")
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|error| anyhow!("invalid Content-Length: {error}"))?
+                .unwrap_or(0);
+            read_http_content_length_body(
+                stream,
+                initial_body,
+                content_length,
+                &mut buffer,
+                deadline,
+            )?
+        }
+    };
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
 
-    let content_length = headers
-        .get("content-length")
-        .map(|value| value.parse::<usize>())
-        .transpose()
-        .map_err(|error| anyhow!("invalid Content-Length: {error}"))?
-        .unwrap_or(0);
+fn read_http_content_length_body(
+    stream: &mut TcpStream,
+    initial_body: &[u8],
+    content_length: usize,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> Result<Vec<u8>> {
     if content_length > MAX_HTTP_BODY_BYTES {
         return Err(anyhow!("HTTP body is too large"));
     }
-    let mut body = raw.get(body_start..).unwrap_or_default().to_vec();
+    let mut body = initial_body.to_vec();
     if body.len() > content_length {
         return Err(anyhow!(
             "HTTP request contains bytes after its declared body"
@@ -1515,12 +1550,203 @@ fn read_http_request_with_timeout(
         }
         body.extend_from_slice(&buffer[..read]);
     }
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
+    Ok(body)
+}
+
+fn read_http_chunked_body(
+    stream: &mut TcpStream,
+    initial_body: &[u8],
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> Result<Vec<u8>> {
+    let mut encoded = initial_body.to_vec();
+    let mut position = 0;
+    let mut framing_bytes = 0;
+    let mut body = Vec::new();
+
+    loop {
+        let line = read_http_chunk_line(
+            stream,
+            &mut encoded,
+            &mut position,
+            buffer,
+            deadline,
+            &mut framing_bytes,
+        )?;
+        let extension_start = line.iter().position(|byte| *byte == b';');
+        let (size_bytes, extension) = extension_start
+            .map_or((line.as_slice(), None), |separator| {
+                (&line[..separator], Some(&line[separator + 1..]))
+            });
+        if size_bytes.is_empty() || !size_bytes.iter().all(u8::is_ascii_hexdigit) {
+            return Err(anyhow!("invalid HTTP chunk size"));
+        }
+        if let Some(extension) = extension {
+            if extension.is_empty()
+                || extension
+                    .iter()
+                    .any(|byte| !byte.is_ascii() || byte.is_ascii_control())
+            {
+                return Err(anyhow!("invalid HTTP chunk extension"));
+            }
+        }
+        let size = std::str::from_utf8(size_bytes)
+            .ok()
+            .and_then(|value| usize::from_str_radix(value, 16).ok())
+            .ok_or_else(|| anyhow!("invalid HTTP chunk size"))?;
+        if size > MAX_HTTP_BODY_BYTES.saturating_sub(body.len()) {
+            return Err(anyhow!("HTTP body is too large"));
+        }
+        if size == 0 {
+            read_http_chunk_trailers(
+                stream,
+                &mut encoded,
+                &mut position,
+                buffer,
+                deadline,
+                &mut framing_bytes,
+            )?;
+            if position != encoded.len() {
+                return Err(anyhow!(
+                    "HTTP request contains bytes after its chunked body"
+                ));
+            }
+            return Ok(body);
+        }
+
+        ensure_http_chunk_bytes(stream, &mut encoded, position, size + 2, buffer, deadline)?;
+        let chunk_end = position + size;
+        if encoded.get(chunk_end..chunk_end + 2) != Some(b"\r\n") {
+            return Err(anyhow!("HTTP chunk data is not terminated by CRLF"));
+        }
+        body.extend_from_slice(&encoded[position..chunk_end]);
+        position = chunk_end + 2;
+        framing_bytes += 2;
+        if framing_bytes > MAX_HTTP_CHUNK_FRAMING_BYTES {
+            return Err(anyhow!("HTTP chunk framing exceeds the 64 KiB limit"));
+        }
+    }
+}
+
+fn read_http_chunk_trailers(
+    stream: &mut TcpStream,
+    encoded: &mut Vec<u8>,
+    position: &mut usize,
+    buffer: &mut [u8],
+    deadline: Instant,
+    framing_bytes: &mut usize,
+) -> Result<()> {
+    let mut trailer_count = 0;
+    loop {
+        let line =
+            read_http_chunk_line(stream, encoded, position, buffer, deadline, framing_bytes)?;
+        if line.is_empty() {
+            return Ok(());
+        }
+        trailer_count += 1;
+        if trailer_count > MAX_HTTP_HEADERS {
+            return Err(anyhow!("HTTP chunk trailers exceed the 128-field limit"));
+        }
+        let Some(separator) = line.iter().position(|byte| *byte == b':') else {
+            return Err(anyhow!("invalid HTTP chunk trailer"));
+        };
+        if separator == 0 || !line[..separator].iter().copied().all(is_http_token_byte) {
+            return Err(anyhow!("invalid HTTP chunk trailer"));
+        }
+        let trailer_name = std::str::from_utf8(&line[..separator])?.to_ascii_lowercase();
+        if is_single_value_http_header(&trailer_name)
+            || line[separator + 1..]
+                .iter()
+                .any(|byte| *byte != b'\t' && (byte.is_ascii_control() || *byte == 0x7f))
+        {
+            return Err(anyhow!("invalid HTTP chunk trailer"));
+        }
+    }
+}
+
+fn read_http_chunk_line(
+    stream: &mut TcpStream,
+    encoded: &mut Vec<u8>,
+    position: &mut usize,
+    buffer: &mut [u8],
+    deadline: Instant,
+    framing_bytes: &mut usize,
+) -> Result<Vec<u8>> {
+    loop {
+        if let Some(line_end) = encoded[*position..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        {
+            let line = encoded[*position..*position + line_end].to_vec();
+            *position += line_end + 2;
+            *framing_bytes += line_end + 2;
+            if *framing_bytes > MAX_HTTP_CHUNK_FRAMING_BYTES {
+                return Err(anyhow!("HTTP chunk framing exceeds the 64 KiB limit"));
+            }
+            return Ok(line);
+        }
+        if encoded.len().saturating_sub(*position) >= MAX_HTTP_CHUNK_FRAMING_BYTES {
+            return Err(anyhow!("HTTP chunk framing exceeds the 64 KiB limit"));
+        }
+        let remaining = MAX_HTTP_CHUNK_FRAMING_BYTES + 1 - encoded.len() + *position;
+        let read_length = remaining.min(buffer.len());
+        let read = read_stream_chunk_before(
+            stream,
+            &mut buffer[..read_length],
+            deadline,
+            "HTTP request deadline exceeded",
+        )?;
+        if read == 0 {
+            return Err(anyhow!("connection closed before HTTP chunk framing"));
+        }
+        encoded.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn ensure_http_chunk_bytes(
+    stream: &mut TcpStream,
+    encoded: &mut Vec<u8>,
+    position: usize,
+    required: usize,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> Result<()> {
+    while encoded.len().saturating_sub(position) < required {
+        let remaining = required - encoded.len().saturating_sub(position);
+        let read_length = remaining.min(buffer.len());
+        let read = read_stream_chunk_before(
+            stream,
+            &mut buffer[..read_length],
+            deadline,
+            "HTTP request deadline exceeded",
+        )?;
+        if read == 0 {
+            return Err(anyhow!("connection closed before HTTP chunk data"));
+        }
+        encoded.extend_from_slice(&buffer[..read]);
+    }
+    Ok(())
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 fn insert_http_header(
@@ -3058,11 +3284,12 @@ mod tests {
                 .contains("duplicate HTTP header"));
         }
 
-        let chunked = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";
-        assert!(parse_http_request_bytes(chunked)
-            .unwrap_err()
-            .to_string()
-            .contains("Transfer-Encoding is not supported"));
+        for request in [
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n2\r\n{}\r\n0\r\n\r\n".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip, chunked\r\n\r\n".as_slice(),
+        ] {
+            assert!(parse_http_request_bytes(request).is_err());
+        }
 
         let extra = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}extra";
         assert!(parse_http_request_bytes(extra)
@@ -3075,6 +3302,26 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("invalid HTTP headers"));
+    }
+
+    #[test]
+    fn http_parser_decodes_chunked_body_and_bounded_trailers() {
+        let request = parse_http_request_bytes(
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: ChUnKeD\r\n\r\n1;source=dotnet\r\n{\r\n1\r\n}\r\n0\r\nDigest: sha-256=test\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(request.body, b"{}");
+
+        for request in [
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\nX\r\n{}\r\n0\r\n\r\n".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}X\n0\r\n\r\n".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\nextra".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nContent-Length: 2\r\n\r\n".as_slice(),
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nDigest: bad\0value\r\n\r\n".as_slice(),
+        ] {
+            assert!(parse_http_request_bytes(request).is_err());
+        }
     }
 
     #[test]

@@ -518,10 +518,12 @@ authentication, Accept, and negotiated-version headers.
 The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
 complete request must arrive within five seconds, each response/SSE write has a five-second socket
 timeout, and excess connections receive `503 Service Unavailable`. Non-SSE responses explicitly
-close the HTTP/1.1 connection. Request headers are parsed strictly with a 64 KiB/128-field limit;
-ambiguous duplicate framing or authentication headers, unsupported `Transfer-Encoding`, malformed
-headers, and bytes beyond the declared `Content-Length` are rejected before JSON-RPC dispatch.
-Repeated list headers such as `Accept` remain supported, including standard quality values.
+close the HTTP/1.1 connection. Request headers are parsed strictly with a 64 KiB/128-field limit.
+Bodies may use `Content-Length` or a sole `Transfer-Encoding: chunked`; decoded bodies remain limited
+to 1 MiB and chunk framing/trailers to 64 KiB/128 fields under the same five-second request budget.
+Conflicting or duplicate framing, other transfer codings, malformed chunks/trailers, and bytes after
+the declared or terminal body are rejected before JSON-RPC dispatch. Repeated list headers such as
+`Accept` remain supported, including standard quality values.
 
 ```bash
 PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
