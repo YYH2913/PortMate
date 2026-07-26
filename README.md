@@ -54,7 +54,9 @@ Stronghold context, salt/KDF/open/rekey, single and batch CRUD, and failed-commi
 Telnet, Tmux protocol parsing, and app-data migration already have their own modules as well.
 `store_normalization.rs` owns legacy JSON loading, Profile/session ID remapping, orphan cleanup,
 MCP/OneKey normalization, duplicate SQLite mirror-key repair, interrupted runtime/transfer
-convergence, and loaded-history bounds.
+convergence, and loaded-history bounds. `store_persistence.rs` owns Store initialization, CAS
+version caching, journal metadata transactions, SQLite/JSON write orchestration, post-commit
+fingerprint verification, and runtime Store persistence.
 
 ## Development
 
