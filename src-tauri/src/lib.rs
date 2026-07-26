@@ -56,6 +56,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 mod app_data_migration;
+mod mcp_control;
 mod migration_journal_store;
 mod migration_recovery;
 mod one_key_prompt;
@@ -77,6 +78,7 @@ mod telnet_protocol;
 mod tmux_protocol;
 
 use app_data_migration::*;
+use mcp_control::*;
 use migration_journal_store::*;
 use migration_recovery::*;
 use one_key_prompt::*;
@@ -137,11 +139,9 @@ const MAX_SESSION_PROFILE_ID_CHARACTERS: usize = 256;
 const MAX_SESSION_PROFILE_GROUP_CHARACTERS: usize = 256;
 const MAX_SESSION_PROFILE_TAGS: usize = 32;
 const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
-const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const BUNDLE_SIGNING_KEY_REF: &str = "keychain:bundle-signing-ed25519-v1";
 const BUNDLE_SIGNING_KEY_PORTABLE_REF: &str = "stronghold:bundle-signing-ed25519-v1";
 const BUNDLE_SIGNATURE_PAYLOAD_FORMAT: &str = "portmate-session-bundle-signature-v1";
-const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
 const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
@@ -150,11 +150,6 @@ const MAX_SYSMON_HISTORY_QUERY_LIMIT: usize = 240;
 const MAX_LOG_SHARDS: usize = 10_000;
 const MAX_LOG_SCAN_ENTRIES: usize = 50_000;
 const MAX_LOG_DELETE_BATCH: usize = 1_000;
-const MAX_MCP_GRANTS: usize = 512;
-const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
-const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
-const MAX_MCP_GRANT_SESSIONS: usize = 1_024;
-const MAX_MCP_GRANT_SESSION_ID_BYTES: usize = 128;
 const MAX_PENDING_MCP_APPROVALS: usize = 32;
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
@@ -4648,25 +4643,6 @@ fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<Mcp
     })
 }
 
-fn upsert_mcp_grant_in_store(
-    store: &mut SessionStore,
-    grant: McpGrant,
-) -> Result<Vec<McpGrant>, String> {
-    if let Some(existing) = store
-        .grants
-        .iter_mut()
-        .find(|existing| existing.client_id == grant.client_id)
-    {
-        *existing = grant;
-    } else {
-        if store.grants.len() >= MAX_MCP_GRANTS {
-            return Err(format!("MCP grant limit exceeded ({MAX_MCP_GRANTS})"));
-        }
-        store.grants.push(grant);
-    }
-    Ok(store.grants.clone())
-}
-
 #[tauri::command]
 fn revoke_mcp_grant(
     state: State<'_, AppState>,
@@ -4677,68 +4653,6 @@ fn revoke_mcp_grant(
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
         Ok(revoke_mcp_grant_from_store(next_store, &client_id))
     })
-}
-
-fn revoke_mcp_grant_from_store(store: &mut SessionStore, client_id: &str) -> Vec<McpGrant> {
-    store.grants.retain(|grant| grant.client_id != client_id);
-    store.grants.clone()
-}
-
-fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, String> {
-    grant.client_id = normalize_mcp_client_id(&grant.client_id)?;
-    grant.name = grant.name.trim().to_string();
-    if grant.name.len() > MAX_MCP_GRANT_NAME_BYTES || grant.name.chars().any(char::is_control) {
-        return Err(format!(
-            "MCP grant name must not contain control characters or exceed {MAX_MCP_GRANT_NAME_BYTES} bytes"
-        ));
-    }
-    if grant.scopes.len() > 6 {
-        return Err("MCP grant contains too many scopes".to_string());
-    }
-    for (index, scope) in grant.scopes.iter().enumerate() {
-        if grant.scopes[..index].contains(scope) {
-            return Err("MCP grant contains duplicate scopes".to_string());
-        }
-    }
-    if grant.allowed_sessions.len() > MAX_MCP_GRANT_SESSIONS {
-        return Err(format!(
-            "MCP grant session limit exceeded ({MAX_MCP_GRANT_SESSIONS})"
-        ));
-    }
-    let mut allowed_sessions = Vec::with_capacity(grant.allowed_sessions.len());
-    for session_id in grant.allowed_sessions {
-        let session_id = session_id.trim();
-        if session_id.is_empty()
-            || session_id.len() > MAX_MCP_GRANT_SESSION_ID_BYTES
-            || session_id.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "MCP grant session IDs must be non-empty, printable, and at most {MAX_MCP_GRANT_SESSION_ID_BYTES} bytes"
-            ));
-        }
-        if allowed_sessions
-            .iter()
-            .any(|existing| existing == session_id)
-        {
-            return Err("MCP grant contains duplicate session IDs".to_string());
-        }
-        allowed_sessions.push(session_id.to_string());
-    }
-    grant.allowed_sessions = allowed_sessions;
-    Ok(grant)
-}
-
-fn normalize_mcp_client_id(client_id: &str) -> Result<String, String> {
-    let client_id = client_id.trim();
-    if client_id.is_empty()
-        || client_id.len() > MAX_MCP_GRANT_CLIENT_ID_BYTES
-        || client_id.chars().any(char::is_control)
-    {
-        return Err(format!(
-            "MCP client ID must be non-empty, printable, and at most {MAX_MCP_GRANT_CLIENT_ID_BYTES} bytes"
-        ));
-    }
-    Ok(client_id.to_string())
 }
 
 fn respond_mcp_approval_inner(
@@ -21131,70 +21045,6 @@ fn persist_bundle_signing_key_in_portable_vault(
         return Err("persisted bundle signing key did not pass read-back verification".to_string());
     }
     decode_bundle_signing_key(persisted.as_str())
-}
-
-fn mcp_sidecar_executable_path() -> PathBuf {
-    let file_name = if cfg!(windows) {
-        "portmate-mcp.exe"
-    } else {
-        "portmate-mcp"
-    };
-    if let Ok(current_exe) = std::env::current_exe() {
-        let mut directories = current_exe
-            .parent()
-            .into_iter()
-            .map(Path::to_path_buf)
-            .collect::<Vec<_>>();
-        if let Some(parent) = current_exe.parent().and_then(Path::parent) {
-            directories.push(parent.to_path_buf());
-        }
-        if let Some(candidate) = directories
-            .into_iter()
-            .map(|directory| directory.join(file_name))
-            .find(|candidate| candidate.is_file())
-        {
-            return candidate;
-        }
-    }
-    PathBuf::from(file_name)
-}
-
-fn shell_command_path(path: &Path) -> String {
-    let value = path.to_string_lossy();
-    if cfg!(windows) {
-        format!("'{}'", value.replace('\'', "''"))
-    } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
-}
-
-fn build_mcp_http_config(
-    token_available: bool,
-    executable: &Path,
-    store_path: &Path,
-) -> McpHttpConfig {
-    let executable_text = executable.to_string_lossy().to_string();
-    let store_path_text = store_path.to_string_lossy().to_string();
-    let executable_command = shell_command_path(executable);
-    let store_path_command = shell_command_path(store_path);
-    let start_command = if cfg!(windows) {
-        format!(
-            "$env:PORTMATE_STORE_PATH={store_path_command}; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='{MCP_HTTP_DEFAULT_ADDR}'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://{MCP_HTTP_DEFAULT_ADDR}'; & {executable_command} --http"
-        )
-    } else {
-        format!(
-            "PORTMATE_STORE_PATH={store_path_command} PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR={MCP_HTTP_DEFAULT_ADDR} PORTMATE_MCP_HTTP_ORIGINS=http://{MCP_HTTP_DEFAULT_ADDR} {executable_command} --http"
-        )
-    };
-    McpHttpConfig {
-        endpoint: format!("http://{MCP_HTTP_DEFAULT_ADDR}/mcp"),
-        token_ref: MCP_HTTP_TOKEN_REF.to_string(),
-        token_available,
-        default_origin: format!("http://{MCP_HTTP_DEFAULT_ADDR}"),
-        executable: executable_text,
-        store_path: store_path_text,
-        start_command,
-    }
 }
 
 fn read_persisted_store_for_migration(path: &Path) -> Result<SessionStore, String> {
