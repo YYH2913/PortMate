@@ -1,6 +1,14 @@
 use super::*;
 use socket2::TcpKeepalive;
 
+pub(super) struct TcpRuntime {
+    pub(super) runtime_id: String,
+    pub(super) writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    pub(super) tap: broadcast::Sender<Vec<u8>>,
+    pub(super) closed: Arc<AtomicBool>,
+    pub(super) telnet: Option<Arc<TelnetRuntimeState>>,
+}
+
 pub(super) fn tcp_connection_details(
     profile: &SessionProfile,
 ) -> Result<(TcpConnection, &'static str), String> {
@@ -155,4 +163,86 @@ pub(super) fn tcp_reconnect_delay(profile: &SessionProfile) -> Duration {
         }
         _ => Duration::from_millis(portmate_core::DEFAULT_TCP_RECONNECT_DELAY_MS),
     }
+}
+
+pub(super) async fn open_tcp_session(
+    state: &AppState,
+    profile: SessionProfile,
+) -> Result<SessionSummary, String> {
+    let (tcp, label) = tcp_connection_details(&profile)?;
+    if let Some(existing) = {
+        let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections.remove(&profile.id)
+    } {
+        existing.closed.store(true, Ordering::SeqCst);
+        let mut writer = existing.writer.lock().await;
+        let _ = writer.shutdown().await;
+    }
+
+    let stream = connect_tcp_socket(&tcp, label).await?;
+
+    let runtime_id = Uuid::new_v4().to_string();
+    let (read_half, write_half) = stream.into_split();
+    let writer = Arc::new(tokio::sync::Mutex::new(write_half));
+    let (tap, _) = broadcast::channel(1024);
+    let closed = Arc::new(AtomicBool::new(false));
+    let telnet = TelnetRuntimeState::from_profile(&profile);
+    {
+        let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections.insert(
+            profile.id.clone(),
+            TcpRuntime {
+                runtime_id: runtime_id.clone(),
+                writer: Arc::clone(&writer),
+                tap: tap.clone(),
+                closed: Arc::clone(&closed),
+                telnet: telnet.as_ref().map(Arc::clone),
+            },
+        );
+    }
+
+    let finalize_result = match state.store.lock() {
+        Ok(mut store) => {
+            commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                mark_session_connected_with_events(
+                    next_store,
+                    &profile,
+                    [format!("PortMate: {label} socket connected")],
+                )
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    let summary = match finalize_result {
+        Ok(summary) => summary,
+        Err(error) => {
+            closed.store(true, Ordering::SeqCst);
+            let cleanup_error = remove_runtime_if_owned(&state.tcp, &profile.id, |runtime| {
+                runtime.runtime_id == runtime_id
+            })
+            .err();
+            let shutdown_error = writer.lock().await.shutdown().await.err();
+            let mut errors = vec![error];
+            if let Some(cleanup_error) = cleanup_error {
+                errors.push(format!("{label} runtime cleanup failed: {cleanup_error}"));
+            }
+            if let Some(shutdown_error) = shutdown_error {
+                errors.push(format!("{label} socket shutdown failed: {shutdown_error}"));
+            }
+            return Err(errors.join("; "));
+        }
+    };
+
+    tauri::async_runtime::spawn(read_tcp_stream(TcpReadTask {
+        state: state.clone(),
+        profile,
+        runtime_id,
+        label: label.to_string(),
+        tap,
+        writer,
+        read_half,
+        closed,
+        telnet,
+    }));
+    Ok(summary)
 }
