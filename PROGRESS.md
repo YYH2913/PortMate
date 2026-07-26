@@ -370,8 +370,8 @@ npm run build
 
 ### P3：架构整理与发布准备
 
-1. `lib.rs` 已累计减少约 15,900 行，并按以下边界持续拆分：
-   - transport/runtime：`tmux_protocol.rs`、`telnet_protocol.rs`、`proxy_protocol.rs`、`tcp_transport.rs` 和 `serial_capture.rs` 承接协议状态机、TCP/Telnet runtime、自动重连与串口 capture。
+1. `lib.rs` 已累计减少约 16,800 行，并按以下边界持续拆分：
+   - transport/runtime：`tmux_protocol.rs`、`telnet_protocol.rs`、`proxy_protocol.rs`、`tcp_transport.rs`、`serial_transport.rs` 和 `serial_capture.rs` 承接协议状态机、TCP/Telnet/Serial runtime、端口打开与读循环、最新 Profile 自动重连、串口线制映射与 capture。
    - security/profile：`ssh_security.rs`、`ssh_health.rs`、`one_key_prompt.rs` 和 `profile_normalization.rs` 承接 SSH 信任/认证、健康检查、提示识别与 Profile 归一化。
    - storage/vault：`state_snapshot.rs`、`sqlite_schema.rs`、`sqlite_mirror.rs`、`sqlite_store.rs`、`store_normalization.rs`、`store_persistence.rs`、`migration_journal_store.rs`、`migration_recovery.rs`、`secret_provider.rs` 和 `portable_vault.rs` 承接 Store/SQLite/Stronghold/keyring 的持久化、一致性、迁移与恢复。
    - MCP：`mcp_control.rs`、`mcp_ipc.rs`、`mcp_authorization.rs` 和 `mcp_execution.rs` 承接 grant/approval、私有 IPC、授权审计与工具执行。
@@ -379,7 +379,7 @@ npm run build
    - session I/O/logging：`outbound_io.rs`、`outbound_events.rs`、`session_events.rs`、`trigger_runtime.rs` 和 `log_storage.rs` 承接每会话出站 lane、跨协议 writer、双向事件、触发动作/受限子进程/发送批次编排、append-only shard 存储与管理，以及 bytesRef v1/v2 解析、范围读取和 SHA-256 替换检测。
    - archive/bundle security：`archive_support.rs` 承接导出目录约束、原子正文/校验和、SHA-256、受限文件打开和 tar.gz 流式归档；`bundle_signing.rs` 承接 keyring/Portable Vault 签名身份 failover、read-back 核验、Ed25519 detached signature 和多产物 fail-closed 收敛；`bundle_export.rs` 承接 redaction/raw 策略、附件 TOCTOU/容量约束、manifest、tar entry 预算和最终导出编排。
 
-   下一步继续审计 Serial/Shell/SSH runtime ownership。
+   下一步继续审计 Shell/SSH runtime ownership。
 2. Bundle identifier 数据目录迁移、PortMate 自有状态判定和 Store/legacy JSON/vault 路径常量已从启动主文件提取到 `app_data_migration.rs`，保留 bootstrap-only WebView 目录替换和双活 Store fail-closed 回归。SQLite schema、mirror、load/transaction 已分别迁入 `sqlite_schema.rs`、`sqlite_mirror.rs`、`sqlite_store.rs`，大型追加表按 raw JSON 相等性增量写入并有 INSERT/UPDATE/DELETE 回归；legacy JSON load 与完整旧快照归一化已进入 `store_normalization.rs`，JSON compatibility write/Store orchestration 已进入 `store_persistence.rs`；继续评估兼容快照异步化与更细的 storage API 所有权。
 3. Stronghold portable vault 已覆盖 OS keyring 不可用/禁用场景、主密码轮换、SSH/Tmux 凭据批量迁移和保守的跨重启恢复；snapshot consistency 与 commit/rekey guard 已迁入 `state_snapshot.rs`，journal 持久化与读回验证已迁入 `migration_journal_store.rs`，recovery 判定与自动收敛已迁入 `migration_recovery.rs`，native keyring 与跨 provider 路由/批处理已迁入 `secret_provider.rs`，Stronghold 底层 provider 已迁入 `portable_vault.rs`；继续拆分命令层与 bundle-signing orchestration，并补真实三平台 provider 故障证据。
 4. Linux DEB/RPM/AppImage 打包与逐包检查已完成；`.github/workflows/native-ci.yml` 已定义 Ubuntu/Windows/macOS 原生测试和 Tauri bundle artifact，以及 Linux 全兼容矩阵。仍需实际 CI 成功证据、Windows/macOS 包结构专项检查、签名和 Apple notarization。
