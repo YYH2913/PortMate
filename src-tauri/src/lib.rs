@@ -25244,6 +25244,13 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    fn shared_runtime_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     struct ChildGuard(Option<std::process::Child>);
 
     impl ChildGuard {
@@ -39766,6 +39773,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn remote_copy_silent_peer_observes_cancellation_and_idle_timeout() {
+        let _runtime_guard = shared_runtime_test_guard();
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping silent remote-copy test: ssh-keygen is not installed");
             return;
@@ -40923,6 +40931,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn openssh_reconnect_store_commit_failure_does_not_install_runtime() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH reconnect Store test: sshd is not installed");
             return;
@@ -41076,6 +41085,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn external_ssh_server_sftp_scp_compatibility() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Ok(label) = std::env::var("PORTMATE_COMPAT_SSH_LABEL") else {
             eprintln!("skipping external SSH compatibility test: matrix environment is not set");
             return;
@@ -41305,6 +41315,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn external_ssh_health_fault_matrix_case() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Ok(fault) = std::env::var("PORTMATE_COMPAT_SSH_HEALTH_FAULT") else {
             eprintln!("skipping external SSH health fault test: matrix environment is not set");
             return;
@@ -41429,6 +41440,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn openssh_sftp_scp_and_tunnels_end_to_end() {
+        let _runtime_guard = shared_runtime_test_guard();
         use std::os::unix::fs::PermissionsExt;
 
         let Some(sshd_path) = openssh_test_server_path() else {
@@ -43277,6 +43289,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH Jump Host test: sshd is not installed");
             return;
@@ -43934,6 +43947,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn openssh_identity_order_respects_max_auth_tries() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH identity-order test: sshd is not installed");
             return;
@@ -44053,6 +44067,7 @@ __PORTMATE_LOADAVG__
     #[cfg(unix)]
     #[test]
     fn openssh_agent_policy_and_identity_filtering_end_to_end() {
+        let _runtime_guard = shared_runtime_test_guard();
         let Some(sshd_path) = openssh_test_server_path() else {
             eprintln!("skipping OpenSSH agent test: sshd is not installed");
             return;
@@ -47090,6 +47105,7 @@ __PORTMATE_LOADAVG__
 
     #[test]
     fn session_lifecycle_lane_serializes_open_and_close() {
+        let _runtime_guard = shared_runtime_test_guard();
         tauri::async_runtime::block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let profile = test_shell_profile();
