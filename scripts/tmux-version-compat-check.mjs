@@ -3,12 +3,17 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import {
+  compatibilityUsesCachedImages,
+  prepareCompatibilityImage,
+} from "./compat-docker-images.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The tmux version matrix currently requires a Linux Docker host");
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const useCachedImages = compatibilityUsesCachedImages();
 const fieldSeparator = "|PORTMATE:8f41c2d7:|";
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/tmux-version-matrix.json"), "utf8"));
 if (!Array.isArray(matrix) || matrix.length < 3) throw new Error("tmux version matrix must contain at least three entries");
@@ -22,7 +27,12 @@ for (const entry of matrix) {
   validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  run("docker", ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot]);
+  await prepareCompatibilityImage({
+    run,
+    image,
+    useCachedImages,
+    buildArgs: ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+  });
   const container = `portmate-tmux-compat-${randomUUID()}`;
   try {
     run("docker", ["run", "--detach", "--rm", "--name", container, image], { quiet: true });

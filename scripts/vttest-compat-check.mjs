@@ -6,16 +6,23 @@ import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import {
+  compatibilityUsesCachedImages,
+  prepareCompatibilityImage,
+} from "./compat-docker-images.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The vttest/full-screen program matrix requires a Linux Docker host");
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const useCachedImages = compatibilityUsesCachedImages();
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/terminal-program-matrix.json"), "utf8"));
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_VTTEST_SCREENSHOT_PREFIX ?? "/tmp/portmate-vttest-compat";
 const maxPtyBytes = 16 * 1024 * 1024;
+const dockerControlTimeoutMs = 180_000;
+const dockerPtyStartupTimeoutMs = 60_000;
 const vttestSuites = [
   { name: "vt100-cursor", choices: [1], marker: "Test of leading zeros in ESC sequences.", minimumHolds: 6 },
   { name: "vt100-screen", choices: [2], marker: "Graphic rendition test pattern:", minimumHolds: 12 },
@@ -70,7 +77,13 @@ for (const entry of matrix) {
   validateEntry(entry);
   entry.image = `portmate-compat-terminal-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  run("docker", ["build", "--tag", entry.image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot], { quiet: true });
+  await prepareCompatibilityImage({
+    run,
+    image: entry.image,
+    useCachedImages,
+    buildArgs: ["build", "--tag", entry.image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+    buildOptions: { quiet: true },
+  });
 }
 
 const port = await reservePort();
@@ -155,6 +168,7 @@ async function runFullScreenProgram(page, entry, spec, screenshot) {
   const processState = spawnPty(entry, spec.command, 12_000);
   activePty = processState;
   try {
+    await processState.started;
     const activeSnapshot = await waitForRenderedMarker(page, processState, spec.marker, 8_000);
     assert(activeSnapshot.nonEmptyLines >= 2,
       `${entry.name}/${spec.name} produced a blank terminal frame: ${JSON.stringify(activeSnapshot)}`);
@@ -235,9 +249,10 @@ async function runVttestSuite(page, entry, suite, screenshot) {
     }
   };
   processState.onOutput = scanPrompts;
-  scanPrompts();
 
   try {
+    await processState.started;
+    scanPrompts();
     await processState.done;
     await automationQueue;
     await processState.writeQueue;
@@ -277,7 +292,7 @@ async function runVttestSuite(page, entry, suite, screenshot) {
 function spawnPty(entry, command, timeoutMs) {
   const container = `portmate-terminal-compat-${randomUUID()}`;
   const child = spawn("docker", [
-    "run", "--rm", "--interactive", "--name", container,
+    "run", "--interactive", "--name", container,
     "--env", "TERM=xterm-256color",
     "--env", "LANG=C",
     "--env", "LC_ALL=C",
@@ -296,22 +311,61 @@ function spawnPty(entry, command, timeoutMs) {
     status: null,
     signal: null,
     timedOut: false,
+    startupTimedOut: false,
+    completedViaInspect: false,
     writeQueue: Promise.resolve(),
     onOutput: null,
-    cleanup: () => run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true }),
+    cleanup: () => run("docker", ["rm", "--force", container], {
+      quiet: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    }),
   };
-  const timer = setTimeout(() => {
-    state.timedOut = true;
+  let commandTimer = null;
+  let startedSettled = false;
+  let resolveStarted;
+  let rejectStarted;
+  state.started = new Promise((resolveStart, rejectStart) => {
+    resolveStarted = resolveStart;
+    rejectStarted = rejectStart;
+  });
+  const startupTimer = setTimeout(() => {
+    state.startupTimedOut = true;
     child.kill("SIGTERM");
-  }, timeoutMs);
+  }, dockerPtyStartupTimeoutMs);
+  const markStarted = () => {
+    if (startedSettled) return;
+    startedSettled = true;
+    clearTimeout(startupTimer);
+    commandTimer = setTimeout(() => {
+      const inspectedExitStatus = inspectContainerExitStatus(container);
+      if (inspectedExitStatus !== null) {
+        state.completedViaInspect = true;
+        state.status = inspectedExitStatus;
+      } else {
+        state.timedOut = true;
+      }
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    resolveStarted();
+  };
   state.done = new Promise((resolveDone, rejectDone) => {
-    child.once("error", rejectDone);
+    child.once("error", (error) => {
+      clearTimeout(startupTimer);
+      if (commandTimer) clearTimeout(commandTimer);
+      if (!startedSettled) {
+        startedSettled = true;
+        rejectStarted(error);
+        resolveDone();
+      } else {
+        rejectDone(error);
+      }
+    });
     child.stderr.on("data", (chunk) => { state.stderr += chunk.toString(); });
     child.stdout.on("data", (chunk) => {
+      markStarted();
       state.bytes += chunk.length;
-      if (state.timedOut) {
-        rejectDone(new Error(`${entry.name} PTY command timed out after ${timeoutMs} ms: ${command}\n${state.raw.slice(-2_000)}`));
-      } else if (state.bytes > maxPtyBytes) {
+      if (state.bytes > maxPtyBytes) {
         child.kill("SIGTERM");
         return;
       }
@@ -324,10 +378,24 @@ function spawnPty(entry, command, timeoutMs) {
       state.onOutput?.();
     });
     child.once("close", (status, signal) => {
-      clearTimeout(timer);
-      state.status = status;
-      state.signal = signal;
-      if (state.bytes > maxPtyBytes) {
+      clearTimeout(startupTimer);
+      if (commandTimer) clearTimeout(commandTimer);
+      if (!state.completedViaInspect) {
+        state.status = status;
+        state.signal = signal;
+      }
+      if (!startedSettled) {
+        startedSettled = true;
+        const reason = state.startupTimedOut
+          ? `did not produce PTY output within ${dockerPtyStartupTimeoutMs} ms`
+          : `exited before producing PTY output with ${status ?? signal}`;
+        rejectStarted(new Error(`${entry.name} ${reason}: ${command}\n${state.stderr}`));
+        resolveDone();
+      } else if (state.completedViaInspect) {
+        resolveDone();
+      } else if (state.timedOut) {
+        rejectDone(new Error(`${entry.name} PTY command timed out after ${timeoutMs} ms: ${command}\n${state.raw.slice(-2_000)}\n${state.stderr}`));
+      } else if (state.bytes > maxPtyBytes) {
         rejectDone(new Error(`${entry.name} PTY output exceeded ${maxPtyBytes} bytes`));
       } else {
         resolveDone();
@@ -335,6 +403,19 @@ function spawnPty(entry, command, timeoutMs) {
     });
   });
   return state;
+}
+
+function inspectContainerExitStatus(container) {
+  const inspected = run("docker", ["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", container], {
+    capture: true,
+    allowFailure: true,
+    timeout: 10_000,
+  });
+  if (inspected.status !== 0) return null;
+  const [status, exitCode] = inspected.stdout.trim().split(/\s+/, 2);
+  if (!new Set(["exited", "dead"]).has(status)) return null;
+  const parsed = Number(exitCode);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 async function resetTerminal(page, marker) {
@@ -356,7 +437,10 @@ async function waitForRenderedMarker(page, processState, marker, timeoutMs) {
     if (processState.status !== null) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 40));
   }
-  throw new Error(`timed out waiting for terminal marker ${String(marker)}; raw=${processState.raw.slice(-2_000)}`);
+  throw new Error(
+    `timed out waiting for terminal marker ${String(marker)}; status=${processState.status ?? processState.signal}; `
+    + `stderr=${processState.stderr}; raw=${processState.raw.slice(-2_000)}`,
+  );
 }
 
 function terminalSnapshot(page) {
@@ -364,23 +448,60 @@ function terminalSnapshot(page) {
 }
 
 function inspectVersions(entry) {
+  const vttestVersionCommand = entry.vttestPattern
+    ? "printf '__PORTMATE_VERSION_VTTEST__\\n'; vttest -V"
+    : "";
+  const output = dockerShell(entry, [
+    "printf '__PORTMATE_VERSION_VIM__\\n'",
+    "vim --version | sed -n '1p'",
+    "printf '__PORTMATE_VERSION_LESS__\\n'",
+    "less --version | sed -n '1p'",
+    "printf '__PORTMATE_VERSION_TOP__\\n'",
+    "top -V 2>&1 | sed -n '1p'",
+    "printf '__PORTMATE_VERSION_DIALOG__\\n'",
+    "dialog --version 2>&1 | sed -n '1p'",
+    vttestVersionCommand,
+  ].filter(Boolean).join("; "));
   const versions = {
-    vim: dockerShell(entry, "vim --version | sed -n '1p'").trim(),
-    less: dockerShell(entry, "less --version | sed -n '1p'").trim(),
-    top: dockerShell(entry, "top -V 2>&1 | sed -n '1p'").trim(),
-    dialog: dockerShell(entry, "dialog --version 2>&1 | sed -n '1p'").trim(),
+    vim: versionAfterMarker(output, "VIM"),
+    less: versionAfterMarker(output, "LESS"),
+    top: versionAfterMarker(output, "TOP"),
+    dialog: versionAfterMarker(output, "DIALOG"),
     vttest: null,
   };
   if (entry.vttestPattern) {
-    versions.vttest = dockerShell(entry, "vttest -V").trim();
+    versions.vttest = versionAfterMarker(output, "VTTEST");
     assert(new RegExp(entry.vttestPattern).test(versions.vttest),
       `${entry.name} returned unexpected vttest version ${JSON.stringify(versions.vttest)}`);
   }
   return versions;
 }
 
+function versionAfterMarker(output, name) {
+  const marker = `__PORTMATE_VERSION_${name}__`;
+  const lines = output.split(/\r?\n/);
+  const markerIndex = lines.indexOf(marker);
+  const version = markerIndex >= 0 ? lines.slice(markerIndex + 1).find((line) => line.trim())?.trim() : null;
+  if (!version || version.startsWith("__PORTMATE_VERSION_")) {
+    throw new Error(`terminal version probe did not return ${name}: ${output}`);
+  }
+  return version;
+}
+
 function dockerShell(entry, command) {
-  return run("docker", ["run", "--rm", "--entrypoint", "sh", entry.image, "-lc", command], { capture: true }).stdout;
+  const container = `portmate-terminal-version-${randomUUID()}`;
+  try {
+    return run("docker", ["run", "--name", container, "--entrypoint", "sh", entry.image, "-lc", command], {
+      capture: true,
+      timeout: dockerControlTimeoutMs,
+    }).stdout;
+  } finally {
+    run("docker", ["rm", "--force", container], {
+      quiet: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    });
+  }
 }
 
 function validateEntry(entry) {
@@ -448,8 +569,14 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     stdio: options.capture || options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout ?? 300_000,
   });
-  if (result.error && !options.allowFailure) throw result.error;
+  if (result.error && !options.allowFailure) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(`${command} ${args.join(" ")} exceeded its ${options.timeout ?? 300_000} ms timeout`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
     const details = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);

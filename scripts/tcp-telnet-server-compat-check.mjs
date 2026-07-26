@@ -1,15 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  compatibilityUsesCachedImages,
+  prepareCompatibilityImage,
+} from "./compat-docker-images.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The TCP/Telnet server compatibility matrix currently requires a Linux Docker host");
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dockerControlTimeoutMs = 180_000;
+const useCachedImages = compatibilityUsesCachedImages();
 const matrixPath = resolve(projectRoot, "tests/compat/tcp-telnet-server-matrix.json");
 const matrix = JSON.parse(readFileSync(matrixPath, "utf8"));
 if (!Array.isArray(matrix) || !matrix.length) {
@@ -22,7 +27,12 @@ for (const entry of matrix) {
   validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  run("docker", ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot]);
+  await prepareCompatibilityImage({
+    run,
+    image,
+    useCachedImages,
+    buildArgs: ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+  });
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
@@ -30,20 +40,15 @@ for (const entry of matrix) {
     run("docker", [
       "run",
       "--detach",
-      "--rm",
       "--name",
       container,
       "--publish",
       "127.0.0.1::23",
       ...containerEnv,
       image,
-    ], { quiet: true });
-    const published = run("docker", ["port", container, "23/tcp"], { capture: true }).stdout.trim();
-    const port = Number(published.match(/:(\d+)$/)?.[1]);
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      throw new Error(`Docker returned an invalid socket port for ${entry.name}: ${published}`);
-    }
-    await waitForTcp(port, container, entry.name);
+    ], { quiet: true, timeout: dockerControlTimeoutMs });
+    const port = await waitForPublishedPort(container, entry.name);
+    await waitForListeningSocket(container, entry.name);
     run("cargo", [
       "test",
       "-p",
@@ -64,7 +69,11 @@ for (const entry of matrix) {
     });
     verifiedServers.push(entry.name);
   } finally {
-    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true });
+    run("docker", ["rm", "--force", container], {
+      quiet: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    });
   }
 }
 
@@ -89,36 +98,61 @@ function validateEntry(entry) {
   }
 }
 
-async function waitForTcp(port, container, label) {
+async function waitForPublishedPort(container, label) {
+  let lastState = "not inspectable";
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const inspected = run("docker", ["inspect", container], {
+      capture: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    });
+    if (inspected.status === 0) {
+      const details = JSON.parse(inspected.stdout)[0];
+      const state = details?.State ?? {};
+      lastState = state.Status ?? "unknown";
+      if (["dead", "exited", "removing"].includes(lastState) || state.Error) {
+        throwContainerStartupError(container, label, lastState, state.Error);
+      }
+      const published = details?.NetworkSettings?.Ports?.["23/tcp"]?.find(({ HostIp }) => HostIp === "127.0.0.1")
+        ?? details?.NetworkSettings?.Ports?.["23/tcp"]?.[0];
+      if (state.Running && published?.HostPort) {
+        const port = Number(published.HostPort);
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+          throw new Error(`Docker returned an invalid socket port for ${label}: ${published.HostPort}`);
+        }
+        return port;
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  throw new Error(`timed out waiting for Docker to publish ${label} socket port (last state: ${lastState})`);
+}
+
+async function waitForListeningSocket(container, label) {
+  const checkListen = "awk '$2 ~ /:0017$/ && $4 == \"0A\" { found = 1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6";
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const running = run("docker", ["inspect", "--format", "{{.State.Running}}", container], {
       capture: true,
       allowFailure: true,
+      timeout: dockerControlTimeoutMs,
     });
     if (running.status !== 0 || running.stdout.trim() !== "true") {
-      const logs = run("docker", ["logs", container], { capture: true, allowFailure: true });
-      throw new Error(`${label} container exited during startup\n${logs.stdout}\n${logs.stderr}`);
+      throwContainerStartupError(container, label, "not running", "");
     }
-    if (await tcpConnects(port)) return;
+    const listening = run("docker", ["exec", container, "sh", "-lc", checkListen], {
+      capture: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    });
+    if (listening.status === 0) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  throw new Error(`timed out waiting for ${label} on 127.0.0.1:${port}`);
+  throw new Error(`timed out waiting for ${label} to listen on container port 23`);
 }
 
-function tcpConnects(port) {
-  return new Promise((resolveConnect) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    socket.setTimeout(250);
-    socket.once("connect", () => {
-      socket.destroy();
-      resolveConnect(true);
-    });
-    socket.once("timeout", () => {
-      socket.destroy();
-      resolveConnect(false);
-    });
-    socket.once("error", () => resolveConnect(false));
-  });
+function throwContainerStartupError(container, label, state, startError) {
+  const logs = run("docker", ["logs", container], { capture: true, allowFailure: true });
+  throw new Error(`${label} container failed during startup (${state}: ${startError || "no start error"})\n${logs.stdout}\n${logs.stderr}`);
 }
 
 function run(command, args, options = {}) {
@@ -128,8 +162,14 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     stdio: options.capture || options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout ?? 300_000,
   });
-  if (result.error && !options.allowFailure) throw result.error;
+  if (result.error && !options.allowFailure) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(`${command} ${args.join(" ")} exceeded its ${options.timeout ?? 300_000} ms timeout`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
     const details = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);

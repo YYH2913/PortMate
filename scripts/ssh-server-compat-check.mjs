@@ -4,6 +4,10 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import {
+  compatibilityUsesCachedImages,
+  prepareCompatibilityImage,
+} from "./compat-docker-images.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The SSH server compatibility matrix currently requires a Linux Docker host");
@@ -11,11 +15,7 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerControlTimeoutMs = 180_000;
-const cachedImageMode = process.env.PORTMATE_COMPAT_USE_CACHED_IMAGES;
-if (cachedImageMode !== undefined && !["0", "1"].includes(cachedImageMode)) {
-  throw new Error("PORTMATE_COMPAT_USE_CACHED_IMAGES must be 0 or 1");
-}
-const useCachedImages = cachedImageMode === "1";
+const useCachedImages = compatibilityUsesCachedImages();
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
 const healthFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
 if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
@@ -27,14 +27,13 @@ for (const entry of matrix) {
   validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  if (useCachedImages) {
-    requireCachedImage(image);
-  } else {
-    await runWithRetries(
-      "docker",
-      ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
-    );
-  }
+  await prepareCompatibilityImage({
+    run,
+    image,
+    useCachedImages,
+    buildArgs: ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+    inspectOptions: { timeout: dockerControlTimeoutMs },
+  });
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
@@ -69,18 +68,20 @@ for (const entry of matrix) {
 }
 
 const healthFaultImage = "portmate-compat-ssh-health-faults:local";
-if (useCachedImages) {
-  requireCachedImage(healthFaultImage);
-} else {
-  await runWithRetries("docker", [
+await prepareCompatibilityImage({
+  run,
+  image: healthFaultImage,
+  useCachedImages,
+  buildArgs: [
     "build",
     "--tag",
     healthFaultImage,
     "--file",
     resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
     projectRoot,
-  ]);
-}
+  ],
+  inspectOptions: { timeout: dockerControlTimeoutMs },
+});
 const verifiedHealthFaults = [];
 for (const entry of healthFaultMatrix) {
   validateHealthFaultEntry(entry);
@@ -244,33 +245,6 @@ function sshBannerReady(port) {
     socket.once("error", () => finish(false));
     socket.once("close", () => finish(false));
   });
-}
-
-async function runWithRetries(command, args, attempts = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return run(command, args);
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts) {
-        console.warn(`${command} ${args[0]} attempt ${attempt}/${attempts} failed; retrying`);
-        await new Promise((resolveWait) => setTimeout(resolveWait, attempt * 1_000));
-      }
-    }
-  }
-  throw lastError;
-}
-
-function requireCachedImage(image) {
-  const inspected = run("docker", ["image", "inspect", image], {
-    quiet: true,
-    allowFailure: true,
-    timeout: dockerControlTimeoutMs,
-  });
-  if (inspected.status !== 0) {
-    throw new Error(`cached SSH compatibility image is unavailable: ${image}`);
-  }
 }
 
 function run(command, args, options = {}) {

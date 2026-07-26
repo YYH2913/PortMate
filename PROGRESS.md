@@ -338,7 +338,7 @@ npm run build
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖；Profile/编辑器/缓存/运行时共享 64 条规则、每条 16 个动作和字段长度/合法性边界，send-text 有 32 条顺序批次/8 批并发和 transport 代际隔离，本地命令另有 4 路并发、30 秒总时限、双流各 64 KiB、饱和拒绝诊断及显式进程清理边界。 |
 | MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和桌面 IPC 的 64 连接/5 秒 I/O 边界已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
 | MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、严格 HTTP framing、容量和 deadline；官方 TypeScript SDK 1.29.0、Python 1.9.4/1.28.1、Go 1.6.1、Rust `rmcp` 1.1.0、Ruby 1.0.0、Java 2.0.0、Kotlin 0.14.0、C# 1.4.1 和 Swift 0.12.1 的 HTTP/stdio 生命周期已通过；Swift 受上游限制只定义 Linux/macOS 矩阵。桌面授权/HTTP/审计任务页、请求门控和有界审计导出已有；更多 SDK 版本待扩展。 |
-| 测试体系 | 部分实现 | Rust workspace 与前端单测、终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序、tmux 3.1c/3.3a/3.5a、OpenSSH 9.6/9.7/9.9 + Debian bookworm OpenSSH + Dropbear、六种 SSH 健康故障、BusyBox/inetutils Telnet、Ncat/Socat TCP、Python MCP 双版本、Go MCP 1.6.1、Rust MCP 1.1.0、Ruby MCP 1.0.0、Java MCP 2.0.0、Kotlin MCP 0.14.0、C# MCP 1.4.1 和 Swift MCP 0.12.1 均已自动化。`Native CI` 定义 Ubuntu/Windows/macOS 测试、Clippy、Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift SDK 和 Tauri bundle，以及 Linux 全兼容矩阵；仍需 CI 实际成功记录、签名安装包 smoke test、真实远端 OS/物理设备证据。 |
+| 测试体系 | 部分实现 | Rust workspace 与前端单测、终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序、tmux 3.1c/3.3a/3.5a、OpenSSH 9.6/9.7/9.9 + Debian bookworm OpenSSH + Dropbear、六种 SSH 健康故障、BusyBox/inetutils Telnet、Ncat/Socat TCP、Python MCP 双版本、Go MCP 1.6.1、Rust MCP 1.1.0、Ruby MCP 1.0.0、Java MCP 2.0.0、Kotlin MCP 0.14.0、C# MCP 1.4.1 和 Swift MCP 0.12.1 均已自动化；所有 Docker 矩阵支持三次镜像构建重试和显式、缺镜像即失败的离线缓存模式。`Native CI` 定义 Ubuntu/Windows/macOS 测试、Clippy、Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift SDK 和 Tauri bundle，以及 Linux 全兼容矩阵；仍需 CI 实际成功记录、签名安装包 smoke test、真实远端 OS/物理设备证据。 |
 
 ## 下一阶段目标
 
@@ -347,7 +347,7 @@ npm run build
 1. Client identity 字段编辑、密钥轮换、引用计数生命周期管理、OS keyring 不可用时的 IOTA Stronghold portable vault/fallback、主密码轮换，以及带 durable journal/跨重启核对/安全 conflict 诊断导出的 SSH/Tmux profile 凭据双向批量迁移已完成；继续补 Windows/macOS/Linux 原生 keyring/Stronghold 故障注入矩阵。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建、cancel 失败后的本地收敛，以及远端命令型传输失败详情、部分进度、事件摘要和复制诊断均已完成；继续扩展服务端故障矩阵。
-4. SFTP/SCP 的 OpenSSH Alpine 3.19/3.20/3.21、Debian bookworm 和 Dropbear 正常矩阵、SSH health 的 ping/exec/SFTP 故障注入，以及 BusyBox/inetutils Telnet、Ncat/Socat TCP 已完成；SSH 容器就绪会分别等待 Docker 动态端口发布和完整协议 banner，Telnet shell 用例会先确认首轮 negotiation reply 再发送应用数据，避免冷启动竞态把服务端兼容性与测试控制面故障混为一谈。继续补 modem 物理串口、OpenSSH 活动传输断线和更多服务端实现。
+4. SFTP/SCP 的 OpenSSH Alpine 3.19/3.20/3.21、Debian bookworm 和 Dropbear 正常矩阵、SSH health 的 ping/exec/SFTP 故障注入，以及 BusyBox/inetutils Telnet、Ncat/Socat TCP 已完成；SSH 容器就绪会分别等待 Docker 动态端口发布和完整协议 banner，TCP/Telnet 通过容器内 LISTEN 状态检查且不会以裸连接消费被测会话，Telnet shell 用例会先确认首轮 negotiation reply 再发送应用数据，避免冷启动竞态把服务端兼容性与测试控制面故障混为一谈。继续补 modem 物理串口、OpenSSH 活动传输断线和更多服务端实现。
 5. SSH/TCP/Telnet/Serial 的最新 Profile 重连、动态延迟、KeepAlive/idle、runtime 断线诊断和 SSH 三层健康检测已完成；下一步集中在 Serial 物理设备、GSSAPI transport 选型和真实远端 OS 故障证据。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
@@ -366,7 +366,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP 官方 TypeScript SDK 1.29.0、Python SDK 1.9.4/1.28.1、Go SDK 1.6.1、Rust SDK `rmcp` 1.1.0、Ruby SDK 1.0.0、Java SDK 2.0.0、Kotlin SDK 0.14.0、C# SDK 1.4.1 与 Swift SDK 0.12.1 的 stdio/HTTP 矩阵已纳入回归；继续扩展版本和客户端实现。
 4. Sysmon 的跨平台采样、四标签窗口、常驻当前会话侧栏、历史趋势、10 秒刷新和结构化持久化已完成；继续补真实 macOS/FreeBSD/Windows SSH 主机与其他 BSD。
-5. 终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序和 tmux 三版本矩阵已完成；继续迁移残余 CDP 检查，并由 macOS/Windows runner 与安装 smoke test 补原生证据。
+5. 终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序和 tmux 三版本矩阵已完成；Docker PTY 首字节启动、程序执行和容器/CLI 收尾使用独立边界，慢控制面不会占用全屏程序 deadline。继续迁移残余 CDP 检查，并由 macOS/Windows runner 与安装 smoke test 补原生证据。
 
 ### P3：架构整理与发布准备
 
