@@ -60,6 +60,7 @@ mod archive_support;
 mod bundle_export;
 mod bundle_signing;
 mod file_batch;
+mod file_commands;
 mod file_transfer;
 mod log_storage;
 mod mcp_authorization;
@@ -98,6 +99,7 @@ mod store_persistence;
 mod store_transactions;
 mod tcp_transport;
 mod telnet_protocol;
+mod tmux_commands;
 mod tmux_protocol;
 mod transfer_runtime;
 mod trigger_runtime;
@@ -3841,130 +3843,6 @@ fn export_terminal_text(
         }
     }
     export_terminal_text_inner(&state.store_path, request)
-}
-
-#[tauri::command]
-async fn list_tmux_state(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<TmuxState, String> {
-    list_tmux_state_inner(state.inner(), &session_id).await
-}
-
-#[tauri::command]
-async fn attach_tmux(
-    state: State<'_, AppState>,
-    session_id: String,
-    target: String,
-) -> Result<SessionEvent, String> {
-    let command = tmux_attach_command(&target)?;
-    send_text_inner_with_context(
-        state.inner().session_io(),
-        session_id,
-        command,
-        "desktop-user",
-        Some("attach_tmux"),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn set_tmux_pane_sync(
-    state: State<'_, AppState>,
-    session_id: String,
-    target: String,
-    enabled: bool,
-) -> Result<TmuxState, String> {
-    set_tmux_pane_sync_inner(state.inner(), &session_id, &target, enabled).await
-}
-
-#[tauri::command]
-async fn mutate_tmux(
-    state: State<'_, AppState>,
-    request: TmuxMutationRequest,
-) -> Result<TmuxState, String> {
-    mutate_tmux_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn start_tmux_control(
-    state: State<'_, AppState>,
-    session_id: String,
-    target: String,
-) -> Result<TmuxControlStatus, String> {
-    start_tmux_control_inner(state.inner(), &session_id, &target).await
-}
-
-#[tauri::command]
-fn stop_tmux_control(
-    state: State<'_, AppState>,
-    session_id: String,
-    target: Option<String>,
-) -> Result<TmuxControlStatus, String> {
-    stop_tmux_control_inner(state.inner(), &session_id, target.as_deref())
-}
-
-#[tauri::command]
-async fn list_files(
-    state: State<'_, AppState>,
-    request: ListFilesRequest,
-) -> Result<Vec<FileEntry>, String> {
-    list_files_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn file_properties(
-    state: State<'_, AppState>,
-    request: FilePropertiesRequest,
-) -> Result<FileProperties, String> {
-    file_properties_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn create_directory(
-    state: State<'_, AppState>,
-    request: FileOperationRequest,
-) -> Result<(), String> {
-    file_operation_inner(state.inner(), request, FileOperation::CreateDirectory).await
-}
-
-#[tauri::command]
-async fn create_file(
-    state: State<'_, AppState>,
-    request: FileOperationRequest,
-) -> Result<(), String> {
-    file_operation_inner(state.inner(), request, FileOperation::CreateFile).await
-}
-
-#[tauri::command]
-async fn delete_path(
-    state: State<'_, AppState>,
-    request: FileOperationRequest,
-) -> Result<(), String> {
-    file_operation_inner(state.inner(), request, FileOperation::Delete).await
-}
-
-#[tauri::command]
-async fn delete_paths(
-    state: State<'_, AppState>,
-    request: DeletePathsRequest,
-) -> Result<(), String> {
-    delete_paths_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn rename_path(state: State<'_, AppState>, request: RenamePathRequest) -> Result<(), String> {
-    rename_path_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn move_paths(state: State<'_, AppState>, request: MovePathsRequest) -> Result<(), String> {
-    move_paths_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn chmod_path(state: State<'_, AppState>, request: ChmodPathRequest) -> Result<(), String> {
-    chmod_path_inner(state.inner(), request).await
 }
 
 #[tauri::command]
@@ -11150,21 +11028,21 @@ pub fn run() {
             export_serial_capture,
             export_serial_capture_history,
             export_terminal_text,
-            list_tmux_state,
-            attach_tmux,
-            set_tmux_pane_sync,
-            mutate_tmux,
-            start_tmux_control,
-            stop_tmux_control,
-            list_files,
-            file_properties,
-            create_directory,
-            create_file,
-            delete_path,
-            delete_paths,
-            rename_path,
-            move_paths,
-            chmod_path,
+            tmux_commands::list_tmux_state,
+            tmux_commands::attach_tmux,
+            tmux_commands::set_tmux_pane_sync,
+            tmux_commands::mutate_tmux,
+            tmux_commands::start_tmux_control,
+            tmux_commands::stop_tmux_control,
+            file_commands::list_files,
+            file_commands::file_properties,
+            file_commands::create_directory,
+            file_commands::create_file,
+            file_commands::delete_path,
+            file_commands::delete_paths,
+            file_commands::rename_path,
+            file_commands::move_paths,
+            file_commands::chmod_path,
             serial_set_lines,
             serial_send_break,
             refresh_sysmon,
