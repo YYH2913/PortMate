@@ -1563,47 +1563,6 @@ pub struct TrustScannedHostKeyRequest {
 }
 
 #[tauri::command]
-async fn send_text(
-    state: State<'_, AppState>,
-    session_id: String,
-    text: String,
-) -> Result<SessionEvent, String> {
-    send_text_inner(state.inner().session_io(), session_id, text).await
-}
-
-#[tauri::command]
-async fn send_bytes(
-    state: State<'_, AppState>,
-    session_id: String,
-    bytes: Vec<u8>,
-) -> Result<SessionEvent, String> {
-    send_bytes_inner(state.inner().session_io(), session_id, bytes).await
-}
-
-#[tauri::command]
-async fn send_key(
-    state: State<'_, AppState>,
-    session_id: String,
-    key: String,
-) -> Result<SessionEvent, String> {
-    let io = state.inner().session_io();
-    let text =
-        terminal_key_sequence_for_protocol(&key, is_telnet_session(&io.store, &session_id)?)?;
-    send_text_inner_with_context(io, session_id, text, "desktop-user", Some("send_key")).await
-}
-
-#[tauri::command]
-async fn run_command(
-    state: State<'_, AppState>,
-    session_id: String,
-    command: String,
-) -> Result<SessionEvent, String> {
-    let io = state.inner().session_io();
-    let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
-    run_command_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
-}
-
-#[tauri::command]
 async fn send_one_key(
     state: State<'_, AppState>,
     request: SendOneKeyRequest,
@@ -1719,16 +1678,6 @@ fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
     if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
         *stored = event.clone();
     }
-}
-
-#[tauri::command]
-async fn resize_session(
-    state: State<'_, AppState>,
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<SessionSummary, String> {
-    resize_session_inner(state.inner(), session_id, cols, rows).await
 }
 
 async fn resize_session_inner(
@@ -1919,14 +1868,6 @@ fn save_session_profile(
         let _ = app_handle.emit("portmate-session-profile-updated", summary.clone());
     }
     Ok(summary)
-}
-
-#[tauri::command]
-async fn delete_session_profile(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<DeleteSessionProfileResponse, String> {
-    delete_session_profile_inner(state.inner(), session_id).await
 }
 
 async fn delete_session_profile_inner(
@@ -2271,50 +2212,6 @@ fn cancel_pending_session_opens(state: &AppState, session_id: &str) -> Result<us
         true
     });
     Ok(cancelled)
-}
-
-#[tauri::command]
-async fn open_session(
-    state: State<'_, AppState>,
-    session_id: String,
-    password: Option<String>,
-    passphrase: Option<String>,
-) -> Result<SessionSummary, String> {
-    let state = state.inner().clone();
-    open_session_inner(
-        state,
-        session_id,
-        SessionOpenCredentials {
-            password,
-            passphrase,
-            ..Default::default()
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-async fn open_session_with_one_key(
-    state: State<'_, AppState>,
-    session_id: String,
-    one_key_id: String,
-) -> Result<SessionSummary, String> {
-    let state = state.inner().clone();
-    let cancellation = register_session_open_cancellation(&state, &session_id)?;
-    let credentials = resolve_one_key_login_credentials(&state, &session_id, &one_key_id)?;
-    open_reserved_session_inner(
-        state,
-        session_id,
-        SessionOpenCredentials {
-            username: Some(credentials.username),
-            password: credentials.password,
-            passphrase: credentials.passphrase,
-            identity: credentials.identity,
-            isolate_saved_ssh_credentials: true,
-        },
-        cancellation,
-    )
-    .await
 }
 
 #[derive(Default)]
@@ -2670,14 +2567,6 @@ fn cleanup_deleted_session_runtime_state(
             let _ = pending.response.send(false);
         }
     }
-}
-
-#[tauri::command]
-async fn close_session(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<SessionSummary, String> {
-    close_session_inner(state.inner(), session_id).await
 }
 
 async fn close_session_inner(
@@ -10666,16 +10555,16 @@ pub fn run() {
             log_commands::search_log_shards,
             log_commands::archive_log_shards,
             log_commands::export_session_bundle_archive,
-            send_text,
-            send_bytes,
-            send_key,
-            run_command,
-            resize_session,
+            session_commands::send_text,
+            session_commands::send_bytes,
+            session_commands::send_key,
+            session_commands::run_command,
+            session_commands::resize_session,
             save_session_profile,
-            delete_session_profile,
-            open_session,
-            open_session_with_one_key,
-            close_session,
+            session_commands::delete_session_profile,
+            session_commands::open_session,
+            session_commands::open_session_with_one_key,
+            session_commands::close_session,
             ssh_health::check_ssh_health,
             ssh_host_key_commands::evaluate_host_key,
             ssh_host_key_commands::apply_host_key_decision,
