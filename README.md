@@ -444,10 +444,10 @@ the same 8-message/request lifecycle over both transports, covering the `2025-03
 used by 1.9.4 and the current `2025-06-18` negotiation used by the later versions without sharing
 site packages.
 
-The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.6.1 from an isolated
-module and runs the same 8-message/request lifecycle over stdio and stateless Streamable HTTP. The
-server's `2025-06-18` fallback is verified explicitly; the Go module has its own locked dependency
-checksums and never shares Python site packages.
+The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.4.0, 1.5.0, and 1.6.1
+from isolated generated modules and runs the same 8-message/request lifecycle over stdio and
+stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
+module has its own dependency checksums and never mutates PortMate's production workspace.
 
 The official Rust SDK matrix uses `rmcp` 1.1.0 from a standalone locked Cargo module and runs the
 same lifecycle through the SDK's child-process and reqwest Streamable HTTP transports. Both paths

@@ -18,12 +18,15 @@ import (
 )
 
 const (
-	sdkVersion            = "1.6.1"
-	expectedProtocol      = "2025-06-18"
 	httpToken             = "portmate-mcp-go-http-client-check"
 	stdioClientID         = "official-go-sdk-stdio-check"
 	httpClientID          = "official-go-sdk-http-check"
 	defaultBinaryRelative = "../../target/debug/portmate-mcp"
+)
+
+var (
+	sdkVersion       = environmentValue("PORTMATE_MCP_GO_SDK_VERSION", "1.6.1")
+	expectedProtocol = environmentValue("PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION", "2025-06-18")
 )
 
 func main() {
@@ -281,4 +284,11 @@ func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+func environmentValue(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
