@@ -11,6 +11,11 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerControlTimeoutMs = 180_000;
+const cachedImageMode = process.env.PORTMATE_COMPAT_USE_CACHED_IMAGES;
+if (cachedImageMode !== undefined && !["0", "1"].includes(cachedImageMode)) {
+  throw new Error("PORTMATE_COMPAT_USE_CACHED_IMAGES must be 0 or 1");
+}
+const useCachedImages = cachedImageMode === "1";
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
 const healthFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
 if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
@@ -22,10 +27,14 @@ for (const entry of matrix) {
   validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  await runWithRetries(
-    "docker",
-    ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
-  );
+  if (useCachedImages) {
+    requireCachedImage(image);
+  } else {
+    await runWithRetries(
+      "docker",
+      ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+    );
+  }
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
@@ -60,14 +69,18 @@ for (const entry of matrix) {
 }
 
 const healthFaultImage = "portmate-compat-ssh-health-faults:local";
-await runWithRetries("docker", [
-  "build",
-  "--tag",
-  healthFaultImage,
-  "--file",
-  resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
-  projectRoot,
-]);
+if (useCachedImages) {
+  requireCachedImage(healthFaultImage);
+} else {
+  await runWithRetries("docker", [
+    "build",
+    "--tag",
+    healthFaultImage,
+    "--file",
+    resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
+    projectRoot,
+  ]);
+}
 const verifiedHealthFaults = [];
 for (const entry of healthFaultMatrix) {
   validateHealthFaultEntry(entry);
@@ -247,6 +260,17 @@ async function runWithRetries(command, args, attempts = 3) {
     }
   }
   throw lastError;
+}
+
+function requireCachedImage(image) {
+  const inspected = run("docker", ["image", "inspect", image], {
+    quiet: true,
+    allowFailure: true,
+    timeout: dockerControlTimeoutMs,
+  });
+  if (inspected.status !== 0) {
+    throw new Error(`cached SSH compatibility image is unavailable: ${image}`);
+  }
 }
 
 function run(command, args, options = {}) {
