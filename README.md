@@ -472,11 +472,12 @@ the SDK's required coroutines 1.11.0 on the same pinned JDK/Maven bootstrap. Its
 and Ktor CIO Streamable HTTP transports run the same lifecycle, reject unsupported negotiation,
 verify server identity and all read surfaces, and confirm that PortMate HTTP remains stateless.
 
-The official C# SDK matrix uses `ModelContextProtocol.Core` 1.4.1 with a locked NuGet dependency
-graph. It requires exactly .NET SDK 10.0.302, bootstrapping a platform archive with its official
-SHA-512 digest below `target/` when necessary. The SDK's Stdio and Streamable HTTP transports run
-the same lifecycle, verify `2025-06-18` negotiation, server identity and every read surface, and
-confirm that PortMate HTTP remains stateless.
+The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, and 1.4.1. Each version
+has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot mask
+cross-version dependency or API incompatibilities. It requires exactly .NET SDK 10.0.302,
+bootstrapping a platform archive with its official SHA-512 digest when necessary. Every SDK's
+Stdio and Streamable HTTP transports run the same lifecycle, verify `2025-06-18` negotiation,
+server identity and every read surface, and confirm that PortMate HTTP remains stateless.
 
 The official Swift SDK matrix uses `swift-sdk` 0.12.1 and a fully resolved SwiftPM graph on Swift
 6.3.3. Linux x64 can bootstrap the pinned official Ubuntu 24.04 toolchain below `target/` after a

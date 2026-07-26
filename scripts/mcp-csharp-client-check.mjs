@@ -40,14 +40,20 @@ mkdirSync(environment.NUGET_PACKAGES, { recursive: true });
 const dotnet = await ensureDotnet(matrix.dotnet, environment);
 
 for (const entry of matrix.sdks) {
+  const environmentRoot = join(projectRoot, "target", `mcp-csharp-sdk-${entry.version}`);
+  const lockFile = join(environmentRoot, "packages.lock.json");
+  mkdirSync(environmentRoot, { recursive: true });
   const properties = [
     `-p:McpSdkVersion=${entry.version}`,
     `-p:PortMateMcpProtocolVersion=${entry.protocolVersion}`,
+    `-p:NuGetLockFilePath=${lockFile}`,
+    `-p:BaseIntermediateOutputPath=${join(environmentRoot, "obj")}${process.platform === "win32" ? "\\" : "/"}`,
+    `-p:BaseOutputPath=${join(environmentRoot, "bin")}${process.platform === "win32" ? "\\" : "/"}`,
   ];
   run(dotnet, [
     "restore",
     project,
-    "--locked-mode",
+    existsSync(lockFile) ? "--locked-mode" : "--force-evaluate",
     ...properties,
   ], { env: environment, timeout: 180_000 });
   run(dotnet, [

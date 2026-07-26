@@ -26,16 +26,17 @@ static McpClientOptions ClientOptions(string sdkVersion, string expectedProtocol
 
 static async Task CheckStdioAsync(string binary, string sdkVersion, string expectedProtocol)
 {
-    Dictionary<string, string?> environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
-    environment["PORTMATE_MCP_HTTP"] = "0";
-    environment["PORTMATE_MCP_CLIENT_ID"] = "official-csharp-sdk-stdio-check";
-    environment["PORTMATE_STORE_PATH"] = "";
+    var environment = new Dictionary<string, string?>
+    {
+        ["PORTMATE_MCP_HTTP"] = "0",
+        ["PORTMATE_MCP_CLIENT_ID"] = "official-csharp-sdk-stdio-check",
+        ["PORTMATE_STORE_PATH"] = "",
+    };
     var transport = new StdioClientTransport(new StdioClientTransportOptions
     {
         Name = "PortMate MCP stdio",
         Command = binary,
         Arguments = [],
-        InheritEnvironmentVariables = false,
         EnvironmentVariables = environment,
     });
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
