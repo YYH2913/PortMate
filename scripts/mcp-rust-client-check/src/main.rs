@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use rmcp::{
     ServiceExt,
     model::{
-        ClientInfo, ClientRequest, Implementation, PingRequest, ProtocolVersion,
-        ReadResourceRequestParams, ResourceContents, ServerResult,
+        ClientInfo, ClientRequest, Implementation, PingRequest, ReadResourceRequestParams,
+        ResourceContents, ServerResult,
     },
     transport::{
         ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess,
@@ -20,9 +20,7 @@ use rmcp::{
 };
 use tokio::{net::TcpListener, process::Command, time::timeout};
 
-const SDK_VERSION: &str = "1.1.0";
 const HTTP_TOKEN: &str = "portmate-mcp-rust-http-client-check";
-const EXPECTED_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2025_06_18;
 const STDIO_CLIENT_ID: &str = "official-rust-sdk-stdio-check";
 const HTTP_CLIENT_ID: &str = "official-rust-sdk-http-check";
 
@@ -33,12 +31,18 @@ async fn main() -> Result<()> {
     timeout(Duration::from_secs(20), check_stdio(&binary))
         .await
         .context("stdio check exceeded 20 seconds")??;
-    println!("MCP Rust SDK {SDK_VERSION} stdio check passed (8 messages)");
+    println!(
+        "MCP Rust SDK {} stdio check passed (8 messages)",
+        sdk_version()
+    );
 
     timeout(Duration::from_secs(30), check_http(&binary))
         .await
         .context("HTTP check exceeded 30 seconds")??;
-    println!("MCP Rust SDK {SDK_VERSION} HTTP check passed (8 requests)");
+    println!(
+        "MCP Rust SDK {} HTTP check passed (8 requests)",
+        sdk_version()
+    );
     Ok(())
 }
 
@@ -128,8 +132,24 @@ async fn check_http(binary: &Path) -> Result<()> {
 fn client_info() -> ClientInfo {
     ClientInfo::new(
         Default::default(),
-        Implementation::new("portmate-rust-sdk-check", SDK_VERSION),
+        Implementation::new("portmate-rust-sdk-check", sdk_version()),
     )
+}
+
+fn sdk_version() -> String {
+    env::var("PORTMATE_MCP_RUST_SDK_VERSION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "1.1.0".to_string())
+}
+
+fn expected_protocol() -> String {
+    env::var("PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "2025-06-18".to_string())
 }
 
 async fn exercise<S>(
@@ -142,11 +162,12 @@ where
     let initialized = client
         .peer_info()
         .with_context(|| format!("{transport} client omitted initialize result"))?;
-    if initialized.protocol_version != EXPECTED_PROTOCOL {
+    let expected_protocol = expected_protocol();
+    if initialized.protocol_version.to_string() != expected_protocol {
         bail!(
             "{transport} negotiated {}; expected {}",
             initialized.protocol_version,
-            EXPECTED_PROTOCOL
+            expected_protocol
         );
     }
     if initialized.server_info.name != "portmate-mcp" {

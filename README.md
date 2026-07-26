@@ -449,10 +449,11 @@ from isolated generated modules and runs the same 8-message/request lifecycle ov
 stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
 module has its own dependency checksums and never mutates PortMate's production workspace.
 
-The official Rust SDK matrix uses `rmcp` 1.1.0 from a standalone locked Cargo module and runs the
-same lifecycle through the SDK's child-process and reqwest Streamable HTTP transports. Both paths
-verify `2025-06-18` negotiation, server identity, ping, tools, resources, templates, prompts, and
-resource reads without adding the compatibility client to PortMate's production workspace.
+The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, and 2.2.0 from standalone locked
+Cargo modules and runs the same lifecycle through each SDK's child-process and reqwest Streamable
+HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, ping, tools,
+resources, templates, prompts, and resource reads without adding compatibility clients to
+PortMate's production workspace.
 
 The official Ruby SDK matrix uses `mcp` 1.0.0 with pinned Faraday 2.14.3 and
 `event_stream_parser` 1.0.0 in an isolated gem home. Its bundled Stdio and HTTP transports run the
