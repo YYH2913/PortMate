@@ -370,13 +370,13 @@ npm run build
 
 ### P3：架构整理与发布准备
 
-1. `lib.rs` 已累计减少约 23,600 行，并按以下边界持续拆分：
+1. `lib.rs` 已累计减少约 23,900 行，并按以下边界持续拆分；主文件不再直接拥有 Tauri command：
    - transport/runtime：`tmux_commands.rs`、`tmux_protocol.rs`、`telnet_protocol.rs`、`proxy_protocol.rs`、`tcp_transport.rs`、`serial_commands.rs`、`serial_transport.rs`、`shell_transport.rs`、`ssh_transport.rs`、`ssh_runtime.rs`、`ssh_tunnel.rs`、`tunnel_commands.rs` 和 `serial_capture.rs` 承接 Tmux/Serial/tunnel 桌面命令适配、协议状态机、TCP/Telnet/Serial runtime、Shell PTY/子进程 runtime、SSH 正式 handler/host-key 接受/remote-forward 分发、socket/Jump Host/认证/terminal 与 auxiliary exec setup、SSH channel reader/断开诊断/代际重连与安装补偿、local/remote/dynamic tunnel runtime/metrics/健康恢复/Profile 补偿与数据 pipe、端口打开与读循环、最新 Profile 自动重连、串口线制映射与 capture。
    - security/profile：`ssh_security.rs`、`ssh_host_key_commands.rs`、`ssh_identity_commands.rs`、`ssh_host_key_scan.rs`、`ssh_health.rs`、`one_key_commands.rs`、`one_key_prompt.rs`、`profile_commands.rs` 和 `profile_normalization.rs` 承接 SSH 信任、完整 Host Key 命令/Store mirror/并发字段合并、identity/agent 枚举/更新/轮换/删除、直连/多跳扫描、健康检查、OneKey CRUD/发送/提示复核，以及 Profile 保存事务/归一化。
-   - storage/vault：`state_snapshot.rs`、`sqlite_schema.rs`、`sqlite_mirror.rs`、`sqlite_store.rs`、`store_normalization.rs`、`store_persistence.rs`、`store_transactions.rs`、`migration_journal_store.rs`、`migration_recovery.rs`、`secret_provider.rs` 和 `portable_vault.rs` 承接 Store/SQLite/Stronghold/keyring 的持久化、copy-on-write/tracked-event 事务、提交后核验、一致性、迁移与恢复。
+   - storage/vault：`state_snapshot.rs`、`sqlite_schema.rs`、`sqlite_mirror.rs`、`sqlite_store.rs`、`store_normalization.rs`、`store_persistence.rs`、`store_transactions.rs`、`migration_journal_store.rs`、`migration_recovery.rs`、`secret_commands.rs`、`secret_provider.rs`、`vault_commands.rs` 和 `portable_vault.rs` 承接 Store/SQLite/Stronghold/keyring 的持久化、Secret/Vault/迁移命令、copy-on-write/tracked-event 事务、提交后核验、一致性、迁移与恢复。
    - MCP：`mcp_commands.rs`、`mcp_control.rs`、`mcp_ipc.rs`、`mcp_authorization.rs` 和 `mcp_execution.rs` 承接桌面 command adapters、grant/approval、私有 IPC、授权审计与工具执行。
    - transfer：`transfer_commands.rs`、`transfer_runtime.rs`、`file_commands.rs`、`file_batch.rs`、`file_transfer.rs`、`scp_protocol.rs` 和 `modem_transfer.rs` 承接传输完整桌面命令适配、文件桌面命令适配、队列、批次规划、Local/SFTP/SCP/remote-copy 与 X/Y/ZModem 数据面。
-   - session I/O/logging：`session_commands.rs`、`outbound_io.rs`、`outbound_events.rs`、`session_events.rs`、`sysmon_commands.rs`、`trigger_runtime.rs`、`log_commands.rs` 和 `log_storage.rs` 承接 session 查询/输入/resize/open/delete/close 命令适配、每会话出站 lane、跨协议 writer、双向事件、Sysmon 桌面命令适配、触发动作/受限子进程/发送批次编排、日志/归档桌面命令、append-only shard 存储与管理，以及 bytesRef v1/v2 解析、范围读取和 SHA-256 替换检测。
+   - session I/O/logging：`session_commands.rs`、`outbound_io.rs`、`outbound_events.rs`、`session_events.rs`、`sysmon_commands.rs`、`terminal_export_commands.rs`、`trigger_runtime.rs`、`log_commands.rs` 和 `log_storage.rs` 承接 session 查询/输入/resize/open/delete/close 命令适配、每会话出站 lane、跨协议 writer、双向事件、Sysmon/终端导出桌面命令适配、触发动作/受限子进程/发送批次编排、日志/归档桌面命令、append-only shard 存储与管理，以及 bytesRef v1/v2 解析、范围读取和 SHA-256 替换检测。
    - archive/bundle security：`archive_support.rs` 承接导出目录约束、原子正文/校验和、SHA-256、受限文件打开和 tar.gz 流式归档；`bundle_signing.rs` 承接 keyring/Portable Vault 签名身份 failover、read-back 核验、Ed25519 detached signature 和多产物 fail-closed 收敛；`bundle_export.rs` 承接 redaction/raw 策略、附件 TOCTOU/容量约束、manifest、tar entry 预算和最终导出编排。
 
    下一步继续审计剩余命令编排 ownership。

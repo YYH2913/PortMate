@@ -81,6 +81,7 @@ mod profile_commands;
 mod profile_normalization;
 mod proxy_protocol;
 mod scp_protocol;
+mod secret_commands;
 mod secret_provider;
 mod serial_capture;
 mod serial_commands;
@@ -106,12 +107,14 @@ mod store_transactions;
 mod sysmon_commands;
 mod tcp_transport;
 mod telnet_protocol;
+mod terminal_export_commands;
 mod tmux_commands;
 mod tmux_protocol;
 mod transfer_commands;
 mod transfer_runtime;
 mod trigger_runtime;
 mod tunnel_commands;
+mod vault_commands;
 
 use app_data_migration::*;
 use archive_support::*;
@@ -2759,72 +2762,6 @@ fn cleanup_replaced_one_key_secrets(
     }
 }
 
-#[tauri::command]
-fn save_secret(
-    state: State<'_, AppState>,
-    request: SecretWriteRequest,
-) -> Result<SecretWriteResponse, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let secret = request.secret.trim_end_matches(['\r', '\n']).to_string();
-    if secret.trim().is_empty() {
-        return Err("密钥内容不能为空".to_string());
-    }
-    let secret_ref =
-        if let Some(secret_ref) = request.secret_ref.filter(|value| !value.trim().is_empty()) {
-            if is_reserved_internal_secret_ref(&secret_ref) {
-                return Err("内部保留 secretRef 不能通过通用凭据接口写入".to_string());
-            }
-            write_secret_to_store(&secret_ref, &secret)?;
-            secret_ref
-        } else {
-            write_new_secret(request.storage, &secret)?
-        };
-    Ok(SecretWriteResponse { secret_ref })
-}
-
-#[tauri::command]
-fn delete_secret(state: State<'_, AppState>, secret_ref: String) -> Result<(), String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    if is_reserved_internal_secret_ref(&secret_ref) {
-        return Err("内部保留 secretRef 不能通过通用凭据接口删除".to_string());
-    }
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    let usage_count = secret_ref_usage_count(&store, &secret_ref);
-    if usage_count > 0 {
-        return Err(format!(
-            "secretRef 仍被 {usage_count} 个凭据字段引用，无法删除"
-        ));
-    }
-    delete_secret_from_store(&secret_ref)
-}
-
-#[tauri::command]
-fn has_secret(state: State<'_, AppState>, secret_ref: String) -> Result<bool, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    if is_reserved_internal_secret_ref(&secret_ref) {
-        return Err("内部保留 secretRef 不能通过通用凭据接口读取".to_string());
-    }
-    match read_secret_from_store(&secret_ref) {
-        Ok(_) => Ok(true),
-        Err(error)
-            if error.contains("NoEntry")
-                || error.contains("No credential")
-                || error.contains("不存在该 secretRef") =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[tauri::command]
-fn portable_vault_status(state: State<'_, AppState>) -> Result<PortableVaultStatus, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    portable_vault_status_inner()
-}
-
 fn portable_vault_status_inner() -> Result<PortableVaultStatus, String> {
     let context = portable_vault_context()?;
     let unlocked = context
@@ -2848,198 +2785,6 @@ fn portable_vault_recovery_ready() -> Result<bool, String> {
     Ok(stronghold.as_ref().is_some_and(|stronghold| {
         stronghold.snapshot_version != PortableVaultSnapshotVersion::UnknownAfterCommit
     }))
-}
-
-#[tauri::command]
-fn unlock_portable_vault(
-    state: State<'_, AppState>,
-    request: PortableVaultUnlockRequest,
-) -> Result<PortableVaultStatus, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let password = Zeroizing::new(request.password);
-    let context = portable_vault_context()?;
-    unlock_portable_vault_in(context, password.as_str())?;
-    portable_vault_status_inner()
-}
-
-#[tauri::command]
-fn rotate_portable_vault_password(
-    state: State<'_, AppState>,
-    request: PortableVaultRotatePasswordRequest,
-) -> Result<PortableVaultStatus, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let current_password = Zeroizing::new(request.current_password);
-    let new_password = Zeroizing::new(request.new_password);
-    let context = portable_vault_context()?;
-    rotate_portable_vault_password_in(context, current_password.as_str(), new_password.as_str())?;
-    portable_vault_status_inner()
-}
-
-#[tauri::command]
-fn lock_portable_vault(state: State<'_, AppState>) -> Result<PortableVaultStatus, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let context = portable_vault_context()?;
-    context
-        .stronghold
-        .lock()
-        .map_err(|error| error.to_string())?
-        .take();
-    portable_vault_status_inner()
-}
-
-#[tauri::command]
-fn preview_profile_secret_migration(
-    state: State<'_, AppState>,
-    request: ProfileSecretMigrationRequest,
-) -> Result<ProfileSecretMigrationPreview, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    verify_store_snapshot_is_current(&state.store_path)?;
-    ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let mut plan = build_profile_secret_migration_plan(&store, &request)?;
-    let plan_token = profile_secret_migration_plan_token(&plan, &request);
-    plan.preview.plan_token = plan_token;
-    if plan.preview.eligible_secret_count > 0 {
-        ensure_portable_vault_ready_for_migration()?;
-    }
-    Ok(plan.preview)
-}
-
-#[tauri::command]
-fn migrate_profile_secrets(
-    state: State<'_, AppState>,
-    request: ProfileSecretMigrationRequest,
-    expected_plan_token: String,
-) -> Result<ProfileSecretMigrationResponse, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    verify_store_snapshot_is_current(&state.store_path)?;
-    ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let plan = build_profile_secret_migration_plan(&store, &request)?;
-    let current_plan_token = profile_secret_migration_plan_token(&plan, &request);
-    if expected_plan_token.trim().is_empty() || expected_plan_token != current_plan_token {
-        return Err("凭据迁移预检已过期，请重新预检后再执行".to_string());
-    }
-    if plan.preview.eligible_secret_count > 0 {
-        ensure_portable_vault_ready_for_migration()?;
-    }
-    migrate_profile_secrets_with_journal_io(
-        &mut store,
-        &request,
-        read_secret_from_store,
-        write_profile_secret_migration_batch,
-        delete_profile_secret_migration_batch,
-        |next_store, affected_profile_ids, target_refs, migration_id| {
-            persist_profile_secret_migration(
-                &state.store_path,
-                next_store,
-                affected_profile_ids,
-                target_refs,
-                migration_id,
-            )
-        },
-        |event| persist_profile_secret_migration_journal_event(&state.store_path, event),
-    )
-}
-
-#[tauri::command]
-fn get_profile_secret_migration_recovery(
-    state: State<'_, AppState>,
-) -> Result<Option<ProfileSecretMigrationRecoverySummary>, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    verify_store_snapshot_is_current(&state.store_path)?;
-    let Some(journal) = load_profile_secret_migration_journal(&state.store_path)? else {
-        return Ok(None);
-    };
-    Ok(Some(profile_secret_migration_recovery_summary(
-        &store,
-        &journal,
-        portable_vault_recovery_ready()?,
-    )))
-}
-
-#[tauri::command]
-fn export_profile_secret_migration_diagnostics(
-    state: State<'_, AppState>,
-) -> Result<ProfileSecretMigrationDiagnosticExportResult, String> {
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let snapshot_lock = lock_store_snapshot(&state.store_path)?;
-    let persisted_store = read_persisted_store_for_migration(&state.store_path)?;
-    let result = export_profile_secret_migration_diagnostics_with_io(
-        &state.store_path,
-        &persisted_store,
-        probe_secret_from_store,
-        profile_secret_migration_diagnostic_vault_status(),
-    );
-    drop(snapshot_lock);
-    result
-}
-
-#[tauri::command]
-fn recover_profile_secret_migration(
-    state: State<'_, AppState>,
-    request: ProfileSecretMigrationRecoveryRequest,
-) -> Result<ProfileSecretMigrationRecoveryResponse, String> {
-    let migration_id = request.migration_id.trim().to_string();
-    Uuid::parse_str(&migration_id).map_err(|_| "凭据迁移恢复 ID 无效".to_string())?;
-    let _credential_guard = lock_credential_operations(state.inner())?;
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    verify_store_snapshot_is_current(&state.store_path)?;
-    let Some(journal) = load_profile_secret_migration_journal(&state.store_path)? else {
-        return Ok(ProfileSecretMigrationRecoveryResponse {
-            migration_id,
-            resolved: true,
-            action: "already-resolved".to_string(),
-            warnings: Vec::new(),
-            pending: None,
-        });
-    };
-    if journal.payload.migration_id != migration_id {
-        return Err(format!(
-            "当前待恢复迁移为 {}，与请求 ID 不一致",
-            journal.payload.migration_id
-        ));
-    }
-    let outcome = recover_profile_secret_migration_with_io(
-        &store,
-        &journal,
-        probe_secret_from_store,
-        delete_profile_secret_migration_batch,
-        |event| persist_profile_secret_migration_journal_event(&state.store_path, event),
-    )?;
-    let pending = load_profile_secret_migration_journal(&state.store_path)?
-        .map(|journal| {
-            Ok::<_, String>(profile_secret_migration_recovery_summary(
-                &store,
-                &journal,
-                portable_vault_recovery_ready()?,
-            ))
-        })
-        .transpose()?;
-    Ok(ProfileSecretMigrationRecoveryResponse {
-        migration_id,
-        resolved: outcome.resolved,
-        action: outcome.action,
-        warnings: outcome.warnings,
-        pending,
-    })
-}
-
-#[tauri::command]
-fn export_terminal_text(
-    state: State<'_, AppState>,
-    request: ExportTerminalTextRequest,
-) -> Result<ExportTerminalTextResult, String> {
-    validate_terminal_text_export_request(&request, MAX_TERMINAL_TEXT_EXPORT_BYTES)?;
-    {
-        let store = state.store.lock().map_err(|error| error.to_string())?;
-        if store.profile(&request.session_id).is_none() {
-            return Err("unknown terminal export session".to_string());
-        }
-    }
-    export_terminal_text_inner(&state.store_path, request)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10062,18 +9807,18 @@ pub fn run() {
             one_key_commands::save_one_key,
             one_key_commands::delete_one_key,
             one_key_commands::send_one_key,
-            save_secret,
-            delete_secret,
-            has_secret,
-            portable_vault_status,
-            unlock_portable_vault,
-            rotate_portable_vault_password,
-            lock_portable_vault,
-            preview_profile_secret_migration,
-            migrate_profile_secrets,
-            get_profile_secret_migration_recovery,
-            export_profile_secret_migration_diagnostics,
-            recover_profile_secret_migration,
+            secret_commands::save_secret,
+            secret_commands::delete_secret,
+            secret_commands::has_secret,
+            vault_commands::portable_vault_status,
+            vault_commands::unlock_portable_vault,
+            vault_commands::rotate_portable_vault_password,
+            vault_commands::lock_portable_vault,
+            vault_commands::preview_profile_secret_migration,
+            vault_commands::migrate_profile_secrets,
+            vault_commands::get_profile_secret_migration_recovery,
+            vault_commands::export_profile_secret_migration_diagnostics,
+            vault_commands::recover_profile_secret_migration,
             ssh_identity_commands::update_client_identity,
             ssh_identity_commands::rotate_client_identity,
             ssh_identity_commands::delete_client_identity,
@@ -10083,7 +9828,7 @@ pub fn run() {
             serial_commands::clear_serial_capture,
             serial_commands::export_serial_capture,
             serial_commands::export_serial_capture_history,
-            export_terminal_text,
+            terminal_export_commands::export_terminal_text,
             tmux_commands::list_tmux_state,
             tmux_commands::attach_tmux,
             tmux_commands::set_tmux_pane_sync,
