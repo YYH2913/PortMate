@@ -10,6 +10,7 @@ if (process.platform !== "linux") {
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dockerControlTimeoutMs = 180_000;
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
 const healthFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
 if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
@@ -27,13 +28,9 @@ for (const entry of matrix) {
   try {
     run("docker", ["run", "--detach", "--rm", "--name", container, "--publish", "127.0.0.1::22", image], {
       quiet: true,
-      timeout: 30_000,
+      timeout: dockerControlTimeoutMs,
     });
-    const published = run("docker", ["port", container, "22/tcp"], { capture: true, timeout: 10_000 }).stdout.trim();
-    const port = Number(published.match(/:(\d+)$/)?.[1]);
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      throw new Error(`Docker returned an invalid SSH port for ${entry.name}: ${published}`);
-    }
+    const port = await waitForPublishedPort(container, entry.name);
     await waitForTcp(port, container, entry.name);
     run("cargo", [
       "test",
@@ -55,7 +52,7 @@ for (const entry of matrix) {
     });
     results.push({ name: entry.name, port });
   } finally {
-    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: 10_000 });
+    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
   }
 }
 
@@ -86,13 +83,9 @@ for (const entry of healthFaultMatrix) {
       healthFaultImage,
     ], {
       quiet: true,
-      timeout: 30_000,
+      timeout: dockerControlTimeoutMs,
     });
-    const published = run("docker", ["port", container, "22/tcp"], { capture: true, timeout: 10_000 }).stdout.trim();
-    const port = Number(published.match(/:(\d+)$/)?.[1]);
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      throw new Error(`Docker returned an invalid SSH health fault port for ${entry.name}: ${published}`);
-    }
+    const port = await waitForPublishedPort(container, entry.name);
     await waitForTcp(port, container, entry.name);
     run("cargo", [
       "test",
@@ -119,8 +112,8 @@ for (const entry of healthFaultMatrix) {
     });
     verifiedHealthFaults.push(entry.name);
   } finally {
-    run("docker", ["unpause", container], { quiet: true, allowFailure: true, timeout: 10_000 });
-    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: 10_000 });
+    run("docker", ["unpause", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
+    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
   }
 }
 
@@ -163,6 +156,38 @@ function validateHealthFaultEntry(entry) {
   }
 }
 
+async function waitForPublishedPort(container, label) {
+  let lastState = "not inspectable";
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const inspected = run("docker", ["inspect", container], {
+      capture: true,
+      allowFailure: true,
+      timeout: dockerControlTimeoutMs,
+    });
+    if (inspected.status === 0) {
+      const details = JSON.parse(inspected.stdout)[0];
+      const state = details?.State ?? {};
+      lastState = state.Status ?? "unknown";
+      if (["dead", "exited", "removing"].includes(lastState) || state.Error) {
+        const logs = run("docker", ["logs", container], { capture: true, allowFailure: true });
+        throw new Error(`${label} container failed during startup (${lastState}: ${state.Error || "no start error"})\n${logs.stdout}\n${logs.stderr}`);
+      }
+
+      const published = details?.NetworkSettings?.Ports?.["22/tcp"]?.find(({ HostIp }) => HostIp === "127.0.0.1")
+        ?? details?.NetworkSettings?.Ports?.["22/tcp"]?.[0];
+      if (state.Running && published?.HostPort) {
+        const port = Number(published.HostPort);
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+          throw new Error(`Docker returned an invalid SSH port for ${label}: ${published.HostPort}`);
+        }
+        return port;
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  throw new Error(`timed out waiting for Docker to publish ${label} SSH port (last state: ${lastState})`);
+}
+
 async function waitForTcp(port, container, label) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const running = run("docker", ["inspect", "--format", "{{.State.Running}}", container], {
@@ -173,25 +198,36 @@ async function waitForTcp(port, container, label) {
       const logs = run("docker", ["logs", container], { capture: true, allowFailure: true });
       throw new Error(`${label} container exited during startup\n${logs.stdout}\n${logs.stderr}`);
     }
-    if (await tcpConnects(port)) return;
+    if (await sshBannerReady(port)) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
   throw new Error(`timed out waiting for ${label} on 127.0.0.1:${port}`);
 }
 
-function tcpConnects(port) {
+function sshBannerReady(port) {
   return new Promise((resolveConnect) => {
     const socket = createConnection({ host: "127.0.0.1", port });
-    socket.setTimeout(250);
-    socket.once("connect", () => {
+    let settled = false;
+    let received = Buffer.alloc(0);
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
-      resolveConnect(true);
+      resolveConnect(ready);
+    };
+    socket.setTimeout(500);
+    socket.on("data", (chunk) => {
+      received = Buffer.concat([received, chunk], Math.min(1024, received.length + chunk.length));
+      const text = received.toString("ascii");
+      if (text.split(/\r?\n/).some((line) => line.startsWith("SSH-"))) {
+        finish(true);
+      } else if (received.length >= 1024) {
+        finish(false);
+      }
     });
-    socket.once("timeout", () => {
-      socket.destroy();
-      resolveConnect(false);
-    });
-    socket.once("error", () => resolveConnect(false));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+    socket.once("close", () => finish(false));
   });
 }
 
