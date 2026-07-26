@@ -26,7 +26,7 @@ for (const entry of matrix) {
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
-    run("docker", ["run", "--detach", "--rm", "--name", container, "--publish", "127.0.0.1::22", image], {
+    run("docker", ["run", "--detach", "--name", container, "--publish", "127.0.0.1::22", image], {
       quiet: true,
       timeout: dockerControlTimeoutMs,
     });
@@ -73,7 +73,6 @@ for (const entry of healthFaultMatrix) {
     run("docker", [
       "run",
       "--detach",
-      "--rm",
       "--name",
       container,
       "--env",
