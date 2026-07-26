@@ -22,7 +22,10 @@ for (const entry of matrix) {
   validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
-  run("docker", ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot]);
+  await runWithRetries(
+    "docker",
+    ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+  );
 
   const container = `portmate-compat-${randomUUID()}`;
   try {
@@ -57,7 +60,7 @@ for (const entry of matrix) {
 }
 
 const healthFaultImage = "portmate-compat-ssh-health-faults:local";
-run("docker", [
+await runWithRetries("docker", [
   "build",
   "--tag",
   healthFaultImage,
@@ -228,6 +231,22 @@ function sshBannerReady(port) {
     socket.once("error", () => finish(false));
     socket.once("close", () => finish(false));
   });
+}
+
+async function runWithRetries(command, args, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return run(command, args);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        console.warn(`${command} ${args[0]} attempt ${attempt}/${attempts} failed; retrying`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, attempt * 1_000));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function run(command, args, options = {}) {
