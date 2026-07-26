@@ -95,8 +95,8 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
-      "TypeScript/Python/Go/Rust/Ruby stdio SDK per package",
-      "TypeScript/Python/Go/Rust/Ruby HTTP SDK per package",
+      "TypeScript/Python/Go/Rust/Ruby/Java stdio SDK per package",
+      "TypeScript/Python/Go/Rust/Ruby/Java HTTP SDK per package",
     ],
   }, null, 2));
 } finally {
@@ -325,6 +325,10 @@ function checkPackagedBridge(kind, bridge) {
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
   });
   run(process.execPath, ["scripts/mcp-ruby-client-check.mjs"], {
+    cwd: projectRoot,
+    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+  });
+  run(process.execPath, ["scripts/mcp-java-client-check.mjs"], {
     cwd: projectRoot,
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
   });

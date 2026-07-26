@@ -53,6 +53,11 @@ jobs:
         with:
           ruby-version: "3.3"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -76,6 +81,7 @@ jobs:
       - run: npm run test:mcp-go-client
       - run: npm run test:mcp-rust-client
       - run: npm run test:mcp-ruby-client
+      - run: npm run test:mcp-java-client
       - run: npm run desktop:build
 
       - uses: actions/upload-artifact@v4
@@ -117,6 +123,11 @@ jobs:
         with:
           ruby-version: "3.3"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Install compatibility dependencies
         run: |
           sudo apt-get update
@@ -140,6 +151,7 @@ jobs:
       - run: npm run test:mcp-go-client
       - run: npm run test:mcp-rust-client
       - run: npm run test:mcp-ruby-client
+      - run: npm run test:mcp-java-client
       - run: npm run test:ssh-server-compat
       - run: npm run test:tcp-telnet-server-compat
       - run: npm run test:tmux-version-compat
