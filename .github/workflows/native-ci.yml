@@ -62,6 +62,11 @@ jobs:
         with:
           dotnet-version: "10.0.302"
 
+      - uses: swift-actions/setup-swift@v2
+        if: runner.os != 'Windows'
+        with:
+          swift-version: "6.3.3"
+
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -88,6 +93,8 @@ jobs:
       - run: npm run test:mcp-java-client
       - run: npm run test:mcp-kotlin-client
       - run: npm run test:mcp-csharp-client
+      - if: runner.os != 'Windows'
+        run: npm run test:mcp-swift-client
       - run: npm run desktop:build
 
       - uses: actions/upload-artifact@v4
@@ -138,6 +145,10 @@ jobs:
         with:
           dotnet-version: "10.0.302"
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.3.3"
+
       - name: Install compatibility dependencies
         run: |
           sudo apt-get update
@@ -164,6 +175,7 @@ jobs:
       - run: npm run test:mcp-java-client
       - run: npm run test:mcp-kotlin-client
       - run: npm run test:mcp-csharp-client
+      - run: npm run test:mcp-swift-client
       - run: npm run test:ssh-server-compat
       - run: npm run test:tcp-telnet-server-compat
       - run: npm run test:tmux-version-compat
