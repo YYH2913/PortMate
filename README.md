@@ -46,7 +46,8 @@ owns the SQLite tables, indexes, schema version, and backward-compatible column 
 `sqlite_mirror.rs` owns typed profile/runtime mirrors and incremental event, audit, timeline, and
 Sysmon reconciliation; `sqlite_store.rs` owns SQLite loading, FULL-sync transactions, migration
 checkpoints, revision updates, and post-commit read-back verification; `migration_journal_store.rs`
-owns credential-migration journal transitions, atomic metadata writes, and read-back verification. Proxy, Telnet, Tmux protocol
+owns credential-migration journal transitions, atomic metadata writes, and read-back verification;
+`migration_recovery.rs` owns before/after disposition, conflict freezing, target rollback, and source cleanup. Proxy, Telnet, Tmux protocol
 parsing, and app-data migration already have their own modules as well.
 
 ## Development
