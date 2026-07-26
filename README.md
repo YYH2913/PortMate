@@ -483,12 +483,13 @@ bootstrapping a platform archive with its official SHA-512 digest when necessary
 Stdio and Streamable HTTP transports run the same lifecycle, verify `2025-06-18` negotiation,
 server identity and every read surface, and confirm that PortMate HTTP remains stateless.
 
-The official Swift SDK matrix uses `swift-sdk` 0.12.1 and a fully resolved SwiftPM graph on Swift
-6.3.3. Linux x64 can bootstrap the pinned official Ubuntu 24.04 toolchain below `target/` after a
-SHA-512 check; CI installs the same version on Linux and macOS. The SDK's Stdio and non-streaming
-HTTP transports run the same lifecycle on those platforms. Version 0.12.1 neither exposes
-`StdioTransport` on Windows nor declares the `EventSource` dependency imported by its HTTP source
-there, so the unpatched official package is not presented as a Windows-compatible matrix.
+The official Swift SDK matrix uses `swift-sdk` 0.11.0 and 0.12.1 with separate committed SwiftPM
+locks and release outputs on Swift 6.3.3. Linux x64 can bootstrap the pinned official Ubuntu 24.04
+toolchain below `target/` after a SHA-512 check; CI installs the same version on Linux and macOS.
+Every SDK's Stdio and non-streaming HTTP transports run the same lifecycle on those platforms.
+These releases neither expose `StdioTransport` on Windows nor declare the `EventSource` dependency
+imported by their HTTP source there, so the unpatched official packages are not presented as a
+Windows-compatible matrix.
 
 Read tools remain available by default while the grant store is empty. After any grant is saved,
 the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`

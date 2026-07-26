@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import {
+  cpSync,
   createReadStream,
   createWriteStream,
   existsSync,
@@ -8,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, delimiter, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,12 +18,12 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const project = join(projectRoot, "scripts", "mcp-swift-client-check");
+const templateRoot = join(projectRoot, "scripts", "mcp-swift-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-swift-client-versions.json"), "utf8"));
 validateMatrix(matrix);
 if (process.platform === "win32") {
   throw new Error(
-    "Official Swift SDK 0.12.1 cannot build on Windows: its HTTP source imports EventSource, but the package declares that dependency only for Apple platforms",
+    "The selected official Swift SDK versions cannot build on Windows: their HTTP source imports EventSource, but the packages declare that dependency only for Apple platforms",
   );
 }
 
@@ -37,33 +39,56 @@ if (!existsSync(binary)) throw new Error(`MCP Swift client check binary does not
 const environment = { ...process.env };
 const swift = await ensureSwift(matrix.swift, environment);
 const cache = join(projectRoot, "target", "mcp-swift-cache");
-const scratch = join(projectRoot, "target", "mcp-swift-build");
 mkdirSync(cache, { recursive: true });
-mkdirSync(scratch, { recursive: true });
-
-run(swift, [
-  "build",
-  "--package-path",
-  project,
-  "--cache-path",
-  cache,
-  "--scratch-path",
-  scratch,
-  "--disable-automatic-resolution",
-  "--configuration",
-  "release",
-  "--product",
-  "McpSwiftClientCheck",
-], { env: environment, timeout: 600_000 });
-
-const client = join(
-  scratch,
-  "release",
-  process.platform === "win32" ? "McpSwiftClientCheck.exe" : "McpSwiftClientCheck",
-);
-if (!existsSync(client)) throw new Error(`Swift build omitted ${client}`);
 
 for (const entry of matrix.sdks) {
+  const environmentRoot = join(projectRoot, "target", `mcp-swift-sdk-${entry.version}`);
+  const sourceRoot = join(environmentRoot, "Sources", "McpSwiftClientCheck");
+  const scratch = join(environmentRoot, "build");
+  mkdirSync(sourceRoot, { recursive: true });
+  copyIfChanged(
+    join(templateRoot, "Sources", "McpSwiftClientCheck", "main.swift"),
+    join(sourceRoot, "main.swift"),
+  );
+  const manifest = swiftManifest(entry.version);
+  const manifestPath = join(environmentRoot, "Package.swift");
+  const manifestChanged = !existsSync(manifestPath) || readFileSync(manifestPath, "utf8") !== manifest;
+  if (manifestChanged) writeFileSync(manifestPath, manifest, "utf8");
+  const lockSource = join(templateRoot, "locks", entry.version, "Package.resolved");
+  if (!existsSync(lockSource)) {
+    throw new Error(`Swift ${entry.version} lock file does not exist: ${lockSource}`);
+  }
+  const resolved = JSON.parse(readFileSync(lockSource, "utf8"));
+  const sdkPin = resolved.pins?.find((pin) => pin.identity === "swift-sdk");
+  if (sdkPin?.state?.version !== entry.version) {
+    throw new Error(`Swift ${entry.version} lock pins ${sdkPin?.state?.version ?? "no SDK version"}`);
+  }
+  copyIfChanged(lockSource, join(environmentRoot, "Package.resolved"));
+  const buildArguments = [
+    "build",
+    "--package-path",
+    environmentRoot,
+    "--cache-path",
+    cache,
+    "--scratch-path",
+    scratch,
+    "--disable-automatic-resolution",
+  ];
+  buildArguments.push(
+    "--configuration",
+    "release",
+    "--product",
+    "McpSwiftClientCheck",
+  );
+  run(swift, buildArguments, { env: environment, timeout: 600_000 });
+
+  const client = join(
+    scratch,
+    "release",
+    process.platform === "win32" ? "McpSwiftClientCheck.exe" : "McpSwiftClientCheck",
+  );
+  if (!existsSync(client)) throw new Error(`Swift ${entry.version} build omitted ${client}`);
+
   run(client, ["stdio", resolve(binary), entry.version, entry.protocolVersion], {
     env: environment,
     timeout: 120_000,
@@ -82,6 +107,42 @@ for (const entry of matrix.sdks) {
   } finally {
     await stopProcess(bridge);
   }
+}
+
+function swiftManifest(sdkVersion) {
+  return `// swift-tools-version: 6.1
+
+import PackageDescription
+
+let package = Package(
+    name: "mcp-swift-client-check",
+    platforms: [
+        .macOS(.v13),
+    ],
+    products: [
+        .executable(name: "McpSwiftClientCheck", targets: ["McpSwiftClientCheck"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "${sdkVersion}"),
+        .package(url: "https://github.com/apple/swift-system.git", exact: "1.4.0"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "McpSwiftClientCheck",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "SystemPackage", package: "swift-system"),
+            ]
+        ),
+    ]
+)
+`;
+}
+
+function copyIfChanged(source, destination) {
+  const sourceBytes = readFileSync(source);
+  if (existsSync(destination) && readFileSync(destination).equals(sourceBytes)) return;
+  cpSync(source, destination);
 }
 
 function validateMatrix(value) {
