@@ -13557,6 +13557,26 @@ mod tests {
 
             match (protocol.as_str(), mode.as_str()) {
                 ("telnet", "shell") => {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let negotiation_ready =
+                                state.store.lock().unwrap().events.iter().any(|event| {
+                                    event.session_id == profile.id
+                                        && event.direction == EventDirection::Outbound
+                                        && event.stream == EventStream::Control
+                                        && event
+                                            .annotations
+                                            .get("origin")
+                                            .is_some_and(|origin| origin == "telnet-negotiation")
+                                });
+                            if negotiation_ready {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} negotiation timed out"));
                     send_text_inner(
                         state.session_io(),
                         profile.id.clone(),
@@ -13566,31 +13586,20 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{label} shell write failed: {error}"));
                     tokio::time::timeout(Duration::from_secs(10), async {
                         loop {
-                            let (screen_ready, negotiation_ready) = {
-                                let store = state.store.lock().unwrap();
-                                let screen_ready =
-                                    store.screen(&profile.id).is_some_and(|screen| {
-                                        screen.contains("__PORTMATE_TELNET_COMPAT__")
-                                    });
-                                let negotiation_ready = store.events.iter().any(|event| {
-                                    event.session_id == profile.id
-                                        && event.direction == EventDirection::Outbound
-                                        && event.stream == EventStream::Control
-                                        && event
-                                            .annotations
-                                            .get("origin")
-                                            .is_some_and(|origin| origin == "telnet-negotiation")
-                                });
-                                (screen_ready, negotiation_ready)
-                            };
-                            if screen_ready && negotiation_ready {
+                            if state
+                                .store
+                                .lock()
+                                .unwrap()
+                                .screen(&profile.id)
+                                .is_some_and(|screen| screen.contains("__PORTMATE_TELNET_COMPAT__"))
+                            {
                                 break;
                             }
                             tokio::time::sleep(Duration::from_millis(20)).await;
                         }
                     })
                     .await
-                    .unwrap_or_else(|_| panic!("{label} shell or negotiation output timed out"));
+                    .unwrap_or_else(|_| panic!("{label} shell output timed out"));
                     resize_session_inner(&state, profile.id.clone(), 132, 43)
                         .await
                         .unwrap_or_else(|error| panic!("{label} resize failed: {error}"));

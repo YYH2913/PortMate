@@ -347,7 +347,7 @@ npm run build
 1. Client identity 字段编辑、密钥轮换、引用计数生命周期管理、OS keyring 不可用时的 IOTA Stronghold portable vault/fallback、主密码轮换，以及带 durable journal/跨重启核对/安全 conflict 诊断导出的 SSH/Tmux profile 凭据双向批量迁移已完成；继续补 Windows/macOS/Linux 原生 keyring/Stronghold 故障注入矩阵。
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建、cancel 失败后的本地收敛，以及远端命令型传输失败详情、部分进度、事件摘要和复制诊断均已完成；继续扩展服务端故障矩阵。
-4. SFTP/SCP 的 OpenSSH Alpine 3.19/3.20/3.21、Debian bookworm 和 Dropbear 正常矩阵、SSH health 的 ping/exec/SFTP 故障注入，以及 BusyBox/inetutils Telnet、Ncat/Socat TCP 已完成；继续补 modem 物理串口、OpenSSH 活动传输断线和更多服务端实现。
+4. SFTP/SCP 的 OpenSSH Alpine 3.19/3.20/3.21、Debian bookworm 和 Dropbear 正常矩阵、SSH health 的 ping/exec/SFTP 故障注入，以及 BusyBox/inetutils Telnet、Ncat/Socat TCP 已完成；Telnet shell 用例会先确认首轮 negotiation reply 再发送应用数据，避免 inetutils 冷启动把过早命令丢弃并把协商/输出超时混为同一故障。继续补 modem 物理串口、OpenSSH 活动传输断线和更多服务端实现。
 5. SSH/TCP/Telnet/Serial 的最新 Profile 重连、动态延迟、KeepAlive/idle、runtime 断线诊断和 SSH 三层健康检测已完成；下一步集中在 Serial 物理设备、GSSAPI transport 选型和真实远端 OS 故障证据。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
