@@ -63,6 +63,7 @@ mod file_batch;
 mod file_transfer;
 mod log_storage;
 mod mcp_authorization;
+mod mcp_commands;
 mod mcp_control;
 mod mcp_execution;
 mod mcp_ipc;
@@ -2859,81 +2860,6 @@ fn cancel_transfer(
 }
 
 #[tauri::command]
-fn list_mcp_audit(state: State<'_, AppState>) -> Result<Vec<portmate_core::AuditRecord>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.audit.clone())
-}
-
-#[tauri::command]
-fn export_mcp_audit(
-    state: State<'_, AppState>,
-    request: ExportMcpAuditRequest,
-) -> Result<ExportMcpAuditResult, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    export_mcp_audit_inner(&state.store_path, &store.audit, request)
-}
-
-#[tauri::command]
-fn list_mcp_grants(state: State<'_, AppState>) -> Result<Vec<McpGrant>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.grants.clone())
-}
-
-#[tauri::command]
-fn list_mcp_approvals(state: State<'_, AppState>) -> Result<Vec<McpApprovalRequest>, String> {
-    list_mcp_approvals_inner(state.inner())
-}
-
-#[tauri::command]
-fn respond_mcp_approval(
-    state: State<'_, AppState>,
-    approval_id: String,
-    approved: bool,
-) -> Result<(), String> {
-    respond_mcp_approval_inner(state.inner(), &approval_id, approved)
-}
-
-#[tauri::command]
-fn save_mcp_grant(state: State<'_, AppState>, grant: McpGrant) -> Result<Vec<McpGrant>, String> {
-    let grant = normalize_mcp_grant(grant)?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        upsert_mcp_grant_in_store(next_store, grant)
-    })
-}
-
-#[tauri::command]
-fn revoke_mcp_grant(
-    state: State<'_, AppState>,
-    client_id: String,
-) -> Result<Vec<McpGrant>, String> {
-    let client_id = normalize_mcp_client_id(&client_id)?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        Ok(revoke_mcp_grant_from_store(next_store, &client_id))
-    })
-}
-
-#[tauri::command]
-fn mcp_http_config(state: State<'_, AppState>) -> McpHttpConfig {
-    build_mcp_http_config(
-        has_secret_ref(MCP_HTTP_TOKEN_REF),
-        &mcp_sidecar_executable_path(),
-        &state.store_path,
-    )
-}
-
-#[tauri::command]
-fn rotate_mcp_http_token(state: State<'_, AppState>) -> Result<McpHttpTokenResponse, String> {
-    let token = Uuid::new_v4().to_string();
-    write_secret_to_keyring(MCP_HTTP_TOKEN_REF, &token)?;
-    Ok(McpHttpTokenResponse {
-        config: build_mcp_http_config(true, &mcp_sidecar_executable_path(), &state.store_path),
-        token,
-    })
-}
-
-#[tauri::command]
 fn list_host_keys(state: State<'_, AppState>) -> Result<HostKeyStore, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.host_keys.clone())
@@ -4795,16 +4721,6 @@ async fn stop_tunnel(
     tunnel_id: String,
 ) -> Result<TunnelStatus, String> {
     stop_tunnel_inner(state.inner(), &tunnel_id).await
-}
-
-#[tauri::command]
-fn mcp_manifest() -> serde_json::Value {
-    serde_json::json!({
-        "protocolVersion": "2025-06-18",
-        "tools": tool_definitions(),
-        "resources": resource_templates(),
-        "prompts": prompt_templates(),
-    })
 }
 
 fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
@@ -11197,15 +11113,15 @@ pub fn run() {
             list_transfers,
             retry_transfer,
             cancel_transfer,
-            list_mcp_audit,
-            export_mcp_audit,
-            list_mcp_grants,
-            list_mcp_approvals,
-            respond_mcp_approval,
-            save_mcp_grant,
-            revoke_mcp_grant,
-            mcp_http_config,
-            rotate_mcp_http_token,
+            mcp_commands::list_mcp_audit,
+            mcp_commands::export_mcp_audit,
+            mcp_commands::list_mcp_grants,
+            mcp_commands::list_mcp_approvals,
+            mcp_commands::respond_mcp_approval,
+            mcp_commands::save_mcp_grant,
+            mcp_commands::revoke_mcp_grant,
+            mcp_commands::mcp_http_config,
+            mcp_commands::rotate_mcp_http_token,
             list_host_keys,
             list_ssh_agent_identities,
             list_one_keys,
@@ -11259,7 +11175,7 @@ pub fn run() {
             create_tunnel,
             list_tunnels,
             stop_tunnel,
-            mcp_manifest
+            mcp_commands::mcp_manifest
         ])
         .build(tauri::generate_context!())
         .expect("error while building PortMate")
