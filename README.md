@@ -49,8 +49,9 @@ checkpoints, revision updates, and post-commit read-back verification; `migratio
 owns credential-migration journal transitions, atomic metadata writes, and read-back verification;
 `migration_recovery.rs` owns before/after disposition, conflict freezing, target rollback, and
 source cleanup. `secret_provider.rs` owns persistent native-keyring initialization, Native/Portable
-routing, shared secret CRUD, and credential-migration provider batches. Proxy, Telnet, Tmux
-protocol parsing, and app-data migration already have their own modules as well.
+routing, shared secret CRUD, and credential-migration provider batches; `portable_vault.rs` owns
+Stronghold context, salt/KDF/open/rekey, single and batch CRUD, and failed-commit rollback. Proxy,
+Telnet, Tmux protocol parsing, and app-data migration already have their own modules as well.
 
 ## Development
 
