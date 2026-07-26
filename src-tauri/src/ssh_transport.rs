@@ -1,5 +1,159 @@
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct PortMateSshHandler {
+    pub(super) profile_id: String,
+    pub(super) host: String,
+    pub(super) port: u16,
+    pub(super) alias: Option<String>,
+    pub(super) policy: portmate_core::HostKeyPolicy,
+    pub(super) host_keys: HostKeyStore,
+    pub(super) one_time_host_key_ids: Vec<String>,
+    pub(super) observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
+    pub(super) host_key_error: Arc<Mutex<Option<String>>>,
+    pub(super) remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+}
+
+pub(super) fn lock_ssh_handler_state<'a, T>(
+    state: &'a Mutex<T>,
+    label: &str,
+) -> Result<MutexGuard<'a, T>, russh::Error> {
+    state.lock().map_err(|_| {
+        russh::Error::IO(std::io::Error::other(format!(
+            "PortMate SSH {label} lock is poisoned"
+        )))
+    })
+}
+
+impl client::Handler for PortMateSshHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &ssh_key::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        let observation = HostKeyObservation {
+            host: self.host.clone(),
+            port: self.port,
+            alias: self.alias.clone(),
+            algorithm: server_public_key.algorithm().to_string(),
+            public_key_base64: server_public_key.public_key_base64(),
+        };
+        *lock_ssh_handler_state(&self.observed_key, "host key observation")? =
+            Some(observation.clone());
+
+        let evaluation = self
+            .host_keys
+            .evaluate(&self.profile_id, &self.policy, &observation);
+        let accepted = match evaluation {
+            Ok(HostKeyEvaluation::Trusted {
+                matched_key_id,
+                fingerprint_sha256,
+            }) if trusted_host_key_allowed(
+                &self.policy,
+                &matched_key_id,
+                &self.one_time_host_key_ids,
+            ) =>
+            {
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
+                let _ = fingerprint_sha256;
+                true
+            }
+            Ok(HostKeyEvaluation::Trusted {
+                fingerprint_sha256, ..
+            }) => {
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some(format!(
+                    "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
+                ));
+                false
+            }
+            Ok(HostKeyEvaluation::Unknown {
+                alias,
+                fingerprint_sha256,
+                ..
+            }) if self.policy.mode == HostKeyMode::TrustOnFirstUse => {
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
+                let _ = (alias, fingerprint_sha256);
+                true
+            }
+            Ok(other) => {
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
+                    Some(describe_host_key_rejection(&other));
+                false
+            }
+            Err(error) => {
+                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
+                    Some(format!("host key fingerprint 计算失败: {error}"));
+                false
+            }
+        };
+
+        Ok(accepted)
+    }
+
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        _session: &mut client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let forwards = Arc::clone(&self.remote_forwards);
+        let connected_address = connected_address.to_string();
+        let originator_address = originator_address.to_string();
+        async move {
+            let Some((connected_port, originator_port)) =
+                forwarded_tcpip_ports(connected_port, originator_port)
+            else {
+                close_ssh_channel_bounded(&channel).await;
+                return Ok(());
+            };
+            let target = {
+                let forwards = lock_ssh_handler_state(&forwards, "remote forward targets")?;
+                let key = remote_forward_key(&connected_address, connected_port);
+                forwards
+                    .get(&key)
+                    .or_else(|| forwards.get(&remote_forward_port_key(connected_port)))
+                    .cloned()
+            };
+            if let Some(target) = target {
+                let Some(permit) = try_acquire_tunnel_connection(
+                    &target.connection_slots,
+                    target.metrics.as_ref(),
+                ) else {
+                    close_ssh_channel_bounded(&channel).await;
+                    return Ok(());
+                };
+                tauri::async_runtime::spawn(async move {
+                    let _permit = permit;
+                    target.metrics.connection_opened();
+                    let result = handle_remote_tunnel_client(
+                        channel,
+                        target.spec.clone(),
+                        originator_address,
+                        originator_port,
+                        Arc::clone(&target.metrics),
+                    )
+                    .await;
+                    match result {
+                        Ok(()) => target.metrics.clear_error(),
+                        Err(error) => {
+                            target.metrics.record_error(&error);
+                            eprintln!("PortMate: remote SSH tunnel client failed: {error}");
+                        }
+                    }
+                    target.metrics.connection_closed();
+                });
+            } else {
+                close_ssh_channel_bounded(&channel).await;
+            }
+            Ok(())
+        }
+    }
+}
+
 pub(super) struct SshConnectRequest<'a> {
     pub(super) config: Arc<client::Config>,
     pub(super) store: Arc<Mutex<SessionStore>>,
