@@ -1,0 +1,9 @@
+[
+  {
+    "version": "0.14.0",
+    "protocolVersion": "2025-06-18",
+    "kotlinVersion": "2.3.21",
+    "ktorVersion": "3.4.3",
+    "coroutinesVersion": "1.11.0"
+  }
+]

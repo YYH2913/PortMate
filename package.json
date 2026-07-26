@@ -37,6 +37,8 @@
     "test:mcp-ruby-client": "cargo build -p portmate-mcp && node scripts/mcp-ruby-client-check.mjs",
     "pretest:mcp-java-client": "node scripts/ensure-node-version.mjs",
     "test:mcp-java-client": "cargo build -p portmate-mcp && node scripts/mcp-java-client-check.mjs",
+    "pretest:mcp-kotlin-client": "node scripts/ensure-node-version.mjs",
+    "test:mcp-kotlin-client": "cargo build -p portmate-mcp && node scripts/mcp-kotlin-client-check.mjs",
     "pretest:ssh-server-compat": "node scripts/ensure-node-version.mjs",
     "test:ssh-server-compat": "node scripts/ssh-server-compat-check.mjs",
     "pretest:tcp-telnet-server-compat": "node scripts/ensure-node-version.mjs",
