@@ -47,8 +47,10 @@ owns the SQLite tables, indexes, schema version, and backward-compatible column 
 Sysmon reconciliation; `sqlite_store.rs` owns SQLite loading, FULL-sync transactions, migration
 checkpoints, revision updates, and post-commit read-back verification; `migration_journal_store.rs`
 owns credential-migration journal transitions, atomic metadata writes, and read-back verification;
-`migration_recovery.rs` owns before/after disposition, conflict freezing, target rollback, and source cleanup. Proxy, Telnet, Tmux protocol
-parsing, and app-data migration already have their own modules as well.
+`migration_recovery.rs` owns before/after disposition, conflict freezing, target rollback, and
+source cleanup. `secret_provider.rs` owns persistent native-keyring initialization, Native/Portable
+routing, shared secret CRUD, and credential-migration provider batches. Proxy, Telnet, Tmux
+protocol parsing, and app-data migration already have their own modules as well.
 
 ## Development
 
