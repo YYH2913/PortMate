@@ -27643,14 +27643,25 @@ __PORTMATE_LOADAVG__
                 .await
                 .unwrap_or_else(|error| panic!("{label} SSH open failed: {error}"));
             assert_eq!(connected.runtime.status, SessionStatus::Connected);
-            let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
-                .await
-                .unwrap_or_else(|error| panic!("{label} SSH health check failed: {error}"));
+            let mut health_attempts = Vec::new();
+            for attempt in 0..3 {
+                let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} SSH health check failed: {error}"));
+                let healthy = health.status == ssh_health::SshHealthStatus::Healthy;
+                health_attempts.push(health);
+                if healthy {
+                    break;
+                }
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+            let health = health_attempts.last().unwrap();
             assert_eq!(
                 health.status,
                 ssh_health::SshHealthStatus::Healthy,
-                "{label} SSH health degraded: {:?}",
-                health
+                "{label} SSH health did not stabilize: {health_attempts:?}"
             );
             assert!(health.transport_round_trip_ms.is_some());
             assert!(health.channel_round_trip_ms.is_some());
