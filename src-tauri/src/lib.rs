@@ -98,12 +98,15 @@ mod state_snapshot;
 mod store_normalization;
 mod store_persistence;
 mod store_transactions;
+mod sysmon_commands;
 mod tcp_transport;
 mod telnet_protocol;
 mod tmux_commands;
 mod tmux_protocol;
+mod transfer_commands;
 mod transfer_runtime;
 mod trigger_runtime;
+mod tunnel_commands;
 
 use app_data_migration::*;
 use archive_support::*;
@@ -4348,14 +4351,6 @@ fn validate_terminal_text_export_request(
     Ok(())
 }
 
-#[tauri::command]
-async fn refresh_sysmon(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<SysmonSnapshot, String> {
-    refresh_sysmon_inner(state.inner(), &session_id).await
-}
-
 async fn refresh_sysmon_inner(
     state: &AppState,
     session_id: &str,
@@ -4405,20 +4400,6 @@ fn commit_sysmon_snapshot(
     })
 }
 
-#[tauri::command]
-fn list_sysmon_history(
-    state: State<'_, AppState>,
-    session_id: String,
-    limit: Option<usize>,
-) -> Result<Vec<SysmonSnapshot>, String> {
-    let limit = validate_sysmon_history_query_limit(limit)?;
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    if store.profile(&session_id).is_none() {
-        return Err(format!("unknown session: {session_id}"));
-    }
-    Ok(store.sysmon_history_for(&session_id, limit))
-}
-
 fn validate_sysmon_history_query_limit(limit: Option<usize>) -> Result<usize, String> {
     let limit = limit.unwrap_or(DEFAULT_SYSMON_HISTORY_QUERY_LIMIT);
     if !(1..=MAX_SYSMON_HISTORY_QUERY_LIMIT).contains(&limit) {
@@ -4427,54 +4408,6 @@ fn validate_sysmon_history_query_limit(limit: Option<usize>) -> Result<usize, St
         ));
     }
     Ok(limit)
-}
-
-#[tauri::command]
-async fn start_transfer(
-    state: State<'_, AppState>,
-    request: StartTransferRequest,
-) -> Result<TransferTask, String> {
-    start_transfer_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn start_external_drop(
-    state: State<'_, AppState>,
-    request: StartExternalDropRequest,
-) -> Result<ExternalDropResult, String> {
-    start_external_drop_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn start_file_batch(
-    state: State<'_, AppState>,
-    request: StartFileBatchRequest,
-) -> Result<ExternalDropResult, String> {
-    start_file_batch_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-async fn create_tunnel(
-    state: State<'_, AppState>,
-    request: CreateTunnelRequest,
-) -> Result<TunnelSpec, String> {
-    create_tunnel_inner(state.inner(), request).await
-}
-
-#[tauri::command]
-fn list_tunnels(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-) -> Result<Vec<TunnelStatus>, String> {
-    list_tunnels_inner(state.inner(), session_id.as_deref())
-}
-
-#[tauri::command]
-async fn stop_tunnel(
-    state: State<'_, AppState>,
-    tunnel_id: String,
-) -> Result<TunnelStatus, String> {
-    stop_tunnel_inner(state.inner(), &tunnel_id).await
 }
 
 fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
@@ -10921,14 +10854,14 @@ pub fn run() {
             file_commands::chmod_path,
             serial_commands::serial_set_lines,
             serial_commands::serial_send_break,
-            refresh_sysmon,
-            list_sysmon_history,
-            start_transfer,
-            start_external_drop,
-            start_file_batch,
-            create_tunnel,
-            list_tunnels,
-            stop_tunnel,
+            sysmon_commands::refresh_sysmon,
+            sysmon_commands::list_sysmon_history,
+            transfer_commands::start_transfer,
+            transfer_commands::start_external_drop,
+            transfer_commands::start_file_batch,
+            tunnel_commands::create_tunnel,
+            tunnel_commands::list_tunnels,
+            tunnel_commands::stop_tunnel,
             mcp_commands::mcp_manifest
         ])
         .build(tauri::generate_context!())
