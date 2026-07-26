@@ -86,6 +86,7 @@ jobs:
       - run: npm run build
       - run: cargo test --workspace -- --test-threads=4
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: npm run test:mcp-typescript-client
       - run: npm run test:mcp-python-client
       - run: npm run test:mcp-go-client
       - run: npm run test:mcp-rust-client
@@ -166,8 +167,7 @@ jobs:
           docker info
 
       - run: npm ci
-      - run: npm run test:mcp-stdio-client
-      - run: npm run test:mcp-http-client
+      - run: npm run test:mcp-typescript-client
       - run: npm run test:mcp-python-client
       - run: npm run test:mcp-go-client
       - run: npm run test:mcp-rust-client

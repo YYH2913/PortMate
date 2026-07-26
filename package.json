@@ -27,6 +27,8 @@
     "test:mcp-http-client": "cargo build -p portmate-mcp && node scripts/mcp-http-client-check.mjs",
     "pretest:mcp-stdio-client": "node scripts/ensure-node-version.mjs",
     "test:mcp-stdio-client": "cargo build -p portmate-mcp && node scripts/mcp-stdio-client-check.mjs",
+    "pretest:mcp-typescript-client": "node scripts/ensure-node-version.mjs",
+    "test:mcp-typescript-client": "cargo build -p portmate-mcp && node scripts/mcp-typescript-client-check.mjs",
     "pretest:mcp-python-client": "node scripts/ensure-node-version.mjs",
     "test:mcp-python-client": "cargo build -p portmate-mcp && node scripts/mcp-python-client-check.mjs",
     "pretest:mcp-go-client": "node scripts/ensure-node-version.mjs",

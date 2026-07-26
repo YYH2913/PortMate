@@ -2,10 +2,21 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { pathToFileURL } from "node:url";
 
-const protocolVersion = "2025-06-18";
+const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
+const sdkModule = (relativePath, packagePath) => sdkRoot
+  ? pathToFileURL(path.join(sdkRoot, "dist", "esm", ...relativePath)).href
+  : packagePath;
+const { Client } = await import(sdkModule(["client", "index.js"], "@modelcontextprotocol/sdk/client/index.js"));
+const { StreamableHTTPClientTransport } = await import(sdkModule(
+  ["client", "streamableHttp.js"],
+  "@modelcontextprotocol/sdk/client/streamableHttp.js",
+));
+const protocolVersion = process.env.PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION?.trim() || "2025-06-18";
+const requestedProtocolVersion = process.env.PORTMATE_MCP_EXPECTED_REQUEST_PROTOCOL_VERSION?.trim();
+const sdkVersion = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_VERSION?.trim() || "root";
+const expectsProtocolHeader = process.env.PORTMATE_MCP_TYPESCRIPT_EXPECT_PROTOCOL_HEADER !== "0";
 const token = "portmate-mcp-http-client-check";
 
 function assert(condition, message) {
@@ -47,6 +58,15 @@ function requestMethod(entry) {
   }
 }
 
+function requestParams(entry) {
+  if (!entry.body) return null;
+  try {
+    return JSON.parse(entry.body).params ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const port = await reservePort();
 const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
 const binary = process.env.PORTMATE_MCP_BINARY
@@ -72,6 +92,7 @@ server.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
 server.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
 
 const requests = [];
+const nativeFetch = globalThis.fetch.bind(globalThis);
 const trackedFetch = async (input, init = {}) => {
   const headers = new Headers(init.headers);
   requests.push({
@@ -81,12 +102,13 @@ const trackedFetch = async (input, init = {}) => {
     protocolVersion: headers.get("mcp-protocol-version"),
     body: typeof init.body === "string" ? init.body : "",
   });
-  return fetch(input, init);
+  return nativeFetch(input, init);
 };
 
 let client;
 try {
   await waitForServer(endpoint, () => serverOutput);
+  globalThis.fetch = trackedFetch;
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
     fetch: trackedFetch,
@@ -98,7 +120,9 @@ try {
 
   await client.connect(transport);
   assert(client.getServerVersion()?.name === "portmate-mcp", "official SDK did not initialize PortMate");
-  assert(transport.protocolVersion === protocolVersion, "official SDK negotiated the wrong MCP version");
+  if ("protocolVersion" in transport) {
+    assert(transport.protocolVersion === protocolVersion, "official SDK negotiated the wrong MCP version");
+  }
   assert(transport.sessionId === undefined, "PortMate's documented stateless HTTP mode unexpectedly created a session");
 
   await client.ping();
@@ -120,18 +144,29 @@ try {
   assert(initialize, "official SDK did not send initialize");
   assert(initialized, "official SDK did not send notifications/initialized");
   assert(eventStream, "official SDK did not open the optional GET event stream");
+  if (requestedProtocolVersion) {
+    assert(
+      requestParams(initialize)?.protocolVersion === requestedProtocolVersion,
+      "initialize used the wrong MCP version",
+    );
+  }
   assert(initialize.accept === "application/json, text/event-stream", "initialize did not advertise both Streamable HTTP response types");
   assert(eventStream.accept === "text/event-stream", "GET event stream used the wrong Accept header");
 
   for (const request of requests) {
     assert(request.authorization === `Bearer ${token}`, `${request.method} request omitted HTTP authentication`);
     if (request !== initialize) {
-      assert(request.protocolVersion === protocolVersion, `${request.method} request omitted the negotiated MCP version`);
+      if (expectsProtocolHeader) {
+        assert(request.protocolVersion === protocolVersion, `${request.method} request omitted the negotiated MCP version`);
+      } else {
+        assert(request.protocolVersion === null, `${request.method} unexpectedly sent a newer MCP protocol header`);
+      }
     }
   }
 
-  console.log(`MCP HTTP official SDK check passed (${requests.length} requests)`);
+  console.log(`MCP TypeScript SDK ${sdkVersion} HTTP check passed (${requests.length} requests)`);
 } finally {
+  globalThis.fetch = nativeFetch;
   await client?.close().catch(() => {});
   server.kill("SIGTERM");
   await new Promise((resolve) => {

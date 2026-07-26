@@ -306,12 +306,10 @@ function extractRpm(archive, destination) {
 }
 
 function checkPackagedBridge(kind, bridge) {
-  for (const script of ["scripts/mcp-stdio-client-check.mjs", "scripts/mcp-http-client-check.mjs"]) {
-    run(process.execPath, [script], {
-      cwd: projectRoot,
-      env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
-    });
-  }
+  run(process.execPath, ["scripts/mcp-typescript-client-check.mjs"], {
+    cwd: projectRoot,
+    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+  });
   run(process.execPath, ["scripts/mcp-python-client-check.mjs"], {
     cwd: projectRoot,
     env: { ...process.env, PORTMATE_MCP_BINARY: bridge },

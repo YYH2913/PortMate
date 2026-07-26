@@ -1,9 +1,16 @@
 import path from "node:path";
 import process from "node:process";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { pathToFileURL } from "node:url";
 
-const protocolVersion = "2025-06-18";
+const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
+const sdkModule = (relativePath, packagePath) => sdkRoot
+  ? pathToFileURL(path.join(sdkRoot, "dist", "esm", ...relativePath)).href
+  : packagePath;
+const { Client } = await import(sdkModule(["client", "index.js"], "@modelcontextprotocol/sdk/client/index.js"));
+const { StdioClientTransport } = await import(sdkModule(["client", "stdio.js"], "@modelcontextprotocol/sdk/client/stdio.js"));
+const protocolVersion = process.env.PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION?.trim() || "2025-06-18";
+const requestedProtocolVersion = process.env.PORTMATE_MCP_EXPECTED_REQUEST_PROTOCOL_VERSION?.trim();
+const sdkVersion = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_VERSION?.trim() || "root";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -47,10 +54,12 @@ const client = new Client(
   { name: "portmate-stdio-client-check", version: "1.0.0" },
   { capabilities: {} },
 );
+let bridgeProcess;
 
 try {
   await client.connect(transport);
-  assert(transport.pid, "official SDK did not start the PortMate stdio bridge");
+  bridgeProcess = transport._process;
+  assert(bridgeProcess?.pid, "official SDK did not start the PortMate stdio bridge");
   assert(client.getServerVersion()?.name === "portmate-mcp", "official SDK did not initialize PortMate over stdio");
 
   await client.ping();
@@ -70,9 +79,18 @@ try {
   assert(initialize, "official SDK did not send initialize over stdio");
   assert(initialized, "official SDK did not send notifications/initialized over stdio");
   assert(typeof initialize.params?.protocolVersion === "string", "official SDK omitted its preferred MCP version");
-  assert(negotiatedProtocolVersion === protocolVersion, "PortMate negotiated an unexpected stdio MCP version");
+  if (requestedProtocolVersion) {
+    assert(
+      initialize.params.protocolVersion === requestedProtocolVersion,
+      "official SDK requested an unexpected stdio MCP version",
+    );
+  }
+  assert(
+    (negotiatedProtocolVersion ?? initialize.params.protocolVersion) === protocolVersion,
+    "PortMate negotiated an unexpected stdio MCP version",
+  );
 
-  console.log(`MCP stdio official SDK check passed (${sent.length} messages)`);
+  console.log(`MCP TypeScript SDK ${sdkVersion} stdio check passed (${sent.length} messages)`);
 } catch (error) {
   if (stderr) {
     error.message = `${error.message}\nPortMate stderr:\n${stderr}`;
@@ -82,4 +100,13 @@ try {
   await client.close().catch(() => {});
 }
 
-assert(transport.pid === null, "PortMate stdio bridge process survived client shutdown");
+if (bridgeProcess?.exitCode === null && bridgeProcess.signalCode === null) {
+  await Promise.race([
+    new Promise((resolveExit) => bridgeProcess.once("exit", resolveExit)),
+    new Promise((resolveTimeout) => setTimeout(resolveTimeout, 2_000)),
+  ]);
+}
+assert(
+  bridgeProcess && (bridgeProcess.exitCode !== null || bridgeProcess.signalCode !== null),
+  "PortMate stdio bridge process survived client shutdown",
+);

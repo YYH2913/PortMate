@@ -186,7 +186,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 已实现：
 
 - `portmate-mcp` stdio bridge，JSON-RPC lifecycle/tools/resources/prompts。
-- 仓库固定的官方 TypeScript SDK 1.29.0 stdio 回归会启动真实 bridge 子进程，覆盖 initialize/initialized、ping、tools/resources/templates/prompts/resource read 共 8 条消息，确认服务端协商 `2025-06-18`，并验证客户端关闭 stdin 后 bridge 自行退出。
+- 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0 矩阵使用隔离 npm lock/node_modules 启动真实 bridge 子进程，分别覆盖 `2024-11-05` 旧生命周期、`2025-06-18` 正常协商和 1.29.0 从 `2025-11-25` 请求回退到服务端 `2025-06-18`；每版都完成 initialize/initialized、ping、tools/resources/templates/prompts/resource read 共 8 条消息，并验证客户端关闭后 bridge 自行退出。
 - stdio 每条 newline-delimited JSON payload 上限为 1 MiB（不含 `LF/CRLF`）；超限行仅保留 `limit + 2` 字节并有界丢弃到换行，返回 JSON-RPC parse error 后可继续处理下一条消息，不会无界分配或协议失步。
 - stdio/HTTP 共用的 JSON-RPC envelope 会保留显式 null ID，拒绝对象/数组/布尔 ID 和非结构化 `params`；batch 在任何 tool dispatch 前限制为 128 项，避免小请求放大为无界调用与响应。
 - stdio/HTTP JSON-RPC 响应与 SSE JSON 数据共用 64 MiB 有界 writer，写入将在追加越界前停止。单响应超限会返回保留原 ID 的 `-32603`；batch 或 SSE 状态超限会以不含原大 payload 的受限错误替换，避免日志、screen 或状态数据造成无界二次序列化和输出。
@@ -202,7 +202,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - 长运行 stdio bridge 会在每个 JSON-RPC envelope 前重新加载最新有效 Store 快照和原子发布的 endpoint；桌面重启、IPC token/address 轮换无需重启 bridge，endpoint 删除会立即清空 live forwarding，Store 暂时不可读时则保留最后一次有效只读快照。endpoint 正常缺失不会反复输出错误日志。
 - 桌面运行时通过本地 IPC 转发真实控制动作，IPC token 优先存 keyring。
 - HTTP 模式通过 `--http` 或 `PORTMATE_MCP_HTTP=1` 启动，仅允许 loopback 绑定，校验 `Origin`，并要求 Bearer 或 `X-PortMate-MCP-Token`；HTTP token 优先来自 `PORTMATE_MCP_HTTP_TOKEN`，否则存入 OS keyring；支持 JSON-RPC POST、streamable-http JSON Accept 兼容、GET SSE 事件流和纯 SSE POST message 事件响应。POST 必须使用 `application/json`（允许 charset 参数），显式 `MCP-Protocol-Version` 必须匹配 `2025-06-18`，该版本头已加入 CORS preflight allow-list。
-- HTTP 明确采用 MCP 允许的无状态 Streamable HTTP 模式，不签发 `Mcp-Session-Id`，因此没有伪造的 session/DELETE/replay 生命周期；仓库固定的官方 TypeScript SDK 1.29.0 回归会启动真实 bridge，覆盖 initialize/initialized、GET SSE、ping、tools/resources/templates/prompts/resource read 共 9 个请求，并核对认证、双 Accept 和协商版本头。
+- HTTP 明确采用 MCP 允许的无状态 Streamable HTTP 模式，不签发 `Mcp-Session-Id`，因此没有伪造的 session/DELETE/replay 生命周期；官方 TypeScript SDK 三版本矩阵会启动真实 bridge，每版覆盖 initialize/initialized、GET SSE、ping、tools/resources/templates/prompts/resource read 共 9 个请求，并核对认证、双 Accept、1.10.0 无后期版本头的旧行为和 1.20.0/1.29.0 协商版本头。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；body 可使用 `Content-Length` 或唯一的 `Transfer-Encoding: chunked`，解码后仍限制为 1 MiB，chunk framing/trailer 另限制为 64 KiB/128 项并共享同一总 deadline。重复/冲突 framing、其他 transfer coding、畸形 chunk/trailer 和终止 body 后额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
 - MCP Bridge 弹窗已提供 HTTP endpoint、Origin、启动命令、tokenRef 展示，以及 keyring token 生成/轮换入口。
 - MCP 授权变更、HTTP 配置/Token、审计刷新/导出按任务使用弹窗级请求门控；重复切换标签不会重叠慢配置读取，操作期间对应控件禁用，关闭弹窗会失效迟到响应。
@@ -210,7 +210,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 主要缺口：
 
-- HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流、纯 SSE POST 的 `message` 事件响应，以及 Content-Type/协议版本/CORS preflight/严格 framing/重复头/quality value 回归；官方 TypeScript SDK 1.29.0 的真实客户端序列已覆盖。Python `mcp` 1.9.4/1.15.0/1.23.3/1.28.1、官方 Go SDK 1.4.0/1.5.0/1.6.1、官方 Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、官方 Ruby SDK `mcp` 0.25.0/1.0.0、官方 Java SDK `mcp` 1.0.0/1.1.3/2.0.0、官方 Kotlin SDK `kotlin-sdk-client-jvm` 0.14.0、官方 C# SDK `ModelContextProtocol.Core` 1.0.0/1.2.0/1.4.1 与官方 Swift SDK 0.12.1 使用隔离环境启动同一真实 bridge，并通过 stdio 与无状态 Streamable HTTP 的 8 条消息/请求生命周期，验证 `2024-11-05`/`2025-03-26`/`2025-06-18` 协商及 tools/resources/prompts。Swift 0.12.1 的上游 transport/依赖声明无法在 Windows 原样编译，因此 Swift 矩阵只定义 Linux/macOS；更多 SDK 版本仍待扩展。
+- HTTP MCP 已补 `Accept: application/json, text/event-stream` streamable-http JSON 兼容回归，GET `text/event-stream` 基础事件流、纯 SSE POST 的 `message` 事件响应，以及 Content-Type/协议版本/CORS preflight/严格 framing/重复头/quality value 回归。官方 TypeScript SDK 1.10.0/1.20.0/1.29.0、Python `mcp` 1.9.4/1.15.0/1.23.3/1.28.1、官方 Go SDK 1.4.0/1.5.0/1.6.1、官方 Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、官方 Ruby SDK `mcp` 0.25.0/1.0.0、官方 Java SDK `mcp` 1.0.0/1.1.3/2.0.0、官方 Kotlin SDK `kotlin-sdk-client-jvm` 0.14.0、官方 C# SDK `ModelContextProtocol.Core` 1.0.0/1.2.0/1.4.1 与官方 Swift SDK 0.12.1 使用隔离环境启动同一真实 bridge，并通过 stdio 与无状态 Streamable HTTP 生命周期，验证 `2024-11-05`/`2025-03-26`/`2025-06-18` 协商及 tools/resources/prompts。Swift 0.12.1 的上游 transport/依赖声明无法在 Windows 原样编译，因此 Swift 矩阵只定义 Linux/macOS；更多 SDK 版本仍待扩展。
 - MCP 已区分 `resources/list` 实际资源与 `resources/templates/list` URI 模板，支持 `ping`、有界 JSON-RPC batch/notification 语义；HTTP notification 返回无响应体的 `202 Accepted`。
 - MCP 与桌面 IPC 都执行日志查询 `limit` 的 1..=1000 边界，日志搜索返回最近命中并按时间正序排列。
 - 当 desktop IPC 不可用时，写工具已返回明确未执行错误；后续可考虑队列或离线计划。
@@ -268,7 +268,7 @@ npm run build
 - JSON 风格凭据、完整 Bearer token 脱敏，以及覆盖 SSH/Tmux credential metadata、本地路径、自动化载荷、传输路径和 raw shard ref 的 redacted session bundle。
 - 运行时断线诊断跨 store reload 保留。
 - 多跳 one-time host key 生命周期与 `AskEveryTime` 强制确认。
-- MCP resource/template、opaque UTF-8 session/transfer ID 的资源 URI 编解码与非法路径拒绝、ping、batch、notification、HTTP `202`、日志 limit、stdio 超限恢复、慢请求总 deadline、HTTP/desktop IPC 连接限额拒绝与 permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限；官方 TypeScript SDK 1.29.0 另以真实子进程覆盖 stdio 8 消息生命周期，并以真实 loopback bridge 覆盖 HTTP 9 请求序列。
+- MCP resource/template、opaque UTF-8 session/transfer ID 的资源 URI 编解码与非法路径拒绝、ping、batch、notification、HTTP `202`、日志 limit、stdio 超限恢复、慢请求总 deadline、HTTP/desktop IPC 连接限额拒绝与 permit 释放，以及 desktop endpoint 的文件/地址/Store/tokenRef 校验和 IPC 请求响应上限；官方 TypeScript SDK 三版本另以真实子进程覆盖 stdio 8 消息生命周期，并以真实 loopback bridge 覆盖 HTTP 9 请求序列。
 - 隔离 OpenSSH 服务上的 TOFU、同地址 host key 变更阻断、`allowRotation` 后重新信任并保留轮换历史、公钥认证、PTY 命令、原生 SFTP 浏览/递归建目录/上传/rename/chmod/属性/远端复制/下载/递归删除、外部目录树递归上传（含空目录）、SFTP upload/download/remote-copy、SCP upload 和远端命令复制的 `.portmate-part` 偏移续传，以及 SCP download 的从 0 临时文件安全重试、限速 SFTP/SCP 上传取消后从 part 重试、SFTP/SCP 服务端拒写失败状态、传输中 SSH 断开后重连续传，以及 local/dynamic/remote reverse tunnel 的流量统计、目标拒绝、错误状态和原 tunnel 恢复。
 - 三 OpenSSH 服务上的两跳 Jump Host direct-tcpip 链、三端独立公钥身份筛选、两跳/目标独立 TOFU 持久化、末端 PTY、第一跳连接拒绝、第二跳 direct-tcpip 拒绝、第一跳/第二跳/目标静默握手超时、第二跳错误 identity 与目标 identity 耗尽的逐端点诊断，以及第二跳 host key 变更诊断。
 - 用户态 russh password/keyboard-interactive 跳板与两台独立 OpenSSH 公钥端点组成的两种混合认证链，以及第一跳错误密码诊断和三端 host key 持久化。
@@ -336,9 +336,9 @@ npm run build
 | Sysmon | 大部分实现 | 本机 Linux/macOS/Windows 与 SSH/Tmux Linux/macOS/FreeBSD/Windows 的 CPU、内存、uptime、吞吐、Top 进程、磁盘和每接口指标已进入有界快照、SQLite、MCP、四标签工作窗口及当前会话常驻侧栏；历史趋势、10 秒采样、请求代际/并发限制、断线停止和失败保留已覆盖。Linux/BusyBox/OpenWrt 地址回退及 Windows PowerShell/CIM marker 均有解析矩阵；仍需真实 macOS/FreeBSD/Windows SSH 主机和其他 BSD 证据。 |
 | 日志 | 大部分实现 | 结构化 events/SQLite、显式命令与入站事件 UUID 关联、带毫秒/方向/session/pane/command 的逐行 Text、双向精确 transport raw、Telnet reply/modem control、system Text/JSONL sink、每会话出站 lane、共享路径串行追加、SHA-256 v2 `bytesRef`、预览/筛选/搜索/清理/保留/归档，以及带 Ed25519 detached signature、可选 raw 和有界已选日志附件的脱敏 session bundle 已有；完整跨平台真实文件系统/keyring 故障矩阵仍待补。 |
 | 触发器 | 已实现 | 多条 contains/regex 规则、多动作编辑、高亮、通知、时间线、本地命令、发送文本、自定义链接和声音均有模型、运行时 dispatch 与回归覆盖；Profile/编辑器/缓存/运行时共享 64 条规则、每条 16 个动作和字段长度/合法性边界，send-text 有 32 条顺序批次/8 批并发和 transport 代际隔离，本地命令另有 4 路并发、30 秒总时限、双流各 64 KiB、饱和拒绝诊断及显式进程清理边界。 |
-| MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和桌面 IPC 的 64 连接/5 秒 I/O 边界已有；目标平台 sidecar 会随桌面安装包交付，官方 TypeScript SDK 1.29.0 已同时对开发二进制和 AppImage 内置二进制完成真实 8 消息生命周期及子进程退出。 |
-| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、严格 HTTP framing、容量和 deadline；官方 TypeScript SDK 1.29.0、Python 1.9.4/1.15.0/1.23.3/1.28.1、Go 1.4.0/1.5.0/1.6.1、Rust `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、Ruby 0.25.0/1.0.0、Java 1.0.0/1.1.3/2.0.0、Kotlin 0.14.0、C# 1.0.0/1.2.0/1.4.1 和 Swift 0.12.1 的 HTTP/stdio 生命周期已通过；Swift 受上游限制只定义 Linux/macOS 矩阵。桌面授权/HTTP/审计任务页、请求门控和有界审计导出已有；更多 SDK 版本待扩展。 |
-| 测试体系 | 部分实现 | Rust workspace 与前端单测、终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序、tmux 3.1c/3.3a/3.5a、OpenSSH 9.6/9.7/9.9 + Debian bookworm OpenSSH + Dropbear、六种 SSH 健康故障、BusyBox/inetutils Telnet、Ncat/Socat TCP、Python MCP 四版本、Go MCP 三版本、Rust MCP 四版本、Ruby MCP 双版本、Java MCP 三版本、Kotlin MCP 0.14.0、C# MCP 三版本和 Swift MCP 0.12.1 均已自动化；所有 Docker 矩阵支持三次镜像构建重试和显式、缺镜像即失败的离线缓存模式。`Native CI` 定义 Ubuntu/Windows/macOS 测试、Clippy、Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift SDK 和 Tauri bundle，以及 Linux 全兼容矩阵；仍需 CI 实际成功记录、签名安装包 smoke test、真实远端 OS/物理设备证据。 |
+| MCP stdio | 已实现 | bridge、tools/resources/prompts、opaque UTF-8 session/transfer ID 的资源 URI 路径段编码/严格解码、空 grant 默认只读与显式 read scope/session 过滤、live IPC 二次授权/命令白名单、全部写 scope 的可选一次性桌面审批、32 项 pending 上限、60 秒 fail-closed/one-shot 响应、脱敏审批事件和副作用前授权审计、1 MiB 可恢复输入边界、128 项 batch 上限、64 MiB 响应序列化边界、严格 ID/params envelope、逐 envelope Store/endpoint 刷新、endpoint 信任边界和桌面 IPC 的 64 连接/5 秒 I/O 边界已有；官方 TypeScript SDK 三版本已对开发二进制完成真实 8 消息生命周期及子进程退出，Linux 安装包验证也已接入同一矩阵；目标平台 sidecar 会随桌面安装包交付。 |
+| MCP HTTP | 部分实现 | `portmate-mcp --http` 支持 loopback JSON-RPC、Origin 校验、Bearer/X-Token、本地 keyring token、无状态 Streamable HTTP、GET SSE、纯 SSE POST、严格 HTTP framing、容量和 deadline；官方 TypeScript SDK 1.10.0/1.20.0/1.29.0、Python 1.9.4/1.15.0/1.23.3/1.28.1、Go 1.4.0/1.5.0/1.6.1、Rust `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、Ruby 0.25.0/1.0.0、Java 1.0.0/1.1.3/2.0.0、Kotlin 0.14.0、C# 1.0.0/1.2.0/1.4.1 和 Swift 0.12.1 的 HTTP/stdio 生命周期已通过；Swift 受上游限制只定义 Linux/macOS 矩阵。桌面授权/HTTP/审计任务页、请求门控和有界审计导出已有；更多 SDK 版本待扩展。 |
+| 测试体系 | 部分实现 | Rust workspace 与前端单测、终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序、tmux 3.1c/3.3a/3.5a、OpenSSH 9.6/9.7/9.9 + Debian bookworm OpenSSH + Dropbear、六种 SSH 健康故障、BusyBox/inetutils Telnet、Ncat/Socat TCP、TypeScript MCP 三版本、Python MCP 四版本、Go MCP 三版本、Rust MCP 四版本、Ruby MCP 双版本、Java MCP 三版本、Kotlin MCP 0.14.0、C# MCP 三版本和 Swift MCP 0.12.1 均已自动化；所有 Docker 矩阵支持三次镜像构建重试和显式、缺镜像即失败的离线缓存模式。`Native CI` 定义 Ubuntu/Windows/macOS 测试、Clippy、TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift SDK 和 Tauri bundle，以及 Linux 全兼容矩阵；仍需 CI 实际成功记录、签名安装包 smoke test、真实远端 OS/物理设备证据。 |
 
 ## 下一阶段目标
 
@@ -364,7 +364,7 @@ npm run build
 
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、逐行毫秒元数据、显式命令 UUID 关联和 system Text/JSONL sink 已完成。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
-3. MCP 官方 TypeScript SDK 1.29.0、Python SDK 1.9.4/1.15.0/1.23.3/1.28.1、Go SDK 1.4.0/1.5.0/1.6.1、Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、Ruby SDK 0.25.0/1.0.0、Java SDK 1.0.0/1.1.3/2.0.0、Kotlin SDK 0.14.0、C# SDK 1.0.0/1.2.0/1.4.1 与 Swift SDK 0.12.1 的 stdio/HTTP 矩阵已纳入回归；继续扩展版本和客户端实现。
+3. MCP 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0、Python SDK 1.9.4/1.15.0/1.23.3/1.28.1、Go SDK 1.4.0/1.5.0/1.6.1、Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0、Ruby SDK 0.25.0/1.0.0、Java SDK 1.0.0/1.1.3/2.0.0、Kotlin SDK 0.14.0、C# SDK 1.0.0/1.2.0/1.4.1 与 Swift SDK 0.12.1 的 stdio/HTTP 矩阵已纳入回归；继续扩展版本和客户端实现。
 4. Sysmon 的跨平台采样、四标签窗口、常驻当前会话侧栏、历史趋势、10 秒刷新和结构化持久化已完成；继续补真实 macOS/FreeBSD/Windows SSH 主机与其他 BSD。
 5. 终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序和 tmux 三版本矩阵已完成；Docker PTY 首字节启动、程序执行和容器/CLI 收尾使用独立边界，慢控制面不会占用全屏程序 deadline。继续迁移残余 CDP 检查，并由 macOS/Windows runner 与安装 smoke test 补原生证据。
 

@@ -1,0 +1,20 @@
+[
+  {
+    "version": "1.10.0",
+    "requestedProtocolVersion": "2024-11-05",
+    "protocolVersion": "2024-11-05",
+    "protocolHeader": false
+  },
+  {
+    "version": "1.20.0",
+    "requestedProtocolVersion": "2025-06-18",
+    "protocolVersion": "2025-06-18",
+    "protocolHeader": true
+  },
+  {
+    "version": "1.29.0",
+    "requestedProtocolVersion": "2025-11-25",
+    "protocolVersion": "2025-06-18",
+    "protocolHeader": true
+  }
+]

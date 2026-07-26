@@ -433,10 +433,12 @@ bounded to 1 MiB and 64 MiB, with 3-second connect, 5-second write, and 180-seco
 deadlines. The total budget includes an optional 60-second write approval without consuming the
 action's previous runtime budget.
 
-The repository's pinned official TypeScript SDK stdio check spawns the real bridge, negotiates the
-server's `2025-06-18` protocol version, completes initialize/initialized, ping, tools, resources,
-templates, prompts, and a resource read, then verifies that closing the client also terminates the
-bridge process.
+The official TypeScript SDK matrix runs versions 1.10.0, 1.20.0, and 1.29.0 from isolated locked
+npm environments. Each version spawns the real bridge and completes initialize/initialized, ping,
+tools, resources, templates, prompts, and a resource read over both stdio and stateless Streamable
+HTTP. It covers the older 1.10.0 `2024-11-05` lifecycle without the later HTTP protocol header,
+normal `2025-06-18` negotiation, and 1.29.0's `2025-11-25` request falling back to the server's
+supported `2025-06-18`; stdio client shutdown must also terminate the bridge process.
 
 The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.15.0, 1.23.3, and
 1.28.1 virtual environments over both stdio and stateless Streamable HTTP. Each version completes
@@ -528,9 +530,9 @@ version; the header remains optional for initialization and older clients, and i
 preflight responses.
 The bridge intentionally runs in the stateless Streamable HTTP mode allowed by the MCP transport:
 it does not issue `Mcp-Session-Id`, so clients do not need session termination or replay state. The
-repository's official TypeScript SDK check exercises initialize/initialized, the optional GET SSE
+repository's official TypeScript SDK matrix exercises initialize/initialized, the optional GET SSE
 stream, ping, tools, resources, templates, prompts, and resource reads while verifying the actual
-authentication, Accept, and negotiated-version headers.
+authentication, Accept, and version-header behavior of all three versions.
 
 The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
 complete request must arrive within five seconds, each response/SSE write has a five-second socket
@@ -561,6 +563,7 @@ npm run test:tmux-version-compat
 npm run test:workspace-ui
 npm run test:mcp-http-client
 npm run test:mcp-stdio-client
+npm run test:mcp-typescript-client
 npm run test:mcp-python-client
 npm run test:mcp-go-client
 npm run test:mcp-rust-client
