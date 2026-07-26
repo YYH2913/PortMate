@@ -1,6 +1,12 @@
 use super::*;
 
 #[tauri::command]
+pub(crate) fn list_host_keys(state: State<'_, AppState>) -> Result<HostKeyStore, String> {
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    Ok(store.host_keys.clone())
+}
+
+#[tauri::command]
 pub(crate) fn evaluate_host_key(
     state: State<'_, AppState>,
     profile_id: String,
