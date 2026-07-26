@@ -7,6 +7,34 @@ pub(super) const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
 pub(super) const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
 pub(super) const MAX_MCP_GRANT_SESSIONS: usize = 1_024;
 pub(super) const MAX_MCP_GRANT_SESSION_ID_BYTES: usize = 128;
+pub(super) const MAX_PENDING_MCP_APPROVALS: usize = 32;
+pub(super) const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub(super) type PendingMcpApprovalMap = Arc<Mutex<HashMap<String, PendingMcpApproval>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpApprovalRequest {
+    pub id: String,
+    pub client_id: String,
+    pub action: String,
+    pub session_id: String,
+    pub scope: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+pub(super) struct PendingMcpApproval {
+    pub(super) request: McpApprovalRequest,
+    pub(super) response: tokio::sync::oneshot::Sender<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum McpApprovalOutcome {
+    Approved,
+    Denied,
+    TimedOut,
+}
 
 pub(super) fn upsert_mcp_grant_in_store(
     store: &mut SessionStore,
@@ -90,6 +118,138 @@ pub(super) fn normalize_mcp_client_id(client_id: &str) -> Result<String, String>
         ));
     }
     Ok(client_id.to_string())
+}
+
+pub(super) fn list_mcp_approvals_inner(
+    state: &AppState,
+) -> Result<Vec<McpApprovalRequest>, String> {
+    let now = Utc::now();
+    let mut requests = state
+        .pending_mcp_approvals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .filter(|pending| pending.request.expires_at > now)
+        .map(|pending| pending.request.clone())
+        .collect::<Vec<_>>();
+    requests.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(requests)
+}
+
+pub(super) fn respond_mcp_approval_inner(
+    state: &AppState,
+    approval_id: &str,
+    approved: bool,
+) -> Result<(), String> {
+    let approval_id = Uuid::parse_str(approval_id)
+        .map_err(|_| "invalid MCP approval ID".to_string())?
+        .to_string();
+    let pending = state
+        .pending_mcp_approvals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&approval_id)
+        .ok_or_else(|| "MCP approval is no longer pending".to_string())?;
+    pending
+        .response
+        .send(approved)
+        .map_err(|_| "MCP approval requester is no longer waiting".to_string())
+}
+
+pub(super) async fn await_mcp_approval_with_emitter<F>(
+    state: &AppState,
+    request: McpApprovalRequest,
+    timeout: Duration,
+    emit: F,
+) -> Result<McpApprovalOutcome, String>
+where
+    F: FnOnce(&McpApprovalRequest) -> Result<(), String>,
+{
+    let (response, receiver) = tokio::sync::oneshot::channel();
+    {
+        let mut pending = state
+            .pending_mcp_approvals
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if pending.len() >= MAX_PENDING_MCP_APPROVALS {
+            return Err(format!(
+                "MCP approval queue limit exceeded ({MAX_PENDING_MCP_APPROVALS})"
+            ));
+        }
+        pending.insert(
+            request.id.clone(),
+            PendingMcpApproval {
+                request: request.clone(),
+                response,
+            },
+        );
+    }
+    if let Err(error) = emit(&request) {
+        state
+            .pending_mcp_approvals
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?
+            .remove(&request.id);
+        return Err(error);
+    }
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(true)) => Ok(McpApprovalOutcome::Approved),
+        Ok(Ok(false)) => Ok(McpApprovalOutcome::Denied),
+        Ok(Err(_)) => Err("MCP approval response channel closed".to_string()),
+        Err(_) => {
+            state
+                .pending_mcp_approvals
+                .lock()
+                .map_err(|error| error.to_string())?
+                .remove(&request.id);
+            Ok(McpApprovalOutcome::TimedOut)
+        }
+    }
+}
+
+pub(super) async fn request_mcp_approval(
+    state: &AppState,
+    client_id: &str,
+    action: &str,
+    session_id: &str,
+    scope: McpScope,
+) -> Result<McpApprovalOutcome, String> {
+    let app_handle = state
+        .app_handle
+        .as_ref()
+        .ok_or_else(|| "MCP approval UI is unavailable".to_string())?;
+    let request = build_mcp_approval_request(client_id, action, session_id, scope)?;
+    await_mcp_approval_with_emitter(state, request, MCP_APPROVAL_TIMEOUT, |request| {
+        app_handle
+            .emit("portmate-mcp-approval", request)
+            .map_err(|error| format!("failed to show MCP approval: {error}"))
+    })
+    .await
+}
+
+pub(super) fn build_mcp_approval_request(
+    client_id: &str,
+    action: &str,
+    session_id: &str,
+    scope: McpScope,
+) -> Result<McpApprovalRequest, String> {
+    validate_mcp_session_id(session_id)?;
+    let created_at = Utc::now();
+    Ok(McpApprovalRequest {
+        id: Uuid::new_v4().to_string(),
+        client_id: mcp_audit_actor(client_id),
+        action: action.to_string(),
+        session_id: session_id.to_string(),
+        scope: mcp_scope_label(scope).to_string(),
+        created_at,
+        expires_at: created_at
+            + chrono::Duration::from_std(MCP_APPROVAL_TIMEOUT)
+                .map_err(|error| format!("invalid MCP approval timeout: {error}"))?,
+    })
 }
 
 pub(super) fn mcp_sidecar_executable_path() -> PathBuf {
