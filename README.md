@@ -52,7 +52,9 @@ source cleanup. `secret_provider.rs` owns persistent native-keyring initializati
 routing, shared secret CRUD, and credential-migration provider batches; `portable_vault.rs` owns
 Stronghold context, salt/KDF/open/rekey, single and batch CRUD, and failed-commit rollback. Proxy,
 Telnet, Tmux protocol parsing, and app-data migration already have their own modules as well.
-`store_normalization.rs` owns loaded OneKey cleanup and duplicate SQLite mirror-key repair.
+`store_normalization.rs` owns legacy JSON loading, Profile/session ID remapping, orphan cleanup,
+MCP/OneKey normalization, duplicate SQLite mirror-key repair, interrupted runtime/transfer
+convergence, and loaded-history bounds.
 
 ## Development
 
