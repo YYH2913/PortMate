@@ -61,7 +61,27 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
       },
     });
-    results.push({ name: entry.name, port });
+    run("cargo", [
+      "test",
+      "-p",
+      "portmate",
+      "external_ssh_server_active_transfer_disconnect",
+      "--",
+      "--nocapture",
+      "--test-threads=1",
+    ], {
+      env: {
+        ...process.env,
+        PORTMATE_COMPAT_SSH_LABEL: entry.name,
+        PORTMATE_COMPAT_SSH_HOST: "127.0.0.1",
+        PORTMATE_COMPAT_SSH_PORT: String(port),
+        PORTMATE_COMPAT_SSH_USERNAME: "portmate",
+        PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
+        PORTMATE_COMPAT_SSH_CONTAINER: container,
+        PORTMATE_COMPAT_SSH_DISCONNECT_PROTOCOL: entry.disconnectProtocol,
+      },
+    });
+    results.push({ name: entry.name, port, activeTransferDisconnect: entry.disconnectProtocol });
   } finally {
     run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
   }
@@ -135,6 +155,10 @@ for (const entry of healthFaultMatrix) {
 
 console.log(JSON.stringify({
   verifiedServers: results.map(({ name }) => name),
+  verifiedActiveTransferDisconnects: results.map(({ name, activeTransferDisconnect }) => ({
+    name,
+    protocol: activeTransferDisconnect,
+  })),
   verifiedHealthFaults,
 }, null, 2));
 
@@ -144,6 +168,9 @@ function validateEntry(entry) {
   }
   if (typeof entry.dockerfile !== "string" || !entry.dockerfile.startsWith("tests/compat/")) {
     throw new Error(`Invalid SSH compatibility Dockerfile: ${JSON.stringify(entry)}`);
+  }
+  if (!["sftp", "scp"].includes(entry.disconnectProtocol)) {
+    throw new Error(`Invalid SSH compatibility disconnect protocol: ${JSON.stringify(entry)}`);
   }
   for (const [name, value] of Object.entries(entry.buildArgs ?? {})) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || typeof value !== "string" || !/^[a-zA-Z0-9._-]+$/.test(value)) {

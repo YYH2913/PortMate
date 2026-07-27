@@ -596,9 +596,12 @@ because xterm.js does not answer it.
 `npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
 3.3a, and 3.5a, including session/window/pane state, synchronization, layout mutations, and
 control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
-health path against OpenSSH 9.6/9.7/9.9, Debian bookworm OpenSSH, and Dropbear, then injects six health failures: paused
-transport, rejected and silent exec channels, missing and rejected SFTP subsystems, and runtime
-replacement. The TCP/Telnet matrix covers BusyBox telnetd, inetutils telnetd, Ncat, and Socat.
+health path against OpenSSH 9.6/9.7/9.9, Debian bookworm OpenSSH, and Dropbear. It also kills each
+server during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no
+committed final file, and a nonempty resumable `.portmate-part` copied from the stopped container.
+The same matrix injects six health failures: paused transport, rejected and silent exec channels,
+missing and rejected SFTP subsystems, and runtime replacement. The TCP/Telnet matrix covers BusyBox
+telnetd, inetutils telnetd, Ncat, and Socat.
 All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
 times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
 matrices without registry access; each command fails closed if a required image is absent.

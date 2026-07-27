@@ -2,6 +2,7 @@
   {
     "name": "openssh-alpine-3.19",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
     "buildArgs": {
       "ALPINE_VERSION": "3.19"
     }
@@ -9,6 +10,7 @@
   {
     "name": "openssh-alpine-3.20",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "scp",
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     }
@@ -16,17 +18,20 @@
   {
     "name": "openssh-alpine-3.21",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
     "buildArgs": {
       "ALPINE_VERSION": "3.21"
     }
   },
   {
     "name": "openssh-debian-bookworm",
-    "dockerfile": "tests/compat/openssh-debian.Dockerfile"
+    "dockerfile": "tests/compat/openssh-debian.Dockerfile",
+    "disconnectProtocol": "scp"
   },
   {
     "name": "dropbear-alpine-3.20",
     "dockerfile": "tests/compat/dropbear-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     }
