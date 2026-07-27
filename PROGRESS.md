@@ -9,7 +9,7 @@
 本次审查覆盖当前仓库内的桌面端、共享核心库、MCP bridge 和项目说明：
 
 - 桌面前端：`src/App.tsx`、`src/api.ts`、`src/types.ts`、`src/styles.css`、`src/sync-input-state.ts`。
-- Tauri 后端：`src-tauri/src/app_data_migration.rs`、`src-tauri/src/lib.rs`、`src-tauri/src/session_commands.rs`、`src-tauri/src/proxy_protocol.rs`、`src-tauri/src/serial_capture.rs`、`src-tauri/src/ssh_health.rs`、`src-tauri/src/ssh_security.rs`、`src-tauri/src/telnet_protocol.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
+- Tauri 后端：`src-tauri/src/app_data_migration.rs`、`src-tauri/src/lib.rs`、`src-tauri/src/state.rs`、`src-tauri/src/session_commands.rs`、`src-tauri/src/proxy_protocol.rs`、`src-tauri/src/serial_capture.rs`、`src-tauri/src/ssh_health.rs`、`src-tauri/src/ssh_security.rs`、`src-tauri/src/telnet_protocol.rs`、`src-tauri/src/tmux_protocol.rs`、`src-tauri/Cargo.toml`。
 - 共享核心：`crates/portmate-core/src/models.rs`、`store.rs`、`host_keys.rs`、`mcp.rs`、`triggers.rs`、`redaction.rs`。
 - MCP stdio bridge：`crates/portmate-mcp/src/main.rs`。
 - 项目目标和使用说明：`PLAN.md`、`README.md`、`package.json`、workspace `Cargo.toml`。
