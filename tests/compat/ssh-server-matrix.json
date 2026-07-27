@@ -33,6 +33,15 @@
     "modemDisconnectProtocol": "ymodem"
   },
   {
+    "name": "openssh-debian-trixie",
+    "dockerfile": "tests/compat/openssh-debian.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem",
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim"
+    }
+  },
+  {
     "name": "openssh-ubuntu-noble",
     "dockerfile": "tests/compat/openssh-ubuntu.Dockerfile",
     "disconnectProtocol": "sftp",

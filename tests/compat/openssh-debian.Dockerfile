@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim
+ARG DEBIAN_VERSION=bookworm-slim
+FROM debian:${DEBIAN_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
