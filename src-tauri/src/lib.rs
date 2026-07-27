@@ -1427,14 +1427,6 @@ pub struct TrustScannedHostKeyRequest {
     pub decision: HostKeyDecision,
 }
 
-async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
-    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn remove_runtime_if_owned<Runtime>(
     registry: &Mutex<HashMap<String, Runtime>>,
     session_id: &str,

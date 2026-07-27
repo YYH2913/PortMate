@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
+    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
+}
+
+pub(super) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 pub(super) fn windows_powershell_command(script: &str) -> String {
     format!(
         "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
