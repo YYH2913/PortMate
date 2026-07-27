@@ -1427,41 +1427,6 @@ pub struct TrustScannedHostKeyRequest {
     pub decision: HostKeyDecision,
 }
 
-fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "failed to create {label} directory {}: {error}",
-            parent.display()
-        )
-    })?;
-    let prefix = format!(
-        ".{}.",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("portmate-private")
-    );
-    let mut temp = tempfile::Builder::new()
-        .prefix(&prefix)
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .map_err(|error| format!("failed to create temporary {label}: {error}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to secure temporary {label}: {error}"))?;
-    }
-    temp.as_file_mut()
-        .write_all(bytes)
-        .and_then(|_| temp.as_file_mut().flush())
-        .and_then(|_| temp.as_file().sync_all())
-        .map_err(|error| format!("failed to persist temporary {label}: {error}"))?;
-    temp.persist(path)
-        .map_err(|error| format!("failed to atomically replace {label}: {}", error.error))?;
-    Ok(())
-}
-
 async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
     let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
 }
