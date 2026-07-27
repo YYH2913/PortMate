@@ -5,7 +5,7 @@ RUN apk add --no-cache build-base curl gzip tar dropbear openssh-client openssh-
     && curl -fsSL https://ohse.de/uwe/releases/lrzsz-0.12.20.tar.gz -o /tmp/lrzsz.tar.gz \
     && tar -xzf /tmp/lrzsz.tar.gz -C /tmp \
     && cd /tmp/lrzsz-0.12.20 \
-    && ./configure --prefix=/usr \
+    && CC="gcc -std=gnu89" ./configure --prefix=/usr \
     && make -j2 \
     && make install \
     && ln -sf /usr/bin/lrz /usr/bin/rx \
