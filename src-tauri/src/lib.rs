@@ -183,7 +183,10 @@ use session_commands::{
     delete_session_profile_inner, register_session_open_cancellation, resize_session_inner,
     resize_session_profile_in_store, session_has_registered_runtime, session_lifecycle_lane,
 };
-use session_commands::{close_session_inner, open_session_inner, SessionOpenCredentials};
+use session_commands::{
+    close_session_inner, mark_session_connected_with_events, open_session_inner,
+    profile_requires_runtime, SessionOpenCredentials,
+};
 use session_commands::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use session_events::*;
 use session_events::{append_logging_error, append_logging_errors, sync_stored_event};
@@ -1441,36 +1444,6 @@ fn remove_runtime_if_owned<Runtime>(
     })
 }
 
-fn mark_session_connected_with_events(
-    store: &mut SessionStore,
-    profile: &SessionProfile,
-    messages: impl IntoIterator<Item = String>,
-) -> Result<(SessionSummary, Vec<String>), String> {
-    let fallback = store.set_runtime_status(&profile.id, SessionStatus::Connected)?;
-    let mut event_ids = Vec::new();
-    for message in messages {
-        if let Some(event_id) = store.record_system_event_tracked(&profile.id, message) {
-            event_ids.push(event_id);
-        }
-    }
-    if let Some(event_id) = store.record_system_event_tracked(
-        &profile.id,
-        format!(
-            "PortMate: connected to {} ({:?})",
-            describe_endpoint(profile),
-            profile.kind
-        ),
-    ) {
-        event_ids.push(event_id);
-    }
-    let summary = store
-        .summaries()
-        .into_iter()
-        .find(|summary| summary.profile.id == profile.id)
-        .unwrap_or(fallback);
-    Ok((summary, event_ids))
-}
-
 fn expand_identity_path(path: &str) -> PathBuf {
     if path == "~" || path.starts_with("~/") {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
@@ -1546,60 +1519,6 @@ fn truncate_for_log(value: &str, limit: usize) -> String {
         .last()
         .unwrap_or(0);
     format!("{}...", &trimmed[..boundary])
-}
-
-fn profile_requires_runtime(
-    store: &Arc<Mutex<SessionStore>>,
-    session_id: &str,
-) -> Result<bool, String> {
-    let store = store.lock().map_err(|error| error.to_string())?;
-    Ok(matches!(
-        store.profile(session_id).map(|profile| profile.connection),
-        Some(
-            ConnectionConfig::Ssh(_)
-                | ConnectionConfig::Tmux(_)
-                | ConnectionConfig::Tcp(_)
-                | ConnectionConfig::Telnet(_)
-                | ConnectionConfig::Serial(_)
-                | ConnectionConfig::Shell(_)
-        )
-    ))
-}
-
-fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
-    if let Ok(mut store) = state.store.lock() {
-        let _ = store.set_runtime_status_with_reason(
-            session_id,
-            SessionStatus::Error,
-            Some(error.to_string()),
-        );
-        store.record_system_event(session_id, format!("PortMate: connection failed: {error}"));
-        if let Err(error) =
-            persist_applied_store(&store, &state.store_path, "connection failure state")
-        {
-            eprintln!("PortMate: failed to persist connection failure: {error}");
-        }
-    }
-}
-
-fn describe_endpoint(profile: &SessionProfile) -> String {
-    match &profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
-            if ssh.username.is_empty() {
-                format!("{}:{}", ssh.endpoint.host, ssh.endpoint.port)
-            } else {
-                format!(
-                    "{}@{}:{}",
-                    ssh.username, ssh.endpoint.host, ssh.endpoint.port
-                )
-            }
-        }
-        ConnectionConfig::Serial(serial) => serial.port.clone(),
-        ConnectionConfig::Shell(shell) => shell.program.clone(),
-        ConnectionConfig::Telnet(tcp) | ConnectionConfig::Tcp(tcp) => {
-            format!("{}:{}", tcp.host, tcp.port)
-        }
-    }
 }
 
 fn describe_host_key_rejection(evaluation: &HostKeyEvaluation) -> String {

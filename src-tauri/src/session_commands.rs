@@ -1,5 +1,88 @@
 use super::*;
 
+pub(super) fn mark_session_connected_with_events(
+    store: &mut SessionStore,
+    profile: &SessionProfile,
+    messages: impl IntoIterator<Item = String>,
+) -> Result<(SessionSummary, Vec<String>), String> {
+    let fallback = store.set_runtime_status(&profile.id, SessionStatus::Connected)?;
+    let mut event_ids = Vec::new();
+    for message in messages {
+        if let Some(event_id) = store.record_system_event_tracked(&profile.id, message) {
+            event_ids.push(event_id);
+        }
+    }
+    if let Some(event_id) = store.record_system_event_tracked(
+        &profile.id,
+        format!(
+            "PortMate: connected to {} ({:?})",
+            describe_endpoint(profile),
+            profile.kind
+        ),
+    ) {
+        event_ids.push(event_id);
+    }
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile.id)
+        .unwrap_or(fallback);
+    Ok((summary, event_ids))
+}
+
+pub(super) fn profile_requires_runtime(
+    store: &Arc<Mutex<SessionStore>>,
+    session_id: &str,
+) -> Result<bool, String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    Ok(matches!(
+        store.profile(session_id).map(|profile| profile.connection),
+        Some(
+            ConnectionConfig::Ssh(_)
+                | ConnectionConfig::Tmux(_)
+                | ConnectionConfig::Tcp(_)
+                | ConnectionConfig::Telnet(_)
+                | ConnectionConfig::Serial(_)
+                | ConnectionConfig::Shell(_)
+        )
+    ))
+}
+
+pub(super) fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.set_runtime_status_with_reason(
+            session_id,
+            SessionStatus::Error,
+            Some(error.to_string()),
+        );
+        store.record_system_event(session_id, format!("PortMate: connection failed: {error}"));
+        if let Err(error) =
+            persist_applied_store(&store, &state.store_path, "connection failure state")
+        {
+            eprintln!("PortMate: failed to persist connection failure: {error}");
+        }
+    }
+}
+
+pub(super) fn describe_endpoint(profile: &SessionProfile) -> String {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            if ssh.username.is_empty() {
+                format!("{}:{}", ssh.endpoint.host, ssh.endpoint.port)
+            } else {
+                format!(
+                    "{}@{}:{}",
+                    ssh.username, ssh.endpoint.host, ssh.endpoint.port
+                )
+            }
+        }
+        ConnectionConfig::Serial(serial) => serial.port.clone(),
+        ConnectionConfig::Shell(shell) => shell.program.clone(),
+        ConnectionConfig::Telnet(tcp) | ConnectionConfig::Tcp(tcp) => {
+            format!("{}:{}", tcp.host, tcp.port)
+        }
+    }
+}
 pub(super) async fn delete_session_profile_inner(
     state: &AppState,
     session_id: String,
