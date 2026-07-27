@@ -151,6 +151,8 @@ use migration_planning::*;
 use migration_recovery::*;
 use migration_runtime::*;
 use migration_types::*;
+#[cfg(test)]
+use modem_transfer::runtime_tap_receiver;
 use modem_transfer::*;
 use one_key_prompt::*;
 use one_key_runtime::*;
@@ -1458,45 +1460,6 @@ fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(
     temp.persist(path)
         .map_err(|error| format!("failed to atomically replace {label}: {}", error.error))?;
     Ok(())
-}
-
-fn runtime_tap_receiver(
-    state: &AppState,
-    session_id: &str,
-) -> Result<broadcast::Receiver<Vec<u8>>, String> {
-    if let Some(tap) = {
-        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.shell.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    Err("需要先连接会话才能执行 X/Y/ZModem 传输".to_string())
 }
 
 async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {

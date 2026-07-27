@@ -1,5 +1,44 @@
 use super::*;
 
+pub(super) fn runtime_tap_receiver(
+    state: &AppState,
+    session_id: &str,
+) -> Result<broadcast::Receiver<Vec<u8>>, String> {
+    if let Some(tap) = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(session_id)
+            .map(|runtime| runtime.tap.clone())
+    } {
+        return Ok(tap.subscribe());
+    }
+    if let Some(tap) = {
+        let connections = state.shell.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(session_id)
+            .map(|runtime| runtime.tap.clone())
+    } {
+        return Ok(tap.subscribe());
+    }
+    if let Some(tap) = {
+        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(session_id)
+            .map(|runtime| runtime.tap.clone())
+    } {
+        return Ok(tap.subscribe());
+    }
+    if let Some(tap) = {
+        let connections = state.serial.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(session_id)
+            .map(|runtime| runtime.tap.clone())
+    } {
+        return Ok(tap.subscribe());
+    }
+    Err("需要先连接会话才能执行 X/Y/ZModem 传输".to_string())
+}
+
 pub(super) const MODEM_SOH: u8 = 0x01;
 pub(super) const MODEM_STX: u8 = 0x02;
 pub(super) const MODEM_EOT: u8 = 0x04;
