@@ -116,10 +116,26 @@ pub(super) async fn check_ssh_health_inner(
     if probe_sftp {
         let sftp_started = Instant::now();
         match auxiliary.sftp().await {
-            Ok(session) => {
-                report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
-                drop(session);
-            }
+            Ok(session) => match session.canonicalize(".").await {
+                Ok(_) => match session.read_dir(".").await {
+                    Ok(_) => {
+                        report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
+                        drop(session);
+                    }
+                    Err(error) => {
+                        report.status = SshHealthStatus::Degraded;
+                        report.sftp_error = Some(bounded_ssh_health_error(&format!(
+                            "SFTP health probe failed: {error}"
+                        )));
+                    }
+                },
+                Err(error) => {
+                    report.status = SshHealthStatus::Degraded;
+                    report.sftp_error = Some(bounded_ssh_health_error(&format!(
+                        "SFTP health probe failed: {error}"
+                    )));
+                }
+            },
             Err(error) => {
                 report.status = SshHealthStatus::Degraded;
                 report.sftp_error = Some(bounded_ssh_health_error(&error));

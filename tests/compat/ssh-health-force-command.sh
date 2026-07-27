@@ -17,6 +17,9 @@ case "$mode:$original" in
         echo 'sftp rejected by fault server' >&2
         exit 74
         ;;
+    sftp-operation-denied:internal-sftp)
+        exec /usr/lib/ssh/sftp-server -d /home/portmate/portmate-sftp-blocked
+        ;;
     scp-rejected:dst=*)
         echo 'scp rejected by fault server' >&2
         exit 75

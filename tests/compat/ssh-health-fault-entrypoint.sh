@@ -3,7 +3,7 @@ set -eu
 
 mode="${PORTMATE_SSH_HEALTH_FAULT:-normal}"
 case "$mode" in
-    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|sftp-no-such-file|sftp-permission-denied|scp-rejected|runtime-replaced) ;;
+    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|sftp-operation-denied|sftp-no-such-file|sftp-permission-denied|scp-rejected|runtime-replaced) ;;
     *)
         echo "unsupported SSH health fault mode: $mode" >&2
         exit 64
@@ -16,6 +16,13 @@ if [ "$mode" = "sftp-permission-denied" ]; then
     mkdir -p /home/portmate/portmate-readonly
     chown portmate:portmate /home/portmate/portmate-readonly
     chmod 0555 /home/portmate/portmate-readonly
+fi
+
+if [ "$mode" = "sftp-operation-denied" ]; then
+    mkdir -p /home/portmate/portmate-sftp-blocked
+    chown portmate:portmate /home/portmate/portmate-sftp-blocked
+    # Allow sftp-server to enter the directory, but reject READDIR probes.
+    chmod 0111 /home/portmate/portmate-sftp-blocked
 fi
 
 cat > /run/portmate-sshd-config <<'EOF'
