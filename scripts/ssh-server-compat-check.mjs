@@ -82,7 +82,12 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SSH_MODEM_DISCONNECT_PROTOCOL: entry.modemDisconnectProtocol,
       },
     });
-    results.push({ name: entry.name, port, activeTransferDisconnect: entry.disconnectProtocol });
+    results.push({
+      name: entry.name,
+      port,
+      activeTransferDisconnect: entry.disconnectProtocol,
+      activeModemTransferDisconnect: entry.modemDisconnectProtocol,
+    });
   } finally {
     run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
   }
@@ -159,6 +164,10 @@ console.log(JSON.stringify({
   verifiedActiveTransferDisconnects: results.map(({ name, activeTransferDisconnect }) => ({
     name,
     protocol: activeTransferDisconnect,
+  })),
+  verifiedActiveModemTransferDisconnects: results.map(({ name, activeModemTransferDisconnect }) => ({
+    name,
+    protocol: activeModemTransferDisconnect,
   })),
   verifiedHealthFaults,
 }, null, 2));

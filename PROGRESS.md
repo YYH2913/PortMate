@@ -276,6 +276,7 @@ npm run build
 - SSH 重连延迟/KeepAlive 的旧 Profile 默认值、非法阈值夹紧、KeepAlive 开关到 russh `keepalive_interval` 的映射、健康参数变化触发最新 Profile 重连代次更新，以及真实 OpenSSH 断线等待期间从 5,000 ms 缩短到 100 ms 后恢复 session 和原 tunnel。
 - 独立真实 `ssh-agent` 与 OpenSSH 服务上的 agent 禁用、未过滤 offer、`IdentitiesOnly` 空白名单、显式指纹白名单，以及错误指纹不能被相同 comment/path 绕过。
 - OpenSSH PTY 上 lrzsz X/Y/ZModem 上传/下载、自动上传 `.portmate-part` 原子提交、相邻协议 stale-byte 隔离、raw TTY 恢复、XModem block padding 精确截断，以及 TCP loopback 下数据块/EOT 首个 ACK 丢失后的精确重传。
+- Linux Docker SSH 服务端矩阵已在 OpenSSH Alpine 3.19/3.20/3.21、OpenSSH Debian Bookworm 和 Dropbear Alpine 上真实验证 SFTP/SCP 活动断线，并在同一容器的独立 SSH runtime 上交错验证 X/Y/ZModem 活动断线；Alpine 的 lrzsz 从固定源码以 legacy C 模式构建，YModem 分配到 Debian（Alpine musl 的 `rb` 不发起 CRC 请求），因此该结果同时记录服务端和工具链边界。
 - 传输限速等待不阻塞 async runtime，并能在 100 ms 轮询周期内响应取消。
 - OpenSSH `MaxAuthTries 2` 下错误 key 优先导致认证耗尽、逐 identity 错误聚合，以及正确 key 前置后的成功连接。
 - `socat` 虚拟 PTY 上的串口二进制收发、非 UTF-8 RX/TX 精确内存捕获、无探测字节的接收空闲超时、断线后切换到最新端口并动态缩短重连延迟、pending/connected 阶段关闭重连，以及设备不支持 DTR/RTS 时的兼容和拒绝边界。串口捕获单测覆盖 512 帧/1 MiB 环形边界、大帧截断标记、增量 reset、选中帧 JSONL 原子导出和 SHA-256 sidecar。
