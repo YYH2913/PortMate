@@ -166,6 +166,7 @@ use serial_capture::*;
 use serial_transport::*;
 #[cfg(test)]
 use session_commands::{resize_session_inner, resize_session_profile_in_store};
+use session_commands::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use session_events::*;
 use shell_transport::*;
 use sqlite_schema::*;
@@ -2645,85 +2646,6 @@ fn profile_requires_runtime(
                 | ConnectionConfig::Shell(_)
         )
     ))
-}
-
-fn terminal_key_sequence(key: &str) -> Result<String, String> {
-    let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
-    let sequence = match normalized.as_str() {
-        "" => return Err("key must not be empty".to_string()),
-        "enter" | "return" => "\r".to_string(),
-        "linefeed" | "lf" => "\n".to_string(),
-        "tab" => "\t".to_string(),
-        "backspace" | "bs" => "\u{0008}".to_string(),
-        "delete" | "del" => "\x1b[3~".to_string(),
-        "escape" | "esc" => "\x1b".to_string(),
-        "up" | "arrow-up" => "\x1b[A".to_string(),
-        "down" | "arrow-down" => "\x1b[B".to_string(),
-        "right" | "arrow-right" => "\x1b[C".to_string(),
-        "left" | "arrow-left" => "\x1b[D".to_string(),
-        "home" => "\x1b[H".to_string(),
-        "end" => "\x1b[F".to_string(),
-        "pageup" | "page-up" => "\x1b[5~".to_string(),
-        "pagedown" | "page-down" => "\x1b[6~".to_string(),
-        "insert" | "ins" => "\x1b[2~".to_string(),
-        "f1" => "\x1bOP".to_string(),
-        "f2" => "\x1bOQ".to_string(),
-        "f3" => "\x1bOR".to_string(),
-        "f4" => "\x1bOS".to_string(),
-        "f5" => "\x1b[15~".to_string(),
-        "f6" => "\x1b[17~".to_string(),
-        "f7" => "\x1b[18~".to_string(),
-        "f8" => "\x1b[19~".to_string(),
-        "f9" => "\x1b[20~".to_string(),
-        "f10" => "\x1b[21~".to_string(),
-        "f11" => "\x1b[23~".to_string(),
-        "f12" => "\x1b[24~".to_string(),
-        "space" => " ".to_string(),
-        value if value.starts_with("ctrl+") || value.starts_with("ctrl-") => {
-            let key = value
-                .trim_start_matches("ctrl+")
-                .trim_start_matches("ctrl-");
-            let byte = match key {
-                "space" | "@" => 0,
-                "[" | "escape" | "esc" => 27,
-                "\\" => 28,
-                "]" => 29,
-                "^" => 30,
-                "_" => 31,
-                value if value.len() == 1 => {
-                    let ch = value.as_bytes()[0];
-                    if ch.is_ascii_alphabetic() {
-                        ch.to_ascii_uppercase() - b'@'
-                    } else {
-                        return Err(format!("unsupported control key: {key}"));
-                    }
-                }
-                _ => return Err(format!("unsupported control key: {key}")),
-            };
-            String::from_utf8(vec![byte]).map_err(|error| error.to_string())?
-        }
-        value if value.chars().count() == 1 => value.to_string(),
-        _ => return Err(format!("unsupported key sequence: {key}")),
-    };
-    Ok(sequence)
-}
-
-fn terminal_key_sequence_for_protocol(key: &str, is_telnet: bool) -> Result<String, String> {
-    let sequence = terminal_key_sequence(key)?;
-    if is_telnet && sequence == "\r" {
-        Ok("\r\n".to_string())
-    } else {
-        Ok(sequence)
-    }
-}
-
-fn terminate_command_for_protocol(mut command: String, is_telnet: bool) -> String {
-    let needs_terminator = !command.ends_with('\n') && !command.ends_with('\r');
-    let telnet_bare_cr = is_telnet && command.ends_with('\r') && !command.ends_with("\r\n");
-    if needs_terminator || telnet_bare_cr {
-        command.push('\n');
-    }
-    command
 }
 
 fn record_connection_failure(state: &AppState, session_id: &str, error: &str) {
