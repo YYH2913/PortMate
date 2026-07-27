@@ -18898,7 +18898,12 @@ __PORTMATE_LOADAVG__
         assert!(root_command.contains("cd '/'"), "{root_command}");
         assert!(root_command.contains("rz -y"), "{root_command}");
 
-        let finalize = xmodem_remote_finalize_command("/tmp/file.bin", 37, token);
+        let finalize = xmodem_remote_finalize_command(
+            "/tmp/file.bin.portmate-part",
+            "/tmp/file.bin",
+            37,
+            token,
+        );
         assert!(finalize.contains("portable_path()"));
         assert!(finalize.contains("truncate -s 37"));
         assert!(finalize.contains("count=37"));
@@ -18908,6 +18913,11 @@ __PORTMATE_LOADAVG__
         assert!(!finalize.contains("mv -f --"));
         assert!(!finalize.contains("rm -f --"));
         assert!(finalize.ends_with('\r'));
+        let atomic_finalize =
+            remote_modem_finalize_command("/tmp/file.bin.portmate-part", "/tmp/file.bin", token);
+        assert!(atomic_finalize.contains("mv -f \"$part\" \"$target\""));
+        assert!(atomic_finalize.contains("__PORTMATE_MODEM_FINALIZE_%s_DONE__"));
+        assert!(atomic_finalize.ends_with('\r'));
         assert!(is_modem_timeout("modem byte timeout"));
         assert!(is_modem_timeout("timed out waiting for modem ACK"));
     }
@@ -18917,9 +18927,15 @@ __PORTMATE_LOADAVG__
     fn xmodem_remote_finalize_command_handles_dash_prefixed_path() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("-received.bin");
-        fs::write(&target, b"abcdef").unwrap();
+        let part = root.path().join("-received.bin.portmate-part");
+        fs::write(&part, b"abcdef").unwrap();
 
-        let command = xmodem_remote_finalize_command("-received.bin", 3, "modem-token");
+        let command = xmodem_remote_finalize_command(
+            "-received.bin.portmate-part",
+            "-received.bin",
+            3,
+            "modem-token",
+        );
         let output = Command::new("sh")
             .arg("-c")
             .arg(command.trim_end_matches('\r'))
@@ -18933,8 +18949,41 @@ __PORTMATE_LOADAVG__
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(fs::read(&target).unwrap(), b"abc");
+        assert!(!part.exists());
         assert!(String::from_utf8_lossy(&output.stdout)
             .contains("__PORTMATE_XMODEM_modem-token_DONE__"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_modem_finalize_command_moves_part_atomically() {
+        let root = tempfile::tempdir().unwrap();
+        let part = root.path().join("-received.bin.portmate-part");
+        let target = root.path().join("-received.bin");
+        fs::write(&part, b"complete modem payload").unwrap();
+        fs::write(&target, b"old payload").unwrap();
+
+        let command = remote_modem_finalize_command(
+            "-received.bin.portmate-part",
+            "-received.bin",
+            "modem-token",
+        );
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command.trim_end_matches('\r'))
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"complete modem payload");
+        assert!(!part.exists());
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .contains("__PORTMATE_MODEM_FINALIZE_modem-token_DONE__"));
     }
 
     #[cfg(unix)]
@@ -18944,7 +18993,8 @@ __PORTMATE_LOADAVG__
 
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("received.bin");
-        fs::write(&target, b"abcdef").unwrap();
+        let part = root.path().join("received.bin.portmate-part");
+        fs::write(&part, b"abcdef").unwrap();
         let tools = root.path().join("tools");
         fs::create_dir_all(&tools).unwrap();
         let truncate = tools.join("truncate");
@@ -18961,8 +19011,13 @@ __PORTMATE_LOADAVG__
         let output = Command::new("sh")
             .arg("-c")
             .arg(
-                xmodem_remote_finalize_command("received.bin", 3, "modem-token")
-                    .trim_end_matches('\r'),
+                xmodem_remote_finalize_command(
+                    "received.bin.portmate-part",
+                    "received.bin",
+                    3,
+                    "modem-token",
+                )
+                .trim_end_matches('\r'),
             )
             .current_dir(root.path())
             .env("PATH", path)
@@ -18975,6 +19030,7 @@ __PORTMATE_LOADAVG__
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(fs::read(&target).unwrap(), b"abc");
+        assert!(!part.exists());
         assert!(String::from_utf8_lossy(&output.stdout)
             .contains("__PORTMATE_XMODEM_modem-token_DONE__"));
     }
@@ -20974,6 +21030,10 @@ __PORTMATE_LOADAVG__
                 );
                 assert_eq!(upload.bytes_done, zmodem_payload.len() as u64);
                 assert_eq!(fs::read(&zmodem_remote).unwrap(), zmodem_payload);
+                assert!(
+                    !PathBuf::from(remote_resume_part_path(zmodem_remote.to_str().unwrap()))
+                        .exists()
+                );
 
                 let download = start_transfer_inner(
                     &state,
@@ -21028,6 +21088,10 @@ __PORTMATE_LOADAVG__
                 );
                 assert_eq!(upload.bytes_done, xmodem_payload.len() as u64);
                 assert_eq!(fs::read(&xmodem_remote).unwrap(), xmodem_payload);
+                assert!(
+                    !PathBuf::from(remote_resume_part_path(xmodem_remote.to_str().unwrap()))
+                        .exists()
+                );
 
                 let download = start_transfer_inner(
                     &state,
@@ -21082,6 +21146,10 @@ __PORTMATE_LOADAVG__
                 );
                 assert_eq!(upload.bytes_done, ymodem_payload.len() as u64);
                 assert_eq!(fs::read(&ymodem_remote).unwrap(), ymodem_payload);
+                assert!(
+                    !PathBuf::from(remote_resume_part_path(ymodem_remote.to_str().unwrap()))
+                        .exists()
+                );
 
                 let download = start_transfer_inner(
                     &state,

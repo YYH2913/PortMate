@@ -29,13 +29,14 @@ pub(super) async fn transfer_file_via_xmodem(
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
             let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
             let source_size = local_transfer_source_size(&local_source)?;
+            let remote_part = remote_resume_part_path(&remote_destination);
             let completion_token = Uuid::new_v4().simple().to_string();
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Xmodem,
                 true,
-                &remote_destination,
+                &remote_part,
             )
             .await?;
             let remote_started = remote_start.is_some();
@@ -64,6 +65,7 @@ pub(super) async fn transfer_file_via_xmodem(
                 )
                 .await?;
                 let command = xmodem_remote_finalize_command(
+                    &remote_part,
                     &remote_destination,
                     source_size,
                     &completion_token,
@@ -136,12 +138,13 @@ pub(super) async fn transfer_file_via_ymodem(
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
             let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_part = remote_resume_part_path(&remote_destination);
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Ymodem,
                 true,
-                &remote_destination,
+                &remote_part,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -151,12 +154,17 @@ pub(super) async fn transfer_file_via_ymodem(
                 &request.session_id,
             )
             .await?;
+            let receiver_destination = if remote_start.is_some() {
+                remote_part.as_str()
+            } else {
+                remote_destination.as_str()
+            };
             let bytes = ymodem_send_file(
                 state,
                 &request.session_id,
                 reader,
                 &local_source,
-                Some(&remote_destination),
+                Some(receiver_destination),
                 remote_start.is_some(),
                 progress,
             )
@@ -167,6 +175,15 @@ pub(super) async fn transfer_file_via_ymodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                )
+                .await?;
+                finalize_remote_modem_upload(
+                    state,
+                    &request.session_id,
+                    &mut completion_receiver,
+                    &remote_part,
+                    &remote_destination,
+                    progress,
                 )
                 .await?;
             }
@@ -228,12 +245,13 @@ pub(super) async fn transfer_file_via_zmodem(
         } => {
             let receiver = runtime_tap_receiver(state, &request.session_id)?;
             let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let remote_part = remote_resume_part_path(&remote_destination);
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Zmodem,
                 true,
-                &remote_destination,
+                &remote_part,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -243,12 +261,17 @@ pub(super) async fn transfer_file_via_zmodem(
                 &request.session_id,
             )
             .await?;
+            let receiver_destination = if remote_start.is_some() {
+                remote_part.as_str()
+            } else {
+                remote_destination.as_str()
+            };
             let bytes = zmodem_send_file(
                 state,
                 &request.session_id,
                 reader,
                 &local_source,
-                Some(&remote_destination),
+                Some(receiver_destination),
                 progress,
             )
             .await?;
@@ -258,6 +281,15 @@ pub(super) async fn transfer_file_via_zmodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                )
+                .await?;
+                finalize_remote_modem_upload(
+                    state,
+                    &request.session_id,
+                    &mut completion_receiver,
+                    &remote_part,
+                    &remote_destination,
+                    progress,
                 )
                 .await?;
             }
@@ -408,30 +440,121 @@ pub(super) fn remote_modem_auto_start_enabled(
 }
 
 pub(super) fn xmodem_remote_finalize_command(
-    remote_path: &str,
+    remote_part: &str,
+    remote_target: &str,
     source_size: u64,
     completion_token: &str,
 ) -> String {
     format!(
         concat!(
-            "target={}; portmate_status=0; ",
+            "part={}; target={}; portmate_status=0; ",
             "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
+            "part=$(portable_path \"$part\") || exit 1; ",
             "target=$(portable_path \"$target\") || exit 1; ",
-            "if command -v truncate >/dev/null 2>&1 && truncate -s {} \"$target\"; then :; ",
-            "else part=\"$target.portmate-trim\"; ",
-            "dd if=\"$target\" of=\"$part\" bs=1 count={} 2>/dev/null ",
-            "&& mv -f \"$part\" \"$target\"; portmate_status=$?; ",
-            "if [ \"$portmate_status\" -ne 0 ]; then rm -f \"$part\"; fi; fi; ",
+            "if command -v truncate >/dev/null 2>&1 && truncate -s {} \"$part\"; then :; ",
+            "else trim=\"$part.portmate-trim\"; ",
+            "dd if=\"$part\" of=\"$trim\" bs=1 count={} 2>/dev/null ",
+            "&& mv -f \"$trim\" \"$part\"; portmate_status=$?; ",
+            "if [ \"$portmate_status\" -ne 0 ]; then rm -f \"$trim\"; fi; fi; ",
+            "if [ \"$portmate_status\" -eq 0 ]; then mv -f \"$part\" \"$target\"; portmate_status=$?; fi; ",
             "if [ \"$portmate_status\" -eq 0 ]; then ",
             "printf '\\n__PORTMATE_XMODEM_%s_DONE__\\n' {}; ",
             "else printf '\\n__PORTMATE_XMODEM_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi\r"
         ),
-        shell_quote(remote_path),
+        shell_quote(remote_part),
+        shell_quote(remote_target),
         source_size,
         source_size,
         shell_quote(completion_token),
         shell_quote(completion_token),
     )
+}
+
+pub(super) fn remote_modem_finalize_command(
+    remote_part: &str,
+    remote_target: &str,
+    completion_token: &str,
+) -> String {
+    format!(
+        concat!(
+            "part={}; target={}; ",
+            "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
+            "part=$(portable_path \"$part\") || exit 1; ",
+            "target=$(portable_path \"$target\") || exit 1; ",
+            "if mv -f \"$part\" \"$target\"; then ",
+            "printf '\\n__PORTMATE_MODEM_FINALIZE_%s_DONE__\\n' {}; ",
+            "else portmate_status=$?; ",
+            "printf '\\n__PORTMATE_MODEM_FINALIZE_%s_FAIL__%s\\n' {} \"$portmate_status\"; fi\r"
+        ),
+        shell_quote(remote_part),
+        shell_quote(remote_target),
+        shell_quote(completion_token),
+        shell_quote(completion_token),
+    )
+}
+
+pub(super) async fn finalize_remote_modem_upload(
+    state: &AppState,
+    session_id: &str,
+    receiver: &mut broadcast::Receiver<Vec<u8>>,
+    remote_part: &str,
+    remote_target: &str,
+    progress: &TransferProgressContext,
+) -> Result<(), String> {
+    let completion_token = Uuid::new_v4().simple().to_string();
+    let command = remote_modem_finalize_command(remote_part, remote_target, &completion_token);
+    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
+    wait_for_remote_modem_finalize(receiver, &completion_token, progress, session_id).await
+}
+
+pub(super) async fn wait_for_remote_modem_finalize(
+    receiver: &mut broadcast::Receiver<Vec<u8>>,
+    completion_token: &str,
+    progress: &TransferProgressContext,
+    session_id: &str,
+) -> Result<(), String> {
+    let success = format!("__PORTMATE_MODEM_FINALIZE_{completion_token}_DONE__");
+    let failure = format!("__PORTMATE_MODEM_FINALIZE_{completion_token}_FAIL__");
+    let started = Instant::now();
+    let mut output = Vec::new();
+    loop {
+        progress.check_cancelled()?;
+        ensure_modem_session_connected(&progress.state.store, session_id)?;
+        let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("remote modem finalize timed out".to_string());
+        }
+        match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv()).await
+        {
+            Ok(Ok(bytes)) => {
+                output.extend_from_slice(&bytes);
+                if output
+                    .windows(success.len())
+                    .any(|window| window == success.as_bytes())
+                {
+                    return Ok(());
+                }
+                if output
+                    .windows(failure.len())
+                    .any(|window| window == failure.as_bytes())
+                {
+                    return Err(format!(
+                        "remote modem finalize failed: {}",
+                        String::from_utf8_lossy(&output)
+                    ));
+                }
+                if output.len() > 64 * 1024 {
+                    let keep = success.len().max(failure.len()).saturating_sub(1);
+                    output.drain(..output.len().saturating_sub(keep));
+                }
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                return Err("remote modem finalize stream closed".to_string())
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 pub(super) async fn wait_for_xmodem_remote_completion(
@@ -541,17 +664,20 @@ pub(super) fn modem_remote_command(
     readiness_token: &str,
 ) -> String {
     match (protocol, upload) {
-        (TransferProtocol::Xmodem, true) => format!(
-            "{}\r",
-            modem_raw_tty_shell_command(
-                &format!("rx {}", shell_quote(remote_path)),
-                readiness_token,
+        (TransferProtocol::Xmodem, true) => {
+            let target = modem_shell_path(remote_path);
+            format!(
+                "{}\r",
+                modem_raw_tty_shell_command(
+                    &format!("rm -f {target} && rx {target}"),
+                    readiness_token,
+                )
             )
-        ),
+        }
         (TransferProtocol::Xmodem, false) => format!(
             "{}\r",
             modem_raw_tty_shell_command(
-                &format!("sx {}", shell_quote(remote_path)),
+                &format!("sx {}", modem_shell_path(remote_path)),
                 readiness_token,
             )
         ),
@@ -574,7 +700,7 @@ pub(super) fn modem_remote_command(
         (TransferProtocol::Ymodem, false) => format!(
             "{}\r",
             modem_raw_tty_shell_command(
-                &format!("sb {}", shell_quote(remote_path)),
+                &format!("sb {}", modem_shell_path(remote_path)),
                 readiness_token,
             )
         ),
@@ -597,11 +723,19 @@ pub(super) fn modem_remote_command(
         (TransferProtocol::Zmodem, false) => format!(
             "{}\r",
             modem_raw_tty_shell_command(
-                &format!("sz {}", shell_quote(remote_path)),
+                &format!("sz {}", modem_shell_path(remote_path)),
                 readiness_token,
             )
         ),
         _ => String::new(),
+    }
+}
+
+fn modem_shell_path(path: &str) -> String {
+    if path.starts_with('-') {
+        shell_quote(&format!("./{path}"))
+    } else {
+        shell_quote(path)
     }
 }
 
