@@ -1521,39 +1521,6 @@ fn truncate_for_log(value: &str, limit: usize) -> String {
     format!("{}...", &trimmed[..boundary])
 }
 
-fn describe_host_key_rejection(evaluation: &HostKeyEvaluation) -> String {
-    match evaluation {
-        HostKeyEvaluation::Trusted { .. } => "SSH host key 已受信任".to_string(),
-        HostKeyEvaluation::Unknown {
-            alias,
-            port,
-            algorithm,
-            fingerprint_sha256,
-            ..
-        } => format!(
-            "SSH host key 未受信任: alias={alias}:{port}, algorithm={algorithm}, fingerprint={fingerprint_sha256}"
-        ),
-        HostKeyEvaluation::Mismatch {
-            alias,
-            port,
-            algorithm,
-            expected,
-            observed_fingerprint_sha256,
-            ..
-        } => {
-            let expected = expected
-                .iter()
-                .map(|key| key.fingerprint_sha256.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "SSH host key 已变化，已阻断: alias={alias}:{port}, algorithm={algorithm}, observed={observed_fingerprint_sha256}, expected=[{expected}]"
-            )
-        }
-    }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
