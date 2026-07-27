@@ -1,5 +1,32 @@
 use super::*;
 
+pub(super) fn append_logging_error(event: &mut SessionEvent, error: impl Into<String>) {
+    let error = error.into();
+    if error.is_empty() {
+        return;
+    }
+    let current = event
+        .annotations
+        .entry("loggingError".to_string())
+        .or_default();
+    if !current.is_empty() {
+        current.push_str("; ");
+    }
+    current.push_str(&error);
+}
+
+pub(super) fn append_logging_errors(event: &mut SessionEvent, errors: &[String]) {
+    for error in errors {
+        append_logging_error(event, error.clone());
+    }
+}
+
+pub(super) fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
+    if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
+        *stored = event.clone();
+    }
+}
+
 pub(super) fn record_channel_bytes(
     io: &SessionIo,
     session_id: &str,

@@ -184,6 +184,7 @@ use session_commands::{
 use session_commands::{close_session_inner, open_session_inner, SessionOpenCredentials};
 use session_commands::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use session_events::*;
+use session_events::{append_logging_error, append_logging_errors, sync_stored_event};
 use shell_transport::*;
 use sqlite_schema::*;
 use sqlite_store::*;
@@ -1422,33 +1423,6 @@ pub struct TrustScannedHostKeyRequest {
     pub profile: SessionProfile,
     pub observation: HostKeyObservation,
     pub decision: HostKeyDecision,
-}
-
-fn append_logging_error(event: &mut SessionEvent, error: impl Into<String>) {
-    let error = error.into();
-    if error.is_empty() {
-        return;
-    }
-    let current = event
-        .annotations
-        .entry("loggingError".to_string())
-        .or_default();
-    if !current.is_empty() {
-        current.push_str("; ");
-    }
-    current.push_str(&error);
-}
-
-fn append_logging_errors(event: &mut SessionEvent, errors: &[String]) {
-    for error in errors {
-        append_logging_error(event, error.clone());
-    }
-}
-
-fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
-    if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
-        *stored = event.clone();
-    }
 }
 
 fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
