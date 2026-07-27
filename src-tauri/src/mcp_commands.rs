@@ -1,5 +1,98 @@
 use super::*;
 
+pub(super) fn export_mcp_audit_inner(
+    store_path: &Path,
+    audit: &[AuditRecord],
+    request: ExportMcpAuditRequest,
+) -> Result<ExportMcpAuditResult, String> {
+    if request.record_ids.is_empty() {
+        return Err("select at least one MCP audit record to export".to_string());
+    }
+    if request.record_ids.len() > MAX_MCP_AUDIT_EXPORT_RECORDS {
+        return Err(format!(
+            "MCP audit export record limit exceeded ({MAX_MCP_AUDIT_EXPORT_RECORDS})"
+        ));
+    }
+    let mut requested = HashSet::new();
+    for id in &request.record_ids {
+        if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+            return Err("MCP audit export contains an invalid record ID".to_string());
+        }
+        if !requested.insert(id.as_str()) {
+            return Err("MCP audit export contains duplicate record IDs".to_string());
+        }
+    }
+
+    let by_id = audit
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<HashMap<_, _>>();
+    let selected = request
+        .record_ids
+        .iter()
+        .map(|id| {
+            by_id
+                .get(id.as_str())
+                .copied()
+                .ok_or_else(|| "MCP audit changed; refresh before exporting".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let created_at = Utc::now();
+    let mut output = Vec::new();
+    append_mcp_audit_jsonl(
+        &mut output,
+        &serde_json::json!({
+            "type": "metadata",
+            "format": "portmate-mcp-audit",
+            "version": 1,
+            "createdAt": created_at.to_rfc3339(),
+            "recordCount": selected.len(),
+            "containsSecretBodies": false,
+        }),
+    )?;
+    for record in &selected {
+        append_mcp_audit_jsonl(
+            &mut output,
+            &serde_json::json!({ "type": "record", "record": record }),
+        )?;
+    }
+
+    let export_dir = prepare_export_directory(store_path, "MCP audit")?;
+    let timestamp = created_at.format("%Y%m%dT%H%M%SZ");
+    let name = format!(
+        "portmate-mcp-audit-{timestamp}-{}.jsonl",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let final_path = export_dir.join(name);
+    let finalized = write_atomic_export_with_checksum(&final_path, &output, "MCP audit export")?;
+    Ok(ExportMcpAuditResult {
+        path: final_path.display().to_string(),
+        checksum_path: finalized.checksum_path.display().to_string(),
+        sha256: finalized.sha256,
+        size: finalized.size,
+        records: selected.len(),
+    })
+}
+
+fn append_mcp_audit_jsonl<T: Serialize>(output: &mut Vec<u8>, value: &T) -> Result<(), String> {
+    let encoded = serde_json::to_vec(value)
+        .map_err(|error| format!("failed to encode MCP audit export: {error}"))?;
+    if encoded.len() > MAX_MCP_AUDIT_EXPORT_RECORD_BYTES {
+        return Err(format!(
+            "MCP audit export record exceeds {MAX_MCP_AUDIT_EXPORT_RECORD_BYTES} bytes"
+        ));
+    }
+    if encoded.len().saturating_add(1) > MAX_MCP_AUDIT_EXPORT_BYTES.saturating_sub(output.len()) {
+        return Err(format!(
+            "MCP audit export exceeds {MAX_MCP_AUDIT_EXPORT_BYTES} bytes"
+        ));
+    }
+    output.extend_from_slice(&encoded);
+    output.push(b'\n');
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn list_mcp_audit(
     state: State<'_, AppState>,
