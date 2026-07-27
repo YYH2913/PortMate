@@ -70,5 +70,11 @@
     "buildArgs": {
       "ALPINE_VERSION": "3.21"
     }
+  },
+  {
+    "name": "proftpd-sftp-alpine-3.21",
+    "dockerfile": "tests/compat/proftpd-sftp-alpine.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
   }
 ]
