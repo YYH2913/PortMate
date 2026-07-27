@@ -154,6 +154,8 @@ use one_key_runtime::*;
 use outbound_events::*;
 use outbound_io::*;
 use portable_vault::*;
+#[cfg(test)]
+use profile_commands::validate_profile_tunnels;
 use profile_normalization::*;
 use profile_security::*;
 use proxy_protocol::*;
@@ -1428,13 +1430,6 @@ fn append_logging_errors(event: &mut SessionEvent, errors: &[String]) {
 fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
     if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
         *stored = event.clone();
-    }
-}
-
-fn validate_profile_tunnels(profile: &SessionProfile) -> Result<(), String> {
-    match &profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => validate_tunnels(&ssh.tunnels),
-        _ => Ok(()),
     }
 }
 

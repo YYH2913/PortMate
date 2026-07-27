@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) fn validate_profile_tunnels(profile: &SessionProfile) -> Result<(), String> {
+    match &profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => validate_tunnels(&ssh.tunnels),
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command]
 pub(crate) fn save_session_profile(
     state: State<'_, AppState>,
