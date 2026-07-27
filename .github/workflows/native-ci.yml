@@ -97,6 +97,9 @@ jobs:
       - if: runner.os != 'Windows'
         run: npm run test:mcp-swift-client
       - run: npm run desktop:build
+      - name: Verify Linux packages and packaged MCP sidecars
+        if: runner.os == 'Linux'
+        run: npm run test:linux-package
 
       - uses: actions/upload-artifact@v4
         with:
