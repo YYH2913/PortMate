@@ -154,6 +154,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 状态：结构化数据可用，日志体系还没达到最终目标。
 
+- Portable vault 的状态读取、恢复资格判断与底层加密操作已集中在 `src-tauri/src/portable_vault.rs`，vault command 只负责授权边界和请求编排。
+
 已实现：
 
 - SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出；兼容文件使用同目录随机临时文件同步后原子替换，Unix 权限固定为 `0600`，预置的固定临时路径或目标 symlink 不能把快照写入其他文件。

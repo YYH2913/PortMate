@@ -8,6 +8,31 @@ pub(super) struct PortableVaultContext {
 
 pub(super) static PORTABLE_VAULT: OnceLock<PortableVaultContext> = OnceLock::new();
 
+pub(super) fn portable_vault_status_inner() -> Result<PortableVaultStatus, String> {
+    let context = portable_vault_context()?;
+    let unlocked = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
+    Ok(PortableVaultStatus {
+        exists: context.snapshot_path.exists(),
+        unlocked,
+        path: context.snapshot_path.display().to_string(),
+    })
+}
+
+pub(super) fn portable_vault_recovery_ready() -> Result<bool, String> {
+    let context = portable_vault_context()?;
+    let stronghold = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(stronghold.as_ref().is_some_and(|stronghold| {
+        stronghold.snapshot_version != PortableVaultSnapshotVersion::UnknownAfterCommit
+    }))
+}
+
 pub(super) fn portable_vault_context() -> Result<&'static PortableVaultContext, String> {
     PORTABLE_VAULT
         .get()

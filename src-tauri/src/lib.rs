@@ -2305,31 +2305,6 @@ async fn close_session_under_lifecycle_lock(
     Ok(summary)
 }
 
-fn portable_vault_status_inner() -> Result<PortableVaultStatus, String> {
-    let context = portable_vault_context()?;
-    let unlocked = context
-        .stronghold
-        .lock()
-        .map_err(|error| error.to_string())?
-        .is_some();
-    Ok(PortableVaultStatus {
-        exists: context.snapshot_path.exists(),
-        unlocked,
-        path: context.snapshot_path.display().to_string(),
-    })
-}
-
-fn portable_vault_recovery_ready() -> Result<bool, String> {
-    let context = portable_vault_context()?;
-    let stronghold = context
-        .stronghold
-        .lock()
-        .map_err(|error| error.to_string())?;
-    Ok(stronghold.as_ref().is_some_and(|stronghold| {
-        stronghold.snapshot_version != PortableVaultSnapshotVersion::UnknownAfterCommit
-    }))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SerialControlLine {
     Dtr,
