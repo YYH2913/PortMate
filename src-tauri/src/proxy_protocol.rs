@@ -1,8 +1,11 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use portmate_core::ProxyKind;
+use portmate_core::{ProxyConfig, ProxyKind};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use zeroize::Zeroizing;
+
+use super::{canonical_secret_ref, read_secret_from_store};
 
 pub(super) const MAX_HTTP_CONNECT_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_HTTP_PROXY_CREDENTIAL_BYTES: usize = 8 * 1024;
@@ -11,6 +14,113 @@ const SOCKS5_SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) struct ProxyCredentials {
     pub(super) username: String,
     pub(super) password: Zeroizing<String>,
+}
+
+pub(super) fn proxy_target_authority(host: &str, port: u16) -> Result<String, String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("代理目标主机不能为空".to_string());
+    }
+    if host.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+        return Err("代理目标主机不能包含换行符".to_string());
+    }
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        Ok(format!("[{host}]:{port}"))
+    } else {
+        Ok(format!("{host}:{port}"))
+    }
+}
+
+pub(super) fn normalized_enabled_proxy(proxy: &ProxyConfig) -> Result<Option<ProxyConfig>, String> {
+    if !proxy.enabled {
+        return Ok(None);
+    }
+    let mut proxy = proxy.clone();
+    proxy.normalize();
+    if proxy.host.is_empty() {
+        return Err("代理主机不能为空".to_string());
+    }
+    if proxy
+        .host
+        .bytes()
+        .any(|byte| byte == b'\r' || byte == b'\n')
+    {
+        return Err("代理主机不能包含换行符".to_string());
+    }
+    if proxy.port == 0 {
+        return Err("代理端口必须在 1-65535 之间".to_string());
+    }
+    if let Some(secret_ref) = proxy.password_secret_ref.as_deref() {
+        if canonical_secret_ref(secret_ref).is_none() {
+            return Err("代理密码 secretRef 无效".to_string());
+        }
+        if proxy.username.is_empty() {
+            return Err("已保存代理密码时，代理用户名不能为空".to_string());
+        }
+    }
+    Ok(Some(proxy))
+}
+
+pub(super) fn resolve_proxy_credentials_with<ReadSecret>(
+    proxy: &ProxyConfig,
+    mut read_secret: ReadSecret,
+) -> Result<Option<ProxyCredentials>, String>
+where
+    ReadSecret: FnMut(&str) -> Result<String, String>,
+{
+    let Some(secret_ref) = proxy.password_secret_ref.as_deref() else {
+        return Ok(None);
+    };
+    if proxy.username.is_empty() {
+        return Err("已保存代理密码时，代理用户名不能为空".to_string());
+    }
+    let password = Zeroizing::new(
+        read_secret(secret_ref).map_err(|error| format!("代理密码读取失败: {error}"))?,
+    );
+    validate_proxy_credentials(proxy.kind, &proxy.username, password.as_str())?;
+    Ok(Some(ProxyCredentials {
+        username: proxy.username.clone(),
+        password,
+    }))
+}
+
+pub(super) async fn connect_target_stream(
+    target_host: &str,
+    target_port: u16,
+    proxy: &ProxyConfig,
+    label: &str,
+) -> Result<TcpStream, String> {
+    let authority = proxy_target_authority(target_host, target_port)?;
+    let Some(proxy) = normalized_enabled_proxy(proxy)? else {
+        return TcpStream::connect((target_host, target_port))
+            .await
+            .map_err(|error| format!("{label} 连接失败 {authority}: {error}"));
+    };
+    let credentials = resolve_proxy_credentials_with(&proxy, read_secret_from_store)?;
+    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
+        .await
+        .map_err(|error| {
+            format!(
+                "{label} 代理连接失败 {}:{}: {error}",
+                proxy.host, proxy.port
+            )
+        })?;
+    match proxy.kind {
+        ProxyKind::HttpConnect => {
+            perform_http_connect(&mut stream, &authority, credentials.as_ref(), label).await?;
+        }
+        ProxyKind::Socks5 => {
+            perform_socks5_connect(
+                &mut stream,
+                target_host.trim(),
+                target_port,
+                credentials.as_ref(),
+                label,
+            )
+            .await?;
+        }
+    }
+    Ok(stream)
 }
 
 pub(super) fn validate_proxy_credentials(

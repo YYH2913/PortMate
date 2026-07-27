@@ -4,6 +4,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use flate2::{write::GzEncoder, Compression};
 use keyring_core::Entry;
 use portable_pty::PtySize;
+#[cfg(test)]
+use portmate_core::ProxyKind;
 use portmate_core::{
     compute_ssh_sha256_fingerprint, normalize_triggers, normalize_tunnels, prompt_templates,
     redact_secrets, redact_session_event, redact_session_events, redact_session_summary,
@@ -11,7 +13,7 @@ use portmate_core::{
     validate_tunnels, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
     HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential,
-    OneKeyIdentity, OneKeyKind, ProxyConfig, ProxyKind, SessionEvent, SessionKind, SessionProfile,
+    OneKeyIdentity, OneKeyKind, ProxyConfig, SessionEvent, SessionKind, SessionProfile,
     SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface,
     SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
     TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec, MAX_TUNNELS_PER_PROFILE,
@@ -2856,113 +2858,6 @@ fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(
     temp.persist(path)
         .map_err(|error| format!("failed to atomically replace {label}: {}", error.error))?;
     Ok(())
-}
-
-fn proxy_target_authority(host: &str, port: u16) -> Result<String, String> {
-    let host = host.trim();
-    if host.is_empty() {
-        return Err("代理目标主机不能为空".to_string());
-    }
-    if host.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
-        return Err("代理目标主机不能包含换行符".to_string());
-    }
-    if host.parse::<std::net::Ipv6Addr>().is_ok() {
-        Ok(format!("[{host}]:{port}"))
-    } else {
-        Ok(format!("{host}:{port}"))
-    }
-}
-
-fn normalized_enabled_proxy(proxy: &ProxyConfig) -> Result<Option<ProxyConfig>, String> {
-    if !proxy.enabled {
-        return Ok(None);
-    }
-    let mut proxy = proxy.clone();
-    proxy.normalize();
-    if proxy.host.is_empty() {
-        return Err("代理主机不能为空".to_string());
-    }
-    if proxy
-        .host
-        .bytes()
-        .any(|byte| byte == b'\r' || byte == b'\n')
-    {
-        return Err("代理主机不能包含换行符".to_string());
-    }
-    if proxy.port == 0 {
-        return Err("代理端口必须在 1-65535 之间".to_string());
-    }
-    if let Some(secret_ref) = proxy.password_secret_ref.as_deref() {
-        if canonical_secret_ref(secret_ref).is_none() {
-            return Err("代理密码 secretRef 无效".to_string());
-        }
-        if proxy.username.is_empty() {
-            return Err("已保存代理密码时，代理用户名不能为空".to_string());
-        }
-    }
-    Ok(Some(proxy))
-}
-
-fn resolve_proxy_credentials_with<ReadSecret>(
-    proxy: &ProxyConfig,
-    mut read_secret: ReadSecret,
-) -> Result<Option<ProxyCredentials>, String>
-where
-    ReadSecret: FnMut(&str) -> Result<String, String>,
-{
-    let Some(secret_ref) = proxy.password_secret_ref.as_deref() else {
-        return Ok(None);
-    };
-    if proxy.username.is_empty() {
-        return Err("已保存代理密码时，代理用户名不能为空".to_string());
-    }
-    let password = Zeroizing::new(
-        read_secret(secret_ref).map_err(|error| format!("代理密码读取失败: {error}"))?,
-    );
-    validate_proxy_credentials(proxy.kind, &proxy.username, password.as_str())?;
-    Ok(Some(ProxyCredentials {
-        username: proxy.username.clone(),
-        password,
-    }))
-}
-
-async fn connect_target_stream(
-    target_host: &str,
-    target_port: u16,
-    proxy: &ProxyConfig,
-    label: &str,
-) -> Result<TcpStream, String> {
-    let authority = proxy_target_authority(target_host, target_port)?;
-    let Some(proxy) = normalized_enabled_proxy(proxy)? else {
-        return TcpStream::connect((target_host, target_port))
-            .await
-            .map_err(|error| format!("{label} 连接失败 {authority}: {error}"));
-    };
-    let credentials = resolve_proxy_credentials_with(&proxy, read_secret_from_store)?;
-    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
-        .await
-        .map_err(|error| {
-            format!(
-                "{label} 代理连接失败 {}:{}: {error}",
-                proxy.host, proxy.port
-            )
-        })?;
-    match proxy.kind {
-        ProxyKind::HttpConnect => {
-            perform_http_connect(&mut stream, &authority, credentials.as_ref(), label).await?;
-        }
-        ProxyKind::Socks5 => {
-            perform_socks5_connect(
-                &mut stream,
-                target_host.trim(),
-                target_port,
-                credentials.as_ref(),
-                label,
-            )
-            .await?;
-        }
-    }
-    Ok(stream)
 }
 
 fn bounded_log_query_limit(limit: Option<u64>) -> usize {
