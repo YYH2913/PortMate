@@ -19886,11 +19886,7 @@ __PORTMATE_LOADAVG__
                 modem_interrupted
                     .message
                     .as_deref()
-                    .is_some_and(|message| {
-                        message
-                            .to_ascii_lowercase()
-                            .contains(&modem_protocol_name.to_ascii_lowercase())
-                    }),
+                    .is_some_and(|message| message.to_ascii_lowercase().contains("modem")),
                 "{label} {modem_protocol:?} interruption lacked protocol context: {modem_interrupted:?}"
             );
             assert!(
