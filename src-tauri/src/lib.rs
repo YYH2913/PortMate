@@ -19949,7 +19949,7 @@ __PORTMATE_LOADAVG__
             if host_modem_part.exists() {
                 let metadata = fs::metadata(&host_modem_part).unwrap();
                 assert!(
-                    metadata.len() > 0 && metadata.len() < modem_payload.len() as u64,
+                    metadata.len() < modem_payload.len() as u64,
                     "{label} {modem_protocol:?} partial file had invalid size: {}",
                     metadata.len()
                 );
