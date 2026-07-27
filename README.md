@@ -601,6 +601,9 @@ control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP
 health path against OpenSSH 9.6/9.7/9.9, Debian bookworm OpenSSH, and Dropbear. It also kills each
 server during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no
 committed final file, and a nonempty resumable `.portmate-part` copied from the stopped container.
+The same five-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
+lrzsz builds and Debian YModem fallback, and verifies disconnect failure, partial progress, final-file
+non-commit, and partial-file cleanup.
 The same matrix injects six health failures: paused transport, rejected and silent exec channels,
 missing and rejected SFTP subsystems, and runtime replacement. The TCP/Telnet matrix covers BusyBox
 telnetd, inetutils telnetd, Ncat, and Socat.
