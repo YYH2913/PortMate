@@ -61,5 +61,14 @@
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     }
+  },
+  {
+    "name": "dropbear-alpine-3.21",
+    "dockerfile": "tests/compat/dropbear-alpine.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "zmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.21"
+    }
   }
 ]
