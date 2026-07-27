@@ -27,6 +27,12 @@
     "mode": "shell"
   },
   {
+    "name": "inetutils-telnetd-ubuntu-noble",
+    "dockerfile": "tests/compat/inetutils-telnetd-ubuntu.Dockerfile",
+    "protocol": "telnet",
+    "mode": "shell"
+  },
+  {
     "name": "ncat-echo-alpine-3.20",
     "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
     "buildArgs": {
@@ -39,11 +45,29 @@
     "mode": "echo"
   },
   {
+    "name": "ncat-echo-ubuntu-noble",
+    "dockerfile": "tests/compat/tcp-tools-ubuntu.Dockerfile",
+    "containerEnv": {
+      "PORTMATE_TCP_MODE": "echo"
+    },
+    "protocol": "tcp",
+    "mode": "echo"
+  },
+  {
     "name": "socat-burst-close-alpine-3.20",
     "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     },
+    "containerEnv": {
+      "PORTMATE_TCP_MODE": "burst-close"
+    },
+    "protocol": "tcp",
+    "mode": "burst-close"
+  },
+  {
+    "name": "socat-burst-close-ubuntu-noble",
+    "dockerfile": "tests/compat/tcp-tools-ubuntu.Dockerfile",
     "containerEnv": {
       "PORTMATE_TCP_MODE": "burst-close"
     },

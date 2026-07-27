@@ -606,7 +606,8 @@ lrzsz builds and Debian and Ubuntu YModem fallback, and verifies disconnect fail
 non-commit, and partial-file cleanup.
 The same matrix injects six health failures: paused transport, rejected and silent exec channels,
 missing and rejected SFTP subsystems, and runtime replacement. The TCP/Telnet matrix covers BusyBox
-telnetd, inetutils telnetd, Ncat, and Socat.
+telnetd on Alpine 3.19/3.21, inetutils telnetd on Debian bookworm and Ubuntu 24.04, and Ncat/Socat
+echo, burst-close, and close modes on Alpine and Ubuntu.
 All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
 times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
 matrices without registry access; each command fails closed if a required image is absent.
