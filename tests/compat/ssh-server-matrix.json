@@ -3,6 +3,7 @@
     "name": "openssh-alpine-3.19",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
     "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "xmodem",
     "buildArgs": {
       "ALPINE_VERSION": "3.19"
     }
@@ -11,6 +12,7 @@
     "name": "openssh-alpine-3.20",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
     "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "ymodem",
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     }
@@ -19,6 +21,7 @@
     "name": "openssh-alpine-3.21",
     "dockerfile": "tests/compat/openssh-alpine.Dockerfile",
     "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "zmodem",
     "buildArgs": {
       "ALPINE_VERSION": "3.21"
     }
@@ -26,12 +29,14 @@
   {
     "name": "openssh-debian-bookworm",
     "dockerfile": "tests/compat/openssh-debian.Dockerfile",
-    "disconnectProtocol": "scp"
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "xmodem"
   },
   {
     "name": "dropbear-alpine-3.20",
     "dockerfile": "tests/compat/dropbear-alpine.Dockerfile",
     "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem",
     "buildArgs": {
       "ALPINE_VERSION": "3.20"
     }

@@ -1,7 +1,7 @@
 ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache openssh-client openssh-server openssh-sftp-server \
+RUN apk add --no-cache lrzsz openssh-client openssh-server openssh-sftp-server \
     && adduser -D -h /home/portmate -s /bin/sh portmate \
     && echo 'portmate:portmate' | chpasswd \
     && ssh-keygen -A \

@@ -79,6 +79,7 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
         PORTMATE_COMPAT_SSH_CONTAINER: container,
         PORTMATE_COMPAT_SSH_DISCONNECT_PROTOCOL: entry.disconnectProtocol,
+        PORTMATE_COMPAT_SSH_MODEM_DISCONNECT_PROTOCOL: entry.modemDisconnectProtocol,
       },
     });
     results.push({ name: entry.name, port, activeTransferDisconnect: entry.disconnectProtocol });
@@ -171,6 +172,9 @@ function validateEntry(entry) {
   }
   if (!["sftp", "scp"].includes(entry.disconnectProtocol)) {
     throw new Error(`Invalid SSH compatibility disconnect protocol: ${JSON.stringify(entry)}`);
+  }
+  if (!["xmodem", "ymodem", "zmodem"].includes(entry.modemDisconnectProtocol)) {
+    throw new Error(`Invalid SSH compatibility modem disconnect protocol: ${JSON.stringify(entry)}`);
   }
   for (const [name, value] of Object.entries(entry.buildArgs ?? {})) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || typeof value !== "string" || !/^[a-zA-Z0-9._-]+$/.test(value)) {

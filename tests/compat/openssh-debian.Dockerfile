@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends openssh-server openssh-client ca-certificates \
+    && apt-get install --yes --no-install-recommends lrzsz openssh-server openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/sh portmate \
     && echo 'portmate:portmate' | chpasswd \

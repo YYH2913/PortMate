@@ -1,7 +1,7 @@
 ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache dropbear openssh-client openssh-sftp-server \
+RUN apk add --no-cache dropbear lrzsz openssh-client openssh-sftp-server \
     && adduser -D -h /home/portmate -s /bin/sh portmate \
     && echo 'portmate:portmate' | chpasswd \
     && mkdir -p /etc/dropbear /home/portmate/compat /usr/libexec \
