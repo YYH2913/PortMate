@@ -137,6 +137,7 @@ use bundle_signing::*;
 use file_batch::*;
 use file_operations::*;
 use file_transfer::*;
+use log_commands::bounded_log_query_limit;
 use log_storage::*;
 use mcp_authorization::*;
 use mcp_control::*;
@@ -2458,12 +2459,6 @@ fn write_private_atomic_file(path: &Path, bytes: &[u8], label: &str) -> Result<(
     temp.persist(path)
         .map_err(|error| format!("failed to atomically replace {label}: {}", error.error))?;
     Ok(())
-}
-
-fn bounded_log_query_limit(limit: Option<u64>) -> usize {
-    limit
-        .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
-        .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
 }
 
 fn runtime_tap_receiver(

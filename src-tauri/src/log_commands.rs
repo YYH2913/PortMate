@@ -1,5 +1,11 @@
 use super::*;
 
+pub(super) fn bounded_log_query_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
+        .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
+}
+
 #[tauri::command]
 pub(crate) fn tail_log(
     state: State<'_, AppState>,
