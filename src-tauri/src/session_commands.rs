@@ -1,5 +1,101 @@
 use super::*;
 
+pub(super) async fn resize_session_inner(
+    state: &AppState,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<SessionSummary, String> {
+    if cols == 0 || rows == 0 {
+        return Err("terminal size must be non-zero".to_string());
+    }
+
+    let ssh_writer = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(&session_id)
+            .map(|runtime| Arc::clone(&runtime.writer))
+    };
+    if let Some(writer) = ssh_writer {
+        let writer = writer.lock().await;
+        writer
+            .window_change(u32::from(cols), u32::from(rows), 0, 0)
+            .await
+            .map_err(|error| format!("SSH resize failed: {error}"))?;
+    }
+
+    let shell_master = {
+        let connections = state.shell.lock().map_err(|error| error.to_string())?;
+        connections
+            .get(&session_id)
+            .map(|runtime| Arc::clone(&runtime.master))
+    };
+    if let Some(master) = shell_master {
+        let master = master.lock().map_err(|error| error.to_string())?;
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| format!("Shell PTY resize failed: {error}"))?;
+    }
+
+    let telnet_target = {
+        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections.get(&session_id).and_then(|runtime| {
+            runtime
+                .telnet
+                .as_ref()
+                .map(|telnet| (Arc::clone(&runtime.writer), Arc::clone(telnet)))
+        })
+    };
+    if let Some((writer, telnet)) = telnet_target {
+        let io = state.session_io();
+        let lane = outbound_lane(&io.store_path, &session_id)?;
+        let _lane_guard = lane.lock().await;
+        telnet.cols.store(cols, Ordering::SeqCst);
+        telnet.rows.store(rows, Ordering::SeqCst);
+        if telnet.naws_negotiated.load(Ordering::SeqCst) {
+            let message = telnet_naws_message(cols, rows);
+            writer
+                .lock()
+                .await
+                .write_all(&message)
+                .await
+                .map_err(|error| format!("Telnet NAWS resize failed: {error}"))?;
+            record_outbound_control_event(&io, &session_id, &message, "telnet-naws", None, true);
+        }
+    }
+
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        resize_session_profile_in_store(next_store, &session_id, cols, rows)
+    })
+}
+
+pub(super) fn resize_session_profile_in_store(
+    store: &mut SessionStore,
+    session_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<SessionSummary, String> {
+    let profile = store
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    profile.terminal.cols = cols;
+    profile.terminal.rows = rows;
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == session_id)
+        .ok_or_else(|| format!("session summary is missing: {session_id}"))?;
+    Ok(summary)
+}
+
 #[tauri::command]
 pub(crate) fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;

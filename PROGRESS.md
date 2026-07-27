@@ -158,6 +158,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 已实现：
 
+- SSH window-change、Shell PTY resize、Telnet NAWS 和 terminal profile 尺寸提交已集中在 `src-tauri/src/session_commands.rs`，根模块只保留跨模块共享状态与测试入口。
+
 - SQLite `portmate-store.sqlite3` 为主存储，并保留 JSON 兼容导出；兼容文件使用同目录随机临时文件同步后原子替换，Unix 权限固定为 `0600`，预置的固定临时路径或目标 symlink 不能把快照写入其他文件。
 - SessionStore 保存使用跨进程 sidecar 文件锁和绑定 `storeRevision + kv` 内容的 CAS；stale 实例、旧 writer 直接修改 kv、提交后无法验证以及损坏 SQLite 均拒绝继续覆盖。首次创建/旧 JSON 迁移在同一锁内完成，单纯启动第二实例不会旋转 revision。
 - SQLite v4 mirror tables：profiles、runtimes、events、transfers、trusted_host_keys、mcp_grants、mcp_audit、timeline_marks、带结构化 `details_json` 的 sysmon_snapshots，以及独立的 profile credential migration journal；v3 Sysmon 表会原位增加默认空 details 列。
