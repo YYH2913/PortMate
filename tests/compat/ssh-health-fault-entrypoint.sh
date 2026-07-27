@@ -3,7 +3,7 @@ set -eu
 
 mode="${PORTMATE_SSH_HEALTH_FAULT:-normal}"
 case "$mode" in
-    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|scp-rejected|runtime-replaced) ;;
+    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|sftp-no-such-file|sftp-permission-denied|scp-rejected|runtime-replaced) ;;
     *)
         echo "unsupported SSH health fault mode: $mode" >&2
         exit 64
@@ -11,6 +11,12 @@ case "$mode" in
 esac
 
 printf '%s\n' "$mode" > /run/portmate-ssh-health-fault
+
+if [ "$mode" = "sftp-permission-denied" ]; then
+    mkdir -p /home/portmate/portmate-readonly
+    chown portmate:portmate /home/portmate/portmate-readonly
+    chmod 0555 /home/portmate/portmate-readonly
+fi
 
 cat > /run/portmate-sshd-config <<'EOF'
 Port 22

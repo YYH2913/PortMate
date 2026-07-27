@@ -18293,13 +18293,29 @@ __PORTMATE_LOADAVG__
 
             let source = root.join("fault-source.bin");
             fs::write(&source, b"PortMate transfer fault matrix\n".repeat(32)).unwrap();
+            let (source_path, destination_path) = match fault.as_str() {
+                "sftp-no-such-file" => (
+                    format!("remote:/home/{username}/portmate-missing-source.bin"),
+                    root.join("missing-source-download.bin")
+                        .display()
+                        .to_string(),
+                ),
+                "sftp-permission-denied" => (
+                    source.display().to_string(),
+                    format!("remote:/home/{username}/portmate-readonly/compat-fault.bin"),
+                ),
+                _ => (
+                    source.display().to_string(),
+                    format!("remote:/home/{username}/compat-fault.bin"),
+                ),
+            };
             let task = start_transfer_inner(
                 &state,
                 StartTransferRequest {
                     session_id: profile.id.clone(),
                     protocol,
-                    source: source.display().to_string(),
-                    destination: format!("remote:/home/{username}/compat-fault.bin"),
+                    source: source_path,
+                    destination: destination_path,
                 },
             )
             .await

@@ -10,6 +10,16 @@
     "expectedErrorContains": "SFTP"
   },
   {
+    "name": "sftp-no-such-file",
+    "protocol": "sftp",
+    "expectedErrorContains": "不存在"
+  },
+  {
+    "name": "sftp-permission-denied",
+    "protocol": "sftp",
+    "expectedErrorContains": "Permission denied"
+  },
+  {
     "name": "scp-rejected",
     "protocol": "scp",
     "expectedErrorContains": "SCP"
