@@ -598,11 +598,11 @@ because xterm.js does not answer it.
 `npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
 3.3a, and 3.5a, including session/window/pane state, synchronization, layout mutations, and
 control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
-health path against OpenSSH 9.6/9.7/9.9, Debian bookworm OpenSSH, and Dropbear. It also kills each
+health path against OpenSSH 9.6/9.7/9.9, Debian bookworm OpenSSH, Ubuntu 24.04 OpenSSH, and Dropbear. It also kills each
 server during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no
 committed final file, and a nonempty resumable `.portmate-part` copied from the stopped container.
-The same five-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
-lrzsz builds and Debian YModem fallback, and verifies disconnect failure, partial progress, final-file
+The same six-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
+lrzsz builds and Debian and Ubuntu YModem fallback, and verifies disconnect failure, partial progress, final-file
 non-commit, and partial-file cleanup.
 The same matrix injects six health failures: paused transport, rejected and silent exec channels,
 missing and rejected SFTP subsystems, and runtime replacement. The TCP/Telnet matrix covers BusyBox

@@ -33,6 +33,12 @@
     "modemDisconnectProtocol": "ymodem"
   },
   {
+    "name": "openssh-ubuntu-noble",
+    "dockerfile": "tests/compat/openssh-ubuntu.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem"
+  },
+  {
     "name": "dropbear-alpine-3.20",
     "dockerfile": "tests/compat/dropbear-alpine.Dockerfile",
     "disconnectProtocol": "sftp",
