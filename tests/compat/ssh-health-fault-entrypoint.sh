@@ -3,7 +3,7 @@ set -eu
 
 mode="${PORTMATE_SSH_HEALTH_FAULT:-normal}"
 case "$mode" in
-    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|runtime-replaced) ;;
+    normal|ping-unresponsive|exec-rejected|exec-silent|sftp-missing|sftp-rejected|scp-rejected|runtime-replaced) ;;
     *)
         echo "unsupported SSH health fault mode: $mode" >&2
         exit 64

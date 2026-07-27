@@ -18,8 +18,10 @@ const dockerControlTimeoutMs = 180_000;
 const useCachedImages = compatibilityUsesCachedImages();
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
 const healthFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
+const transferFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-transfer-fault-matrix.json"), "utf8"));
 if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
 if (!Array.isArray(healthFaultMatrix) || !healthFaultMatrix.length) throw new Error("SSH health fault matrix is empty");
+if (!Array.isArray(transferFaultMatrix) || !transferFaultMatrix.length) throw new Error("SSH transfer fault matrix is empty");
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 
 const results = [];
@@ -159,6 +161,53 @@ for (const entry of healthFaultMatrix) {
   }
 }
 
+const verifiedTransferFaults = [];
+for (const entry of transferFaultMatrix) {
+  validateTransferFaultEntry(entry);
+  const container = `portmate-compat-${randomUUID()}`;
+  try {
+    run("docker", [
+      "run",
+      "--detach",
+      "--name",
+      container,
+      "--env",
+      `PORTMATE_SSH_HEALTH_FAULT=${entry.name}`,
+      "--publish",
+      "127.0.0.1::22",
+      healthFaultImage,
+    ], {
+      quiet: true,
+      timeout: dockerControlTimeoutMs,
+    });
+    const port = await waitForPublishedPort(container, entry.name);
+    await waitForTcp(port, container, entry.name);
+    run("cargo", [
+      "test",
+      "-p",
+      "portmate",
+      "external_ssh_transfer_fault_matrix_case",
+      "--",
+      "--nocapture",
+      "--test-threads=1",
+    ], {
+      env: {
+        ...process.env,
+        PORTMATE_COMPAT_SSH_TRANSFER_FAULT: entry.name,
+        PORTMATE_COMPAT_SSH_HOST: "127.0.0.1",
+        PORTMATE_COMPAT_SSH_PORT: String(port),
+        PORTMATE_COMPAT_SSH_USERNAME: "portmate",
+        PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
+        PORTMATE_COMPAT_SSH_TRANSFER_PROTOCOL: entry.protocol,
+        PORTMATE_COMPAT_SSH_TRANSFER_EXPECTED_ERROR: entry.expectedErrorContains,
+      },
+    });
+    verifiedTransferFaults.push(entry.name);
+  } finally {
+    run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
+  }
+}
+
 console.log(JSON.stringify({
   verifiedServers: results.map(({ name }) => name),
   verifiedActiveTransferDisconnects: results.map(({ name, activeTransferDisconnect }) => ({
@@ -170,6 +219,7 @@ console.log(JSON.stringify({
     protocol: activeModemTransferDisconnect,
   })),
   verifiedHealthFaults,
+  verifiedTransferFaults,
 }, null, 2));
 
 function validateEntry(entry) {
@@ -209,6 +259,18 @@ function validateHealthFaultEntry(entry) {
   const expectsError = typeof entry.expectedErrorContains === "string" && entry.expectedErrorContains.length > 0;
   if (expectsReport === expectsError) {
     throw new Error(`SSH health fault entry must expect exactly one report or command error: ${JSON.stringify(entry)}`);
+  }
+}
+
+function validateTransferFaultEntry(entry) {
+  if (!entry || typeof entry.name !== "string" || !/^[a-z0-9-]+$/.test(entry.name)) {
+    throw new Error(`Invalid SSH transfer fault entry: ${JSON.stringify(entry)}`);
+  }
+  if (!["sftp", "scp"].includes(entry.protocol)) {
+    throw new Error(`Invalid SSH transfer fault protocol: ${JSON.stringify(entry)}`);
+  }
+  if (typeof entry.expectedErrorContains !== "string" || entry.expectedErrorContains.length === 0) {
+    throw new Error(`Invalid SSH transfer fault expectation: ${JSON.stringify(entry)}`);
   }
 }
 

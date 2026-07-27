@@ -1,0 +1,17 @@
+[
+  {
+    "name": "sftp-missing",
+    "protocol": "sftp",
+    "expectedErrorContains": "SFTP"
+  },
+  {
+    "name": "sftp-rejected",
+    "protocol": "sftp",
+    "expectedErrorContains": "SFTP"
+  },
+  {
+    "name": "scp-rejected",
+    "protocol": "scp",
+    "expectedErrorContains": "SCP"
+  }
+]

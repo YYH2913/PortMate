@@ -17,6 +17,10 @@ case "$mode:$original" in
         echo 'sftp rejected by fault server' >&2
         exit 74
         ;;
+    scp-rejected:dst=*)
+        echo 'scp rejected by fault server' >&2
+        exit 75
+        ;;
 esac
 
 if [ -z "$original" ]; then
