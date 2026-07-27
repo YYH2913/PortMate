@@ -163,6 +163,11 @@ use proxy_protocol::*;
 use scp_protocol::*;
 use secret_provider::*;
 use serial_capture::*;
+#[cfg(test)]
+use serial_commands::{
+    apply_serial_line_updates_with, pulse_serial_break_with, record_applied_serial_line_state,
+    SerialControlLine,
+};
 use serial_transport::*;
 use session_commands::{
     apply_proxy_password_update_with_io, merge_expected_json_value, merge_expected_profile_update,
@@ -1441,132 +1446,6 @@ fn append_logging_errors(event: &mut SessionEvent, errors: &[String]) {
 fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
     if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
         *stored = event.clone();
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SerialControlLine {
-    Dtr,
-    Rts,
-}
-
-impl SerialControlLine {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Dtr => "DTR",
-            Self::Rts => "RTS",
-        }
-    }
-}
-
-fn apply_serial_line_updates_with<WriteLine>(
-    old_dtr: bool,
-    old_rts: bool,
-    dtr: Option<bool>,
-    rts: Option<bool>,
-    mut write_line: WriteLine,
-) -> Result<(), String>
-where
-    WriteLine: FnMut(SerialControlLine, bool) -> Result<(), String>,
-{
-    let requested = [
-        (SerialControlLine::Dtr, dtr, old_dtr),
-        (SerialControlLine::Rts, rts, old_rts),
-    ];
-    let mut applied = Vec::new();
-    for (line, value, previous) in requested {
-        let Some(value) = value else {
-            continue;
-        };
-        if let Err(error) = write_line(line, value) {
-            let mut rollback_errors = Vec::new();
-            if let Err(rollback_error) = write_line(line, previous) {
-                rollback_errors.push(format!("恢复 {} 失败: {rollback_error}", line.label()));
-            }
-            for (applied_line, applied_previous) in applied.into_iter().rev() {
-                if let Err(rollback_error) = write_line(applied_line, applied_previous) {
-                    rollback_errors.push(format!(
-                        "恢复 {} 失败: {rollback_error}",
-                        applied_line.label()
-                    ));
-                }
-            }
-            let error = format!("设置 {} 失败: {error}", line.label());
-            return Err(if rollback_errors.is_empty() {
-                error
-            } else {
-                format!("{error}; {}", rollback_errors.join("; "))
-            });
-        }
-        applied.push((line, previous));
-    }
-    Ok(())
-}
-
-fn record_applied_serial_line_state(
-    store: &mut SessionStore,
-    store_path: &Path,
-    request: &SerialLineRequest,
-) -> Result<SessionSummary, String> {
-    if request.dtr.is_none() && request.rts.is_none() {
-        return Err("串口线路请求必须包含 DTR 或 RTS".to_string());
-    }
-    let profile = store
-        .profiles
-        .iter_mut()
-        .find(|profile| profile.id == request.session_id)
-        .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
-    let ConnectionConfig::Serial(serial) = &mut profile.connection else {
-        return Err(format!(
-            "session is not serial-backed: {}",
-            request.session_id
-        ));
-    };
-    if let Some(dtr) = request.dtr {
-        serial.dtr = dtr;
-    }
-    if let Some(rts) = request.rts {
-        serial.rts = rts;
-    }
-    store.record_system_event(&request.session_id, "PortMate: serial line state updated");
-    let summary = store
-        .summaries()
-        .into_iter()
-        .find(|summary| summary.profile.id == request.session_id)
-        .ok_or_else(|| format!("session summary is missing: {}", request.session_id))?;
-    persist_applied_store(store, store_path, "serial line state")
-        .map_err(|error| format!("串口线路已在设备上更新，但 Profile 状态无法持久化: {error}"))?;
-    Ok(summary)
-}
-
-fn pulse_serial_break_with<SetBreak, ClearBreak, Wait>(
-    mut set_break: SetBreak,
-    mut clear_break: ClearBreak,
-    wait: Wait,
-) -> Result<bool, String>
-where
-    SetBreak: FnMut() -> Result<(), String>,
-    ClearBreak: FnMut() -> Result<(), String>,
-    Wait: FnOnce(),
-{
-    if let Err(error) = set_break() {
-        return Err(match clear_break() {
-            Ok(()) => format!("发送 Break 失败并已尝试清除线路: {error}"),
-            Err(clear_error) => {
-                format!("发送 Break 失败: {error}; 清除 Break 也失败: {clear_error}")
-            }
-        });
-    }
-    wait();
-    let first_error = match clear_break() {
-        Ok(()) => return Ok(false),
-        Err(error) => error,
-    };
-    match clear_break() {
-        Ok(()) => Ok(true),
-        Err(retry_error) => Err(format!(
-            "清除 Break 失败: {first_error}; 重试清除 Break 仍失败: {retry_error}"
-        )),
     }
 }
 
