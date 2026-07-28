@@ -300,8 +300,14 @@ mod tests {
     mod migration_tests;
     #[path = "modem_protocol_tests.rs"]
     mod modem_protocol_tests;
-    #[path = "openssh_integration_tests.rs"]
-    mod openssh_integration_tests;
+    #[path = "openssh_authentication_tests.rs"]
+    mod openssh_authentication_tests;
+    #[path = "openssh_jump_host_tests.rs"]
+    mod openssh_jump_host_tests;
+    #[path = "openssh_reconnect_tests.rs"]
+    mod openssh_reconnect_tests;
+    #[path = "openssh_transfer_tunnel_tests.rs"]
+    mod openssh_transfer_tunnel_tests;
     #[path = "portable_vault_tests.rs"]
     mod portable_vault_tests;
     #[path = "proxy_runtime_tests.rs"]
