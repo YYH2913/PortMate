@@ -15,7 +15,7 @@ exec /usr/sbin/sshd -D -e -f /dev/null \
   -o GSSAPICleanupCredentials=yes \
   -o GSSAPIStrictAcceptorCheck=yes \
   -o LogLevel=VERBOSE \
-  -o PasswordAuthentication=no \
+  -o PasswordAuthentication=yes \
   -o KbdInteractiveAuthentication=no \
   -o PubkeyAuthentication=no \
   -o PermitRootLogin=no \

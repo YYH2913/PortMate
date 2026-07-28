@@ -34,14 +34,29 @@ fn external_ssh_gssapi_runtime_matrix_case() {
         } else {
             HostKeyMode::TrustOnFirstUse
         };
-        ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic];
+        let mixed_auth = matches!(
+            case.as_str(),
+            "gssapi-preferred" | "password-fallback" | "server-disabled-password-fallback"
+        );
+        ssh.identity_policy.auth_order = if mixed_auth {
+            vec![AuthMethod::GssapiWithMic, AuthMethod::Password]
+        } else {
+            vec![AuthMethod::GssapiWithMic]
+        };
         ssh.identity_refs.clear();
         ssh.agent_policy.enabled = false;
         ssh.agent_policy.forwarding = false;
         ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
 
         let state = test_app_state(profile.clone(), local_root.join("portmate-store.sqlite3"));
-        let opened = open_ssh_session(&state, profile.clone(), None, None).await;
+        let password = match case.as_str() {
+            "gssapi-preferred" => Some("deliberately-wrong-password".to_string()),
+            "password-fallback" | "server-disabled-password-fallback" => {
+                Some("portmate".to_string())
+            }
+            _ => None,
+        };
+        let opened = open_ssh_session(&state, profile.clone(), password, None).await;
 
         match case.as_str() {
             "host-key-reject" => {
@@ -59,10 +74,34 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                     "{error}"
                 );
             }
-            "success" => {
+            "success"
+            | "gssapi-preferred"
+            | "password-fallback"
+            | "server-disabled-password-fallback" => {
                 let connected =
                     opened.unwrap_or_else(|error| panic!("GSSAPI open failed: {error}"));
                 assert_eq!(connected.runtime.status, SessionStatus::Connected);
+                let expected_auth = if matches!(
+                    case.as_str(),
+                    "password-fallback" | "server-disabled-password-fallback"
+                ) {
+                    AuthMethod::Password
+                } else {
+                    AuthMethod::GssapiWithMic
+                };
+                let recorded_auth =
+                    state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .profile(&profile.id)
+                        .and_then(|profile| match &profile.connection {
+                            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                                ssh.identity_policy.last_successful
+                            }
+                            _ => None,
+                        });
+                assert_eq!(recorded_auth, Some(expected_auth));
                 assert!(state
                     .store
                     .lock()

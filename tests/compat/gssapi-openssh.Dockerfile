@@ -15,7 +15,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends krb5-admin-server \
     && rm -rf /var/lib/apt/lists/*
 
-RUN passwd -d portmate
+RUN printf '%s\n' 'portmate:portmate' | chpasswd
 
 COPY tests/compat/gssapi-krb5.conf /etc/krb5.conf
 COPY tests/compat/gssapi-kdc.conf /etc/krb5kdc/kdc.conf

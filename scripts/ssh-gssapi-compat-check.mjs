@@ -73,9 +73,11 @@ try {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("success", server, kerberos, cases);
+      runCase("gssapi-preferred", server, kerberos, cases);
       runCase("host-key-reject", server, kerberos, cases);
       destroyTicket(kerberos);
       runCase("no-ticket", server, kerberos, cases);
+      runCase("password-fallback", server, kerberos, cases);
       return server.version;
     });
 
@@ -83,6 +85,7 @@ try {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("server-disabled", server, kerberos, cases);
+      runCase("server-disabled-password-fallback", server, kerberos, cases);
       destroyTicket(kerberos);
     });
     verifiedServers.push({ name: entry.name, version, cases });

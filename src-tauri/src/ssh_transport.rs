@@ -632,6 +632,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             state,
             profile,
             &ssh,
+            password,
             connect_timeout,
             host_keys,
             one_time_host_keys,
@@ -788,7 +789,18 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
 }
 
 pub(super) fn ssh_uses_libssh_gssapi_backend(ssh: &SshConnection) -> bool {
-    ssh.identity_policy.auth_order.as_slice() == [AuthMethod::GssapiWithMic]
+    ssh.identity_policy
+        .auth_order
+        .contains(&AuthMethod::GssapiWithMic)
+        && ssh.identity_policy.auth_order.iter().all(|method| {
+            matches!(
+                method,
+                AuthMethod::GssapiWithMic
+                    | AuthMethod::KeyboardInteractive
+                    | AuthMethod::Password
+                    | AuthMethod::None
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -796,6 +808,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     state: &AppState,
     profile: &SessionProfile,
     ssh: &SshConnection,
+    password: Option<String>,
     connect_timeout: Duration,
     host_keys: HostKeyStore,
     one_time_host_keys: Vec<TrustedHostKey>,
@@ -891,42 +904,54 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         return Err(error);
     }
 
+    let saved_password = if password
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        match read_optional_secret_ref(ssh.password_secret_ref.as_deref(), "SSH password") {
+            Ok(password) => password,
+            Err(error) => {
+                let cleanup = session.clone();
+                let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let effective_password = password
+        .filter(|value| !value.is_empty())
+        .or(saved_password);
+    let auth_order = ordered_auth_methods(ssh);
     let auth_session = session.clone();
-    let auth = tokio::time::timeout(
+    let auth = match tokio::time::timeout(
         connect_timeout,
         tokio::task::spawn_blocking(move || {
-            let none = auth_session
-                .userauth_none(None)
-                .map_err(|error| format!("libssh GSSAPI capability probe failed: {error}"))?;
-            if none == libssh_rs::AuthStatus::Success {
-                return Err("SSH server accepted none authentication instead of GSSAPI".to_string());
-            }
-            let methods = auth_session
-                .userauth_list(None)
-                .map_err(|error| format!("libssh auth method query failed: {error}"))?;
-            if !methods.contains(libssh_rs::AuthMethods::GSSAPI_MIC) {
-                return Err("SSH server did not advertise gssapi-with-mic".to_string());
-            }
-            match auth_session.userauth_gssapi() {
-                Ok(libssh_rs::AuthStatus::Success) => Ok(()),
-                Ok(status) => Err(format!("libssh GSSAPI authentication returned {status:?}")),
-                Err(error) => Err(format!("libssh GSSAPI authentication failed: {error}")),
-            }
+            authenticate_libssh_with_order(
+                &auth_session,
+                &auth_order,
+                effective_password.as_deref(),
+            )
         }),
     )
     .await
-    .map_err(|_| {
-        format!(
-            "libssh GSSAPI 认证超时（{} ms）",
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("libssh SSH 认证 worker 失败: {error}")),
+        Err(_) => Err(format!(
+            "libssh SSH 认证超时（{} ms）",
             connect_timeout.as_millis()
-        )
-    })?
-    .map_err(|error| format!("libssh GSSAPI worker 失败: {error}"))?;
-    if let Err(error) = auth {
-        let cleanup = session.clone();
-        let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
-        return Err(error);
-    }
+        )),
+    };
+    let auth_method = match auth {
+        Ok(method) => method,
+        Err(error) => {
+            let cleanup = session.clone();
+            let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+            return Err(error);
+        }
+    };
 
     if let Err(error) = persist_observed_host_key(
         &state.store,
@@ -1016,10 +1041,168 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         },
         tap,
         read_half,
-        auth_method: AuthMethod::GssapiWithMic,
+        auth_method,
         closed,
         reader_finished: reader_finished_sender,
     })
+}
+
+pub(super) fn authenticate_libssh_with_order(
+    session: &libssh_rs::Session,
+    auth_order: &[AuthMethod],
+    password: Option<&str>,
+) -> Result<AuthMethod, String> {
+    let none = session
+        .userauth_none(None)
+        .map_err(|error| format!("libssh authentication capability probe failed: {error}"))?;
+    if none == libssh_rs::AuthStatus::Success {
+        return auth_order
+            .contains(&AuthMethod::None)
+            .then_some(AuthMethod::None)
+            .ok_or_else(|| {
+                "SSH server accepted none authentication, but the profile does not allow it"
+                    .to_string()
+            });
+    }
+
+    let mut methods = session
+        .userauth_list(None)
+        .map_err(|error| format!("libssh auth method query failed: {error}"))?;
+    let mut attempted = Vec::new();
+    let mut failures = Vec::new();
+
+    for method in auth_order {
+        let status = match method {
+            AuthMethod::GssapiWithMic => {
+                attempted.push("gssapi-with-mic");
+                if !methods.contains(libssh_rs::AuthMethods::GSSAPI_MIC) {
+                    failures.push("server did not advertise gssapi-with-mic".to_string());
+                    continue;
+                }
+                session
+                    .userauth_gssapi()
+                    .map_err(|error| format!("libssh GSSAPI authentication failed: {error}"))?
+            }
+            AuthMethod::KeyboardInteractive => {
+                let Some(password) = password else {
+                    continue;
+                };
+                attempted.push("keyboard-interactive");
+                if !methods.contains(libssh_rs::AuthMethods::INTERACTIVE) {
+                    failures.push("server did not advertise keyboard-interactive".to_string());
+                    continue;
+                }
+                authenticate_libssh_keyboard_interactive(session, password)?
+            }
+            AuthMethod::Password => {
+                let Some(password) = password else {
+                    continue;
+                };
+                attempted.push("password");
+                if !methods.contains(libssh_rs::AuthMethods::PASSWORD) {
+                    failures.push("server did not advertise password authentication".to_string());
+                    continue;
+                }
+                session
+                    .userauth_password(None, Some(password))
+                    .map_err(|error| format!("libssh password authentication failed: {error}"))?
+            }
+            AuthMethod::None => {
+                attempted.push("none");
+                failures.push("server rejected none authentication".to_string());
+                continue;
+            }
+            AuthMethod::PublicKey => {
+                return Err("GSSAPI libssh backend 尚未支持 public-key/agent 混合认证".to_string());
+            }
+        };
+
+        match status {
+            libssh_rs::AuthStatus::Success => return Ok(*method),
+            libssh_rs::AuthStatus::Denied => {
+                failures.push(if *method == AuthMethod::GssapiWithMic {
+                    "GSSAPI authentication was denied".to_string()
+                } else {
+                    format!("{method:?} was denied")
+                });
+            }
+            libssh_rs::AuthStatus::Partial => {
+                failures.push(if *method == AuthMethod::GssapiWithMic {
+                    "GSSAPI authentication was only partially accepted".to_string()
+                } else {
+                    format!("{method:?} was only partially accepted")
+                });
+            }
+            libssh_rs::AuthStatus::Info => {
+                return Err(format!(
+                    "libssh {method:?} authentication returned an unexpected prompt state"
+                ));
+            }
+            libssh_rs::AuthStatus::Again => {
+                return Err(format!(
+                    "libssh {method:?} authentication unexpectedly requested a retry"
+                ));
+            }
+        }
+        methods = session
+            .userauth_list(None)
+            .map_err(|error| format!("libssh auth method refresh failed: {error}"))?;
+    }
+
+    if auth_order == [AuthMethod::GssapiWithMic]
+        && failures
+            .iter()
+            .any(|failure| failure == "server did not advertise gssapi-with-mic")
+    {
+        return Err("SSH server did not advertise gssapi-with-mic".to_string());
+    }
+    let attempted = if attempted.is_empty() {
+        "none".to_string()
+    } else {
+        attempted.join(", ")
+    };
+    let details = if failures.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", failures.join(" | "))
+    };
+    Err(format!(
+        "libssh SSH authentication failed; attempted: {attempted}{details}"
+    ))
+}
+
+fn authenticate_libssh_keyboard_interactive(
+    session: &libssh_rs::Session,
+    password: &str,
+) -> Result<libssh_rs::AuthStatus, String> {
+    for _ in 0..8 {
+        let status = session
+            .userauth_keyboard_interactive(None, None)
+            .map_err(|error| {
+                format!("libssh keyboard-interactive authentication failed: {error}")
+            })?;
+        if status != libssh_rs::AuthStatus::Info {
+            return Ok(status);
+        }
+        let info = session
+            .userauth_keyboard_interactive_info()
+            .map_err(|error| format!("libssh keyboard-interactive prompt failed: {error}"))?;
+        let answers = info
+            .prompts
+            .iter()
+            .map(|prompt| {
+                if prompt.echo {
+                    String::new()
+                } else {
+                    password.to_string()
+                }
+            })
+            .collect::<Vec<_>>();
+        session
+            .userauth_keyboard_interactive_set_answers(&answers)
+            .map_err(|error| format!("libssh keyboard-interactive response failed: {error}"))?;
+    }
+    Err("libssh keyboard-interactive authentication exceeded 8 rounds".to_string())
 }
 
 pub(super) fn ssh_client_config(ssh: &SshConnection) -> client::Config {
