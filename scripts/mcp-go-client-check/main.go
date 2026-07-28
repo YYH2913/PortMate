@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	sdkVersion       = environmentValue("PORTMATE_MCP_GO_SDK_VERSION", "1.6.1")
+	sdkVersion       = environmentValue("PORTMATE_MCP_GO_SDK_VERSION", "1.7.0")
 	expectedProtocol = environmentValue("PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION", "2025-06-18")
 )
 

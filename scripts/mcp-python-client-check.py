@@ -12,7 +12,12 @@ from collections.abc import AsyncIterator
 from urllib.request import Request, urlopen
 
 import anyio
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError as error:
+    if error.name != "httpx":
+        raise
+    import httpx2 as httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import AnyUrl
@@ -30,11 +35,18 @@ except ImportError:
 HTTP_TOKEN = "portmate-mcp-python-http-client-check"
 SDK_VERSION = os.environ.get("PORTMATE_MCP_PYTHON_SDK_VERSION", "unknown")
 EXPECTED_PROTOCOL_VERSION = os.environ.get("PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION", "2025-06-18")
+SDK_V2 = SDK_VERSION.split(".", 1)[0] == "2"
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def sdk_field(value: object, legacy_name: str, modern_name: str) -> object:
+    if hasattr(value, modern_name):
+        return getattr(value, modern_name)
+    return getattr(value, legacy_name)
 
 
 def bridge_binary() -> Path:
@@ -48,10 +60,11 @@ def bridge_binary() -> Path:
 async def exercise_session(session: ClientSession, transport: str) -> int:
     initialized = await session.initialize()
     require(
-        initialized.protocolVersion == EXPECTED_PROTOCOL_VERSION,
-        f"{transport} negotiated {initialized.protocolVersion}; expected {EXPECTED_PROTOCOL_VERSION}",
+        sdk_field(initialized, "protocolVersion", "protocol_version") == EXPECTED_PROTOCOL_VERSION,
+        f"{transport} negotiated {sdk_field(initialized, 'protocolVersion', 'protocol_version')}; expected {EXPECTED_PROTOCOL_VERSION}",
     )
-    require(initialized.serverInfo.name == "portmate-mcp", f"{transport} initialized the wrong server")
+    server_info = sdk_field(initialized, "serverInfo", "server_info")
+    require(server_info.name == "portmate-mcp", f"{transport} initialized the wrong server")
 
     await session.send_ping()
     tools = await session.list_tools()
@@ -60,13 +73,20 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     require(any(str(resource.uri) == "portmate://sessions" for resource in resources.resources), f"{transport} resources/list omitted sessions")
     templates = await session.list_resource_templates()
     require(
-        any(str(template.uriTemplate).startswith("portmate://sessions/{id}/") for template in templates.resourceTemplates),
+        any(
+            str(sdk_field(template, "uriTemplate", "uri_template")).startswith("portmate://sessions/{id}/")
+            for template in sdk_field(templates, "resourceTemplates", "resource_templates")
+        ),
         f"{transport} resources/templates/list omitted session templates",
     )
     prompts = await session.list_prompts()
     require(prompts.prompts, f"{transport} prompts/list returned no prompts")
-    sessions = await session.read_resource(AnyUrl("portmate://sessions"))
-    require(sessions.contents[0].mimeType == "application/json", f"{transport} returned the wrong sessions MIME type")
+    resource_uri = "portmate://sessions" if SDK_V2 else AnyUrl("portmate://sessions")
+    sessions = await session.read_resource(resource_uri)
+    require(
+        sdk_field(sessions.contents[0], "mimeType", "mime_type") == "application/json",
+        f"{transport} returned the wrong sessions MIME type",
+    )
     return 8
 
 
@@ -82,7 +102,7 @@ async def check_stdio(binary: Path) -> None:
         async with ClientSession(
             read_stream,
             write_stream,
-            read_timeout_seconds=timedelta(seconds=10),
+            read_timeout_seconds=10.0 if SDK_V2 else timedelta(seconds=10),
         ) as session:
             messages = await exercise_session(session, "stdio")
     print(f"MCP Python SDK {SDK_VERSION} stdio check passed ({messages} messages)")
@@ -128,11 +148,12 @@ async def check_http(binary: Path) -> None:
     try:
         wait_for_http(endpoint, server)
         async with open_http_streams(endpoint) as streams:
-            read_stream, write_stream, session_id = streams
+            read_stream, write_stream = streams[:2]
+            session_id = streams[2] if len(streams) > 2 else lambda: None
             async with ClientSession(
                 read_stream,
                 write_stream,
-                read_timeout_seconds=timedelta(seconds=10),
+                read_timeout_seconds=10.0 if SDK_V2 else timedelta(seconds=10),
             ) as session:
                 requests = await exercise_session(session, "HTTP")
                 require(session_id() is None, "PortMate stateless HTTP unexpectedly created a session")

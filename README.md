@@ -443,13 +443,15 @@ normal `2025-06-18` negotiation, and the latest SDKs' `2025-11-25` request falli
 supported `2025-06-18`; stdio client shutdown must also terminate the bridge process.
 
 The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.12.4, 1.15.0,
-1.21.2, 1.23.3, and 1.28.1 virtual environments over both stdio and stateless Streamable HTTP. Each
-version completes
+1.21.2, 1.23.3, 1.28.1, 1.29.0, and 2.0.0 virtual environments over both stdio and stateless
+Streamable HTTP. Each version completes
 the same 8-message/request lifecycle over both transports, covering the `2025-03-26` negotiation
 used by 1.9.4 and the current `2025-06-18` negotiation used by the later versions without sharing
-site packages.
+site packages. The client check handles the official 2.0 transition from `httpx` to `httpx2`,
+snake-case result fields, numeric read timeouts, and two-stream HTTP transports without weakening
+the assertions used for 1.x.
 
-The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.4.0, 1.5.0, and 1.6.1
+The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.4.0, 1.5.0, 1.6.1, and 1.7.0
 from isolated generated modules and runs the same 8-message/request lifecycle over stdio and
 stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
 module has its own dependency checksums and never mutates PortMate's production workspace.
@@ -472,7 +474,7 @@ Stdio and JDK Streamable HTTP 8-message/request lifecycle, preventing stale cros
 the matrix verifies `2024-11-05` negotiation for 1.x, `2025-06-18` for 2.0.0, server identity, and
 every read surface.
 
-The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.12.0, 0.13.0, and 0.14.0 with Kotlin
+The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.12.0, 0.13.0, 0.14.0, and 0.15.0 with Kotlin
 2.3.21 on the same pinned JDK/Maven bootstrap. Version 0.12.0 uses its published Ktor 3.3.3 and
 coroutines 1.10.2 runtime; later versions use Ktor 3.4.3 and coroutines 1.11.0. Each version is
 clean-compiled before its stream-backed Stdio and Ktor CIO Streamable HTTP lifecycle, rejects
