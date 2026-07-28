@@ -633,6 +633,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             profile,
             &ssh,
             password,
+            passphrase,
             connect_timeout,
             host_keys,
             one_time_host_keys,
@@ -789,18 +790,43 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
 }
 
 pub(super) fn ssh_uses_libssh_gssapi_backend(ssh: &SshConnection) -> bool {
-    ssh.identity_policy
+    let uses_supported_methods = ssh
+        .identity_policy
         .auth_order
         .contains(&AuthMethod::GssapiWithMic)
         && ssh.identity_policy.auth_order.iter().all(|method| {
             matches!(
                 method,
                 AuthMethod::GssapiWithMic
+                    | AuthMethod::PublicKey
                     | AuthMethod::KeyboardInteractive
                     | AuthMethod::Password
                     | AuthMethod::None
             )
-        })
+        });
+    uses_supported_methods && !libssh_auth_order_requires_agent(ssh)
+}
+
+fn libssh_auth_order_requires_agent(ssh: &SshConnection) -> bool {
+    if !ssh
+        .identity_policy
+        .auth_order
+        .contains(&AuthMethod::PublicKey)
+        || !ssh.agent_policy.enabled
+    {
+        return false;
+    }
+    let has_agent_identity = ssh
+        .identity_refs
+        .iter()
+        .any(|identity| identity.source == IdentitySource::Agent);
+    has_agent_identity
+        || (!ssh.identity_policy.identities_only
+            && matches!(
+                ssh.agent_policy.offer_mode,
+                portmate_core::AgentOfferMode::BeforeProfileKeys
+                    | portmate_core::AgentOfferMode::AfterProfileKeys
+            ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -809,6 +835,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     profile: &SessionProfile,
     ssh: &SshConnection,
     password: Option<String>,
+    passphrase: Option<String>,
     connect_timeout: Duration,
     host_keys: HostKeyStore,
     one_time_host_keys: Vec<TrustedHostKey>,
@@ -923,7 +950,30 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let effective_password = password
         .filter(|value| !value.is_empty())
         .or(saved_password);
+    let saved_passphrase = if passphrase
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        match read_optional_secret_ref(
+            ssh.passphrase_secret_ref.as_deref(),
+            "SSH private-key passphrase",
+        ) {
+            Ok(passphrase) => passphrase,
+            Err(error) => {
+                let cleanup = session.clone();
+                let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let effective_passphrase = passphrase
+        .filter(|value| !value.is_empty())
+        .or(saved_passphrase);
     let auth_order = ordered_auth_methods(ssh);
+    let identity_refs = ssh.identity_refs.clone();
     let auth_session = session.clone();
     let auth = match tokio::time::timeout(
         connect_timeout,
@@ -932,6 +982,8 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 &auth_session,
                 &auth_order,
                 effective_password.as_deref(),
+                &identity_refs,
+                effective_passphrase.as_deref(),
             )
         }),
     )
@@ -1051,6 +1103,8 @@ pub(super) fn authenticate_libssh_with_order(
     session: &libssh_rs::Session,
     auth_order: &[AuthMethod],
     password: Option<&str>,
+    identity_refs: &[IdentityRef],
+    passphrase: Option<&str>,
 ) -> Result<AuthMethod, String> {
     let none = session
         .userauth_none(None)
@@ -1113,7 +1167,59 @@ pub(super) fn authenticate_libssh_with_order(
                 continue;
             }
             AuthMethod::PublicKey => {
-                return Err("GSSAPI libssh backend 尚未支持 public-key/agent 混合认证".to_string());
+                attempted.push("publickey");
+                if !methods.contains(libssh_rs::AuthMethods::PUBLIC_KEY) {
+                    failures.push("server did not advertise public-key authentication".to_string());
+                    continue;
+                }
+                let identities = identity_refs.iter().filter(|identity| {
+                    matches!(
+                        identity.source,
+                        IdentitySource::SystemFile | IdentitySource::ProfileVault
+                    )
+                });
+                let mut identity_attempted = false;
+                for identity in identities {
+                    identity_attempted = true;
+                    let key = match load_libssh_private_key(identity, passphrase) {
+                        Ok(Some(key)) => key,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            failures.push(format!("{}: {error}", identity.label));
+                            continue;
+                        }
+                    };
+                    let status = session.userauth_publickey(None, &key).map_err(|error| {
+                        format!(
+                            "libssh public-key authentication failed for {}: {error}",
+                            identity.label
+                        )
+                    })?;
+                    match status {
+                        libssh_rs::AuthStatus::Success => return Ok(AuthMethod::PublicKey),
+                        libssh_rs::AuthStatus::Denied => {
+                            failures.push(format!("{}: public key was denied", identity.label));
+                        }
+                        libssh_rs::AuthStatus::Partial => failures.push(format!(
+                            "{}: public key was only partially accepted",
+                            identity.label
+                        )),
+                        libssh_rs::AuthStatus::Info | libssh_rs::AuthStatus::Again => {
+                            return Err(format!(
+                                "libssh public-key authentication for {} returned {status:?}",
+                                identity.label
+                            ));
+                        }
+                    }
+                }
+                if !identity_attempted {
+                    failures
+                        .push("profile has no usable explicit private-key identity".to_string());
+                }
+                methods = session
+                    .userauth_list(None)
+                    .map_err(|error| format!("libssh auth method refresh failed: {error}"))?;
+                continue;
             }
         };
 
@@ -1169,6 +1275,43 @@ pub(super) fn authenticate_libssh_with_order(
     Err(format!(
         "libssh SSH authentication failed; attempted: {attempted}{details}"
     ))
+}
+
+fn load_libssh_private_key(
+    identity: &IdentityRef,
+    passphrase: Option<&str>,
+) -> Result<Option<libssh_rs::SshKey>, String> {
+    let private_key = match identity.source {
+        IdentitySource::SystemFile => {
+            let Some(path) = identity
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
+                return Ok(None);
+            };
+            let path = expand_identity_path(path);
+            fs::read_to_string(&path)
+                .map_err(|error| format!("system-file {}: {error}", path.display()))?
+        }
+        IdentitySource::ProfileVault => {
+            let Some(secret_ref) = identity
+                .secret_ref
+                .as_deref()
+                .map(str::trim)
+                .filter(|secret_ref| !secret_ref.is_empty())
+            else {
+                return Err("profile-vault identity 缺少 secretRef".to_string());
+            };
+            read_secret_from_store(secret_ref)
+                .map_err(|error| format!("profile-vault {secret_ref}: {error}"))?
+        }
+        IdentitySource::Agent | IdentitySource::PublicKeyOnly => return Ok(None),
+    };
+    libssh_rs::SshKey::from_privkey_base64(&private_key, passphrase)
+        .map(Some)
+        .map_err(|error| format!("private key 解析失败: {error}"))
 }
 
 fn authenticate_libssh_keyboard_interactive(
