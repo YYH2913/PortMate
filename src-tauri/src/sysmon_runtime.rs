@@ -1,5 +1,127 @@
 use super::*;
 
+pub(super) const REMOTE_WINDOWS_SYSMON_JSON_MARKER: &str = "__PORTMATE_WINDOWS_SYSMON_JSON__";
+pub(super) const REMOTE_WINDOWS_PLATFORM_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if ($env:OS -eq 'Windows_NT') {
+    [Console]::Out.WriteLine('Windows')
+} else {
+    [Console]::Out.WriteLine([Environment]::OSVersion.Platform)
+}
+"#;
+pub(super) const REMOTE_WINDOWS_SYSMON_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$os = Get-CimInstance -ClassName Win32_OperatingSystem
+$computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+$logicalProcessors = [Math]::Max(1, [int]$computer.NumberOfLogicalProcessors)
+$memoryTotal = [uint64]([uint64]$os.TotalVisibleMemorySize * 1024)
+$memoryAvailable = [uint64]([uint64]$os.FreePhysicalMemory * 1024)
+$uptime = [uint64][Math]::Max(0, ((Get-Date) - $os.LastBootUpTime).TotalSeconds)
+
+$cpuSample = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq '_Total' } |
+    Select-Object -First 1
+$cpuPercent = if ($null -eq $cpuSample) {
+    0.0
+} else {
+    [Math]::Min(100.0, [Math]::Max(0.0, [double]$cpuSample.PercentProcessorTime))
+}
+
+$processes = @(Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue |
+    Where-Object { [uint32]$_.IDProcess -gt 0 -and $_.Name -ne '_Total' } |
+    Sort-Object -Property @{Expression = {[uint64]$_.PercentProcessorTime}; Descending = $true}, @{Expression = {[uint64]$_.WorkingSet}; Descending = $true} |
+    Select-Object -First 8 |
+    ForEach-Object {
+        [ordered]@{
+            pid = [uint32]$_.IDProcess
+            name = [string]$_.Name
+            cpuPercent = [Math]::Min(100.0, [Math]::Max(0.0, [double]$_.PercentProcessorTime / $logicalProcessors))
+            rssBytes = [uint64]$_.WorkingSet
+        }
+    })
+
+$disks = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue |
+    Sort-Object -Property DeviceID |
+    Select-Object -First 16 |
+    ForEach-Object {
+        $filesystem = if ([string]::IsNullOrWhiteSpace([string]$_.FileSystem)) { [string]$_.DeviceID } else { [string]$_.FileSystem }
+        [ordered]@{
+            filesystem = $filesystem
+            mountPoint = [string]$_.DeviceID
+            totalBytes = [uint64]$_.Size
+            availableBytes = [uint64]$_.FreeSpace
+        }
+    })
+
+$rawNetworks = @{}
+@(Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue) |
+    ForEach-Object { $rawNetworks[([string]$_.Name).Trim()] = $_ }
+$ipAddresses = @{}
+@(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue) |
+    ForEach-Object {
+        $addresses = @($_.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        $description = ([string]$_.Description).Trim()
+        if ($addresses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($description)) {
+            $ipAddresses[$description] = $addresses
+        }
+    }
+$matchedIpAddressNames = @{}
+$performanceNetworkInterfaces = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $name = ([string]$_.Name).Trim()
+        $raw = $rawNetworks[$name]
+        $addresses = if ($ipAddresses.ContainsKey($name)) {
+            $matchedIpAddressNames[$name] = $true
+            @($ipAddresses[$name])
+        } else {
+            @()
+        }
+        [ordered]@{
+            name = $name
+            addresses = $addresses
+            rxBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesReceivedPersec }
+            txBytes = if ($null -eq $raw) { [uint64]0 } else { [uint64]$raw.BytesSentPersec }
+            rxKbps = [Math]::Max(0.0, [double]$_.BytesReceivedPersec / 1024.0)
+            txKbps = [Math]::Max(0.0, [double]$_.BytesSentPersec / 1024.0)
+        }
+    })
+$addressOnlyNetworkInterfaces = @($ipAddresses.GetEnumerator() |
+    Where-Object { -not $matchedIpAddressNames.ContainsKey([string]$_.Key) } |
+    ForEach-Object {
+        [ordered]@{
+            name = [string]$_.Key
+            addresses = @($_.Value)
+            rxBytes = [uint64]0
+            txBytes = [uint64]0
+            rxKbps = 0.0
+            txKbps = 0.0
+        }
+    })
+$networkInterfaces = @(@($performanceNetworkInterfaces + $addressOnlyNetworkInterfaces) |
+    Sort-Object -Property @(
+        @{Expression = { if (@($_.addresses).Count -gt 0) { 0 } else { 1 } }; Ascending = $true},
+        @{Expression = {[double]$_.rxKbps + [double]$_.txKbps}; Descending = $true},
+        @{Expression = {[string]$_.name}; Ascending = $true}
+    ) |
+    Select-Object -First 128)
+
+$payload = [ordered]@{
+    uptimeSeconds = $uptime
+    cpuPercent = $cpuPercent
+    memoryTotalBytes = $memoryTotal
+    memoryAvailableBytes = $memoryAvailable
+    processes = $processes
+    disks = $disks
+    networkInterfaces = $networkInterfaces
+}
+[Console]::Out.WriteLine('__PORTMATE_WINDOWS_SYSMON_JSON__')
+[Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 4 -Compress))
+"#;
+
 pub(super) async fn refresh_sysmon_inner(
     state: &AppState,
     session_id: &str,
