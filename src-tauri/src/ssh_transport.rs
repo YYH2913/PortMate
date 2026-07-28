@@ -1281,6 +1281,17 @@ fn load_libssh_private_key(
     identity: &IdentityRef,
     passphrase: Option<&str>,
 ) -> Result<Option<libssh_rs::SshKey>, String> {
+    load_libssh_private_key_with(identity, passphrase, read_secret_from_store)
+}
+
+pub(super) fn load_libssh_private_key_with<ReadSecret>(
+    identity: &IdentityRef,
+    passphrase: Option<&str>,
+    read_secret: ReadSecret,
+) -> Result<Option<libssh_rs::SshKey>, String>
+where
+    ReadSecret: FnOnce(&str) -> Result<String, String>,
+{
     let private_key = match identity.source {
         IdentitySource::SystemFile => {
             let Some(path) = identity
@@ -1304,7 +1315,7 @@ fn load_libssh_private_key(
             else {
                 return Err("profile-vault identity 缺少 secretRef".to_string());
             };
-            read_secret_from_store(secret_ref)
+            read_secret(secret_ref)
                 .map_err(|error| format!("profile-vault {secret_ref}: {error}"))?
         }
         IdentitySource::Agent | IdentitySource::PublicKeyOnly => return Ok(None),

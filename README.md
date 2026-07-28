@@ -667,7 +667,9 @@ wins before a later fallback credential; the successful method is recorded throu
 profile policy. Russh-server-to-libssh-client regressions cover both password-based fallback methods
 plus normalized stdout, stderr, exit status, and EOF handling. An isolated OpenSSH runtime regression
 also covers GSSAPI-unavailable fallback across an ordered rejected key and encrypted accepted key,
-including passphrase unlock and successful-method persistence. Agent-backed mixed authentication
+including wrong-passphrase cleanup, passphrase unlock, and successful-method persistence. An isolated
+Profile Vault loader regression covers secretRef routing, encrypted-key parsing, missing secrets, and
+error redaction without initializing process-global credential providers. Agent-backed mixed authentication
 remains on the russh 0.62.4 compatibility path, which has no client GSSAPI exchange. The libssh path also rejects
 Proxy, Jump Host, and agent forwarding; SFTP/SCP and tunnels remain explicit russh compatibility
 paths.

@@ -265,6 +265,23 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         ssh.agent_policy.enabled = false;
         ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
 
+        let failed_state =
+            test_app_state(profile.clone(), root.join("failed-portmate-store.sqlite3"));
+        let error = open_ssh_session(
+            &failed_state,
+            profile.clone(),
+            None,
+            Some("wrong passphrase".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("libssh SSH authentication failed"),
+            "{error}"
+        );
+        assert!(error.contains("private key 解析失败"), "{error}");
+        assert!(!failed_state.ssh.lock().unwrap().contains_key(&profile.id));
+
         let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
         open_ssh_session(&state, profile.clone(), None, Some(passphrase.to_string()))
             .await
@@ -292,4 +309,67 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
 
     sshd.stop();
     let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn libssh_profile_vault_key_loader_uses_secret_ref_and_passphrase() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh vault key test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let key_path = root.path().join("vault_ed25519");
+    let passphrase = "PortMate vault identity passphrase";
+    let keygen = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", passphrase, "-f"])
+        .arg(&key_path)
+        .status()
+        .unwrap();
+    assert!(keygen.success(), "ssh-keygen failed for vault identity");
+    let key_material = fs::read_to_string(&key_path).unwrap();
+    let identity = IdentityRef {
+        id: "vault-key".to_string(),
+        label: "Vault key".to_string(),
+        source: IdentitySource::ProfileVault,
+        fingerprint_sha256: None,
+        path: None,
+        secret_ref: Some("stronghold:vault-key".to_string()),
+    };
+
+    let key = load_libssh_private_key_with(&identity, Some(passphrase), |secret_ref| {
+        assert_eq!(secret_ref, "stronghold:vault-key");
+        Ok(key_material.clone())
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(key.key_type_name().unwrap(), "ssh-ed25519");
+
+    let error = load_libssh_private_key_with(&identity, Some("wrong passphrase"), |_| {
+        Ok(key_material.clone())
+    })
+    .err()
+    .expect("wrong vault passphrase unexpectedly parsed");
+    assert!(error.contains("private key 解析失败"), "{error}");
+
+    let error = load_libssh_private_key_with(&identity, Some(passphrase), |secret_ref| {
+        Err(format!("missing test secret: {secret_ref}"))
+    })
+    .err()
+    .expect("missing vault secret unexpectedly loaded");
+    assert!(
+        error.contains("profile-vault stronghold:vault-key"),
+        "{error}"
+    );
+    assert!(!error.contains(&key_material));
+
+    let mut missing_ref = identity;
+    missing_ref.secret_ref = None;
+    let error = load_libssh_private_key_with(&missing_ref, Some(passphrase), |_| {
+        panic!("missing secretRef must not invoke the provider")
+    })
+    .err()
+    .expect("missing vault secretRef unexpectedly loaded");
+    assert_eq!(error, "profile-vault identity 缺少 secretRef");
 }
