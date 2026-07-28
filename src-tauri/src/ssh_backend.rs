@@ -20,6 +20,10 @@ where
         Self::Libssh(session)
     }
 
+    pub(super) fn is_libssh(&self) -> bool {
+        matches!(self, Self::Libssh(_))
+    }
+
     pub(super) fn russh_compat(&self) -> Result<&client::Handle<H>, String> {
         match self {
             Self::Russh(handle) => Ok(handle),
@@ -175,10 +179,13 @@ pub(super) enum SshBackendChannelReader {
 }
 
 impl SshBackendChannelReader {
-    pub(super) async fn wait(&mut self) -> Option<SshBackendMessage> {
+    pub(super) async fn wait_until_closed(
+        &mut self,
+        closed: &AtomicBool,
+    ) -> Option<SshBackendMessage> {
         match self {
             Self::Russh(reader) => reader.wait().await.map(SshBackendMessage::from),
-            Self::Libssh(reader) => reader.wait().await,
+            Self::Libssh(reader) => reader.wait_until_closed(closed).await,
         }
     }
 }
@@ -246,7 +253,18 @@ impl LibsshChannelReader {
     }
 
     async fn wait(&mut self) -> Option<SshBackendMessage> {
+        self.wait_inner(None).await
+    }
+
+    async fn wait_until_closed(&mut self, closed: &AtomicBool) -> Option<SshBackendMessage> {
+        self.wait_inner(Some(closed)).await
+    }
+
+    async fn wait_inner(&mut self, closed: Option<&AtomicBool>) -> Option<SshBackendMessage> {
         loop {
+            if closed.is_some_and(|closed| closed.load(Ordering::SeqCst)) {
+                return None;
+            }
             if let Some(message) = self.pending.pop_front() {
                 return Some(message);
             }

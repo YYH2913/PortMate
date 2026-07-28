@@ -276,6 +276,8 @@ mod tests {
     mod external_sftp_compat;
     #[path = "external_ssh_compat.rs"]
     mod external_ssh_compat;
+    #[path = "external_ssh_gssapi_compat.rs"]
+    mod external_ssh_gssapi_compat;
     #[path = "external_tcp_telnet_compat.rs"]
     mod external_tcp_telnet_compat;
     #[path = "ssh_test_support.rs"]
@@ -13359,6 +13361,13 @@ __PORTMATE_LOADAVG__
                 spawn_mixed_auth_test_server(&host_key, username, secret).await;
 
             let session = libssh_rs::Session::new().unwrap();
+            // libssh 0.10's default cipher list has a trailing comma that russh rejects.
+            session
+                .set_option(libssh_rs::SshOption::CiphersCS("aes256-ctr".to_string()))
+                .unwrap();
+            session
+                .set_option(libssh_rs::SshOption::CiphersSC("aes256-ctr".to_string()))
+                .unwrap();
             session
                 .set_option(libssh_rs::SshOption::ProcessConfig(false))
                 .unwrap();

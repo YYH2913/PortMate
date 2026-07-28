@@ -90,6 +90,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - if: runner.os == 'Linux'
         run: npm run test:libssh-gssapi-build
+      - if: runner.os == 'Linux'
+        run: npm run test:ssh-gssapi-compat
       - run: npm run test:mcp-typescript-client
       - run: npm run test:mcp-python-client
       - run: npm run test:mcp-go-client

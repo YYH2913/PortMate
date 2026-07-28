@@ -62,7 +62,13 @@ pub(super) fn read_ssh_channel(
         let mut has_unpersisted_stream = false;
         let mut disconnect_reason = None;
 
-        while let Some(message) = read_half.wait().await {
+        loop {
+            if closed.load(Ordering::SeqCst) {
+                break;
+            }
+            let Some(message) = read_half.wait_until_closed(&closed).await else {
+                break;
+            };
             if let Some(reason) = ssh_channel_disconnect_reason(&message) {
                 disconnect_reason = Some(reason);
             }
@@ -583,29 +589,59 @@ pub(super) async fn disconnect_registered_ssh_runtime(
     let SshRuntime {
         runtime_id,
         handle,
+        sftp,
         jump_handles,
+        writer,
         closed,
         reader_finished,
         ..
     } = runtime;
     closed.store(true, Ordering::SeqCst);
-    let handle = handle.lock().await;
-    let _ = handle.disconnect(reason).await;
+    drop(sftp);
+
+    let is_libssh = handle.lock().await.is_libssh();
+    if is_libssh {
+        let reader_stopped = tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
+            .await
+            .is_ok();
+        let writer_released = Arc::try_unwrap(writer).map(drop).is_ok();
+        let handle_is_exclusive = Arc::strong_count(&handle) == 1;
+        if reader_stopped && writer_released && handle_is_exclusive {
+            let handle = handle.lock().await;
+            let _ = handle.disconnect(reason).await;
+        } else {
+            eprintln!(
+                "PortMate: skipped eager libssh disconnect for reader {runtime_id} while channel users are still shutting down"
+            );
+        }
+        if !reader_stopped {
+            eprintln!(
+                "PortMate: SSH reader {runtime_id} did not finish within {}ms before libssh disconnect",
+                SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
+            );
+        }
+    } else {
+        drop(writer);
+        let handle_guard = handle.lock().await;
+        let _ = handle_guard.disconnect(reason).await;
+        drop(handle_guard);
+        if tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
+            .await
+            .is_err()
+        {
+            eprintln!(
+                "PortMate: SSH reader {runtime_id} did not finish within {}ms after disconnect",
+                SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
+            );
+        }
+    }
     drop(handle);
+
     for jump_handle in jump_handles {
         let handle = jump_handle.lock().await;
         let _ = handle
             .disconnect(Disconnect::ByApplication, jump_reason, "en")
             .await;
-    }
-    if tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
-        .await
-        .is_err()
-    {
-        eprintln!(
-            "PortMate: SSH reader {runtime_id} did not finish within {}ms after disconnect",
-            SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
-        );
     }
 }
 

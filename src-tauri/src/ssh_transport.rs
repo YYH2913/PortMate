@@ -826,6 +826,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             session
                 .set_option(libssh_rs::SshOption::ProcessConfig(false))
                 .map_err(|error| format!("libssh 禁用系统 ssh_config 失败: {error}"))?;
+            #[cfg(test)]
+            if std::env::var_os("PORTMATE_COMPAT_LIBSSH_TRACE").is_some() {
+                session
+                    .set_option(libssh_rs::SshOption::LogLevel(
+                        libssh_rs::LogLevel::Protocol,
+                    ))
+                    .map_err(|error| format!("libssh 设置测试日志级别失败: {error}"))?;
+            }
             session
                 .set_option(libssh_rs::SshOption::Hostname(host.clone()))
                 .map_err(|error| format!("libssh 设置主机失败: {error}"))?;
