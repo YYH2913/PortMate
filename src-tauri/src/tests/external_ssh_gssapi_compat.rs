@@ -77,7 +77,9 @@ fn external_ssh_gssapi_runtime_matrix_case() {
             "success"
             | "gssapi-preferred"
             | "password-fallback"
-            | "server-disabled-password-fallback" => {
+            | "server-disabled-password-fallback"
+            | "sftp-rejected"
+            | "sftp-operation-denied" => {
                 let connected =
                     opened.unwrap_or_else(|error| panic!("GSSAPI open failed: {error}"));
                 assert_eq!(connected.runtime.status, SessionStatus::Connected);
@@ -118,11 +120,17 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                 let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
                     .await
                     .unwrap();
-                assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
                 assert!(health.transport_round_trip_ms.is_some());
                 assert!(health.channel_round_trip_ms.is_some());
-                assert!(health.sftp_round_trip_ms.is_some());
-                assert!(health.sftp_error.is_none());
+                if matches!(case.as_str(), "sftp-rejected" | "sftp-operation-denied") {
+                    assert_eq!(health.status, ssh_health::SshHealthStatus::Degraded);
+                    assert!(health.sftp_round_trip_ms.is_none());
+                    assert!(health.sftp_error.is_some());
+                } else {
+                    assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
+                    assert!(health.sftp_round_trip_ms.is_some());
+                    assert!(health.sftp_error.is_none());
+                }
 
                 resize_session_inner(&state, profile.id.clone(), 101, 37)
                     .await

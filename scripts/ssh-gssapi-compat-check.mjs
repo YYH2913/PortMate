@@ -88,6 +88,17 @@ try {
       runCase("server-disabled-password-fallback", server, kerberos, cases);
       destroyTicket(kerberos);
     });
+    for (const [mode, caseName] of [
+      ["rejected", "sftp-rejected"],
+      ["operation-denied", "sftp-operation-denied"],
+    ]) {
+      await withServer(image, "yes", async (server) => {
+        const kerberos = configureKerberos(server);
+        acquireTicket(server, kerberos);
+        runCase(caseName, server, kerberos, cases);
+        destroyTicket(kerberos);
+      }, mode);
+    }
     verifiedServers.push({ name: entry.name, version, cases });
   }
 
@@ -96,7 +107,7 @@ try {
   rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
-async function withServer(image, gssapiAuthentication, callback) {
+async function withServer(image, gssapiAuthentication, callback, sftpMode = "normal") {
   const container = `portmate-gssapi-${randomUUID()}`;
   try {
     run("docker", [
@@ -108,6 +119,8 @@ async function withServer(image, gssapiAuthentication, callback) {
       "localhost",
       "--env",
       `PORTMATE_GSSAPI_AUTH=${gssapiAuthentication}`,
+      "--env",
+      `PORTMATE_GSSAPI_SFTP=${sftpMode}`,
       "--publish",
       "127.0.0.1::22/tcp",
       "--publish",

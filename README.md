@@ -683,7 +683,8 @@ linked shared library, and verifies its GSSAPI runtime dependency. Other targets
 vendored build to remain self-contained, but that build has no GSSAPI support. These build and
 channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian trixie OpenSSH/MIT
 Kerberos matrices covering successful authentication, GSSAPI precedence, strict host-key rejection,
-a missing ticket, password fallback, server-disabled GSSAPI, and disabled-GSSAPI password fallback.
+a missing ticket, password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback,
+SFTP subsystem rejection, and SFTP directory-operation rejection.
 Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
 subsystem, canonicalize the working directory, and read its entries through the health probe.
 Non-OpenSSH/Active Directory realms and agent-backed mixed authentication remain unverified.
