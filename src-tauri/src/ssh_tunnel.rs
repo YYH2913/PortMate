@@ -250,7 +250,13 @@ pub(super) async fn start_tunnel_runtime(
     expected_runtime_id: Option<&str>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, String), String> {
     validate_tunnels(std::slice::from_ref(&tunnel))?;
-    let (handle, remote_forwards, ssh_runtime_id) = {
+    let (
+        handle,
+        remote_forwards,
+        remote_forward_acceptor_started,
+        ssh_runtime_closed,
+        ssh_runtime_id,
+    ) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         let runtime = connections
             .get(session_id)
@@ -267,6 +273,8 @@ pub(super) async fn start_tunnel_runtime(
         (
             Arc::clone(&runtime.handle),
             Arc::clone(&runtime.remote_forwards),
+            Arc::clone(&runtime.remote_forward_acceptor_started),
+            Arc::clone(&runtime.closed),
             runtime.runtime_id.clone(),
         )
     };
@@ -283,21 +291,24 @@ pub(super) async fn start_tunnel_runtime(
         if tunnel.target_host.trim().is_empty() || tunnel.target_port == 0 {
             return Err("remote tunnel requires a local target host and port".to_string());
         }
-        let returned_port = {
+        let (returned_port, libssh_session) = {
             let handle = handle.lock().await;
-            handle
-                .russh_compat()?
-                .tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
+            let returned_port = handle
+                .listen_remote_forward(tunnel.bind_host.clone(), tunnel.bind_port)
                 .await
                 .map_err(|error| {
                     format!(
                         "remote SSH tunnel request failed {}:{}: {error}",
                         tunnel.bind_host, tunnel.bind_port
                     )
-                })?
+                })?;
+            (returned_port, handle.libssh_forward_session())
         };
-        if tunnel.bind_port == 0 && returned_port > 0 {
-            tunnel.bind_port = returned_port as u16;
+        if tunnel.bind_port == 0 {
+            if returned_port == 0 {
+                return Err("remote SSH tunnel request did not return an assigned port".to_string());
+            }
+            tunnel.bind_port = returned_port;
             if relabel_assigned_port {
                 tunnel.label = tunnel_label(
                     tunnel.mode,
@@ -364,6 +375,18 @@ pub(super) async fn start_tunnel_runtime(
                     warnings.join("; ")
                 )
             });
+        }
+        if let Some(session) = libssh_session {
+            if remote_forward_acceptor_started
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                spawn_libssh_remote_forward_acceptor(
+                    session,
+                    Arc::clone(&remote_forwards),
+                    ssh_runtime_closed,
+                );
+            }
         }
         spawn_remote_tunnel_health_monitor(state.clone(), tunnel.id.clone(), Arc::clone(&closed));
         return Ok((tunnel, None, ssh_runtime_id));
@@ -713,11 +736,7 @@ pub(super) async fn probe_remote_tunnel_health(
                     return Err("tunnel closed before listener restore".to_string());
                 }
                 handle
-                    .russh_compat()?
-                    .tcpip_forward(
-                        runtime.spec.bind_host.clone(),
-                        u32::from(runtime.spec.bind_port),
-                    )
+                    .listen_remote_forward(runtime.spec.bind_host.clone(), runtime.spec.bind_port)
                     .await
                     .map_err(|error| {
                         format!(
@@ -726,7 +745,7 @@ pub(super) async fn probe_remote_tunnel_health(
                         )
                     })?
             };
-            if returned_port != 0 && returned_port != u32::from(runtime.spec.bind_port) {
+            if returned_port != runtime.spec.bind_port {
                 return Err(format!(
                     "listener restore returned unexpected port {returned_port} for {}",
                     runtime.spec.bind_port
@@ -1161,10 +1180,8 @@ pub(super) async fn cancel_remote_tunnel_forward(
     let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
         let handle = handle.lock().await;
         handle
-            .russh_compat()?
-            .cancel_tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
+            .cancel_remote_forward(tunnel.bind_host.clone(), tunnel.bind_port)
             .await
-            .map_err(|error| error.to_string())
     })
     .await;
     match cancel {
@@ -1425,10 +1442,9 @@ pub(super) async fn handle_local_tunnel_client(
 }
 
 pub(super) async fn handle_remote_tunnel_client(
-    channel: Channel<client::Msg>,
+    channel: SshBackendChannel,
     tunnel: TunnelSpec,
-    originator_address: String,
-    originator_port: u16,
+    originator: Option<(String, u16)>,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let target_connect = bounded_connection_step(
@@ -1439,30 +1455,105 @@ pub(super) async fn handle_remote_tunnel_client(
     let local_stream = match target_connect {
         Ok(stream) => stream,
         Err(error) => {
-            close_russh_channel_bounded(&channel).await;
+            close_ssh_channel_bounded(&channel).await;
+            let originator = originator
+                .map(|(address, port)| format!("{address}:{port}"))
+                .unwrap_or_else(|| format!("remote port {}", tunnel.bind_port));
             return Err(match error {
                 BoundedConnectionStepError::Failed(error) => format!(
-                    "remote tunnel target connect failed {}:{} for {}:{}: {error}",
-                    tunnel.target_host, tunnel.target_port, originator_address, originator_port
+                    "remote tunnel target connect failed {}:{} for {originator}: {error}",
+                    tunnel.target_host, tunnel.target_port
                 ),
                 BoundedConnectionStepError::TimedOut => format!(
-                    "remote tunnel target connect timed out after {} ms {}:{} for {}:{}",
+                    "remote tunnel target connect timed out after {} ms {}:{} for {originator}",
                     TUNNEL_CONNECT_TIMEOUT.as_millis(),
                     tunnel.target_host,
-                    tunnel.target_port,
-                    originator_address,
-                    originator_port
+                    tunnel.target_port
                 ),
             });
         }
     };
-    pipe_ssh_channel_to_tcp(
-        SshBackendChannel::from_russh(channel),
-        local_stream,
-        tunnel,
-        metrics,
-    )
-    .await
+    pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
+}
+
+pub(super) fn spawn_libssh_remote_forward_acceptor(
+    session: libssh_rs::Session,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    runtime_closed: Arc<AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while !runtime_closed.load(Ordering::SeqCst) {
+            let has_routes = match remote_forwards.lock() {
+                Ok(forwards) => !forwards.is_empty(),
+                Err(error) => {
+                    eprintln!("PortMate: libssh remote forward route lock failed: {error}");
+                    break;
+                }
+            };
+            if !has_routes {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+
+            let accept_session = session.clone();
+            let accepted = tokio::task::spawn_blocking(move || {
+                accept_session.accept_forward(Duration::from_millis(50))
+            })
+            .await;
+            let (destination_port, channel) = match accepted {
+                Ok(Ok(accepted)) => accepted,
+                Ok(Err(libssh_rs::Error::TryAgain)) => continue,
+                Ok(Err(error)) => {
+                    if !runtime_closed.load(Ordering::SeqCst) {
+                        eprintln!("PortMate: libssh remote forward accept failed: {error}");
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    if !runtime_closed.load(Ordering::SeqCst) {
+                        eprintln!("PortMate: libssh remote forward worker failed: {error}");
+                    }
+                    break;
+                }
+            };
+            let channel = SshBackendChannel::from_libssh_forward(channel);
+            let target = remote_forwards.lock().ok().and_then(|forwards| {
+                forwards
+                    .get(&remote_forward_port_key(destination_port))
+                    .cloned()
+            });
+            let Some(target) = target else {
+                close_ssh_channel_bounded(&channel).await;
+                continue;
+            };
+            let Some(permit) =
+                try_acquire_tunnel_connection(&target.connection_slots, target.metrics.as_ref())
+            else {
+                close_ssh_channel_bounded(&channel).await;
+                continue;
+            };
+            tauri::async_runtime::spawn(async move {
+                let _permit = permit;
+                target.metrics.connection_opened();
+                let result = handle_remote_tunnel_client(
+                    channel,
+                    target.spec.clone(),
+                    None,
+                    Arc::clone(&target.metrics),
+                )
+                .await;
+                match result {
+                    Ok(()) => target.metrics.clear_error(),
+                    Err(error) => {
+                        target.metrics.record_error(&error);
+                        eprintln!("PortMate: remote SSH tunnel client failed: {error}");
+                    }
+                }
+                target.metrics.connection_closed();
+            });
+        }
+    });
 }
 
 pub(super) async fn handle_dynamic_tunnel_client(

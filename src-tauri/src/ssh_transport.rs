@@ -94,10 +94,9 @@ impl client::Handler for PortMateSshHandler {
                     let _permit = permit;
                     target.metrics.connection_opened();
                     let result = handle_remote_tunnel_client(
-                        channel,
+                        SshBackendChannel::from_russh(channel),
                         target.spec.clone(),
-                        originator_address,
-                        originator_port,
+                        Some((originator_address, originator_port)),
                         Arc::clone(&target.metrics),
                     )
                     .await;
@@ -744,6 +743,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             writer,
             tap: tap.clone(),
             remote_forwards,
+            remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
             closed: Arc::clone(&closed),
             reader_finished,
         },
@@ -1054,6 +1054,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             writer: Arc::new(tokio::sync::Mutex::new(write_half)),
             tap: tap.clone(),
             remote_forwards,
+            remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
             closed: Arc::clone(&closed),
             reader_finished,
         },

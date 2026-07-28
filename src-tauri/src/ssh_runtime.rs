@@ -8,6 +8,7 @@ pub(super) struct SshRuntime {
     pub(super) writer: Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    pub(super) remote_forward_acceptor_started: Arc<AtomicBool>,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Receiver<()>,
 }

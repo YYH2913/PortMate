@@ -24,6 +24,7 @@ where
         matches!(self, Self::Libssh(_))
     }
 
+    #[cfg(test)]
     pub(super) fn russh_compat(&self) -> Result<&client::Handle<H>, String> {
         match self {
             Self::Russh(handle) => Ok(handle),
@@ -150,6 +151,66 @@ where
             }
         }
     }
+
+    pub(super) async fn listen_remote_forward(
+        &self,
+        bind_host: String,
+        bind_port: u16,
+    ) -> Result<u16, String> {
+        match self {
+            Self::Russh(handle) => {
+                let returned_port = handle
+                    .tcpip_forward(bind_host, u32::from(bind_port))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if returned_port == 0 {
+                    Ok(bind_port)
+                } else {
+                    u16::try_from(returned_port).map_err(|_| {
+                        format!("remote forward returned invalid port {returned_port}")
+                    })
+                }
+            }
+            Self::Libssh(session) => {
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || {
+                    session.listen_forward(Some(&bind_host), bind_port)
+                })
+                .await
+                .map_err(|error| format!("libssh remote forward worker failed: {error}"))?
+                .map_err(|error| format!("libssh remote forward request failed: {error}"))
+            }
+        }
+    }
+
+    pub(super) async fn cancel_remote_forward(
+        &self,
+        bind_host: String,
+        bind_port: u16,
+    ) -> Result<(), String> {
+        match self {
+            Self::Russh(handle) => handle
+                .cancel_tcpip_forward(bind_host, u32::from(bind_port))
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || {
+                    session.cancel_forward(Some(&bind_host), bind_port)
+                })
+                .await
+                .map_err(|error| format!("libssh remote forward cancel worker failed: {error}"))?
+                .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    pub(super) fn libssh_forward_session(&self) -> Option<libssh_rs::Session> {
+        match self {
+            Self::Russh(_) => None,
+            Self::Libssh(session) => Some(session.clone()),
+        }
+    }
 }
 
 pub(super) enum SshBackendChannel {
@@ -178,7 +239,7 @@ impl SshBackendChannel {
         Self::Libssh(LibsshChannelReader::new(channel, true))
     }
 
-    fn from_libssh_forward(channel: libssh_rs::Channel) -> Self {
+    pub(super) fn from_libssh_forward(channel: libssh_rs::Channel) -> Self {
         // Forwarding channels have no process exit status; querying one can block until close.
         Self::Libssh(LibsshChannelReader::new(channel, false))
     }

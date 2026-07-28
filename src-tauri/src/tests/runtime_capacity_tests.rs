@@ -240,6 +240,7 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
                 writer: Arc::new(tokio::sync::Mutex::new(writer)),
                 tap,
                 remote_forwards,
+                remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
                 closed: Arc::new(AtomicBool::new(false)),
                 reader_finished,
             },
