@@ -118,7 +118,7 @@ pub(super) fn local_file_properties(path: &str) -> Result<FileProperties, String
 }
 
 pub(super) async fn list_remote_files(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<Vec<FileEntry>, String> {
     let path = if path.trim().is_empty() {
@@ -130,7 +130,7 @@ pub(super) async fn list_remote_files(
 }
 
 async fn list_remote_files_via_sftp(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<Vec<FileEntry>, String> {
     let mut entries = Vec::new();
@@ -162,7 +162,7 @@ async fn list_remote_files_via_sftp(
 }
 
 pub(super) async fn remote_file_properties(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<FileProperties, String> {
     let metadata = sftp
@@ -212,7 +212,10 @@ fn system_time_to_rfc3339(time: std::time::SystemTime) -> Option<String> {
         })
 }
 
-pub(super) async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<(), String> {
+pub(super) async fn sftp_remove_recursive(
+    sftp: &SftpBackendSession,
+    path: &str,
+) -> Result<(), String> {
     let path = validate_remote_mutating_path(path)?;
     let mut stack = vec![(path.to_string(), false)];
 
@@ -536,7 +539,7 @@ fn prepare_local_delete_paths(paths: &[String]) -> Result<Vec<LocalDeletePath>, 
 }
 
 async fn prepare_remote_delete_paths(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     paths: &[String],
 ) -> Result<Vec<RemoteDeletePath>, String> {
     validate_file_batch_path_count(paths)?;
@@ -655,7 +658,7 @@ fn ensure_local_path_missing(path: &Path, label: &str) -> Result<(), String> {
 }
 
 async fn ensure_remote_path_missing(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
     label: &str,
 ) -> Result<(), String> {
@@ -832,7 +835,7 @@ fn prepare_local_move_paths(
 }
 
 async fn prepare_remote_move_paths(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     paths: &[String],
     destination: &str,
 ) -> Result<Vec<RemoteMovePath>, String> {

@@ -259,7 +259,7 @@ pub(super) fn plan_local_file_batch(paths: &[String]) -> Result<FileBatchPlan, S
 }
 
 pub(super) async fn plan_remote_file_batch(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     paths: &[String],
 ) -> Result<FileBatchPlan, String> {
     let mut roots = Vec::new();
@@ -420,7 +420,7 @@ pub(super) fn validate_batch_relative_path(path: &str) -> Result<(), String> {
 }
 
 pub(super) async fn validate_remote_batch_destination(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<(), String> {
     validate_remote_drop_destination(path)?;
@@ -449,7 +449,7 @@ pub(super) fn batch_destination_path(
 }
 
 pub(super) async fn batch_target_kind(
-    sftp: Option<&SftpSession>,
+    sftp: Option<&SftpBackendSession>,
     path: &str,
     remote: bool,
 ) -> Result<BatchTargetKind, String> {
@@ -508,7 +508,7 @@ pub(super) fn batch_path_depth(path: &str) -> usize {
 
 pub(super) async fn apply_external_drop_conflicts(
     plan: &mut ExternalDropPlan,
-    sftp: Option<&SftpSession>,
+    sftp: Option<&SftpBackendSession>,
     destination: &str,
     local_destination: Option<&Path>,
     remote: bool,

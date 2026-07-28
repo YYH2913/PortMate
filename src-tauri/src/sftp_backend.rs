@@ -1,0 +1,559 @@
+use super::*;
+
+pub(super) enum SftpBackendSession {
+    Russh(SftpSession),
+    Libssh(Arc<tokio::sync::Mutex<libssh_rs::Sftp>>),
+}
+
+impl SftpBackendSession {
+    pub(super) fn from_russh(session: SftpSession) -> Self {
+        Self::Russh(session)
+    }
+
+    pub(super) fn from_libssh(session: libssh_rs::Sftp) -> Self {
+        Self::Libssh(Arc::new(tokio::sync::Mutex::new(session)))
+    }
+
+    pub(super) fn set_timeout(&self, seconds: u64) {
+        if let Self::Russh(session) = self {
+            session.set_timeout(seconds);
+        }
+    }
+
+    pub(super) async fn read_dir<P: Into<String>>(
+        &self,
+        path: P,
+    ) -> Result<std::vec::IntoIter<SftpBackendDirEntry>, String> {
+        let path = path.into();
+        let entries = match self {
+            Self::Russh(session) => session
+                .read_dir(path)
+                .await
+                .map_err(|error| error.to_string())?
+                .map(SftpBackendDirEntry::from_russh)
+                .collect(),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .read_dir(&path)
+                        .map(|entries| {
+                            entries
+                                .into_iter()
+                                .filter_map(SftpBackendDirEntry::from_libssh)
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP read_dir worker failed: {error}"))??
+            }
+        };
+        Ok(entries.into_iter())
+    }
+
+    pub(super) async fn canonicalize(&self, path: &str) -> Result<String, String> {
+        match self {
+            Self::Russh(session) => session
+                .canonicalize(path.to_string())
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                let path = path.to_string();
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .canonicalize(&path)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP canonicalize worker failed: {error}"))?
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn close(&self) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => session.close().await.map_err(|error| error.to_string()),
+            Self::Libssh(_) => Ok(()),
+        }
+    }
+
+    pub(super) async fn metadata(&self, path: String) -> Result<SftpBackendMetadata, String> {
+        match self {
+            Self::Russh(session) => session
+                .metadata(path)
+                .await
+                .map(SftpBackendMetadata::from_russh)
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .metadata(&path)
+                        .map(SftpBackendMetadata::from_libssh)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP stat worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn symlink_metadata(
+        &self,
+        path: String,
+    ) -> Result<SftpBackendMetadata, String> {
+        match self {
+            Self::Russh(session) => session
+                .symlink_metadata(path)
+                .await
+                .map(SftpBackendMetadata::from_russh)
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .symlink_metadata(&path)
+                        .map(SftpBackendMetadata::from_libssh)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP lstat worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn try_exists(&self, path: String) -> Result<bool, String> {
+        match self {
+            Self::Russh(session) => session
+                .try_exists(path)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(_) => match self.symlink_metadata(path).await {
+                Ok(_) => Ok(true),
+                Err(error) if libssh_sftp_missing_error(&error) => Ok(false),
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    pub(super) async fn open(&self, path: String) -> Result<SftpBackendFile, String> {
+        self.open_with_flags(path, OpenFlags::READ).await
+    }
+
+    pub(super) async fn open_with_flags(
+        &self,
+        path: String,
+        flags: OpenFlags,
+    ) -> Result<SftpBackendFile, String> {
+        match self {
+            Self::Russh(session) => session
+                .open_with_flags(path, flags)
+                .await
+                .map(|file| SftpBackendFile::Russh(Box::new(file)))
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .open(&path, libssh_open_flags(flags), 0o600)
+                        .map(SftpBackendFile::from_libssh)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP open worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn create_dir(&self, path: String) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => session
+                .create_dir(path)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .create_dir(&path, 0o755)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP mkdir worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn remove_dir(&self, path: String) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => session
+                .remove_dir(path)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .remove_dir(&path)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP rmdir worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn remove_file(&self, path: String) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => session
+                .remove_file(path)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .remove_file(&path)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP unlink worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn rename(&self, old_path: String, new_path: String) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => session
+                .rename(old_path, new_path)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .rename(&old_path, &new_path)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP rename worker failed: {error}"))?
+            }
+        }
+    }
+
+    pub(super) async fn set_metadata(
+        &self,
+        path: String,
+        metadata: SftpBackendMetadata,
+    ) -> Result<(), String> {
+        match (self, metadata.raw) {
+            (Self::Russh(session), SftpBackendMetadataRaw::Russh(mut raw)) => {
+                raw.permissions = metadata.permissions;
+                session
+                    .set_metadata(path, raw)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            (Self::Libssh(session), _) => {
+                let session = Arc::clone(session);
+                let attributes = libssh_rs::SetAttributes {
+                    size: None,
+                    uid_gid: None,
+                    permissions: metadata.permissions,
+                    atime_mtime: None,
+                };
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .blocking_lock()
+                        .set_metadata(&path, &attributes)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("libssh SFTP setstat worker failed: {error}"))?
+            }
+            (Self::Russh(_), SftpBackendMetadataRaw::Libssh) => {
+                Err("SFTP metadata backend mismatch".to_string())
+            }
+        }
+    }
+}
+
+fn libssh_sftp_missing_error(error: &str) -> bool {
+    error.ends_with("Sftp error code 2") || error.ends_with("Sftp error code 10")
+}
+
+fn libssh_open_flags(flags: OpenFlags) -> libssh_rs::OpenFlags {
+    let mut mapped = if flags.contains(OpenFlags::READ) && flags.contains(OpenFlags::WRITE) {
+        libssh_rs::OpenFlags::READ_WRITE
+    } else if flags.contains(OpenFlags::WRITE) {
+        libssh_rs::OpenFlags::WRITE_ONLY
+    } else {
+        libssh_rs::OpenFlags::READ_ONLY
+    };
+    if flags.contains(OpenFlags::CREATE) {
+        mapped |= libssh_rs::OpenFlags::CREATE;
+    }
+    if flags.contains(OpenFlags::EXCLUDE) {
+        mapped |= libssh_rs::OpenFlags::EXCLUSIVE;
+    }
+    if flags.contains(OpenFlags::TRUNCATE) {
+        mapped |= libssh_rs::OpenFlags::TRUNCATE;
+    }
+    if flags.contains(OpenFlags::APPEND) {
+        mapped |= libssh_rs::OpenFlags::APPEND;
+    }
+    mapped
+}
+
+pub(super) struct SftpBackendDirEntry {
+    name: String,
+    metadata: SftpBackendMetadata,
+}
+
+impl SftpBackendDirEntry {
+    fn from_russh(entry: russh_sftp::client::fs::DirEntry) -> Self {
+        Self {
+            name: entry.file_name(),
+            metadata: SftpBackendMetadata::from_russh(entry.metadata()),
+        }
+    }
+
+    fn from_libssh(metadata: libssh_rs::Metadata) -> Option<Self> {
+        let name = metadata.name()?.to_string();
+        if matches!(name.as_str(), "." | "..") {
+            return None;
+        }
+        Some(Self {
+            name,
+            metadata: SftpBackendMetadata::from_libssh(metadata),
+        })
+    }
+
+    pub(super) fn file_name(&self) -> String {
+        self.name.clone()
+    }
+
+    pub(super) fn metadata(&self) -> SftpBackendMetadata {
+        self.metadata.clone()
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct SftpBackendMetadata {
+    raw: SftpBackendMetadataRaw,
+    kind: SftpBackendFileType,
+    size: u64,
+    pub(super) permissions: Option<u32>,
+    pub(super) mtime: Option<u32>,
+}
+
+#[derive(Clone)]
+enum SftpBackendMetadataRaw {
+    Russh(russh_sftp::client::fs::Metadata),
+    Libssh,
+}
+
+impl SftpBackendMetadata {
+    fn from_russh(metadata: russh_sftp::client::fs::Metadata) -> Self {
+        let kind = if metadata.is_symlink() {
+            SftpBackendFileType::Symlink
+        } else if metadata.is_dir() {
+            SftpBackendFileType::Directory
+        } else if metadata.is_regular() {
+            SftpBackendFileType::Regular
+        } else {
+            SftpBackendFileType::Other
+        };
+        Self {
+            size: metadata.len(),
+            permissions: metadata.permissions,
+            mtime: metadata.mtime,
+            raw: SftpBackendMetadataRaw::Russh(metadata),
+            kind,
+        }
+    }
+
+    fn from_libssh(metadata: libssh_rs::Metadata) -> Self {
+        let kind = match metadata.file_type() {
+            Some(libssh_rs::FileType::Directory) => SftpBackendFileType::Directory,
+            Some(libssh_rs::FileType::Regular) => SftpBackendFileType::Regular,
+            Some(libssh_rs::FileType::Symlink) => SftpBackendFileType::Symlink,
+            _ => SftpBackendFileType::Other,
+        };
+        let mtime = metadata
+            .modified()
+            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .and_then(|duration| u32::try_from(duration.as_secs()).ok());
+        Self {
+            raw: SftpBackendMetadataRaw::Libssh,
+            kind,
+            size: metadata.len().unwrap_or(0),
+            permissions: metadata.permissions(),
+            mtime,
+        }
+    }
+
+    pub(super) fn is_dir(&self) -> bool {
+        self.kind == SftpBackendFileType::Directory
+    }
+
+    pub(super) fn is_regular(&self) -> bool {
+        self.kind == SftpBackendFileType::Regular
+    }
+
+    pub(super) fn is_symlink(&self) -> bool {
+        self.kind == SftpBackendFileType::Symlink
+    }
+
+    pub(super) fn len(&self) -> u64 {
+        self.size
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SftpBackendFileType {
+    Directory,
+    Regular,
+    Symlink,
+    Other,
+}
+
+pub(super) enum SftpBackendFile {
+    Russh(Box<russh_sftp::client::fs::File>),
+    Libssh(Arc<tokio::sync::Mutex<Option<libssh_rs::SftpFile>>>),
+}
+
+impl SftpBackendFile {
+    fn from_libssh(file: libssh_rs::SftpFile) -> Self {
+        Self::Libssh(Arc::new(tokio::sync::Mutex::new(Some(file))))
+    }
+
+    pub(super) async fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncReadExt::read(file, buffer).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                let capacity = buffer.len();
+                let (read, data) = tokio::task::spawn_blocking(move || {
+                    let mut data = vec![0_u8; capacity];
+                    let mut file = file.blocking_lock();
+                    let file = file.as_mut().ok_or_else(sftp_file_closed_error)?;
+                    let read = file.read(&mut data)?;
+                    Ok::<_, std::io::Error>((read, data))
+                })
+                .await
+                .map_err(std::io::Error::other)??;
+                buffer[..read].copy_from_slice(&data[..read]);
+                Ok(read)
+            }
+        }
+    }
+
+    pub(super) async fn read_exact(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncReadExt::read_exact(file, buffer).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                let capacity = buffer.len();
+                let data = tokio::task::spawn_blocking(move || {
+                    let mut data = vec![0_u8; capacity];
+                    let mut file = file.blocking_lock();
+                    file.as_mut()
+                        .ok_or_else(sftp_file_closed_error)?
+                        .read_exact(&mut data)?;
+                    Ok::<_, std::io::Error>(data)
+                })
+                .await
+                .map_err(std::io::Error::other)??;
+                buffer.copy_from_slice(&data);
+                Ok(capacity)
+            }
+        }
+    }
+
+    pub(super) async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncWriteExt::write_all(file, data).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                let data = data.to_vec();
+                tokio::task::spawn_blocking(move || {
+                    file.blocking_lock()
+                        .as_mut()
+                        .ok_or_else(sftp_file_closed_error)?
+                        .write_all(&data)
+                })
+                .await
+                .map_err(std::io::Error::other)?
+            }
+        }
+    }
+
+    pub(super) async fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncWriteExt::flush(file).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                tokio::task::spawn_blocking(move || {
+                    file.blocking_lock()
+                        .as_mut()
+                        .ok_or_else(sftp_file_closed_error)?
+                        .flush()
+                })
+                .await
+                .map_err(std::io::Error::other)?
+            }
+        }
+    }
+
+    pub(super) async fn shutdown(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncWriteExt::shutdown(file).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                tokio::task::spawn_blocking(move || {
+                    let mut file = file.blocking_lock();
+                    let Some(mut file) = file.take() else {
+                        return Ok(());
+                    };
+                    file.flush()
+                })
+                .await
+                .map_err(std::io::Error::other)?
+            }
+        }
+    }
+
+    pub(super) async fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Russh(file) => tokio::io::AsyncSeekExt::seek(file, position).await,
+            Self::Libssh(file) => {
+                let file = Arc::clone(file);
+                tokio::task::spawn_blocking(move || {
+                    file.blocking_lock()
+                        .as_mut()
+                        .ok_or_else(sftp_file_closed_error)?
+                        .seek(position)
+                })
+                .await
+                .map_err(std::io::Error::other)?
+            }
+        }
+    }
+}
+
+fn sftp_file_closed_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SFTP file is closed")
+}

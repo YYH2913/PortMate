@@ -417,6 +417,100 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         assert!(health.sftp_probed);
         assert!(health.sftp_round_trip_ms.is_some());
         assert!(health.sftp_error.is_none());
+
+        state
+            .store
+            .lock()
+            .unwrap()
+            .transfers
+            .push(test_transfer_task(&profile.id, TransferStatus::Running));
+        let progress = test_transfer_progress_context(
+            &state,
+            "transfer-commit-test",
+            Arc::new(AtomicBool::new(false)),
+        );
+        let source = root.join("libssh-sftp-source.bin");
+        let downloaded = root.join("libssh-sftp-downloaded.bin");
+        let payload = b"PortMate libssh native SFTP payload";
+        fs::write(&source, payload).unwrap();
+        let remote_root = format!("/tmp/portmate-libssh-sftp-{}", Uuid::new_v4());
+        let uploaded = remote_join_path(&remote_root, "uploaded.bin");
+        let copied = remote_join_path(&remote_root, "copied.bin");
+        let renamed = remote_join_path(&remote_root, "renamed.bin");
+        let exclusive = remote_join_path(&remote_root, "exclusive.bin");
+
+        let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+        let sftp = auxiliary.sftp().await.unwrap();
+        sftp_create_dir_all(&sftp, &remote_root).await.unwrap();
+        let mut exclusive_file = sftp
+            .open_with_flags(
+                exclusive.clone(),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+            )
+            .await
+            .unwrap();
+        exclusive_file.shutdown().await.unwrap();
+        assert!(sftp
+            .open_with_flags(
+                exclusive.clone(),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+            )
+            .await
+            .is_err());
+        sftp.remove_file(exclusive).await.unwrap();
+        assert_eq!(
+            sftp_upload(&sftp, source.to_str().unwrap(), &uploaded, &progress,)
+                .await
+                .unwrap(),
+            payload.len() as u64
+        );
+        assert_eq!(
+            sftp_download(&sftp, &uploaded, downloaded.to_str().unwrap(), &progress,)
+                .await
+                .unwrap(),
+            payload.len() as u64
+        );
+        assert_eq!(fs::read(&downloaded).unwrap(), payload);
+        assert_eq!(
+            sftp_remote_copy(&sftp, &uploaded, &copied, &progress)
+                .await
+                .unwrap(),
+            payload.len() as u64
+        );
+
+        let entries = list_remote_files(&sftp, &remote_root).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["uploaded.bin", "copied.bin"])
+        );
+        let properties = remote_file_properties(&sftp, &copied).await.unwrap();
+        assert!(properties.is_file);
+        assert_eq!(properties.size, payload.len() as u64);
+
+        let mut metadata = sftp.symlink_metadata(copied.clone()).await.unwrap();
+        let file_type_bits = metadata.permissions.unwrap_or(0) & 0o170000;
+        metadata.permissions = Some(file_type_bits | 0o600);
+        sftp.set_metadata(copied.clone(), metadata).await.unwrap();
+        assert_eq!(
+            sftp.symlink_metadata(copied.clone())
+                .await
+                .unwrap()
+                .permissions
+                .unwrap_or(0)
+                & 0o777,
+            0o600
+        );
+        sftp.rename(copied.clone(), renamed.clone()).await.unwrap();
+        assert!(!sftp.try_exists(copied).await.unwrap());
+        assert!(sftp.try_exists(renamed).await.unwrap());
+        sftp_remove_recursive(&sftp, &remote_root).await.unwrap();
+        assert!(!sftp.try_exists(remote_root).await.unwrap());
+        drop(sftp);
+        drop(auxiliary);
+
         let stored = state
             .store
             .lock()

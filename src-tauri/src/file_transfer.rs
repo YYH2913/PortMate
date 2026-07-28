@@ -128,7 +128,7 @@ pub(super) fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(
 
 struct SshAuxiliaryResources {
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
-    sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+    sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
 }
 
 fn ssh_resources_for_auxiliary_operation(
@@ -147,7 +147,7 @@ fn ssh_resources_for_auxiliary_operation(
 
 pub(super) struct SshAuxiliaryLease {
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
-    sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+    sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -176,11 +176,11 @@ impl SshAuxiliaryLease {
 }
 
 pub(super) struct SftpSessionLease {
-    session: tokio::sync::OwnedMutexGuard<Option<SftpSession>>,
+    session: tokio::sync::OwnedMutexGuard<Option<SftpBackendSession>>,
 }
 
 impl Deref for SftpSessionLease {
-    type Target = SftpSession;
+    type Target = SftpBackendSession;
 
     fn deref(&self) -> &Self::Target {
         self.session
@@ -263,7 +263,7 @@ pub(super) async fn copy_local_file_for_transfer(
 
 pub(super) async fn open_sftp_session(
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
-) -> Result<SftpSession, String> {
+) -> Result<SftpBackendSession, String> {
     let timeout = SSH_AUXILIARY_SETUP_TIMEOUT;
     let started = Instant::now();
     let handle = tokio::time::timeout(timeout, handle.lock())
@@ -275,18 +275,30 @@ pub(super) async fn open_sftp_session(
         .ok_or_else(|| format!("SFTP setup 超时（{} ms）", timeout.as_millis()))?;
 
     let setup = async {
-        let channel = handle
-            .russh_compat()?
-            .channel_open_session()
-            .await
-            .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|error| format!("SFTP subsystem 启动失败: {error}"))?;
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
+        let sftp = match &*handle {
+            SshBackendSession::Russh(handle) => {
+                let channel = handle
+                    .channel_open_session()
+                    .await
+                    .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?;
+                channel
+                    .request_subsystem(true, "sftp")
+                    .await
+                    .map_err(|error| format!("SFTP subsystem 启动失败: {error}"))?;
+                let session = SftpSession::new(channel.into_stream())
+                    .await
+                    .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
+                SftpBackendSession::from_russh(session)
+            }
+            SshBackendSession::Libssh(session) => {
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || session.sftp())
+                    .await
+                    .map_err(|error| format!("libssh SFTP setup worker failed: {error}"))?
+                    .map(SftpBackendSession::from_libssh)
+                    .map_err(|error| format!("SFTP 初始化失败: {error}"))?
+            }
+        };
         sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
         Ok::<_, String>(sftp)
     };
@@ -311,7 +323,7 @@ pub(super) async fn open_sftp_session(
 pub(super) async fn open_sftp_session_with_timeout<H: client::Handler>(
     handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     timeout: Duration,
-) -> Result<SftpSession, String> {
+) -> Result<SftpBackendSession, String> {
     let started = Instant::now();
     let handle = tokio::time::timeout(timeout, handle.lock())
         .await
@@ -334,7 +346,7 @@ pub(super) async fn open_sftp_session_with_timeout<H: client::Handler>(
             .await
             .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
         sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
-        Ok::<_, String>(sftp)
+        Ok::<_, String>(SftpBackendSession::from_russh(sftp))
     };
     match bounded_connection_step(setup, remaining).await {
         Ok(sftp) => Ok(sftp),
@@ -594,7 +606,7 @@ pub(super) fn remote_resume_part_path(target: &str) -> String {
 }
 
 pub(super) async fn sftp_resume_offset(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
     total: u64,
 ) -> Result<u64, String> {
@@ -612,7 +624,7 @@ pub(super) async fn sftp_resume_offset(
 }
 
 pub(super) async fn sftp_resume_offset_matching_local_source(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     part_path: &str,
     total: u64,
     source: &mut fs::File,
@@ -639,7 +651,7 @@ pub(super) async fn sftp_resume_offset_matching_local_source(
 }
 
 pub(super) async fn local_resume_offset_matching_sftp_source(
-    source: &mut russh_sftp::client::fs::File,
+    source: &mut SftpBackendFile,
     part_path: &Path,
     total: u64,
     progress: &TransferProgressContext,
@@ -662,8 +674,8 @@ pub(super) async fn local_resume_offset_matching_sftp_source(
 }
 
 pub(super) async fn sftp_resume_offset_matching_sftp_source(
-    sftp: &SftpSession,
-    source: &mut russh_sftp::client::fs::File,
+    sftp: &SftpBackendSession,
+    source: &mut SftpBackendFile,
     part_path: &str,
     total: u64,
     progress: &TransferProgressContext,
@@ -691,7 +703,7 @@ pub(super) async fn sftp_resume_offset_matching_sftp_source(
 }
 
 pub(super) async fn compare_sftp_and_local_prefix(
-    remote: &mut russh_sftp::client::fs::File,
+    remote: &mut SftpBackendFile,
     local: &mut fs::File,
     length: u64,
     progress: &TransferProgressContext,
@@ -720,8 +732,8 @@ pub(super) async fn compare_sftp_and_local_prefix(
 }
 
 pub(super) async fn compare_sftp_prefixes(
-    left: &mut russh_sftp::client::fs::File,
-    right: &mut russh_sftp::client::fs::File,
+    left: &mut SftpBackendFile,
+    right: &mut SftpBackendFile,
     length: u64,
     progress: &TransferProgressContext,
 ) -> Result<bool, String> {
@@ -760,7 +772,7 @@ pub(super) fn prefix_read_mismatch_or_error(
 }
 
 pub(super) async fn sftp_regular_file_size(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
     label: &str,
 ) -> Result<Option<u64>, String> {
@@ -791,10 +803,10 @@ pub(super) async fn sftp_regular_file_size(
 }
 
 pub(super) async fn sftp_open_resume_writer(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
     offset: u64,
-) -> Result<russh_sftp::client::fs::File, String> {
+) -> Result<SftpBackendFile, String> {
     let _ = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await?;
     let flags = if offset == 0 {
         OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
@@ -814,7 +826,7 @@ pub(super) async fn sftp_open_resume_writer(
 }
 
 pub(super) async fn sftp_finalize_resume_file(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     temp: &str,
     target: &str,
 ) -> Result<(), String> {
@@ -838,7 +850,7 @@ pub(super) async fn sftp_finalize_resume_file(
 }
 
 pub(super) async fn sftp_upload(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     local_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -911,7 +923,7 @@ pub(super) async fn sftp_upload(
 }
 
 pub(super) async fn sftp_download(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     remote_source: &str,
     local_destination: &str,
     progress: &TransferProgressContext,
@@ -968,7 +980,7 @@ pub(super) async fn sftp_download(
 }
 
 pub(super) async fn sftp_remote_copy(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     remote_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -1045,7 +1057,7 @@ pub(super) async fn sftp_remote_copy(
 }
 
 pub(super) async fn sftp_destination_file_path(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     remote_destination: &str,
     source_name: &str,
 ) -> Result<String, String> {
@@ -1090,7 +1102,10 @@ pub(super) fn local_destination_file_path(
     }
 }
 
-pub(super) async fn sftp_create_dir_all(sftp: &SftpSession, path: &str) -> Result<(), String> {
+pub(super) async fn sftp_create_dir_all(
+    sftp: &SftpBackendSession,
+    path: &str,
+) -> Result<(), String> {
     let path = path.trim().trim_end_matches('/');
     if path.is_empty() || path == "." || path == "/" {
         return Ok(());
@@ -1118,7 +1133,7 @@ pub(super) async fn sftp_create_dir_all(sftp: &SftpSession, path: &str) -> Resul
 }
 
 pub(super) async fn reject_remote_symlink_components(
-    sftp: &SftpSession,
+    sftp: &SftpBackendSession,
     path: &str,
     allow_final_symlink: bool,
     label: &str,

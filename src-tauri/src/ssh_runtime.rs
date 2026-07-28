@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct SshRuntime {
     pub(super) runtime_id: String,
     pub(super) handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
-    pub(super) sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
+    pub(super) sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
     pub(super) jump_handles: Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
     pub(super) writer: Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,

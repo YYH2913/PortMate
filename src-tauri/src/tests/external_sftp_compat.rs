@@ -99,6 +99,7 @@ fn external_sftp_server_compatibility() {
             .await
             .unwrap_or_else(|error| panic!("{label} SFTP init failed: {error}"));
         sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
+        let sftp = SftpBackendSession::from_russh(sftp);
 
         let remote_root = format!("/home/{username}/portmate-compat-{}", Uuid::new_v4());
         sftp_create_dir_all(&sftp, &remote_root)
