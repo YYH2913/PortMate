@@ -767,3 +767,10 @@ fn log_retention_check_registry_replaces_changes_and_reclaims_entries() {
     assert!(!checks.lock().unwrap().contains_key(&key));
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn log_truncation_preserves_utf8_boundaries() {
+    assert_eq!(truncate_for_log("  short message  ", 20), "short message");
+    assert_eq!(truncate_for_log("传输失败详情", 5), "传...");
+    assert_eq!(truncate_for_log("传输失败详情", 6), "传输...");
+}
