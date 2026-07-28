@@ -47,6 +47,7 @@
     "test:mcp-swift-client": "cargo build -p portmate-mcp && node scripts/mcp-swift-client-check.mjs",
     "pretest:ssh-server-compat": "node scripts/ensure-node-version.mjs",
     "test:ssh-server-compat": "node scripts/ssh-server-compat-check.mjs",
+    "test:libssh-gssapi-build": "bash scripts/libssh-gssapi-build-check.sh",
     "pretest:tcp-telnet-server-compat": "node scripts/ensure-node-version.mjs",
     "test:tcp-telnet-server-compat": "node scripts/tcp-telnet-server-compat-check.mjs",
     "pretest:linux-package": "node scripts/ensure-node-version.mjs",

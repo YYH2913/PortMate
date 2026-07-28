@@ -661,6 +661,13 @@ use explicit russh compatibility paths. OpenSSH native multiplexing was not sele
 backend because its control protocol has no post-open window-change request, so it cannot preserve the
 interactive terminal's dynamic resize behavior.
 
+The workspace carries a source-pinned `libssh-rs` 0.3.8 fork with only a safe
+`Session::userauth_gssapi()` wrapper added. `npm run test:libssh-gssapi-build` is a Linux build
+capability check: it requires system libssh development metadata, retains a real reference to
+`ssh_userauth_gssapi`, resolves the linked shared library, and verifies that library declares a
+GSSAPI runtime dependency. This check does not claim successful authentication; a real Kerberos
+realm, ticket cache, and GSSAPI-enabled SSH server matrix is still required.
+
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
 `lastDisconnect` value through `Reconnecting`, reconnect disablement, and an idempotent manual close.
