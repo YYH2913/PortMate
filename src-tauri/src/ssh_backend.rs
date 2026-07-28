@@ -112,6 +112,44 @@ where
             }
         }
     }
+
+    pub(super) async fn open_direct_tcpip(
+        &self,
+        target_host: String,
+        target_port: u16,
+        originator_address: String,
+        originator_port: u16,
+    ) -> Result<SshBackendChannel, String> {
+        match self {
+            Self::Russh(handle) => handle
+                .channel_open_direct_tcpip(
+                    target_host,
+                    u32::from(target_port),
+                    originator_address,
+                    u32::from(originator_port),
+                )
+                .await
+                .map(SshBackendChannel::from_russh)
+                .map_err(|error| error.to_string()),
+            Self::Libssh(session) => {
+                let session = session.clone();
+                let channel = tokio::task::spawn_blocking(move || {
+                    let channel = session.new_channel()?;
+                    channel.open_forward(
+                        &target_host,
+                        target_port,
+                        &originator_address,
+                        originator_port,
+                    )?;
+                    Ok::<_, libssh_rs::Error>(channel)
+                })
+                .await
+                .map_err(|error| format!("libssh direct-tcpip worker failed: {error}"))?
+                .map_err(|error| format!("libssh direct-tcpip open failed: {error}"))?;
+                Ok(SshBackendChannel::from_libssh_forward(channel))
+            }
+        }
+    }
 }
 
 pub(super) enum SshBackendChannel {
@@ -137,7 +175,12 @@ impl SshBackendChannel {
     }
 
     pub(super) fn from_libssh(channel: libssh_rs::Channel) -> Self {
-        Self::Libssh(LibsshChannelReader::new(channel))
+        Self::Libssh(LibsshChannelReader::new(channel, true))
+    }
+
+    fn from_libssh_forward(channel: libssh_rs::Channel) -> Self {
+        // Forwarding channels have no process exit status; querying one can block until close.
+        Self::Libssh(LibsshChannelReader::new(channel, false))
     }
 
     pub(super) fn split(self) -> (SshBackendChannelReader, SshBackendChannelWriter) {
@@ -209,6 +252,13 @@ pub(super) enum SshBackendChannelReader {
 }
 
 impl SshBackendChannelReader {
+    pub(super) async fn wait(&mut self) -> Option<SshBackendMessage> {
+        match self {
+            Self::Russh(reader) => reader.wait().await.map(SshBackendMessage::from),
+            Self::Libssh(reader) => reader.wait().await,
+        }
+    }
+
     pub(super) async fn wait_until_closed(
         &mut self,
         closed: &AtomicBool,
@@ -265,19 +315,34 @@ impl SshBackendChannelWriter {
             }
         }
     }
+
+    pub(super) async fn eof(&self) -> Result<(), String> {
+        match self {
+            Self::Russh(writer) => writer.eof().await.map_err(|error| error.to_string()),
+            Self::Libssh(channel) => {
+                let channel = Arc::clone(channel);
+                tokio::task::spawn_blocking(move || channel.blocking_lock().send_eof())
+                    .await
+                    .map_err(|error| format!("libssh EOF worker failed: {error}"))?
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
 }
 
 pub(super) struct LibsshChannelReader {
     channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
     pending: VecDeque<SshBackendMessage>,
+    collect_exit_metadata: bool,
     completed: bool,
 }
 
 impl LibsshChannelReader {
-    fn new(channel: libssh_rs::Channel) -> Self {
+    fn new(channel: libssh_rs::Channel, collect_exit_metadata: bool) -> Self {
         Self {
             channel: Arc::new(tokio::sync::Mutex::new(channel)),
             pending: VecDeque::new(),
+            collect_exit_metadata,
             completed: false,
         }
     }
@@ -303,10 +368,13 @@ impl LibsshChannelReader {
             }
 
             let channel = Arc::clone(&self.channel);
-            let polled = tokio::task::spawn_blocking(move || poll_libssh_channel(channel))
-                .await
-                .map_err(|error| format!("libssh read worker failed: {error}"))
-                .and_then(|result| result);
+            let collect_exit_metadata = self.collect_exit_metadata;
+            let polled = tokio::task::spawn_blocking(move || {
+                poll_libssh_channel(channel, collect_exit_metadata)
+            })
+            .await
+            .map_err(|error| format!("libssh read worker failed: {error}"))
+            .and_then(|result| result);
             match polled {
                 Ok(LibsshChannelPoll::Data(data)) => return Some(SshBackendMessage::Data(data)),
                 Ok(LibsshChannelPoll::ExtendedData(data)) => {
@@ -360,6 +428,7 @@ enum LibsshChannelPoll {
 
 fn poll_libssh_channel(
     channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
+    collect_exit_metadata: bool,
 ) -> Result<LibsshChannelPoll, String> {
     const POLL_TIMEOUT: Duration = Duration::from_millis(50);
     const MAX_READ_BYTES: usize = 64 * 1024;
@@ -392,8 +461,12 @@ fn poll_libssh_channel(
     let closed = channel.is_closed();
     if closed || channel.is_eof() {
         return Ok(LibsshChannelPoll::Finished {
-            exit_status: channel.get_exit_status(),
-            exit_signal: channel.get_exit_signal(),
+            exit_status: collect_exit_metadata
+                .then(|| channel.get_exit_status())
+                .flatten(),
+            exit_signal: collect_exit_metadata
+                .then(|| channel.get_exit_signal())
+                .flatten(),
             closed,
         });
     }

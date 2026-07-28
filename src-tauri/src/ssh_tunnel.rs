@@ -1373,7 +1373,7 @@ pub(super) async fn open_tunnel_direct_tcpip(
     target_port: u16,
     peer: std::net::SocketAddr,
     label: &str,
-) -> Result<Channel<client::Msg>, String> {
+) -> Result<SshBackendChannel, String> {
     let handle = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, shared_handle.lock())
         .await
         .map_err(|_| {
@@ -1382,29 +1382,25 @@ pub(super) async fn open_tunnel_direct_tcpip(
                 TUNNEL_CONNECT_TIMEOUT.as_millis()
             )
         })?;
-    let russh = handle.russh_compat()?;
-    match open_direct_tcpip_with_timeout(
-        russh,
-        target_host,
-        target_port,
-        peer.ip().to_string(),
-        peer.port(),
+    match bounded_connection_step(
+        handle.open_direct_tcpip(target_host, target_port, peer.ip().to_string(), peer.port()),
         TUNNEL_CONNECT_TIMEOUT,
-        "PortMate tunnel channel open timeout",
     )
     .await
     {
         Ok(channel) => Ok(channel),
-        Err(DirectTcpipOpenError::Failed(error)) => Err(format!("{label} failed: {error}")),
-        Err(DirectTcpipOpenError::TimedOut {
-            timeout_ms,
-            cleanup_warning,
-        }) => {
-            let cleanup_warning = cleanup_warning
-                .map(|warning| format!("; {warning}"))
-                .unwrap_or_default();
+        Err(BoundedConnectionStepError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning = request_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate tunnel channel open timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
             Err(format!(
-                "{label} timed out after {timeout_ms} ms{cleanup_warning}"
+                "{label} timed out after {} ms{cleanup_warning}",
+                TUNNEL_CONNECT_TIMEOUT.as_millis()
             ))
         }
     }
@@ -1425,54 +1421,7 @@ pub(super) async fn handle_local_tunnel_client(
         "direct-tcpip open",
     )
     .await?;
-    let (mut remote_read, remote_write) = channel.split();
-    let (mut local_read, mut local_write) = local_stream.into_split();
-
-    let upload_metrics = Arc::clone(&metrics);
-    let local_to_remote = async move {
-        let mut buffer = vec![0_u8; 16 * 1024];
-        loop {
-            let size = local_read
-                .read(&mut buffer)
-                .await
-                .map_err(|error| error.to_string())?;
-            if size == 0 {
-                remote_write
-                    .eof()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                break;
-            }
-            upload_metrics.add_tcp_to_ssh_bytes(size);
-            remote_write
-                .data(&buffer[..size])
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok::<(), String>(())
-    };
-
-    let download_metrics = Arc::clone(&metrics);
-    let remote_to_local = async move {
-        while let Some(message) = remote_read.wait().await {
-            match message {
-                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                    download_metrics.add_ssh_to_tcp_bytes(data.len());
-                    local_write
-                        .write_all(&data)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                ChannelMsg::Eof | ChannelMsg::Close => break,
-                _ => {}
-            }
-        }
-        Ok::<(), String>(())
-    };
-
-    tokio::try_join!(local_to_remote, remote_to_local)
-        .map(|_| ())
-        .map_err(|error| format!("local tunnel pipe failed ({}): {error}", tunnel.label))
+    pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
 }
 
 pub(super) async fn handle_remote_tunnel_client(
@@ -1507,7 +1456,13 @@ pub(super) async fn handle_remote_tunnel_client(
             });
         }
     };
-    pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
+    pipe_ssh_channel_to_tcp(
+        SshBackendChannel::from_russh(channel),
+        local_stream,
+        tunnel,
+        metrics,
+    )
+    .await
 }
 
 pub(super) async fn handle_dynamic_tunnel_client(
@@ -1553,7 +1508,7 @@ pub(super) async fn handle_dynamic_tunnel_client(
 }
 
 pub(super) async fn pipe_ssh_channel_to_tcp(
-    channel: Channel<client::Msg>,
+    channel: SshBackendChannel,
     local_stream: TcpStream,
     tunnel: TunnelSpec,
     metrics: Arc<TunnelMetrics>,
@@ -1589,21 +1544,32 @@ pub(super) async fn pipe_ssh_channel_to_tcp(
     let remote_to_local = async move {
         while let Some(message) = remote_read.wait().await {
             match message {
-                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                SshBackendMessage::Data(data) | SshBackendMessage::ExtendedData { data, .. } => {
                     download_metrics.add_ssh_to_tcp_bytes(data.len());
                     local_write
                         .write_all(&data)
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                SshBackendMessage::Eof | SshBackendMessage::Close => break,
+                SshBackendMessage::Failure => {
+                    return Err("SSH tunnel channel reported failure".to_string());
+                }
+                SshBackendMessage::Error(error) => {
+                    return Err(format!("SSH tunnel channel read failed: {error}"));
+                }
                 _ => {}
             }
         }
         Ok::<(), String>(())
     };
 
+    let pipe_kind = if tunnel.mode == TunnelMode::Local {
+        "local tunnel"
+    } else {
+        "tunnel"
+    };
     tokio::try_join!(local_to_remote, remote_to_local)
         .map(|_| ())
-        .map_err(|error| format!("tunnel pipe failed ({}): {error}", tunnel.label))
+        .map_err(|error| format!("{pipe_kind} pipe failed ({}): {error}", tunnel.label))
 }
