@@ -16,5 +16,11 @@
     "requestedProtocolVersion": "2025-11-25",
     "protocolVersion": "2025-06-18",
     "protocolHeader": true
+  },
+  {
+    "version": "1.30.0",
+    "requestedProtocolVersion": "2025-11-25",
+    "protocolVersion": "2025-06-18",
+    "protocolHeader": true
   }
 ]

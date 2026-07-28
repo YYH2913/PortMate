@@ -85,7 +85,7 @@
     "slip": "^1.0.2"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@tauri-apps/cli": "^2.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
