@@ -656,3 +656,34 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
         .last_error
         .is_none());
 }
+
+#[test]
+fn stopping_tunnel_marks_profile_tunnel_disabled() {
+    let mut store = SessionStore::default();
+    let mut profile = test_ssh_profile();
+    let tunnel = TunnelSpec {
+        id: "tunnel-1".to_string(),
+        label: "127.0.0.1:10022 -> 127.0.0.1:22".to_string(),
+        mode: TunnelMode::Local,
+        bind_host: "127.0.0.1".to_string(),
+        bind_port: 10022,
+        target_host: "127.0.0.1".to_string(),
+        target_port: 22,
+        enabled: true,
+    };
+    if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {
+        ssh.tunnels.push(tunnel.clone());
+    }
+    store.upsert_profile(profile);
+
+    let mut stopped = tunnel;
+    stopped.enabled = false;
+    mark_tunnel_stopped_in_store(&mut store, "ssh-session-1", &stopped);
+
+    let saved = match store.profile("ssh-session-1").unwrap().connection {
+        ConnectionConfig::Ssh(ssh) => ssh.tunnels,
+        _ => panic!("expected SSH profile"),
+    };
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].enabled);
+}

@@ -1242,3 +1242,37 @@ fn log_query_limit_matches_mcp_schema_bounds() {
     assert_eq!(bounded_log_query_limit(Some(600)), 600);
     assert_eq!(bounded_log_query_limit(Some(u64::MAX)), 1000);
 }
+
+#[test]
+fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
+    let executable = Path::new("/opt/PortMate/bin/portmate-mcp");
+    let store_path = Path::new("/home/operator/PortMate Data/portmate-store.sqlite3");
+    let config = build_mcp_http_config(true, executable, store_path);
+    assert_eq!(config.token_ref, MCP_HTTP_TOKEN_REF);
+    assert_eq!(config.endpoint, "http://127.0.0.1:8787/mcp");
+    assert!(config.token_available);
+    assert!(config.start_command.contains("PORTMATE_MCP_HTTP=1"));
+    assert_eq!(config.executable, executable.to_string_lossy());
+    assert_eq!(config.store_path, store_path.to_string_lossy());
+    assert!(config
+        .start_command
+        .contains("/opt/PortMate/bin/portmate-mcp"));
+    assert!(config
+        .start_command
+        .contains("'/home/operator/PortMate Data/portmate-store.sqlite3'"));
+    assert!(!config.start_command.contains("cargo run"));
+    assert!(!config.start_command.contains(MCP_HTTP_TOKEN_REF));
+    assert!(!config.start_command.contains("keychain:"));
+    assert!(!config.start_command.contains("PORTMATE_MCP_HTTP_TOKEN"));
+    assert!(!config.start_command.contains("example-token-body"));
+    #[cfg(not(windows))]
+    assert_eq!(
+        config.start_command,
+        "PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787 '/opt/PortMate/bin/portmate-mcp' --http"
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        config.start_command,
+        "$env:PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3'; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787'; & '/opt/PortMate/bin/portmate-mcp' --http"
+    );
+}
