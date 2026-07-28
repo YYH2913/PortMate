@@ -1,0 +1,31 @@
+[package]
+name = "russh-sftp"
+version = "2.1.2"
+edition = "2021"
+description = "SFTP subsystem supported server and client for Russh"
+readme = "README.md"
+repository = "https://github.com/AspectUnk/russh-sftp"
+license = "Apache-2.0"
+keywords = ["russh", "sftp", "ssh2", "server", "client"]
+
+[dependencies]
+async-trait = { version = "0.1.89", optional = true }
+bitflags = { version = "2.11.1", features = ["serde"] }
+bytes = "1.11.1"
+chrono = "0.4.44"
+dashmap = "6.1.0"
+log = "0.4.29"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11"
+thiserror = "2.0.18"
+tokio = { version = "1", default-features = false, features = [
+  "io-util",
+  "rt",
+  "sync",
+  "time",
+  "macros",
+] }
+tokio-util = "0.7.18"
+
+[features]
+async-trait = ["dep:async-trait"]

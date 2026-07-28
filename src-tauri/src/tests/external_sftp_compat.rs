@@ -15,6 +15,8 @@ fn external_sftp_server_compatibility() {
         .unwrap();
     let username = std::env::var("PORTMATE_COMPAT_SSH_USERNAME").unwrap();
     let password = std::env::var("PORTMATE_COMPAT_SSH_PASSWORD").unwrap();
+    let verify_extended_status_codes =
+        std::env::var("PORTMATE_COMPAT_SFTP_EXTENDED_STATUS_CODES").as_deref() == Ok("1");
     let root = std::env::temp_dir().join(format!(
         "portmate-external-sftp-{}-{}",
         label,
@@ -113,6 +115,21 @@ fn external_sftp_server_compatibility() {
         sftp_create_dir_all(&sftp, &remote_root)
             .await
             .unwrap_or_else(|error| panic!("{label} SFTP mkdir failed: {error}"));
+        if verify_extended_status_codes {
+            let started = Instant::now();
+            let error = sftp
+                .create_dir(remote_root.clone())
+                .await
+                .expect_err("Apache MINA duplicate SFTP mkdir unexpectedly succeeded");
+            assert!(
+                error.contains("File already exists"),
+                "{label} returned the wrong duplicate mkdir status: {error}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{label} duplicate mkdir status exceeded the compatibility deadline"
+            );
+        }
         let source = root.join("source.bin");
         let payload = format!("PortMate {label} SFTP compatibility\n").repeat(64);
         fs::write(&source, payload.as_bytes()).unwrap();
@@ -177,7 +194,30 @@ fn external_sftp_server_compatibility() {
         .await
         .unwrap_or_else(|error| panic!("{label} SFTP remote copy failed: {error}"));
         assert_eq!(copied_bytes, payload.len() as u64);
-        sftp.remove_dir(remote_root.clone()).await.ok();
+        if verify_extended_status_codes {
+            let started = Instant::now();
+            let error = sftp
+                .remove_dir(remote_root.clone())
+                .await
+                .expect_err("Apache MINA non-empty SFTP rmdir unexpectedly succeeded");
+            assert!(
+                error.contains("Directory not empty"),
+                "{label} returned the wrong non-empty rmdir status: {error}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{label} non-empty rmdir status exceeded the compatibility deadline"
+            );
+        }
+        sftp.remove_file(format!("{remote_root}/source.bin"))
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP source cleanup failed: {error}"));
+        sftp.remove_file(copied)
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP copy cleanup failed: {error}"));
+        sftp.remove_dir(remote_root.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{label} SFTP directory cleanup failed: {error}"));
         let _ = session
             .disconnect(
                 Disconnect::ByApplication,

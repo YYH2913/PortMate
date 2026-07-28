@@ -1121,6 +1121,15 @@ pub(super) async fn sftp_create_dir_all(
         .filter(|part| !part.is_empty() && *part != ".")
     {
         current = remote_join_path(&current, part);
+        match sftp.symlink_metadata(current.clone()).await {
+            Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => continue,
+            Ok(_) => {
+                return Err(format!(
+                    "SFTP 创建远端目录失败 {current}: 路径已存在但不是普通目录"
+                ));
+            }
+            Err(_) => {}
+        }
         match sftp.create_dir(current.clone()).await {
             Ok(()) => {}
             Err(error) => match sftp.symlink_metadata(current.clone()).await {

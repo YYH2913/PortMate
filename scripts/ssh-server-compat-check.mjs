@@ -66,6 +66,7 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SSH_PORT: String(port),
         PORTMATE_COMPAT_SSH_USERNAME: "portmate",
         PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
+        PORTMATE_COMPAT_SFTP_EXTENDED_STATUS_CODES: entry.verifyExtendedSftpStatusCodes ? "1" : "0",
       },
     });
     if (entry.runActiveTransferDisconnect !== false) {
@@ -101,6 +102,7 @@ for (const entry of matrix) {
       activeModemTransferDisconnect: entry.runActiveTransferDisconnect === false
         ? null
         : entry.modemDisconnectProtocol,
+      extendedSftpStatusCodes: entry.verifyExtendedSftpStatusCodes === true,
     });
   } finally {
     run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
@@ -234,6 +236,9 @@ console.log(JSON.stringify({
     name,
     protocol: activeModemTransferDisconnect,
     })),
+  verifiedExtendedSftpStatusServers: results
+    .filter(({ extendedSftpStatusCodes }) => extendedSftpStatusCodes)
+    .map(({ name }) => name),
   verifiedHealthFaults,
   verifiedTransferFaults,
 }, null, 2));
@@ -256,6 +261,12 @@ function validateEntry(entry) {
   }
   if (entry.runActiveTransferDisconnect !== undefined && typeof entry.runActiveTransferDisconnect !== "boolean") {
     throw new Error(`Invalid SSH compatibility active-transfer flag in ${entry.name}`);
+  }
+  if (entry.verifyExtendedSftpStatusCodes !== undefined && typeof entry.verifyExtendedSftpStatusCodes !== "boolean") {
+    throw new Error(`Invalid SSH compatibility extended-status flag in ${entry.name}`);
+  }
+  if (entry.verifyExtendedSftpStatusCodes === true && !protocols.includes("sftp")) {
+    throw new Error(`SSH compatibility extended-status checks require SFTP in ${entry.name}`);
   }
   if (entry.runActiveTransferDisconnect !== false) {
     if (!entry.disconnectProtocol || !["sftp", "scp"].includes(entry.disconnectProtocol)) {

@@ -28,7 +28,7 @@ keyring-core = "1.0.0"
 libssh-rs = { path = "../crates/libssh-rs" }
 libc = "0.2"
 russh = { version = "0.62.4", features = ["async-trait"] }
-russh-sftp = "2.1.2"
+russh-sftp = { path = "../crates/russh-sftp" }
 portable-pty = "0.9"
 regex.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
