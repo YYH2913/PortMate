@@ -1124,6 +1124,16 @@ impl Session {
         }
     }
 
+    /// Cancel a remote port forward previously created by [`Session::listen_forward`].
+    pub fn cancel_forward(&self, bind_address: Option<&str>, port: u16) -> SshResult<()> {
+        let sess = self.lock_session();
+        let bind_address = opt_str_to_cstring(bind_address);
+        let res = unsafe {
+            sys::ssh_channel_cancel_forward(**sess, opt_cstring_to_cstr(&bind_address), port as i32)
+        };
+        sess.basic_status(res, "ssh_channel_cancel_forward failed")
+    }
+
     /// Accept a remote forwarded connection.
     /// You must have called `Session::listen_forward` previously to set up
     /// remote port forwarding.
