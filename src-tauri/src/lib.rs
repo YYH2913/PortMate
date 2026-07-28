@@ -552,8 +552,9 @@ mod tests {
         async fn channel_open_session(
             &mut self,
             _channel: Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut russh::server::Session,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<(), Self::Error> {
             self.counters
                 .session_channel_attempts
                 .fetch_add(1, Ordering::SeqCst);
@@ -563,7 +564,8 @@ mod tests {
             self.counters
                 .session_channel_completions
                 .fetch_add(1, Ordering::SeqCst);
-            Ok(true)
+            reply.accept().await;
+            Ok(())
         }
 
         async fn exec_request(
@@ -710,8 +712,9 @@ mod tests {
             port_to_connect: u32,
             _originator_address: &str,
             _originator_port: u32,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut russh::server::Session,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<(), Self::Error> {
             self.counters
                 .direct_tcpip_attempts
                 .fetch_add(1, Ordering::SeqCst);
@@ -724,13 +727,14 @@ mod tests {
             let Ok(mut socket) =
                 TcpStream::connect((host_to_connect, port_to_connect as u16)).await
             else {
-                return Ok(false);
+                return Ok(());
             };
+            reply.accept().await;
             tokio::spawn(async move {
                 let mut stream = channel.into_stream();
                 let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
             });
-            Ok(true)
+            Ok(())
         }
     }
 
@@ -772,8 +776,9 @@ mod tests {
         async fn channel_open_session(
             &mut self,
             channel: Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut russh::server::Session,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<(), Self::Error> {
             self.counters
                 .session_channel_attempts
                 .fetch_add(1, Ordering::SeqCst);
@@ -781,7 +786,8 @@ mod tests {
             self.counters
                 .session_channel_completions
                 .fetch_add(1, Ordering::SeqCst);
-            Ok(true)
+            reply.accept().await;
+            Ok(())
         }
 
         async fn subsystem_request(

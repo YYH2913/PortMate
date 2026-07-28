@@ -19,18 +19,15 @@ portmate-core = { path = "../crates/portmate-core" }
 portmate-kdf = { path = "../crates/portmate-kdf" }
 base64.workspace = true
 chrono.workspace = true
-ed25519-dalek = "=3.0.0-pre.6"
+ed25519-dalek = "3.0.0"
 flate2 = "1.1.9"
 getrandom = "0.3"
 iota_stronghold = "2.1.0"
 keyring = "4.0.1"
 keyring-core = "1.0.0"
 libc = "0.2"
-russh = { version = "0.60.1", features = ["async-trait"] }
+russh = { version = "0.62.4", features = ["async-trait"] }
 russh-sftp = "2.1.2"
-# russh 0.60.1 depends on pkcs5 0.8.0-rc.13 semantics; without an
-# exact direct pin Cargo may resolve pkcs5 0.8.0, which breaks pkcs8 rc.
-pkcs5 = "=0.8.0-rc.13"
 portable-pty = "0.9"
 regex.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }

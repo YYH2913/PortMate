@@ -98,6 +98,7 @@ impl client::Handler for PortMateSshHandler {
         connected_port: u32,
         originator_address: &str,
         originator_port: u32,
+        reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         let forwards = Arc::clone(&self.remote_forwards);
@@ -107,7 +108,6 @@ impl client::Handler for PortMateSshHandler {
             let Some((connected_port, originator_port)) =
                 forwarded_tcpip_ports(connected_port, originator_port)
             else {
-                close_ssh_channel_bounded(&channel).await;
                 return Ok(());
             };
             let target = {
@@ -123,9 +123,9 @@ impl client::Handler for PortMateSshHandler {
                     &target.connection_slots,
                     target.metrics.as_ref(),
                 ) else {
-                    close_ssh_channel_bounded(&channel).await;
                     return Ok(());
                 };
+                reply.accept().await;
                 tauri::async_runtime::spawn(async move {
                     let _permit = permit;
                     target.metrics.connection_opened();
@@ -146,8 +146,6 @@ impl client::Handler for PortMateSshHandler {
                     }
                     target.metrics.connection_closed();
                 });
-            } else {
-                close_ssh_channel_bounded(&channel).await;
             }
             Ok(())
         }
