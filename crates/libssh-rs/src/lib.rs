@@ -72,6 +72,7 @@ impl Drop for LibraryState {
 }
 
 static LIB: LazyLock<Option<LibraryState>> = LazyLock::new(|| LibraryState::new());
+const MAX_PENDING_AGENT_FORWARD_CHANNELS: usize = 32;
 
 fn initialize() -> SshResult<()> {
     if LIB.is_none() {
@@ -310,6 +311,9 @@ impl Session {
         userdata: *mut ::std::os::raw::c_void,
     ) -> sys::ssh_channel {
         let sess: &mut SessionHolder = &mut *(userdata as *mut SessionHolder);
+        if sess.pending_agent_forward_channels.len() >= MAX_PENDING_AGENT_FORWARD_CHANNELS {
+            return std::ptr::null_mut();
+        }
         let chan = sys::ssh_channel_new(session);
         if chan.is_null() {
             eprintln!("ssh_channel_new failed: {:?}", sess.last_error());

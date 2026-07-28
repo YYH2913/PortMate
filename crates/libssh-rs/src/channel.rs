@@ -217,6 +217,12 @@ impl Channel {
         sess.basic_status(res, "ssh_channel_send_eof failed")
     }
 
+    /// Flush pending session output with an optional bounded timeout.
+    pub fn flush(&self, timeout: Option<Duration>) -> SshResult<()> {
+        let (sess, _chan) = self.lock_session();
+        sess.blocking_flush(timeout)
+    }
+
     /// Check if the channel is open or not.
     pub fn is_open(&self) -> bool {
         let (_sess, chan) = self.lock_session();

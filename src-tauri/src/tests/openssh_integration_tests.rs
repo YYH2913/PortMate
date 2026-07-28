@@ -2967,6 +2967,83 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
             .await
             .unwrap();
 
+        let mut libssh_forwarding = libssh_agent.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_forwarding.connection {
+            ssh.agent_policy.forwarding = true;
+        }
+        let forwarded = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_forwarding,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(forwarded.runtime.handle.lock().await.is_libssh());
+        let EstablishedSshRuntime {
+            runtime,
+            mut read_half,
+            ..
+        } = forwarded;
+        let SshRuntime {
+            handle,
+            writer,
+            closed,
+            agent_forwarder_finished,
+            ..
+        } = runtime;
+        writer
+            .lock()
+            .await
+            .data(b"ssh-add -L 2>&1; printf '\\n__PORTMATE_%s__\\n' AGENT_FORWARD_DONE\r")
+            .await
+            .unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut output = Vec::new();
+            loop {
+                match read_half.wait().await {
+                    Some(SshBackendMessage::Data(data)) => {
+                        output.extend_from_slice(&data);
+                        if output
+                            .windows(b"__PORTMATE_AGENT_FORWARD_DONE__".len())
+                            .any(|window| window == b"__PORTMATE_AGENT_FORWARD_DONE__")
+                        {
+                            return output;
+                        }
+                    }
+                    Some(SshBackendMessage::ExtendedData { data, .. }) => {
+                        output.extend_from_slice(&data);
+                    }
+                    Some(_) => {}
+                    None => panic!("libssh agent forwarding terminal closed before marker"),
+                }
+            }
+        })
+        .await
+        .expect("libssh agent forwarding command did not finish");
+        assert!(
+            String::from_utf8_lossy(&output).contains(&accepted_public_key),
+            "remote ssh-add did not return the forwarded agent identity: {}",
+            String::from_utf8_lossy(&output)
+        );
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        if let Some(finished) = agent_forwarder_finished {
+            tokio::time::timeout(Duration::from_secs(2), finished)
+                .await
+                .expect("libssh agent forwarder did not stop")
+                .expect("libssh agent forwarder completion sender dropped");
+        }
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate libssh agent forwarding test")
+            .await
+            .unwrap();
+
         let matching_ref = IdentityRef {
             id: "accepted-agent-key".to_string(),
             label: accepted_comment.clone(),

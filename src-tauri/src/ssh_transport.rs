@@ -745,6 +745,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             tap: tap.clone(),
             remote_forwards,
             remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
+            agent_forwarder_finished: None,
             closed: Arc::clone(&closed),
             reader_finished,
         },
@@ -812,15 +813,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     if !ssh.jumps.is_empty() {
         return Err("GSSAPI libssh backend 尚未支持 Jump Host".to_string());
     }
-    if ssh.agent_policy.forwarding {
-        return Err("GSSAPI libssh backend 尚未支持 SSH agent forwarding".to_string());
-    }
-
+    let agent_socket_path = agent_socket_path
+        .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from));
     let host = ssh.endpoint.host.clone();
     let port = ssh.endpoint.port;
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
     let identity_agent = agent_socket_path
+        .clone()
         .map(|path| {
             path.into_os_string()
                 .into_string()
@@ -1007,6 +1007,16 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     }
 
     let terminal_session = session.clone();
+    let agent_forward_socket = if ssh.agent_policy.forwarding {
+        Some(
+            agent_socket_path
+                .clone()
+                .ok_or_else(|| "SSH agent forwarding requires an SSH agent socket".to_string())?,
+        )
+    } else {
+        None
+    };
+    let request_agent_forward = agent_forward_socket.is_some();
     let term = profile.terminal.term.clone();
     let cols = u32::from(profile.terminal.cols);
     let rows = u32::from(profile.terminal.rows);
@@ -1031,6 +1041,12 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 ("TERM_PROGRAM", "PortMate"),
             ] {
                 let _ = channel.request_env(name, value);
+            }
+            if request_agent_forward {
+                terminal_session.enable_accept_agent_forward(true);
+                channel
+                    .request_auth_agent()
+                    .map_err(|error| format!("libssh 请求 agent forwarding 失败: {error}"))?;
             }
             channel
                 .request_shell()
@@ -1061,6 +1077,9 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
+    let agent_forwarder_finished = agent_forward_socket.map(|socket_path| {
+        start_libssh_agent_forwarder(session.clone(), socket_path, Arc::clone(&closed))
+    });
 
     Ok(EstablishedSshRuntime {
         runtime_id: runtime_id.clone(),
@@ -1075,6 +1094,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             tap: tap.clone(),
             remote_forwards,
             remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
+            agent_forwarder_finished,
             closed: Arc::clone(&closed),
             reader_finished,
         },
