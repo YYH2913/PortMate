@@ -4,14 +4,14 @@ pub(super) const SCP_IO_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const MAX_SCP_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
 pub(super) async fn scp_send_data_with_idle_timeout(
-    channel: &Channel<client::Msg>,
+    channel: &SshBackendChannel,
     data: &[u8],
     progress: &TransferProgressContext,
     idle_timeout: Duration,
     stage: &str,
 ) -> Result<(), String> {
     if let Err(error) = progress.check_cancelled() {
-        close_russh_channel_bounded(channel).await;
+        close_ssh_channel_bounded(channel).await;
         return Err(error);
     }
     let started = Instant::now();
@@ -39,18 +39,18 @@ pub(super) async fn scp_send_data_with_idle_timeout(
         }
     };
     if outcome.is_err() {
-        close_russh_channel_bounded(channel).await;
+        close_ssh_channel_bounded(channel).await;
     }
     outcome
 }
 
 pub(super) async fn scp_wait_channel_message(
-    channel: &mut Channel<client::Msg>,
+    channel: &mut SshBackendChannel,
     progress: &TransferProgressContext,
     last_progress: &mut Instant,
     idle_timeout: Duration,
     stage: &str,
-) -> Result<Option<ChannelMsg>, String> {
+) -> Result<Option<SshBackendMessage>, String> {
     progress.check_cancelled()?;
     let outcome = {
         let wait = channel.wait();
@@ -77,7 +77,7 @@ pub(super) async fn scp_wait_channel_message(
         Ok(message) => {
             if matches!(
                 message.as_ref(),
-                Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. })
+                Some(SshBackendMessage::Data(_) | SshBackendMessage::ExtendedData { .. })
             ) {
                 *last_progress = Instant::now();
             }
@@ -87,7 +87,7 @@ pub(super) async fn scp_wait_channel_message(
     }
 }
 
-pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
+pub(super) async fn scp_upload<H: SshExecChannelOpener>(
     handle: H,
     local_source: &str,
     remote_destination: &str,
@@ -101,7 +101,7 @@ pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
         .unwrap_or("portmate-upload.bin");
     let command = scp_upload_command(remote_destination, file_name, size);
     let mut channel = handle
-        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
+        .open_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
         .await?;
 
     let outcome = async {
@@ -119,7 +119,7 @@ pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
                 return Err("SCP upload 等待远端续传状态超时".to_string());
             }
             match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
-                Ok(Some(ChannelMsg::Data { data })) => {
+                Ok(Some(SshBackendMessage::Data(data))) => {
                     append_bounded_ssh_exec_data(
                         &mut output,
                         &data,
@@ -208,14 +208,14 @@ pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
                         break resume;
                     }
                 }
-                Ok(Some(ChannelMsg::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
+                Ok(Some(SshBackendMessage::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
                     &mut stderr,
                     &data,
                     MAX_SSH_EXEC_STDERR_BYTES,
                     "SCP upload stderr",
                 )?,
-                Ok(Some(ChannelMsg::ExitStatus { exit_status: code })) => exit_status = Some(code),
-                Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => {
+                Ok(Some(SshBackendMessage::ExitStatus(code))) => exit_status = Some(code),
+                Ok(Some(SshBackendMessage::Eof | SshBackendMessage::Close)) | Ok(None) => {
                     return Err(format!(
                         "SCP upload remote closed before resume marker: {}{}",
                         String::from_utf8_lossy(&output),
@@ -287,20 +287,20 @@ pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
                 return Err("SCP upload 等待远端完成超时".to_string());
             }
             match tokio::time::timeout(Duration::from_millis(250), channel.wait()).await {
-                Ok(Some(ChannelMsg::Data { data })) => append_bounded_ssh_exec_data(
+                Ok(Some(SshBackendMessage::Data(data))) => append_bounded_ssh_exec_data(
                     &mut output,
                     &data,
                     MAX_SSH_EXEC_STDOUT_BYTES,
                     "SCP upload stdout",
                 )?,
-                Ok(Some(ChannelMsg::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
+                Ok(Some(SshBackendMessage::ExtendedData { data, .. })) => append_bounded_ssh_exec_data(
                     &mut stderr,
                     &data,
                     MAX_SSH_EXEC_STDERR_BYTES,
                     "SCP upload stderr",
                 )?,
                 Ok(Some(message)) => {
-                    if russh_exec_message_completes(
+                    if ssh_exec_message_completes(
                         &message,
                         &mut exit_status,
                         &mut eof_received_at,
@@ -336,7 +336,7 @@ pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
         Ok(done)
     }
     .await;
-    close_russh_channel_bounded(&channel).await;
+    close_ssh_channel_bounded(&channel).await;
     outcome
 }
 
@@ -444,7 +444,7 @@ pub(super) async fn scp_download(
     .await
 }
 
-pub(super) async fn scp_download_with_idle_timeout<H: RusshExecChannelOpener>(
+pub(super) async fn scp_download_with_idle_timeout<H: SshExecChannelOpener>(
     handle: H,
     remote_source: &str,
     local_destination: &str,
@@ -453,7 +453,7 @@ pub(super) async fn scp_download_with_idle_timeout<H: RusshExecChannelOpener>(
 ) -> Result<u64, String> {
     let command = scp_download_command(remote_source);
     let mut channel = handle
-        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP download")
+        .open_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP download")
         .await?;
     let outcome = async {
         let mut pending = VecDeque::new();
@@ -546,22 +546,24 @@ pub(super) async fn scp_download_with_idle_timeout<H: RusshExecChannelOpener>(
                 )
                 .await?
                 {
-                    Some(ChannelMsg::Data { data }) => {
+                    Some(SshBackendMessage::Data(data)) => {
                         pending.extend(data.iter().copied());
                     }
-                    Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
-                        &mut stderr,
-                        &data,
-                        MAX_SSH_EXEC_STDERR_BYTES,
-                        "SCP download stderr",
-                    )?,
-                    Some(ChannelMsg::ExitStatus { exit_status: code }) if code != 0 => {
+                    Some(SshBackendMessage::ExtendedData { data, .. }) => {
+                        append_bounded_ssh_exec_data(
+                            &mut stderr,
+                            &data,
+                            MAX_SSH_EXEC_STDERR_BYTES,
+                            "SCP download stderr",
+                        )?
+                    }
+                    Some(SshBackendMessage::ExitStatus(code)) if code != 0 => {
                         return Err(format!(
                             "SCP download remote returned non-zero {code}: {}",
                             String::from_utf8_lossy(&stderr)
                         ));
                     }
-                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                    Some(SshBackendMessage::Eof) | Some(SshBackendMessage::Close) | None => {
                         return Err("SCP remote closed during file body".to_string());
                     }
                     _ => {}
@@ -602,12 +604,12 @@ pub(super) async fn scp_download_with_idle_timeout<H: RusshExecChannelOpener>(
         Ok(size)
     }
     .await;
-    close_russh_channel_bounded(&channel).await;
+    close_ssh_channel_bounded(&channel).await;
     outcome
 }
 
 pub(super) async fn scp_wait_download_completion(
-    channel: &mut Channel<client::Msg>,
+    channel: &mut SshBackendChannel,
     stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
     idle_timeout: Duration,
@@ -642,17 +644,17 @@ pub(super) async fn scp_wait_download_completion(
             .await
         {
             Ok(Some(message)) => {
-                if russh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
+                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
                     break;
                 }
                 match message {
-                    ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
+                    SshBackendMessage::Data(data) => append_bounded_ssh_exec_data(
                         &mut output,
                         &data,
                         MAX_SSH_EXEC_STDOUT_BYTES,
                         "SCP download stdout",
                     )?,
-                    ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
+                    SshBackendMessage::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
                         stderr,
                         &data,
                         MAX_SSH_EXEC_STDERR_BYTES,
@@ -684,7 +686,7 @@ pub(super) fn scp_download_command(remote_source: &str) -> String {
 }
 
 pub(super) async fn scp_wait_ack(
-    channel: &mut Channel<client::Msg>,
+    channel: &mut SshBackendChannel,
     pending: &mut VecDeque<u8>,
     stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
@@ -723,7 +725,7 @@ pub(super) async fn scp_wait_ack(
 }
 
 pub(super) async fn scp_read_line(
-    channel: &mut Channel<client::Msg>,
+    channel: &mut SshBackendChannel,
     pending: &mut VecDeque<u8>,
     stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
@@ -758,7 +760,7 @@ pub(super) async fn scp_read_line(
 }
 
 pub(super) async fn scp_next_byte(
-    channel: &mut Channel<client::Msg>,
+    channel: &mut SshBackendChannel,
     pending: &mut VecDeque<u8>,
     stderr: &mut Vec<u8>,
     progress: &TransferProgressContext,
@@ -774,22 +776,24 @@ pub(super) async fn scp_next_byte(
         match scp_wait_channel_message(channel, progress, last_progress, idle_timeout, stage)
             .await?
         {
-            Some(ChannelMsg::Data { data }) => {
+            Some(SshBackendMessage::Data(data)) => {
                 pending.extend(data.iter().copied());
             }
-            Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
+            Some(SshBackendMessage::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
                 stderr,
                 &data,
                 MAX_SSH_EXEC_STDERR_BYTES,
                 "SCP download stderr",
             )?,
-            Some(ChannelMsg::ExitStatus { exit_status: code }) if code != 0 => {
+            Some(SshBackendMessage::ExitStatus(code)) if code != 0 => {
                 return Err(format!(
                     "SCP download remote returned non-zero {code}: {}",
                     String::from_utf8_lossy(stderr)
                 ));
             }
-            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => return Ok(None),
+            Some(SshBackendMessage::Eof) | Some(SshBackendMessage::Close) | None => {
+                return Ok(None)
+            }
             _ => {}
         }
     }

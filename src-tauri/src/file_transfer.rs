@@ -1197,7 +1197,7 @@ pub(super) async fn remote_copy(
     .await
 }
 
-pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
+pub(super) async fn remote_copy_with_timeouts<H: SshExecChannelOpener>(
     handle: H,
     remote_source: &str,
     remote_destination: &str,
@@ -1207,7 +1207,7 @@ pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
 ) -> Result<u64, String> {
     let command = remote_copy_command(remote_source, remote_destination);
     let mut channel = handle
-        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SSH remote copy")
+        .open_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SSH remote copy")
         .await?;
 
     let mut output = Vec::new();
@@ -1256,7 +1256,7 @@ pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
             }?;
 
             match message {
-                Some(ChannelMsg::Data { data }) => {
+                Some(SshBackendMessage::Data(data)) => {
                     append_bounded_ssh_exec_data(
                         &mut output,
                         &data,
@@ -1300,18 +1300,15 @@ pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
                         last_progress = Instant::now();
                     }
                 }
-                Some(ChannelMsg::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
+                Some(SshBackendMessage::ExtendedData { data, .. }) => append_bounded_ssh_exec_data(
                     &mut stderr,
                     &data,
                     MAX_SSH_EXEC_STDERR_BYTES,
                     "remote copy stderr",
                 )?,
                 Some(message) => {
-                    if russh_exec_message_completes(
-                        &message,
-                        &mut exit_status,
-                        &mut eof_received_at,
-                    ) {
+                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at)
+                    {
                         break;
                     }
                 }
@@ -1339,7 +1336,7 @@ pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
         Ok(bytes)
     }
     .await;
-    close_russh_channel_bounded(&channel).await;
+    close_ssh_channel_bounded(&channel).await;
     outcome
 }
 

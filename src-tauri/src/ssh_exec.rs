@@ -51,25 +51,6 @@ pub(super) fn ssh_exec_message_completes(
     }
 }
 
-pub(super) fn russh_exec_message_completes(
-    message: &ChannelMsg,
-    exit_status: &mut Option<u32>,
-    eof_received_at: &mut Option<Instant>,
-) -> bool {
-    match message {
-        ChannelMsg::ExitStatus { exit_status: code } => {
-            *exit_status = Some(*code);
-            eof_received_at.is_some()
-        }
-        ChannelMsg::Eof => {
-            eof_received_at.get_or_insert_with(Instant::now);
-            exit_status.is_some()
-        }
-        ChannelMsg::Close => true,
-        _ => false,
-    }
-}
-
 pub(super) fn ssh_exec_status_grace_expired(eof_received_at: Option<Instant>) -> bool {
     eof_received_at
         .is_some_and(|received_at| received_at.elapsed() >= SSH_EXEC_STATUS_GRACE_TIMEOUT)

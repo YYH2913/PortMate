@@ -112,27 +112,6 @@ where
             }
         }
     }
-
-    pub(super) async fn open_russh_exec_compat(
-        &self,
-        command: &str,
-        label: &str,
-    ) -> Result<Channel<client::Msg>, String> {
-        match self {
-            Self::Russh(handle) => {
-                let channel = handle
-                    .channel_open_session()
-                    .await
-                    .map_err(|error| format!("{label} 打开 SSH channel 失败: {error}"))?;
-                channel
-                    .exec(true, command)
-                    .await
-                    .map_err(|error| format!("{label} 启动 SSH exec 失败: {error}"))?;
-                Ok(channel)
-            }
-            Self::Libssh(_) => Err(format!("{label} 尚未迁移到 libssh backend")),
-        }
-    }
 }
 
 pub(super) enum SshBackendChannel {
@@ -181,6 +160,38 @@ impl SshBackendChannel {
         match self {
             Self::Russh(channel) => channel.wait().await.map(SshBackendMessage::from),
             Self::Libssh(reader) => reader.wait().await,
+        }
+    }
+
+    pub(super) async fn data(&self, data: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Russh(channel) => channel.data(data).await.map_err(|error| error.to_string()),
+            Self::Libssh(reader) => {
+                let channel = Arc::clone(&reader.channel);
+                let data = data.to_vec();
+                tokio::task::spawn_blocking(move || {
+                    let channel = channel.blocking_lock();
+                    let mut stdin = channel.stdin();
+                    stdin.write_all(&data)?;
+                    stdin.flush()
+                })
+                .await
+                .map_err(|error| format!("libssh write worker failed: {error}"))?
+                .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    pub(super) async fn eof(&self) -> Result<(), String> {
+        match self {
+            Self::Russh(channel) => channel.eof().await.map_err(|error| error.to_string()),
+            Self::Libssh(reader) => {
+                let channel = Arc::clone(&reader.channel);
+                tokio::task::spawn_blocking(move || channel.blocking_lock().send_eof())
+                    .await
+                    .map_err(|error| format!("libssh EOF worker failed: {error}"))?
+                    .map_err(|error| error.to_string())
+            }
         }
     }
 
@@ -442,40 +453,42 @@ impl From<ChannelMsg> for SshBackendMessage {
     }
 }
 
-pub(super) trait RusshExecChannelOpener {
-    async fn open_russh_exec_channel(
+pub(super) trait SshExecChannelOpener {
+    async fn open_exec_channel(
         &self,
         command: &str,
         timeout: Duration,
         label: &str,
-    ) -> Result<Channel<client::Msg>, String>;
+    ) -> Result<SshBackendChannel, String>;
 }
 
-impl<H> RusshExecChannelOpener for Arc<tokio::sync::Mutex<SshBackendSession<H>>>
+impl<H> SshExecChannelOpener for Arc<tokio::sync::Mutex<SshBackendSession<H>>>
 where
     H: client::Handler,
 {
-    async fn open_russh_exec_channel(
+    async fn open_exec_channel(
         &self,
         command: &str,
         timeout: Duration,
         label: &str,
-    ) -> Result<Channel<client::Msg>, String> {
-        open_shared_russh_compat_exec_channel(self, command, timeout, label).await
+    ) -> Result<SshBackendChannel, String> {
+        open_shared_ssh_exec_channel(self, command, timeout, label).await
     }
 }
 
-impl<H> RusshExecChannelOpener for Arc<tokio::sync::Mutex<client::Handle<H>>>
+impl<H> SshExecChannelOpener for Arc<tokio::sync::Mutex<client::Handle<H>>>
 where
     H: client::Handler,
 {
-    async fn open_russh_exec_channel(
+    async fn open_exec_channel(
         &self,
         command: &str,
         timeout: Duration,
         label: &str,
-    ) -> Result<Channel<client::Msg>, String> {
-        open_shared_russh_exec_channel(self, command, timeout, label).await
+    ) -> Result<SshBackendChannel, String> {
+        open_shared_russh_exec_channel(self, command, timeout, label)
+            .await
+            .map(SshBackendChannel::from_russh)
     }
 }
 

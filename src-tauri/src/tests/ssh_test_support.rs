@@ -145,6 +145,7 @@ pub(super) struct MixedAuthTestCounters {
     pub(super) direct_tcpip_attempts: AtomicU64,
     pub(super) direct_tcpip_completions: AtomicU64,
     pub(super) channel_closes: AtomicU64,
+    pub(super) scp_upload_bytes: AtomicU64,
 }
 
 #[cfg(unix)]
@@ -156,6 +157,7 @@ pub(super) struct MixedAuthTestServer {
     password_auth_delay: Option<Duration>,
     session_channel_delay: Option<Duration>,
     direct_tcpip_delay: Option<Duration>,
+    active_scp_uploads: Arc<Mutex<HashSet<russh::ChannelId>>>,
 }
 
 #[cfg(unix)]
@@ -268,6 +270,17 @@ impl russh::server::Handler for MixedAuthTestServer {
             b"__PORTMATE_TEST_EXEC_TIMEOUT__" => {}
             command
                 if command
+                    .windows(b"__PORTMATE_TEST_SCP_UPLOAD_DATA_SUCCESS__".len())
+                    .any(|window| window == b"__PORTMATE_TEST_SCP_UPLOAD_DATA_SUCCESS__") =>
+            {
+                self.active_scp_uploads.lock().unwrap().insert(channel);
+                session.data(
+                    channel,
+                    b"__PORTMATE_SIZE__4\n__PORTMATE_RESUME__0\n__PORTMATE_PROGRESS__0\n".to_vec(),
+                )?;
+            }
+            command
+                if command
                     .windows(b"__PORTMATE_TEST_SCP_UPLOAD_SUCCESS__".len())
                     .any(|window| window == b"__PORTMATE_TEST_SCP_UPLOAD_SUCCESS__") =>
             {
@@ -337,6 +350,19 @@ impl russh::server::Handler for MixedAuthTestServer {
             }
             command
                 if command
+                    .windows(b"__PORTMATE_TEST_REMOTE_COPY_SUCCESS__".len())
+                    .any(|window| window == b"__PORTMATE_TEST_REMOTE_COPY_SUCCESS__") =>
+            {
+                session.data(
+                    channel,
+                    b"__PORTMATE_SIZE__4\n__PORTMATE_RESUME__0\n__PORTMATE_PROGRESS__4\n__PORTMATE_DONE__4\n"
+                        .to_vec(),
+                )?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+            }
+            command
+                if command
                     .windows(b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__".len())
                     .any(|window| {
                         window == b"__PORTMATE_TEST_REMOTE_COPY_EOF_BEFORE_NONZERO__"
@@ -356,6 +382,38 @@ impl russh::server::Handler for MixedAuthTestServer {
                 session.eof(channel)?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: russh::ChannelId,
+        data: &[u8],
+        _session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.active_scp_uploads.lock().unwrap().contains(&channel) {
+            self.counters
+                .scp_upload_bytes
+                .fetch_add(data.len() as u64, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: russh::ChannelId,
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.active_scp_uploads.lock().unwrap().remove(&channel) {
+            let received = self.counters.scp_upload_bytes.load(Ordering::SeqCst);
+            session.data(
+                channel,
+                format!("__PORTMATE_PROGRESS__{received}\n__PORTMATE_DONE__{received}\n")
+                    .into_bytes(),
+            )?;
+            session.exit_status_request(channel, u32::from(received != 4))?;
+            session.eof(channel)?;
         }
         Ok(())
     }
@@ -567,6 +625,7 @@ pub(super) async fn spawn_mixed_auth_test_server_with_delays(
         password_auth_delay,
         session_channel_delay,
         direct_tcpip_delay,
+        active_scp_uploads: Arc::new(Mutex::new(HashSet::new())),
     };
     let config = Arc::new(russh::server::Config {
         auth_rejection_time: Duration::ZERO,

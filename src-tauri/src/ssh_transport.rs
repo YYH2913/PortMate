@@ -361,40 +361,6 @@ pub(super) async fn open_shared_russh_exec_channel<H: client::Handler>(
     }
 }
 
-pub(super) async fn open_shared_russh_compat_exec_channel<H: client::Handler>(
-    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
-    command: &str,
-    timeout: Duration,
-    label: &str,
-) -> Result<Channel<client::Msg>, String> {
-    let started = Instant::now();
-    let handle = tokio::time::timeout(timeout, shared_handle.lock())
-        .await
-        .map_err(|_| format!("{label} handle lock 超时（{} ms）", timeout.as_millis()))?;
-    let remaining = timeout
-        .checked_sub(started.elapsed())
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| format!("{label} setup 超时（{} ms）", timeout.as_millis()))?;
-
-    match bounded_connection_step(handle.open_russh_exec_compat(command, label), remaining).await {
-        Ok(channel) => Ok(channel),
-        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
-        Err(BoundedConnectionStepError::TimedOut) => {
-            let cleanup_warning = request_backend_disconnect_with_timeout(
-                &handle,
-                "PortMate auxiliary SSH exec setup timeout",
-            )
-            .await
-            .map(|warning| format!("; {warning}"))
-            .unwrap_or_default();
-            Err(format!(
-                "{label} setup 超时（{} ms）{cleanup_warning}",
-                timeout.as_millis()
-            ))
-        }
-    }
-}
-
 pub(super) async fn remove_ssh_runtime_after_failed_open(
     state: &AppState,
     session_id: &str,
