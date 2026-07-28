@@ -807,9 +807,6 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
-    if ssh.proxy.enabled {
-        return Err("GSSAPI libssh backend 尚未支持 SSH proxy".to_string());
-    }
     if !ssh.jumps.is_empty() {
         return Err("GSSAPI libssh backend 尚未支持 Jump Host".to_string());
     }
@@ -819,6 +816,38 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let port = ssh.endpoint.port;
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
+    let connect_started = Instant::now();
+    let proxy_stream = if ssh.proxy.enabled {
+        let stream = tokio::time::timeout(
+            connect_timeout,
+            connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "libssh SSH 代理连接超时（{} ms）",
+                connect_timeout.as_millis()
+            )
+        })??;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("libssh SSH 设置 TCP_NODELAY 失败: {error}"))?;
+        configure_ssh_tcp_keepalive(&stream, "libssh SSH", ssh.tcp_keepalive_enabled)?;
+        Some(
+            stream
+                .into_std()
+                .map_err(|error| format!("libssh SSH 接管代理 socket 失败: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let remaining_connect_timeout = connect_timeout.saturating_sub(connect_started.elapsed());
+    if remaining_connect_timeout.is_zero() {
+        return Err(format!(
+            "libssh SSH 连接超时（{} ms）",
+            connect_timeout.as_millis()
+        ));
+    }
     let identity_agent = agent_socket_path
         .clone()
         .map(|path| {
@@ -828,7 +857,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         })
         .transpose()?;
     let connected = tokio::time::timeout(
-        connect_timeout,
+        remaining_connect_timeout,
         tokio::task::spawn_blocking(move || {
             let session = libssh_rs::Session::new()
                 .map_err(|error| format!("libssh session 初始化失败: {error}"))?;
@@ -852,13 +881,18 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             session
                 .set_option(libssh_rs::SshOption::User(Some(username)))
                 .map_err(|error| format!("libssh 设置用户名失败: {error}"))?;
+            if let Some(proxy_stream) = proxy_stream {
+                session
+                    .set_owned_tcp_stream(proxy_stream)
+                    .map_err(|error| format!("libssh 设置代理 socket 失败: {error}"))?;
+            }
             if let Some(identity_agent) = identity_agent {
                 session
                     .set_option(libssh_rs::SshOption::IdentityAgent(Some(identity_agent)))
                     .map_err(|error| format!("libssh 设置 SSH agent socket 失败: {error}"))?;
             }
             session
-                .set_option(libssh_rs::SshOption::Timeout(connect_timeout))
+                .set_option(libssh_rs::SshOption::Timeout(remaining_connect_timeout))
                 .map_err(|error| format!("libssh 设置连接超时失败: {error}"))?;
             session
                 .connect()

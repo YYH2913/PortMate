@@ -3044,6 +3044,138 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
             .await
             .unwrap();
 
+        let (http_proxy_port, http_proxy_connections, http_proxy_task) =
+            spawn_test_http_connect_proxy(200).await;
+        let mut libssh_http_proxy = libssh_agent.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_http_proxy.connection {
+            ssh.proxy = ProxyConfig {
+                enabled: true,
+                kind: ProxyKind::HttpConnect,
+                host: "127.0.0.1".to_string(),
+                port: http_proxy_port,
+                ..ProxyConfig::default()
+            };
+        }
+        let proxied = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_http_proxy,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(proxied.auth_method, AuthMethod::PublicKey);
+        assert!(proxied.runtime.handle.lock().await.is_libssh());
+        let EstablishedSshRuntime {
+            runtime, read_half, ..
+        } = proxied;
+        let SshRuntime {
+            handle,
+            writer,
+            closed,
+            ..
+        } = runtime;
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate libssh HTTP proxy test")
+            .await
+            .unwrap();
+        drop(handle);
+        assert_eq!(http_proxy_connections.load(Ordering::SeqCst), 1);
+        http_proxy_task.abort();
+        let _ = http_proxy_task.await;
+
+        let (socks_proxy_port, socks_proxy_connections, socks_proxy_task) =
+            spawn_test_socks5_proxy(0).await;
+        let mut libssh_socks_proxy = libssh_agent.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_socks_proxy.connection {
+            ssh.proxy = ProxyConfig {
+                enabled: true,
+                kind: ProxyKind::Socks5,
+                host: "127.0.0.1".to_string(),
+                port: socks_proxy_port,
+                ..ProxyConfig::default()
+            };
+        }
+        let proxied = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_socks_proxy,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(proxied.auth_method, AuthMethod::PublicKey);
+        assert!(proxied.runtime.handle.lock().await.is_libssh());
+        let EstablishedSshRuntime {
+            runtime, read_half, ..
+        } = proxied;
+        let SshRuntime {
+            handle,
+            writer,
+            closed,
+            ..
+        } = runtime;
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate libssh SOCKS5 proxy test")
+            .await
+            .unwrap();
+        drop(handle);
+        assert_eq!(socks_proxy_connections.load(Ordering::SeqCst), 1);
+        socks_proxy_task.abort();
+        let _ = socks_proxy_task.await;
+
+        let (rejected_http_port, _, rejected_http_task) = spawn_test_http_connect_proxy(407).await;
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_http_proxy.connection {
+            ssh.proxy.port = rejected_http_port;
+        }
+        let error = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_http_proxy,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .err()
+        .expect("rejected HTTP CONNECT proxy unexpectedly established libssh");
+        assert!(error.contains("HTTP CONNECT 被代理拒绝"), "{error}");
+        rejected_http_task.abort();
+        let _ = rejected_http_task.await;
+
+        let (rejected_socks_port, _, rejected_socks_task) = spawn_test_socks5_proxy(0x05).await;
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_socks_proxy.connection {
+            ssh.proxy.port = rejected_socks_port;
+        }
+        let error = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_socks_proxy,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .err()
+        .expect("rejected SOCKS5 proxy unexpectedly established libssh");
+        assert!(error.contains("SOCKS5 CONNECT 被拒绝"), "{error}");
+        rejected_socks_task.abort();
+        let _ = rejected_socks_task.await;
+
         let matching_ref = IdentityRef {
             id: "accepted-agent-key".to_string(),
             label: accepted_comment.clone(),

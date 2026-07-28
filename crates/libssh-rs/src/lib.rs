@@ -87,6 +87,7 @@ pub(crate) struct SessionHolder {
     callbacks: sys::ssh_callbacks_struct,
     auth_callback: Option<Box<dyn FnMut(&str, bool, bool, Option<String>) -> SshResult<String>>>,
     pending_agent_forward_channels: Vec<sys::ssh_channel>,
+    owned_socket: Option<std::net::TcpStream>,
 }
 unsafe impl Send for SessionHolder {}
 
@@ -233,6 +234,7 @@ impl Session {
                 callbacks,
                 auth_callback: None,
                 pending_agent_forward_channels: Vec::new(),
+                owned_socket: None,
             }));
 
             {
@@ -429,8 +431,9 @@ impl Session {
     /// Disconnect from a session (client or server).
     /// The session can then be reused to open a new session.
     pub fn disconnect(&self) {
-        let sess = self.lock_session();
+        let mut sess = self.lock_session();
         unsafe { sys::ssh_disconnect(**sess) };
+        sess.owned_socket.take();
     }
 
     /// Connect to the configured remote host
@@ -770,6 +773,21 @@ impl Session {
         } else {
             Err(Error::fatal("failed to set option"))
         }
+    }
+
+    /// Configure a pre-connected TCP stream and retain ownership until the session is freed.
+    ///
+    /// libssh 0.10 and newer do not close descriptors supplied through `SSH_OPTIONS_FD`, so
+    /// callers that transfer a stream to the session should use this method instead of
+    /// `SshOption::Socket`.
+    pub fn set_owned_tcp_stream(&self, stream: std::net::TcpStream) -> SshResult<()> {
+        #[cfg(unix)]
+        let socket = std::os::fd::AsRawFd::as_raw_fd(&stream);
+        #[cfg(windows)]
+        let socket = std::os::windows::io::AsRawSocket::as_raw_socket(&stream);
+        self.set_option(SshOption::Socket(socket))?;
+        self.lock_session().owned_socket = Some(stream);
+        Ok(())
     }
 
     /// This function allows you to get a hash of the public key.
