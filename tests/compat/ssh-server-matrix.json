@@ -76,5 +76,11 @@
     "dockerfile": "tests/compat/proftpd-sftp-alpine.Dockerfile",
     "protocols": ["sftp"],
     "runActiveTransferDisconnect": false
+  },
+  {
+    "name": "sftpgo-2.6.6",
+    "dockerfile": "tests/compat/sftpgo-2.6.6.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
   }
 ]
