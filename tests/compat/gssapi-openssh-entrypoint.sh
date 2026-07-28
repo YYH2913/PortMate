@@ -10,7 +10,7 @@ case "${PORTMATE_GSSAPI_AUTH:-yes}" in
 esac
 
 /usr/sbin/krb5kdc -n &
-exec /usr/sbin/sshd -D -e \
+exec /usr/sbin/sshd -D -e -f /dev/null \
   -o "GSSAPIAuthentication=${PORTMATE_GSSAPI_AUTH:-yes}" \
   -o GSSAPICleanupCredentials=yes \
   -o GSSAPIStrictAcceptorCheck=yes \

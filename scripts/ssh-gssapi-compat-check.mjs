@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,8 +16,6 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controlTimeoutMs = 180_000;
-const image = "portmate-compat-gssapi-openssh-ubuntu:local";
-const temporaryRoot = mkdtempSync(join(tmpdir(), "portmate-gssapi-compat-"));
 const cargoTargetDir = process.env.PORTMATE_GSSAPI_TARGET_DIR
   ? resolve(process.env.PORTMATE_GSSAPI_TARGET_DIR)
   : resolve(projectRoot, "target/gssapi-compat");
@@ -25,7 +23,24 @@ const baseEnvironment = {
   ...process.env,
   CARGO_TARGET_DIR: cargoTargetDir,
 };
-const verifiedCases = [];
+const matrix = JSON.parse(readFileSync(
+  resolve(projectRoot, "tests/compat/gssapi-server-matrix.json"),
+  "utf8",
+));
+if (!Array.isArray(matrix) || matrix.length < 3) {
+  throw new Error("SSH GSSAPI server matrix must contain at least three entries");
+}
+const matrixNames = new Set();
+for (const entry of matrix) {
+  validateMatrixEntry(entry);
+  if (matrixNames.has(entry.name)) {
+    throw new Error(`duplicate SSH GSSAPI matrix name: ${entry.name}`);
+  }
+  matrixNames.add(entry.name);
+}
+const useCachedImages = compatibilityUsesCachedImages();
+const temporaryRoot = mkdtempSync(join(tmpdir(), "portmate-gssapi-compat-"));
+const verifiedServers = [];
 
 try {
   run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
@@ -33,44 +48,52 @@ try {
     env: baseEnvironment,
     timeout: 600_000,
   });
-  await prepareCompatibilityImage({
-    run,
-    image,
-    useCachedImages: compatibilityUsesCachedImages(),
-    buildArgs: [
-      "build",
-      "--tag",
+  for (const entry of matrix) {
+    const image = `portmate-compat-gssapi-${entry.name}:local`;
+    await prepareCompatibilityImage({
+      run,
       image,
-      "--file",
-      resolve(projectRoot, "tests/compat/gssapi-openssh-ubuntu.Dockerfile"),
-      projectRoot,
-    ],
-    buildOptions: { timeout: 600_000 },
-    inspectOptions: { timeout: controlTimeoutMs },
-  });
+      useCachedImages,
+      buildArgs: [
+        "build",
+        "--tag",
+        image,
+        "--file",
+        resolve(projectRoot, "tests/compat/gssapi-openssh.Dockerfile"),
+        "--build-arg",
+        `PORTMATE_GSSAPI_BASE_IMAGE=${entry.baseImage}`,
+        projectRoot,
+      ],
+      buildOptions: { timeout: 600_000 },
+      inspectOptions: { timeout: controlTimeoutMs },
+    });
 
-  await withServer("yes", async (server) => {
-    const kerberos = configureKerberos(server);
-    acquireTicket(server, kerberos);
-    runCase("success", server, kerberos);
-    runCase("host-key-reject", server, kerberos);
-    destroyTicket(kerberos);
-    runCase("no-ticket", server, kerberos);
-  });
+    const cases = [];
+    const version = await withServer(image, "yes", async (server) => {
+      const kerberos = configureKerberos(server);
+      acquireTicket(server, kerberos);
+      runCase("success", server, kerberos, cases);
+      runCase("host-key-reject", server, kerberos, cases);
+      destroyTicket(kerberos);
+      runCase("no-ticket", server, kerberos, cases);
+      return server.version;
+    });
 
-  await withServer("no", async (server) => {
-    const kerberos = configureKerberos(server);
-    acquireTicket(server, kerberos);
-    runCase("server-disabled", server, kerberos);
-    destroyTicket(kerberos);
-  });
+    await withServer(image, "no", async (server) => {
+      const kerberos = configureKerberos(server);
+      acquireTicket(server, kerberos);
+      runCase("server-disabled", server, kerberos, cases);
+      destroyTicket(kerberos);
+    });
+    verifiedServers.push({ name: entry.name, version, cases });
+  }
 
-  console.log(JSON.stringify({ verifiedGssapiCases: verifiedCases }, null, 2));
+  console.log(JSON.stringify({ verifiedGssapiServers: verifiedServers }, null, 2));
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
-async function withServer(gssapiAuthentication, callback) {
+async function withServer(image, gssapiAuthentication, callback) {
   const container = `portmate-gssapi-${randomUUID()}`;
   try {
     run("docker", [
@@ -91,8 +114,16 @@ async function withServer(gssapiAuthentication, callback) {
     const ports = await waitForPublishedPorts(container);
     await waitForTcp(ports.kdc, container, "Kerberos KDC", false);
     await waitForTcp(ports.ssh, container, "OpenSSH", true);
+    const versionResult = run("docker", ["exec", container, "/usr/sbin/sshd", "-V"], {
+      capture: true,
+      timeout: controlTimeoutMs,
+    });
+    const version = `${versionResult.stdout}${versionResult.stderr}`.trim();
+    if (!/^OpenSSH_[0-9]/.test(version)) {
+      throw new Error(`invalid OpenSSH version from ${container}: ${JSON.stringify(version)}`);
+    }
     try {
-      await callback({ container, ...ports });
+      return await callback({ container, version, ...ports });
     } catch (error) {
       throw containerFailure(container, error instanceof Error ? error.message : String(error));
     }
@@ -160,7 +191,7 @@ function destroyTicket(kerberos) {
   rmSync(kerberos.cache, { force: true });
 }
 
-function runCase(name, server, kerberos) {
+function runCase(name, server, kerberos, cases) {
   run("cargo", [
     "test",
     "-p",
@@ -179,7 +210,16 @@ function runCase(name, server, kerberos) {
     },
     timeout: 600_000,
   });
-  verifiedCases.push(name);
+  cases.push(name);
+}
+
+function validateMatrixEntry(entry) {
+  if (!entry || typeof entry.name !== "string" || !/^[a-z0-9.-]+$/.test(entry.name)) {
+    throw new Error(`invalid SSH GSSAPI matrix name: ${JSON.stringify(entry)}`);
+  }
+  if (typeof entry.baseImage !== "string" || !/^[a-z0-9./:-]+$/.test(entry.baseImage)) {
+    throw new Error(`invalid SSH GSSAPI base image for ${entry.name}`);
+  }
 }
 
 async function waitForPublishedPorts(container) {

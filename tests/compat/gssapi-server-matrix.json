@@ -1,0 +1,14 @@
+[
+  {
+    "name": "ubuntu-24.04",
+    "baseImage": "ubuntu:24.04"
+  },
+  {
+    "name": "debian-bookworm",
+    "baseImage": "debian:bookworm-slim"
+  },
+  {
+    "name": "debian-trixie",
+    "baseImage": "debian:trixie-slim"
+  }
+]
