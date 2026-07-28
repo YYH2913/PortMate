@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str =
+    "PORTMATE_MIGRATION_RESTART_REQUIRED:";
+pub(super) const PROFILE_SECRET_MIGRATION_JOURNAL_VERSION: u32 = 1;
+pub(super) const MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES: u64 = 1024 * 1024;
+pub(super) const MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
+pub(super) const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProfileSecretMigrationPlan {
     pub(super) preview: ProfileSecretMigrationPreview,

@@ -190,7 +190,7 @@ use session_commands::{
 };
 use session_commands::{
     close_session_inner, mark_session_connected_with_events, open_session_inner,
-    profile_requires_runtime, SessionOpenCredentials,
+    profile_requires_runtime, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,
 };
 use session_commands::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use session_events::*;
@@ -263,26 +263,7 @@ const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
     "solarized-dark",
     "portmate-light",
 ];
-const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
-const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
-const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_ACTIVE_TUNNELS: usize = 256;
-const MAX_TUNNEL_CONNECTIONS: usize = 256;
-const MAX_CONCURRENT_SESSION_OPENS: usize = 64;
-const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
-const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
-const SSH_EXEC_STATUS_GRACE_TIMEOUT: Duration = Duration::from_secs(1);
-const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
-const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46ln 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
-const PROFILE_SECRET_MIGRATION_RESTART_REQUIRED: &str = "PORTMATE_MIGRATION_RESTART_REQUIRED:";
-const PROFILE_SECRET_MIGRATION_JOURNAL_VERSION: u32 = 1;
-const MAX_PROFILE_SECRET_MIGRATION_JOURNAL_BYTES: u64 = 1024 * 1024;
-const MAX_PROFILE_SECRET_MIGRATION_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PROFILE_SECRET_MIGRATION_PROFILES: usize = 10_000;
-const MAX_PROFILE_SECRET_MIGRATION_ITEMS: usize = 50_000;
 const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 mod tests {

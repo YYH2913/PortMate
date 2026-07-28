@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const MAX_CONCURRENT_SESSION_OPENS: usize = 64;
+
 pub(super) fn mark_session_connected_with_events(
     store: &mut SessionStore,
     profile: &SessionProfile,

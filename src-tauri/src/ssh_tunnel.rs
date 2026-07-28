@@ -1,5 +1,14 @@
 use super::*;
 
+pub(super) const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(15);
+pub(super) const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const MAX_ACTIVE_TUNNELS: usize = 256;
+pub(super) const MAX_TUNNEL_CONNECTIONS: usize = 256;
+pub(super) const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
+pub(super) const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
+pub(super) const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46ln 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+
 #[derive(Clone)]
 pub(super) struct TunnelRuntime {
     pub(super) session_id: String,

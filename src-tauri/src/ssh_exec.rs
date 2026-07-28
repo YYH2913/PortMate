@@ -1,5 +1,10 @@
 use super::*;
 
+pub(super) const SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const SSH_EXEC_STATUS_GRACE_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
+
 pub(super) async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
     let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
 }
