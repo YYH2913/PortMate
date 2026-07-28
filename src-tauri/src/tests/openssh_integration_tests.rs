@@ -2367,6 +2367,92 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         close_session_inner(&state, profile.id.clone())
             .await
             .unwrap();
+
+        let mut libssh_jump_profile = profile.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_jump_profile.connection {
+            ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic, AuthMethod::PublicKey];
+        }
+        let jumped = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_jump_profile,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(jumped.auth_method, AuthMethod::PublicKey);
+        assert!(jumped.runtime.handle.lock().await.is_libssh());
+        assert_eq!(jumped.runtime.jump_handles.len(), 2);
+        let EstablishedSshRuntime {
+            runtime,
+            mut read_half,
+            ..
+        } = jumped;
+        let SshRuntime {
+            handle,
+            jump_handles,
+            writer,
+            closed,
+            transport_bridge_finished,
+            ..
+        } = runtime;
+        writer
+            .lock()
+            .await
+            .data(b"printf '__PORTMATE_%s__\\n' LIBSSH_JUMP_OK\r")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut output = Vec::new();
+            loop {
+                match read_half.wait().await {
+                    Some(SshBackendMessage::Data(data)) => {
+                        output.extend_from_slice(&data);
+                        if output
+                            .windows(b"__PORTMATE_LIBSSH_JUMP_OK__".len())
+                            .any(|window| window == b"__PORTMATE_LIBSSH_JUMP_OK__")
+                        {
+                            break;
+                        }
+                    }
+                    Some(_) => {}
+                    None => panic!("libssh Jump Host terminal closed before marker"),
+                }
+            }
+        })
+        .await
+        .expect("libssh Jump Host PTY command output was not recorded");
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        if let Some(finished) = transport_bridge_finished {
+            tokio::time::timeout(Duration::from_secs(2), finished)
+                .await
+                .expect("libssh Jump Host bridge did not stop")
+                .expect("libssh Jump Host bridge completion sender dropped");
+        }
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate libssh Jump Host test")
+            .await
+            .unwrap();
+        drop(handle);
+        for jump_handle in jump_handles {
+            jump_handle
+                .lock()
+                .await
+                .disconnect(
+                    Disconnect::ByApplication,
+                    "PortMate libssh Jump Host test",
+                    "en",
+                )
+                .await
+                .unwrap();
+        }
+
         tokio::time::sleep(Duration::from_millis(200)).await;
         jump_two_sshd.stop();
         write_openssh_test_config(

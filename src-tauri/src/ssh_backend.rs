@@ -10,6 +10,65 @@ where
 
 const MAX_LIBSSH_AGENT_FORWARD_CHANNELS: usize = 16;
 
+pub(super) async fn start_russh_jump_transport_bridge(
+    channel: Channel<client::Msg>,
+    closed: Arc<AtomicBool>,
+) -> Result<(std::net::TcpStream, tokio::sync::oneshot::Receiver<()>), String> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| format!("bind libssh Jump Host bridge failed: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("read libssh Jump Host bridge address failed: {error}"))?;
+    let client = tokio::net::TcpStream::connect(address)
+        .await
+        .map_err(|error| format!("connect libssh Jump Host bridge failed: {error}"))?;
+    let expected_peer = client
+        .local_addr()
+        .map_err(|error| format!("read libssh Jump Host bridge peer failed: {error}"))?;
+    let (mut bridge, peer) = listener
+        .accept()
+        .await
+        .map_err(|error| format!("accept libssh Jump Host bridge failed: {error}"))?;
+    if peer != expected_peer {
+        return Err("libssh Jump Host bridge accepted an unexpected local peer".to_string());
+    }
+    client
+        .set_nodelay(true)
+        .map_err(|error| format!("set libssh Jump Host bridge TCP_NODELAY failed: {error}"))?;
+    bridge
+        .set_nodelay(true)
+        .map_err(|error| format!("set libssh Jump Host bridge peer TCP_NODELAY failed: {error}"))?;
+    let client = client
+        .into_std()
+        .map_err(|error| format!("transfer libssh Jump Host bridge socket failed: {error}"))?;
+    let (finished_sender, finished_receiver) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let mut jump_stream = channel.into_stream();
+        let mut copy = Box::pin(tokio::io::copy_bidirectional(&mut bridge, &mut jump_stream));
+        loop {
+            tokio::select! {
+                result = &mut copy => {
+                    if let Err(error) = result {
+                        eprintln!("PortMate: libssh Jump Host bridge failed: {error}");
+                    }
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                    if closed.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(copy);
+        let _ = tokio::io::AsyncWriteExt::shutdown(&mut bridge).await;
+        let _ = tokio::io::AsyncWriteExt::shutdown(&mut jump_stream).await;
+        let _ = finished_sender.send(());
+    });
+    Ok((client, finished_receiver))
+}
+
 pub(super) fn start_libssh_agent_forwarder(
     session: libssh_rs::Session,
     agent_socket_path: std::path::PathBuf,

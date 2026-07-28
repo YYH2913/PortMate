@@ -193,6 +193,23 @@ pub(super) enum SshTransportConnectError {
     Handshake(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SshTargetTransportMode {
+    Russh,
+    JumpChannel,
+}
+
+pub(super) enum ConnectedSshTarget {
+    Russh {
+        session: client::Handle<PortMateSshHandler>,
+        jump_sessions: Vec<client::Handle<PortMateSshHandler>>,
+    },
+    JumpChannel {
+        channel: Channel<client::Msg>,
+        jump_sessions: Vec<client::Handle<PortMateSshHandler>>,
+    },
+}
+
 pub(super) async fn connect_ssh_transport<H>(
     params: SshTransportConnectParams<'_>,
     handler: H,
@@ -613,7 +630,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
 
     let config = Arc::new(ssh_client_config(&ssh));
 
-    let (mut session, jump_sessions) = connect_ssh_target(
+    let connected_target = connect_ssh_target(
         SshConnectRequest {
             config: Arc::clone(&config),
             store: Arc::clone(&state.store),
@@ -631,8 +648,16 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         },
         connect_timeout,
         agent_socket_path.as_deref(),
+        SshTargetTransportMode::Russh,
     )
     .await?;
+    let ConnectedSshTarget::Russh {
+        mut session,
+        jump_sessions,
+    } = connected_target
+    else {
+        return Err("SSH target returned an unexpected Jump Host transport".to_string());
+    };
 
     let auth_method = authenticate_ssh_with_timeout(
         &mut session,
@@ -746,6 +771,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             remote_forwards,
             remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
             agent_forwarder_finished: None,
+            transport_bridge_finished: None,
             closed: Arc::clone(&closed),
             reader_finished,
         },
@@ -807,41 +833,80 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
-    if !ssh.jumps.is_empty() {
-        return Err("GSSAPI libssh backend 尚未支持 Jump Host".to_string());
-    }
     let agent_socket_path = agent_socket_path
         .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from));
     let host = ssh.endpoint.host.clone();
     let port = ssh.endpoint.port;
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
-    let connect_started = Instant::now();
-    let proxy_stream = if ssh.proxy.enabled {
-        let stream = tokio::time::timeout(
-            connect_timeout,
-            connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "libssh SSH 代理连接超时（{} ms）",
-                connect_timeout.as_millis()
+    let closed = Arc::new(AtomicBool::new(false));
+    let (proxy_stream, jump_sessions, transport_bridge_finished, remaining_connect_timeout) =
+        if !ssh.jumps.is_empty() {
+            let connected_target = connect_ssh_target(
+                SshConnectRequest {
+                    config: Arc::new(ssh_client_config(ssh)),
+                    store: Arc::clone(&state.store),
+                    store_path: state.store_path.clone(),
+                    profile,
+                    ssh,
+                    host_keys: host_keys.clone(),
+                    one_time_host_keys: one_time_host_keys.clone(),
+                    observed_key: Arc::clone(&observed_key),
+                    host_key_error: Arc::clone(&host_key_error),
+                    remote_forwards: Arc::clone(&remote_forwards),
+                    password: password.as_deref(),
+                    passphrase: passphrase.as_deref(),
+                    enforce_profile_snapshot,
+                },
+                connect_timeout,
+                agent_socket_path.as_deref(),
+                SshTargetTransportMode::JumpChannel,
             )
-        })??;
-        stream
-            .set_nodelay(true)
-            .map_err(|error| format!("libssh SSH 设置 TCP_NODELAY 失败: {error}"))?;
-        configure_ssh_tcp_keepalive(&stream, "libssh SSH", ssh.tcp_keepalive_enabled)?;
-        Some(
+            .await?;
+            let ConnectedSshTarget::JumpChannel {
+                channel,
+                jump_sessions,
+            } = connected_target
+            else {
+                return Err("libssh Jump Host returned an unexpected target session".to_string());
+            };
+            let (stream, bridge_finished) =
+                start_russh_jump_transport_bridge(channel, Arc::clone(&closed)).await?;
+            (
+                Some(stream),
+                jump_sessions,
+                Some(bridge_finished),
+                connect_timeout,
+            )
+        } else if ssh.proxy.enabled {
+            let connect_started = Instant::now();
+            let stream = tokio::time::timeout(
+                connect_timeout,
+                connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "libssh SSH 代理连接超时（{} ms）",
+                    connect_timeout.as_millis()
+                )
+            })??;
             stream
+                .set_nodelay(true)
+                .map_err(|error| format!("libssh SSH 设置 TCP_NODELAY 失败: {error}"))?;
+            configure_ssh_tcp_keepalive(&stream, "libssh SSH", ssh.tcp_keepalive_enabled)?;
+            let stream = stream
                 .into_std()
-                .map_err(|error| format!("libssh SSH 接管代理 socket 失败: {error}"))?,
-        )
-    } else {
-        None
-    };
-    let remaining_connect_timeout = connect_timeout.saturating_sub(connect_started.elapsed());
+                .map_err(|error| format!("libssh SSH 接管代理 socket 失败: {error}"))?;
+            (
+                Some(stream),
+                Vec::new(),
+                None,
+                connect_timeout.saturating_sub(connect_started.elapsed()),
+            )
+        } else {
+            (None, Vec::new(), None, connect_timeout)
+        };
     if remaining_connect_timeout.is_zero() {
         return Err(format!(
             "libssh SSH 连接超时（{} ms）",
@@ -1109,7 +1174,6 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let runtime_id = Uuid::new_v4().to_string();
     let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split();
     let (tap, _) = broadcast::channel(1024);
-    let closed = Arc::new(AtomicBool::new(false));
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
     let agent_forwarder_finished = agent_forward_socket.map(|socket_path| {
         start_libssh_agent_forwarder(session.clone(), socket_path, Arc::clone(&closed))
@@ -1123,12 +1187,16 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 session,
             ))),
             sftp: Arc::new(tokio::sync::Mutex::new(None)),
-            jump_handles: Vec::new(),
+            jump_handles: jump_sessions
+                .into_iter()
+                .map(|session| Arc::new(tokio::sync::Mutex::new(session)))
+                .collect(),
             writer: Arc::new(tokio::sync::Mutex::new(write_half)),
             tap: tap.clone(),
             remote_forwards,
             remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
             agent_forwarder_finished,
+            transport_bridge_finished,
             closed: Arc::clone(&closed),
             reader_finished,
         },
@@ -1457,13 +1525,8 @@ pub(super) async fn connect_ssh_target(
     request: SshConnectRequest<'_>,
     connect_timeout: Duration,
     agent_socket_path: Option<&Path>,
-) -> Result<
-    (
-        client::Handle<PortMateSshHandler>,
-        Vec<client::Handle<PortMateSshHandler>>,
-    ),
-    String,
-> {
+    mode: SshTargetTransportMode,
+) -> Result<ConnectedSshTarget, String> {
     let SshConnectRequest {
         config,
         store,
@@ -1511,6 +1574,9 @@ pub(super) async fn connect_ssh_target(
     });
 
     if ssh.jumps.is_empty() {
+        if mode == SshTargetTransportMode::JumpChannel {
+            return Err("SSH Jump Host transport requires at least one jump".to_string());
+        }
         let session = connect_ssh_transport(
             SshTransportConnectParams {
                 config,
@@ -1538,7 +1604,10 @@ pub(super) async fn connect_ssh_target(
                     .unwrap_or_else(|| format!("SSH 握手失败: {error}")));
             }
         };
-        return Ok((session, Vec::new()));
+        return Ok(ConnectedSshTarget::Russh {
+            session,
+            jump_sessions: Vec::new(),
+        });
     }
 
     let mut jump_sessions: Vec<client::Handle<PortMateSshHandler>> = Vec::new();
@@ -1752,6 +1821,12 @@ pub(super) async fn connect_ssh_target(
             ));
         }
     };
+    if mode == SshTargetTransportMode::JumpChannel {
+        return Ok(ConnectedSshTarget::JumpChannel {
+            channel: jump_channel,
+            jump_sessions,
+        });
+    }
     let target_session = match tokio::time::timeout(
         connect_timeout,
         client::connect_stream(config, jump_channel.into_stream(), target_handler),
@@ -1776,7 +1851,10 @@ pub(super) async fn connect_ssh_target(
         }
     };
 
-    Ok((target_session, jump_sessions))
+    Ok(ConnectedSshTarget::Russh {
+        session: target_session,
+        jump_sessions,
+    })
 }
 
 pub(super) fn jump_endpoint_details(

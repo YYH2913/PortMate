@@ -50,7 +50,7 @@ fn external_sftp_server_compatibility() {
         let store = Arc::clone(&state.store);
         let store_path = state.store_path.clone();
         let host_keys = store.lock().unwrap().host_keys.clone();
-        let (mut session, jump_sessions) = connect_ssh_target(
+        let connected_target = connect_ssh_target(
             SshConnectRequest {
                 config: ssh_config,
                 store,
@@ -68,9 +68,17 @@ fn external_sftp_server_compatibility() {
             },
             SSH_CONNECT_TIMEOUT,
             None,
+            SshTargetTransportMode::Russh,
         )
         .await
         .unwrap_or_else(|error| panic!("{label} SFTP SSH connect failed: {error}"));
+        let ConnectedSshTarget::Russh {
+            mut session,
+            jump_sessions,
+        } = connected_target
+        else {
+            panic!("{label} SFTP SSH connect returned a Jump Host transport");
+        };
         assert!(jump_sessions.is_empty());
         authenticate_ssh_with_timeout(
             &mut session,
