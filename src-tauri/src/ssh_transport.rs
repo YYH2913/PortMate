@@ -605,6 +605,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             observed_key,
             host_key_error,
             remote_forwards,
+            agent_socket_path,
             enforce_profile_snapshot,
         )
         .await;
@@ -770,10 +771,10 @@ pub(super) fn ssh_uses_libssh_gssapi_backend(ssh: &SshConnection) -> bool {
                     | AuthMethod::None
             )
         });
-    uses_supported_methods && !libssh_auth_order_requires_agent(ssh)
+    uses_supported_methods && !libssh_auth_order_requires_filtered_agent(ssh)
 }
 
-fn libssh_auth_order_requires_agent(ssh: &SshConnection) -> bool {
+fn libssh_auth_order_requires_filtered_agent(ssh: &SshConnection) -> bool {
     if !ssh
         .identity_policy
         .auth_order
@@ -787,12 +788,6 @@ fn libssh_auth_order_requires_agent(ssh: &SshConnection) -> bool {
         .iter()
         .any(|identity| identity.source == IdentitySource::Agent);
     has_agent_identity
-        || (!ssh.identity_policy.identities_only
-            && matches!(
-                ssh.agent_policy.offer_mode,
-                portmate_core::AgentOfferMode::BeforeProfileKeys
-                    | portmate_core::AgentOfferMode::AfterProfileKeys
-            ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -808,6 +803,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     host_key_error: Arc<Mutex<Option<String>>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
     if ssh.proxy.enabled {
@@ -824,6 +820,13 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let port = ssh.endpoint.port;
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
+    let identity_agent = agent_socket_path
+        .map(|path| {
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| "libssh SSH agent socket path is not valid UTF-8".to_string())
+        })
+        .transpose()?;
     let connected = tokio::time::timeout(
         connect_timeout,
         tokio::task::spawn_blocking(move || {
@@ -849,6 +852,11 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             session
                 .set_option(libssh_rs::SshOption::User(Some(username)))
                 .map_err(|error| format!("libssh 设置用户名失败: {error}"))?;
+            if let Some(identity_agent) = identity_agent {
+                session
+                    .set_option(libssh_rs::SshOption::IdentityAgent(Some(identity_agent)))
+                    .map_err(|error| format!("libssh 设置 SSH agent socket 失败: {error}"))?;
+            }
             session
                 .set_option(libssh_rs::SshOption::Timeout(connect_timeout))
                 .map_err(|error| format!("libssh 设置连接超时失败: {error}"))?;
@@ -940,6 +948,16 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         .or(saved_passphrase);
     let auth_order = ordered_auth_methods(ssh);
     let identity_refs = ssh.identity_refs.clone();
+    let offer_unfiltered_agent = ssh.agent_policy.enabled
+        && !ssh.identity_policy.identities_only
+        && !ssh
+            .identity_refs
+            .iter()
+            .any(|identity| identity.source == IdentitySource::Agent);
+    let offer_agent_before = offer_unfiltered_agent
+        && ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::BeforeProfileKeys;
+    let offer_agent_after = offer_unfiltered_agent
+        && ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::AfterProfileKeys;
     let auth_session = session.clone();
     let auth = match tokio::time::timeout(
         connect_timeout,
@@ -950,6 +968,8 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 effective_password.as_deref(),
                 &identity_refs,
                 effective_passphrase.as_deref(),
+                offer_agent_before,
+                offer_agent_after,
             )
         }),
     )
@@ -1072,6 +1092,8 @@ pub(super) fn authenticate_libssh_with_order(
     password: Option<&str>,
     identity_refs: &[IdentityRef],
     passphrase: Option<&str>,
+    offer_agent_before: bool,
+    offer_agent_after: bool,
 ) -> Result<AuthMethod, String> {
     let none = session
         .userauth_none(None)
@@ -1139,6 +1161,11 @@ pub(super) fn authenticate_libssh_with_order(
                     failures.push("server did not advertise public-key authentication".to_string());
                     continue;
                 }
+                if offer_agent_before
+                    && authenticate_libssh_agent(session, "before profile keys", &mut failures)?
+                {
+                    return Ok(AuthMethod::PublicKey);
+                }
                 let identities = identity_refs.iter().filter(|identity| {
                     matches!(
                         identity.source,
@@ -1179,9 +1206,14 @@ pub(super) fn authenticate_libssh_with_order(
                         }
                     }
                 }
-                if !identity_attempted {
+                if !identity_attempted && !offer_agent_before && !offer_agent_after {
                     failures
                         .push("profile has no usable explicit private-key identity".to_string());
+                }
+                if offer_agent_after
+                    && authenticate_libssh_agent(session, "after profile keys", &mut failures)?
+                {
+                    return Ok(AuthMethod::PublicKey);
                 }
                 methods = session
                     .userauth_list(None)
@@ -1242,6 +1274,36 @@ pub(super) fn authenticate_libssh_with_order(
     Err(format!(
         "libssh SSH authentication failed; attempted: {attempted}{details}"
     ))
+}
+
+fn authenticate_libssh_agent(
+    session: &libssh_rs::Session,
+    position: &str,
+    failures: &mut Vec<String>,
+) -> Result<bool, String> {
+    let status = match session.userauth_agent(None) {
+        Ok(status) => status,
+        Err(error) => {
+            failures.push(format!("SSH agent ({position}) failed: {error}"));
+            return Ok(false);
+        }
+    };
+    match status {
+        libssh_rs::AuthStatus::Success => Ok(true),
+        libssh_rs::AuthStatus::Denied => {
+            failures.push(format!("SSH agent ({position}) was denied"));
+            Ok(false)
+        }
+        libssh_rs::AuthStatus::Partial => {
+            failures.push(format!(
+                "SSH agent ({position}) was only partially accepted"
+            ));
+            Ok(false)
+        }
+        status @ (libssh_rs::AuthStatus::Info | libssh_rs::AuthStatus::Again) => Err(format!(
+            "libssh SSH agent authentication ({position}) returned {status:?}"
+        )),
+    }
 }
 
 fn load_libssh_private_key(

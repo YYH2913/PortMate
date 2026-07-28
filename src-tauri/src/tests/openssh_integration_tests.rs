@@ -2931,6 +2931,42 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
         assert_eq!(unfiltered.auth_method, AuthMethod::PublicKey);
         disconnect_ssh_runtime(unfiltered.runtime, "PortMate agent test").await;
 
+        let mut libssh_agent = profile.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut libssh_agent.connection {
+            ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic, AuthMethod::PublicKey];
+            ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::BeforeProfileKeys;
+        }
+        let libssh_runtime = establish_ssh_runtime_with_timeout(
+            &state,
+            &libssh_agent,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(libssh_runtime.auth_method, AuthMethod::PublicKey);
+        assert!(libssh_runtime.runtime.handle.lock().await.is_libssh());
+        let EstablishedSshRuntime {
+            runtime, read_half, ..
+        } = libssh_runtime;
+        let SshRuntime {
+            handle,
+            writer,
+            closed,
+            ..
+        } = runtime;
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate libssh agent fallback test")
+            .await
+            .unwrap();
+
         let matching_ref = IdentityRef {
             id: "accepted-agent-key".to_string(),
             label: accepted_comment.clone(),

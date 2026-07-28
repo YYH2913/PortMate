@@ -34,6 +34,8 @@ fn connect_libssh_password_test_session(
             Some(secret),
             &[],
             None,
+            false,
+            false,
         )
         .unwrap(),
         AuthMethod::Password
@@ -236,7 +238,7 @@ fn libssh_backend_selection_accepts_supported_gssapi_mixed_auth_order() {
     ssh.agent_policy.enabled = true;
     ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::BeforeProfileKeys;
     ssh.identity_policy.identities_only = false;
-    assert!(!ssh_uses_libssh_gssapi_backend(&ssh));
+    assert!(ssh_uses_libssh_gssapi_backend(&ssh));
 
     ssh.identity_policy.identities_only = true;
     assert!(ssh_uses_libssh_gssapi_backend(&ssh));
@@ -302,6 +304,8 @@ fn libssh_mixed_auth_falls_back_to_keyboard_interactive() {
                 Some(secret),
                 &[],
                 None,
+                false,
+                false,
             )
             .unwrap(),
             AuthMethod::KeyboardInteractive
