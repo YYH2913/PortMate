@@ -127,7 +127,7 @@ pub(super) fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(
 }
 
 struct SshAuxiliaryResources {
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
 }
 
@@ -146,13 +146,13 @@ fn ssh_resources_for_auxiliary_operation(
 }
 
 pub(super) struct SshAuxiliaryLease {
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl SshAuxiliaryLease {
-    pub(super) fn handle(&self) -> Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>> {
+    pub(super) fn handle(&self) -> Arc<tokio::sync::Mutex<SshBackendSession>> {
         Arc::clone(&self.handle)
     }
 
@@ -262,11 +262,52 @@ pub(super) async fn copy_local_file_for_transfer(
 }
 
 pub(super) async fn open_sftp_session(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
 ) -> Result<SftpSession, String> {
-    open_sftp_session_with_timeout(handle, SSH_AUXILIARY_SETUP_TIMEOUT).await
+    let timeout = SSH_AUXILIARY_SETUP_TIMEOUT;
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, handle.lock())
+        .await
+        .map_err(|_| format!("SFTP handle lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("SFTP setup 超时（{} ms）", timeout.as_millis()))?;
+
+    let setup = async {
+        let channel = handle
+            .russh()
+            .channel_open_session()
+            .await
+            .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|error| format!("SFTP subsystem 启动失败: {error}"))?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
+        sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
+        Ok::<_, String>(sftp)
+    };
+    match bounded_connection_step(setup, remaining).await {
+        Ok(sftp) => Ok(sftp),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning =
+                request_backend_disconnect_with_timeout(&handle, "PortMate SFTP setup timeout")
+                    .await
+                    .map(|warning| format!("; {warning}"))
+                    .unwrap_or_default();
+            Err(format!(
+                "SFTP setup 超时（{} ms）{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
 }
 
+#[cfg(test)]
 pub(super) async fn open_sftp_session_with_timeout<H: client::Handler>(
     handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     timeout: Duration,
@@ -1140,7 +1181,7 @@ pub(super) fn remote_join_path(parent: &str, name: &str) -> String {
 }
 
 pub(super) async fn remote_copy(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     remote_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -1156,8 +1197,8 @@ pub(super) async fn remote_copy(
     .await
 }
 
-pub(super) async fn remote_copy_with_timeouts<H: client::Handler>(
-    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+pub(super) async fn remote_copy_with_timeouts<H: RusshExecChannelOpener>(
+    handle: H,
     remote_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -1165,13 +1206,9 @@ pub(super) async fn remote_copy_with_timeouts<H: client::Handler>(
     total_timeout: Duration,
 ) -> Result<u64, String> {
     let command = remote_copy_command(remote_source, remote_destination);
-    let mut channel = open_shared_ssh_exec_channel(
-        &handle,
-        &command,
-        SSH_AUXILIARY_SETUP_TIMEOUT,
-        "SSH remote copy",
-    )
-    .await?;
+    let mut channel = handle
+        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SSH remote copy")
+        .await?;
 
     let mut output = Vec::new();
     let mut stderr = Vec::new();
@@ -1270,8 +1307,11 @@ pub(super) async fn remote_copy_with_timeouts<H: client::Handler>(
                     "remote copy stderr",
                 )?,
                 Some(message) => {
-                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at)
-                    {
+                    if russh_exec_message_completes(
+                        &message,
+                        &mut exit_status,
+                        &mut eof_received_at,
+                    ) {
                         break;
                     }
                 }
@@ -1299,7 +1339,7 @@ pub(super) async fn remote_copy_with_timeouts<H: client::Handler>(
         Ok(bytes)
     }
     .await;
-    close_ssh_channel_bounded(&channel).await;
+    close_russh_channel_bounded(&channel).await;
     outcome
 }
 

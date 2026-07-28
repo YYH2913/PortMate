@@ -11,7 +11,7 @@ pub(super) async fn scp_send_data_with_idle_timeout(
     stage: &str,
 ) -> Result<(), String> {
     if let Err(error) = progress.check_cancelled() {
-        close_ssh_channel_bounded(channel).await;
+        close_russh_channel_bounded(channel).await;
         return Err(error);
     }
     let started = Instant::now();
@@ -39,7 +39,7 @@ pub(super) async fn scp_send_data_with_idle_timeout(
         }
     };
     if outcome.is_err() {
-        close_ssh_channel_bounded(channel).await;
+        close_russh_channel_bounded(channel).await;
     }
     outcome
 }
@@ -87,8 +87,8 @@ pub(super) async fn scp_wait_channel_message(
     }
 }
 
-pub(super) async fn scp_upload<H: client::Handler>(
-    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+pub(super) async fn scp_upload<H: RusshExecChannelOpener>(
+    handle: H,
     local_source: &str,
     remote_destination: &str,
     progress: &TransferProgressContext,
@@ -100,9 +100,9 @@ pub(super) async fn scp_upload<H: client::Handler>(
         .filter(|value| !value.is_empty())
         .unwrap_or("portmate-upload.bin");
     let command = scp_upload_command(remote_destination, file_name, size);
-    let mut channel =
-        open_shared_ssh_exec_channel(&handle, &command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
-            .await?;
+    let mut channel = handle
+        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP upload")
+        .await?;
 
     let outcome = async {
         let mut output = Vec::new();
@@ -300,7 +300,11 @@ pub(super) async fn scp_upload<H: client::Handler>(
                     "SCP upload stderr",
                 )?,
                 Ok(Some(message)) => {
-                    if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at)
+                    if russh_exec_message_completes(
+                        &message,
+                        &mut exit_status,
+                        &mut eof_received_at,
+                    )
                     {
                         break;
                     }
@@ -332,7 +336,7 @@ pub(super) async fn scp_upload<H: client::Handler>(
         Ok(done)
     }
     .await;
-    close_ssh_channel_bounded(&channel).await;
+    close_russh_channel_bounded(&channel).await;
     outcome
 }
 
@@ -425,7 +429,7 @@ pub(super) fn scp_upload_command(remote_destination: &str, file_name: &str, tota
 }
 
 pub(super) async fn scp_download(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     remote_source: &str,
     local_destination: &str,
     progress: &TransferProgressContext,
@@ -440,21 +444,17 @@ pub(super) async fn scp_download(
     .await
 }
 
-pub(super) async fn scp_download_with_idle_timeout<H: client::Handler>(
-    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+pub(super) async fn scp_download_with_idle_timeout<H: RusshExecChannelOpener>(
+    handle: H,
     remote_source: &str,
     local_destination: &str,
     progress: &TransferProgressContext,
     idle_timeout: Duration,
 ) -> Result<u64, String> {
     let command = scp_download_command(remote_source);
-    let mut channel = open_shared_ssh_exec_channel(
-        &handle,
-        &command,
-        SSH_AUXILIARY_SETUP_TIMEOUT,
-        "SCP download",
-    )
-    .await?;
+    let mut channel = handle
+        .open_russh_exec_channel(&command, SSH_AUXILIARY_SETUP_TIMEOUT, "SCP download")
+        .await?;
     let outcome = async {
         let mut pending = VecDeque::new();
         let mut stderr = Vec::new();
@@ -602,7 +602,7 @@ pub(super) async fn scp_download_with_idle_timeout<H: client::Handler>(
         Ok(size)
     }
     .await;
-    close_ssh_channel_bounded(&channel).await;
+    close_russh_channel_bounded(&channel).await;
     outcome
 }
 
@@ -642,7 +642,7 @@ pub(super) async fn scp_wait_download_completion(
             .await
         {
             Ok(Some(message)) => {
-                if ssh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
+                if russh_exec_message_completes(&message, &mut exit_status, &mut eof_received_at) {
                     break;
                 }
                 match message {

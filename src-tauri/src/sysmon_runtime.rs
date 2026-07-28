@@ -436,7 +436,7 @@ where
 
 pub(super) async fn collect_remote_sysmon(
     session_id: &str,
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
 ) -> Result<SysmonSnapshot, String> {
     let platform = detect_remote_sysmon_platform(handle.clone()).await?;
     match platform
@@ -519,7 +519,7 @@ pub(super) async fn collect_remote_sysmon(
 }
 
 pub(super) async fn detect_remote_sysmon_platform(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
 ) -> Result<String, String> {
     if let Ok(output) = exec_ssh_command_capture(
         handle.clone(),

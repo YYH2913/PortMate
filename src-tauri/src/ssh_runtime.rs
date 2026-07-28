@@ -2,10 +2,10 @@ use super::*;
 
 pub(super) struct SshRuntime {
     pub(super) runtime_id: String,
-    pub(super) handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    pub(super) handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     pub(super) sftp: Arc<tokio::sync::Mutex<Option<SftpSession>>>,
     pub(super) jump_handles: Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
-    pub(super) writer: Arc<tokio::sync::Mutex<ChannelWriteHalf<client::Msg>>>,
+    pub(super) writer: Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     pub(super) closed: Arc<AtomicBool>,
@@ -16,7 +16,7 @@ pub(super) struct EstablishedSshRuntime {
     pub(super) runtime_id: String,
     pub(super) runtime: SshRuntime,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
-    pub(super) read_half: ChannelReadHalf,
+    pub(super) read_half: SshBackendChannelReader,
     pub(super) auth_method: AuthMethod,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Sender<()>,
@@ -27,7 +27,7 @@ pub(super) struct SshReadTask {
     pub(super) profile: SessionProfile,
     pub(super) runtime_id: String,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
-    pub(super) read_half: ChannelReadHalf,
+    pub(super) read_half: SshBackendChannelReader,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Sender<()>,
 }
@@ -67,8 +67,7 @@ pub(super) fn read_ssh_channel(
                 disconnect_reason = Some(reason);
             }
             match message {
-                ChannelMsg::Data { data } => {
-                    let bytes = data.to_vec();
+                SshBackendMessage::Data(bytes) => {
                     let _ = tap.send(bytes.clone());
                     record_channel_bytes(
                         &io,
@@ -80,8 +79,7 @@ pub(super) fn read_ssh_channel(
                     );
                     has_unpersisted_stream = true;
                 }
-                ChannelMsg::ExtendedData { data, ext } => {
-                    let bytes = data.to_vec();
+                SshBackendMessage::ExtendedData { data: bytes, ext } => {
                     let _ = tap.send(bytes.clone());
                     let stream = if ext == 1 {
                         EventStream::Stderr
@@ -98,7 +96,7 @@ pub(super) fn read_ssh_channel(
                     );
                     has_unpersisted_stream = true;
                 }
-                ChannelMsg::ExitStatus { exit_status } => {
+                SshBackendMessage::ExitStatus(exit_status) => {
                     if let Ok(mut store) = io.store.lock() {
                         store.record_system_event(
                             &session_id,
@@ -113,7 +111,7 @@ pub(super) fn read_ssh_channel(
                         }
                     }
                 }
-                ChannelMsg::ExitSignal {
+                SshBackendMessage::ExitSignal {
                     signal_name,
                     error_message,
                     ..
@@ -122,7 +120,7 @@ pub(super) fn read_ssh_channel(
                         store.record_system_event(
                             &session_id,
                             format!(
-                                "PortMate: SSH remote process exited by signal {signal_name:?} {error_message}"
+                                "PortMate: SSH remote process exited by signal {signal_name} {error_message}"
                             ),
                         );
                         if let Err(error) =
@@ -132,7 +130,7 @@ pub(super) fn read_ssh_channel(
                         }
                     }
                 }
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                SshBackendMessage::Eof | SshBackendMessage::Close => break,
                 _ => {}
             }
 
@@ -240,12 +238,12 @@ pub(super) fn read_ssh_channel(
     })
 }
 
-pub(super) fn ssh_channel_disconnect_reason(message: &ChannelMsg) -> Option<String> {
+pub(super) fn ssh_channel_disconnect_reason(message: &SshBackendMessage) -> Option<String> {
     match message {
-        ChannelMsg::ExitStatus { exit_status } => Some(format!(
+        SshBackendMessage::ExitStatus(exit_status) => Some(format!(
             "SSH remote process exited with status {exit_status}"
         )),
-        ChannelMsg::ExitSignal {
+        SshBackendMessage::ExitSignal {
             signal_name,
             error_message,
             ..
@@ -253,7 +251,7 @@ pub(super) fn ssh_channel_disconnect_reason(message: &ChannelMsg) -> Option<Stri
             let detail = error_message.trim();
             let suffix = (!detail.is_empty()).then(|| format!(": {detail}"));
             Some(format!(
-                "SSH remote process exited by signal {signal_name:?}{}",
+                "SSH remote process exited by signal {signal_name}{}",
                 suffix.unwrap_or_default()
             ))
         }
@@ -589,9 +587,7 @@ pub(super) async fn disconnect_registered_ssh_runtime(
     } = runtime;
     closed.store(true, Ordering::SeqCst);
     let handle = handle.lock().await;
-    let _ = handle
-        .disconnect(Disconnect::ByApplication, reason, "en")
-        .await;
+    let _ = handle.disconnect(reason).await;
     drop(handle);
     for jump_handle in jump_handles {
         let handle = jump_handle.lock().await;
@@ -613,9 +609,7 @@ pub(super) async fn disconnect_registered_ssh_runtime(
 pub(super) async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
     runtime.closed.store(true, Ordering::SeqCst);
     let handle = runtime.handle.lock().await;
-    let _ = handle
-        .disconnect(Disconnect::ByApplication, reason, "en")
-        .await;
+    let _ = handle.disconnect(reason).await;
     drop(handle);
     for jump_handle in runtime.jump_handles {
         let handle = jump_handle.lock().await;

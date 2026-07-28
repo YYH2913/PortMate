@@ -286,6 +286,7 @@ pub(super) async fn start_tunnel_runtime(
         let returned_port = {
             let handle = handle.lock().await;
             handle
+                .russh()
                 .tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
                 .await
                 .map_err(|error| {
@@ -712,6 +713,7 @@ pub(super) async fn probe_remote_tunnel_health(
                     return Err("tunnel closed before listener restore".to_string());
                 }
                 handle
+                    .russh()
                     .tcpip_forward(
                         runtime.spec.bind_host.clone(),
                         u32::from(runtime.spec.bind_port),
@@ -1151,7 +1153,7 @@ pub(super) async fn stop_tunnel_runtime_effects(
 }
 
 pub(super) async fn cancel_remote_tunnel_forward(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     tunnel: &TunnelSpec,
 ) -> Vec<String> {
@@ -1159,6 +1161,7 @@ pub(super) async fn cancel_remote_tunnel_forward(
     let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
         let handle = handle.lock().await;
         handle
+            .russh()
             .cancel_tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
             .await
     })
@@ -1364,7 +1367,7 @@ pub(super) async fn open_direct_tcpip_with_timeout<H: client::Handler>(
 }
 
 pub(super) async fn open_tunnel_direct_tcpip(
-    shared_handle: &Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
     target_host: String,
     target_port: u16,
     peer: std::net::SocketAddr,
@@ -1379,7 +1382,7 @@ pub(super) async fn open_tunnel_direct_tcpip(
             )
         })?;
     match open_direct_tcpip_with_timeout(
-        &handle,
+        handle.russh(),
         target_host,
         target_port,
         peer.ip().to_string(),
@@ -1406,7 +1409,7 @@ pub(super) async fn open_tunnel_direct_tcpip(
 }
 
 pub(super) async fn handle_local_tunnel_client(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     tunnel: TunnelSpec,
     local_stream: TcpStream,
     peer: std::net::SocketAddr,
@@ -1485,7 +1488,7 @@ pub(super) async fn handle_remote_tunnel_client(
     let local_stream = match target_connect {
         Ok(stream) => stream,
         Err(error) => {
-            close_ssh_channel_bounded(&channel).await;
+            close_russh_channel_bounded(&channel).await;
             return Err(match error {
                 BoundedConnectionStepError::Failed(error) => format!(
                     "remote tunnel target connect failed {}:{} for {}:{}: {error}",
@@ -1506,7 +1509,7 @@ pub(super) async fn handle_remote_tunnel_client(
 }
 
 pub(super) async fn handle_dynamic_tunnel_client(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     mut local_stream: TcpStream,
     peer: std::net::SocketAddr,
     metrics: Arc<TunnelMetrics>,

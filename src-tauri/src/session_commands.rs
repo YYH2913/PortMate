@@ -968,7 +968,7 @@ pub(super) async fn resize_session_inner(
     if let Some(writer) = ssh_writer {
         let writer = writer.lock().await;
         writer
-            .window_change(u32::from(cols), u32::from(rows), 0, 0)
+            .window_change(u32::from(cols), u32::from(rows))
             .await
             .map_err(|error| format!("SSH resize failed: {error}"))?;
     }

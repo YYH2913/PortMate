@@ -102,6 +102,7 @@ mod shell_transport;
 mod sqlite_mirror;
 mod sqlite_schema;
 mod sqlite_store;
+mod ssh_backend;
 mod ssh_exec;
 mod ssh_health;
 mod ssh_host_key_commands;
@@ -198,6 +199,7 @@ use session_events::{append_logging_error, append_logging_errors, sync_stored_ev
 use shell_transport::*;
 use sqlite_schema::*;
 use sqlite_store::*;
+use ssh_backend::*;
 use ssh_exec::*;
 #[cfg(test)]
 use ssh_host_key_commands::{
@@ -2221,9 +2223,12 @@ mod tests {
                 .await
                 .unwrap()
                 .success());
-            let terminal = handle.channel_open_session().await.unwrap();
+            let terminal =
+                SshBackendChannel::from_russh(handle.channel_open_session().await.unwrap());
             let (_reader, writer) = terminal.split();
-            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+                handle,
+            )));
             let (tap, _) = broadcast::channel(1);
             let (_reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
             state.ssh.lock().unwrap().insert(
@@ -2264,13 +2269,7 @@ mod tests {
 
             state.ssh.lock().unwrap().remove(&profile.id);
             let handle = handle.lock().await;
-            let _ = handle
-                .disconnect(
-                    Disconnect::ByApplication,
-                    "PortMate tmux lease test complete",
-                    "en",
-                )
-                .await;
+            let _ = handle.disconnect("PortMate tmux lease test complete").await;
             drop(handle);
             server_task.abort();
             let _ = server_task.await;
@@ -6613,10 +6612,10 @@ __PORTMATE_LOADAVG__
     #[test]
     fn ssh_channel_exit_status_preserves_remote_disconnect_diagnostic() {
         assert_eq!(
-            ssh_channel_disconnect_reason(&ChannelMsg::ExitStatus { exit_status: 7 }).as_deref(),
+            ssh_channel_disconnect_reason(&SshBackendMessage::ExitStatus(7)).as_deref(),
             Some("SSH remote process exited with status 7")
         );
-        assert_eq!(ssh_channel_disconnect_reason(&ChannelMsg::Eof), None);
+        assert_eq!(ssh_channel_disconnect_reason(&SshBackendMessage::Eof), None);
     }
 
     #[test]
@@ -13191,7 +13190,7 @@ __PORTMATE_LOADAVG__
                 .unwrap()
                 .success());
             let exec_handle = Arc::new(tokio::sync::Mutex::new(exec_handle));
-            let error = open_shared_ssh_exec_channel(
+            let error = open_shared_russh_exec_channel(
                 &exec_handle,
                 "true",
                 Duration::from_millis(30),
@@ -13270,7 +13269,9 @@ __PORTMATE_LOADAVG__
                 .await
                 .unwrap()
                 .success());
-            let handle = Arc::new(tokio::sync::Mutex::new(handle));
+            let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+                handle,
+            )));
 
             let output = exec_ssh_command_capture(
                 Arc::clone(&handle),
@@ -13411,7 +13412,7 @@ __PORTMATE_LOADAVG__
             cancel_task.await.unwrap();
             sftp.close().await.unwrap();
 
-            let channel = open_shared_ssh_exec_channel(
+            let channel = open_shared_russh_exec_channel(
                 &handle,
                 "true",
                 Duration::from_secs(1),
@@ -13419,7 +13420,7 @@ __PORTMATE_LOADAVG__
             )
             .await
             .unwrap();
-            close_ssh_channel_bounded(&channel).await;
+            close_russh_channel_bounded(&channel).await;
             assert_eq!(counters.subsystem_requests.load(Ordering::SeqCst), 1);
             assert_eq!(counters.lstat_attempts.load(Ordering::SeqCst), 1);
             assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
@@ -15030,11 +15031,7 @@ __PORTMATE_LOADAVG__
             {
                 let handle = reconnect_handle.lock().await;
                 handle
-                    .disconnect(
-                        Disconnect::ByApplication,
-                        "PortMate reconnect Store failure test",
-                        "en",
-                    )
+                    .disconnect("PortMate reconnect Store failure test")
                     .await
                     .unwrap();
             }
@@ -16586,6 +16583,7 @@ __PORTMATE_LOADAVG__
             {
                 let handle = remote_health_handle.lock().await;
                 handle
+                    .russh()
                     .cancel_tcpip_forward(
                         remote_tunnel.bind_host.clone(),
                         u32::from(remote_tunnel.bind_port),
@@ -16648,6 +16646,7 @@ __PORTMATE_LOADAVG__
             {
                 let handle = remote_health_handle.lock().await;
                 handle
+                    .russh()
                     .cancel_tcpip_forward(
                         remote_tunnel.bind_host.clone(),
                         u32::from(remote_tunnel.bind_port),
@@ -16745,11 +16744,7 @@ __PORTMATE_LOADAVG__
             {
                 let handle = reconnect_handle.lock().await;
                 handle
-                    .disconnect(
-                        Disconnect::ByApplication,
-                        "PortMate tunnel reconnect integration test",
-                        "en",
-                    )
+                    .disconnect("PortMate tunnel reconnect integration test")
                     .await
                     .unwrap();
             }

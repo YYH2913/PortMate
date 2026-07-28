@@ -234,7 +234,7 @@ pub(super) async fn start_tmux_control_inner(
                 }
                 message = channel.wait() => {
                     match message {
-                        Some(ChannelMsg::Data { data }) => match parser.push(&data) {
+                        Some(SshBackendMessage::Data(data)) => match parser.push(&data) {
                             Ok(parsed) if parsed.changed => {
                                 let now = Instant::now();
                                 if first_pending_at.is_none() {
@@ -249,7 +249,7 @@ pub(super) async fn start_tmux_control_inner(
                                 break;
                             }
                         },
-                        Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        Some(SshBackendMessage::ExtendedData { data, .. }) => {
                             if let Err(error) = append_bounded_ssh_exec_data(
                                 &mut stderr,
                                 &data,
@@ -260,11 +260,11 @@ pub(super) async fn start_tmux_control_inner(
                                 break;
                             }
                         }
-                        Some(ChannelMsg::Failure) => {
+                        Some(SshBackendMessage::Failure) => {
                             stopped_error = Some("远端拒绝启动 tmux control-mode".to_string());
                             break;
                         }
-                        Some(ChannelMsg::ExitStatus { exit_status }) if exit_status != 0 => {
+                        Some(SshBackendMessage::ExitStatus(exit_status)) if exit_status != 0 => {
                             let detail = String::from_utf8_lossy(&stderr);
                             stopped_error = Some(if detail.trim().is_empty() {
                                 format!("tmux control-mode 返回非零状态 {exit_status}")
@@ -273,7 +273,7 @@ pub(super) async fn start_tmux_control_inner(
                             });
                             break;
                         }
-                        Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                        Some(SshBackendMessage::Eof | SshBackendMessage::Close) | None => break,
                         _ => {}
                     }
                 }
@@ -402,7 +402,7 @@ pub(super) async fn list_tmux_state_inner(
 }
 
 async fn list_tmux_state_with_handle(
-    handle: Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
 ) -> Result<TmuxState, String> {
     let sessions_output = exec_ssh_command_capture(
         Arc::clone(&handle),

@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-07-27
+审查日期：2026-07-28
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -108,7 +108,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 主要缺口：
 
 - Jump Host 后端连接链路已支持多跳，逐跳 host key 验证和有 deadline 的 direct-tcpip 串接可用；会话设置可增删多跳 Jump Host，并可为每跳保存独立 password/passphrase secretRef、指定 identityRef、切换继承或自定义 host-key mode/alias/trust scope/rotation/IP 检查；目标 host-key 预扫描可经多跳链路执行；连接失败和扫描时可返回首个需要确认的 Jump Host host key，并通过同一确认弹窗逐跳信任后重连；目标会话临时输入的凭据不会覆盖跳板独立 secretRef。
-- GSSAPI 仍未实现：当前 `russh` 0.62.4 客户端 API 仍没有 GSSAPI exchange。完成它需要引入/评审另一条 SSH transport 或等待上游客户端支持，不能用 UI 标记代替协议实现。
+- GSSAPI 仍未实现：当前 `russh` 0.62.4 客户端 API 仍没有 GSSAPI exchange。SSH runtime 已增加第一阶段 `ssh_backend` 边界，主 session、PTY 读写与 resize、规范化 channel message、exec/Tmux/Sysmon 和 keepalive/exec 健康探针不再直接保存 russh handle/channel half；SFTP/SCP、tunnel、Jump Host 建连和 host-key scan 仍通过显式 russh 兼容入口。OpenSSH native mux 虽能在新会话请求中分配 TTY，但协议没有会话后的 window-change 请求，不能保持 PortMate 的动态 resize 语义，因此不作为完整交互后端。下一阶段仍需接入并验证带 GSSAPI 的 libssh transport，不能用这个抽象层或 UI 标记代替协议实现。
 - Runtime summary 已记录 `lastDisconnect`/`lastDisconnectReason`，SQLite mirror 同步保存；资源树会话和 pane 连接按钮现在通过不占布局的 tooltip 与 `aria-description` 显示六种中文状态、最近断开时间和原因，保持稳定的“连接/断开”可访问动作名称。原因会折叠多行空白并限制为 256 个 Unicode 字符，无效时间不显示；Chrome 工作区基线注入 SSH keepalive 断线记录，锁定资源树、连接按钮和精确动作定位，并覆盖浏览器 fallback 凭据保存失败时显示实际错误原因。同一次 outage 的 SSH/TCP/Telnet/Serial 重连失败、禁用重连和幂等手动关闭只更新原因并保留首次 `lastDisconnect`；恢复 Connected 后的下一次 transport loss 才记录新时间，共享 Store 单元回归和真实 TCP 断线/换端点/再次断线/停用链路已锁定。浏览器 fallback 复用同一状态转换规则，首次进入 `Connecting` 不会制造伪断线，首次成功连接不会留下不存在的断线时间，连接失败会保留具体原因。SSH/Tmux 的重连延迟/协议 KeepAlive、TCP/Telnet 的 OS keepalive/重连延迟，以及 Serial 的重连延迟/接收空闲阈值均可按 Profile 配置，断线后会进入 `Reconnecting` 并后台重试；更广故障矩阵和更深连接健康诊断还不完整。
 - Rust Store 在持久化前同样折叠断线原因空白并限制为 256 个 Unicode 字符，空原因回退到状态默认诊断；加载旧 SQLite/兼容快照时也会归一化历史字段。浏览器 fallback 现在也在更新可缓存 runtime 之前执行同一字符边界和默认原因，不再只在 tooltip 渲染时截断；结构合法的旧 SessionSummary cache 在独立窗口消费前同样规范该字段，不会因单个超长历史原因丢弃其余可用会话。前后端 formatter 单次流式扫描且只保留有界输出，不会为被篡改的超大字段构造等长副本或等长字符数组；单元回归覆盖多字节字符、精确边界、第 257 字符、超大前导空白、空原因和 legacy 加载。
 - 独立串口分析器复用共享 runtime health formatter：标题栏显示固定宽度中文状态并提供完整 tooltip/`aria-description`，状态条只在存在有效诊断时显示一次断线详情；非法时间、多行空白和超过 256 个 Unicode 字符的原因均按主工作区同一边界处理。Chrome 工作区矩阵锁定文本、可访问描述、固定宽度和真实截图，不再出现内部英文状态、`Invalid Date` 或 `上次断开 --` 占位。
@@ -354,7 +354,7 @@ npm run build
 2. Jump Host password/keyboard-interactive 混合认证、连接拒绝、三段握手超时与逐端 identity 失败诊断已覆盖。
 3. remote forward 服务端撤销的被动探测/原端口重建、cancel 失败后的本地收敛，以及远端命令型传输失败详情、部分进度、事件摘要和复制诊断均已完成；继续扩展服务端故障矩阵。
 4. SFTP/SCP 的 OpenSSH Alpine 3.19/3.20/3.21、Debian bookworm、Debian trixie、Ubuntu 24.04、独立 GESFTPServer Ubuntu 和 Dropbear Alpine 3.20/3.21 正常矩阵、交错的 SFTP/SCP 活动上传断线、SFTP subsystem 缺失/拒绝与 SCP command 拒绝、缺失远端源文件/只读目录的 `NoSuchFile`/`PermissionDenied` 语义、SSH health 的 ping/exec/SFTP 故障注入，以及 BusyBox Alpine 3.19/3.21、inetutils Debian/Ubuntu、netkit `telnetd-ssl` Ubuntu 24.04 明文/TLS Telnet、Ncat/Socat Alpine/Ubuntu TCP 已完成；SSH 容器就绪会分别等待 Docker 动态端口发布和完整协议 banner，TCP/Telnet 通过容器内 LISTEN 状态检查且不会以裸连接消费被测会话，Telnet shell 用例会先确认首轮 negotiation reply 再发送应用数据，避免冷启动竞态把服务端兼容性与测试控制面故障混为一谈。继续补 modem 物理串口、更多 SSH 服务端实现和异常状态码。
-5. SSH/TCP/Telnet/Serial 的最新 Profile 重连、动态延迟、KeepAlive/idle、runtime 断线诊断和 SSH 三层健康检测已完成；下一步集中在 Serial 物理设备、GSSAPI transport 选型和真实远端 OS 故障证据。
+5. SSH/TCP/Telnet/Serial 的最新 Profile 重连、动态延迟、KeepAlive/idle、runtime 断线诊断和 SSH 三层健康检测已完成；SSH runtime/PTY/exec/health 已迁入第一阶段 backend 边界，并排除不支持动态 resize 的 OpenSSH native mux。下一步继续迁移 SFTP/SCP/tunnel/Jump Host 后接入 libssh GSSAPI，同时补 Serial 物理设备和真实远端 OS 故障证据。
 
 ### P1：补齐 WindTerm/Bitvise 级工作流
 

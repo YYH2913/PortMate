@@ -272,7 +272,61 @@ pub(super) async fn request_ssh_disconnect_with_timeout<H: client::Handler>(
     }
 }
 
+pub(super) async fn request_backend_disconnect_with_timeout<H: client::Handler>(
+    handle: &SshBackendSession<H>,
+    disconnect_description: &str,
+) -> Option<String> {
+    match tokio::time::timeout(
+        SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT,
+        handle.disconnect(disconnect_description),
+    )
+    .await
+    {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("SSH disconnect request failed: {error}")),
+        Err(_) => Some(format!(
+            "SSH disconnect request timed out after {} ms",
+            SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+        )),
+    }
+}
+
 pub(super) async fn open_shared_ssh_exec_channel<H: client::Handler>(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
+    command: &str,
+    timeout: Duration,
+    label: &str,
+) -> Result<SshBackendChannel, String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
+        .await
+        .map_err(|_| format!("{label} handle lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} setup 超时（{} ms）", timeout.as_millis()))?;
+
+    let setup = async { handle.open_exec(command, label).await };
+    match bounded_connection_step(setup, remaining).await {
+        Ok(channel) => Ok(channel),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning = request_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate auxiliary SSH exec setup timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+            Err(format!(
+                "{label} setup 超时（{} ms）{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
+}
+
+pub(super) async fn open_shared_russh_exec_channel<H: client::Handler>(
     shared_handle: &Arc<tokio::sync::Mutex<client::Handle<H>>>,
     command: &str,
     timeout: Duration,
@@ -317,6 +371,40 @@ pub(super) async fn open_shared_ssh_exec_channel<H: client::Handler>(
     }
 }
 
+pub(super) async fn open_shared_russh_compat_exec_channel<H: client::Handler>(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
+    command: &str,
+    timeout: Duration,
+    label: &str,
+) -> Result<Channel<client::Msg>, String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
+        .await
+        .map_err(|_| format!("{label} handle lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} setup 超时（{} ms）", timeout.as_millis()))?;
+
+    match bounded_connection_step(handle.open_russh_exec_compat(command, label), remaining).await {
+        Ok(channel) => Ok(channel),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(error),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            let cleanup_warning = request_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate auxiliary SSH exec setup timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+            Err(format!(
+                "{label} setup 超时（{} ms）{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
+}
+
 pub(super) async fn remove_ssh_runtime_after_failed_open(
     state: &AppState,
     session_id: &str,
@@ -330,13 +418,7 @@ pub(super) async fn remove_ssh_runtime_after_failed_open(
     };
     runtime.closed.store(true, Ordering::SeqCst);
     let handle = runtime.handle.lock().await;
-    let _ = handle
-        .disconnect(
-            Disconnect::ByApplication,
-            "PortMate connection commit failed",
-            "en",
-        )
-        .await;
+    let _ = handle.disconnect("PortMate connection commit failed").await;
     drop(handle);
     for jump_handle in runtime.jump_handles {
         let handle = jump_handle.lock().await;
@@ -670,7 +752,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         .collect();
 
     let runtime_id = Uuid::new_v4().to_string();
-    let (read_half, write_half) = channel.split();
+    let (read_half, write_half) = SshBackendChannel::from_russh(channel).split();
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
@@ -680,7 +762,9 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id: runtime_id.clone(),
-            handle: Arc::new(tokio::sync::Mutex::new(session)),
+            handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+                session,
+            ))),
             sftp: Arc::new(tokio::sync::Mutex::new(None)),
             jump_handles,
             writer,

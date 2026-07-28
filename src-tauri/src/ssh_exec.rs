@@ -5,7 +5,11 @@ pub(super) const SSH_EXEC_STATUS_GRACE_TIMEOUT: Duration = Duration::from_secs(1
 pub(super) const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
 
-pub(super) async fn close_ssh_channel_bounded(channel: &Channel<client::Msg>) {
+pub(super) async fn close_ssh_channel_bounded(channel: &SshBackendChannel) {
+    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
+}
+
+pub(super) async fn close_russh_channel_bounded(channel: &Channel<client::Msg>) {
     let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
 }
 
@@ -29,6 +33,25 @@ pub(super) fn windows_powershell_encoded_script(script: &str) -> String {
 }
 
 pub(super) fn ssh_exec_message_completes(
+    message: &SshBackendMessage,
+    exit_status: &mut Option<u32>,
+    eof_received_at: &mut Option<Instant>,
+) -> bool {
+    match message {
+        SshBackendMessage::ExitStatus(code) => {
+            *exit_status = Some(*code);
+            eof_received_at.is_some()
+        }
+        SshBackendMessage::Eof => {
+            eof_received_at.get_or_insert_with(Instant::now);
+            exit_status.is_some()
+        }
+        SshBackendMessage::Close => true,
+        _ => false,
+    }
+}
+
+pub(super) fn russh_exec_message_completes(
     message: &ChannelMsg,
     exit_status: &mut Option<u32>,
     eof_received_at: &mut Option<Instant>,
@@ -53,7 +76,7 @@ pub(super) fn ssh_exec_status_grace_expired(eof_received_at: Option<Instant>) ->
 }
 
 pub(super) async fn exec_ssh_command_capture<H: client::Handler>(
-    handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
     command: &str,
     timeout: Duration,
 ) -> Result<String, String> {
@@ -91,13 +114,13 @@ pub(super) async fn exec_ssh_command_capture<H: client::Handler>(
                     break;
                 }
                 match message {
-                    ChannelMsg::Data { data } => append_bounded_ssh_exec_data(
+                    SshBackendMessage::Data(data) => append_bounded_ssh_exec_data(
                         &mut output,
                         &data,
                         MAX_SSH_EXEC_STDOUT_BYTES,
                         "stdout",
                     )?,
-                    ChannelMsg::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
+                    SshBackendMessage::ExtendedData { data, .. } => append_bounded_ssh_exec_data(
                         &mut stderr,
                         &data,
                         MAX_SSH_EXEC_STDERR_BYTES,

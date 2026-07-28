@@ -654,6 +654,13 @@ public-key, keyboard-interactive, and agent authentication but no client GSSAPI 
 requires a separately reviewed SSH transport integration or upstream client support; a profile flag
 alone would not constitute working GSSAPI.
 
+The first transport-boundary stage is in place: the live SSH session, PTY reader/writer and resize,
+normalized channel messages, exec-based Tmux/Sysmon operations, and transport/exec health probes use
+the internal `ssh_backend` API. SFTP/SCP, tunnels, Jump Host establishment, and host-key scanning still
+use explicit russh compatibility paths. OpenSSH native multiplexing was not selected as the alternate
+backend because its control protocol has no post-open window-change request, so it cannot preserve the
+interactive terminal's dynamic resize behavior.
+
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
 `lastDisconnect` value through `Reconnecting`, reconnect disablement, and an idempotent manual close.
