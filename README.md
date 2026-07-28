@@ -33,8 +33,10 @@ src                    React workbench UI
 src-tauri              Tauri desktop shell and backend commands
 ```
 
-The Tauri backend keeps the application orchestration in `src-tauri/src/lib.rs`, while protocol and
-security boundaries are being extracted incrementally. `serial_capture.rs` owns bounded Serial
+The Tauri backend keeps only module wiring, public re-exports, and shared constants in
+`src-tauri/src/lib.rs`; `app_bootstrap.rs` owns application startup, command registration, and
+shutdown, while `tests/mod.rs` owns the shared test harness and test-module registration.
+`serial_capture.rs` owns bounded Serial
 capture frames, history snapshots, and the per-session registry. `ssh_security.rs` owns ssh-agent signing,
 authentication filtering, one-shot trust, TOFU persistence, and Host Key observation updates;
 `ssh_health.rs` owns the three-stage health command and its stable report contract.
