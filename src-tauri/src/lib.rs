@@ -50,8 +50,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -3092,7 +3091,7 @@ mod tests {
                 profile.id.clone(),
                 TcpRuntime {
                     runtime_id: Uuid::new_v4().to_string(),
-                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
                     telnet: None,
@@ -3237,6 +3236,95 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed() {
+        let _runtime_guard = shared_runtime_test_guard();
+        tauri::async_runtime::block_on(async {
+            use native_tls::{Identity, TlsAcceptor};
+            use rcgen::generate_simple_self_signed;
+            use tokio_native_tls::TlsAcceptor as TokioTlsAcceptor;
+
+            let certificate = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let identity = Identity::from_pkcs8(
+                certificate.cert.pem().as_bytes(),
+                certificate.signing_key.serialize_pem().as_bytes(),
+            )
+            .unwrap();
+            let acceptor = TokioTlsAcceptor::from(TlsAcceptor::builder(identity).build().unwrap());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tauri::async_runtime::spawn(async move {
+                for attempt in 0..2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    match acceptor.accept(stream).await {
+                        Ok(mut stream) => {
+                            stream.write_all(b"__PORTMATE_TLS_OK__\\n").await.unwrap();
+                            return;
+                        }
+                        Err(error) if attempt == 0 => {
+                            eprintln!("expected first TLS certificate failure: {error}");
+                        }
+                        Err(error) => panic!("TLS server handshake failed: {error}"),
+                    }
+                }
+                panic!("TLS client did not complete the allowed handshake");
+            });
+
+            let root =
+                std::env::temp_dir().join(format!("portmate-telnet-tls-test-{}", Uuid::new_v4()));
+            let mut rejected = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                tls_enabled: true,
+                tls_server_name: Some("localhost".to_string()),
+                ..Default::default()
+            }));
+            let rejected_state = test_app_state(rejected.clone(), root.join("rejected.sqlite3"));
+            let error = open_tcp_session(&rejected_state, rejected.clone())
+                .await
+                .expect_err("untrusted TLS certificate should fail closed");
+            assert!(
+                error.contains("TLS 握手失败"),
+                "unexpected TLS error: {error}"
+            );
+
+            rejected.connection = ConnectionConfig::Telnet(TcpConnection {
+                tls_accept_invalid_cert: true,
+                ..match rejected.connection {
+                    ConnectionConfig::Telnet(tcp) => tcp,
+                    _ => unreachable!(),
+                }
+            });
+            let accepted_state = test_app_state(rejected.clone(), root.join("accepted.sqlite3"));
+            open_tcp_session(&accepted_state, rejected.clone())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if accepted_state
+                        .store
+                        .lock()
+                        .unwrap()
+                        .screen(&rejected.id)
+                        .is_some_and(|screen| screen.contains("__PORTMATE_TLS_OK__"))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("TLS session did not receive server output");
+            close_session_inner(&accepted_state, rejected.id.clone())
+                .await
+                .unwrap();
+            server.await.unwrap();
+            let _ = fs::remove_dir_all(root);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn external_tcp_telnet_server_compatibility() {
         let Ok(label) = std::env::var("PORTMATE_COMPAT_SOCKET_LABEL") else {
             eprintln!(
@@ -3251,6 +3339,18 @@ mod tests {
             .unwrap();
         let protocol = std::env::var("PORTMATE_COMPAT_SOCKET_PROTOCOL").unwrap();
         let mode = std::env::var("PORTMATE_COMPAT_SOCKET_MODE").unwrap();
+        let tls_enabled = std::env::var("PORTMATE_COMPAT_SOCKET_TLS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap();
+        let tls_server_name = std::env::var("PORTMATE_COMPAT_SOCKET_TLS_SERVER_NAME")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let tls_accept_invalid_cert =
+            std::env::var("PORTMATE_COMPAT_SOCKET_TLS_ACCEPT_INVALID_CERT")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse::<bool>()
+                .unwrap();
         let root = std::env::temp_dir().join(format!(
             "portmate-external-socket-compat-{}-{}",
             label,
@@ -3265,6 +3365,9 @@ mod tests {
                 reconnect: false,
                 telnet_binary: true,
                 telnet_naws: true,
+                tls_enabled,
+                tls_server_name,
+                tls_accept_invalid_cert,
                 ..Default::default()
             };
             let connection = match protocol.as_str() {
@@ -8027,6 +8130,9 @@ __PORTMATE_LOADAVG__
             keepalive_retries: 6,
             telnet_binary: false,
             telnet_naws: false,
+            tls_enabled: false,
+            tls_server_name: None,
+            tls_accept_invalid_cert: false,
         });
         state.store.lock().unwrap().upsert_profile(updated);
         assert_eq!(
@@ -10269,7 +10375,7 @@ __PORTMATE_LOADAVG__
                 profile.id.clone(),
                 TcpRuntime {
                     runtime_id: Uuid::new_v4().to_string(),
-                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
                     telnet: None,
@@ -12479,7 +12585,7 @@ __PORTMATE_LOADAVG__
                 profile.id.clone(),
                 TcpRuntime {
                     runtime_id: Uuid::new_v4().to_string(),
-                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
                     telnet: None,
@@ -12808,7 +12914,7 @@ __PORTMATE_LOADAVG__
                 profile.id.clone(),
                 TcpRuntime {
                     runtime_id: Uuid::new_v4().to_string(),
-                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
                     telnet: None,
@@ -13397,7 +13503,7 @@ __PORTMATE_LOADAVG__
                 profile.id.clone(),
                 TcpRuntime {
                     runtime_id: "runtime-current".to_string(),
-                    writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
                     tap,
                     closed: Arc::new(AtomicBool::new(false)),
                     telnet: None,

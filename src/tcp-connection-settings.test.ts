@@ -35,6 +35,9 @@ describe("TCP connection settings", () => {
       keepaliveRetries: 999,
       telnetBinary: true,
       telnetNaws: true,
+      tlsEnabled: false,
+      tlsServerName: null,
+      tlsAcceptInvalidCert: false,
     });
 
     expect(normalized.reconnectDelayMs).toBe(tcpConnectionBounds.reconnectDelayMs.min);
@@ -56,6 +59,9 @@ describe("TCP connection settings", () => {
       keepaliveRetries: 6,
       telnetBinary: false,
       telnetNaws: false,
+      tlsEnabled: false,
+      tlsServerName: null,
+      tlsAcceptInvalidCert: false,
     });
 
     expect(normalized).toMatchObject({
@@ -68,5 +74,28 @@ describe("TCP connection settings", () => {
       telnetBinary: false,
       telnetNaws: false,
     });
+  });
+
+  it("normalizes Telnet TLS settings without enabling them for legacy profiles", () => {
+    const normalized = normalizeTcpConnectionSettings({
+      host: "console.example",
+      port: 992,
+      reconnect: true,
+      proxy: proxyDefaults,
+      ...tcpConnectionDefaults,
+      tlsEnabled: true,
+      tlsServerName: "  tls.console.example  ",
+      tlsAcceptInvalidCert: true,
+    });
+    expect(normalized).toMatchObject({
+      tlsEnabled: true,
+      tlsServerName: "tls.console.example",
+      tlsAcceptInvalidCert: true,
+    });
+
+    expect(normalizeTcpConnectionSettings({
+      ...normalized,
+      tlsServerName: "invalid server name",
+    }).tlsServerName).toBeNull();
   });
 });

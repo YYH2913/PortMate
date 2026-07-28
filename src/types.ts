@@ -154,6 +154,9 @@ export interface TcpConnection {
   keepaliveRetries: number;
   telnetBinary: boolean;
   telnetNaws: boolean;
+  tlsEnabled: boolean;
+  tlsServerName: string | null;
+  tlsAcceptInvalidCert: boolean;
 }
 
 export interface TrustedHostKey {

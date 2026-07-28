@@ -39,6 +39,15 @@
     "mode": "shell"
   },
   {
+    "name": "netkit-telnetd-tls-ubuntu-noble",
+    "dockerfile": "tests/compat/telnetd-ssl-tls-ubuntu.Dockerfile",
+    "protocol": "telnet",
+    "mode": "shell",
+    "tls": true,
+    "tlsServerName": "localhost",
+    "tlsAcceptInvalidCert": true
+  },
+  {
     "name": "ncat-echo-alpine-3.20",
     "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
     "buildArgs": {

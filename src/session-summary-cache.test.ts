@@ -209,6 +209,9 @@ function createConnection(kind: SessionKind): ConnectionConfig {
         keepaliveRetries: 3,
         telnetBinary: false,
         telnetNaws: true,
+        tlsEnabled: false,
+        tlsServerName: null,
+        tlsAcceptInvalidCert: false,
       };
     case "ssh":
     case "tmux":

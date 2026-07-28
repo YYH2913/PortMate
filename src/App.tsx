@@ -5300,7 +5300,9 @@ function defaultSessionName(profile: SessionProfile) {
     case "tmux":
       return formatSshTarget(connection) || "SSH";
     case "telnet":
-      return connection.host ? `telnet://${connection.host}:${connection.port}` : "Telnet";
+      return connection.host
+        ? `${connection.tlsEnabled ? "telnets" : "telnet"}://${connection.host}:${connection.port}`
+        : "Telnet";
     case "tcp":
       return connection.host ? `tcp://${connection.host}:${connection.port}` : "Tcp";
     case "serial":

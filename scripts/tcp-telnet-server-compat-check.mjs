@@ -65,6 +65,9 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SOCKET_PORT: String(port),
         PORTMATE_COMPAT_SOCKET_PROTOCOL: entry.protocol,
         PORTMATE_COMPAT_SOCKET_MODE: entry.mode,
+        PORTMATE_COMPAT_SOCKET_TLS: String(entry.tls ?? false),
+        PORTMATE_COMPAT_SOCKET_TLS_SERVER_NAME: entry.tlsServerName ?? "",
+        PORTMATE_COMPAT_SOCKET_TLS_ACCEPT_INVALID_CERT: String(entry.tlsAcceptInvalidCert ?? false),
       },
     });
     verifiedServers.push(entry.name);
@@ -88,6 +91,15 @@ function validateEntry(entry) {
   }
   if (!new Set(["tcp", "telnet"]).has(entry.protocol) || typeof entry.mode !== "string") {
     throw new Error(`Invalid compatibility protocol or mode in ${entry.name}`);
+  }
+  if ((entry.tls !== undefined && typeof entry.tls !== "boolean")
+    || (entry.tlsAcceptInvalidCert !== undefined && typeof entry.tlsAcceptInvalidCert !== "boolean")
+    || (entry.tlsServerName !== undefined
+      && (typeof entry.tlsServerName !== "string" || !/^[a-zA-Z0-9.-]+$/.test(entry.tlsServerName)))) {
+    throw new Error(`Invalid TLS compatibility setting in ${entry.name}`);
+  }
+  if (entry.tls === true && entry.protocol !== "telnet") {
+    throw new Error(`TLS compatibility entry must use Telnet in ${entry.name}`);
   }
   for (const values of [entry.buildArgs ?? {}, entry.containerEnv ?? {}]) {
     for (const [name, value] of Object.entries(values)) {

@@ -39,10 +39,15 @@ serde_json.workspace = true
 sha2.workspace = true
 serialport = { version = "4.9", default-features = false }
 socket2 = { version = "0.6.3", features = ["all"] }
+native-tls = "0.2.18"
 tar = "0.4.46"
 tauri = { version = "2.10.3", features = [] }
 tempfile = "3.27"
 tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }
+tokio-native-tls = "0.3.1"
 uuid.workspace = true
 zeroize = "1"
 zmodem2 = "0.5.0"
+
+[dev-dependencies]
+rcgen = "0.14.8"

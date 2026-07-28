@@ -477,6 +477,12 @@ pub struct TcpConnection {
     pub telnet_binary: bool,
     #[serde(default = "default_true")]
     pub telnet_naws: bool,
+    #[serde(default)]
+    pub tls_enabled: bool,
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
+    #[serde(default)]
+    pub tls_accept_invalid_cert: bool,
 }
 
 pub const MIN_TCP_RECONNECT_DELAY_MS: u64 = 100;
@@ -524,6 +530,15 @@ impl TcpConnection {
         self.keepalive_retries = self
             .keepalive_retries
             .clamp(MIN_TCP_KEEPALIVE_RETRIES, MAX_TCP_KEEPALIVE_RETRIES);
+        self.tls_server_name = self.tls_server_name.take().and_then(|name| {
+            let name = name.trim();
+            (!name.is_empty()
+                && name.chars().take(254).count() <= 253
+                && !name
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace()))
+            .then(|| name.to_string())
+        });
     }
 }
 
@@ -541,6 +556,9 @@ impl Default for TcpConnection {
             keepalive_retries: DEFAULT_TCP_KEEPALIVE_RETRIES,
             telnet_binary: true,
             telnet_naws: true,
+            tls_enabled: false,
+            tls_server_name: None,
+            tls_accept_invalid_cert: false,
         }
     }
 }
@@ -1133,6 +1151,9 @@ mod tests {
         assert_eq!(legacy.keepalive_retries, DEFAULT_TCP_KEEPALIVE_RETRIES);
         assert!(legacy.telnet_binary);
         assert!(legacy.telnet_naws);
+        assert!(!legacy.tls_enabled);
+        assert!(legacy.tls_server_name.is_none());
+        assert!(!legacy.tls_accept_invalid_cert);
 
         let disabled: TcpConnection = serde_json::from_str(
             r#"{
@@ -1146,6 +1167,20 @@ mod tests {
         .expect("explicit Telnet feature switches should deserialize");
         assert!(!disabled.telnet_binary);
         assert!(!disabled.telnet_naws);
+
+        let mut tls = TcpConnection {
+            tls_enabled: true,
+            tls_server_name: Some("  console.example  ".to_string()),
+            tls_accept_invalid_cert: true,
+            ..TcpConnection::default()
+        };
+        tls.normalize_health_settings();
+        assert_eq!(tls.tls_server_name.as_deref(), Some("console.example"));
+        assert!(tls.tls_accept_invalid_cert);
+
+        tls.tls_server_name = Some("bad name".to_string());
+        tls.normalize_health_settings();
+        assert!(tls.tls_server_name.is_none());
 
         let mut invalid = TcpConnection {
             reconnect_delay_ms: 0,

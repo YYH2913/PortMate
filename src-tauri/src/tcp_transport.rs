@@ -1,9 +1,43 @@
 use super::*;
+use native_tls::TlsConnector as NativeTlsConnector;
 use socket2::TcpKeepalive;
+#[cfg(test)]
+use tokio::net::tcp::OwnedWriteHalf;
+use tokio_native_tls::{TlsConnector as TokioTlsConnector, TlsStream};
+
+const TCP_CONNECTION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub(super) type TcpReadHalf = Box<dyn AsyncRead + Send + Unpin>;
+pub(super) type TcpWriteHalf = Box<dyn AsyncWrite + Send + Unpin>;
+
+enum TcpConnectedStream {
+    Plain(TcpStream),
+    Tls(TlsStream<TcpStream>),
+}
+
+impl TcpConnectedStream {
+    fn split(self) -> (TcpReadHalf, TcpWriteHalf) {
+        match self {
+            Self::Plain(stream) => {
+                let (reader, writer) = tokio::io::split(stream);
+                (Box::new(reader), Box::new(writer))
+            }
+            Self::Tls(stream) => {
+                let (reader, writer) = tokio::io::split(stream);
+                (Box::new(reader), Box::new(writer))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn box_tcp_write_half(writer: OwnedWriteHalf) -> TcpWriteHalf {
+    Box::new(writer)
+}
 
 pub(super) struct TcpRuntime {
     pub(super) runtime_id: String,
-    pub(super) writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    pub(super) writer: Arc<tokio::sync::Mutex<TcpWriteHalf>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) telnet: Option<Arc<TelnetRuntimeState>>,
@@ -87,13 +121,50 @@ pub(super) async fn connect_tcp_socket(
     label: &str,
 ) -> Result<TcpStream, String> {
     let stream = tokio::time::timeout(
-        Duration::from_secs(15),
+        TCP_CONNECTION_SETUP_TIMEOUT,
         connect_target_stream(&tcp.host, tcp.port, &tcp.proxy, label),
     )
     .await
     .map_err(|_| format!("{label} 连接超时: {}:{}", tcp.host, tcp.port))??;
     configure_tcp_socket(&stream, label, tcp)?;
     Ok(stream)
+}
+
+async fn connect_tcp_transport(
+    tcp: &TcpConnection,
+    label: &str,
+) -> Result<TcpConnectedStream, String> {
+    let started = Instant::now();
+    let stream = connect_tcp_socket(tcp, label).await?;
+    if !tcp.tls_enabled {
+        return Ok(TcpConnectedStream::Plain(stream));
+    }
+
+    let server_name = tcp.tls_server_name.as_deref().unwrap_or(tcp.host.as_str());
+    if server_name.is_empty()
+        || server_name
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(format!("{label} TLS Server Name 无效"));
+    }
+    let mut builder = NativeTlsConnector::builder();
+    builder.danger_accept_invalid_certs(tcp.tls_accept_invalid_cert);
+    let connector = builder
+        .build()
+        .map_err(|error| format!("{label} TLS connector 初始化失败: {error}"))?;
+    let remaining = TCP_CONNECTION_SETUP_TIMEOUT.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(format!("{label} TLS 握手超时: {server_name}"));
+    }
+    tokio::time::timeout(
+        remaining,
+        TokioTlsConnector::from(connector).connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| format!("{label} TLS 握手超时: {server_name}"))?
+    .map(TcpConnectedStream::Tls)
+    .map_err(|error| format!("{label} TLS 握手失败: {error}"))
 }
 
 pub(super) fn configure_tcp_socket(
@@ -179,10 +250,10 @@ pub(super) async fn open_tcp_session(
         let _ = writer.shutdown().await;
     }
 
-    let stream = connect_tcp_socket(&tcp, label).await?;
+    let stream = connect_tcp_transport(&tcp, label).await?;
 
     let runtime_id = Uuid::new_v4().to_string();
-    let (read_half, write_half) = stream.into_split();
+    let (read_half, write_half) = stream.split();
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
@@ -253,8 +324,8 @@ pub(super) struct TcpReadTask {
     pub(super) runtime_id: String,
     pub(super) label: String,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
-    pub(super) writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
-    pub(super) read_half: OwnedReadHalf,
+    pub(super) writer: Arc<tokio::sync::Mutex<TcpWriteHalf>>,
+    pub(super) read_half: TcpReadHalf,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) telnet: Option<Arc<TelnetRuntimeState>>,
 }
@@ -817,7 +888,7 @@ async fn reconnect_tcp_session(
             }
         };
 
-        let stream = match connect_tcp_socket(&tcp, label).await {
+        let stream = match connect_tcp_transport(&tcp, label).await {
             Ok(stream) => stream,
             Err(error) => {
                 match record_tcp_reconnect_failure_if_pending(
@@ -848,7 +919,7 @@ async fn reconnect_tcp_session(
         };
 
         let runtime_id = Uuid::new_v4().to_string();
-        let (read_half, write_half) = stream.into_split();
+        let (read_half, write_half) = stream.split();
         let writer = Arc::new(tokio::sync::Mutex::new(write_half));
         let (tap, _) = broadcast::channel(1024);
         let next_closed = Arc::new(AtomicBool::new(false));

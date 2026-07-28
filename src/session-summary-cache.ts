@@ -142,7 +142,12 @@ function isConnection(value: unknown, expectedKind: unknown): boolean {
         && isFiniteNumber(connection.keepaliveIntervalSeconds)
         && isFiniteNumber(connection.keepaliveRetries)
         && isBoolean(connection.telnetBinary)
-        && isBoolean(connection.telnetNaws);
+        && isBoolean(connection.telnetNaws)
+        && (connection.tlsEnabled === undefined || isBoolean(connection.tlsEnabled))
+        && (connection.tlsServerName === undefined
+          || connection.tlsServerName === null
+          || isString(connection.tlsServerName))
+        && (connection.tlsAcceptInvalidCert === undefined || isBoolean(connection.tlsAcceptInvalidCert));
     case "ssh":
     case "tmux": {
       const endpoint = recordValue(connection.endpoint);

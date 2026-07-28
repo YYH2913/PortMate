@@ -8,6 +8,9 @@ export const tcpConnectionDefaults = {
   keepaliveRetries: 3,
   telnetBinary: true,
   telnetNaws: true,
+  tlsEnabled: false,
+  tlsServerName: null,
+  tlsAcceptInvalidCert: false,
 } as const;
 
 export const tcpConnectionBounds = {
@@ -22,12 +25,29 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
+function normalizeTlsServerName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  let characters = 0;
+  for (const character of normalized) {
+    characters += 1;
+    if (characters > 253 || /[\s\u0000-\u001f\u007f]/u.test(character)) return null;
+  }
+  return normalized;
+}
+
 export function normalizeTcpConnectionSettings<T extends TcpConnection>(connection: T): T {
   return {
     ...connection,
     reconnect: typeof connection.reconnect === "boolean" ? connection.reconnect : true,
     telnetBinary: typeof connection.telnetBinary === "boolean" ? connection.telnetBinary : true,
     telnetNaws: typeof connection.telnetNaws === "boolean" ? connection.telnetNaws : true,
+    tlsEnabled: typeof connection.tlsEnabled === "boolean" ? connection.tlsEnabled : false,
+    tlsServerName: normalizeTlsServerName(connection.tlsServerName),
+    tlsAcceptInvalidCert: typeof connection.tlsAcceptInvalidCert === "boolean"
+      ? connection.tlsAcceptInvalidCert
+      : false,
     reconnectDelayMs: boundedInteger(
       connection.reconnectDelayMs,
       tcpConnectionDefaults.reconnectDelayMs,
