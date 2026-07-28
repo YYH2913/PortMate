@@ -622,11 +622,14 @@ SCP commands. The TCP/Telnet matrix covers BusyBox
 telnetd on Alpine 3.19/3.21, inetutils telnetd on Debian bookworm and Ubuntu 24.04, and Ncat/Socat
 echo, burst-close, and close modes on Alpine and Ubuntu.
 `npm run test:ssh-gssapi-compat` provisions MIT Kerberos realms with Ubuntu 24.04 OpenSSH 9.6,
-Debian bookworm OpenSSH 9.2, and Debian trixie OpenSSH 10.0. Each server verifies successful
+Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. Each server verifies successful
 `gssapi-with-mic`, GSSAPI precedence over a deliberately wrong fallback password, strict host-key
 rejection, a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and
-password fallback when GSSAPI is disabled. The success cases also cover TOFU persistence, PTY shell
-I/O, resize, keepalive/exec health, recorded authentication method, and bounded runtime cleanup.
+password fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
+The OpenSSH success cases also cover TOFU persistence, PTY shell I/O and resize, keepalive/exec/SFTP
+health, recorded authentication method, and bounded runtime cleanup. Apache MINA covers the same
+authentication and health behavior plus interactive process-shell I/O; its shell accepts resize
+requests, but the matrix does not assert `stty` dimensions because it does not expose a real local PTY.
 All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
 times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
 matrices without registry access; each command fails closed if a required image is absent.
@@ -667,22 +670,25 @@ returns an explicit retry error instead of publishing stale latency data.
 
 The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, profile-level SSH reconnect delay and protocol KeepAlive thresholds, profile-level HTTP CONNECT/SOCKS5 routing with optional authentication for SSH/Tmux/TCP/Telnet, multi-hop SSH Jump Host backend connection chains with per-hop host-key verification, per-hop independent password/passphrase `secretRef`, per-hop identity selection, per-hop inherited or custom host-key mode/alias/trust scope/rotation/IP-check policy, target host-key scan over multi-hop chains, Jump Host host-key confirmation for the first untrusted or changed hop in the chain, session-settings editing, and initial SSH reconnect loops, local Shell PTY with resize, raw TCP, Telnet socket mode with directional BINARY, NAWS, profile TERMINAL-TYPE and NVT negotiation, profile-configurable reconnect delay and bounded OS TCP keepalive, Telnet CRLF/raw byte IAC handling plus Raw TCP byte preservation with loopback mock regressions, TCP/Telnet and Serial automatic reconnect with latest-profile reload and stale-attempt rejection, runtime `lastDisconnect` and `lastDisconnectReason` diagnostics surfaced in summaries, SQLite, and bounded resource-tree/pane-control tooltips and accessible descriptions, serial open/read/write with runtime port enumeration, configurable reconnect delay and receive-idle detection, DTR/RTS, Break, real Hex byte sending, exact bounded Serial RX/TX capture with direction/Hex/ASCII filtering and atomic JSONL export, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels with running-list, stop controls, connection counters, byte counters, last-error status, enabled-tunnel reconstruction after SSH reconnect, and passive remote-listener health checks that restore revoked forwards while preserving IDs, labels, and ports, bounded local Linux/macOS/Windows and remote Linux/macOS/FreeBSD/Windows Sysmon summaries with process/disk/interface detail views and CPU/memory/RX/TX history trends, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks with retry/speed metadata, profile-level B/s rate limits, per-session background queued scheduling, `.portmate-part` offset resume for local copy, SFTP upload/download/remote copy, SCP upload, and remote-command SCP copy, plus from-zero temporary-file retries for SCP download, full session queue view, batch cancel/retry controls, and live progress/cancel for local/SFTP/SCP copy loops, remote-command SCP copy with target-size polling, and X/Y/ZModem block loops, append-only raw/text/jsonl log shards, profile-vault private key/password/passphrase/proxy-password storage through the OS keyring or Stronghold, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust with connection-failure confirmation dialog and one-shot trust, host/client key manager workflows for known_hosts import/export, host-key scope/profile filtering, host-key field editing, batch host-key delete/copy-to-profile, grouped and filtered client identities, cross-profile client-key copy/reorder/reference removal, protected Jump Host references, profile-vault private-key import, and individual or batch ssh-agent identity addition, modal settings, MCP manifests/tools/resources, stdio/loopback HTTP MCP bridge, and live desktop IPC for trusted MCP control. Automated integration coverage includes isolated OpenSSH TOFU, same-endpoint host-key mismatch blocking, public-key/PTY/native-SFTP write and transfer/SCP workflows, live SSH reconnect-delay changes with tunnel restoration, authenticated and unauthenticated HTTP CONNECT/SOCKS5 transport forwarding and rejection handling, a real two-hop Jump Host direct-tcpip chain with per-endpoint TOFU and second-hop key-mismatch blocking, all three SSH tunnel modes, SOCKS5 protocol negotiation, `socat` virtual serial PTY exact binary capture/I/O, no-probe receive-idle detection, and reconnect migration to a different PTY path with live delay changes, plus Telnet/raw TCP loopback, configurable keepalive, and reconnect-delay behavior.
 
-GSSAPI has a deliberately narrow real-client path. When a profile's authentication order contains
-`gssapi-with-mic` and otherwise only explicit Profile Vault/System File public keys, password,
-keyboard-interactive, or none, Linux uses the system
-libssh backend for ordered authentication, PortMate host-key verification, PTY/shell setup,
-interactive I/O and resize, exec-based Tmux/Sysmon work, and keepalive/exec/SFTP health probes. Password
-and keyboard-interactive can follow a denied or unadvertised GSSAPI attempt, while a valid ticket
-wins before a later fallback credential; the successful method is recorded through the existing
-profile policy. Russh-server-to-libssh-client regressions cover both password-based fallback methods
-plus normalized stdout, stderr, exit status, and EOF handling. An isolated OpenSSH runtime regression
-also covers GSSAPI-unavailable fallback across an ordered rejected key and encrypted accepted key,
-including wrong-passphrase cleanup, passphrase unlock, and successful-method persistence. An isolated
-Profile Vault loader regression covers secretRef routing, encrypted-key parsing, missing secrets, and
-error redaction without initializing process-global credential providers. Agent-backed mixed authentication
-remains on the russh 0.62.4 compatibility path, which has no client GSSAPI exchange. The libssh path also rejects
-Proxy, Jump Host, and agent forwarding; SFTP file browsing and transfer operations, SCP, and tunnels
-remain explicit russh compatibility paths.
+GSSAPI has a deliberately constrained real-client path. When a profile's authentication order contains
+`gssapi-with-mic` and otherwise only explicit Profile Vault/System File public keys, unfiltered local
+ssh-agent fallback, password, keyboard-interactive, or none, Linux uses the system libssh backend for
+ordered authentication, PortMate host-key verification, PTY/shell setup, interactive I/O and resize,
+exec-based Tmux/Sysmon work, and keepalive/exec/SFTP health probes. HTTP CONNECT/SOCKS5 can hand a
+bounded preconnected socket to libssh; multi-hop Jump Host reuses the independently authenticated
+russh chain through a loopback bridge; agent forwarding uses a bounded Unix-socket/channel bridge.
+SFTP file operations and transfers, SCP upload/download/remote copy, and local/dynamic/remote-reverse
+tunnels all use the same backend boundary. Public keys, unfiltered agent offers, password, and
+keyboard-interactive can follow a denied or unadvertised GSSAPI attempt, while a valid ticket wins
+before a later fallback credential; the successful method is recorded through the existing profile
+policy. Exact Agent identity/fingerprint selection remains on russh because libssh cannot request one
+specific key from an agent. Russh-server-to-libssh-client regressions cover both password-based
+fallback methods plus normalized stdout, stderr, exit status, and EOF handling. Isolated OpenSSH
+runtime regressions additionally cover ordered public-key and agent fallback, Proxy and Jump Host
+transport, agent forwarding, SFTP/SCP, all three tunnel modes, cleanup, and successful-method
+persistence. An isolated Profile Vault loader regression covers secretRef routing, encrypted-key
+parsing, missing secrets, and error redaction without initializing process-global credential
+providers. The current russh 0.62.4 path still has no client GSSAPI exchange.
 
 OpenSSH native multiplexing was not selected as the alternate backend because its control protocol
 has no post-open window-change request, so it cannot preserve dynamic terminal resize. The workspace
@@ -692,12 +698,15 @@ system libssh development metadata, retains a real `ssh_userauth_gssapi` referen
 linked shared library, and verifies its GSSAPI runtime dependency. Other targets use the upstream
 vendored build to remain self-contained, but that build has no GSSAPI support. These build and
 channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian trixie OpenSSH/MIT
-Kerberos matrices covering successful authentication, GSSAPI precedence, strict host-key rejection,
+Kerberos matrices plus Apache MINA SSHD 2.19.0 with MIT Kerberos, covering successful
+authentication, GSSAPI precedence, strict host-key rejection,
 a missing ticket, password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback,
 SFTP subsystem rejection, and SFTP directory-operation rejection.
 Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
 subsystem, canonicalize the working directory, and read its entries through the health probe.
-Non-OpenSSH/Active Directory realms and agent-backed mixed authentication remain unverified.
+The Apache MINA path verifies interactive shell I/O but does not claim real process-PTY resize.
+Active Directory realms and exact agent identity/fingerprint selection inside the libssh GSSAPI path
+remain unverified.
 
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
@@ -742,10 +751,9 @@ disconnect timestamp and reason remain visible throughout the new handshake.
 
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP upload/download/remote-copy and SCP upload resume from pre-existing `.portmate-part` prefixes; SCP download safely replaces stale prefixes from byte zero. The matrix also covers cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets; delayed russh direct-tcpip and session-channel confirmations verify the terminal, auxiliary exec, SFTP, and tunnel setup deadlines plus owning-session disconnect paths. A delayed russh-sftp `LSTAT` verifies that an in-flight request is issued only once, cancellation returns promptly, and the following exec channel reuses the same SSH connection. A silent russh `scp -f` peer verifies prompt download cancellation and the SCP idle deadline; a separate silent remote-copy exec peer verifies cancellation, idle timeout, bounded cleanup, and reuse of the same SSH connection for the following channel.
 
-Still pending: non-OpenSSH/Active Directory Kerberos/GSSAPI implementations and unsupported libssh transport
-combinations, including agent-backed mixed authentication, Proxy/Jump Host, agent forwarding,
-SFTP file operations, SCP, and tunnels,
-real FreeBSD/macOS SSH hosts in the remote-forward integration matrix, a
+Still pending: Active Directory Kerberos/GSSAPI implementations, exact agent identity/fingerprint
+selection inside the libssh GSSAPI path, real FreeBSD/macOS SSH hosts in the remote-forward
+integration matrix, a
 Windows OpenSSH host for remote Sysmon, additional SDK versions beyond the pinned TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift clients,
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
 validated transfer and file-manager surfaces, and native keyring/Stronghold fault injection. The

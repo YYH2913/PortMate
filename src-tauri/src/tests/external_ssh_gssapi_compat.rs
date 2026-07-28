@@ -13,6 +13,8 @@ fn external_ssh_gssapi_runtime_matrix_case() {
         .unwrap()
         .parse::<u16>()
         .unwrap();
+    let verify_pty_resize =
+        std::env::var("PORTMATE_COMPAT_GSSAPI_VERIFY_PTY_RESIZE").as_deref() != Ok("0");
     let local_root = std::env::temp_dir().join(format!(
         "portmate-external-gssapi-{}-{}",
         case,
@@ -135,11 +137,15 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                 resize_session_inner(&state, profile.id.clone(), 101, 37)
                     .await
                     .unwrap();
+                let shell_probe = if verify_pty_resize {
+                    "printf '__PORTMATE_GSSAPI_SIZE__'; stty size; printf '__PORTMATE_GSSAPI_DONE__\\n'\n"
+                } else {
+                    "printf '__PORTMATE_GSSAPI_SHELL____PORTMATE_GSSAPI_DONE__\\n'\n"
+                };
                 send_text_inner(
                     state.session_io(),
                     profile.id.clone(),
-                    "printf '__PORTMATE_GSSAPI_SIZE__'; stty size; printf '__PORTMATE_GSSAPI_DONE__\\n'\n"
-                        .to_string(),
+                    shell_probe.to_string(),
                 )
                 .await
                 .unwrap();
@@ -152,9 +158,13 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                                 .unwrap()
                                 .screen(&profile.id)
                                 .is_some_and(|screen| {
-                                    screen.contains("__PORTMATE_GSSAPI_SIZE__")
-                                        && screen.contains("37 101")
-                                        && screen.contains("__PORTMATE_GSSAPI_DONE__")
+                                    screen.contains("__PORTMATE_GSSAPI_DONE__")
+                                        && if verify_pty_resize {
+                                            screen.contains("__PORTMATE_GSSAPI_SIZE__")
+                                                && screen.contains("37 101")
+                                        } else {
+                                            screen.contains("__PORTMATE_GSSAPI_SHELL__")
+                                        }
                                 });
                         if ready {
                             break;
@@ -163,7 +173,7 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                     }
                 })
                 .await
-                .expect("GSSAPI PTY resize output timed out");
+                .expect("GSSAPI shell probe timed out");
 
                 close_session_inner(&state, profile.id.clone())
                     .await

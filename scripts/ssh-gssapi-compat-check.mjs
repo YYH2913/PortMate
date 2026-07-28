@@ -27,8 +27,8 @@ const matrix = JSON.parse(readFileSync(
   resolve(projectRoot, "tests/compat/gssapi-server-matrix.json"),
   "utf8",
 ));
-if (!Array.isArray(matrix) || matrix.length < 3) {
-  throw new Error("SSH GSSAPI server matrix must contain at least three entries");
+if (!Array.isArray(matrix) || matrix.length < 4) {
+  throw new Error("SSH GSSAPI server matrix must contain at least four entries");
 }
 const matrixNames = new Set();
 for (const entry of matrix) {
@@ -38,6 +38,13 @@ for (const entry of matrix) {
   }
   matrixNames.add(entry.name);
 }
+const requestedServer = process.env.PORTMATE_COMPAT_GSSAPI_SERVER?.trim();
+if (requestedServer && !matrixNames.has(requestedServer)) {
+  throw new Error(`unknown SSH GSSAPI matrix server: ${requestedServer}`);
+}
+const selectedMatrix = requestedServer
+  ? matrix.filter(({ name }) => name === requestedServer)
+  : matrix;
 const useCachedImages = compatibilityUsesCachedImages();
 const temporaryRoot = mkdtempSync(join(tmpdir(), "portmate-gssapi-compat-"));
 const verifiedServers = [];
@@ -48,8 +55,12 @@ try {
     env: baseEnvironment,
     timeout: 600_000,
   });
-  for (const entry of matrix) {
+  for (const entry of selectedMatrix) {
     const image = `portmate-compat-gssapi-${entry.name}:local`;
+    const dockerfile = entry.dockerfile ?? "tests/compat/gssapi-openssh.Dockerfile";
+    const buildArgs = entry.baseImage
+      ? ["--build-arg", `PORTMATE_GSSAPI_BASE_IMAGE=${entry.baseImage}`]
+      : [];
     await prepareCompatibilityImage({
       run,
       image,
@@ -59,9 +70,8 @@ try {
         "--tag",
         image,
         "--file",
-        resolve(projectRoot, "tests/compat/gssapi-openssh.Dockerfile"),
-        "--build-arg",
-        `PORTMATE_GSSAPI_BASE_IMAGE=${entry.baseImage}`,
+        resolve(projectRoot, dockerfile),
+        ...buildArgs,
         projectRoot,
       ],
       buildOptions: { timeout: 600_000 },
@@ -69,7 +79,7 @@ try {
     });
 
     const cases = [];
-    const version = await withServer(image, "yes", async (server) => {
+    const version = await withServer(entry, image, "yes", async (server) => {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("success", server, kerberos, cases);
@@ -81,7 +91,7 @@ try {
       return server.version;
     });
 
-    await withServer(image, "no", async (server) => {
+    await withServer(entry, image, "no", async (server) => {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("server-disabled", server, kerberos, cases);
@@ -92,14 +102,20 @@ try {
       ["rejected", "sftp-rejected"],
       ["operation-denied", "sftp-operation-denied"],
     ]) {
-      await withServer(image, "yes", async (server) => {
+      await withServer(entry, image, "yes", async (server) => {
         const kerberos = configureKerberos(server);
         acquireTicket(server, kerberos);
         runCase(caseName, server, kerberos, cases);
         destroyTicket(kerberos);
       }, mode);
     }
-    verifiedServers.push({ name: entry.name, version, cases });
+    verifiedServers.push({
+      name: entry.name,
+      implementation: entry.implementation ?? "openssh",
+      version,
+      verifiedPtyResize: entry.verifyPtyResize !== false,
+      cases,
+    });
   }
 
   console.log(JSON.stringify({ verifiedGssapiServers: verifiedServers }, null, 2));
@@ -107,8 +123,9 @@ try {
   rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
-async function withServer(image, gssapiAuthentication, callback, sftpMode = "normal") {
+async function withServer(entry, image, gssapiAuthentication, callback, sftpMode = "normal") {
   const container = `portmate-gssapi-${randomUUID()}`;
+  const sshContainerPort = entry.sshContainerPort ?? 22;
   try {
     run("docker", [
       "run",
@@ -122,24 +139,22 @@ async function withServer(image, gssapiAuthentication, callback, sftpMode = "nor
       "--env",
       `PORTMATE_GSSAPI_SFTP=${sftpMode}`,
       "--publish",
-      "127.0.0.1::22/tcp",
+      `127.0.0.1::${sshContainerPort}/tcp`,
       "--publish",
       "127.0.0.1::88/tcp",
       image,
     ], { quiet: true, timeout: controlTimeoutMs });
-    const ports = await waitForPublishedPorts(container);
+    const ports = await waitForPublishedPorts(container, sshContainerPort);
     await waitForTcp(ports.kdc, container, "Kerberos KDC", false);
-    await waitForTcp(ports.ssh, container, "OpenSSH", true);
-    const versionResult = run("docker", ["exec", container, "/usr/sbin/sshd", "-V"], {
-      capture: true,
-      timeout: controlTimeoutMs,
-    });
-    const version = `${versionResult.stdout}${versionResult.stderr}`.trim();
-    if (!/^OpenSSH_[0-9]/.test(version)) {
-      throw new Error(`invalid OpenSSH version from ${container}: ${JSON.stringify(version)}`);
-    }
+    await waitForTcp(ports.ssh, container, `${entry.implementation ?? "openssh"} SSH`, true);
+    const version = inspectServerVersion(entry, container);
     try {
-      return await callback({ container, version, ...ports });
+      return await callback({
+        container,
+        version,
+        verifyPtyResize: entry.verifyPtyResize !== false,
+        ...ports,
+      });
     } catch (error) {
       throw containerFailure(container, error instanceof Error ? error.message : String(error));
     }
@@ -222,6 +237,7 @@ function runCase(name, server, kerberos, cases) {
       PORTMATE_COMPAT_GSSAPI_CASE: name,
       PORTMATE_COMPAT_GSSAPI_HOST: "localhost",
       PORTMATE_COMPAT_GSSAPI_PORT: String(server.ssh),
+      PORTMATE_COMPAT_GSSAPI_VERIFY_PTY_RESIZE: server.verifyPtyResize ? "1" : "0",
       PORTMATE_COMPAT_LIBSSH_TRACE: "1",
     },
     timeout: 600_000,
@@ -233,12 +249,56 @@ function validateMatrixEntry(entry) {
   if (!entry || typeof entry.name !== "string" || !/^[a-z0-9.-]+$/.test(entry.name)) {
     throw new Error(`invalid SSH GSSAPI matrix name: ${JSON.stringify(entry)}`);
   }
-  if (typeof entry.baseImage !== "string" || !/^[a-z0-9./:-]+$/.test(entry.baseImage)) {
+  const implementation = entry.implementation ?? "openssh";
+  if (!new Set(["openssh", "apache-mina"]).has(implementation)) {
+    throw new Error(`invalid SSH GSSAPI implementation for ${entry.name}`);
+  }
+  if (entry.baseImage !== undefined
+    && (typeof entry.baseImage !== "string" || !/^[a-z0-9./:-]+$/.test(entry.baseImage))) {
     throw new Error(`invalid SSH GSSAPI base image for ${entry.name}`);
+  }
+  if (implementation === "openssh" && typeof entry.baseImage !== "string") {
+    throw new Error(`OpenSSH GSSAPI entry requires a base image for ${entry.name}`);
+  }
+  if (entry.dockerfile !== undefined
+    && (typeof entry.dockerfile !== "string" || !entry.dockerfile.startsWith("tests/compat/"))) {
+    throw new Error(`invalid SSH GSSAPI Dockerfile for ${entry.name}`);
+  }
+  if (entry.sshContainerPort !== undefined
+    && (!Number.isInteger(entry.sshContainerPort)
+      || entry.sshContainerPort <= 0
+      || entry.sshContainerPort > 65535)) {
+    throw new Error(`invalid SSH GSSAPI container port for ${entry.name}`);
+  }
+  if (entry.verifyPtyResize !== undefined && typeof entry.verifyPtyResize !== "boolean") {
+    throw new Error(`invalid SSH GSSAPI PTY resize flag for ${entry.name}`);
+  }
+  if (entry.versionPattern !== undefined) {
+    if (typeof entry.versionPattern !== "string") {
+      throw new Error(`invalid SSH GSSAPI version pattern for ${entry.name}`);
+    }
+    new RegExp(entry.versionPattern);
   }
 }
 
-async function waitForPublishedPorts(container) {
+function inspectServerVersion(entry, container) {
+  const implementation = entry.implementation ?? "openssh";
+  const command = implementation === "apache-mina"
+    ? ["exec", container, "java", "-jar", "/opt/portmate/apache-mina-gssapi-server.jar", "--version"]
+    : ["exec", container, "/usr/sbin/sshd", "-V"];
+  const versionResult = run("docker", command, {
+    capture: true,
+    timeout: controlTimeoutMs,
+  });
+  const version = `${versionResult.stdout}${versionResult.stderr}`.trim();
+  const pattern = new RegExp(entry.versionPattern ?? "^OpenSSH_[0-9]");
+  if (!pattern.test(version)) {
+    throw new Error(`invalid ${implementation} version from ${container}: ${JSON.stringify(version)}`);
+  }
+  return version;
+}
+
+async function waitForPublishedPorts(container, sshContainerPort) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const inspected = run("docker", ["inspect", container], {
       capture: true,
@@ -248,7 +308,7 @@ async function waitForPublishedPorts(container) {
     if (inspected.status === 0) {
       const details = JSON.parse(inspected.stdout)[0];
       if (details?.State?.Running) {
-        const ssh = publishedPort(details, "22/tcp");
+        const ssh = publishedPort(details, `${sshContainerPort}/tcp`);
         const kdc = publishedPort(details, "88/tcp");
         if (ssh && kdc) return { ssh, kdc };
       } else if (details?.State?.Status === "exited") {

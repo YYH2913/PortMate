@@ -10,5 +10,13 @@
   {
     "name": "debian-trixie",
     "baseImage": "debian:trixie-slim"
+  },
+  {
+    "name": "apache-mina-sshd-2.19.0",
+    "implementation": "apache-mina",
+    "dockerfile": "tests/compat/apache-mina-gssapi.Dockerfile",
+    "sshContainerPort": 2222,
+    "versionPattern": "^Apache MINA SSHD 2\\.19\\.0$",
+    "verifyPtyResize": false
   }
 ]
