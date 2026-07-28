@@ -661,7 +661,7 @@ GSSAPI has a deliberately narrow real-client path. When a profile's authenticati
 `gssapi-with-mic` and otherwise only explicit Profile Vault/System File public keys, password,
 keyboard-interactive, or none, Linux uses the system
 libssh backend for ordered authentication, PortMate host-key verification, PTY/shell setup,
-interactive I/O and resize, exec-based Tmux/Sysmon work, and keepalive/exec health probes. Password
+interactive I/O and resize, exec-based Tmux/Sysmon work, and keepalive/exec/SFTP health probes. Password
 and keyboard-interactive can follow a denied or unadvertised GSSAPI attempt, while a valid ticket
 wins before a later fallback credential; the successful method is recorded through the existing
 profile policy. Russh-server-to-libssh-client regressions cover both password-based fallback methods
@@ -671,8 +671,8 @@ including wrong-passphrase cleanup, passphrase unlock, and successful-method per
 Profile Vault loader regression covers secretRef routing, encrypted-key parsing, missing secrets, and
 error redaction without initializing process-global credential providers. Agent-backed mixed authentication
 remains on the russh 0.62.4 compatibility path, which has no client GSSAPI exchange. The libssh path also rejects
-Proxy, Jump Host, and agent forwarding; SFTP/SCP and tunnels remain explicit russh compatibility
-paths.
+Proxy, Jump Host, and agent forwarding; SFTP file browsing and transfer operations, SCP, and tunnels
+remain explicit russh compatibility paths.
 
 OpenSSH native multiplexing was not selected as the alternate backend because its control protocol
 has no post-open window-change request, so it cannot preserve dynamic terminal resize. The workspace
@@ -684,6 +684,8 @@ vendored build to remain self-contained, but that build has no GSSAPI support. T
 channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian trixie OpenSSH/MIT
 Kerberos matrices covering successful authentication, GSSAPI precedence, strict host-key rejection,
 a missing ticket, password fallback, server-disabled GSSAPI, and disabled-GSSAPI password fallback.
+Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
+subsystem, canonicalize the working directory, and read its entries through the health probe.
 Non-OpenSSH/Active Directory realms and agent-backed mixed authentication remain unverified.
 
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
@@ -731,7 +733,7 @@ The OpenSSH integration matrix also exercises host-key mismatch blocking followe
 
 Still pending: non-OpenSSH/Active Directory Kerberos/GSSAPI implementations and unsupported libssh transport
 combinations, including agent-backed mixed authentication, Proxy/Jump Host, agent forwarding,
-SFTP/SCP, and tunnels,
+SFTP file operations, SCP, and tunnels,
 real FreeBSD/macOS SSH hosts in the remote-forward integration matrix, a
 Windows OpenSSH host for remote Sysmon, additional SDK versions beyond the pinned TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift clients,
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the

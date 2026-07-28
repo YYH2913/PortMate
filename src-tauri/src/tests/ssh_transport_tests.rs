@@ -286,6 +286,13 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         open_ssh_session(&state, profile.clone(), None, Some(passphrase.to_string()))
             .await
             .unwrap();
+        let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
+            .await
+            .unwrap();
+        assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
+        assert!(health.sftp_probed);
+        assert!(health.sftp_round_trip_ms.is_some());
+        assert!(health.sftp_error.is_none());
         let stored = state
             .store
             .lock()

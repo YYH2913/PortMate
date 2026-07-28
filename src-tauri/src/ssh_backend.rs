@@ -60,6 +60,25 @@ where
         }
     }
 
+    pub(super) async fn probe_libssh_sftp(&self) -> Result<(), String> {
+        let Self::Libssh(session) = self else {
+            return Err("SFTP libssh health probe requires a libssh backend".to_string());
+        };
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || {
+            let sftp = session
+                .sftp()
+                .map_err(|error| format!("libssh SFTP initialization failed: {error}"))?;
+            sftp.canonicalize(".")
+                .map_err(|error| format!("libssh SFTP canonicalize failed: {error}"))?;
+            sftp.read_dir(".")
+                .map_err(|error| format!("libssh SFTP read_dir failed: {error}"))?;
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|error| format!("libssh SFTP health worker failed: {error}"))?
+    }
+
     pub(super) async fn open_exec(
         &self,
         command: &str,
