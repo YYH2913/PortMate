@@ -43,8 +43,12 @@ version = "1.3"
 [dependencies.libc]
 version = "0.2"
 
-[dependencies.libssh-rs-sys]
+[target.'cfg(target_os = "linux")'.dependencies.libssh-rs-sys]
 version = "0.2.8"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies.libssh-rs-sys]
+version = "0.2.8"
+features = ["vendored", "vendored-openssl"]
 
 [dependencies.openssl-sys]
 version = "0.9.105"

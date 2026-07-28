@@ -130,7 +130,9 @@ pub(super) fn read_ssh_channel(
                         }
                     }
                 }
-                SshBackendMessage::Eof | SshBackendMessage::Close => break,
+                SshBackendMessage::Error(_) | SshBackendMessage::Eof | SshBackendMessage::Close => {
+                    break
+                }
                 _ => {}
             }
 
@@ -255,6 +257,7 @@ pub(super) fn ssh_channel_disconnect_reason(message: &SshBackendMessage) -> Opti
                 suffix.unwrap_or_default()
             ))
         }
+        SshBackendMessage::Error(error) => Some(format!("SSH channel read failed: {error}")),
         _ => None,
     }
 }

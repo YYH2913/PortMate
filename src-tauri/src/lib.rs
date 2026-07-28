@@ -13342,6 +13342,88 @@ __PORTMATE_LOADAVG__
 
     #[cfg(unix)]
     #[test]
+    fn libssh_backend_exec_normalizes_output_and_exit_status() {
+        if Command::new("ssh-keygen").arg("-V").output().is_err() {
+            eprintln!("skipping libssh backend test: ssh-keygen is not installed");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let host_key = root.path().join("ssh_host_ed25519_key");
+        generate_ed25519_test_key(&host_key);
+
+        tauri::async_runtime::block_on(async {
+            let username = "portmate-libssh-backend-user";
+            let secret = "PortMate libssh backend secret";
+            let (port, counters, server_task) =
+                spawn_mixed_auth_test_server(&host_key, username, secret).await;
+
+            let session = libssh_rs::Session::new().unwrap();
+            session
+                .set_option(libssh_rs::SshOption::ProcessConfig(false))
+                .unwrap();
+            session
+                .set_option(libssh_rs::SshOption::Hostname("127.0.0.1".to_string()))
+                .unwrap();
+            session
+                .set_option(libssh_rs::SshOption::Port(port))
+                .unwrap();
+            session
+                .set_option(libssh_rs::SshOption::User(Some(username.to_string())))
+                .unwrap();
+            session.connect().unwrap();
+            assert_eq!(
+                session.userauth_password(None, Some(secret)).unwrap(),
+                libssh_rs::AuthStatus::Success
+            );
+
+            let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::<
+                AcceptAnyTestSshClient,
+            >::from_libssh(session)));
+            let output = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_SUCCESS__",
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            assert_eq!(output, "captured");
+
+            let error = exec_ssh_command_capture(
+                Arc::clone(&handle),
+                "__PORTMATE_TEST_EXEC_NONZERO__",
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, "SSH exec 返回非零状态 7: remote failure");
+            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 2);
+
+            handle
+                .lock()
+                .await
+                .disconnect("PortMate libssh backend test complete")
+                .await
+                .unwrap();
+            server_task.abort();
+            let _ = server_task.await;
+        });
+    }
+
+    #[test]
+    fn libssh_backend_selection_requires_gssapi_only_auth_order() {
+        let ConnectionConfig::Ssh(mut ssh) = test_ssh_profile().connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic];
+        assert!(ssh_uses_libssh_gssapi_backend(&ssh));
+
+        ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic, AuthMethod::PublicKey];
+        assert!(!ssh_uses_libssh_gssapi_backend(&ssh));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn sftp_in_flight_request_observes_transfer_cancellation() {
         if Command::new("ssh-keygen").arg("-V").output().is_err() {
             eprintln!("skipping SFTP cancellation test: ssh-keygen is not installed");
@@ -16583,7 +16665,8 @@ __PORTMATE_LOADAVG__
             {
                 let handle = remote_health_handle.lock().await;
                 handle
-                    .russh()
+                    .russh_compat()
+                    .unwrap()
                     .cancel_tcpip_forward(
                         remote_tunnel.bind_host.clone(),
                         u32::from(remote_tunnel.bind_port),
@@ -16646,7 +16729,8 @@ __PORTMATE_LOADAVG__
             {
                 let handle = remote_health_handle.lock().await;
                 handle
-                    .russh()
+                    .russh_compat()
+                    .unwrap()
                     .cancel_tcpip_forward(
                         remote_tunnel.bind_host.clone(),
                         u32::from(remote_tunnel.bind_port),

@@ -286,7 +286,7 @@ pub(super) async fn start_tunnel_runtime(
         let returned_port = {
             let handle = handle.lock().await;
             handle
-                .russh()
+                .russh_compat()?
                 .tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
                 .await
                 .map_err(|error| {
@@ -713,7 +713,7 @@ pub(super) async fn probe_remote_tunnel_health(
                     return Err("tunnel closed before listener restore".to_string());
                 }
                 handle
-                    .russh()
+                    .russh_compat()?
                     .tcpip_forward(
                         runtime.spec.bind_host.clone(),
                         u32::from(runtime.spec.bind_port),
@@ -1161,9 +1161,10 @@ pub(super) async fn cancel_remote_tunnel_forward(
     let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
         let handle = handle.lock().await;
         handle
-            .russh()
+            .russh_compat()?
             .cancel_tcpip_forward(tunnel.bind_host.clone(), u32::from(tunnel.bind_port))
             .await
+            .map_err(|error| error.to_string())
     })
     .await;
     match cancel {
@@ -1381,8 +1382,9 @@ pub(super) async fn open_tunnel_direct_tcpip(
                 TUNNEL_CONNECT_TIMEOUT.as_millis()
             )
         })?;
+    let russh = handle.russh_compat()?;
     match open_direct_tcpip_with_timeout(
-        handle.russh(),
+        russh,
         target_host,
         target_port,
         peer.ip().to_string(),

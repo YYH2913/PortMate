@@ -126,6 +126,9 @@ pub(super) async fn exec_ssh_command_capture<H: client::Handler>(
                         MAX_SSH_EXEC_STDERR_BYTES,
                         "stderr",
                     )?,
+                    SshBackendMessage::Error(error) => {
+                        return Err(format!("SSH exec channel read failed: {error}"));
+                    }
                     _ => {}
                 }
             }

@@ -276,7 +276,7 @@ pub(super) async fn open_sftp_session(
 
     let setup = async {
         let channel = handle
-            .russh()
+            .russh_compat()?
             .channel_open_session()
             .await
             .map_err(|error| format!("SFTP 打开 SSH channel 失败: {error}"))?;

@@ -273,6 +273,10 @@ pub(super) async fn start_tmux_control_inner(
                             });
                             break;
                         }
+                        Some(SshBackendMessage::Error(error)) => {
+                            stopped_error = Some(format!("tmux control-mode SSH read failed: {error}"));
+                            break;
+                        }
                         Some(SshBackendMessage::Eof | SshBackendMessage::Close) | None => break,
                         _ => {}
                     }

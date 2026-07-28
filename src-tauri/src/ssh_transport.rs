@@ -42,53 +42,17 @@ impl client::Handler for PortMateSshHandler {
         *lock_ssh_handler_state(&self.observed_key, "host key observation")? =
             Some(observation.clone());
 
-        let evaluation = self
-            .host_keys
-            .evaluate(&self.profile_id, &self.policy, &observation);
-        let accepted = match evaluation {
-            Ok(HostKeyEvaluation::Trusted {
-                matched_key_id,
-                fingerprint_sha256,
-            }) if trusted_host_key_allowed(
-                &self.policy,
-                &matched_key_id,
-                &self.one_time_host_key_ids,
-            ) =>
-            {
-                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
-                let _ = fingerprint_sha256;
-                true
-            }
-            Ok(HostKeyEvaluation::Trusted {
-                fingerprint_sha256, ..
-            }) => {
-                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some(format!(
-                    "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
-                ));
-                false
-            }
-            Ok(HostKeyEvaluation::Unknown {
-                alias,
-                fingerprint_sha256,
-                ..
-            }) if self.policy.mode == HostKeyMode::TrustOnFirstUse => {
-                *lock_ssh_handler_state(&self.host_key_error, "host key error")? = None;
-                let _ = (alias, fingerprint_sha256);
-                true
-            }
-            Ok(other) => {
-                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
-                    Some(describe_host_key_rejection(&other));
-                false
-            }
-            Err(error) => {
-                *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
-                    Some(format!("host key fingerprint 计算失败: {error}"));
-                false
-            }
-        };
+        let verification = verify_ssh_host_key_observation(
+            &self.profile_id,
+            &self.policy,
+            &self.host_keys,
+            &self.one_time_host_key_ids,
+            &observation,
+        );
+        *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
+            verification.as_ref().err().cloned();
 
-        Ok(accepted)
+        Ok(verification.is_ok())
     }
 
     fn server_channel_open_forwarded_tcpip(
@@ -149,6 +113,32 @@ impl client::Handler for PortMateSshHandler {
             }
             Ok(())
         }
+    }
+}
+
+pub(super) fn verify_ssh_host_key_observation(
+    profile_id: &str,
+    policy: &portmate_core::HostKeyPolicy,
+    host_keys: &HostKeyStore,
+    one_time_host_key_ids: &[String],
+    observation: &HostKeyObservation,
+) -> Result<(), String> {
+    match host_keys.evaluate(profile_id, policy, observation) {
+        Ok(HostKeyEvaluation::Trusted { matched_key_id, .. })
+            if trusted_host_key_allowed(policy, &matched_key_id, one_time_host_key_ids) =>
+        {
+            Ok(())
+        }
+        Ok(HostKeyEvaluation::Trusted {
+            fingerprint_sha256, ..
+        }) => Err(format!(
+            "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
+        )),
+        Ok(HostKeyEvaluation::Unknown { .. }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
+            Ok(())
+        }
+        Ok(other) => Err(describe_host_key_rejection(&other)),
+        Err(error) => Err(format!("host key fingerprint 计算失败: {error}")),
     }
 }
 
@@ -637,6 +627,22 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
     let host_key_error = Arc::new(Mutex::new(None));
     let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
 
+    if ssh_uses_libssh_gssapi_backend(&ssh) {
+        return establish_libssh_gssapi_runtime(
+            state,
+            profile,
+            &ssh,
+            connect_timeout,
+            host_keys,
+            one_time_host_keys,
+            observed_key,
+            host_key_error,
+            remote_forwards,
+            enforce_profile_snapshot,
+        )
+        .await;
+    }
+
     let config = Arc::new(ssh_client_config(&ssh));
 
     let (mut session, jump_sessions) = connect_ssh_target(
@@ -776,6 +782,233 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         tap,
         read_half,
         auth_method,
+        closed,
+        reader_finished: reader_finished_sender,
+    })
+}
+
+pub(super) fn ssh_uses_libssh_gssapi_backend(ssh: &SshConnection) -> bool {
+    ssh.identity_policy.auth_order.as_slice() == [AuthMethod::GssapiWithMic]
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn establish_libssh_gssapi_runtime(
+    state: &AppState,
+    profile: &SessionProfile,
+    ssh: &SshConnection,
+    connect_timeout: Duration,
+    host_keys: HostKeyStore,
+    one_time_host_keys: Vec<TrustedHostKey>,
+    observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
+    host_key_error: Arc<Mutex<Option<String>>>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    enforce_profile_snapshot: bool,
+) -> Result<EstablishedSshRuntime, String> {
+    if ssh.proxy.enabled {
+        return Err("GSSAPI libssh backend 尚未支持 SSH proxy".to_string());
+    }
+    if !ssh.jumps.is_empty() {
+        return Err("GSSAPI libssh backend 尚未支持 Jump Host".to_string());
+    }
+    if ssh.agent_policy.forwarding {
+        return Err("GSSAPI libssh backend 尚未支持 SSH agent forwarding".to_string());
+    }
+
+    let host = ssh.endpoint.host.clone();
+    let port = ssh.endpoint.port;
+    let username = ssh.username.clone();
+    let host_key_alias = ssh.host_key_policy.alias.clone();
+    let connected = tokio::time::timeout(
+        connect_timeout,
+        tokio::task::spawn_blocking(move || {
+            let session = libssh_rs::Session::new()
+                .map_err(|error| format!("libssh session 初始化失败: {error}"))?;
+            session
+                .set_option(libssh_rs::SshOption::ProcessConfig(false))
+                .map_err(|error| format!("libssh 禁用系统 ssh_config 失败: {error}"))?;
+            session
+                .set_option(libssh_rs::SshOption::Hostname(host.clone()))
+                .map_err(|error| format!("libssh 设置主机失败: {error}"))?;
+            session
+                .set_option(libssh_rs::SshOption::Port(port))
+                .map_err(|error| format!("libssh 设置端口失败: {error}"))?;
+            session
+                .set_option(libssh_rs::SshOption::User(Some(username)))
+                .map_err(|error| format!("libssh 设置用户名失败: {error}"))?;
+            session
+                .set_option(libssh_rs::SshOption::Timeout(connect_timeout))
+                .map_err(|error| format!("libssh 设置连接超时失败: {error}"))?;
+            session
+                .connect()
+                .map_err(|error| format!("libssh 连接 {host}:{port} 失败: {error}"))?;
+            let key = session
+                .get_server_public_key()
+                .map_err(|error| format!("libssh 读取服务端 host key 失败: {error}"))?;
+            let observation = HostKeyObservation {
+                host,
+                port,
+                alias: host_key_alias,
+                algorithm: key
+                    .key_type_name()
+                    .map_err(|error| format!("libssh 读取 host key 算法失败: {error}"))?,
+                public_key_base64: key
+                    .export_public_key_base64()
+                    .map_err(|error| format!("libssh 导出 host key 失败: {error}"))?,
+            };
+            Ok::<_, String>((session, observation))
+        }),
+    )
+    .await
+    .map_err(|_| format!("libssh 连接超时（{} ms）", connect_timeout.as_millis()))?
+    .map_err(|error| format!("libssh 连接 worker 失败: {error}"))??;
+    let (session, observation) = connected;
+
+    *observed_key.lock().map_err(|error| error.to_string())? = Some(observation.clone());
+    let one_time_host_key_ids = one_time_host_keys
+        .iter()
+        .map(|key| key.id.clone())
+        .collect::<Vec<_>>();
+    let verification = verify_ssh_host_key_observation(
+        &profile.id,
+        &ssh.host_key_policy,
+        &host_keys,
+        &one_time_host_key_ids,
+        &observation,
+    );
+    *host_key_error.lock().map_err(|error| error.to_string())? =
+        verification.as_ref().err().cloned();
+    if let Err(error) = verification {
+        let session = session.clone();
+        let _ = tokio::task::spawn_blocking(move || session.disconnect()).await;
+        return Err(error);
+    }
+
+    let auth_session = session.clone();
+    let auth = tokio::time::timeout(
+        connect_timeout,
+        tokio::task::spawn_blocking(move || {
+            let none = auth_session
+                .userauth_none(None)
+                .map_err(|error| format!("libssh GSSAPI capability probe failed: {error}"))?;
+            if none == libssh_rs::AuthStatus::Success {
+                return Err("SSH server accepted none authentication instead of GSSAPI".to_string());
+            }
+            let methods = auth_session
+                .userauth_list(None)
+                .map_err(|error| format!("libssh auth method query failed: {error}"))?;
+            if !methods.contains(libssh_rs::AuthMethods::GSSAPI_MIC) {
+                return Err("SSH server did not advertise gssapi-with-mic".to_string());
+            }
+            match auth_session.userauth_gssapi() {
+                Ok(libssh_rs::AuthStatus::Success) => Ok(()),
+                Ok(status) => Err(format!("libssh GSSAPI authentication returned {status:?}")),
+                Err(error) => Err(format!("libssh GSSAPI authentication failed: {error}")),
+            }
+        }),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "libssh GSSAPI 认证超时（{} ms）",
+            connect_timeout.as_millis()
+        )
+    })?
+    .map_err(|error| format!("libssh GSSAPI worker 失败: {error}"))?;
+    if let Err(error) = auth {
+        let cleanup = session.clone();
+        let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+        return Err(error);
+    }
+
+    if let Err(error) = persist_observed_host_key(
+        &state.store,
+        &state.store_path,
+        HostKeyPersistenceGuard {
+            profile_id: &profile.id,
+            expected_profile: enforce_profile_snapshot.then_some(profile),
+        },
+        &observed_key,
+        &one_time_host_keys,
+    ) {
+        let cleanup = session.clone();
+        let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+        return Err(error);
+    }
+
+    let terminal_session = session.clone();
+    let term = profile.terminal.term.clone();
+    let cols = u32::from(profile.terminal.cols);
+    let rows = u32::from(profile.terminal.rows);
+    let attach_tmux = matches!(profile.connection, ConnectionConfig::Tmux(_));
+    let channel = tokio::time::timeout(
+        connect_timeout,
+        tokio::task::spawn_blocking(move || {
+            let channel = terminal_session
+                .new_channel()
+                .map_err(|error| format!("libssh 创建终端 channel 失败: {error}"))?;
+            channel
+                .open_session()
+                .map_err(|error| format!("libssh 打开终端 channel 失败: {error}"))?;
+            channel
+                .request_pty(&term, cols, rows)
+                .map_err(|error| format!("libssh 请求 PTY 失败: {error}"))?;
+            for (name, value) in [
+                ("COLORTERM", "truecolor"),
+                ("CLICOLOR", "1"),
+                ("CLICOLOR_FORCE", "1"),
+                ("FORCE_COLOR", "1"),
+                ("TERM_PROGRAM", "PortMate"),
+            ] {
+                let _ = channel.request_env(name, value);
+            }
+            channel
+                .request_shell()
+                .map_err(|error| format!("libssh 请求 shell 失败: {error}"))?;
+            if attach_tmux {
+                let mut stdin = channel.stdin();
+                stdin
+                    .write_all(b"tmux new-session -A -s portmate\r")
+                    .map_err(|error| format!("libssh Tmux attach 写入失败: {error}"))?;
+                stdin
+                    .flush()
+                    .map_err(|error| format!("libssh Tmux attach 刷新失败: {error}"))?;
+            }
+            Ok::<_, String>(channel)
+        }),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "libssh 终端 setup 超时（{} ms）",
+            connect_timeout.as_millis()
+        )
+    })?
+    .map_err(|error| format!("libssh 终端 worker 失败: {error}"))??;
+
+    let runtime_id = Uuid::new_v4().to_string();
+    let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split();
+    let (tap, _) = broadcast::channel(1024);
+    let closed = Arc::new(AtomicBool::new(false));
+    let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
+
+    Ok(EstablishedSshRuntime {
+        runtime_id: runtime_id.clone(),
+        runtime: SshRuntime {
+            runtime_id,
+            handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_libssh(
+                session,
+            ))),
+            sftp: Arc::new(tokio::sync::Mutex::new(None)),
+            jump_handles: Vec::new(),
+            writer: Arc::new(tokio::sync::Mutex::new(write_half)),
+            tap: tap.clone(),
+            remote_forwards,
+            closed: Arc::clone(&closed),
+            reader_finished,
+        },
+        tap,
+        read_half,
+        auth_method: AuthMethod::GssapiWithMic,
         closed,
         reader_finished: reader_finished_sender,
     })

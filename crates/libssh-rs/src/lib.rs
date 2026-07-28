@@ -200,6 +200,14 @@ pub struct Session {
     sess: Arc<Mutex<SessionHolder>>,
 }
 
+impl Clone for Session {
+    fn clone(&self) -> Self {
+        Self {
+            sess: Arc::clone(&self.sess),
+        }
+    }
+}
+
 impl Session {
     /// Create a new Session.
     pub fn new() -> SshResult<Self> {
@@ -1210,6 +1218,13 @@ impl Session {
             Ok(())
         }
     }
+
+    /// Send a keepalive request and wait for libssh to process the result.
+    pub fn send_keepalive(&self) -> SshResult<()> {
+        let sess = self.lock_session();
+        let status = unsafe { sys::ssh_send_keepalive(**sess) };
+        sess.basic_status(status, "ssh_send_keepalive failed")
+    }
 }
 
 #[cfg(unix)]
@@ -1278,6 +1293,33 @@ impl Drop for SshKey {
 }
 
 impl SshKey {
+    /// Returns the libssh algorithm name for this key.
+    pub fn key_type_name(&self) -> SshResult<String> {
+        let name = unsafe { sys::ssh_key_type_to_char(sys::ssh_key_type(self.key)) };
+        if name.is_null() {
+            Err(Error::fatal("failed to get public key type"))
+        } else {
+            Ok(unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .to_string())
+        }
+    }
+
+    /// Exports the public key payload without an algorithm prefix.
+    pub fn export_public_key_base64(&self) -> SshResult<String> {
+        let mut encoded = std::ptr::null_mut();
+        let status = unsafe { sys::ssh_pki_export_pubkey_base64(self.key, &mut encoded) };
+        if status != sys::SSH_OK as i32 || encoded.is_null() {
+            Err(Error::fatal("failed to export public key"))
+        } else {
+            let value = unsafe { CStr::from_ptr(encoded) }
+                .to_string_lossy()
+                .to_string();
+            unsafe { sys::ssh_string_free_char(encoded) };
+            Ok(value)
+        }
+    }
+
     /// Returns the public key hash in the requested format.
     /// The hash is returned as binary bytes.
     /// Consider using [get_public_key_hash_hexa](#method.get_public_key_hash_hexa)
