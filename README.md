@@ -435,15 +435,16 @@ bounded to 1 MiB and 64 MiB, with 3-second connect, 5-second write, and 180-seco
 deadlines. The total budget includes an optional 60-second write approval without consuming the
 action's previous runtime budget.
 
-The official TypeScript SDK matrix runs versions 1.10.0, 1.20.0, and 1.29.0 from isolated locked
-npm environments. Each version spawns the real bridge and completes initialize/initialized, ping,
+The official TypeScript SDK matrix runs versions 1.10.0, 1.20.0, 1.29.0, and 1.30.0 from isolated
+locked npm environments. Each version spawns the real bridge and completes initialize/initialized, ping,
 tools, resources, templates, prompts, and a resource read over both stdio and stateless Streamable
 HTTP. It covers the older 1.10.0 `2024-11-05` lifecycle without the later HTTP protocol header,
-normal `2025-06-18` negotiation, and 1.29.0's `2025-11-25` request falling back to the server's
+normal `2025-06-18` negotiation, and the latest SDKs' `2025-11-25` request falling back to the server's
 supported `2025-06-18`; stdio client shutdown must also terminate the bridge process.
 
-The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.15.0, 1.23.3, and
-1.28.1 virtual environments over both stdio and stateless Streamable HTTP. Each version completes
+The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.12.4, 1.15.0,
+1.21.2, 1.23.3, and 1.28.1 virtual environments over both stdio and stateless Streamable HTTP. Each
+version completes
 the same 8-message/request lifecycle over both transports, covering the `2025-03-26` negotiation
 used by 1.9.4 and the current `2025-06-18` negotiation used by the later versions without sharing
 site packages.
