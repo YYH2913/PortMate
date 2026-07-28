@@ -18,5 +18,15 @@
     "sshContainerPort": 2222,
     "versionPattern": "^Apache MINA SSHD 2\\.19\\.0$",
     "verifyPtyResize": false
+  },
+  {
+    "name": "ubuntu-24.04-samba-ad",
+    "baseImage": "ubuntu:24.04",
+    "dockerfile": "tests/compat/gssapi-samba-ad.Dockerfile",
+    "kerberosImplementation": "samba-ad-compatible",
+    "kerberosVersionPattern": "^Version 4\\.19\\.5-Ubuntu$",
+    "capAdd": [
+      "SYS_ADMIN"
+    ]
   }
 ]

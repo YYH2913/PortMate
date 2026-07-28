@@ -27,8 +27,8 @@ const matrix = JSON.parse(readFileSync(
   resolve(projectRoot, "tests/compat/gssapi-server-matrix.json"),
   "utf8",
 ));
-if (!Array.isArray(matrix) || matrix.length < 4) {
-  throw new Error("SSH GSSAPI server matrix must contain at least four entries");
+if (!Array.isArray(matrix) || matrix.length < 5) {
+  throw new Error("SSH GSSAPI server matrix must contain at least five entries");
 }
 const matrixNames = new Set();
 for (const entry of matrix) {
@@ -79,7 +79,7 @@ try {
     });
 
     const cases = [];
-    const version = await withServer(entry, image, "yes", async (server) => {
+    const versions = await withServer(entry, image, "yes", async (server) => {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("success", server, kerberos, cases);
@@ -88,7 +88,10 @@ try {
       destroyTicket(kerberos);
       runCase("no-ticket", server, kerberos, cases);
       runCase("password-fallback", server, kerberos, cases);
-      return server.version;
+      return {
+        ssh: server.version,
+        kerberos: server.kerberosVersion,
+      };
     });
 
     await withServer(entry, image, "no", async (server) => {
@@ -112,7 +115,13 @@ try {
     verifiedServers.push({
       name: entry.name,
       implementation: entry.implementation ?? "openssh",
-      version,
+      kerberosImplementation: entry.kerberosImplementation ?? "mit",
+      version: versions.ssh,
+      ...(versions.kerberos ? { kerberosVersion: versions.kerberos } : {}),
+      ...(entry.capAdd?.length ? {
+        provisionCapabilities: entry.capAdd,
+        droppedRuntimeCapabilities: entry.capAdd,
+      } : {}),
       verifiedPtyResize: entry.verifyPtyResize !== false,
       cases,
     });
@@ -126,6 +135,10 @@ try {
 async function withServer(entry, image, gssapiAuthentication, callback, sftpMode = "normal") {
   const container = `portmate-gssapi-${randomUUID()}`;
   const sshContainerPort = entry.sshContainerPort ?? 22;
+  const capabilityArgs = (entry.capAdd ?? []).flatMap((capability) => [
+    "--cap-add",
+    capability,
+  ]);
   try {
     run("docker", [
       "run",
@@ -134,6 +147,7 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
       container,
       "--hostname",
       "localhost",
+      ...capabilityArgs,
       "--env",
       `PORTMATE_GSSAPI_AUTH=${gssapiAuthentication}`,
       "--env",
@@ -147,10 +161,13 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
     const ports = await waitForPublishedPorts(container, sshContainerPort);
     await waitForTcp(ports.kdc, container, "Kerberos KDC", false);
     await waitForTcp(ports.ssh, container, `${entry.implementation ?? "openssh"} SSH`, true);
+    verifyDroppedRuntimeCapabilities(entry, container);
     const version = inspectServerVersion(entry, container);
+    const kerberosVersion = inspectKerberosVersion(entry, container);
     try {
       return await callback({
         container,
+        kerberosVersion,
         version,
         verifyPtyResize: entry.verifyPtyResize !== false,
         ...ports,
@@ -164,6 +181,46 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
       allowFailure: true,
       timeout: controlTimeoutMs,
     });
+  }
+}
+
+function verifyDroppedRuntimeCapabilities(entry, container) {
+  if (!(entry.capAdd ?? []).includes("SYS_ADMIN")) return;
+  const result = run("docker", [
+    "exec",
+    container,
+    "sh",
+    "-lc",
+    `for status in /proc/[0-9]*/status; do
+      name="$(awk '$1 == "Name:" { print $2 }' "$status" 2>/dev/null || true)"
+      case "$name" in
+        samba|sshd)
+          capability="$(awk '$1 == "CapBnd:" { print $2 }' "$status" 2>/dev/null || true)"
+          if [ -n "$capability" ]; then
+            printf '%s %s\\n' "$name" "$capability"
+          fi
+          ;;
+      esac
+    done`,
+  ], {
+    capture: true,
+    timeout: controlTimeoutMs,
+  });
+  const capabilities = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const match = /^(samba|sshd) ([0-9a-f]+)$/i.exec(line);
+    if (!match) {
+      throw new Error(`invalid runtime capability output from ${container}: ${JSON.stringify(line)}`);
+    }
+    return { process: match[1], boundingSet: BigInt(`0x${match[2]}`) };
+  });
+  const processes = new Set(capabilities.map(({ process }) => process));
+  if (!processes.has("samba") || !processes.has("sshd")) {
+    throw new Error(`Samba and sshd capability state was not observable in ${container}`);
+  }
+  const sysAdmin = 1n << 21n;
+  const retained = capabilities.find(({ boundingSet }) => (boundingSet & sysAdmin) !== 0n);
+  if (retained) {
+    throw new Error(`${retained.process} retained CAP_SYS_ADMIN in ${container}`);
   }
 }
 
@@ -273,12 +330,58 @@ function validateMatrixEntry(entry) {
   if (entry.verifyPtyResize !== undefined && typeof entry.verifyPtyResize !== "boolean") {
     throw new Error(`invalid SSH GSSAPI PTY resize flag for ${entry.name}`);
   }
+  const kerberosImplementation = entry.kerberosImplementation ?? "mit";
+  if (!new Set(["mit", "samba-ad-compatible"]).has(kerberosImplementation)) {
+    throw new Error(`invalid Kerberos implementation for ${entry.name}`);
+  }
+  const capabilities = entry.capAdd ?? [];
+  if (!Array.isArray(capabilities)
+    || capabilities.some((capability) => typeof capability !== "string")
+    || new Set(capabilities).size !== capabilities.length) {
+    throw new Error(`invalid Docker capability list for ${entry.name}`);
+  }
+  const requiredCapabilities = kerberosImplementation === "samba-ad-compatible"
+    ? ["SYS_ADMIN"]
+    : [];
+  if (capabilities.length !== requiredCapabilities.length
+    || capabilities.some((capability, index) => capability !== requiredCapabilities[index])) {
+    throw new Error(`unexpected Docker capabilities for ${entry.name}`);
+  }
+  if (kerberosImplementation === "samba-ad-compatible"
+    && entry.dockerfile !== "tests/compat/gssapi-samba-ad.Dockerfile") {
+    throw new Error(`Samba AD-compatible entry requires its controlled Dockerfile for ${entry.name}`);
+  }
+  if (entry.kerberosVersionPattern !== undefined) {
+    if (typeof entry.kerberosVersionPattern !== "string") {
+      throw new Error(`invalid Kerberos version pattern for ${entry.name}`);
+    }
+    new RegExp(entry.kerberosVersionPattern);
+  }
+  if (kerberosImplementation === "samba-ad-compatible"
+    && typeof entry.kerberosVersionPattern !== "string") {
+    throw new Error(`Samba AD-compatible entry requires a version pattern for ${entry.name}`);
+  }
   if (entry.versionPattern !== undefined) {
     if (typeof entry.versionPattern !== "string") {
       throw new Error(`invalid SSH GSSAPI version pattern for ${entry.name}`);
     }
     new RegExp(entry.versionPattern);
   }
+}
+
+function inspectKerberosVersion(entry, container) {
+  const implementation = entry.kerberosImplementation ?? "mit";
+  if (implementation === "mit") return null;
+  const versionResult = run("docker", ["exec", container, "samba", "--version"], {
+    capture: true,
+    timeout: controlTimeoutMs,
+  });
+  const version = `${versionResult.stdout}${versionResult.stderr}`.trim();
+  const pattern = new RegExp(entry.kerberosVersionPattern);
+  if (!pattern.test(version)) {
+    throw new Error(`invalid ${implementation} version from ${container}: ${JSON.stringify(version)}`);
+  }
+  return version;
 }
 
 function inspectServerVersion(entry, container) {

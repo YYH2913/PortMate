@@ -622,7 +622,8 @@ SCP commands. The TCP/Telnet matrix covers BusyBox
 telnetd on Alpine 3.19/3.21, inetutils telnetd on Debian bookworm and Ubuntu 24.04, and Ncat/Socat
 echo, burst-close, and close modes on Alpine and Ubuntu.
 `npm run test:ssh-gssapi-compat` provisions MIT Kerberos realms with Ubuntu 24.04 OpenSSH 9.6,
-Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. Each server verifies successful
+Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. It also
+provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each pairing verifies successful
 `gssapi-with-mic`, GSSAPI precedence over a deliberately wrong fallback password, strict host-key
 rejection, a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and
 password fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
@@ -630,6 +631,9 @@ The OpenSSH success cases also cover TOFU persistence, PTY shell I/O and resize,
 health, recorded authentication method, and bounded runtime cleanup. Apache MINA covers the same
 authentication and health behavior plus interactive process-shell I/O; its shell accepts resize
 requests, but the matrix does not assert `stty` dimensions because it does not expose a real local PTY.
+Samba provisioning receives only the additional `SYS_ADMIN` container capability required for its
+SYSVOL ACL/xattr setup; the entrypoint removes that capability from the runtime bounding set before
+starting Samba and OpenSSH. This is Samba AD-compatible coverage, not evidence from Microsoft AD.
 All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
 times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
 matrices without registry access; each command fails closed if a required image is absent.
@@ -698,15 +702,16 @@ system libssh development metadata, retains a real `ssh_userauth_gssapi` referen
 linked shared library, and verifies its GSSAPI runtime dependency. Other targets use the upstream
 vendored build to remain self-contained, but that build has no GSSAPI support. These build and
 channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian trixie OpenSSH/MIT
-Kerberos matrices plus Apache MINA SSHD 2.19.0 with MIT Kerberos, covering successful
+Kerberos matrices, Apache MINA SSHD 2.19.0 with MIT Kerberos, and Ubuntu OpenSSH with a Samba 4.19.5
+AD-compatible KDC, covering successful
 authentication, GSSAPI precedence, strict host-key rejection,
 a missing ticket, password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback,
 SFTP subsystem rejection, and SFTP directory-operation rejection.
 Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
 subsystem, canonicalize the working directory, and read its entries through the health probe.
 The Apache MINA path verifies interactive shell I/O but does not claim real process-PTY resize.
-Active Directory realms and exact agent identity/fingerprint selection inside the libssh GSSAPI path
-remain unverified.
+Microsoft Active Directory realms and exact agent identity/fingerprint selection inside the libssh
+GSSAPI path remain unverified.
 
 Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
 TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
@@ -751,7 +756,7 @@ disconnect timestamp and reason remain visible throughout the new handshake.
 
 The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP upload/download/remote-copy and SCP upload resume from pre-existing `.portmate-part` prefixes; SCP download safely replaces stale prefixes from byte zero. The matrix also covers cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets; delayed russh direct-tcpip and session-channel confirmations verify the terminal, auxiliary exec, SFTP, and tunnel setup deadlines plus owning-session disconnect paths. A delayed russh-sftp `LSTAT` verifies that an in-flight request is issued only once, cancellation returns promptly, and the following exec channel reuses the same SSH connection. A silent russh `scp -f` peer verifies prompt download cancellation and the SCP idle deadline; a separate silent remote-copy exec peer verifies cancellation, idle timeout, bounded cleanup, and reuse of the same SSH connection for the following channel.
 
-Still pending: Active Directory Kerberos/GSSAPI implementations, exact agent identity/fingerprint
+Still pending: Microsoft Active Directory Kerberos/GSSAPI evidence, exact agent identity/fingerprint
 selection inside the libssh GSSAPI path, real FreeBSD/macOS SSH hosts in the remote-forward
 integration matrix, a
 Windows OpenSSH host for remote Sysmon, additional SDK versions beyond the pinned TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift clients,
