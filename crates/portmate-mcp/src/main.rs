@@ -17,6 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 mod desktop_ipc;
+mod http_protocol;
 mod http_request;
 mod http_security;
 mod keyring_store;
@@ -24,12 +25,17 @@ mod socket_io;
 mod store_loader;
 
 use desktop_ipc::{call_ipc_value as call_desktop_ipc_value, load_ipc_endpoint, IpcEndpointFile};
+#[cfg(test)]
+use http_protocol::MCP_PROTOCOL_VERSIONS;
+use http_protocol::{
+    accepts_json_http_response, accepts_sse_http_response, has_json_http_content_type,
+    http_protocol_version, is_sse_stream_request, negotiated_mcp_protocol_version,
+    validate_mcp_protocol_version, MCP_PROTOCOL_VERSION,
+};
 use http_request::{read_http_request, HttpRequest};
 use http_security::{authorized_http_request, validate_origin, HttpSecurityConfig, HTTP_TOKEN_REF};
 use store_loader::load_store_from_path;
 
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION];
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -1114,88 +1120,6 @@ fn handle_one_json_rpc_value(
         Err(error_message) if has_id => Ok(Some(error(id, -32603, error_message.to_string()))),
         Err(_) => Ok(None),
     }
-}
-
-fn negotiated_mcp_protocol_version(params: &Value) -> &str {
-    params
-        .get("protocolVersion")
-        .and_then(Value::as_str)
-        .filter(|version| MCP_PROTOCOL_VERSIONS.contains(version))
-        .unwrap_or(MCP_PROTOCOL_VERSION)
-}
-
-fn http_protocol_version(request: &HttpRequest) -> &str {
-    request
-        .headers
-        .get("mcp-protocol-version")
-        .map(String::as_str)
-        .filter(|version| MCP_PROTOCOL_VERSIONS.contains(version))
-        .unwrap_or(MCP_PROTOCOL_VERSION)
-}
-
-fn validate_mcp_protocol_version(request: &HttpRequest) -> Result<()> {
-    let Some(version) = request.headers.get("mcp-protocol-version") else {
-        return Ok(());
-    };
-    if MCP_PROTOCOL_VERSIONS.contains(&version.as_str()) {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "unsupported MCP-Protocol-Version `{version}`; supported versions: {}",
-            MCP_PROTOCOL_VERSIONS.join(", ")
-        ))
-    }
-}
-
-fn has_json_http_content_type(request: &HttpRequest) -> bool {
-    request.headers.get("content-type").is_some_and(|value| {
-        value
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .eq_ignore_ascii_case("application/json")
-    })
-}
-
-fn accepts_json_http_response(request: &HttpRequest) -> bool {
-    accepts_http_media_type(request, true, |media_type| {
-        matches!(media_type, "*/*" | "application/*" | "application/json")
-    })
-}
-
-fn accepts_sse_http_response(request: &HttpRequest) -> bool {
-    accepts_http_media_type(request, false, |media_type| {
-        media_type == "text/event-stream"
-    })
-}
-
-fn accepts_http_media_type(
-    request: &HttpRequest,
-    default_when_missing: bool,
-    matches_media_type: impl Fn(&str) -> bool,
-) -> bool {
-    let Some(accept) = request.headers.get("accept") else {
-        return default_when_missing;
-    };
-    accept.split(',').any(|item| {
-        let mut parts = item.split(';');
-        let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
-        let mut quality = 1.0_f32;
-        for parameter in parts {
-            let Some((name, value)) = parameter.trim().split_once('=') else {
-                continue;
-            };
-            if name.trim().eq_ignore_ascii_case("q") {
-                quality = value.trim().parse::<f32>().unwrap_or(0.0);
-            }
-        }
-        (0.0..=1.0).contains(&quality) && quality > 0.0 && matches_media_type(&media_type)
-    })
-}
-
-fn is_sse_stream_request(request: &HttpRequest) -> bool {
-    request.method == "GET" && request.path == "/mcp" && accepts_sse_http_response(request)
 }
 
 fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
