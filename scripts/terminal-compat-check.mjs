@@ -702,6 +702,18 @@ try {
 
   const activeTextarea = page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea');
   const activeCompletion = page.locator('[data-pane-id="pane-a"] .terminal-completion');
+  async function reloadWithTerminalPrefs(patch) {
+    await page.evaluate((nextPrefs) => {
+      const prefs = JSON.parse(localStorage.getItem("portmate.terminalPrefs"));
+      localStorage.setItem("portmate.terminalPrefs", JSON.stringify({ ...prefs, ...nextPrefs }));
+    }, patch);
+    await page.reload();
+    await page.waitForFunction(() => (
+      document.querySelectorAll(".terminal-host").length === 2
+      && document.querySelectorAll('[data-terminal-resize-owner="active"]').length === 1
+    ));
+    await activeTextarea.focus();
+  }
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");
   await activeCompletion.waitFor();
@@ -727,6 +739,60 @@ try {
   const disabledClipboardWrites = await page.evaluate(() => window.__clipboardWrites);
   assert(disabledClipboardWrites.length === 0,
     `disabled copy-on-select wrote to the clipboard: ${JSON.stringify(disabledClipboardWrites)}`);
+
+  await reloadWithTerminalPrefs({ completionEnabled: false });
+  await page.keyboard.type("git s");
+  await page.waitForTimeout(100);
+  const completionDisabled = await activeCompletion.count() === 0;
+  assert(completionDisabled, "disabled command completion still rendered candidates");
+  await page.keyboard.press("Enter");
+
+  await reloadWithTerminalPrefs({
+    completionEnabled: true,
+    completionCommandNames: true,
+    completionCommandOptions: false,
+    completionCommandArgs: false,
+    completionHistory: false,
+    completionQuickCommands: false,
+    completionTriggerChars: "3 字符",
+    completionListHeight: "5 行",
+    completionPreviewMode: "输入框",
+  });
+  await page.keyboard.type("gi");
+  await page.waitForTimeout(100);
+  const completionBeforeTrigger = await activeCompletion.count();
+  assert(completionBeforeTrigger === 0,
+    `three-character completion triggered too early: ${completionBeforeTrigger}`);
+  await page.keyboard.type("t");
+  await activeCompletion.waitFor();
+  const completionPreferenceState = await activeCompletion.evaluate((completion) => ({
+    previewMode: completion.getAttribute("data-preview-mode"),
+    rows: completion.style.getPropertyValue("--terminal-completion-rows"),
+    candidateCount: completion.querySelectorAll(".terminal-completion-list > button").length,
+    preview: completion.querySelector(".terminal-completion-preview")?.textContent ?? "",
+  }));
+  assert(completionPreferenceState.previewMode === "input"
+    && completionPreferenceState.rows === "5"
+    && completionPreferenceState.candidateCount > 0
+    && completionPreferenceState.candidateCount <= 5
+    && completionPreferenceState.preview.startsWith("git"),
+  `completion preferences did not drive the terminal surface: ${JSON.stringify(completionPreferenceState)}`);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Enter");
+
+  await reloadWithTerminalPrefs({
+    completionCommandNames: false,
+    completionCommandOptions: false,
+    completionCommandArgs: false,
+    completionHistory: false,
+    completionQuickCommands: false,
+    completionTriggerChars: "1 字符",
+  });
+  await page.keyboard.type("git");
+  await page.waitForTimeout(100);
+  const completionSourcesDisabled = await activeCompletion.count() === 0;
+  assert(completionSourcesDisabled, "disabled completion sources still rendered candidates");
+  await page.keyboard.press("Enter");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => [...document.querySelectorAll(".terminal-host")]
@@ -784,6 +850,13 @@ try {
       beforePaste: completionBeforePaste?.includes("status") ?? false,
       paused: true,
       resumed: completionAfterPasteBoundary?.includes("status") ?? false,
+    },
+    completionPreferences: {
+      disabled: completionDisabled,
+      triggerCharacters: 3,
+      beforeTrigger: completionBeforeTrigger,
+      ...completionPreferenceState,
+      sourcesDisabled: completionSourcesDisabled,
     },
     disabledClipboardWrites,
     desktopLayout,

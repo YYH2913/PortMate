@@ -76,7 +76,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 - WindTerm 的 view 精确排序/跨 group 定点拖放和完整 group 合并、逐 view 标签颜色、pane 独立窗口/返回、最多两段的 chord keymap、默认分屏创建、方向焦点移动、关闭、交换、zoom、比例调整和恢复已可用。上一个/下一个标签会按活动 pane 的独立 view ID 顺序首尾循环，不会跳过绑定同一 session 的 view；Remote 默认 `Alt+[`/`Alt+]`，Local/Normal 默认 `Ctrl+PgUp`/`Ctrl+PgDn`，其余模式保留对应按键语义，切换不跨 pane 或创建后端连接。Remote/Local 的 `Ctrl+Shift+W` 关闭当前 view，全模式 `Ctrl+Shift+T` 恢复最近关闭 view；repeat 不会连续修改历史，Normal/Command 的关闭按键保留给本地编辑，最后一个 workspace view 仍受保护。pane 标签右键菜单已补齐复制 session 名称/URL、保存/重连、水平/垂直分屏、精确 view 移组、关闭其他/右侧、恢复和 session 设置；同 session 多 view 的保存/重连保持原 view ID，全局与 view 右键菜单的分屏方向也已统一为水平向右、垂直向下。
 - 终端视图切换使用最多 32 个会话、单项 2 MiB、2,000 行 scrollback 的进程内 LRU 序列化缓存，不把屏幕内容写入 localStorage 或磁盘。缓存现在区分“事件已排队”和“XTerm 已完成解析”：快速切换/React StrictMode 不再把空或半成品缓冲与已消费事件 ID 组合保存。事件 ID 达到 4,000 条后按完成顺序淘汰最旧记录，尚未完成 XTerm 解析的写入受保护；不会再整表清空并让下一轮最新 600 条日志重放。同一后端 session 出现在多个 pane 时，只有焦点 pane 可上报 PTY resize；焦点转移会强制按新 owner 当前尺寸重新同步，避免非活动小 pane 覆盖 vim/tmux/top 的行列数。`npm run test:terminal-compat` 覆盖 alternate screen、cursor addressing、SGR/truecolor、Unicode 宽字符、view 缓存、鼠标、选择、事件去重、搜索、resize owner、真实 Vim/less/top 和 6,000 行性能回归；`npm run test:vttest-compat` 另在 Debian bookworm、Ubuntu 24.04、Debian trixie 的三个 vttest 版本上各运行 13 组 VT100/VT102/VT220/ISO-6429/xterm 套件，并在 Debian/Ubuntu/Alpine 容器中通过双向 PTY 实跑 Vim、less、top、dialog。SRM 因依赖不可预测人工按键不自动化，xterm.js 不响应的 DECREQTPARM 也不伪报通过；真正的 macOS/Windows 原生全屏程序证据由 native runner/后续安装 smoke test 承担。
-- 很多全局偏好目前存在于前端 localStorage 或表单状态，没有全部驱动真实后端行为。
+- 终端设置当前只保留有实际消费者的应用、安全、快捷键、自动补全、命令历史、鼠标和同步输入七页；启动策略、空闲/启动锁屏、两段 chord、补全来源/触发字符/列表高度/预览、历史容量/保留期/持久化、鼠标报告/选择即复制和同步输入变换均会驱动对应运行时。真实 XTerm Playwright 回归除既有鼠标与选择行为外，现还逐项验证关闭补全、3 字符触发、5 行候选上限、输入框预览和全部来源关闭；后续新增全局偏好仍须先接入实际行为和同层回归，不能只增加 localStorage 字段或表单控件。
 
 ### 连接与传输
 
