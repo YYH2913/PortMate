@@ -6,7 +6,6 @@ use portmate_core::{
     resource_templates, tool_definitions, McpScope, SessionEvent, SessionStore, SessionSummary,
     TransferTask,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -20,6 +19,7 @@ mod desktop_ipc;
 mod http_protocol;
 mod http_request;
 mod http_security;
+mod json_rpc;
 mod keyring_store;
 mod response_encoding;
 mod socket_io;
@@ -35,6 +35,9 @@ use http_protocol::{
 use http_protocol::{MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSIONS};
 use http_request::{read_http_request, HttpRequest};
 use http_security::{authorized_http_request, validate_origin, HttpSecurityConfig, HTTP_TOKEN_REF};
+#[cfg(test)]
+use json_rpc::MAX_JSON_RPC_BATCH_ITEMS;
+use json_rpc::{dispatch_json_rpc_value, error, JsonRpcRequest, JsonRpcResponse};
 use response_encoding::{
     encode_json_rpc_response, http_response, http_response_with_protocol, http_sse_headers,
     http_sse_message_response, json_rpc_http_body, sse_event, MAX_JSON_RPC_RESPONSE_BYTES,
@@ -44,38 +47,10 @@ use response_encoding::{sse_event_with_limit, try_encode_json_with_limit};
 use store_loader::load_store_from_path;
 
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
-const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    id: Option<Value>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: &'static str,
-    id: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcError {
-    code: i64,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
-}
 
 struct PortMateMcp {
     store: SessionStore,
@@ -986,70 +961,7 @@ fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
 
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
     server.refresh_runtime_sources();
-    if let Value::Array(items) = value {
-        if items.is_empty() {
-            return Ok(Some(serde_json::to_value(error(
-                Value::Null,
-                -32600,
-                "an empty JSON-RPC batch is invalid",
-            ))?));
-        }
-        if items.len() > MAX_JSON_RPC_BATCH_ITEMS {
-            return Ok(Some(serde_json::to_value(error(
-                Value::Null,
-                -32600,
-                format!("JSON-RPC batch exceeds the {MAX_JSON_RPC_BATCH_ITEMS}-item limit"),
-            ))?));
-        }
-        let mut responses = Vec::with_capacity(items.len());
-        for item in items {
-            if let Some(response) = handle_one_json_rpc_value(server, item)? {
-                responses.push(serde_json::to_value(response)?);
-            }
-        }
-        return if responses.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Value::Array(responses)))
-        };
-    }
-    handle_one_json_rpc_value(server, value)?
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(Into::into)
-}
-
-fn handle_one_json_rpc_value(
-    server: &mut PortMateMcp,
-    value: Value,
-) -> Result<Option<JsonRpcResponse>> {
-    let has_id = value.get("id").is_some();
-    let id = value.get("id").cloned().unwrap_or(Value::Null);
-    if has_id && !matches!(id, Value::Null | Value::Number(_) | Value::String(_)) {
-        return Ok(Some(error(
-            Value::Null,
-            -32600,
-            "JSON-RPC id must be a string, number, or null",
-        )));
-    }
-    if value
-        .get("params")
-        .is_some_and(|params| !params.is_array() && !params.is_object())
-    {
-        return Ok(has_id.then(|| error(id, -32602, "JSON-RPC params must be an object or array")));
-    }
-    let mut request = match serde_json::from_value::<JsonRpcRequest>(value) {
-        Ok(request) => request,
-        Err(error_message) => return Ok(Some(error(id, -32600, error_message.to_string()))),
-    };
-    if has_id {
-        request.id = Some(id.clone());
-    }
-    match server.handle(request) {
-        Ok(response) => Ok(response),
-        Err(error_message) if has_id => Ok(Some(error(id, -32603, error_message.to_string()))),
-        Err(_) => Ok(None),
-    }
+    dispatch_json_rpc_value(value, |request| server.handle(request))
 }
 
 fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) -> String {
@@ -1122,19 +1034,6 @@ fn write_http_sse_stream(
 
 fn mcp_sse_state_payload(protocol_version: &str) -> Value {
     PortMateMcp::new().sse_state_payload(protocol_version)
-}
-
-fn error(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse {
-    JsonRpcResponse {
-        jsonrpc: "2.0",
-        id,
-        result: None,
-        error: Some(JsonRpcError {
-            code,
-            message: message.into(),
-            data: None,
-        }),
-    }
 }
 
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
