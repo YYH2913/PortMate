@@ -2,12 +2,22 @@ import { describe, expect, it } from "vitest";
 import type { TcpConnection } from "./types";
 import { proxyDefaults } from "./proxy-settings";
 import {
+  formatTcpConnectionTarget,
   normalizeTcpConnectionSettings,
   tcpConnectionBounds,
   tcpConnectionDefaults,
 } from "./tcp-connection-settings";
 
 describe("TCP connection settings", () => {
+  it("formats plain and TLS targets for TCP and Telnet", () => {
+    const connection = { host: " console.example ", port: 23, tlsEnabled: false };
+    expect(formatTcpConnectionTarget("tcp", connection)).toBe("tcp://console.example:23");
+    expect(formatTcpConnectionTarget("telnet", connection)).toBe("telnet://console.example:23");
+    expect(formatTcpConnectionTarget("tcp", { ...connection, tlsEnabled: true })).toBe("tcps://console.example:23");
+    expect(formatTcpConnectionTarget("telnet", { ...connection, tlsEnabled: true })).toBe("telnets://console.example:23");
+    expect(formatTcpConnectionTarget("tcp", { ...connection, host: "   " })).toBe("");
+  });
+
   it("fills health defaults for legacy profiles", () => {
     const legacy = {
       host: "console.example",
@@ -76,7 +86,7 @@ describe("TCP connection settings", () => {
     });
   });
 
-  it("normalizes Telnet TLS settings without enabling them for legacy profiles", () => {
+  it("normalizes TCP and Telnet TLS settings without enabling them for legacy profiles", () => {
     const normalized = normalizeTcpConnectionSettings({
       host: "console.example",
       port: 992,

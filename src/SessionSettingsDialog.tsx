@@ -1207,24 +1207,24 @@ function TcpLikeAdvancedFields({
           <>
             <DialogToggleField label="BINARY:" checked={tcp.telnetBinary} onChange={(telnetBinary) => updateTcp({ telnetBinary })} />
             <DialogToggleField label="NAWS:" checked={tcp.telnetNaws} onChange={(telnetNaws) => updateTcp({ telnetNaws })} />
-            <DialogToggleField label="TLS/SSL:" checked={tcp.tlsEnabled} onChange={(tlsEnabled) => updateTcp({ tlsEnabled })} />
-            {tcp.tlsEnabled ? (
-              <>
-                <DialogField label="TLS Server Name:">
-                  <input
-                    value={tcp.tlsServerName ?? ""}
-                    placeholder={tcp.host}
-                    maxLength={253}
-                    onChange={(event) => updateTcp({ tlsServerName: event.target.value || null })}
-                  />
-                </DialogField>
-                <DialogToggleField
-                  label="接受无效证书(不安全):"
-                  checked={tcp.tlsAcceptInvalidCert}
-                  onChange={(tlsAcceptInvalidCert) => updateTcp({ tlsAcceptInvalidCert })}
-                />
-              </>
-            ) : null}
+          </>
+        ) : null}
+        <DialogToggleField label="TLS/SSL:" checked={tcp.tlsEnabled} onChange={(tlsEnabled) => updateTcp({ tlsEnabled })} />
+        {tcp.tlsEnabled ? (
+          <>
+            <DialogField label="TLS Server Name:">
+              <input
+                value={tcp.tlsServerName ?? ""}
+                placeholder={tcp.host}
+                maxLength={253}
+                onChange={(event) => updateTcp({ tlsServerName: event.target.value || null })}
+              />
+            </DialogField>
+            <DialogToggleField
+              label="接受无效证书(不安全):"
+              checked={tcp.tlsAcceptInvalidCert}
+              onChange={(tlsAcceptInvalidCert) => updateTcp({ tlsAcceptInvalidCert })}
+            />
           </>
         ) : null}
       </>

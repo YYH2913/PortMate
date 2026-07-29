@@ -17,6 +17,7 @@ This repository currently contains the active desktop implementation slice:
 - Standalone serial analyzer window with live/persistent Raw-log sources, capture/delimiter/fixed-length/idle-gap framing, RFC 1055 SLIP, COBS, and Modbus RTU decoding, bookmarks, filtering, paging, and exact source-frame export
 - SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
 - Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
+- Profile-configurable TLS for raw TCP and Telnet, with system-CA verification, an optional server-name override, and an explicit insecure certificate override
 - Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
 - A persistent current-session Sysmon sidebar with process, disk, network, and trend drill-down
 - Three-stage SSH health reports for transport keepalive, exec-channel round trips, and optional SFTP initialization
@@ -631,11 +632,12 @@ canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and
 and runtime replacement. Each report error is checked against
 the expected failure stage, and every health case has a hard test deadline. Five transfer fault cases
 separately cover missing/rejected SFTP, missing source files, denied writes, and rejected SCP commands.
-The 16-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
+The 17-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
 bookworm, Twisted Conch 24.11.0 on Debian bookworm and 26.4.0 on Debian trixie with a real `/bin/sh`
 PTY bridge, and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
-echo and Socat burst-close on Alpine and Ubuntu, plus Socat close on Alpine. The matrix also
+plain echo on Alpine and Ubuntu, Ncat TLS echo on Ubuntu 24.04, Socat burst-close on Alpine and
+Ubuntu, and Socat close on Alpine. The matrix also
 connects to ser2net 4.3.11 on Debian bookworm and 4.6.4 on Debian trixie through their
 RFC2217-capable gensio Telnet accepter and a real
 pseudo-serial PTY; PortMate explicitly declines COM-PORT-OPTION 44 and keeps the standard Telnet

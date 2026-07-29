@@ -127,6 +127,15 @@
     "mode": "echo"
   },
   {
+    "name": "ncat-tls-echo-ubuntu-noble",
+    "dockerfile": "tests/compat/tcp-tls-echo-ubuntu.Dockerfile",
+    "protocol": "tcp",
+    "mode": "echo",
+    "tls": true,
+    "tlsServerName": "localhost",
+    "tlsAcceptInvalidCert": true
+  },
+  {
     "name": "socat-burst-close-alpine-3.20",
     "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
     "buildArgs": {

@@ -20,6 +20,18 @@ export const tcpConnectionBounds = {
   keepaliveRetries: { min: 1, max: 20 },
 } as const;
 
+export function formatTcpConnectionTarget(
+  kind: "telnet" | "tcp",
+  connection: Pick<TcpConnection, "host" | "port" | "tlsEnabled">,
+): string {
+  const host = connection.host.trim();
+  if (!host) return "";
+  const scheme = kind === "telnet"
+    ? (connection.tlsEnabled ? "telnets" : "telnet")
+    : (connection.tlsEnabled ? "tcps" : "tcp");
+  return `${scheme}://${host}:${connection.port}`;
+}
+
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(value)));

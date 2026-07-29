@@ -76,7 +76,7 @@ import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
-import { normalizeTcpConnectionSettings } from "./tcp-connection-settings";
+import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp-connection-settings";
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
@@ -5300,11 +5300,9 @@ function defaultSessionName(profile: SessionProfile) {
     case "tmux":
       return formatSshTarget(connection) || "SSH";
     case "telnet":
-      return connection.host
-        ? `${connection.tlsEnabled ? "telnets" : "telnet"}://${connection.host}:${connection.port}`
-        : "Telnet";
     case "tcp":
-      return connection.host ? `tcp://${connection.host}:${connection.port}` : "Tcp";
+      return formatTcpConnectionTarget(connection.kind, connection)
+        || (connection.kind === "telnet" ? "Telnet" : "Tcp");
     case "serial":
       return connection.port || "Serial";
   }

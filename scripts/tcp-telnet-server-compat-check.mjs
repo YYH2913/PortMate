@@ -102,9 +102,6 @@ function validateEntry(entry) {
       && (typeof entry.tlsServerName !== "string" || !/^[a-zA-Z0-9.-]+$/.test(entry.tlsServerName)))) {
     throw new Error(`Invalid TLS compatibility setting in ${entry.name}`);
   }
-  if (entry.tls === true && entry.protocol !== "telnet") {
-    throw new Error(`TLS compatibility entry must use Telnet in ${entry.name}`);
-  }
   if (entry.expectRejectedTelnetOption !== undefined
     && (!Number.isInteger(entry.expectRejectedTelnetOption)
       || entry.expectRejectedTelnetOption < 0
