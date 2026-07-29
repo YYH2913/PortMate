@@ -15,22 +15,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use uuid::Uuid;
 
 mod desktop_ipc;
 mod http_request;
+mod http_security;
 mod keyring_store;
 mod socket_io;
 mod store_loader;
 
 use desktop_ipc::{call_ipc_value as call_desktop_ipc_value, load_ipc_endpoint, IpcEndpointFile};
 use http_request::{read_http_request, HttpRequest};
-use keyring_store::{read_secret_from_keyring, write_secret_to_keyring};
+use http_security::{authorized_http_request, validate_origin, HttpSecurityConfig, HTTP_TOKEN_REF};
 use store_loader::load_store_from_path;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION];
-const HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -77,8 +76,7 @@ struct PortMateMcp {
 #[derive(Debug, Clone)]
 struct HttpConfig {
     addr: SocketAddr,
-    token: String,
-    allowed_origins: Vec<String>,
+    security: HttpSecurityConfig,
 }
 
 impl PortMateMcp {
@@ -903,45 +901,13 @@ fn http_config() -> Result<HttpConfig> {
     {
         return Err(anyhow!("MCP HTTP must bind a loopback address; got {addr}"));
     }
-    let token = std::env::var("PORTMATE_MCP_HTTP_TOKEN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-        .or_else(|| read_or_create_http_token().ok())
-        .ok_or_else(|| anyhow!("failed to load or create MCP HTTP token"))?;
-    let mut allowed_origins = std::env::var("PORTMATE_MCP_HTTP_ORIGINS")
-        .or_else(|_| std::env::var("PORTMATE_MCP_HTTP_ORIGIN"))
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    if allowed_origins.is_empty() {
-        allowed_origins.push(format!("http://127.0.0.1:{}", addr.port()));
-        allowed_origins.push(format!("http://localhost:{}", addr.port()));
-    }
-    Ok(HttpConfig {
-        addr,
-        token,
-        allowed_origins,
-    })
-}
-
-fn read_or_create_http_token() -> Result<String> {
-    match read_secret_from_keyring(HTTP_TOKEN_REF) {
-        Ok(token) if !token.trim().is_empty() => Ok(token),
-        _ => {
-            let token = Uuid::new_v4().to_string();
-            write_secret_to_keyring(HTTP_TOKEN_REF, &token)?;
-            Ok(token)
-        }
-    }
+    let security = HttpSecurityConfig::from_environment(addr)?;
+    Ok(HttpConfig { addr, security })
 }
 
 fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
     let origin = request.headers.get("origin").cloned();
-    if let Err(error) = validate_origin(origin.as_deref(), config) {
+    if let Err(error) = validate_origin(origin.as_deref(), &config.security) {
         return http_response(
             403,
             "Forbidden",
@@ -1006,7 +972,7 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
             origin.as_deref(),
         );
     }
-    if !authorized_http_request(&request, &config.token) {
+    if !authorized_http_request(&request, config.security.token()) {
         return http_response(
             401,
             "Unauthorized",
@@ -1150,39 +1116,6 @@ fn handle_one_json_rpc_value(
     }
 }
 
-fn validate_origin(origin: Option<&str>, config: &HttpConfig) -> Result<()> {
-    let Some(origin) = origin.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(());
-    };
-    if config
-        .allowed_origins
-        .iter()
-        .any(|allowed| allowed == "*" || allowed == origin)
-    {
-        Ok(())
-    } else {
-        Err(anyhow!("Origin `{origin}` is not allowed"))
-    }
-}
-
-fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
-    if let Some(value) = request.headers.get("authorization") {
-        let mut parts = value.split_whitespace();
-        if parts
-            .next()
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
-        {
-            if let (Some(candidate), None) = (parts.next(), parts.next()) {
-                return constant_time_str_eq(candidate, token);
-            }
-        }
-    }
-    request
-        .headers
-        .get("x-portmate-mcp-token")
-        .is_some_and(|candidate| constant_time_str_eq(candidate.trim(), token))
-}
-
 fn negotiated_mcp_protocol_version(params: &Value) -> &str {
     params
         .get("protocolVersion")
@@ -1265,14 +1198,6 @@ fn is_sse_stream_request(request: &HttpRequest) -> bool {
     request.method == "GET" && request.path == "/mcp" && accepts_sse_http_response(request)
 }
 
-fn constant_time_str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
     http_response_with_protocol(status, reason, body, origin, MCP_PROTOCOL_VERSION)
 }
@@ -1308,7 +1233,7 @@ fn http_response_with_protocol(
 
 fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) -> String {
     let origin = request.headers.get("origin").cloned();
-    if let Err(error) = validate_origin(origin.as_deref(), config) {
+    if let Err(error) = validate_origin(origin.as_deref(), &config.security) {
         return http_response(
             403,
             "Forbidden",
@@ -1324,7 +1249,7 @@ fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) ->
             origin.as_deref(),
         );
     }
-    if !authorized_http_request(request, &config.token) {
+    if !authorized_http_request(request, config.security.token()) {
         return http_response(
             401,
             "Unauthorized",

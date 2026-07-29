@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
 use std::time::Instant;
+use uuid::Uuid;
 
 #[test]
 fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
@@ -50,8 +51,10 @@ fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
 fn test_http_config() -> HttpConfig {
     HttpConfig {
         addr: "127.0.0.1:8787".parse().unwrap(),
-        token: "secret-token".to_string(),
-        allowed_origins: vec!["http://127.0.0.1:8787".to_string()],
+        security: HttpSecurityConfig::new(
+            "secret-token".to_string(),
+            vec!["http://127.0.0.1:8787".to_string()],
+        ),
     }
 }
 
@@ -1001,9 +1004,9 @@ fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
 #[test]
 fn http_origin_requires_allow_list_match_when_present() {
     let config = test_http_config();
-    assert!(validate_origin(None, &config).is_ok());
-    assert!(validate_origin(Some("http://127.0.0.1:8787"), &config).is_ok());
-    assert!(validate_origin(Some("http://evil.example"), &config).is_err());
+    assert!(validate_origin(None, &config.security).is_ok());
+    assert!(validate_origin(Some("http://127.0.0.1:8787"), &config.security).is_ok());
+    assert!(validate_origin(Some("http://evil.example"), &config.security).is_err());
 }
 
 #[test]
