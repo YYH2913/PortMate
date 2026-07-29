@@ -53,7 +53,32 @@
     "probeSftp": true,
     "expectedStatus": "degraded",
     "expectedErrorField": "sftpError",
-    "expectedErrorContains": "exceeded 5000 ms"
+    "expectedErrorContains": "exceeded 5000 ms",
+    "expectSftpRecovery": true
+  },
+  {
+    "name": "sftp-canonicalize-silent-once",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms",
+    "expectSftpRecovery": true
+  },
+  {
+    "name": "sftp-opendir-silent-once",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms",
+    "expectSftpRecovery": true
+  },
+  {
+    "name": "sftp-readdir-silent-once",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms",
+    "expectSftpRecovery": true
   },
   {
     "name": "sftp-canonicalize-missing",

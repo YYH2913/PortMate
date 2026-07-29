@@ -4,6 +4,14 @@ set -eu
 mode="$(cat /run/portmate-ssh-health-fault)"
 original="${SSH_ORIGINAL_COMMAND:-}"
 
+run_sftp_fault_once() {
+    fault_mode="$1"
+    if mkdir /tmp/portmate-sftp-health-fault-fired 2>/dev/null; then
+        exec /usr/local/bin/portmate-sftp-health-fault-server "$fault_mode"
+    fi
+    exec /usr/lib/ssh/sftp-server
+}
+
 case "$mode:$original" in
     exec-rejected:*PORTMATE_SSH_HEALTH_OK*)
         echo 'health exec rejected by fault server' >&2
@@ -22,8 +30,16 @@ case "$mode:$original" in
         exit 74
         ;;
     sftp-silent:internal-sftp)
-        sleep 30
-        exit 0
+        run_sftp_fault_once init
+        ;;
+    sftp-canonicalize-silent-once:internal-sftp)
+        run_sftp_fault_once canonicalize
+        ;;
+    sftp-opendir-silent-once:internal-sftp)
+        run_sftp_fault_once opendir
+        ;;
+    sftp-readdir-silent-once:internal-sftp)
+        run_sftp_fault_once readdir
         ;;
     sftp-canonicalize-missing:internal-sftp)
         vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"

@@ -189,6 +189,12 @@ impl Deref for SftpSessionLease {
     }
 }
 
+impl SftpSessionLease {
+    pub(super) fn invalidate(&mut self) {
+        self.session.take();
+    }
+}
+
 pub(super) fn acquire_ssh_auxiliary_slot(
     state: &AppState,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {

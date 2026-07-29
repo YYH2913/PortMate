@@ -514,6 +514,10 @@ fn external_ssh_health_fault_matrix_case() {
     let expected_error_field = std::env::var("PORTMATE_COMPAT_SSH_EXPECTED_ERROR_FIELD").unwrap();
     let expected_error_contains =
         std::env::var("PORTMATE_COMPAT_SSH_EXPECTED_ERROR_CONTAINS").unwrap();
+    let expect_sftp_recovery = std::env::var("PORTMATE_COMPAT_SSH_EXPECT_SFTP_RECOVERY")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap();
     let root = std::env::temp_dir().join(format!(
         "portmate-external-ssh-health-fault-{}-{}",
         fault,
@@ -628,6 +632,23 @@ fn external_ssh_health_fault_matrix_case() {
             if expected_error_field == "sftpError" {
                 assert!(health.channel_round_trip_ms.is_some(), "{health:?}");
                 assert!(health.sftp_probed, "{health:?}");
+            }
+            if expect_sftp_recovery {
+                let recovered = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    ssh_health::check_ssh_health_inner(&state, &profile.id, true),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{fault} SFTP recovery check timed out"))
+                .unwrap_or_else(|error| panic!("{fault} SFTP recovery check failed: {error}"));
+                assert_eq!(
+                    recovered.status,
+                    ssh_health::SshHealthStatus::Healthy,
+                    "{fault} did not recover with a fresh SFTP channel: {recovered:?}"
+                );
+                assert!(recovered.transport_round_trip_ms.is_some(), "{recovered:?}");
+                assert!(recovered.channel_round_trip_ms.is_some(), "{recovered:?}");
+                assert!(recovered.sftp_round_trip_ms.is_some(), "{recovered:?}");
             }
         }
 

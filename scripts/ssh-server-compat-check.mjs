@@ -166,6 +166,7 @@ for (const entry of healthFaultMatrix) {
         PORTMATE_COMPAT_SSH_EXPECTED_STATUS: entry.expectedStatus ?? "",
         PORTMATE_COMPAT_SSH_EXPECTED_ERROR_FIELD: entry.expectedErrorField ?? "",
         PORTMATE_COMPAT_SSH_EXPECTED_ERROR_CONTAINS: entry.expectedErrorContains ?? "",
+        PORTMATE_COMPAT_SSH_EXPECT_SFTP_RECOVERY: String(entry.expectSftpRecovery ?? false),
       },
     });
     verifiedHealthFaults.push(entry.name);
@@ -300,6 +301,13 @@ function validateHealthFaultEntry(entry) {
   }
   if (expectedErrorContains !== undefined && (typeof expectedErrorContains !== "string" || expectedErrorContains.length === 0)) {
     throw new Error(`Invalid SSH health error substring: ${JSON.stringify(entry)}`);
+  }
+  if (entry.expectSftpRecovery !== undefined
+    && (typeof entry.expectSftpRecovery !== "boolean"
+      || !entry.probeSftp
+      || !expectsReport
+      || entry.expectedErrorField !== "sftpError")) {
+    throw new Error(`Invalid SSH health SFTP recovery expectation: ${JSON.stringify(entry)}`);
   }
 }
 

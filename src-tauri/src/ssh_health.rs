@@ -29,6 +29,11 @@ pub(crate) struct SshHealthReport {
     pub sftp_probed: bool,
 }
 
+enum SftpHealthProbeError {
+    Failed(String),
+    TimedOut,
+}
+
 #[tauri::command]
 pub(crate) async fn check_ssh_health(
     state: State<'_, AppState>,
@@ -115,39 +120,17 @@ pub(super) async fn check_ssh_health_inner(
 
     if probe_sftp {
         let sftp_started = Instant::now();
-        let result = tokio::time::timeout(SSH_HEALTH_CHANNEL_TIMEOUT, async {
-            let libssh_backend = {
-                let handle = handle.lock().await;
-                handle.is_libssh()
-            };
-            if libssh_backend {
-                let handle = handle.lock().await;
-                handle.probe_libssh_sftp().await
-            } else {
-                let session = auxiliary.sftp().await?;
-                session
-                    .canonicalize(".")
-                    .await
-                    .map_err(|error| format!("SFTP canonicalize failed: {error}"))?;
-                session
-                    .read_dir(".")
-                    .await
-                    .map_err(|error| format!("SFTP read_dir failed: {error}"))?;
-                Ok(())
-            }
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {
+        match probe_sftp_health(&auxiliary, Arc::clone(&handle), SSH_HEALTH_CHANNEL_TIMEOUT).await {
+            Ok(()) => {
                 report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
             }
-            Ok(Err(error)) => {
+            Err(SftpHealthProbeError::Failed(error)) => {
                 report.status = SshHealthStatus::Degraded;
                 report.sftp_error = Some(bounded_ssh_health_error(&format!(
                     "SFTP health probe failed: {error}"
                 )));
             }
-            Err(_) => {
+            Err(SftpHealthProbeError::TimedOut) => {
                 report.status = SshHealthStatus::Degraded;
                 report.sftp_error = Some(format!(
                     "SFTP health probe exceeded {} ms",
@@ -158,6 +141,54 @@ pub(super) async fn check_ssh_health_inner(
     }
 
     finish_health_report(state, runtime_id, report)
+}
+
+async fn probe_sftp_health(
+    auxiliary: &SshAuxiliaryLease,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
+    timeout: Duration,
+) -> Result<(), SftpHealthProbeError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let libssh_backend = tokio::time::timeout_at(deadline, async {
+        let handle = handle.lock().await;
+        handle.is_libssh()
+    })
+    .await
+    .map_err(|_| SftpHealthProbeError::TimedOut)?;
+
+    if libssh_backend {
+        return tokio::time::timeout_at(deadline, async {
+            let handle = handle.lock().await;
+            handle.probe_libssh_sftp().await
+        })
+        .await
+        .map_err(|_| SftpHealthProbeError::TimedOut)?
+        .map_err(SftpHealthProbeError::Failed);
+    }
+
+    let mut session = tokio::time::timeout_at(deadline, auxiliary.sftp())
+        .await
+        .map_err(|_| SftpHealthProbeError::TimedOut)?
+        .map_err(SftpHealthProbeError::Failed)?;
+    match tokio::time::timeout_at(deadline, async {
+        session
+            .canonicalize(".")
+            .await
+            .map_err(|error| format!("SFTP canonicalize failed: {error}"))?;
+        session
+            .read_dir(".")
+            .await
+            .map_err(|error| format!("SFTP read_dir failed: {error}"))?;
+        Ok::<_, String>(())
+    })
+    .await
+    {
+        Ok(result) => result.map_err(SftpHealthProbeError::Failed),
+        Err(_) => {
+            session.invalidate();
+            Err(SftpHealthProbeError::TimedOut)
+        }
+    }
 }
 
 fn finish_health_report(
