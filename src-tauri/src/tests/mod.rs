@@ -25,6 +25,8 @@ mod file_operation_tests;
 mod host_key_tests;
 #[path = "identity_tests.rs"]
 mod identity_tests;
+#[path = "mcp_grant_tests.rs"]
+mod mcp_grant_tests;
 #[path = "mcp_tests.rs"]
 mod mcp_tests;
 #[path = "migration_tests.rs"]
