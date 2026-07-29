@@ -22,6 +22,8 @@ const transferFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/
 if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
 if (!Array.isArray(healthFaultMatrix) || !healthFaultMatrix.length) throw new Error("SSH health fault matrix is empty");
 if (!Array.isArray(transferFaultMatrix) || !transferFaultMatrix.length) throw new Error("SSH transfer fault matrix is empty");
+transferFaultMatrix.forEach(validateTransferFaultEntry);
+validateTransferFaultStatusCoverage(transferFaultMatrix);
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 
 const results = [];
@@ -178,7 +180,6 @@ for (const entry of healthFaultMatrix) {
 
 const verifiedTransferFaults = [];
 for (const entry of transferFaultMatrix) {
-  validateTransferFaultEntry(entry);
   const container = `portmate-compat-${randomUUID()}`;
   try {
     run("docker", [
@@ -320,6 +321,27 @@ function validateTransferFaultEntry(entry) {
   }
   if (typeof entry.expectedErrorContains !== "string" || entry.expectedErrorContains.length === 0) {
     throw new Error(`Invalid SSH transfer fault expectation: ${JSON.stringify(entry)}`);
+  }
+}
+
+function validateTransferFaultStatusCoverage(entries) {
+  const aliases = new Map([
+    ["sftp-no-space", 14],
+    ["sftp-quota-exceeded", 15],
+    ["sftp-unknown-status", 99],
+  ]);
+  const actual = entries.flatMap((entry) => {
+    const encoded = /^sftp-status-(\d+)$/.exec(entry.name)?.[1];
+    if (encoded !== undefined) return [Number(encoded)];
+    const alias = aliases.get(entry.name);
+    return alias === undefined ? [] : [alias];
+  });
+  const expected = [4, 5, ...Array.from({ length: 24 }, (_, index) => index + 8), 99];
+  const unique = [...new Set(actual)].sort((left, right) => left - right);
+  if (actual.length !== unique.length
+    || unique.length !== expected.length
+    || unique.some((value, index) => value !== expected[index])) {
+    throw new Error(`SSH transfer fault status coverage must be exactly ${expected.join(",")}: ${actual.join(",")}`);
   }
 }
 

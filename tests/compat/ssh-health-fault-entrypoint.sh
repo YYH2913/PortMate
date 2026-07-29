@@ -4,6 +4,15 @@ set -eu
 mode="${PORTMATE_SSH_HEALTH_FAULT:-normal}"
 case "$mode" in
     normal|ping-unresponsive|transport-closed|exec-rejected|exec-silent|exec-wrong-marker|sftp-missing|sftp-rejected|sftp-silent|sftp-canonicalize-silent-once|sftp-opendir-silent-once|sftp-readdir-silent-once|sftp-canonicalize-missing|sftp-operation-denied|sftp-no-such-file|sftp-permission-denied|sftp-no-space|sftp-quota-exceeded|sftp-unknown-status|scp-rejected|runtime-replaced) ;;
+    sftp-status-*)
+        status_code="${mode#sftp-status-}"
+        case "$status_code" in
+            ''|*[!0-9]*)
+                echo "unsupported SSH health fault mode: $mode" >&2
+                exit 64
+                ;;
+        esac
+        ;;
     *)
         echo "unsupported SSH health fault mode: $mode" >&2
         exit 64

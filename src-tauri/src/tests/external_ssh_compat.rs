@@ -742,7 +742,8 @@ fn external_ssh_transfer_fault_matrix_case() {
         if matches!(
             fault.as_str(),
             "sftp-unknown-status" | "sftp-no-space" | "sftp-quota-exceeded"
-        ) {
+        ) || fault.starts_with("sftp-status-")
+        {
             assert!(
                 wait_started.elapsed() < Duration::from_secs(5),
                 "{fault} did not fail promptly: {task:?}"

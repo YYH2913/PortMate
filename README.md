@@ -630,10 +630,11 @@ The fault matrix injects fourteen health failures: paused and forcibly closed tr
 silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
 canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and `READDIR` operations;
 and runtime replacement. Each report error is checked against
-the expected failure stage, and every health case has a hard test deadline. Eight transfer fault cases
-separately cover missing/rejected SFTP, missing source files, denied writes, filesystem-full and
-quota-exceeded statuses, an unknown SFTP status code that must fail within five seconds with its
-protocol diagnosis intact, and rejected SCP commands.
+the expected failure stage, and every health case has a hard test deadline. Thirty-two transfer fault
+cases separately cover missing/rejected SFTP, missing source files, denied writes, rejected SCP commands,
+and all 26 server-returnable error statuses defined by SFTP v3-v6 (`4`, `5`, and `8..31`) plus unknown
+status `99`. Every injected status must fail within five seconds with its protocol diagnosis intact;
+client-only pseudo-statuses `6` and `7` are intentionally not forged as server responses.
 The 17-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
 bookworm, Twisted Conch 24.11.0 on Debian bookworm and 26.4.0 on Debian trixie with a real `/bin/sh`

@@ -74,7 +74,10 @@ def reject_status_requests(status_code, message):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in {
+    if len(sys.argv) != 2:
+        raise ValueError("expected exactly one SFTP fault mode")
+    mode = sys.argv[1]
+    fixed_modes = {
         "init",
         "canonicalize",
         "opendir",
@@ -82,12 +85,20 @@ def main():
         "no-space",
         "quota-exceeded",
         "unknown-status",
-    }:
+    }
+    status_code = None
+    if mode.startswith("status-"):
+        encoded_status = mode.removeprefix("status-")
+        if not encoded_status.isascii() or not encoded_status.isdecimal():
+            raise ValueError(f"invalid numeric SFTP status fault mode: {mode}")
+        status_code = int(encoded_status)
+        if status_code < 0 or status_code > 0xFFFFFFFF:
+            raise ValueError(f"SFTP status fault code is out of range: {status_code}")
+    elif mode not in fixed_modes:
         raise ValueError(
             "expected init, canonicalize, opendir, readdir, no-space, quota-exceeded, "
-            "or unknown-status fault mode"
+            "unknown-status, or status-N fault mode"
         )
-    mode = sys.argv[1]
 
     init = read_packet(SSH_FXP_INIT)
     if len(init) < 4:
@@ -101,6 +112,11 @@ def main():
         "quota-exceeded": (15, b"quota exceeded injected by PortMate fault server"),
         "unknown-status": (99, b"unknown status injected by PortMate fault server"),
     }
+    if status_code is not None:
+        reject_status_requests(
+            status_code, f"status {status_code} injected by PortMate fault server".encode()
+        )
+        return
     if mode in status_faults:
         reject_status_requests(*status_faults[mode])
         return

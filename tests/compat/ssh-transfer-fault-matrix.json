@@ -35,6 +35,126 @@
     "expectedErrorContains": "Quota exceeded"
   },
   {
+    "name": "sftp-status-4",
+    "protocol": "sftp",
+    "expectedErrorContains": "Failure"
+  },
+  {
+    "name": "sftp-status-5",
+    "protocol": "sftp",
+    "expectedErrorContains": "Bad message"
+  },
+  {
+    "name": "sftp-status-8",
+    "protocol": "sftp",
+    "expectedErrorContains": "Operation unsupported"
+  },
+  {
+    "name": "sftp-status-9",
+    "protocol": "sftp",
+    "expectedErrorContains": "Invalid handle"
+  },
+  {
+    "name": "sftp-status-10",
+    "protocol": "sftp",
+    "expectedErrorContains": "No such path"
+  },
+  {
+    "name": "sftp-status-11",
+    "protocol": "sftp",
+    "expectedErrorContains": "File already exists"
+  },
+  {
+    "name": "sftp-status-12",
+    "protocol": "sftp",
+    "expectedErrorContains": "Write protect"
+  },
+  {
+    "name": "sftp-status-13",
+    "protocol": "sftp",
+    "expectedErrorContains": "No media"
+  },
+  {
+    "name": "sftp-status-16",
+    "protocol": "sftp",
+    "expectedErrorContains": "Unknown principal"
+  },
+  {
+    "name": "sftp-status-17",
+    "protocol": "sftp",
+    "expectedErrorContains": "Lock conflict"
+  },
+  {
+    "name": "sftp-status-18",
+    "protocol": "sftp",
+    "expectedErrorContains": "Directory not empty"
+  },
+  {
+    "name": "sftp-status-19",
+    "protocol": "sftp",
+    "expectedErrorContains": "Not a directory"
+  },
+  {
+    "name": "sftp-status-20",
+    "protocol": "sftp",
+    "expectedErrorContains": "Invalid filename"
+  },
+  {
+    "name": "sftp-status-21",
+    "protocol": "sftp",
+    "expectedErrorContains": "Link loop"
+  },
+  {
+    "name": "sftp-status-22",
+    "protocol": "sftp",
+    "expectedErrorContains": "Cannot delete"
+  },
+  {
+    "name": "sftp-status-23",
+    "protocol": "sftp",
+    "expectedErrorContains": "Invalid parameter"
+  },
+  {
+    "name": "sftp-status-24",
+    "protocol": "sftp",
+    "expectedErrorContains": "File is a directory"
+  },
+  {
+    "name": "sftp-status-25",
+    "protocol": "sftp",
+    "expectedErrorContains": "Byte range lock conflict"
+  },
+  {
+    "name": "sftp-status-26",
+    "protocol": "sftp",
+    "expectedErrorContains": "Byte range lock refused"
+  },
+  {
+    "name": "sftp-status-27",
+    "protocol": "sftp",
+    "expectedErrorContains": "Delete pending"
+  },
+  {
+    "name": "sftp-status-28",
+    "protocol": "sftp",
+    "expectedErrorContains": "File corrupt"
+  },
+  {
+    "name": "sftp-status-29",
+    "protocol": "sftp",
+    "expectedErrorContains": "Owner invalid"
+  },
+  {
+    "name": "sftp-status-30",
+    "protocol": "sftp",
+    "expectedErrorContains": "Group invalid"
+  },
+  {
+    "name": "sftp-status-31",
+    "protocol": "sftp",
+    "expectedErrorContains": "No matching byte range lock"
+  },
+  {
     "name": "scp-rejected",
     "protocol": "scp",
     "expectedErrorContains": "SCP"

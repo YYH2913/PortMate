@@ -50,6 +50,10 @@ case "$mode:$original" in
     sftp-quota-exceeded:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server quota-exceeded
         ;;
+    sftp-status-*:internal-sftp)
+        status_code="${mode#sftp-status-}"
+        exec /usr/local/bin/portmate-sftp-health-fault-server "status-$status_code"
+        ;;
     sftp-canonicalize-missing:internal-sftp)
         vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"
         cd "$vanished"
