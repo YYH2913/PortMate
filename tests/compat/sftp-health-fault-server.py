@@ -82,11 +82,13 @@ def main():
         "init",
         "canonicalize",
         "malformed-packet",
+        "malformed-status-payload",
         "opendir",
         "oversized-packet",
         "readdir",
         "truncated-packet",
         "wrong-request-id",
+        "zero-length-packet",
         "no-space",
         "quota-exceeded",
         "unknown-status",
@@ -102,8 +104,8 @@ def main():
     elif mode not in fixed_modes:
         raise ValueError(
             "expected init, canonicalize, opendir, readdir, no-space, quota-exceeded, "
-            "unknown-status, malformed-packet, oversized-packet, truncated-packet, "
-            "wrong-request-id, or status-N fault mode"
+            "unknown-status, malformed-packet, malformed-status-payload, oversized-packet, "
+            "truncated-packet, wrong-request-id, zero-length-packet, or status-N fault mode"
         )
 
     init = read_packet(SSH_FXP_INIT)
@@ -115,9 +117,11 @@ def main():
     write_packet(SSH_FXP_VERSION, struct.pack(">I", 3))
     if mode in {
         "malformed-packet",
+        "malformed-status-payload",
         "oversized-packet",
         "truncated-packet",
         "wrong-request-id",
+        "zero-length-packet",
     }:
         length = struct.unpack(">I", read_exact(4))[0]
         if length < 5 or length > MAX_PACKET_LENGTH:
@@ -125,6 +129,9 @@ def main():
         packet = read_exact(length)
         if mode == "malformed-packet":
             write_packet(255, b"")
+        elif mode == "malformed-status-payload":
+            write_packet(SSH_FXP_STATUS, struct.pack(">I", request_id(packet[1:])))
+            stall()
         elif mode == "wrong-request-id":
             write_packet(
                 SSH_FXP_STATUS,
@@ -135,6 +142,10 @@ def main():
         elif mode == "truncated-packet":
             sys.stdout.buffer.write(struct.pack(">I", 9) + bytes([SSH_FXP_STATUS]))
             sys.stdout.buffer.flush()
+        elif mode == "zero-length-packet":
+            sys.stdout.buffer.write(struct.pack(">I", 0))
+            sys.stdout.buffer.flush()
+            stall()
         else:
             sys.stdout.buffer.write(
                 struct.pack(">I", CLIENT_PACKET_LENGTH_LIMIT + 1)

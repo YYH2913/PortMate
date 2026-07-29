@@ -824,6 +824,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zero_length_response_fails_pending_request_without_waiting_for_timeout() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            assert!(matches!(
+                read_client_packet(&mut server).await,
+                Packet::Lstat(_)
+            ));
+            server.write_all(&0_u32.to_be_bytes()).await.unwrap();
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/zero-length"))
+            .await
+            .expect("zero-length response waited for the request timeout")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only 0 bytes remaining, but 1 requested"),
+            "{error}"
+        );
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_status_payload_fails_pending_request_without_waiting_for_timeout() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            let request_id = read_client_packet(&mut server).await.get_request_id();
+            server.write_all(&5_u32.to_be_bytes()).await.unwrap();
+            server.write_all(&[101]).await.unwrap();
+            server.write_all(&request_id.to_be_bytes()).await.unwrap();
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/malformed-status"))
+            .await
+            .expect("malformed status response waited for the request timeout")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only 0 bytes remaining, but 4 requested"),
+            "{error}"
+        );
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn truncated_response_fails_pending_request_without_waiting_for_timeout() {
         let (client, mut server) = duplex(4096);
         let session = RawSftpSession::new_with_config(client, long_timeout_config());

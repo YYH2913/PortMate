@@ -57,6 +57,9 @@ case "$mode:$original" in
     sftp-malformed-packet:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server malformed-packet
         ;;
+    sftp-malformed-status-payload:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server malformed-status-payload
+        ;;
     sftp-oversized-packet:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server oversized-packet
         ;;
@@ -65,6 +68,9 @@ case "$mode:$original" in
         ;;
     sftp-wrong-request-id:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server wrong-request-id
+        ;;
+    sftp-zero-length-packet:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server zero-length-packet
         ;;
     sftp-canonicalize-missing:internal-sftp)
         vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"

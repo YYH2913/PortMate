@@ -160,6 +160,11 @@
     "expectedErrorContains": "unknown type"
   },
   {
+    "name": "sftp-malformed-status-payload",
+    "protocol": "sftp",
+    "expectedErrorContains": "only 0 bytes remaining, but 4 requested"
+  },
+  {
     "name": "sftp-oversized-packet",
     "protocol": "sftp",
     "expectedErrorContains": "packet length limit exceeded"
@@ -173,6 +178,11 @@
     "name": "sftp-wrong-request-id",
     "protocol": "sftp",
     "expectedErrorContains": "unknown recipient"
+  },
+  {
+    "name": "sftp-zero-length-packet",
+    "protocol": "sftp",
+    "expectedErrorContains": "only 0 bytes remaining, but 1 requested"
   },
   {
     "name": "scp-rejected",
