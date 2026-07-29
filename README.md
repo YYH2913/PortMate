@@ -605,11 +605,11 @@ because xterm.js does not answer it.
 `npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
 3.3a, and 3.5a, including session/window/pane state, synchronization, layout mutations, and
 control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
-health path against ten full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
+health path against eleven full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
 Debian bookworm/trixie, and Ubuntu 24.04; OpenSSH with an independent GESFTPServer subsystem on
-Ubuntu 24.04; Dropbear on Alpine 3.20/3.21; and AsyncSSH 2.24.0 on Debian bookworm. It also validates
-SFTP upload, download, and remote copy against ProFTPD `mod_sftp`, SFTPGo 2.6.6, and Apache MINA
-SSHD 2.19.0. The Apache MINA case
+Ubuntu 24.04; Dropbear on Alpine 3.20/3.21; and AsyncSSH 2.24.0 and Paramiko 5.0.0 on Debian
+bookworm. It also validates SFTP upload, download, and remote copy against ProFTPD `mod_sftp`,
+SFTPGo 2.6.6, and Apache MINA SSHD 2.19.0. The Apache MINA case
 checks that duplicate `MKDIR` and non-empty `RMDIR` return their SFTP v4+ status promptly even after
 version 3 negotiation; the local `russh-sftp` compatibility patch also retains unknown status packets
 instead of dropping them until timeout. The matrix kills each of the nine OpenSSH/Dropbear servers
