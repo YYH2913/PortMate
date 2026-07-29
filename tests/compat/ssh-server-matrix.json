@@ -118,6 +118,24 @@
     }
   },
   {
+    "name": "erlang-otp-25.2.3-debian-bookworm",
+    "dockerfile": "tests/compat/erlang-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "DEBIAN_VERSION": "bookworm-slim"
+    }
+  },
+  {
+    "name": "erlang-otp-27.3.4.1-debian-trixie",
+    "dockerfile": "tests/compat/erlang-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim"
+    }
+  },
+  {
     "name": "apache-mina-sshd-2.19.0",
     "dockerfile": "tests/compat/apache-mina-sftp.Dockerfile",
     "protocols": ["sftp"],
