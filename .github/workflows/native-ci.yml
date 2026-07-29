@@ -106,6 +106,12 @@ jobs:
       - name: Verify Linux packages and packaged MCP sidecars
         if: runner.os == 'Linux'
         run: npm run test:linux-package
+      - name: Verify Windows MSI and NSIS packages
+        if: runner.os == 'Windows'
+        run: npm run test:windows-package
+      - name: Verify macOS app and DMG packages
+        if: runner.os == 'macOS'
+        run: npm run test:macos-package
 
       - uses: actions/upload-artifact@v4
         with:
