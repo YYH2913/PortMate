@@ -31,6 +31,8 @@ mod mcp_approval_tests;
 mod mcp_grant_tests;
 #[path = "mcp_ipc_tests.rs"]
 mod mcp_ipc_tests;
+#[path = "mcp_read_tests.rs"]
+mod mcp_read_tests;
 #[path = "mcp_tests.rs"]
 mod mcp_tests;
 #[path = "migration_tests.rs"]
