@@ -79,6 +79,7 @@ mod migration_planning;
 mod migration_recovery;
 mod migration_runtime;
 mod migration_types;
+mod modem_remote;
 mod modem_transfer;
 mod one_key_commands;
 mod one_key_prompt;
@@ -161,6 +162,7 @@ use migration_planning::*;
 use migration_recovery::*;
 use migration_runtime::*;
 use migration_types::*;
+use modem_remote::*;
 #[cfg(test)]
 use modem_transfer::runtime_tap_receiver;
 use modem_transfer::*;
