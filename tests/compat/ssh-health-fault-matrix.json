@@ -3,37 +3,71 @@
     "name": "ping-unresponsive",
     "probeSftp": false,
     "expectedStatus": "unresponsive",
-    "expectedErrorField": "transportError"
+    "expectedErrorField": "transportError",
+    "expectedErrorContains": "超过 3000 ms"
+  },
+  {
+    "name": "transport-closed",
+    "probeSftp": false,
+    "expectedStatus": "unresponsive",
+    "expectedErrorField": "transportError",
+    "expectedErrorContains": "Channel send error"
   },
   {
     "name": "exec-rejected",
     "probeSftp": false,
     "expectedStatus": "degraded",
-    "expectedErrorField": "channelError"
+    "expectedErrorField": "channelError",
+    "expectedErrorContains": "非零状态 73"
   },
   {
     "name": "exec-silent",
     "probeSftp": false,
     "expectedStatus": "degraded",
-    "expectedErrorField": "channelError"
+    "expectedErrorField": "channelError",
+    "expectedErrorContains": "SSH exec 超时"
+  },
+  {
+    "name": "exec-wrong-marker",
+    "probeSftp": false,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "channelError",
+    "expectedErrorContains": "未返回健康标记"
   },
   {
     "name": "sftp-missing",
     "probeSftp": true,
     "expectedStatus": "degraded",
-    "expectedErrorField": "sftpError"
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms"
   },
   {
     "name": "sftp-rejected",
     "probeSftp": true,
     "expectedStatus": "degraded",
-    "expectedErrorField": "sftpError"
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms"
+  },
+  {
+    "name": "sftp-silent",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "exceeded 5000 ms"
+  },
+  {
+    "name": "sftp-canonicalize-missing",
+    "probeSftp": true,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "SFTP canonicalize failed"
   },
   {
     "name": "sftp-operation-denied",
     "probeSftp": true,
     "expectedStatus": "degraded",
-    "expectedErrorField": "sftpError"
+    "expectedErrorField": "sftpError",
+    "expectedErrorContains": "SFTP read_dir failed"
   },
   {
     "name": "runtime-replaced",

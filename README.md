@@ -624,10 +624,12 @@ nonempty resumable `.portmate-part` copied from the stopped container.
 The same nine-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
 lrzsz builds and Debian, Debian trixie, Ubuntu, and GESFTPServer YModem fallback, and verifies
 disconnect failure, partial progress, final-file non-commit, and partial-file cleanup.
-The fault matrix injects seven health failures: paused transport, rejected and silent exec channels,
-missing and rejected SFTP subsystems, denied SFTP operations, and runtime replacement. Five transfer
-fault cases separately cover missing/rejected SFTP, missing source files, denied writes, and rejected
-SCP commands. The 14-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
+The fault matrix injects eleven health failures: paused and forcibly closed transports; rejected,
+silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
+canonicalization; denied directory reads; and runtime replacement. Each report error is checked against
+the expected failure stage, and every health case has a hard test deadline. Five transfer fault cases
+separately cover missing/rejected SFTP, missing source files, denied writes, and rejected SCP commands.
+The 14-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
 bookworm and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
 echo and Socat burst-close on Alpine and Ubuntu, plus Socat close on Alpine. The matrix also
@@ -682,7 +684,9 @@ For an active SSH/Tmux runtime, Session Settings can request a health report wit
 transport. A keepalive failure is `unresponsive`; a successful keepalive followed by exec-marker or
 optional SFTP failure is `degraded`; all requested stages succeeding is `healthy`. Every report is
 bound to the runtime generation captured at the start, so reconnect or replacement during the probe
-returns an explicit retry error instead of publishing stale latency data.
+returns an explicit retry error instead of publishing stale latency data. The optional SFTP stage gives
+initialization, canonicalization, and directory reading one shared five-second budget, so a server that
+accepts the subsystem request without completing the protocol cannot hang the health command.
 
 ## Current Implementation Boundary
 

@@ -529,7 +529,10 @@ fn external_ssh_health_fault_matrix_case() {
         ssh.endpoint.host = host;
         ssh.endpoint.port = port;
         ssh.username = username;
-        ssh.reconnect = false;
+        ssh.reconnect = fault == "transport-closed";
+        if ssh.reconnect {
+            ssh.reconnect_delay_ms = 60_000;
+        }
         ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
         ssh.identity_policy.auth_order = vec![AuthMethod::Password];
         ssh.identity_refs.clear();
@@ -576,8 +579,21 @@ fn external_ssh_health_fault_matrix_case() {
             } else {
                 None
             };
+            if fault == "transport-closed" {
+                let container = std::env::var("PORTMATE_COMPAT_SSH_CONTAINER").unwrap();
+                let killed = Command::new("docker")
+                    .args(["kill", "--signal", "KILL", &container])
+                    .status()
+                    .unwrap();
+                assert!(killed.success(), "failed to kill {container}");
+            }
 
-            let result = ssh_health::check_ssh_health_inner(&state, &profile.id, probe_sftp).await;
+            let result = tokio::time::timeout(
+                Duration::from_secs(12),
+                ssh_health::check_ssh_health_inner(&state, &profile.id, probe_sftp),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{fault} SSH health check exceeded the test deadline"));
             if let Some(container) = paused_container {
                 let unpaused = Command::new("docker")
                     .args(["unpause", &container])
@@ -593,11 +609,18 @@ fn external_ssh_health_fault_matrix_case() {
                 value => panic!("unsupported expected SSH health status: {value}"),
             };
             assert_eq!(health.status, expected_health_status, "{fault}: {health:?}");
-            match expected_error_field.as_str() {
-                "transportError" => assert!(health.transport_error.is_some(), "{health:?}"),
-                "channelError" => assert!(health.channel_error.is_some(), "{health:?}"),
-                "sftpError" => assert!(health.sftp_error.is_some(), "{health:?}"),
+            let field_error = match expected_error_field.as_str() {
+                "transportError" => health.transport_error.as_deref(),
+                "channelError" => health.channel_error.as_deref(),
+                "sftpError" => health.sftp_error.as_deref(),
                 value => panic!("unsupported SSH health error field: {value}"),
+            }
+            .unwrap_or_else(|| panic!("{fault} omitted {expected_error_field}: {health:?}"));
+            if !expected_error_contains.is_empty() {
+                assert!(
+                    field_error.contains(&expected_error_contains),
+                    "{fault} returned an unexpected {expected_error_field}: {field_error}"
+                );
             }
             if expected_health_status != ssh_health::SshHealthStatus::Unresponsive {
                 assert!(health.transport_round_trip_ms.is_some(), "{health:?}");

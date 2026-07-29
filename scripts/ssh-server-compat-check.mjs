@@ -292,9 +292,14 @@ function validateHealthFaultEntry(entry) {
     throw new Error(`Invalid SSH health error field: ${JSON.stringify(entry)}`);
   }
   const expectsReport = entry.expectedStatus !== undefined && entry.expectedErrorField !== undefined;
-  const expectsError = typeof entry.expectedErrorContains === "string" && entry.expectedErrorContains.length > 0;
-  if (expectsReport === expectsError) {
+  const hasPartialReportExpectation = (entry.expectedStatus !== undefined) !== (entry.expectedErrorField !== undefined);
+  const expectedErrorContains = entry.expectedErrorContains;
+  if (hasPartialReportExpectation
+    || (!expectsReport && (typeof expectedErrorContains !== "string" || expectedErrorContains.length === 0))) {
     throw new Error(`SSH health fault entry must expect exactly one report or command error: ${JSON.stringify(entry)}`);
+  }
+  if (expectedErrorContains !== undefined && (typeof expectedErrorContains !== "string" || expectedErrorContains.length === 0)) {
+    throw new Error(`Invalid SSH health error substring: ${JSON.stringify(entry)}`);
   }
 }
 

@@ -13,9 +13,23 @@ case "$mode:$original" in
         sleep 30
         exit 0
         ;;
+    exec-wrong-marker:*PORTMATE_SSH_HEALTH_OK*)
+        printf '%s\n' 'PORTMATE_SSH_HEALTH_WRONG'
+        exit 0
+        ;;
     sftp-rejected:internal-sftp)
         echo 'sftp rejected by fault server' >&2
         exit 74
+        ;;
+    sftp-silent:internal-sftp)
+        sleep 30
+        exit 0
+        ;;
+    sftp-canonicalize-missing:internal-sftp)
+        vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"
+        cd "$vanished"
+        rmdir "$vanished"
+        exec /usr/lib/ssh/sftp-server
         ;;
     sftp-operation-denied:internal-sftp)
         exec /usr/lib/ssh/sftp-server -d /home/portmate/portmate-sftp-blocked

@@ -115,60 +115,44 @@ pub(super) async fn check_ssh_health_inner(
 
     if probe_sftp {
         let sftp_started = Instant::now();
-        let libssh_backend = {
-            let handle = handle.lock().await;
-            handle.is_libssh()
-        };
-        if libssh_backend {
-            let result = tokio::time::timeout(SSH_HEALTH_CHANNEL_TIMEOUT, async {
+        let result = tokio::time::timeout(SSH_HEALTH_CHANNEL_TIMEOUT, async {
+            let libssh_backend = {
+                let handle = handle.lock().await;
+                handle.is_libssh()
+            };
+            if libssh_backend {
                 let handle = handle.lock().await;
                 handle.probe_libssh_sftp().await
-            })
-            .await;
-            match result {
-                Ok(Ok(())) => {
-                    report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
-                }
-                Ok(Err(error)) => {
-                    report.status = SshHealthStatus::Degraded;
-                    report.sftp_error = Some(bounded_ssh_health_error(&format!(
-                        "SFTP health probe failed: {error}"
-                    )));
-                }
-                Err(_) => {
-                    report.status = SshHealthStatus::Degraded;
-                    report.sftp_error = Some(format!(
-                        "SFTP health probe exceeded {} ms",
-                        SSH_HEALTH_CHANNEL_TIMEOUT.as_millis()
-                    ));
-                }
+            } else {
+                let session = auxiliary.sftp().await?;
+                session
+                    .canonicalize(".")
+                    .await
+                    .map_err(|error| format!("SFTP canonicalize failed: {error}"))?;
+                session
+                    .read_dir(".")
+                    .await
+                    .map_err(|error| format!("SFTP read_dir failed: {error}"))?;
+                Ok(())
             }
-        } else {
-            match auxiliary.sftp().await {
-                Ok(session) => match session.canonicalize(".").await {
-                    Ok(_) => match session.read_dir(".").await {
-                        Ok(_) => {
-                            report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
-                            drop(session);
-                        }
-                        Err(error) => {
-                            report.status = SshHealthStatus::Degraded;
-                            report.sftp_error = Some(bounded_ssh_health_error(&format!(
-                                "SFTP health probe failed: {error}"
-                            )));
-                        }
-                    },
-                    Err(error) => {
-                        report.status = SshHealthStatus::Degraded;
-                        report.sftp_error = Some(bounded_ssh_health_error(&format!(
-                            "SFTP health probe failed: {error}"
-                        )));
-                    }
-                },
-                Err(error) => {
-                    report.status = SshHealthStatus::Degraded;
-                    report.sftp_error = Some(bounded_ssh_health_error(&error));
-                }
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {
+                report.sftp_round_trip_ms = Some(elapsed_millis(sftp_started));
+            }
+            Ok(Err(error)) => {
+                report.status = SshHealthStatus::Degraded;
+                report.sftp_error = Some(bounded_ssh_health_error(&format!(
+                    "SFTP health probe failed: {error}"
+                )));
+            }
+            Err(_) => {
+                report.status = SshHealthStatus::Degraded;
+                report.sftp_error = Some(format!(
+                    "SFTP health probe exceeded {} ms",
+                    SSH_HEALTH_CHANNEL_TIMEOUT.as_millis()
+                ));
             }
         }
     }
