@@ -31,6 +31,8 @@ mod mcp_tests;
 mod migration_tests;
 #[path = "modem_protocol_tests.rs"]
 mod modem_protocol_tests;
+#[path = "modem_runtime_tests.rs"]
+mod modem_runtime_tests;
 #[path = "openssh_authentication_tests.rs"]
 mod openssh_authentication_tests;
 #[path = "openssh_jump_host_tests.rs"]
