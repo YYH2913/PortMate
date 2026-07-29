@@ -76,6 +76,7 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             gnome-keyring \
+            libglib2.0-bin \
             libkrb5-dev \
             libssh-dev \
             librsvg2-dev \

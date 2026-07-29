@@ -112,6 +112,16 @@ fn wait_for_child(child: &mut Child, phase: &str) -> Result<(), String> {
 }
 
 fn run_phase(phase: &str) -> Result<(), String> {
+    if phase == "expect-unavailable" {
+        return match keyring::use_native_store(true) {
+            Err(Error::PlatformFailure(_)) => Ok(()),
+            Err(error) => Err(format!(
+                "native keyring unavailable probe returned the wrong error: {error}"
+            )),
+            Ok(()) => Err("native keyring unexpectedly initialized without a provider".to_string()),
+        };
+    }
+
     keyring::use_native_store(true)
         .map_err(|error| format!("initialize persistent native keyring failed: {error}"))?;
     let account = required_environment(ACCOUNT_ENV)?;
@@ -150,6 +160,13 @@ fn run_phase(phase: &str) -> Result<(), String> {
                 )),
             }
         }
+        "verify-locked" => match entry.get_password() {
+            Err(Error::NoStorageAccess(_)) => Ok(()),
+            Err(error) => Err(format!(
+                "native keyring locked probe returned the wrong error: {error}"
+            )),
+            Ok(_) => Err("native keyring unexpectedly read a locked credential".to_string()),
+        },
         "cleanup" => match entry.delete_credential() {
             Ok(()) | Err(Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("native keyring probe cleanup failed: {error}")),
