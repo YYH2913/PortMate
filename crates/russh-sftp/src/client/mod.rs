@@ -65,12 +65,16 @@ where
     }
 }
 
-async fn process_handler<S, H>(stream: &mut S, handler: &mut H) -> Result<(), Error>
+async fn process_handler<S, H>(
+    stream: &mut S,
+    handler: &mut H,
+    max_packet_len: u32,
+) -> Result<(), Error>
 where
     S: AsyncRead + Unpin,
     H: Handler + Send,
 {
-    let mut bytes = read_packet(stream, u32::MAX).await?;
+    let mut bytes = read_packet(stream, max_packet_len).await?;
     Ok(execute_handler(&mut bytes, handler).await?)
 }
 
@@ -81,12 +85,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
 {
-    run_with_error(stream, handler).0
+    run_with_error(stream, handler, Config::default().max_packet_len).0
 }
 
 pub(crate) fn run_with_error<S, H>(
     stream: S,
     mut handler: H,
+    max_packet_len: u32,
 ) -> (mpsc::UnboundedSender<Bytes>, watch::Receiver<Option<Error>>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -103,7 +108,7 @@ where
         tokio::spawn(async move {
             loop {
                 select! {
-                    result = process_handler(&mut rd, &mut handler) => {
+                    result = process_handler(&mut rd, &mut handler, max_packet_len) => {
                         if let Err(err) = result {
                             warn!("{}", err);
                             publish_stream_error(&error_tx, err);

@@ -745,7 +745,10 @@ fn external_ssh_transfer_fault_matrix_case() {
         ) || fault.starts_with("sftp-status-")
             || matches!(
                 fault.as_str(),
-                "sftp-malformed-packet" | "sftp-wrong-request-id"
+                "sftp-malformed-packet"
+                    | "sftp-oversized-packet"
+                    | "sftp-truncated-packet"
+                    | "sftp-wrong-request-id"
             )
         {
             assert!(

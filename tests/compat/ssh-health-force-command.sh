@@ -57,6 +57,12 @@ case "$mode:$original" in
     sftp-malformed-packet:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server malformed-packet
         ;;
+    sftp-oversized-packet:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server oversized-packet
+        ;;
+    sftp-truncated-packet:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server truncated-packet
+        ;;
     sftp-wrong-request-id:internal-sftp)
         exec /usr/local/bin/portmate-sftp-health-fault-server wrong-request-id
         ;;

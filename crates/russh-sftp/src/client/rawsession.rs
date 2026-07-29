@@ -166,7 +166,7 @@ impl RawSftpSession {
             requests: req_map.clone(),
         };
 
-        let (tx, stream_error) = run_with_error(stream, inner);
+        let (tx, stream_error) = run_with_error(stream, inner, cfg.max_packet_len);
         Self {
             tx,
             stream_error,
@@ -818,6 +818,67 @@ mod tests {
             .expect("malformed response waited for the request timeout")
             .unwrap_err();
         assert!(error.to_string().contains("unknown type"), "{error}");
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn truncated_response_fails_pending_request_without_waiting_for_timeout() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            assert!(matches!(
+                read_client_packet(&mut server).await,
+                Packet::Lstat(_)
+            ));
+            server.write_all(&[0, 0, 0, 9, 101]).await.unwrap();
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/truncated"))
+            .await
+            .expect("truncated response waited for the request timeout")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Unexpected EOF on stream"),
+            "{error}"
+        );
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_response_fails_before_reading_the_declared_payload() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(
+            client,
+            Config {
+                max_packet_len: 64,
+                ..long_timeout_config()
+            },
+        );
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            assert!(matches!(
+                read_client_packet(&mut server).await,
+                Packet::Lstat(_)
+            ));
+            server.write_all(&65_u32.to_be_bytes()).await.unwrap();
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/oversized"))
+            .await
+            .expect("oversized response waited for its declared payload")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("packet length limit exceeded"),
+            "{error}"
+        );
 
         let _ = release_tx.send(());
         server_task.await.unwrap();

@@ -14,6 +14,7 @@ SSH_FXP_STATUS = 101
 SSH_FXP_HANDLE = 102
 SSH_FXP_NAME = 104
 MAX_PACKET_LENGTH = 1024 * 1024
+CLIENT_PACKET_LENGTH_LIMIT = 256 * 1024
 
 
 def read_exact(length):
@@ -82,7 +83,9 @@ def main():
         "canonicalize",
         "malformed-packet",
         "opendir",
+        "oversized-packet",
         "readdir",
+        "truncated-packet",
         "wrong-request-id",
         "no-space",
         "quota-exceeded",
@@ -99,7 +102,8 @@ def main():
     elif mode not in fixed_modes:
         raise ValueError(
             "expected init, canonicalize, opendir, readdir, no-space, quota-exceeded, "
-            "unknown-status, malformed-packet, wrong-request-id, or status-N fault mode"
+            "unknown-status, malformed-packet, oversized-packet, truncated-packet, "
+            "wrong-request-id, or status-N fault mode"
         )
 
     init = read_packet(SSH_FXP_INIT)
@@ -109,20 +113,34 @@ def main():
         stall()
         return
     write_packet(SSH_FXP_VERSION, struct.pack(">I", 3))
-    if mode in {"malformed-packet", "wrong-request-id"}:
+    if mode in {
+        "malformed-packet",
+        "oversized-packet",
+        "truncated-packet",
+        "wrong-request-id",
+    }:
         length = struct.unpack(">I", read_exact(4))[0]
         if length < 5 or length > MAX_PACKET_LENGTH:
             raise ValueError(f"invalid SFTP request packet length: {length}")
         packet = read_exact(length)
         if mode == "malformed-packet":
             write_packet(255, b"")
-        else:
+        elif mode == "wrong-request-id":
             write_packet(
                 SSH_FXP_STATUS,
                 struct.pack(">II", (request_id(packet[1:]) + 1) & 0xFFFFFFFF, 4)
                 + encode_string(b"wrong request id injected by PortMate fault server")
                 + encode_string(b""),
             )
+        elif mode == "truncated-packet":
+            sys.stdout.buffer.write(struct.pack(">I", 9) + bytes([SSH_FXP_STATUS]))
+            sys.stdout.buffer.flush()
+        else:
+            sys.stdout.buffer.write(
+                struct.pack(">I", CLIENT_PACKET_LENGTH_LIMIT + 1)
+            )
+            sys.stdout.buffer.flush()
+            stall()
         return
     status_faults = {
         "no-space": (14, b"no space injected by PortMate fault server"),

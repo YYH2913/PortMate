@@ -160,6 +160,16 @@
     "expectedErrorContains": "unknown type"
   },
   {
+    "name": "sftp-oversized-packet",
+    "protocol": "sftp",
+    "expectedErrorContains": "packet length limit exceeded"
+  },
+  {
+    "name": "sftp-truncated-packet",
+    "protocol": "sftp",
+    "expectedErrorContains": "Unexpected EOF on stream"
+  },
+  {
     "name": "sftp-wrong-request-id",
     "protocol": "sftp",
     "expectedErrorContains": "unknown recipient"
