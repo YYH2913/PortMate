@@ -16,7 +16,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const useCachedImages = compatibilityUsesCachedImages();
 const fieldSeparator = "|PORTMATE:8f41c2d7:|";
 const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/tmux-version-matrix.json"), "utf8"));
-if (!Array.isArray(matrix) || matrix.length < 3) throw new Error("tmux version matrix must contain at least three entries");
+if (!Array.isArray(matrix) || matrix.length < 4) throw new Error("tmux version matrix must contain at least four entries");
 
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 run("cargo", ["build", "-p", "portmate", "--bin", "tmux-compat-probe"]);

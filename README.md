@@ -604,7 +604,7 @@ not automated because vttest requires unpredictable human key input, and DECREQT
 because xterm.js does not answer it.
 
 `npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
-3.3a, and 3.5a, including session/window/pane state, synchronization, layout mutations, and
+3.3a, 3.5a, and 3.7b, including session/window/pane state, synchronization, layout mutations, and
 control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
 health path against eleven full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
 Debian bookworm/trixie, and Ubuntu 24.04; OpenSSH with an independent GESFTPServer subsystem on
