@@ -136,6 +136,15 @@
     "tlsAcceptInvalidCert": true
   },
   {
+    "name": "gnutls-tls-echo-debian-bookworm",
+    "dockerfile": "tests/compat/tcp-tls-echo-gnutls-debian.Dockerfile",
+    "protocol": "tcp",
+    "mode": "line-echo",
+    "tls": true,
+    "tlsServerName": "localhost",
+    "tlsAcceptInvalidCert": true
+  },
+  {
     "name": "socat-burst-close-alpine-3.20",
     "dockerfile": "tests/compat/tcp-tools-alpine.Dockerfile",
     "buildArgs": {

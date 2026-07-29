@@ -1,6 +1,23 @@
 use super::*;
 
 #[cfg(unix)]
+async fn receive_exact_tcp_bytes(
+    tap: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
+    expected_len: usize,
+) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut received = Vec::with_capacity(expected_len);
+        while received.len() < expected_len {
+            let chunk = tap.recv().await.map_err(|error| error.to_string())?;
+            received.extend_from_slice(&chunk);
+        }
+        Ok(received)
+    })
+    .await
+    .map_err(|_| "timed out".to_string())?
+}
+
+#[cfg(unix)]
 #[test]
 fn external_tcp_telnet_server_compatibility() {
     let Ok(label) = std::env::var("PORTMATE_COMPAT_SOCKET_LABEL") else {
@@ -234,11 +251,32 @@ fn external_tcp_telnet_server_compatibility() {
                 send_bytes_inner(state.session_io(), profile.id.clone(), raw.clone())
                     .await
                     .unwrap_or_else(|error| panic!("{label} raw write failed: {error}"));
-                let echoed = tokio::time::timeout(Duration::from_secs(5), tap.recv())
+                let echoed = receive_exact_tcp_bytes(&mut tap, raw.len())
                     .await
-                    .unwrap_or_else(|_| panic!("{label} raw echo timed out"))
-                    .unwrap_or_else(|error| panic!("{label} raw echo tap failed: {error}"));
+                    .unwrap_or_else(|error| panic!("{label} raw echo failed: {error}"));
                 assert_eq!(echoed, raw, "{label} changed raw TCP bytes");
+                close_session_inner(&state, profile.id.clone())
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} close failed: {error}"));
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            ("tcp", "line-echo") => {
+                let mut tap = state
+                    .tcp
+                    .lock()
+                    .unwrap()
+                    .get(&profile.id)
+                    .unwrap()
+                    .tap
+                    .subscribe();
+                let line = b"__PORTMATE_TCP_LINE_ECHO__\r\n".to_vec();
+                send_bytes_inner(state.session_io(), profile.id.clone(), line.clone())
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} line write failed: {error}"));
+                let echoed = receive_exact_tcp_bytes(&mut tap, line.len())
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} line echo failed: {error}"));
+                assert_eq!(echoed, line, "{label} changed Raw TCP line bytes");
                 close_session_inner(&state, profile.id.clone())
                     .await
                     .unwrap_or_else(|error| panic!("{label} close failed: {error}"));
@@ -297,7 +335,7 @@ fn external_tcp_telnet_server_compatibility() {
             pair => panic!("unsupported external socket compatibility case: {pair:?}"),
         }
 
-        if mode != "echo" {
+        if !matches!(mode.as_str(), "echo" | "line-echo") {
             let disconnected = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let runtime = state

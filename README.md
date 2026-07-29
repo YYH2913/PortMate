@@ -642,12 +642,12 @@ a truncated response, an oversized declared packet, and an unknown response requ
 status or invalid response must fail within five
 seconds with its protocol diagnosis intact;
 client-only pseudo-statuses `6` and `7` are intentionally not forged as server responses.
-The 17-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
+The 18-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
 bookworm, Twisted Conch 24.11.0 on Debian bookworm and 26.4.0 on Debian trixie with a real `/bin/sh`
 PTY bridge, and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
-plain echo on Alpine and Ubuntu, Ncat TLS echo on Ubuntu 24.04, Socat burst-close on Alpine and
-Ubuntu, and Socat close on Alpine. The matrix also
+plain echo on Alpine and Ubuntu, Ncat TLS echo on Ubuntu 24.04, GnuTLS 3.7.9 TLS line echo on
+Debian bookworm, Socat burst-close on Alpine and Ubuntu, and Socat close on Alpine. The matrix also
 connects to ser2net 4.3.11 on Debian bookworm and 4.6.4 on Debian trixie through their
 RFC2217-capable gensio Telnet accepter and a real
 pseudo-serial PTY; PortMate explicitly declines COM-PORT-OPTION 44 and keeps the standard Telnet
