@@ -1,0 +1,33 @@
+name: MCP SDK Freshness
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-sdk-freshness
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Official SDK registry audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check pinned MCP SDK matrices against current stable releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run test:mcp-sdk-freshness
