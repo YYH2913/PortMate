@@ -25,6 +25,10 @@ fn external_tcp_telnet_server_compatibility() {
         .unwrap_or_else(|_| "false".to_string())
         .parse::<bool>()
         .unwrap();
+    let expected_rejected_option = std::env::var("PORTMATE_COMPAT_SOCKET_EXPECT_REJECTED_OPTION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<u8>().unwrap());
     let root = std::env::temp_dir().join(format!(
         "portmate-external-socket-compat-{}-{}",
         label,
@@ -50,6 +54,12 @@ fn external_tcp_telnet_server_compatibility() {
             other => panic!("unsupported external socket protocol: {other}"),
         };
         let mut profile = test_tcp_profile(connection);
+        if expected_rejected_option.is_some() {
+            profile.logging.enabled = true;
+            profile.logging.raw = true;
+            profile.logging.text = false;
+            profile.logging.jsonl = false;
+        }
         profile.terminal.term = "xterm-256color".to_string();
         profile.terminal.cols = 120;
         profile.terminal.rows = 40;
@@ -81,6 +91,43 @@ fn external_tcp_telnet_server_compatibility() {
                 })
                 .await
                 .unwrap_or_else(|_| panic!("{label} negotiation timed out"));
+                if let Some(option) = expected_rejected_option {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let references = state
+                                .store
+                                .lock()
+                                .unwrap()
+                                .events
+                                .iter()
+                                .filter(|event| {
+                                    event.session_id == profile.id
+                                        && event.direction == EventDirection::Outbound
+                                        && event.stream == EventStream::Control
+                                        && event
+                                            .annotations
+                                            .get("origin")
+                                            .is_some_and(|origin| origin == "telnet-negotiation")
+                                })
+                                .filter_map(|event| event.bytes_ref.clone())
+                                .collect::<Vec<_>>();
+                            if references.iter().any(|reference| {
+                                read_log_bytes_ref(&state.store_path, reference).is_ok_and(
+                                    |(_, _, bytes)| {
+                                        bytes.windows(3).any(|window| {
+                                            window == [TELNET_IAC, TELNET_WONT, option]
+                                        })
+                                    },
+                                )
+                            }) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} did not reject Telnet option {option}"));
+                }
                 send_text_inner(
                     state.session_io(),
                     profile.id.clone(),

@@ -68,6 +68,9 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SOCKET_TLS: String(entry.tls ?? false),
         PORTMATE_COMPAT_SOCKET_TLS_SERVER_NAME: entry.tlsServerName ?? "",
         PORTMATE_COMPAT_SOCKET_TLS_ACCEPT_INVALID_CERT: String(entry.tlsAcceptInvalidCert ?? false),
+        PORTMATE_COMPAT_SOCKET_EXPECT_REJECTED_OPTION: entry.expectRejectedTelnetOption === undefined
+          ? ""
+          : String(entry.expectRejectedTelnetOption),
       },
     });
     verifiedServers.push(entry.name);
@@ -100,6 +103,13 @@ function validateEntry(entry) {
   }
   if (entry.tls === true && entry.protocol !== "telnet") {
     throw new Error(`TLS compatibility entry must use Telnet in ${entry.name}`);
+  }
+  if (entry.expectRejectedTelnetOption !== undefined
+    && (!Number.isInteger(entry.expectRejectedTelnetOption)
+      || entry.expectRejectedTelnetOption < 0
+      || entry.expectRejectedTelnetOption > 255
+      || entry.protocol !== "telnet")) {
+    throw new Error(`Invalid rejected Telnet option in ${entry.name}`);
   }
   for (const values of [entry.buildArgs ?? {}, entry.containerEnv ?? {}]) {
     for (const [name, value] of Object.entries(values)) {

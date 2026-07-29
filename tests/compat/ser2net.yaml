@@ -1,0 +1,10 @@
+%YAML 1.1
+---
+define: &confver 1.0
+
+connection: &portmate
+  accepter: telnet(rfc2217),tcp,23
+  timeout: 0
+  connector: serialdev,/run/portmate/serial,115200n81,local
+  options:
+    mdns: false

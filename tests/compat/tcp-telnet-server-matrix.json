@@ -43,6 +43,26 @@
     "mode": "shell"
   },
   {
+    "name": "ser2net-debian-bookworm",
+    "dockerfile": "tests/compat/ser2net-debian.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_VERSION": "bookworm-slim"
+    },
+    "protocol": "telnet",
+    "mode": "shell",
+    "expectRejectedTelnetOption": 44
+  },
+  {
+    "name": "ser2net-debian-trixie",
+    "dockerfile": "tests/compat/ser2net-debian.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim"
+    },
+    "protocol": "telnet",
+    "mode": "shell",
+    "expectRejectedTelnetOption": 44
+  },
+  {
     "name": "netkit-telnetd-ssl-ubuntu-noble",
     "dockerfile": "tests/compat/telnetd-ssl-ubuntu.Dockerfile",
     "protocol": "telnet",

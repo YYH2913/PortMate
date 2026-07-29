@@ -627,10 +627,14 @@ disconnect failure, partial progress, final-file non-commit, and partial-file cl
 The fault matrix injects seven health failures: paused transport, rejected and silent exec channels,
 missing and rejected SFTP subsystems, denied SFTP operations, and runtime replacement. Five transfer
 fault cases separately cover missing/rejected SFTP, missing source files, denied writes, and rejected
-SCP commands. The TCP/Telnet matrix covers BusyBox
-telnetd on Alpine 3.19/3.21, inetutils telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5
-with a real PTY shell on Debian bookworm, and Ncat/Socat echo, burst-close, and close modes on Alpine
-and Ubuntu.
+SCP commands. The 14-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
+telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
+bookworm and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
+echo and Socat burst-close on Alpine and Ubuntu, plus Socat close on Alpine. The matrix also
+connects to ser2net 4.3.11 on Debian bookworm and 4.6.4 on Debian trixie through their
+RFC2217-capable gensio Telnet accepter and a real
+pseudo-serial PTY; PortMate explicitly declines COM-PORT-OPTION 44 and keeps the standard Telnet
+shell data path usable.
 `npm run test:ssh-gssapi-compat` provisions MIT Kerberos realms with Ubuntu 24.04 OpenSSH 9.6,
 Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. It also
 provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each pairing verifies successful
