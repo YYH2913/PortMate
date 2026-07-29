@@ -88,7 +88,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: npm test
       - run: npm run build
-      - run: cargo test --workspace -- --test-threads=4
+      - run: npm run test:portable-vault
+      - run: cargo test --workspace -- --test-threads=4 --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: npm run test:native-keyring
       - if: runner.os == 'Linux'

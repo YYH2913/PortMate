@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 pub(super) struct PortableVaultContext {
     pub(super) snapshot_path: PathBuf,
@@ -40,8 +42,17 @@ pub(super) fn portable_vault_context() -> Result<&'static PortableVaultContext, 
 }
 
 pub(super) fn read_portable_vault_salt(salt_path: &Path) -> Result<Vec<u8>, String> {
-    let file = fs::File::open(salt_path)
+    if !portable_vault_file_exists(salt_path, "salt")? {
+        return Err("无法读取 portable vault salt: 文件不存在".to_string());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let file = options
+        .open(salt_path)
         .map_err(|error| format!("无法读取 portable vault salt: {error}"))?;
+    secure_opened_portable_vault_file(&file, "salt")?;
     let mut salt = Vec::with_capacity(portmate_kdf::SALT_LENGTH.saturating_add(1));
     file.take(portmate_kdf::SALT_LENGTH.saturating_add(1) as u64)
         .read_to_end(&mut salt)
@@ -61,23 +72,24 @@ pub(super) fn open_portable_vault(
     salt_path: &Path,
     password: &str,
 ) -> Result<PortableStronghold, String> {
-    if let Some(parent) = snapshot_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!("无法创建 portable vault 目录 {}: {error}", parent.display())
-        })?;
-    }
+    secure_portable_vault_parent(snapshot_path)?;
     let salt_lock = lock_portable_vault_snapshot(snapshot_path)?;
-    if snapshot_path.exists() && !salt_path.exists() {
+    let snapshot_exists = portable_vault_file_exists(snapshot_path, "snapshot")?;
+    let salt_exists = portable_vault_file_exists(salt_path, "salt")?;
+    if snapshot_exists && !salt_exists {
         return Err("portable vault snapshot 存在，但 salt 文件缺失，已阻止解锁".to_string());
     }
-    let salt = if salt_path.exists() {
+    let salt = if salt_exists {
         read_portable_vault_salt(salt_path)?
     } else {
         let mut salt = vec![0_u8; portmate_kdf::SALT_LENGTH];
         getrandom::fill(&mut salt)
             .map_err(|error| format!("无法生成 portable vault salt: {error}"))?;
-        fs::write(salt_path, &salt)
-            .map_err(|error| format!("无法保存 portable vault salt: {error}"))?;
+        super::store_persistence::write_private_atomic_file(
+            salt_path,
+            &salt,
+            "portable vault salt",
+        )?;
         salt
     };
     drop(salt_lock);

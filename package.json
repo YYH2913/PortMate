@@ -49,6 +49,8 @@
     "test:mcp-sdk-freshness": "node scripts/mcp-sdk-freshness.mjs",
     "pretest:native-keyring": "node scripts/ensure-node-version.mjs",
     "test:native-keyring": "node scripts/native-keyring-check.mjs",
+    "pretest:portable-vault": "node scripts/ensure-node-version.mjs",
+    "test:portable-vault": "cargo test --locked -p portmate tests::portable_vault_tests::portable_vault_cross_process_fault_matrix -- --exact --nocapture --test-threads=1",
     "pretest:ssh-server-compat": "node scripts/ensure-node-version.mjs",
     "test:ssh-server-compat": "node scripts/ssh-server-compat-check.mjs",
     "test:libssh-gssapi-build": "bash scripts/libssh-gssapi-build-check.sh",
