@@ -6,7 +6,8 @@
       "ALPINE_VERSION": "3.19"
     },
     "protocol": "telnet",
-    "mode": "shell"
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "busybox-telnetd-alpine-3.21",
@@ -15,7 +16,8 @@
       "ALPINE_VERSION": "3.21"
     },
     "protocol": "telnet",
-    "mode": "shell"
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "inetutils-telnetd-debian-bookworm",
@@ -24,13 +26,15 @@
       "DEBIAN_VERSION": "bookworm-slim"
     },
     "protocol": "telnet",
-    "mode": "shell"
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "inetutils-telnetd-ubuntu-noble",
     "dockerfile": "tests/compat/inetutils-telnetd-ubuntu.Dockerfile",
     "protocol": "telnet",
-    "mode": "shell"
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "telnetlib3-4.0.5-debian-bookworm",
@@ -41,6 +45,28 @@
     },
     "protocol": "telnet",
     "mode": "shell"
+  },
+  {
+    "name": "twisted-24.11.0-debian-bookworm",
+    "dockerfile": "tests/compat/twisted-telnet.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_VERSION": "bookworm-slim",
+      "TWISTED_VERSION": "24.11.0"
+    },
+    "protocol": "telnet",
+    "mode": "shell",
+    "verifyNawsPty": true
+  },
+  {
+    "name": "twisted-26.4.0-debian-trixie",
+    "dockerfile": "tests/compat/twisted-telnet.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim",
+      "TWISTED_VERSION": "26.4.0"
+    },
+    "protocol": "telnet",
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "ser2net-debian-bookworm",
@@ -66,7 +92,8 @@
     "name": "netkit-telnetd-ssl-ubuntu-noble",
     "dockerfile": "tests/compat/telnetd-ssl-ubuntu.Dockerfile",
     "protocol": "telnet",
-    "mode": "shell"
+    "mode": "shell",
+    "verifyNawsPty": true
   },
   {
     "name": "netkit-telnetd-tls-ubuntu-noble",
@@ -75,7 +102,8 @@
     "mode": "shell",
     "tls": true,
     "tlsServerName": "localhost",
-    "tlsAcceptInvalidCert": true
+    "tlsAcceptInvalidCert": true,
+    "verifyNawsPty": true
   },
   {
     "name": "ncat-echo-alpine-3.20",

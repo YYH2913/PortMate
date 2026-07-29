@@ -71,6 +71,7 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SOCKET_EXPECT_REJECTED_OPTION: entry.expectRejectedTelnetOption === undefined
           ? ""
           : String(entry.expectRejectedTelnetOption),
+        PORTMATE_COMPAT_SOCKET_VERIFY_NAWS_PTY: String(entry.verifyNawsPty ?? false),
       },
     });
     verifiedServers.push(entry.name);
@@ -110,6 +111,12 @@ function validateEntry(entry) {
       || entry.expectRejectedTelnetOption > 255
       || entry.protocol !== "telnet")) {
     throw new Error(`Invalid rejected Telnet option in ${entry.name}`);
+  }
+  if (entry.verifyNawsPty !== undefined
+    && (typeof entry.verifyNawsPty !== "boolean"
+      || entry.protocol !== "telnet"
+      || entry.mode !== "shell")) {
+    throw new Error(`Invalid NAWS PTY verification setting in ${entry.name}`);
   }
   for (const values of [entry.buildArgs ?? {}, entry.containerEnv ?? {}]) {
     for (const [name, value] of Object.entries(values)) {

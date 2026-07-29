@@ -29,6 +29,10 @@ fn external_tcp_telnet_server_compatibility() {
         .ok()
         .filter(|value| !value.is_empty())
         .map(|value| value.parse::<u8>().unwrap());
+    let verify_naws_pty = std::env::var("PORTMATE_COMPAT_SOCKET_VERIFY_NAWS_PTY")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap();
     let root = std::env::temp_dir().join(format!(
         "portmate-external-socket-compat-{}-{}",
         label,
@@ -151,9 +155,68 @@ fn external_tcp_telnet_server_compatibility() {
                 })
                 .await
                 .unwrap_or_else(|_| panic!("{label} shell output timed out"));
+                if verify_naws_pty {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let negotiated = state
+                                .tcp
+                                .lock()
+                                .unwrap()
+                                .get(&profile.id)
+                                .and_then(|runtime| runtime.telnet.as_ref())
+                                .is_some_and(|telnet| {
+                                    telnet.naws_negotiated.load(Ordering::SeqCst)
+                                });
+                            if negotiated {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} did not negotiate Telnet NAWS"));
+                }
                 resize_session_inner(&state, profile.id.clone(), 132, 43)
                     .await
                     .unwrap_or_else(|error| panic!("{label} resize failed: {error}"));
+                if verify_naws_pty {
+                    assert!(
+                        state.store.lock().unwrap().events.iter().any(|event| {
+                            event.session_id == profile.id
+                                && event.direction == EventDirection::Outbound
+                                && event.stream == EventStream::Control
+                                && event
+                                    .annotations
+                                    .get("origin")
+                                    .is_some_and(|origin| origin == "telnet-naws")
+                        }),
+                        "{label} did not send Telnet NAWS resize"
+                    );
+                    send_text_inner(
+                        state.session_io(),
+                        profile.id.clone(),
+                        "printf '__PORTMATE_TELNET_SIZE__'; stty size; printf '__PORTMATE_TELNET_SIZE_DONE__\\n'\n"
+                            .to_string(),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} size probe failed: {error}"));
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            if state.store.lock().unwrap().screen(&profile.id).is_some_and(
+                                |screen| {
+                                    screen.contains("__PORTMATE_TELNET_SIZE__")
+                                        && screen.contains("43 132")
+                                        && screen.contains("__PORTMATE_TELNET_SIZE_DONE__")
+                                },
+                            ) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} did not apply Telnet NAWS resize"));
+                }
                 send_text_inner(state.session_io(), profile.id.clone(), "exit\n".to_string())
                     .await
                     .unwrap_or_else(|error| panic!("{label} shell exit failed: {error}"));

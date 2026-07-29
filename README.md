@@ -625,19 +625,24 @@ nonempty resumable `.portmate-part` copied from the stopped container.
 The same nine-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
 lrzsz builds and Debian, Debian trixie, Ubuntu, and GESFTPServer YModem fallback, and verifies
 disconnect failure, partial progress, final-file non-commit, and partial-file cleanup.
-The fault matrix injects eleven health failures: paused and forcibly closed transports; rejected,
+The fault matrix injects fourteen health failures: paused and forcibly closed transports; rejected,
 silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
-canonicalization; denied directory reads; and runtime replacement. Each report error is checked against
+canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and `READDIR` operations;
+and runtime replacement. Each report error is checked against
 the expected failure stage, and every health case has a hard test deadline. Five transfer fault cases
 separately cover missing/rejected SFTP, missing source files, denied writes, and rejected SCP commands.
-The 14-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
+The 16-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
-bookworm and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
+bookworm, Twisted Conch 24.11.0 on Debian bookworm and 26.4.0 on Debian trixie with a real `/bin/sh`
+PTY bridge, and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
 echo and Socat burst-close on Alpine and Ubuntu, plus Socat close on Alpine. The matrix also
 connects to ser2net 4.3.11 on Debian bookworm and 4.6.4 on Debian trixie through their
 RFC2217-capable gensio Telnet accepter and a real
 pseudo-serial PTY; PortMate explicitly declines COM-PORT-OPTION 44 and keeps the standard Telnet
-shell data path usable.
+shell data path usable. Every Telnet shell case verifies negotiation, application I/O, resize calls,
+shell exit, and bounded disconnect convergence. BusyBox, inetutils, Twisted, and netkit additionally
+require the negotiated NAWS resize to appear as `43 132` inside the server-side PTY; telnetlib3 and
+ser2net remain data-path checks because those adapters do not propagate NAWS to their child PTY.
 `npm run test:ssh-gssapi-compat` provisions MIT Kerberos realms with Ubuntu 24.04 OpenSSH 9.6,
 Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. It also
 provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each pairing verifies successful
