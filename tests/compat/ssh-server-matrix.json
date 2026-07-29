@@ -102,6 +102,12 @@
     "runActiveTransferDisconnect": false
   },
   {
+    "name": "sftpgo-2.7.5",
+    "dockerfile": "tests/compat/sftpgo-2.7.5.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
+  },
+  {
     "name": "apache-mina-sshd-2.19.0",
     "dockerfile": "tests/compat/apache-mina-sftp.Dockerfile",
     "protocols": ["sftp"],
