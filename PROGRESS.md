@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 后续稳定版持续跟踪，以及发布签名/安装后 smoke test。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义。
+但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 后续稳定版持续跟踪，以及发布签名/安装后 smoke test。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义。
 
 ## 当前实现快照
 
