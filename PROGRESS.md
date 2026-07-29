@@ -320,7 +320,7 @@ npm run build
 - Transfer 队列回归覆盖每会话/全应用 5,000 项 Store 活动计数、整数溢出 fail-closed、runner semaphore 饱和时零 Store/cancellation 副作用，以及 queued worker 在 lane 被占用时仍能由取消通知退出、清理 handle 并释放 permit。
 - 已有 russh/OpenSSH local/dynamic/remote reverse tunnel 端到端、三种模式目标拒绝后原 tunnel 恢复、remote 失败 channel 的 1 秒有界主动关闭、全应用连接槽饱和/释放和 remote-forward `u16` 端口边界、服务端撤销 remote forward 后被动探测/原端口重建、重复 cancel 被拒后的本地强制收敛、SSH channel 结束时按 session 清理旧 runtime、自动重连后按原 ID/标签/端口重建和单条端口冲突失败隔离，以及 SOCKS5 错误协议 loopback 测试；隔离 OpenSSH 上的真实 libssh runtime 另覆盖三种 tunnel 的目标拒绝、恢复、双向数据、metrics 和停止，并确认 remote Stop 后服务端监听不可再连接。setup deadline 单测覆盖成功、底层拒绝和永久 pending 的精确分类，真实延迟 russh direct-tcpip confirmation 回归覆盖超时与所属 session 断开。`sockstat`/`lsof`/BSD netstat 解析与失败工具回退已有单元矩阵，真实 FreeBSD/macOS SSH 主机仍待纳入集成环境。
 - Tunnel Profile 单元回归覆盖 64 条定义、128/255 字符边界、重复 ID、非法 host/端口/mode shape、旧数据优先保留 enabled、disabled 历史回收、活动 runtime 上限、停止未知定义不追加、并发删除 Profile 时拒绝提交；前端回归覆盖严格端口解析、host/数量边界和 SessionSummary cache fail-closed，workspace UI 另验证真实 input 属性、非法值禁用态并输出 Tunnel 截图。
-- 已有基于浏览器 CDP 的工作区、独立窗口和截图回归；终端兼容、Tmux workflow 与紧凑 workspace UI 已整理为仓库内 `playwright-core` suite，其他一次性 CDP 检查仍待迁移。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区工具标签切换和非活动内容折叠、标题栏聚焦和跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、文件列表/属性/日志预览反向响应、独立终端日志追赶/轮询失败保留、串口分析器 session 慢轮询串行化、tunnel 慢轮询串行化、MCP HTTP 慢加载防重入、关闭后成功 grant mutation 保留、Sysmon 跨会话反向响应、Profile 删除后 session/log 迟到响应失效、StrictMode 双启动列表与保存中 Profile 的补偿全量 hydration、启动 transfer 事件/MCP grant mutation 的独立域补偿收敛、真实筛选、精确上下文动作、Profile 删除确认/级联/view 与快照收敛、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离、control refresh 与 mutation 的旧快照淘汰、关闭后 attach 迟到响应隔离及桌面/移动截图边界。
+- 终端兼容、vttest、Tmux workflow、工作区、独立窗口和截图回归现已全部整理为仓库内 `playwright-core` suite，并复用已安装 Chrome；仓库已无直接连接 DevTools 协议的一次性浏览器控制脚本。workspace UI 覆盖旧多面板迁移、资源/文件/历史/发送三处同时停靠、同区工具标签切换和非活动内容折叠、标题栏聚焦和跨区拖放、三向尺寸调整/边界/双击复位与刷新持久化、关闭后终端全宽、文件列表/属性/日志预览反向响应、独立终端日志追赶/轮询失败保留、串口分析器 session 慢轮询串行化、tunnel 慢轮询串行化、MCP HTTP 慢加载防重入、关闭后成功 grant mutation 保留、Sysmon 跨会话反向响应、Profile 删除后 session/log 迟到响应失效、StrictMode 双启动列表与保存中 Profile 的补偿全量 hydration、启动 transfer 事件/MCP grant mutation 的独立域补偿收敛、真实筛选、精确上下文动作、Profile 删除确认/级联/view 与快照收敛、MCP 审批队列/去重/允许后 Escape 拒绝/桌面移动边界、无终端误写和聚焦截图；Tmux workflow 覆盖同步状态聚合、成功开关、失败回滚、刷新、attach/new-session、session/window 新建/重命名/确认关闭、pane activate/split/swap/resize/break/move/确认关闭、move 失败保留快照、window layout、同 SSH runtime 多 target control 并存/独立重启/精确停止/关闭全清理、推送静默刷新保留其他 target editor、旧 runtime stop 隔离、control refresh 与 mutation 的旧快照淘汰、关闭后 attach 迟到响应隔离及桌面/移动截图边界。
 - Unicode 11、Serialize、write-only OSC 52、Profile 终端背景不透明度（透明度下 DOM renderer、100% 下 WebGL、原位保留 XTerm/buffer）和 WebGL fallback 已有浏览器回归；alternate screen/ANSI/truecolor/宽字符、双 pane PTY resize owner、SGR mouse、选择复制偏好、缓存恢复、真实 Vim/less/top PTY 和 6,000 行长日志已有可重复 Playwright 基线。新增 vttest 三版本×13 套件、四发行版 Vim/less/top/dialog 和 tmux 3.1c/3.3a/3.5a/3.7b 矩阵；原生 macOS/Windows 全屏程序及签名安装包 smoke test 仍需对应 runner/设备证据。
 
 ## 对照最终目标的完成度
@@ -372,7 +372,7 @@ npm run build
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
 3. MCP 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0/1.30.0、Python SDK 1.9.4/1.12.4/1.15.0/1.21.2/1.23.3/1.28.1/1.29.0/2.0.0、Go SDK 1.4.0/1.5.0/1.6.1/1.7.0、Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0/3.0.0、Ruby SDK 0.25.0/1.0.0、Java SDK 1.0.0/1.1.3/2.0.0、Kotlin SDK 0.12.0/0.13.0/0.14.0/0.15.0、C# SDK 1.0.0/1.2.0/1.4.1/2.0.0 与 Swift SDK 0.11.0/0.12.1 的 stdio/HTTP 矩阵已纳入回归；截至 2026-07-29 已覆盖九种官方 SDK 的当前稳定版，后续稳定版发布后继续跟踪。
 4. Sysmon 的跨平台采样、四标签窗口、常驻当前会话侧栏、历史趋势、10 秒刷新和结构化持久化已完成；继续补真实 macOS/FreeBSD/Windows SSH 主机与其他 BSD。
-5. 终端/Tmux/workspace Playwright、vttest 三版本×13 套件、四发行版全屏程序和 tmux 四版本矩阵已完成；Docker PTY 首字节启动、程序执行和容器/CLI 收尾使用独立边界，慢控制面不会占用全屏程序 deadline。继续迁移残余 CDP 检查，并由 macOS/Windows runner 与安装 smoke test 补原生证据。
+5. 终端/vttest/Tmux/workspace 浏览器回归已全部迁入 Playwright，vttest 三版本×13 套件、四发行版全屏程序和 tmux 四版本矩阵已完成；Docker PTY 首字节启动、程序执行和容器/CLI 收尾使用独立边界，慢控制面不会占用全屏程序 deadline。下一步由 macOS/Windows runner 与安装 smoke test 补原生证据。
 
 ### P3：架构整理与发布准备
 
@@ -401,6 +401,6 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
 2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；durable migration journal、异常提交核对、重载 UX、双向迁移、跨进程 CAS 和 conflict 诊断导出已完成。
 3. SSH 三层健康与服务端故障矩阵已完成；继续扩展跨平台传输、Serial 物理设备与远端 OS 故障矩阵。
-4. vttest、真实 tmux 和四发行版全屏程序矩阵已完成；继续把其余 CDP 检查整理为 Playwright，并收集三平台 native CI/安装 smoke test 证据。
+4. vttest、真实 tmux、四发行版全屏程序和全部浏览器 Playwright 回归已完成；继续收集三平台 native CI/安装 smoke test 证据。
 
 这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。
