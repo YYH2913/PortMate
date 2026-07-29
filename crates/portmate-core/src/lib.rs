@@ -3,6 +3,7 @@ pub mod mcp;
 pub mod models;
 pub mod redaction;
 pub mod store;
+mod store_system_events;
 pub mod triggers;
 pub mod tunnels;
 
