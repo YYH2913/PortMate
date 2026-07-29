@@ -564,6 +564,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "rmcp",
+ "serde_json",
  "tokio",
 ]
 

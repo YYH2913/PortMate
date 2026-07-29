@@ -14,5 +14,9 @@
   {
     "version": "2.2.0",
     "protocolVersion": "2025-06-18"
+  },
+  {
+    "version": "3.0.0",
+    "protocolVersion": "2025-06-18"
   }
 ]

@@ -170,7 +170,9 @@ where
             expected_protocol
         );
     }
-    if initialized.server_info.name != "portmate-mcp" {
+    let server_info = serde_json::to_value(&initialized.server_info)
+        .with_context(|| format!("{transport} server info was not serializable"))?;
+    if server_info.get("name").and_then(serde_json::Value::as_str) != Some("portmate-mcp") {
         bail!("{transport} initialized the wrong server");
     }
 

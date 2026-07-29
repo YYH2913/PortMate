@@ -46,6 +46,7 @@ rmcp = { version = "=${sdkVersion}", default-features = false, features = [
   "transport-child-process",
   "transport-streamable-http-client-reqwest",
 ] }
+serde_json = "1.0"
 tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-thread", "time"] }
 `;
   const manifestPath = join(environmentRoot, "Cargo.toml");

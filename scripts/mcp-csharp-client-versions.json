@@ -40,6 +40,10 @@
     {
       "version": "1.4.1",
       "protocolVersion": "2025-06-18"
+    },
+    {
+      "version": "2.0.0",
+      "protocolVersion": "2025-06-18"
     }
   ]
 }

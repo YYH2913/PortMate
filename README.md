@@ -458,11 +458,12 @@ from isolated generated modules and runs the same 8-message/request lifecycle ov
 stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
 module has its own dependency checksums and never mutates PortMate's production workspace.
 
-The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, and 2.2.0 from standalone locked
-Cargo modules and runs the same lifecycle through each SDK's child-process and reqwest Streamable
-HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, ping, tools,
-resources, templates, prompts, and resource reads without adding compatibility clients to
-PortMate's production workspace.
+The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, 2.2.0, and 3.0.0 from standalone
+locked Cargo modules and runs the same lifecycle through each SDK's child-process and reqwest
+Streamable HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, ping,
+tools, resources, templates, prompts, and resource reads without adding compatibility clients to
+PortMate's production workspace. The shared probe reads serialized initialization metadata so it
+accepts 3.0.0's optional `server_info` shape without weakening the identity assertion for 1.x/2.x.
 
 The official Ruby SDK matrix uses `mcp` 0.25.0 and 1.0.0 with pinned Faraday 2.14.3 and
 `event_stream_parser` 1.0.0 in version-isolated gem homes. Their bundled Stdio and HTTP transports
@@ -483,9 +484,9 @@ clean-compiled before its stream-backed Stdio and Ktor CIO Streamable HTTP lifec
 unsupported negotiation, verifies server identity and all read surfaces, and confirms that
 PortMate HTTP remains stateless.
 
-The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, and 1.4.1. Each version
-has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot mask
-cross-version dependency or API incompatibilities. It requires exactly .NET SDK 10.0.302,
+The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, 1.4.1, and 2.0.0. Each
+version has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot
+mask cross-version dependency or API incompatibilities. It requires exactly .NET SDK 10.0.302,
 bootstrapping a platform archive with its official SHA-512 digest when necessary. Every SDK's
 Stdio and Streamable HTTP transports run the same lifecycle, verify `2025-06-18` negotiation,
 server identity and every read surface, and confirm that PortMate HTTP remains stateless.
