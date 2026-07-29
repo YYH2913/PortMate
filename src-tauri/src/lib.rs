@@ -105,6 +105,7 @@ mod sqlite_schema;
 mod sqlite_store;
 mod ssh_authentication;
 mod ssh_backend;
+mod ssh_connection;
 mod ssh_exec;
 mod ssh_health;
 mod ssh_host_key_commands;
@@ -204,6 +205,7 @@ use sqlite_schema::*;
 use sqlite_store::*;
 use ssh_authentication::*;
 use ssh_backend::*;
+use ssh_connection::*;
 use ssh_exec::*;
 #[cfg(test)]
 use ssh_host_key_commands::{
