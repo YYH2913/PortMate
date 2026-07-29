@@ -21,24 +21,30 @@ mod http_protocol;
 mod http_request;
 mod http_security;
 mod keyring_store;
+mod response_encoding;
 mod socket_io;
 mod store_loader;
 
 use desktop_ipc::{call_ipc_value as call_desktop_ipc_value, load_ipc_endpoint, IpcEndpointFile};
-#[cfg(test)]
-use http_protocol::MCP_PROTOCOL_VERSIONS;
 use http_protocol::{
     accepts_json_http_response, accepts_sse_http_response, has_json_http_content_type,
     http_protocol_version, is_sse_stream_request, negotiated_mcp_protocol_version,
-    validate_mcp_protocol_version, MCP_PROTOCOL_VERSION,
+    validate_mcp_protocol_version,
 };
+#[cfg(test)]
+use http_protocol::{MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSIONS};
 use http_request::{read_http_request, HttpRequest};
 use http_security::{authorized_http_request, validate_origin, HttpSecurityConfig, HTTP_TOKEN_REF};
+use response_encoding::{
+    encode_json_rpc_response, http_response, http_response_with_protocol, http_sse_headers,
+    http_sse_message_response, json_rpc_http_body, sse_event, MAX_JSON_RPC_RESPONSE_BYTES,
+};
+#[cfg(test)]
+use response_encoding::{sse_event_with_limit, try_encode_json_with_limit};
 use store_loader::load_store_from_path;
 
 const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
-const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
@@ -680,64 +686,6 @@ fn write_stdio_json_response<W: Write>(writer: &mut W, response: &Value) -> Resu
     Ok(())
 }
 
-struct BoundedJsonWriter {
-    bytes: Vec<u8>,
-    max_bytes: usize,
-    exceeded: bool,
-}
-
-impl BoundedJsonWriter {
-    fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes: Vec::with_capacity(max_bytes.min(8192)),
-            max_bytes,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for BoundedJsonWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if buffer.len() > self.max_bytes.saturating_sub(self.bytes.len()) {
-            self.exceeded = true;
-            return Err(io::Error::other("JSON response exceeds its byte limit"));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn try_encode_json_with_limit(value: &Value, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-    let mut writer = BoundedJsonWriter::new(max_bytes);
-    match serde_json::to_writer(&mut writer, value) {
-        Ok(()) => Ok(Some(writer.bytes)),
-        Err(_) if writer.exceeded => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn encode_json_rpc_response(response: &Value, max_bytes: usize) -> Result<Vec<u8>> {
-    if let Some(encoded) = try_encode_json_with_limit(response, max_bytes)? {
-        return Ok(encoded);
-    }
-    let response_id = response
-        .as_object()
-        .and_then(|object| object.get("id"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let fallback = serde_json::to_value(error(
-        response_id,
-        -32603,
-        format!("JSON-RPC response exceeds the {max_bytes}-byte limit"),
-    ))?;
-    try_encode_json_with_limit(&fallback, max_bytes)?
-        .ok_or_else(|| anyhow!("JSON-RPC response limit is too small to encode its overflow error"))
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum StdioMessage {
     Eof,
@@ -1031,24 +979,6 @@ fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {
     }
 }
 
-fn json_rpc_http_body(response: &Value) -> String {
-    match encode_json_rpc_response(response, MAX_JSON_RPC_RESPONSE_BYTES) {
-        Ok(encoded) => String::from_utf8(encoded).unwrap_or_else(|error| {
-            internal_json_rpc_error_body(format!("failed to encode JSON-RPC response: {error}"))
-        }),
-        Err(error) => internal_json_rpc_error_body(error.to_string()),
-    }
-}
-
-fn internal_json_rpc_error_body(message: impl Into<String>) -> String {
-    json!({
-        "jsonrpc": "2.0",
-        "id": null,
-        "error": { "code": -32603, "message": message.into() }
-    })
-    .to_string()
-}
-
 fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
     let mut server = PortMateMcp::new();
     handle_json_rpc_value(&mut server, value)
@@ -1122,39 +1052,6 @@ fn handle_one_json_rpc_value(
     }
 }
 
-fn http_response(status: u16, reason: &str, body: &str, origin: Option<&str>) -> String {
-    http_response_with_protocol(status, reason, body, origin, MCP_PROTOCOL_VERSION)
-}
-
-fn http_response_with_protocol(
-    status: u16,
-    reason: &str,
-    body: &str,
-    origin: Option<&str>,
-    protocol_version: &str,
-) -> String {
-    let content_type = if body.is_empty() {
-        "text/plain"
-    } else {
-        "application/json"
-    };
-    let mut response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n",
-        body.len()
-    );
-    if let Some(origin) = origin {
-        response.push_str(&format!(
-            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
-        ));
-    }
-    response.push_str(&format!("MCP-Protocol-Version: {protocol_version}\r\n"));
-    response.push_str(
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
-    );
-    response.push_str(body);
-    response
-}
-
 fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) -> String {
     let origin = request.headers.get("origin").cloned();
     if let Err(error) = validate_origin(origin.as_deref(), &config.security) {
@@ -1221,66 +1118,6 @@ fn write_http_sse_stream(
         stream.write_all(event.as_bytes())?;
         stream.flush()?;
     }
-}
-
-fn http_sse_message_response(body: &str, origin: Option<&str>, protocol_version: &str) -> String {
-    let event = sse_event(
-        "message",
-        &serde_json::from_str::<Value>(body).unwrap_or_else(|_| json!({ "text": body })),
-    );
-    let mut response = http_sse_headers(origin, Some(event.len()), protocol_version);
-    response.push_str(&event);
-    response
-}
-
-fn http_sse_headers(
-    origin: Option<&str>,
-    content_length: Option<usize>,
-    protocol_version: &str,
-) -> String {
-    let mut response =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
-            .to_string();
-    if let Some(content_length) = content_length {
-        response.push_str(&format!("Content-Length: {content_length}\r\n"));
-    } else {
-        response.push_str("Connection: keep-alive\r\n");
-    }
-    if let Some(origin) = origin {
-        response.push_str(&format!(
-            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
-        ));
-    }
-    response.push_str(&format!("MCP-Protocol-Version: {protocol_version}\r\n"));
-    response.push_str(
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, MCP-Protocol-Version, X-PortMate-MCP-Token\r\n\r\n",
-    );
-    response
-}
-
-fn sse_event(event: &str, data: &Value) -> String {
-    sse_event_with_limit(event, data, MAX_JSON_RPC_RESPONSE_BYTES)
-}
-
-fn sse_event_with_limit(event: &str, data: &Value, max_data_bytes: usize) -> String {
-    let data = match try_encode_json_with_limit(data, max_data_bytes) {
-        Ok(Some(encoded)) => String::from_utf8(encoded).unwrap_or_else(|error| {
-            json!({ "error": format!("failed to encode SSE data: {error}") }).to_string()
-        }),
-        Ok(None) => json!({
-            "error": format!("SSE data exceeds the {max_data_bytes}-byte limit")
-        })
-        .to_string(),
-        Err(error) => json!({ "error": format!("failed to encode SSE data: {error}") }).to_string(),
-    };
-    let mut output = format!("event: {event}\n");
-    for line in data.lines() {
-        output.push_str("data: ");
-        output.push_str(line);
-        output.push('\n');
-    }
-    output.push('\n');
-    output
 }
 
 fn mcp_sse_state_payload(protocol_version: &str) -> Value {
