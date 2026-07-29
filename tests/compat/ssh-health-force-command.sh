@@ -54,6 +54,12 @@ case "$mode:$original" in
         status_code="${mode#sftp-status-}"
         exec /usr/local/bin/portmate-sftp-health-fault-server "status-$status_code"
         ;;
+    sftp-malformed-packet:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server malformed-packet
+        ;;
+    sftp-wrong-request-id:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server wrong-request-id
+        ;;
     sftp-canonicalize-missing:internal-sftp)
         vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"
         cd "$vanished"

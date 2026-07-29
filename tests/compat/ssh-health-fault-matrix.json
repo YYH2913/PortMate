@@ -46,7 +46,7 @@
     "probeSftp": true,
     "expectedStatus": "degraded",
     "expectedErrorField": "sftpError",
-    "expectedErrorContains": "exceeded 5000 ms"
+    "expectedErrorContains": "Unexpected EOF on stream"
   },
   {
     "name": "sftp-silent",

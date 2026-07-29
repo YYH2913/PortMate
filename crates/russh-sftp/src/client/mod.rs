@@ -12,7 +12,7 @@ use bytes::Bytes;
 use tokio::{
     io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
-    sync::mpsc,
+    sync::{mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -76,25 +76,38 @@ where
 
 /// Run processing stream as SFTP client. Is a simple handler of incoming
 /// and outgoing packets. Can be used for non-standard implementations
-pub fn run<S, H>(stream: S, mut handler: H) -> mpsc::UnboundedSender<Bytes>
+pub fn run<S, H>(stream: S, handler: H) -> mpsc::UnboundedSender<Bytes>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Handler + Send + 'static,
+{
+    run_with_error(stream, handler).0
+}
+
+pub(crate) fn run_with_error<S, H>(
+    stream: S,
+    mut handler: H,
+) -> (mpsc::UnboundedSender<Bytes>, watch::Receiver<Option<Error>>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+    let (error_tx, error_rx) = watch::channel(None);
     let (mut rd, mut wr) = io::split(stream);
 
     let rc = CancellationToken::new();
     let wc = rc.clone();
     {
+        let error_tx = error_tx.clone();
         tokio::spawn(async move {
             loop {
                 select! {
                     result = process_handler(&mut rd, &mut handler) => {
-                        match result {
-                            Err(Error::UnexpectedEof) => break,
-                            Err(err) => warn!("{}", err),
-                            Ok(_) => (),
+                        if let Err(err) = result {
+                            warn!("{}", err);
+                            publish_stream_error(&error_tx, err);
+                            break;
                         }
                     },
                     _ = rc.cancelled() => break,
@@ -111,11 +124,16 @@ where
             select! {
                 Some(data) = rx.recv() => {
                     if data.is_empty() {
-                        let _ = wr.shutdown().await;
+                        if let Err(error) = wr.shutdown().await {
+                            publish_stream_error(&error_tx, error.into());
+                        }
                         break;
                     }
 
-                    let _ = wr.write_all(&data[..]).await;
+                    if let Err(error) = wr.write_all(&data[..]).await {
+                        publish_stream_error(&error_tx, error.into());
+                        break;
+                    }
                 },
                 _ = wc.cancelled() => break,
             }
@@ -125,5 +143,16 @@ where
         debug!("write half of sftp stream ended");
     });
 
-    tx
+    (tx, error_rx)
+}
+
+fn publish_stream_error(error_tx: &watch::Sender<Option<Error>>, error: Error) {
+    error_tx.send_if_modified(|current| {
+        if current.is_some() {
+            false
+        } else {
+            *current = Some(error);
+            true
+        }
+    });
 }

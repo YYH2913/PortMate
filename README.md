@@ -620,7 +620,9 @@ SFTPGo 2.6.6/2.7.5, rclone 1.74.4, Erlang/OTP 25.2.3/27.3.4.1 `ssh_sftpd`, Go
 `github.com/pkg/sftp` 1.13.6 on Debian trixie, and Apache MINA SSHD 2.19.0. The Apache MINA case
 checks that duplicate `MKDIR` and non-empty `RMDIR` return their SFTP v4+ status promptly even after
 version 3 negotiation; the local `russh-sftp` compatibility patch also retains unknown status packets
-instead of dropping them until timeout. The matrix kills each of the nine OpenSSH/Dropbear servers
+instead of dropping them until timeout, fails pending requests immediately on malformed packet types
+or unknown response IDs, and routes valid out-of-order responses by request ID. The matrix kills each
+of the nine OpenSSH/Dropbear servers
 during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no committed final file, and a
 nonempty resumable `.portmate-part` copied from the stopped container.
 The same nine-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
@@ -630,10 +632,11 @@ The fault matrix injects fourteen health failures: paused and forcibly closed tr
 silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
 canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and `READDIR` operations;
 and runtime replacement. Each report error is checked against
-the expected failure stage, and every health case has a hard test deadline. Thirty-two transfer fault
+the expected failure stage, and every health case has a hard test deadline. Thirty-four transfer fault
 cases separately cover missing/rejected SFTP, missing source files, denied writes, rejected SCP commands,
 and all 26 server-returnable error statuses defined by SFTP v3-v6 (`4`, `5`, and `8..31`) plus unknown
-status `99`. Every injected status must fail within five seconds with its protocol diagnosis intact;
+status `99`, a malformed response packet type, and an unknown response request ID. Every injected
+status or invalid response must fail within five seconds with its protocol diagnosis intact;
 client-only pseudo-statuses `6` and `7` are intentionally not forged as server responses.
 The 17-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
 telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian

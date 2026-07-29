@@ -743,6 +743,10 @@ fn external_ssh_transfer_fault_matrix_case() {
             fault.as_str(),
             "sftp-unknown-status" | "sftp-no-space" | "sftp-quota-exceeded"
         ) || fault.starts_with("sftp-status-")
+            || matches!(
+                fault.as_str(),
+                "sftp-malformed-packet" | "sftp-wrong-request-id"
+            )
         {
             assert!(
                 wait_started.elapsed() < Duration::from_secs(5),

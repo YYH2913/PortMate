@@ -155,6 +155,16 @@
     "expectedErrorContains": "No matching byte range lock"
   },
   {
+    "name": "sftp-malformed-packet",
+    "protocol": "sftp",
+    "expectedErrorContains": "unknown type"
+  },
+  {
+    "name": "sftp-wrong-request-id",
+    "protocol": "sftp",
+    "expectedErrorContains": "unknown recipient"
+  },
+  {
     "name": "scp-rejected",
     "protocol": "scp",
     "expectedErrorContains": "SCP"

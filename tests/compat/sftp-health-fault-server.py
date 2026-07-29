@@ -80,8 +80,10 @@ def main():
     fixed_modes = {
         "init",
         "canonicalize",
+        "malformed-packet",
         "opendir",
         "readdir",
+        "wrong-request-id",
         "no-space",
         "quota-exceeded",
         "unknown-status",
@@ -97,7 +99,7 @@ def main():
     elif mode not in fixed_modes:
         raise ValueError(
             "expected init, canonicalize, opendir, readdir, no-space, quota-exceeded, "
-            "unknown-status, or status-N fault mode"
+            "unknown-status, malformed-packet, wrong-request-id, or status-N fault mode"
         )
 
     init = read_packet(SSH_FXP_INIT)
@@ -107,6 +109,21 @@ def main():
         stall()
         return
     write_packet(SSH_FXP_VERSION, struct.pack(">I", 3))
+    if mode in {"malformed-packet", "wrong-request-id"}:
+        length = struct.unpack(">I", read_exact(4))[0]
+        if length < 5 or length > MAX_PACKET_LENGTH:
+            raise ValueError(f"invalid SFTP request packet length: {length}")
+        packet = read_exact(length)
+        if mode == "malformed-packet":
+            write_packet(255, b"")
+        else:
+            write_packet(
+                SSH_FXP_STATUS,
+                struct.pack(">II", (request_id(packet[1:]) + 1) & 0xFFFFFFFF, 4)
+                + encode_string(b"wrong request id injected by PortMate fault server")
+                + encode_string(b""),
+            )
+        return
     status_faults = {
         "no-space": (14, b"no space injected by PortMate fault server"),
         "quota-exceeded": (15, b"quota exceeded injected by PortMate fault server"),

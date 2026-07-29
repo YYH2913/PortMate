@@ -9,14 +9,15 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time,
 };
 
 use super::{error::Error, Handler};
 use crate::{
-    client::{run, Config},
+    client::{run_with_error, Config},
     de,
+    error::Error as StreamError,
     extensions::{
         self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
     },
@@ -119,6 +120,7 @@ impl From<LimitsExtension> for Limits {
 /// the packet is stored as Err.
 pub struct RawSftpSession {
     tx: mpsc::UnboundedSender<Bytes>,
+    stream_error: watch::Receiver<Option<StreamError>>,
     requests: Arc<SharedRequests>,
     next_req_id: AtomicU32,
     handles: AtomicU64,
@@ -164,8 +166,10 @@ impl RawSftpSession {
             requests: req_map.clone(),
         };
 
+        let (tx, stream_error) = run_with_error(stream, inner);
         Self {
-            tx: run(stream, inner),
+            tx,
+            stream_error,
             requests: req_map,
             next_req_id: AtomicU32::new(1),
             handles: AtomicU64::new(0),
@@ -212,13 +216,33 @@ impl RawSftpSession {
     async fn request(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
         let rx = self.send(id, packet)?;
         let timeout = self.timeout.load(Ordering::Relaxed);
+        let mut stream_error = self.stream_error.clone();
+        if let Some(error) = stream_error.borrow().clone() {
+            self.requests.remove(&id);
+            return Err(error.into());
+        }
 
-        match time::timeout(Duration::from_secs(timeout), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(Error::UnexpectedBehavior("sender dropped".into())),
-            Err(error) => {
+        tokio::select! {
+            biased;
+            result = rx => match result {
+                Ok(result) => result,
+                Err(_) => Err(Error::UnexpectedBehavior("sender dropped".into())),
+            },
+            changed = stream_error.changed() => {
                 self.requests.remove(&id);
-                Err(error.into())
+                match changed {
+                    Ok(()) => {
+                        let error = stream_error.borrow().clone().ok_or_else(|| {
+                            Error::UnexpectedBehavior("SFTP stream closed without an error".into())
+                        })?;
+                        Err(error.into())
+                    }
+                    Err(_) => Err(Error::UnexpectedBehavior("SFTP stream error sender dropped".into())),
+                }
+            },
+            _ = time::sleep(Duration::from_secs(timeout)) => {
+                self.requests.remove(&id);
+                Err(Error::Timeout)
             }
         }
     }
@@ -737,5 +761,130 @@ impl RawSftpSession {
 impl Drop for RawSftpSession {
     fn drop(&mut self) {
         let _ = self.close_session();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use tokio::{
+        io::{duplex, AsyncWriteExt, DuplexStream},
+        sync::oneshot,
+    };
+
+    use super::*;
+    use crate::{protocol::Version, utils::read_packet};
+
+    async fn read_client_packet(stream: &mut DuplexStream) -> Packet {
+        let mut encoded = read_packet(stream, u32::MAX).await.unwrap();
+        Packet::try_from(&mut encoded).unwrap()
+    }
+
+    async fn write_server_packet(stream: &mut DuplexStream, packet: Packet) {
+        let encoded = Bytes::try_from(packet).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+
+    async fn initialize_server(stream: &mut DuplexStream) {
+        assert!(matches!(read_client_packet(stream).await, Packet::Init(_)));
+        write_server_packet(stream, Version::default().into()).await;
+    }
+
+    fn long_timeout_config() -> Config {
+        Config {
+            request_timeout_secs: 30,
+            ..Config::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_response_fails_pending_request_without_waiting_for_timeout() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            assert!(matches!(
+                read_client_packet(&mut server).await,
+                Packet::Lstat(_)
+            ));
+            server.write_all(&[0, 0, 0, 1, 0xff]).await.unwrap();
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/malformed"))
+            .await
+            .expect("malformed response waited for the request timeout")
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown type"), "{error}");
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_response_id_fails_pending_request_without_waiting_for_timeout() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            let request_id = read_client_packet(&mut server).await.get_request_id();
+            write_server_packet(
+                &mut server,
+                Packet::status(request_id + 1, StatusCode::Failure, "wrong request id", ""),
+            )
+            .await;
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let error = time::timeout(Duration::from_secs(1), session.lstat("/wrong-id"))
+            .await
+            .expect("unknown response id waited for the request timeout")
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown recipient"), "{error}");
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reverse_order_responses_are_routed_to_their_request_ids() {
+        let (client, mut server) = duplex(4096);
+        let session = RawSftpSession::new_with_config(client, long_timeout_config());
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize_server(&mut server).await;
+            let first_id = read_client_packet(&mut server).await.get_request_id();
+            let second_id = read_client_packet(&mut server).await.get_request_id();
+            write_server_packet(&mut server, Packet::error(second_id, StatusCode::Ok)).await;
+            write_server_packet(&mut server, Packet::error(first_id, StatusCode::Ok)).await;
+            let _ = release_rx.await;
+        });
+
+        session.init().await.unwrap();
+        let first = session
+            .write_nowait("handle".to_owned(), 0, vec![1])
+            .unwrap();
+        let second = session
+            .write_nowait("handle".to_owned(), 1, vec![2])
+            .unwrap();
+        let second_packet = time::timeout(Duration::from_secs(1), second)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let first_packet = time::timeout(Duration::from_secs(1), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(first_packet, Packet::Status(status) if status.id == 1));
+        assert!(matches!(second_packet, Packet::Status(status) if status.id == 2));
+
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
     }
 }

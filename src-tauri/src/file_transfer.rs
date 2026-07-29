@@ -1077,10 +1077,24 @@ pub(super) async fn sftp_destination_file_path(
         return Ok(remote_join_path(destination, source_name));
     }
 
-    if let Ok(metadata) = sftp.metadata(destination.to_string()).await {
-        if metadata.is_dir() {
+    match sftp.metadata(destination.to_string()).await {
+        Ok(metadata) if metadata.is_dir() => {
             return Ok(remote_join_path(destination, source_name));
         }
+        Ok(_) => {}
+        Err(metadata_error) => match sftp.try_exists(destination.to_string()).await {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(format!(
+                    "SFTP 无法读取远端目标属性 {destination}: {metadata_error}"
+                ));
+            }
+            Err(exists_error) => {
+                return Err(format!(
+                    "SFTP 无法读取远端目标属性 {destination}: {metadata_error}; existence check failed: {exists_error}"
+                ));
+            }
+        },
     }
 
     if let Some(parent) = remote_parent_path(destination) {
@@ -1134,7 +1148,17 @@ pub(super) async fn sftp_create_dir_all(
                     "SFTP 创建远端目录失败 {current}: 路径已存在但不是普通目录"
                 ));
             }
-            Err(_) => {}
+            Err(metadata_error) => match sftp.try_exists(current.clone()).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Err(format!("SFTP 创建远端目录失败 {current}: {metadata_error}"));
+                }
+                Err(exists_error) => {
+                    return Err(format!(
+                        "SFTP 创建远端目录失败 {current}: {metadata_error}; existence check failed: {exists_error}"
+                    ));
+                }
+            },
         }
         match sftp.create_dir(current.clone()).await {
             Ok(()) => {}
