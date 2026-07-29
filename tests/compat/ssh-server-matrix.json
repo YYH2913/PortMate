@@ -48,6 +48,12 @@
     "modemDisconnectProtocol": "ymodem"
   },
   {
+    "name": "openssh-fedora-44",
+    "dockerfile": "tests/compat/openssh-fedora.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "xmodem"
+  },
+  {
     "name": "openssh-gesftpserver-ubuntu-noble",
     "dockerfile": "tests/compat/openssh-gesftpserver-ubuntu.Dockerfile",
     "disconnectProtocol": "sftp",

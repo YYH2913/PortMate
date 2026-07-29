@@ -612,8 +612,8 @@ because xterm.js does not answer it.
 `npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
 3.3a, 3.5a, and 3.7b, including session/window/pane state, synchronization, layout mutations, and
 control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
-health path against eleven full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
-Debian bookworm/trixie, and Ubuntu 24.04; OpenSSH with an independent GESFTPServer subsystem on
+health path against twelve full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
+Debian bookworm/trixie, Ubuntu 24.04, and Fedora 44; OpenSSH with an independent GESFTPServer subsystem on
 Ubuntu 24.04; Dropbear on Alpine 3.20/3.21; and AsyncSSH 2.24.0 and Paramiko 5.0.0 on Debian
 bookworm. It also validates SFTP upload, download, and remote copy against ProFTPD `mod_sftp`,
 SFTPGo 2.6.6/2.7.5, rclone 1.74.4, Erlang/OTP 25.2.3/27.3.4.1 `ssh_sftpd`, Go
@@ -624,10 +624,10 @@ instead of dropping them until timeout, fails pending requests immediately on ma
 zero-length frames, field-truncated payloads, or unknown response IDs, enforces the configured inbound
 packet-length limit before allocating the declared payload, and routes valid out-of-order responses by
 request ID. The matrix kills each of the
-nine OpenSSH/Dropbear servers
+ten OpenSSH/Dropbear servers
 during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no committed final file, and a
 nonempty resumable `.portmate-part` copied from the stopped container.
-The same nine-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
+The same ten-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
 lrzsz builds and Debian, Debian trixie, Ubuntu, and GESFTPServer YModem fallback, and verifies
 disconnect failure, partial progress, final-file non-commit, and partial-file cleanup.
 The fault matrix injects fourteen health failures: paused and forcibly closed transports; rejected,
