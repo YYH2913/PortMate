@@ -103,6 +103,7 @@ mod shell_transport;
 mod sqlite_mirror;
 mod sqlite_schema;
 mod sqlite_store;
+mod ssh_authentication;
 mod ssh_backend;
 mod ssh_exec;
 mod ssh_health;
@@ -201,6 +202,7 @@ use sftp_backend::*;
 use shell_transport::*;
 use sqlite_schema::*;
 use sqlite_store::*;
+use ssh_authentication::*;
 use ssh_backend::*;
 use ssh_exec::*;
 #[cfg(test)]
