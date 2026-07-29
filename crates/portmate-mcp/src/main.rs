@@ -8,24 +8,24 @@ use portmate_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
+mod desktop_ipc;
 mod http_request;
 mod keyring_store;
 mod socket_io;
 mod store_loader;
 
+use desktop_ipc::{call_ipc_value as call_desktop_ipc_value, load_ipc_endpoint, IpcEndpointFile};
 use http_request::{read_http_request, HttpRequest};
 use keyring_store::{read_secret_from_keyring, write_secret_to_keyring};
-use socket_io::read_stream_chunk_before;
 use store_loader::load_store_from_path;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -36,13 +36,6 @@ const MAX_JSON_RPC_BATCH_ITEMS: usize = 128;
 const MAX_JSON_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
-const MAX_IPC_RESPONSE_BYTES: usize = MAX_JSON_RPC_RESPONSE_BYTES;
-const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
-const MAX_IPC_TOKEN_BYTES: usize = 4096;
-const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const IPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
 const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
@@ -79,38 +72,6 @@ struct PortMateMcp {
     ipc: Option<IpcEndpointFile>,
     client_id: String,
     allow_write: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IpcEndpointFile {
-    addr: String,
-    #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
-    token_ref: Option<String>,
-    store_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IpcRequest {
-    token: String,
-    #[serde(default)]
-    client_id: String,
-    #[serde(default)]
-    trusted_write: bool,
-    command: String,
-    #[serde(default)]
-    args: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IpcResponse {
-    ok: bool,
-    value: Option<Value>,
-    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -624,230 +585,15 @@ impl PortMateMcp {
             .store_path
             .as_deref()
             .ok_or_else(|| anyhow!("desktop IPC endpoint has no configured store path"))?;
-        let addr = validate_ipc_endpoint(endpoint, store_path)?;
-        let mut stream = match TcpStream::connect_timeout(&addr, IPC_CONNECT_TIMEOUT) {
-            Ok(stream) => stream,
-            Err(_) => return Ok(None),
-        };
-        stream.set_write_timeout(Some(IPC_WRITE_TIMEOUT))?;
-        let token = endpoint_ipc_token(endpoint)?;
-        let request = IpcRequest {
-            token,
-            client_id: self.client_id.clone(),
-            trusted_write: self.allow_write,
-            command: command.to_string(),
+        call_desktop_ipc_value(
+            endpoint,
+            store_path,
+            &self.client_id,
+            self.allow_write,
+            command,
             args,
-        };
-        let request = encode_ipc_request(&request, MAX_IPC_REQUEST_BYTES)?;
-        stream.write_all(&request)?;
-        stream.shutdown(Shutdown::Write)?;
-        let raw = read_ipc_response_with_limits(
-            &mut stream,
-            MAX_IPC_RESPONSE_BYTES,
-            IPC_RESPONSE_TIMEOUT,
-        )?;
-        let response = serde_json::from_slice::<IpcResponse>(&raw)?;
-        if response.ok {
-            Ok(Some(response.value.unwrap_or(Value::Null)))
-        } else {
-            Err(anyhow!(
-                "desktop IPC error: {}",
-                response
-                    .error
-                    .unwrap_or_else(|| "unknown error".to_string())
-            ))
-        }
+        )
     }
-}
-
-fn load_ipc_endpoint(store_path: &std::path::Path) -> Option<IpcEndpointFile> {
-    let endpoint_path = store_path.with_file_name("portmate-ipc.json");
-    let raw = match read_ipc_endpoint_file(&endpoint_path) {
-        Ok(raw) => raw,
-        Err(error)
-            if error
-                .downcast_ref::<io::Error>()
-                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
-        {
-            return None;
-        }
-        Err(error) => {
-            eprintln!("PortMate MCP ignored unreadable desktop IPC endpoint: {error}");
-            return None;
-        }
-    };
-    let endpoint = serde_json::from_slice::<IpcEndpointFile>(&raw).ok()?;
-    if let Err(error) = validate_ipc_endpoint(&endpoint, store_path) {
-        eprintln!("PortMate MCP ignored invalid desktop IPC endpoint: {error}");
-        return None;
-    }
-    Some(endpoint)
-}
-
-fn read_ipc_endpoint_file(path: &Path) -> Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
-        return Err(anyhow!("desktop IPC endpoint must be a regular file"));
-    }
-    if metadata.len() > MAX_IPC_ENDPOINT_BYTES as u64 {
-        return Err(anyhow!(
-            "desktop IPC endpoint exceeds the {MAX_IPC_ENDPOINT_BYTES}-byte limit"
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(anyhow!(
-                "desktop IPC endpoint permissions must not allow group or world access"
-            ));
-        }
-    }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(path)?;
-    let opened_metadata = file.metadata()?;
-    if !opened_metadata.is_file() || opened_metadata.len() > MAX_IPC_ENDPOINT_BYTES as u64 {
-        return Err(anyhow!(
-            "opened desktop IPC endpoint must be a bounded regular file"
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if opened_metadata.permissions().mode() & 0o077 != 0 {
-            return Err(anyhow!(
-                "desktop IPC endpoint permissions must not allow group or world access"
-            ));
-        }
-    }
-    let mut raw = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_IPC_ENDPOINT_BYTES.saturating_add(1) as u64)
-        .read_to_end(&mut raw)?;
-    if raw.len() > MAX_IPC_ENDPOINT_BYTES {
-        return Err(anyhow!(
-            "desktop IPC endpoint exceeds the {MAX_IPC_ENDPOINT_BYTES}-byte limit"
-        ));
-    }
-    Ok(raw)
-}
-
-fn validate_ipc_endpoint(endpoint: &IpcEndpointFile, store_path: &Path) -> Result<SocketAddr> {
-    let addr = endpoint
-        .addr
-        .parse::<SocketAddr>()
-        .map_err(|error| anyhow!("desktop IPC address must be an IP socket address: {error}"))?;
-    if !addr.ip().is_loopback() {
-        return Err(anyhow!("desktop IPC address must be loopback; got {addr}"));
-    }
-    if !paths_refer_to_same_store(Path::new(&endpoint.store_path), store_path) {
-        return Err(anyhow!(
-            "desktop IPC endpoint storePath does not match PORTMATE_STORE_PATH"
-        ));
-    }
-    match (&endpoint.token, &endpoint.token_ref) {
-        (Some(token), None) if valid_inline_ipc_token(token) => {}
-        (None, Some(token_ref)) if valid_ipc_token_ref(token_ref) => {}
-        (Some(_), Some(_)) => {
-            return Err(anyhow!(
-                "desktop IPC endpoint must not contain both token and tokenRef"
-            ))
-        }
-        (Some(_), None) => return Err(anyhow!("desktop IPC endpoint token is invalid")),
-        (None, Some(_)) => return Err(anyhow!("desktop IPC endpoint tokenRef is invalid")),
-        (None, None) => return Err(anyhow!("desktop IPC endpoint is missing token/tokenRef")),
-    }
-    Ok(addr)
-}
-
-fn paths_refer_to_same_store(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => absolute_path(left)
-            .is_some_and(|left| absolute_path(right).is_some_and(|right| left == right)),
-    }
-}
-
-fn absolute_path(path: &Path) -> Option<PathBuf> {
-    if path.is_absolute() {
-        Some(path.to_path_buf())
-    } else {
-        std::env::current_dir().ok().map(|cwd| cwd.join(path))
-    }
-}
-
-fn valid_inline_ipc_token(token: &str) -> bool {
-    !token.trim().is_empty() && token.len() <= MAX_IPC_TOKEN_BYTES
-}
-
-fn valid_ipc_token_ref(token_ref: &str) -> bool {
-    let Some(account) = token_ref.strip_prefix("keychain:ipc-") else {
-        return false;
-    };
-    Uuid::parse_str(account).is_ok_and(|uuid| uuid.hyphenated().to_string() == account)
-}
-
-fn endpoint_ipc_token(endpoint: &IpcEndpointFile) -> Result<String> {
-    if let Some(token_ref) = endpoint
-        .token_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if !valid_ipc_token_ref(token_ref) {
-            return Err(anyhow!("desktop IPC endpoint tokenRef is invalid"));
-        }
-        return read_secret_from_keyring(token_ref);
-    }
-    endpoint
-        .token
-        .clone()
-        .filter(|value| valid_inline_ipc_token(value))
-        .ok_or_else(|| anyhow!("desktop IPC endpoint is missing token/tokenRef"))
-}
-
-fn encode_ipc_request(request: &IpcRequest, max_bytes: usize) -> Result<Vec<u8>> {
-    let bytes = serde_json::to_vec(request)?;
-    if bytes.len() > max_bytes {
-        return Err(anyhow!(
-            "desktop IPC request exceeds the {max_bytes}-byte limit"
-        ));
-    }
-    Ok(bytes)
-}
-
-fn read_ipc_response_with_limits(
-    stream: &mut TcpStream,
-    max_bytes: usize,
-    timeout: Duration,
-) -> Result<Vec<u8>> {
-    let deadline = Instant::now() + timeout;
-    let mut raw = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = read_stream_chunk_before(
-            stream,
-            &mut buffer,
-            deadline,
-            "desktop IPC response deadline exceeded",
-        )?;
-        if read == 0 {
-            break;
-        }
-        if raw.len().saturating_add(read) > max_bytes {
-            return Err(anyhow!(
-                "desktop IPC response exceeds the {max_bytes}-byte limit"
-            ));
-        }
-        raw.extend_from_slice(&buffer[..read]);
-    }
-    Ok(raw)
 }
 
 fn ipc_value_to_text(value: Value) -> Result<String> {

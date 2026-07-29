@@ -1,3 +1,8 @@
+use super::desktop_ipc::{
+    encode_ipc_request, endpoint_ipc_token, load_ipc_endpoint, read_ipc_endpoint_file,
+    read_ipc_response_with_limits, validate_ipc_endpoint, IpcEndpointFile, IpcRequest,
+    MAX_IPC_ENDPOINT_BYTES,
+};
 use super::http_request::read_http_request_with_timeout;
 use super::keyring_store::{ensure_keyring_store_with, initialize_persistent_native_keyring_with};
 use super::store_loader::{
@@ -6,7 +11,9 @@ use super::store_loader::{
 use super::*;
 use rusqlite::{params, Connection as SqliteConnection};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Mutex;
+use std::time::Instant;
 
 #[test]
 fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
