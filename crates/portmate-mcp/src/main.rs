@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use keyring_core::Entry;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use portmate_core::{
     prompt_templates, redact_secrets, redact_session_event, redact_session_events,
@@ -14,16 +13,18 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod http_request;
+mod keyring_store;
 mod socket_io;
 mod store_loader;
 
 use http_request::{read_http_request, HttpRequest};
+use keyring_store::{read_secret_from_keyring, write_secret_to_keyring};
 use socket_io::read_stream_chunk_before;
 use store_loader::load_store_from_path;
 
@@ -847,72 +848,6 @@ fn read_ipc_response_with_limits(
         raw.extend_from_slice(&buffer[..read]);
     }
     Ok(raw)
-}
-
-fn ensure_keyring_store() -> Result<()> {
-    static KEYRING_INITIALIZED: OnceLock<Mutex<bool>> = OnceLock::new();
-    ensure_keyring_store_with(
-        KEYRING_INITIALIZED.get_or_init(|| Mutex::new(false)),
-        initialize_persistent_native_keyring,
-    )
-}
-
-fn ensure_keyring_store_with<Initialize>(
-    initialized: &Mutex<bool>,
-    initialize: Initialize,
-) -> Result<()>
-where
-    Initialize: FnOnce() -> Result<()>,
-{
-    let mut initialized = initialized
-        .lock()
-        .map_err(|error| anyhow!(error.to_string()))?;
-    if *initialized {
-        return Ok(());
-    }
-    initialize()?;
-    *initialized = true;
-    Ok(())
-}
-
-fn initialize_persistent_native_keyring() -> Result<()> {
-    initialize_persistent_native_keyring_with(|not_keyutils| {
-        keyring::use_native_store(not_keyutils)
-            .map_err(|error| anyhow!("system keyring initialization failed: {error}"))
-    })
-}
-
-fn initialize_persistent_native_keyring_with<UseNative>(use_native: UseNative) -> Result<()>
-where
-    UseNative: FnOnce(bool) -> Result<()>,
-{
-    // On Linux, true selects persistent Secret Service instead of reboot-volatile keyutils.
-    use_native(true)
-}
-
-fn keyring_entry(secret_ref: &str) -> Result<Entry> {
-    ensure_keyring_store()?;
-    let account = secret_ref
-        .trim()
-        .strip_prefix("keychain:")
-        .unwrap_or_else(|| secret_ref.trim());
-    if account.is_empty() || account.contains('\0') {
-        return Err(anyhow!("invalid secretRef"));
-    }
-    Entry::new("PortMate", account)
-        .map_err(|error| anyhow!("failed to create keyring entry: {error}"))
-}
-
-fn read_secret_from_keyring(secret_ref: &str) -> Result<String> {
-    keyring_entry(secret_ref)?
-        .get_password()
-        .map_err(|error| anyhow!("failed to read keyring secret {secret_ref}: {error:?}"))
-}
-
-fn write_secret_to_keyring(secret_ref: &str, secret: &str) -> Result<()> {
-    keyring_entry(secret_ref)?
-        .set_password(secret)
-        .map_err(|error| anyhow!("failed to write keyring secret {secret_ref}: {error:?}"))
 }
 
 fn ipc_value_to_text(value: Value) -> Result<String> {

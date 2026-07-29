@@ -1,10 +1,12 @@
 use super::http_request::read_http_request_with_timeout;
+use super::keyring_store::{ensure_keyring_store_with, initialize_persistent_native_keyring_with};
 use super::store_loader::{
     ensure_store_schema, load_store_from_path, prepare_loaded_store, STORE_KEY,
 };
 use super::*;
 use rusqlite::{params, Connection as SqliteConnection};
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 #[test]
 fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
