@@ -711,7 +711,7 @@ fn external_ssh_transfer_fault_matrix_case() {
         let source = root.join("fault-source.bin");
         fs::write(&source, b"PortMate transfer fault matrix\n".repeat(32)).unwrap();
         let (source_path, destination_path) = match fault.as_str() {
-            "sftp-no-such-file" => (
+            "sftp-no-such-file" | "sftp-unknown-status" => (
                 format!("remote:/home/{username}/portmate-missing-source.bin"),
                 root.join("missing-source-download.bin")
                     .display()
@@ -737,7 +737,14 @@ fn external_ssh_transfer_fault_matrix_case() {
         )
         .await
         .unwrap_or_else(|error| panic!("{fault} transfer queue rejected unexpectedly: {error}"));
+        let wait_started = Instant::now();
         let task = wait_for_transfer_terminal_state(&state, &task.id).await;
+        if fault == "sftp-unknown-status" {
+            assert!(
+                wait_started.elapsed() < Duration::from_secs(5),
+                "{fault} did not fail promptly: {task:?}"
+            );
+        }
         assert_eq!(
             task.status,
             TransferStatus::Failed,

@@ -41,6 +41,9 @@ case "$mode:$original" in
     sftp-readdir-silent-once:internal-sftp)
         run_sftp_fault_once readdir
         ;;
+    sftp-unknown-status:internal-sftp)
+        exec /usr/local/bin/portmate-sftp-health-fault-server unknown-status
+        ;;
     sftp-canonicalize-missing:internal-sftp)
         vanished="$(mktemp -d /tmp/portmate-sftp-vanished.XXXXXX)"
         cd "$vanished"

@@ -10,6 +10,7 @@ SSH_FXP_VERSION = 2
 SSH_FXP_OPENDIR = 11
 SSH_FXP_READDIR = 12
 SSH_FXP_REALPATH = 16
+SSH_FXP_STATUS = 101
 SSH_FXP_HANDLE = 102
 SSH_FXP_NAME = 104
 MAX_PACKET_LENGTH = 1024 * 1024
@@ -58,14 +59,32 @@ def stall():
     time.sleep(30)
 
 
+def reject_unknown_status_requests():
+    message = b"unknown status injected by PortMate fault server"
+    while True:
+        length = struct.unpack(">I", read_exact(4))[0]
+        if length < 5 or length > MAX_PACKET_LENGTH:
+            raise ValueError(f"invalid SFTP request packet length: {length}")
+        packet = read_exact(length)
+        write_packet(
+            SSH_FXP_STATUS,
+            struct.pack(">II", request_id(packet[1:]), 99)
+            + encode_string(message)
+            + encode_string(b""),
+        )
+
+
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in {
         "init",
         "canonicalize",
         "opendir",
         "readdir",
+        "unknown-status",
     }:
-        raise ValueError("expected init, canonicalize, opendir, or readdir fault mode")
+        raise ValueError(
+            "expected init, canonicalize, opendir, readdir, or unknown-status fault mode"
+        )
     mode = sys.argv[1]
 
     init = read_packet(SSH_FXP_INIT)
@@ -75,6 +94,9 @@ def main():
         stall()
         return
     write_packet(SSH_FXP_VERSION, struct.pack(">I", 3))
+    if mode == "unknown-status":
+        reject_unknown_status_requests()
+        return
 
     realpath = read_packet(SSH_FXP_REALPATH)
     if mode == "canonicalize":

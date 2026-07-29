@@ -20,6 +20,11 @@
     "expectedErrorContains": "Permission denied"
   },
   {
+    "name": "sftp-unknown-status",
+    "protocol": "sftp",
+    "expectedErrorContains": "Unknown status"
+  },
+  {
     "name": "scp-rejected",
     "protocol": "scp",
     "expectedErrorContains": "SCP"
