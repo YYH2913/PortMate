@@ -17,6 +17,10 @@ mod external_ssh_compat;
 mod external_ssh_gssapi_compat;
 #[path = "external_tcp_telnet_compat.rs"]
 mod external_tcp_telnet_compat;
+#[path = "file_batch_tests.rs"]
+mod file_batch_tests;
+#[path = "file_operation_tests.rs"]
+mod file_operation_tests;
 #[path = "host_key_tests.rs"]
 mod host_key_tests;
 #[path = "identity_tests.rs"]
@@ -71,8 +75,10 @@ mod sysmon_tests;
 mod tcp_telnet_tests;
 #[path = "tmux_protocol_tests.rs"]
 mod tmux_protocol_tests;
-#[path = "transfer_tests.rs"]
-mod transfer_tests;
+#[path = "transfer_io_tests.rs"]
+mod transfer_io_tests;
+#[path = "transfer_queue_tests.rs"]
+mod transfer_queue_tests;
 #[path = "transport_runtime_tests.rs"]
 mod transport_runtime_tests;
 #[path = "trigger_tests.rs"]
