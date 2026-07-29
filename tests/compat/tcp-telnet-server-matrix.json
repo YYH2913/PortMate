@@ -33,6 +33,16 @@
     "mode": "shell"
   },
   {
+    "name": "telnetlib3-4.0.5-debian-bookworm",
+    "dockerfile": "tests/compat/telnetlib3-python.Dockerfile",
+    "buildArgs": {
+      "TELNETLIB3_VERSION": "4.0.5",
+      "WCWIDTH_VERSION": "0.8.2"
+    },
+    "protocol": "telnet",
+    "mode": "shell"
+  },
+  {
     "name": "netkit-telnetd-ssl-ubuntu-noble",
     "dockerfile": "tests/compat/telnetd-ssl-ubuntu.Dockerfile",
     "protocol": "telnet",
