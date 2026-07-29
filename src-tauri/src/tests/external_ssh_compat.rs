@@ -739,7 +739,10 @@ fn external_ssh_transfer_fault_matrix_case() {
         .unwrap_or_else(|error| panic!("{fault} transfer queue rejected unexpectedly: {error}"));
         let wait_started = Instant::now();
         let task = wait_for_transfer_terminal_state(&state, &task.id).await;
-        if fault == "sftp-unknown-status" {
+        if matches!(
+            fault.as_str(),
+            "sftp-unknown-status" | "sftp-no-space" | "sftp-quota-exceeded"
+        ) {
             assert!(
                 wait_started.elapsed() < Duration::from_secs(5),
                 "{fault} did not fail promptly: {task:?}"

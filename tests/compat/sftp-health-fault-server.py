@@ -59,8 +59,7 @@ def stall():
     time.sleep(30)
 
 
-def reject_unknown_status_requests():
-    message = b"unknown status injected by PortMate fault server"
+def reject_status_requests(status_code, message):
     while True:
         length = struct.unpack(">I", read_exact(4))[0]
         if length < 5 or length > MAX_PACKET_LENGTH:
@@ -68,7 +67,7 @@ def reject_unknown_status_requests():
         packet = read_exact(length)
         write_packet(
             SSH_FXP_STATUS,
-            struct.pack(">II", request_id(packet[1:]), 99)
+            struct.pack(">II", request_id(packet[1:]), status_code)
             + encode_string(message)
             + encode_string(b""),
         )
@@ -80,10 +79,13 @@ def main():
         "canonicalize",
         "opendir",
         "readdir",
+        "no-space",
+        "quota-exceeded",
         "unknown-status",
     }:
         raise ValueError(
-            "expected init, canonicalize, opendir, readdir, or unknown-status fault mode"
+            "expected init, canonicalize, opendir, readdir, no-space, quota-exceeded, "
+            "or unknown-status fault mode"
         )
     mode = sys.argv[1]
 
@@ -94,8 +96,13 @@ def main():
         stall()
         return
     write_packet(SSH_FXP_VERSION, struct.pack(">I", 3))
-    if mode == "unknown-status":
-        reject_unknown_status_requests()
+    status_faults = {
+        "no-space": (14, b"no space injected by PortMate fault server"),
+        "quota-exceeded": (15, b"quota exceeded injected by PortMate fault server"),
+        "unknown-status": (99, b"unknown status injected by PortMate fault server"),
+    }
+    if mode in status_faults:
+        reject_status_requests(*status_faults[mode])
         return
 
     realpath = read_packet(SSH_FXP_REALPATH)

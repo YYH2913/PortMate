@@ -25,6 +25,16 @@
     "expectedErrorContains": "Unknown status"
   },
   {
+    "name": "sftp-no-space",
+    "protocol": "sftp",
+    "expectedErrorContains": "No space on filesystem"
+  },
+  {
+    "name": "sftp-quota-exceeded",
+    "protocol": "sftp",
+    "expectedErrorContains": "Quota exceeded"
+  },
+  {
     "name": "scp-rejected",
     "protocol": "scp",
     "expectedErrorContains": "SCP"
