@@ -499,6 +499,11 @@ These releases neither expose `StdioTransport` on Windows nor declare the `Event
 imported by their HTTP source there, so the unpatched official packages are not presented as a
 Windows-compatible matrix.
 
+As of 2026-07-29, the newest stable release published by each of these nine official SDK projects is
+present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.0.0, Ruby 1.0.0, Java 2.0.0,
+Kotlin 0.15.0, C# 2.0.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
+API compatibility anchors; later stable releases should be added only after both real transports pass.
+
 Read tools remain available by default while the grant store is empty. After any grant is saved,
 the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`
 scope for the requested operation. An empty allowed-session list means all sessions; otherwise
