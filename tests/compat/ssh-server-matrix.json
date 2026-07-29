@@ -72,6 +72,15 @@
     }
   },
   {
+    "name": "asyncssh-2.24.0-debian-bookworm",
+    "dockerfile": "tests/compat/asyncssh-python.Dockerfile",
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "ASYNCSSH_VERSION": "2.24.0",
+      "DEBIAN_VERSION": "bookworm-slim"
+    }
+  },
+  {
     "name": "proftpd-sftp-alpine-3.21",
     "dockerfile": "tests/compat/proftpd-sftp-alpine.Dockerfile",
     "protocols": ["sftp"],
