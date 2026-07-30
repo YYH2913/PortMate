@@ -235,8 +235,11 @@ npm test -- --run
 npm run test:workspace-ui
 npm run test:terminal-compat
 npm run test:mcp-sdk-freshness
+PORTMATE_COMPAT_USE_CACHED_IMAGES=1 npm run test:ssh-gssapi-compat
 PORTMATE_COMPAT_USE_CACHED_IMAGES=1 npm run test:ssh-server-compat
 PORTMATE_COMPAT_USE_CACHED_IMAGES=1 npm run test:tcp-telnet-server-compat
+PORTMATE_COMPAT_USE_CACHED_IMAGES=1 npm run test:vttest-compat
+PORTMATE_COMPAT_USE_CACHED_IMAGES=1 npm run test:tmux-version-compat
 npm run build
 npm run desktop:build
 npm run test:linux-package
@@ -244,7 +247,7 @@ npm run test:linux-desktop-smoke
 npm run test:linux-appimage-smoke
 ```
 
-本轮缓存镜像复验确认 SSH 矩阵的 20 个正常服务端、10 组 SFTP/SCP 活动断线、10 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；TCP/Telnet 矩阵的 18 个服务端也全部通过。
+本轮缓存镜像复验确认 SSH 矩阵的 20 个正常服务端、10 组 SFTP/SCP 活动断线、10 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；TCP/Telnet 矩阵的 18 个服务端也全部通过。Ubuntu libssh 0.10.6 的 `ssh_userauth_gssapi` 符号和 `libgssapi_krb5` 动态依赖先经构建门禁确认，随后五个 GSSAPI/Kerberos 服务端组合的 55 个场景全部通过；vttest 三版本各 13 套件、四发行版 Vim/less/top/dialog 和 tmux 3.1c/3.3a/3.5a/3.7b 也完成本轮复验。
 
 `npm run build` 已把应用壳、文件管理器、会话设置、终端设置、密钥管理器、MCP Bridge、Sysmon 详情、日志管理、低频传输任务弹窗、端口转发弹窗、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、SessionSummary cache 校验、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 375.05 kB、文件管理器约 21.67 kB、会话设置约 40.59 kB、终端设置约 11.75 kB、密钥管理器约 48.52 kB、Sysmon 详情约 11.47 kB、日志管理约 11.23 kB、端口转发弹窗约 5.57 kB、传输任务弹窗约 4.27 kB、SessionSummary cache 校验约 6.96 kB、MCP Bridge 约 13.32 kB、独立终端窗口约 9.32 kB、终端 core JS 约 475.38 kB、WebGL JS 约 120.37 kB、主 CSS 约 153.75 kB、终端 CSS 约 3.93 kB；共享 session 搜索状态约 1.94 kB、工作区辅助筛选约 2.87 kB、命令历史状态约 1.77 kB、session/终端菜单约 4.84 kB、view 右键菜单约 4.63 kB、终端 buffer 约 1.39 kB、选择/在线搜索约 2.19 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
 
