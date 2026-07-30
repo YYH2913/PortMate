@@ -81,8 +81,10 @@ jobs:
             libssh-dev \
             librsvg2-dev \
             libudev-dev \
+            openbox \
             patchelf \
             rpm \
+            wmctrl \
             x11-apps \
             x11-utils \
             xvfb
@@ -97,7 +99,16 @@ jobs:
       - run: npm run test:native-keyring
       - name: Smoke-test the native Linux WebKit window
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24 -nolisten tcp" npm run test:linux-desktop-smoke
+        run: >
+          dbus-run-session -- xvfb-run --auto-servernum
+          --server-args="-screen 0 1440x900x24 -nolisten tcp"
+          sh -eu -c '
+          openbox >/tmp/portmate-openbox.log 2>&1 &
+          wm_pid=$!;
+          trap "kill $wm_pid 2>/dev/null || true" EXIT;
+          for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
+          wmctrl -m;
+          npm run test:linux-desktop-smoke'
       - if: runner.os == 'Linux'
         run: npm run test:libssh-gssapi-build
       - if: runner.os == 'Linux'
@@ -113,6 +124,18 @@ jobs:
       - if: runner.os != 'Windows'
         run: npm run test:mcp-swift-client
       - run: npm run desktop:build
+      - name: Smoke-test packaged Linux AppImage restart
+        if: runner.os == 'Linux'
+        run: >
+          dbus-run-session -- xvfb-run --auto-servernum
+          --server-args="-screen 0 1440x900x24 -nolisten tcp"
+          sh -eu -c '
+          openbox >/tmp/portmate-openbox-appimage.log 2>&1 &
+          wm_pid=$!;
+          trap "kill $wm_pid 2>/dev/null || true" EXIT;
+          for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
+          wmctrl -m;
+          npm run test:linux-appimage-smoke'
       - name: Verify Linux packages and packaged MCP sidecars
         if: runner.os == 'Linux'
         run: npm run test:linux-package

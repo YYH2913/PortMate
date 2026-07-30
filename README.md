@@ -369,7 +369,10 @@ npm run test:linux-desktop-smoke
 
 The gate forces X11 only for deterministic capture and removes any inherited
 `WEBKIT_DISABLE_DMABUF_RENDERER`, so VMware hosts exercise PortMate's automatic DMI fallback. Set
-`PORTMATE_NATIVE_SMOKE_XWD=/tmp/portmate-native-smoke.xwd` to retain the verified frame.
+`PORTMATE_NATIVE_SMOKE_XWD=/tmp/portmate-native-smoke.xwd` to retain the verified frame. The host
+must provide `xwininfo`, `xwd`, `wmctrl`, and an EWMH-compatible window manager; CI supplies Xvfb
+and Openbox. A successful check also requires a valid isolated IPC endpoint and Store, closes the
+window through `WM_DELETE_WINDOW`, and verifies that normal shutdown removes the endpoint.
 
 Build desktop bundles:
 
@@ -387,6 +390,12 @@ packaging-time GitHub download. A valid caller-provided `LDAI_RUNTIME_FILE` take
 neither source exists, LinuxDeploy retains its normal download behavior. DEB, RPM, and AppImage
 artifacts are written below `target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release,
 signing, migration, artifact, and rollback gates.
+
+After a Linux bundle build, `npm run test:linux-appimage-smoke` extracts the final AppImage and
+launches its packaged `AppRun` twice against one isolated Store. Both launches must render a native
+frame, publish and retire their IPC endpoint through normal window closure, rotate the IPC
+credential, and preserve the exact Store SHA-256 across the no-op restart. It has the same X11,
+`xwd`, `xwininfo`, `wmctrl`, and window-manager requirements as the development desktop smoke gate.
 
 The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
 

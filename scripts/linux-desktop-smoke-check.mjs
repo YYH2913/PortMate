@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   accessSync,
   constants,
@@ -7,15 +8,18 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const STARTUP_TIMEOUT_MS = boundedInteger(process.env.PORTMATE_NATIVE_SMOKE_TIMEOUT_MS, 180_000, 10_000, 600_000);
 const RENDER_TIMEOUT_MS = 30_000;
+const IPC_STARTUP_TIMEOUT_MS = 30_000;
+const GRACEFUL_EXIT_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_CAPTURE_BYTES = 128 * 1024 * 1024;
 const MAX_LOG_BYTES = 256 * 1024;
@@ -34,11 +38,19 @@ if (!process.env.DISPLAY?.trim()) {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const xwininfo = executablePath("xwininfo");
 const xwd = executablePath("xwd");
-const npm = executablePath("npm");
+const wmctrl = executablePath("wmctrl");
+const configuredBinary = process.env.PORTMATE_NATIVE_SMOKE_BINARY?.trim();
+const launchCommand = configuredBinary ? resolve(configuredBinary) : executablePath("npm");
+const launchArguments = configuredBinary ? [] : ["run", "desktop:clean"];
+const launchKind = configuredBinary ? "packaged" : "development";
+if (configuredBinary) assertExecutablePath(launchCommand);
 const existingWindowIds = new Set(listPortMateWindows(xwininfo).map((window) => window.id));
 const dmiIdentity = readDmiIdentity();
 const expectsVmwareFallback = dmiIdentity.some((value) => value.toLowerCase().includes("vmware"));
-const testRoot = mkdtempSync(join(tmpdir(), "portmate-native-smoke-"));
+const configuredRoot = process.env.PORTMATE_NATIVE_SMOKE_ROOT?.trim();
+const testRoot = configuredRoot ? resolve(configuredRoot) : mkdtempSync(join(tmpdir(), "portmate-native-smoke-"));
+const ownsTestRoot = !configuredRoot;
+if (configuredRoot) assertTemporaryTestRoot(testRoot);
 const xdgDirectories = Object.fromEntries([
   ["XDG_CACHE_HOME", "cache"],
   ["XDG_CONFIG_HOME", "config"],
@@ -49,13 +61,16 @@ const xdgDirectories = Object.fromEntries([
 for (const path of Object.values(xdgDirectories)) mkdirSync(path, { recursive: true, mode: 0o700 });
 const environment = { ...process.env, ...xdgDirectories, GDK_BACKEND: "x11" };
 delete environment.WEBKIT_DISABLE_DMABUF_RENDERER;
+const appDataDirectory = join(xdgDirectories.XDG_DATA_HOME, "dev.portmate.desktop");
+const endpointPath = join(appDataDirectory, "portmate-ipc.json");
+const storePath = join(appDataDirectory, "portmate-store.sqlite3");
 
 let output = "";
 let interruptedSignal = null;
 let stopPromise = null;
 let desktopResult = null;
-const desktop = spawn(npm, ["run", "desktop:clean"], {
-  cwd: projectRoot,
+const desktop = spawn(launchCommand, launchArguments, {
+  cwd: configuredBinary ? testRoot : projectRoot,
   detached: true,
   env: environment,
   stdio: ["ignore", "pipe", "pipe"],
@@ -86,17 +101,34 @@ try {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   const window = await waitForWindow(deadline);
   const rendered = await waitForRenderedPixels(window, Math.min(deadline, Date.now() + RENDER_TIMEOUT_MS));
+  const endpoint = await waitForIpcEndpoint(Math.min(deadline, Date.now() + IPC_STARTUP_TIMEOUT_MS));
   if (expectsVmwareFallback && !output.includes("disabled WebKit DMABUF rendering for VMware compatibility")) {
     throw new Error("The VMware desktop started without the expected WebKit DMABUF fallback marker");
   }
 
   const artifactPath = process.env.PORTMATE_NATIVE_SMOKE_XWD?.trim();
   if (artifactPath) writeFileSync(resolve(artifactPath), rendered.capture);
+  closeNativeWindow(window.id);
+  await waitForGracefulExit(Date.now() + GRACEFUL_EXIT_TIMEOUT_MS);
+  await waitForEndpointRemoval(Date.now() + 5_000);
+  const store = inspectPersistedStore();
   console.log(JSON.stringify({
+    launch: launchKind,
     window: { id: window.id, width: window.width, height: window.height },
     renderer: expectsVmwareFallback ? "automatic VMware DMABUF fallback" : "host default",
     dmiIdentity,
     pixels: rendered.stats,
+    lifecycle: {
+      gracefulExit: true,
+      endpointPublished: true,
+      endpointRemoved: true,
+      endpointUsesTokenRef: typeof endpoint.tokenRef === "string",
+      endpointAddress: endpoint.addr,
+      endpointCredentialSha256: createHash("sha256")
+        .update(endpoint.tokenRef ?? endpoint.token)
+        .digest("hex"),
+      store,
+    },
     artifact: artifactPath ? resolve(artifactPath) : null,
   }, null, 2));
 } catch (error) {
@@ -106,7 +138,7 @@ try {
   process.off("SIGINT", handleSignal);
   process.off("SIGTERM", handleSignal);
   await stopDesktop();
-  rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  if (ownsTestRoot) rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 if (interruptedSignal) process.kill(process.pid, interruptedSignal);
 if (failure) throw failure;
@@ -149,6 +181,65 @@ async function waitForRenderedPixels(window, deadline) {
     await delay(POLL_INTERVAL_MS);
   }
   throw new Error(`PortMate's native window never produced a rendered frame: ${lastFailure}`);
+}
+
+async function waitForIpcEndpoint(deadline) {
+  let lastFailure = "the endpoint was not published";
+  while (Date.now() < deadline) {
+    if (interruptedSignal) throw new Error(`Native desktop smoke check interrupted by ${interruptedSignal}`);
+    if (desktopResult) throw desktopExitError(desktopResult);
+    if (existsSync(endpointPath)) {
+      try {
+        const endpoint = JSON.parse(readFileSync(endpointPath, "utf8"));
+        if (endpoint.storePath !== storePath) throw new Error("IPC endpoint points outside the isolated Store");
+        if (!/^127\.0\.0\.1:\d+$/.test(endpoint.addr)) throw new Error("IPC endpoint is not loopback TCP");
+        const hasTokenRef = typeof endpoint.tokenRef === "string" && endpoint.tokenRef.startsWith("keychain:ipc-");
+        const hasFallbackToken = typeof endpoint.token === "string" && endpoint.token.length >= 16;
+        if (hasTokenRef === hasFallbackToken) throw new Error("IPC endpoint must contain exactly one token representation");
+        return endpoint;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : String(error);
+      }
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`PortMate did not publish a valid IPC endpoint: ${lastFailure}`);
+}
+
+function closeNativeWindow(windowId) {
+  const result = spawnSync(wmctrl, ["-i", "-c", windowId], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `wmctrl could not close ${windowId}`);
+  }
+}
+
+async function waitForGracefulExit(deadline) {
+  while (Date.now() < deadline) {
+    if (desktopResult) {
+      if (desktopResult.error) throw desktopResult.error;
+      if (desktopResult.code !== 0 || desktopResult.signal) throw desktopExitError(desktopResult);
+      return;
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`PortMate did not exit after WM_DELETE_WINDOW within ${GRACEFUL_EXIT_TIMEOUT_MS} ms`);
+}
+
+async function waitForEndpointRemoval(deadline) {
+  while (Date.now() < deadline) {
+    if (!existsSync(endpointPath)) return;
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error("PortMate left its MCP IPC endpoint behind after a normal window close");
+}
+
+function inspectPersistedStore() {
+  const metadata = statSync(storePath);
+  if (!metadata.isFile() || metadata.size <= 0) throw new Error("PortMate did not persist a non-empty Store");
+  return {
+    bytes: metadata.size,
+    sha256: createHash("sha256").update(readFileSync(storePath)).digest("hex"),
+  };
 }
 
 function inspectXwd(buffer) {
@@ -278,6 +369,22 @@ function executablePath(name) {
     }
   }
   throw new Error(`The native desktop smoke check requires '${name}' in PATH`);
+}
+
+function assertExecutablePath(path) {
+  const metadata = statSync(path);
+  if (!metadata.isFile()) throw new Error(`Native desktop smoke binary is not a file: ${path}`);
+  accessSync(path, constants.X_OK);
+}
+
+function assertTemporaryTestRoot(path) {
+  const temporaryRoot = resolve(tmpdir());
+  const fromTemporaryRoot = relative(temporaryRoot, path);
+  if (!fromTemporaryRoot || fromTemporaryRoot === ".." || fromTemporaryRoot.startsWith(`..${sep}`)
+    || isAbsolute(fromTemporaryRoot) || !/^portmate-(native|appimage)-smoke-/.test(fromTemporaryRoot)) {
+    throw new Error(`PORTMATE_NATIVE_SMOKE_ROOT must be a dedicated PortMate directory below ${temporaryRoot}`);
+  }
+  mkdirSync(path, { recursive: true, mode: 0o700 });
 }
 
 function desktopExitError(result) {

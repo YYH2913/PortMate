@@ -60,6 +60,8 @@
     "test:tcp-telnet-server-compat": "node scripts/tcp-telnet-server-compat-check.mjs",
     "pretest:linux-desktop-smoke": "node scripts/ensure-node-version.mjs",
     "test:linux-desktop-smoke": "node scripts/linux-desktop-smoke-check.mjs",
+    "pretest:linux-appimage-smoke": "node scripts/ensure-node-version.mjs",
+    "test:linux-appimage-smoke": "node scripts/linux-appimage-smoke-check.mjs",
     "pretest:linux-package": "node scripts/ensure-node-version.mjs",
     "test:linux-package": "node scripts/linux-package-check.mjs",
     "pretest:windows-package": "node scripts/ensure-node-version.mjs",

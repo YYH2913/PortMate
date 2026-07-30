@@ -29,6 +29,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 - [ ] Linux produces DEB, RPM, and AppImage; Windows produces signed MSI/NSIS; macOS produces signed and notarized app/DMG.
 - [ ] Every package contains the main executable, target-specific `portmate-mcp` sidecar, standard icons, and license metadata.
 - [ ] On Linux, `npm run test:linux-package` passes against the freshly built DEB, RPM, and AppImage, including full file/symlink permission checks.
+- [ ] On Linux, `npm run test:linux-appimage-smoke` renders the final AppImage twice, closes it normally, rotates IPC credentials, removes each endpoint, and preserves the Store SHA-256.
 - [ ] On Windows, `npm run test:windows-package` passes against the freshly built MSI and NSIS installers, including administrative extraction, silent install/uninstall, unique co-located payload files, portable symlinks, and release-source SHA-256 checks.
 - [ ] On macOS, `npm run test:macos-package` passes against the freshly built app and DMG, including Info.plist metadata, portable symlinks, release-source SHA-256 checks for unsigned binaries or strict code-signature verification for signed binaries, direct app/DMG payload equality, DMG verification, and a read-only mount audit.
 - [ ] Run every official TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK check with `PORTMATE_MCP_BINARY` set to the bridge extracted from each package.
