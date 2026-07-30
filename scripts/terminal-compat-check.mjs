@@ -11,6 +11,16 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function inspectOnlineSearchPopup(popup) {
+  await popup.waitForURL((url) => url.hostname === "www.google.com" && url.pathname === "/search");
+  await popup.waitForLoadState("load");
+  return popup.evaluate(() => ({
+    url: window.location.href,
+    hasOpener: window.opener !== null,
+    referrer: document.referrer,
+  }));
+}
+
 function captureAlternateScreenPty(label, command, input, marker) {
   const result = spawnSync("script", [
     "-qfec",
@@ -587,12 +597,7 @@ try {
   const selectionPopupPromise = page.waitForEvent("popup");
   await page.locator(".terminal-context-menu .context-menu-row", { hasText: "在线搜索" }).click();
   const selectionPopup = await selectionPopupPromise;
-  await selectionPopup.waitForLoadState("domcontentloaded");
-  const onlineSelectionSearch = {
-    url: selectionPopup.url(),
-    hasOpener: await selectionPopup.evaluate(() => window.opener !== null),
-    referrer: await selectionPopup.evaluate(() => document.referrer),
-  };
+  const onlineSelectionSearch = await inspectOnlineSearchPopup(selectionPopup);
   assert(new URL(onlineSelectionSearch.url).searchParams.get("q") === copiedWithPreference.trim(),
     `online search did not use the exact XTerm selection: ${JSON.stringify(onlineSelectionSearch)}`);
   assert(!onlineSelectionSearch.hasOpener && !onlineSelectionSearch.referrer,
@@ -636,12 +641,7 @@ try {
   const fallbackPopupPromise = page.waitForEvent("popup");
   await page.locator(".terminal-context-menu .context-menu-row", { hasText: "在线搜索" }).click();
   const fallbackPopup = await fallbackPopupPromise;
-  await fallbackPopup.waitForLoadState("domcontentloaded");
-  const onlineFallbackSearch = {
-    url: fallbackPopup.url(),
-    hasOpener: await fallbackPopup.evaluate(() => window.opener !== null),
-    referrer: await fallbackPopup.evaluate(() => document.referrer),
-  };
+  const onlineFallbackSearch = await inspectOnlineSearchPopup(fallbackPopup);
   assert(new URL(onlineFallbackSearch.url).searchParams.get("q") === sessions[0].lastLine,
     `online search did not fall back to the target session line: ${JSON.stringify(onlineFallbackSearch)}`);
   assert(!onlineFallbackSearch.hasOpener && !onlineFallbackSearch.referrer,
