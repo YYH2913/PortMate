@@ -109,6 +109,7 @@ mod ssh_backend;
 mod ssh_connection;
 mod ssh_connection_steps;
 mod ssh_exec;
+mod ssh_handler;
 mod ssh_health;
 mod ssh_host_key_commands;
 mod ssh_host_key_scan;
@@ -223,6 +224,7 @@ use ssh_backend::*;
 use ssh_connection::*;
 use ssh_connection_steps::*;
 use ssh_exec::*;
+use ssh_handler::*;
 #[cfg(test)]
 use ssh_host_key_commands::{
     delete_host_keys_from_store, merge_expected_host_key_update, update_host_key_in_store,

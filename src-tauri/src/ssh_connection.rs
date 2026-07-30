@@ -388,32 +388,6 @@ pub(super) async fn disconnect_jump_sessions(
     }
 }
 
-pub(super) fn ssh_handler_for_endpoint(params: SshHandlerParams) -> PortMateSshHandler {
-    PortMateSshHandler {
-        profile_id: params.profile_id,
-        host: params.host,
-        port: params.port,
-        alias: params.alias,
-        policy: params.policy,
-        host_keys: params.host_keys,
-        one_time_host_key_ids: params.one_time_host_key_ids,
-        observed_key: params.observed_key,
-        host_key_error: params.host_key_error,
-        remote_forwards: params.remote_forwards,
-    }
-}
-
-pub(super) fn trusted_host_key_allowed(
-    policy: &portmate_core::HostKeyPolicy,
-    matched_key_id: &str,
-    one_time_host_key_ids: &[String],
-) -> bool {
-    policy.mode != HostKeyMode::AskEveryTime
-        || one_time_host_key_ids
-            .iter()
-            .any(|key_id| key_id == matched_key_id)
-}
-
 pub(super) fn jump_host_key_policy(
     ssh: &SshConnection,
     jump: &portmate_core::JumpHop,
