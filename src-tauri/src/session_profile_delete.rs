@@ -1,7 +1,8 @@
-use super::session_commands::{
-    cancel_pending_session_opens, cleanup_deleted_session_runtime_state,
-    close_session_under_lifecycle_lock, session_has_registered_runtime, session_lifecycle_lane,
+use super::session_close::{
+    cleanup_deleted_session_runtime_state, close_session_under_lifecycle_lock,
+    session_has_registered_runtime,
 };
+use super::session_open::{cancel_pending_session_opens, session_lifecycle_lane};
 use super::*;
 
 pub(super) async fn delete_session_profile_inner(

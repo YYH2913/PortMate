@@ -1,0 +1,190 @@
+use super::session_open::{cancel_pending_session_opens, session_lifecycle_lane};
+use super::*;
+
+pub(super) fn session_has_registered_runtime(
+    state: &AppState,
+    session_id: &str,
+) -> Result<bool, String> {
+    if state
+        .ssh
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .shell
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .tcp
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .serial
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .active_commands
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id)
+    {
+        return Ok(true);
+    }
+    if state
+        .tmux_controls
+        .lock()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|((runtime_session_id, _), runtime)| {
+            runtime_session_id == session_id && !runtime.cancel.load(Ordering::SeqCst)
+        })
+    {
+        return Ok(true);
+    }
+    if state
+        .tunnels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .any(|runtime| runtime.session_id == session_id)
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub(super) fn cleanup_deleted_session_runtime_state(
+    state: &AppState,
+    session_id: &str,
+    transfer_ids: &[String],
+) {
+    clear_active_command(&state.session_io(), session_id);
+    clear_log_retention_check(&state.store_path, session_id);
+    state
+        .serial_captures
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    state
+        .transfer_lanes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    let transfer_ids = transfer_ids.iter().collect::<HashSet<_>>();
+    state
+        .transfer_cancellations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|transfer_id, _| !transfer_ids.contains(transfer_id));
+    state
+        .one_time_host_keys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+    clear_outbound_lane(&state.store_path, session_id);
+
+    let mut approvals = state
+        .pending_mcp_approvals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let approval_ids = approvals
+        .iter()
+        .filter_map(|(id, pending)| {
+            (pending.request.session_id == session_id).then_some(id.clone())
+        })
+        .collect::<Vec<_>>();
+    for approval_id in approval_ids {
+        if let Some(pending) = approvals.remove(&approval_id) {
+            let _ = pending.response.send(false);
+        }
+    }
+}
+
+pub(super) async fn close_session_inner(
+    state: &AppState,
+    session_id: String,
+) -> Result<SessionSummary, String> {
+    cancel_pending_session_opens(state, &session_id)?;
+    let lifecycle_lane = session_lifecycle_lane(state, &session_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    close_session_under_lifecycle_lock(state, session_id).await
+}
+
+pub(super) async fn close_session_under_lifecycle_lock(
+    state: &AppState,
+    session_id: String,
+) -> Result<SessionSummary, String> {
+    clear_active_command(&state.session_io(), &session_id);
+    let _ = cancel_tmux_control_runtimes_for_session(state, &session_id);
+    let existing = {
+        let mut connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections.remove(&session_id)
+    };
+    if let Some(runtime) = existing {
+        disconnect_registered_ssh_runtime(
+            runtime,
+            "PortMate close_session",
+            "PortMate close jump session",
+        )
+        .await;
+    }
+    let existing_shell = {
+        let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
+        connections.remove(&session_id)
+    };
+    if let Some(runtime) = existing_shell {
+        runtime.closed.store(true, Ordering::SeqCst);
+        if let Ok(mut child) = runtime.child.lock() {
+            let _ = child.kill();
+        }
+    }
+    let existing_tcp = {
+        let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        connections.remove(&session_id)
+    };
+    if let Some(runtime) = existing_tcp {
+        runtime.closed.store(true, Ordering::SeqCst);
+        let mut writer = runtime.writer.lock().await;
+        let _ = writer.shutdown().await;
+    }
+    let existing_serial = {
+        let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
+        connections.remove(&session_id)
+    };
+    if let Some(runtime) = existing_serial {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    {
+        let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        let ids = tunnels
+            .iter()
+            .filter_map(|(id, runtime)| (runtime.session_id == session_id).then_some(id.clone()))
+            .collect::<Vec<_>>();
+        for id in ids {
+            if let Some(runtime) = tunnels.remove(&id) {
+                runtime.closed.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let summary = store.close_session(&session_id)?;
+    persist_applied_store(&store, &state.store_path, "session disconnect state")
+        .map_err(|error| format!("会话传输已在本地关闭，但断开状态无法持久化: {error}"))?;
+    Ok(summary)
+}

@@ -117,8 +117,10 @@ mod serial_commands;
 mod serial_reconnect;
 mod serial_reconnect_runtime;
 mod serial_transport;
+mod session_close;
 mod session_commands;
 mod session_events;
+mod session_open;
 mod session_profile_delete;
 mod session_terminal;
 mod sftp_backend;
@@ -264,17 +266,18 @@ use serial_commands::{
 use serial_reconnect::*;
 use serial_reconnect_runtime::*;
 use serial_transport::*;
+use session_close::close_session_inner;
 #[cfg(test)]
-use session_commands::{
-    apply_session_open_profile_credentials, cancel_pending_session_opens,
-    register_session_open_cancellation, session_has_registered_runtime, session_lifecycle_lane,
-};
-use session_commands::{
-    close_session_inner, mark_session_connected_with_events, open_session_inner,
-    profile_requires_runtime, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,
-};
+use session_close::session_has_registered_runtime;
+use session_commands::{mark_session_connected_with_events, profile_requires_runtime};
 use session_events::*;
 use session_events::{append_logging_error, append_logging_errors, sync_stored_event};
+#[cfg(test)]
+use session_open::{
+    apply_session_open_profile_credentials, cancel_pending_session_opens,
+    register_session_open_cancellation, session_lifecycle_lane,
+};
+use session_open::{open_session_inner, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS};
 #[cfg(test)]
 use session_profile_delete::delete_session_profile_inner;
 #[cfg(test)]
