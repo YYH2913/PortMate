@@ -834,8 +834,9 @@ validated transfer and file-manager surfaces, and native keyring/Stronghold faul
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
 compatibility job. Its Windows package gate silently installs/extracts and launches both MSI and NSIS
 payloads; its macOS gate launches the direct app and the copy mounted from the verified DMG. Every
-launch uses an isolated data directory and must publish a loopback IPC endpoint tied to its non-empty
-Store, exit through Tauri with code zero, and remove the endpoint. A successful workflow run and
+package uses an isolated data directory for two launches and must publish a loopback IPC endpoint
+tied to its non-empty Store, exit through Tauri with code zero, remove the endpoint, preserve the
+Store byte-for-byte across the idle restart, and rotate the IPC credential. A successful workflow run and
 retained artifacts are still required as native platform evidence. Signing and Apple notarization
 remain release gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile
 credential migration.

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   smokePackagedApplication,
+  smokePackagedApplicationRestart,
   validatePackagedSmokeEndpoint,
 } from "./native-packaged-smoke.mjs";
 
@@ -73,6 +74,65 @@ describe("native packaged runtime smoke", () => {
     }, store)).toThrow(/exactly one token representation/);
   });
 
+  it("preserves the Store and rotates the IPC credential across restart", async () => {
+    const root = temporaryRoot();
+    const fixture = join(root, "restart-fixture.mjs");
+    writeFileSync(fixture, `
+      import { randomBytes } from "node:crypto";
+      import { existsSync, rmSync, writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
+      const store = join(data, "portmate-store.sqlite3");
+      const endpoint = join(data, "portmate-ipc.json");
+      if (!existsSync(store)) writeFileSync(store, "stable-sqlite-fixture");
+      writeFileSync(endpoint, JSON.stringify({
+        addr: "127.0.0.1:43123",
+        storePath: store,
+        token: randomBytes(24).toString("hex"),
+      }));
+      setTimeout(() => rmSync(endpoint), 100);
+      setTimeout(() => process.exit(0), 150);
+    `);
+
+    const result = await smokePackagedApplicationRestart({
+      executable: process.execPath,
+      args: [fixture],
+      dataDirectory: join(root, "restart-data", "dev.portmate.desktop"),
+      label: "restart fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.storePreserved).toBe(true);
+    expect(result.endpointCredentialRotated).toBe(true);
+    expect(result.first.store).toEqual(result.second.store);
+    expect(result.first.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
+  });
+
+  it("rejects an idle restart that mutates the Store", async () => {
+    const { fixture, dataDirectory } = restartFailureFixture("mutate-store");
+    await expect(smokePackagedApplicationRestart({
+      executable: process.execPath,
+      args: [fixture, "mutate-store"],
+      dataDirectory,
+      label: "Store mutation fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/changed across an idle application restart/);
+  });
+
+  it("rejects an idle restart that reuses its IPC credential", async () => {
+    const { fixture, dataDirectory } = restartFailureFixture("reuse-credential");
+    await expect(smokePackagedApplicationRestart({
+      executable: process.execPath,
+      args: [fixture, "reuse-credential"],
+      dataDirectory,
+      label: "credential reuse fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/reused its IPC credential after restart/);
+  });
+
   it("terminates a hanging packaged process before reporting failure", async () => {
     const root = temporaryRoot();
     const fixture = join(root, "hanging-fixture.mjs");
@@ -104,4 +164,30 @@ function temporaryRoot() {
   const root = mkdtempSync(join(tmpdir(), "portmate-native-packaged-smoke-"));
   temporaryRoots.push(root);
   return root;
+}
+
+function restartFailureFixture(name) {
+  const root = temporaryRoot();
+  const fixture = join(root, `${name}.mjs`);
+  writeFileSync(fixture, `
+    import { randomBytes } from "node:crypto";
+    import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
+    const behavior = process.argv[2];
+    const store = join(data, "portmate-store.sqlite3");
+    const endpoint = join(data, "portmate-ipc.json");
+    if (!existsSync(store)) writeFileSync(store, "stable-sqlite-fixture");
+    else if (behavior === "mutate-store") appendFileSync(store, "-changed");
+    const token = behavior === "reuse-credential"
+      ? "fixture-static-token-with-enough-entropy"
+      : randomBytes(24).toString("hex");
+    writeFileSync(endpoint, JSON.stringify({ addr: "127.0.0.1:43123", storePath: store, token }));
+    setTimeout(() => rmSync(endpoint), 100);
+    setTimeout(() => process.exit(0), 150);
+  `);
+  return {
+    fixture,
+    dataDirectory: join(root, "data", "dev.portmate.desktop"),
+  };
 }

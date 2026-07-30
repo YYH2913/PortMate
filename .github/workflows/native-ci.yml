@@ -139,10 +139,10 @@ jobs:
       - name: Verify Linux packages and packaged MCP sidecars
         if: runner.os == 'Linux'
         run: npm run test:linux-package
-      - name: Verify and runtime-smoke Windows MSI and NSIS packages
+      - name: Verify and restart-smoke Windows MSI and NSIS packages
         if: runner.os == 'Windows'
         run: npm run test:windows-package
-      - name: Verify and runtime-smoke macOS app and DMG packages
+      - name: Verify and restart-smoke macOS app and DMG packages
         if: runner.os == 'macOS'
         run: npm run test:macos-package
 

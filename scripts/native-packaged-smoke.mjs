@@ -19,6 +19,7 @@ export async function smokePackagedApplication({
   environment = process.env,
   exitAfterMs = 5_000,
   timeoutMs = 45_000,
+  expectedStore = null,
 }) {
   if (!executable || !isAbsolute(executable)) throw new Error(`${label} executable must be absolute`);
   if (!dataDirectory || !isAbsolute(dataDirectory)) throw new Error(`${label} data directory must be absolute`);
@@ -31,8 +32,13 @@ export async function smokePackagedApplication({
   mkdirSync(dataDirectory, { recursive: true });
   const endpointPath = join(dataDirectory, "portmate-ipc.json");
   const storePath = join(dataDirectory, "portmate-store.sqlite3");
-  if (existsSync(endpointPath) || existsSync(storePath)) {
-    throw new Error(`${label} smoke data directory is not empty`);
+  if (existsSync(endpointPath)) {
+    throw new Error(`${label} smoke data directory contains a stale IPC endpoint`);
+  }
+  if (expectedStore) {
+    assertStoreMatches(inspectStore(storePath, label), expectedStore, `${label} pre-launch Store`);
+  } else if (existsSync(storePath)) {
+    throw new Error(`${label} smoke data directory contains an unexpected Store`);
   }
 
   let output = "";
@@ -74,6 +80,7 @@ export async function smokePackagedApplication({
     }
     await waitForRemoval(endpointPath, deadline, label);
     const store = inspectStore(storePath, label);
+    if (expectedStore) assertStoreMatches(store, expectedStore, `${label} restarted Store`);
     smokeResult = {
       executable,
       endpointAddress: endpoint.addr,
@@ -103,6 +110,29 @@ export async function smokePackagedApplication({
     });
   }
   return smokeResult;
+}
+
+export async function smokePackagedApplicationRestart(options) {
+  const label = options?.label;
+  const first = await smokePackagedApplication({
+    ...options,
+    label: `${label} initial launch`,
+    expectedStore: null,
+  });
+  const second = await smokePackagedApplication({
+    ...options,
+    label: `${label} restart`,
+    expectedStore: first.store,
+  });
+  if (first.endpointCredentialSha256 === second.endpointCredentialSha256) {
+    throw new Error(`${label} reused its IPC credential after restart`);
+  }
+  return {
+    first,
+    second,
+    storePreserved: true,
+    endpointCredentialRotated: true,
+  };
 }
 
 export function validatePackagedSmokeEndpoint(endpoint, storePath, label = "packaged app") {
@@ -170,6 +200,19 @@ function inspectStore(path, label) {
     bytes: metadata.size,
     sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
   };
+}
+
+function assertStoreMatches(actual, expected, label) {
+  if (!expected
+      || !Number.isSafeInteger(expected.bytes)
+      || expected.bytes <= 0
+      || typeof expected.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(expected.sha256)) {
+    throw new Error(`${label} expectation is invalid`);
+  }
+  if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
+    throw new Error(`${label} changed across an idle application restart`);
+  }
 }
 
 function samePath(left, right) {

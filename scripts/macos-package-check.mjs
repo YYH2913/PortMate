@@ -11,7 +11,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File, verifyMacAppBundle } from "./native-package-layout.mjs";
-import { smokePackagedApplication } from "./native-packaged-smoke.mjs";
+import { smokePackagedApplicationRestart } from "./native-packaged-smoke.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -58,7 +58,7 @@ try {
   verifiedApp = verifyApp(app, { compareBinaries: exactReleaseBinaries });
   runtimeSmokes.push({
     package: "macOS app",
-    result: await smokePackagedApplication({
+    result: await smokePackagedApplicationRestart({
       executable: verifiedApp.main,
       dataDirectory: join(auditRoot, "runtime-app", "dev.portmate.desktop"),
       label: "macOS application bundle",
@@ -82,7 +82,7 @@ try {
   });
   runtimeSmokes.push({
     package: "DMG",
-    result: await smokePackagedApplication({
+    result: await smokePackagedApplicationRestart({
       executable: verifiedDmg.main,
       dataDirectory: join(auditRoot, "runtime-dmg", "dev.portmate.desktop"),
       label: "DMG packaged application",
@@ -118,7 +118,7 @@ console.log(JSON.stringify({
     "bundle identifier, version, executable, and application category",
     "portable bundle symlinks",
     "DMG verification and read-only mount",
-    "packaged main-process IPC, Store, clean exit, and endpoint cleanup",
+    "packaged main-process IPC, stable restart Store, credential rotation, clean exit, and endpoint cleanup",
   ],
   payloads: {
     app: verifiedApp,
