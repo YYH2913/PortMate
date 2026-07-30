@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn export_command_types_keep_stable_serde_contract() {
+    let request: ExportSessionBundleArchiveRequest =
+        serde_json::from_value(serde_json::json!({ "sessionId": "shell-a" })).unwrap();
+    assert_eq!(request.session_id, "shell-a");
+    assert!(request.redact_secrets);
+    assert!(!request.include_raw_logs);
+    assert!(request.attachment_paths.is_empty());
+
+    assert_eq!(
+        serde_json::to_value(TerminalTextExportSource::Selection).unwrap(),
+        serde_json::json!("selection")
+    );
+    assert_eq!(
+        serde_json::from_value::<TerminalTextExportSource>(serde_json::json!("buffer")).unwrap(),
+        TerminalTextExportSource::Buffer
+    );
+
+    let search: SearchLogShardsRequest = serde_json::from_value(serde_json::json!({
+        "query": "disconnect"
+    }))
+    .unwrap();
+    assert!(search.paths.is_empty());
+    assert!(search.limit.is_none());
+}
+
+#[test]
 fn mcp_audit_export_is_atomic_exact_and_checksummed() {
     let root = std::env::temp_dir().join(format!("portmate-mcp-audit-export-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
