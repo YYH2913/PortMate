@@ -1,3 +1,4 @@
+use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;

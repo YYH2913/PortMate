@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const DEFAULT_SYSMON_HISTORY_QUERY_LIMIT: usize = 120;
+
 pub(super) const MAX_SYSMON_HISTORY_QUERY_LIMIT: usize = 240;
 pub(super) const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 pub(super) const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;

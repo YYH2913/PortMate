@@ -1,3 +1,4 @@
+use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty};
 

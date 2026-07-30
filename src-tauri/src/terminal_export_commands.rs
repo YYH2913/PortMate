@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_TERMINAL_TEXT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
+
 #[tauri::command]
 pub(crate) fn export_terminal_text(
     state: State<'_, AppState>,

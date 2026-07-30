@@ -1,3 +1,4 @@
+use super::transport_timing::RECONNECT_DELAY_POLL_INTERVAL;
 use super::*;
 
 pub(super) fn serial_reconnect_delay(profile: &SessionProfile) -> Duration {

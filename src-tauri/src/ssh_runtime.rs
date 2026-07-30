@@ -1,5 +1,7 @@
 use super::*;
 
+const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(super) struct SshRuntime {
     pub(super) runtime_id: String,
     pub(super) handle: Arc<tokio::sync::Mutex<SshBackendSession>>,

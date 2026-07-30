@@ -2,6 +2,8 @@ use super::*;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
+
 pub(super) struct PortableVaultContext {
     pub(super) snapshot_path: PathBuf,
     pub(super) salt_path: PathBuf,

@@ -1,5 +1,32 @@
 use super::*;
 
+pub(super) const MAX_SESSION_PROFILE_NAME_CHARACTERS: usize = 128;
+pub(super) const MAX_SESSION_PROFILE_ID_CHARACTERS: usize = 256;
+pub(super) const MAX_SESSION_PROFILE_GROUP_CHARACTERS: usize = 256;
+pub(super) const MAX_SESSION_PROFILE_TAGS: usize = 32;
+pub(super) const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
+pub(super) const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
+pub(super) const DEFAULT_TERMINAL_THEME: &str = "portmate-dark";
+pub(super) const DEFAULT_TERMINAL_NAME: &str = "xterm-256color";
+pub(super) const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Roboto Mono, JetBrains Mono, monospace";
+pub(super) const MIN_TERMINAL_ROWS: u16 = 1;
+pub(super) const MAX_TERMINAL_ROWS: u16 = 512;
+pub(super) const MIN_TERMINAL_COLS: u16 = 1;
+pub(super) const MAX_TERMINAL_COLS: u16 = 1024;
+pub(super) const MAX_TERMINAL_SCROLLBACK: u32 = 10_000_000;
+pub(super) const MIN_TERMINAL_FONT_SIZE: u8 = 6;
+pub(super) const MAX_TERMINAL_FONT_SIZE: u8 = 72;
+pub(super) const MIN_TERMINAL_BACKGROUND_OPACITY: u8 = 20;
+pub(super) const MAX_TERMINAL_BACKGROUND_OPACITY: u8 = 100;
+pub(super) const MAX_TERMINAL_NAME_BYTES: usize = 64;
+pub(super) const MAX_TERMINAL_FONT_FAMILY_CHARACTERS: usize = 256;
+pub(super) const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
+    DEFAULT_TERMINAL_THEME,
+    "graphite",
+    "solarized-dark",
+    "portmate-light",
+];
+
 pub(super) fn normalized_terminal_name(term: &str) -> &str {
     let term = term.trim();
     if term.len() <= MAX_TERMINAL_NAME_BYTES

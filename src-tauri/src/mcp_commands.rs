@@ -1,5 +1,9 @@
 use super::*;
 
+const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
+const MAX_MCP_AUDIT_EXPORT_RECORD_BYTES: usize = 64 * 1024;
+const MAX_MCP_AUDIT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
+
 pub(super) fn export_mcp_audit_inner(
     store_path: &Path,
     audit: &[AuditRecord],

@@ -1,6 +1,8 @@
 use super::*;
 use std::process::Command;
 
+const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[path = "app_migration_tests.rs"]
 mod app_migration_tests;
 #[path = "archive_tests.rs"]

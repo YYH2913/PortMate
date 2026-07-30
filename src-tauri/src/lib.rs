@@ -193,6 +193,7 @@ mod transfer_commands;
 mod transfer_progress;
 mod transfer_request;
 mod transfer_runtime;
+mod transport_timing;
 mod trigger_runtime;
 mod tunnel_commands;
 mod vault_commands;
@@ -355,48 +356,6 @@ use transfer_progress::*;
 use transfer_request::*;
 use transfer_runtime::*;
 use trigger_runtime::*;
-
-const STORE_KEY: &str = "session-store";
-const STREAM_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
-const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_SESSION_PROFILE_NAME_CHARACTERS: usize = 128;
-const MAX_SESSION_PROFILE_ID_CHARACTERS: usize = 256;
-const MAX_SESSION_PROFILE_GROUP_CHARACTERS: usize = 256;
-const MAX_SESSION_PROFILE_TAGS: usize = 32;
-const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
-const PORTABLE_VAULT_CLIENT: &[u8] = b"portmate-secrets";
-const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
-const MAX_LOG_QUERY_LIMIT: u64 = 1000;
-const DEFAULT_SYSMON_HISTORY_QUERY_LIMIT: usize = 120;
-const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
-const MAX_MCP_AUDIT_EXPORT_RECORD_BYTES: usize = 64 * 1024;
-const MAX_MCP_AUDIT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
-const MAX_TERMINAL_TEXT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
-const DEFAULT_TERMINAL_THEME: &str = "portmate-dark";
-const DEFAULT_TERMINAL_NAME: &str = "xterm-256color";
-const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Roboto Mono, JetBrains Mono, monospace";
-const MIN_TERMINAL_ROWS: u16 = 1;
-const MAX_TERMINAL_ROWS: u16 = 512;
-const MIN_TERMINAL_COLS: u16 = 1;
-const MAX_TERMINAL_COLS: u16 = 1024;
-const MAX_TERMINAL_SCROLLBACK: u32 = 10_000_000;
-const MIN_TERMINAL_FONT_SIZE: u8 = 6;
-const MAX_TERMINAL_FONT_SIZE: u8 = 72;
-const MIN_TERMINAL_BACKGROUND_OPACITY: u8 = 20;
-const MAX_TERMINAL_BACKGROUND_OPACITY: u8 = 100;
-const MAX_TERMINAL_NAME_BYTES: usize = 64;
-const MAX_TERMINAL_FONT_FAMILY_CHARACTERS: usize = 256;
-const SUPPORTED_TERMINAL_THEMES: [&str; 4] = [
-    DEFAULT_TERMINAL_THEME,
-    "graphite",
-    "solarized-dark",
-    "portmate-light",
-];
-const RECONNECT_DELAY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

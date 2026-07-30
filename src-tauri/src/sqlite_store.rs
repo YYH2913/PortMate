@@ -6,8 +6,10 @@ use uuid::Uuid;
 
 use super::{
     journal_transition_allowed, sqlite_mirror::save_store_sqlite_tables,
-    sqlite_schema::ensure_store_schema, ProfileSecretMigrationJournalState, STORE_KEY,
+    sqlite_schema::ensure_store_schema, ProfileSecretMigrationJournalState,
 };
+
+pub(super) const STORE_KEY: &str = "session-store";
 
 pub(super) fn load_store_sqlite(path: &Path) -> Result<SessionStore, String> {
     let connection = SqliteConnection::open(path).map_err(|error| {

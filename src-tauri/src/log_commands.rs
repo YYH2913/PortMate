@@ -1,5 +1,8 @@
 use super::*;
 
+const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
+const MAX_LOG_QUERY_LIMIT: u64 = 1000;
+
 pub(super) fn bounded_log_query_limit(limit: Option<u64>) -> usize {
     limit
         .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
