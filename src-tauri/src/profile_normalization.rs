@@ -8,7 +8,12 @@ pub(super) const MAX_SESSION_PROFILE_TAG_CHARACTERS: usize = 64;
 pub(super) const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
 pub(super) const DEFAULT_TERMINAL_THEME: &str = "portmate-dark";
 pub(super) const DEFAULT_TERMINAL_NAME: &str = "xterm-256color";
-pub(super) const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Roboto Mono, JetBrains Mono, monospace";
+pub(super) const DEFAULT_TERMINAL_FONT_FAMILY: &str =
+    "\"JetBrains Mono\", \"Noto Sans Mono CJK SC\", \"Sarasa Mono SC\", \"Microsoft YaHei UI\", monospace";
+const LEGACY_DEFAULT_TERMINAL_FONT_FAMILIES: [&str; 2] = [
+    "Roboto Mono, JetBrains Mono, monospace",
+    "JetBrains Mono, monospace",
+];
 pub(super) const MIN_TERMINAL_ROWS: u16 = 1;
 pub(super) const MAX_TERMINAL_ROWS: u16 = 512;
 pub(super) const MIN_TERMINAL_COLS: u16 = 1;
@@ -50,6 +55,7 @@ pub(super) fn normalized_terminal_font_family(font_family: &str) -> String {
     if !font_family.is_empty()
         && font_family.chars().count() <= MAX_TERMINAL_FONT_FAMILY_CHARACTERS
         && !font_family.chars().any(char::is_control)
+        && !LEGACY_DEFAULT_TERMINAL_FONT_FAMILIES.contains(&font_family)
     {
         font_family.to_string()
     } else {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "./types";
 import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
   MAX_TERMINAL_STARTUP_SESSION_ID_CHARACTERS,
   normalizeTerminalProfileSettings,
   normalizeTerminalStartupSessionIds,
@@ -41,7 +42,7 @@ describe("terminal settings state", () => {
       rows: 0,
       cols: 100_000,
       scrollback: Number.POSITIVE_INFINITY,
-      fontFamily: " JetBrains Mono, monospace ",
+      fontFamily: " Iosevka, monospace ",
       fontSize: 5.9,
       theme: "portmate-dark",
       backgroundOpacity: 19,
@@ -52,7 +53,7 @@ describe("terminal settings state", () => {
       rows: TERMINAL_PROFILE_BOUNDS.rows.min,
       cols: TERMINAL_PROFILE_BOUNDS.cols.max,
       scrollback: TERMINAL_PROFILE_BOUNDS.scrollback.fallback,
-      fontFamily: "JetBrains Mono, monospace",
+      fontFamily: "Iosevka, monospace",
       fontSize: TERMINAL_PROFILE_BOUNDS.fontSize.min,
       backgroundOpacity: TERMINAL_PROFILE_BOUNDS.backgroundOpacity.min,
     });
@@ -71,8 +72,27 @@ describe("terminal settings state", () => {
     });
 
     expect(normalized.term).toBe("xterm-256color");
-    expect(normalized.fontFamily).toBe("Roboto Mono, JetBrains Mono, monospace");
+    expect(normalized.fontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
     expect(normalized.backgroundOpacity).toBe(TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback);
+  });
+
+  it("migrates the former shipped font stacks to the bundled terminal font", () => {
+    for (const fontFamily of [
+      "Roboto Mono, JetBrains Mono, monospace",
+      "JetBrains Mono, monospace",
+    ]) {
+      const normalized = normalizeTerminalProfileSettings({
+        term: "xterm-256color",
+        rows: 32,
+        cols: 120,
+        scrollback: 200_000,
+        fontFamily,
+        fontSize: 13,
+        theme: "portmate-dark",
+        backgroundOpacity: 100,
+      });
+      expect(normalized.fontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
+    }
   });
 
   it("uses the DOM renderer only in Linux Tauri WebKitGTK", () => {

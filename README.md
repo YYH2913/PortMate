@@ -73,6 +73,12 @@ PortMate requires Node `>=22.12.0`; `.nvmrc` pins the verified `22.20.0` toolcha
 preview runs at `http://127.0.0.1:1420`. It uses empty local state outside Tauri and the Tauri
 command backend inside the desktop app.
 
+The desktop and terminal ship the complete JetBrains Mono 2.304 Regular, SemiBold, and Bold webfonts
+from the upstream project under SIL OFL 1.1. The bundled files include terminal box-drawing,
+Powerline, arrow, and mathematical glyphs instead of relying on a reduced web subset or a font
+installed on the host. Existing profiles which still contain either former PortMate default font
+stack are migrated to the bundled font; explicitly configured custom stacks remain unchanged.
+
 The main window never hydrates authoritative sessions from browser storage. It writes a versioned
 session-summary cache only so detached terminals and the serial analyzer can paint a useful first
 frame while their backend refresh starts. Those windows accept the current v1 envelope and the

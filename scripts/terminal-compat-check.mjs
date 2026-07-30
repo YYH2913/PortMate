@@ -405,7 +405,13 @@ try {
 
   const page = await context.newPage();
   const pageErrors = [];
+  const fontResponses = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("response", (response) => {
+    if (/JetBrainsMono-(?:Regular|SemiBold|Bold)\.woff2/.test(response.url())) {
+      fontResponses.push({ url: response.url(), status: response.status() });
+    }
+  });
   await page.goto(appUrl);
   try {
     await page.waitForFunction(() => {
@@ -418,6 +424,27 @@ try {
     const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
+
+  const bundledFonts = await page.evaluate(async () => {
+    const weights = [400, 600, 700];
+    const loaded = await Promise.all(weights.map(async (weight) => ({
+      weight,
+      faces: (await document.fonts.load(`${weight} 13px "JetBrains Mono"`, "PortMate 0O1l ─│┌┐└┘"))
+        .map((face) => ({ family: face.family, status: face.status, weight: face.weight })),
+    })));
+    return {
+      bootstrap: document.documentElement.dataset.bundledTerminalFont,
+      loaded,
+    };
+  });
+  assert(bundledFonts.bootstrap === "loaded",
+    `bundled terminal font was not ready before XTerm mounted: ${JSON.stringify(bundledFonts)}`);
+  assert(bundledFonts.loaded.every((entry) => entry.faces.length > 0
+      && entry.faces.every((face) => face.family === "JetBrains Mono" && face.status === "loaded")),
+  `bundled terminal font weights did not load: ${JSON.stringify(bundledFonts)}`);
+  assert(["Regular", "SemiBold", "Bold"].every((weight) => fontResponses
+    .some((response) => response.status === 200 && response.url.includes(`JetBrainsMono-${weight}.woff2`))),
+  `bundled terminal font assets were not served successfully: ${JSON.stringify(fontResponses)}`);
 
   const terminalState = () => page.evaluate(() => [...document.querySelectorAll("[data-pane-id]")].map((pane) => {
     const host = pane.querySelector(".terminal-host");
@@ -811,6 +838,7 @@ try {
   assert(!onlineSelectionSearch.hasOpener && !onlineSelectionSearch.referrer,
     `online search retained opener/referrer access: ${JSON.stringify(onlineSelectionSearch)}`);
   await selectionPopup.close();
+  await page.bringToFront();
   const onlineSelectionWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
     call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
   )));

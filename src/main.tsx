@@ -14,16 +14,30 @@ const serialAnalyzerRequest = detachedPaneRequest || workspaceWindowRequest ? nu
 if (detachedPaneRequest) document.body.classList.add("detached-window");
 if (serialAnalyzerRequest) document.body.classList.add("serial-analyzer-window");
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    {detachedPaneRequest ? (
-      <Suspense fallback={<div className="detached-pane-loading">正在加载终端...</div>}>
-        <DetachedPaneApp request={detachedPaneRequest} />
-      </Suspense>
-    ) : serialAnalyzerRequest ? (
-      <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
-        <SerialAnalyzerApp request={serialAnalyzerRequest} />
-      </Suspense>
-    ) : <App workspaceWindowId={workspaceWindowRequest?.windowId} />}
-  </React.StrictMode>,
-);
+void loadBundledTerminalFont().finally(() => {
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <React.StrictMode>
+      {detachedPaneRequest ? (
+        <Suspense fallback={<div className="detached-pane-loading">正在加载终端...</div>}>
+          <DetachedPaneApp request={detachedPaneRequest} />
+        </Suspense>
+      ) : serialAnalyzerRequest ? (
+        <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
+          <SerialAnalyzerApp request={serialAnalyzerRequest} />
+        </Suspense>
+      ) : <App workspaceWindowId={workspaceWindowRequest?.windowId} />}
+    </React.StrictMode>,
+  );
+});
+
+async function loadBundledTerminalFont() {
+  try {
+    const faces = await document.fonts.load(
+      '400 13px "JetBrains Mono"',
+      "PortMate 0O1l []{} ─│┌┐└┘",
+    );
+    document.documentElement.dataset.bundledTerminalFont = faces.length > 0 ? "loaded" : "fallback";
+  } catch {
+    document.documentElement.dataset.bundledTerminalFont = "fallback";
+  }
+}

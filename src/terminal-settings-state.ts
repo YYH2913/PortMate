@@ -21,7 +21,11 @@ export function shouldEnableTerminalWebgl(desktopBackend: boolean, userAgent: st
 }
 
 const DEFAULT_TERMINAL_NAME = "xterm-256color";
-const DEFAULT_TERMINAL_FONT_FAMILY = "Roboto Mono, JetBrains Mono, monospace";
+export const DEFAULT_TERMINAL_FONT_FAMILY = '"JetBrains Mono", "Noto Sans Mono CJK SC", "Sarasa Mono SC", "Microsoft YaHei UI", monospace';
+const LEGACY_DEFAULT_TERMINAL_FONT_FAMILIES = new Set([
+  "Roboto Mono, JetBrains Mono, monospace",
+  "JetBrains Mono, monospace",
+]);
 const terminalNamePattern = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
 export type TerminalStartupSessionOption = {
@@ -42,6 +46,7 @@ export function normalizeTerminalProfileSettings(
     fontFamily: fontFamily
       && Array.from(fontFamily).length <= MAX_TERMINAL_FONT_FAMILY_CHARACTERS
       && !/[\u0000-\u001f\u007f-\u009f]/.test(fontFamily)
+      && !LEGACY_DEFAULT_TERMINAL_FONT_FAMILIES.has(fontFamily)
       ? fontFamily
       : DEFAULT_TERMINAL_FONT_FAMILY,
     fontSize: boundedInteger(value.fontSize, TERMINAL_PROFILE_BOUNDS.fontSize),

@@ -1,6 +1,30 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-SemiBold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
-  --mono: "JetBrains Mono", "Consolas", "Microsoft YaHei UI", monospace;
+  --mono: "JetBrains Mono", "Noto Sans Mono CJK SC", "Sarasa Mono SC", "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
   font-family: var(--mono);
   --bg: #0f1419;
   --panel: #131a22;
@@ -5446,7 +5470,7 @@ fieldset label {
   background: #0d141c;
   color: var(--text);
   padding: 9px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.45;
 }

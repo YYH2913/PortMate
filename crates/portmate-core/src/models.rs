@@ -612,7 +612,7 @@ impl Default for TerminalSettings {
             rows: 32,
             cols: 120,
             scrollback: 200_000,
-            font_family: "Roboto Mono, JetBrains Mono, monospace".to_string(),
+            font_family: "\"JetBrains Mono\", \"Noto Sans Mono CJK SC\", \"Sarasa Mono SC\", \"Microsoft YaHei UI\", monospace".to_string(),
             font_size: 13,
             theme: "portmate-dark".to_string(),
             background_opacity: default_terminal_background_opacity(),

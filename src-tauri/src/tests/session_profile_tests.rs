@@ -128,6 +128,18 @@ fn session_profile_normalization_bounds_metadata_and_terminal_settings() {
     assert_eq!(normalized.triggers.len(), 1);
     assert_eq!(normalized.triggers[0].id, "valid-trigger");
 
+    for legacy_font_family in [
+        "Roboto Mono, JetBrains Mono, monospace",
+        "JetBrains Mono, monospace",
+    ] {
+        let mut legacy = test_shell_profile();
+        legacy.terminal.font_family = legacy_font_family.to_string();
+        assert_eq!(
+            normalize_session_profile(legacy).terminal.font_family,
+            DEFAULT_TERMINAL_FONT_FAMILY
+        );
+    }
+
     let mut fallback = profile.clone();
     fallback.name = "\0\n".to_string();
     assert_eq!(

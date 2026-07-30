@@ -70,7 +70,7 @@ import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
-import { normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
+import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
@@ -959,12 +959,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   useEffect(() => {
     if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
+    const closeOnScroll = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".terminal-canvas")) return;
+      setContextMenu(null);
+    };
+    const closeOnResize = () => setContextMenu(null);
+    window.addEventListener("scroll", closeOnScroll, true);
+    window.addEventListener("resize", closeOnResize);
     return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", closeOnScroll, true);
+      window.removeEventListener("resize", closeOnResize);
     };
   }, [contextMenu]);
 
@@ -5144,7 +5148,7 @@ function createSessionDraft(): SessionProfile {
       rows: 32,
       cols: 120,
       scrollback: 200000,
-      fontFamily: "JetBrains Mono, monospace",
+      fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
       fontSize: 13,
       theme: "portmate-dark",
       backgroundOpacity: 100,

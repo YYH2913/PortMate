@@ -238,7 +238,7 @@ function SysmonTrendCanvas({ history, mode }: { history: SysmonSnapshot[]; mode:
       const plotWidth = Math.max(1, width - plot.left - plot.right);
       const plotHeight = Math.max(1, height - plot.top - plot.bottom);
       const maximum = sysmonTrendMax(history, mode);
-      context.font = '10px "JetBrains Mono", monospace';
+      context.font = '10px "JetBrains Mono", "Noto Sans Mono CJK SC", monospace';
       context.lineWidth = 1;
       context.textAlign = "right";
       context.textBaseline = "middle";
