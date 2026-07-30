@@ -103,6 +103,26 @@ pub(super) fn validate_expected_proxy_password(
     Ok(())
 }
 
+pub(super) fn cleanup_orphaned_profile_secret_refs_with<DeleteSecret>(
+    store: &SessionStore,
+    candidates: impl IntoIterator<Item = String>,
+    mut delete_secret: DeleteSecret,
+) -> Vec<(String, String)>
+where
+    DeleteSecret: FnMut(&str) -> Result<(), String>,
+{
+    let mut failures = Vec::new();
+    for secret_ref in candidates {
+        if secret_ref_usage_count(store, &secret_ref) != 0 {
+            continue;
+        }
+        if let Err(error) = delete_secret(&secret_ref) {
+            failures.push((secret_ref, error));
+        }
+    }
+    failures
+}
+
 pub(super) fn merge_expected_json_value(
     entity: &str,
     path: &str,
@@ -233,12 +253,12 @@ pub(crate) fn save_session_profile(
             return Err(error);
         }
     };
-    for secret_ref in old_secret_refs {
-        if secret_ref_usage_count(&store, &secret_ref) == 0 {
-            if let Err(error) = delete_secret_from_store(&secret_ref) {
-                eprintln!("PortMate: profile saved but orphan secret cleanup failed: {error}");
-            }
-        }
+    for (secret_ref, error) in
+        cleanup_orphaned_profile_secret_refs_with(&store, old_secret_refs, delete_secret_from_store)
+    {
+        eprintln!(
+            "PortMate: profile saved but orphan secret cleanup failed ({secret_ref}): {error}"
+        );
     }
     drop(store);
     clear_log_retention_check(&state.store_path, &summary.profile.id);

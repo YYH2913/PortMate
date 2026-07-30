@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile_commands::cleanup_orphaned_profile_secret_refs_with;
 
 #[test]
 fn terminal_resize_metadata_changes_memory_only_after_persistence_succeeds() {
@@ -268,6 +269,67 @@ fn proxy_secret_usage_counts_all_supported_profile_kinds() {
         .profiles
         .iter()
         .all(|profile| { profile_secret_refs(profile).contains("keychain:shared-proxy") }));
+}
+
+#[test]
+fn deleting_persisted_jump_reclaims_only_unreferenced_secrets() {
+    let unique_password = "keychain:jump-unique";
+    let shared_passphrase = "keychain:jump-shared";
+    let mut first = test_ssh_profile();
+    if let ConnectionConfig::Ssh(ssh) = &mut first.connection {
+        ssh.jumps.push(portmate_core::JumpHop {
+            host: "first-bastion.example".to_string(),
+            port: 22,
+            username: "operator".to_string(),
+            password_secret_ref: Some(unique_password.to_string()),
+            passphrase_secret_ref: Some(shared_passphrase.to_string()),
+            identity_ref: None,
+            host_key_policy: None,
+        });
+    }
+    let old_secret_refs = profile_secret_refs(&first);
+
+    let mut second = test_ssh_profile();
+    second.id = "ssh-session-2".to_string();
+    if let ConnectionConfig::Ssh(ssh) = &mut second.connection {
+        ssh.jumps.push(portmate_core::JumpHop {
+            host: "second-bastion.example".to_string(),
+            port: 22,
+            username: "operator".to_string(),
+            password_secret_ref: None,
+            passphrase_secret_ref: Some(shared_passphrase.to_string()),
+            identity_ref: None,
+            host_key_policy: None,
+        });
+    }
+
+    let mut store = SessionStore::default();
+    store.upsert_profile(first.clone());
+    store.upsert_profile(second);
+    if let ConnectionConfig::Ssh(ssh) = &mut first.connection {
+        ssh.jumps.clear();
+    }
+    store.upsert_profile(first);
+
+    let deleted = std::cell::RefCell::new(Vec::new());
+    let failures =
+        cleanup_orphaned_profile_secret_refs_with(&store, old_secret_refs, |secret_ref| {
+            deleted.borrow_mut().push(secret_ref.to_string());
+            Ok(())
+        });
+    assert!(failures.is_empty());
+    assert_eq!(deleted.into_inner(), vec![unique_password.to_string()]);
+    assert_eq!(secret_ref_usage_count(&store, unique_password), 0);
+    assert_eq!(secret_ref_usage_count(&store, shared_passphrase), 1);
+
+    let failures =
+        cleanup_orphaned_profile_secret_refs_with(&store, [unique_password.to_string()], |_| {
+            Err("keyring locked".to_string())
+        });
+    assert_eq!(
+        failures,
+        vec![(unique_password.to_string(), "keyring locked".to_string())]
+    );
 }
 
 #[test]
