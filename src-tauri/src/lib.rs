@@ -116,6 +116,7 @@ mod ssh_host_key_scan;
 mod ssh_identity_commands;
 mod ssh_libssh_transport;
 mod ssh_reader;
+mod ssh_reconnect;
 mod ssh_runtime;
 mod ssh_security;
 mod ssh_session_lifecycle;
@@ -234,6 +235,7 @@ use ssh_host_key_commands::{
 use ssh_host_key_scan::*;
 use ssh_libssh_transport::*;
 use ssh_reader::*;
+use ssh_reconnect::*;
 use ssh_runtime::*;
 use ssh_security::*;
 use ssh_session_lifecycle::*;
