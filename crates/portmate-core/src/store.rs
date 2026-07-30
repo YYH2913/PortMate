@@ -1,9 +1,6 @@
-use crate::host_keys::{HostKeyEvaluation, HostKeyObservation, HostKeyStore};
+use crate::host_keys::HostKeyStore;
 use crate::models::*;
-use crate::redaction::{
-    redact_audit_records, redact_secrets, redact_session_events, redact_session_summary,
-    redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
-};
+use crate::redaction::redact_secrets;
 use crate::store_system_events::SystemEventSinkRuntime;
 #[cfg(test)]
 use crate::store_system_events::MAX_SYSTEM_EVENT_OUTBOX;
@@ -13,7 +10,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::SyncSender;
 use uuid::Uuid;
 
+mod exports;
 mod histories;
+mod security;
 #[cfg(test)]
 use histories::{
     AUX_HISTORY_TRIM_BATCH, MAX_AUDIT_RECORDS_PER_SCOPE, MAX_SYSMON_SNAPSHOTS_PER_SESSION,
@@ -699,118 +698,6 @@ impl SessionStore {
             });
         }
         Ok(event)
-    }
-
-    pub fn evaluate_host_key(
-        &self,
-        profile_id: &str,
-        observation: &HostKeyObservation,
-    ) -> Result<HostKeyEvaluation, String> {
-        let policy = self
-            .ssh_profile(profile_id)
-            .map(|ssh| &ssh.host_key_policy)
-            .ok_or_else(|| format!("profile is not SSH-backed: {profile_id}"))?;
-        self.host_keys
-            .evaluate(profile_id, policy, observation)
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn apply_host_key_decision(
-        &mut self,
-        profile_id: &str,
-        observation: &HostKeyObservation,
-        decision: HostKeyDecision,
-    ) -> Result<Option<TrustedHostKey>, String> {
-        let policy = self
-            .ssh_profile(profile_id)
-            .map(|ssh| ssh.host_key_policy.clone())
-            .ok_or_else(|| format!("profile is not SSH-backed: {profile_id}"))?;
-        self.host_keys
-            .apply_decision(profile_id, &policy, observation, decision)
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn mcp_can(&self, client_id: &str, scope: McpScope, session_id: Option<&str>) -> bool {
-        let now = Utc::now();
-        self.grants
-            .iter()
-            .filter(|grant| grant.client_id == client_id)
-            .any(|grant| grant.allows(scope, session_id, now))
-    }
-
-    pub fn mcp_can_read(&self, client_id: &str, scope: McpScope, session_id: Option<&str>) -> bool {
-        let client_id = client_id.trim();
-        !client_id.is_empty()
-            && client_id.len() <= 128
-            && !client_id.chars().any(char::is_control)
-            && (self.grants.is_empty() || self.mcp_can(client_id, scope, session_id))
-    }
-
-    pub fn export_session_bundle(&self, session_id: &str) -> serde_json::Value {
-        self.export_session_bundle_with_redaction(session_id, false)
-    }
-
-    pub fn export_session_bundle_redacted(&self, session_id: &str) -> serde_json::Value {
-        self.export_session_bundle_with_redaction(session_id, true)
-    }
-
-    fn export_session_bundle_with_redaction(
-        &self,
-        session_id: &str,
-        redact_bundle: bool,
-    ) -> serde_json::Value {
-        let mut summary = self
-            .summaries()
-            .into_iter()
-            .find(|summary| summary.profile.id == session_id);
-        let mut events = self.tail_log(session_id, 500);
-        let mut timeline = self.timeline_for(session_id);
-        let mut transfers = self
-            .transfers
-            .iter()
-            .filter(|transfer| transfer.session_id == session_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut audit = self
-            .audit
-            .iter()
-            .filter(|record| record.session_id.as_deref() == Some(session_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut sysmon = self.sysmon_for(session_id);
-        if redact_bundle {
-            summary = summary.map(redact_session_summary);
-            events = redact_session_events(events);
-            timeline = redact_timeline_marks(timeline);
-            transfers = transfers.into_iter().map(redact_transfer_task).collect();
-            audit = redact_audit_records(audit);
-            sysmon = sysmon.map(redact_sysmon_snapshot);
-        }
-        let log_shards = events
-            .iter()
-            .filter_map(|event| event.bytes_ref.as_ref())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        serde_json::json!({
-            "summary": summary,
-            "events": events,
-            "logShards": log_shards,
-            "timeline": timeline,
-            "sysmon": sysmon,
-            "transfers": transfers,
-            "audit": audit,
-        })
-    }
-
-    fn ssh_profile(&self, profile_id: &str) -> Option<&SshConnection> {
-        self.profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .and_then(|profile| match &profile.connection {
-                ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => Some(ssh),
-                _ => None,
-            })
     }
 }
 
