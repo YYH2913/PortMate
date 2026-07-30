@@ -180,6 +180,11 @@ export function reconcileWorkspaceSnapshot(
   };
 }
 
+export function resetWorkspaceTerminalKeyModes(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const root = resetWorkspaceNodeTerminalKeyModes(snapshot.root);
+  return root === snapshot.root ? snapshot : { ...snapshot, root };
+}
+
 export function resolveStartupSessionIds(
   mode: StartupMode,
   configuredIds: string[],
@@ -1017,6 +1022,23 @@ function reconcileWorkspaceNode(root: WorkspaceNode | null, available: Set<strin
   if (!first) return second;
   if (!second) return first;
   return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
+function resetWorkspaceNodeTerminalKeyModes(root: WorkspaceNode | null): WorkspaceNode | null {
+  if (!root) return null;
+  if (root.kind === "pane") {
+    if (root.views.every((view) => view.keyMode === "remote")) return root;
+    return createWorkspacePaneFromViews(
+      root.id,
+      root.views.map((view) => ({ ...view, keyMode: "remote" })),
+      root.activeViewId,
+    );
+  }
+  const first = resetWorkspaceNodeTerminalKeyModes(root.first);
+  const second = resetWorkspaceNodeTerminalKeyModes(root.second);
+  if (first === root.first && second === root.second) return root;
+  if (!first || !second) return root;
+  return { ...root, first, second };
 }
 
 function uniqueNodeId(requested: string, state: SanitizeState) {

@@ -14,6 +14,7 @@ import {
   findWorkspacePane,
   insertWorkspacePaneSession,
   reconcileWorkspaceSnapshot,
+  resetWorkspaceTerminalKeyModes,
   removeWorkspacePane,
   removeWorkspacePaneSession,
   removeWorkspacePaneView,
@@ -393,6 +394,40 @@ describe("workspace snapshots", () => {
       activeId: "a",
     });
     expect(workspacePaneActiveView(findWorkspacePane(legacy.root, "legacy")!).keyMode).toBe("remote");
+  });
+
+  it("resets persisted terminal key modes to Insert without changing live mode operations", () => {
+    const snapshot = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "split",
+        id: "root",
+        direction: "vertical",
+        ratio: 0.5,
+        first: {
+          kind: "pane",
+          id: "group-a",
+          activeViewId: "view-a",
+          views: [{ id: "view-a", sessionId: "a", title: "", color: "", keyMode: "command" }],
+        },
+        second: {
+          kind: "pane",
+          id: "group-b",
+          activeViewId: "view-b",
+          views: [{ id: "view-b", sessionId: "b", title: "", color: "", keyMode: "normal" }],
+        },
+      },
+      activePaneId: "group-b",
+      activeId: "b",
+    });
+
+    const reset = resetWorkspaceTerminalKeyModes(snapshot);
+    expect(workspacePaneLeaves(reset.root).flatMap((pane) => pane.views.map((view) => view.keyMode)))
+      .toEqual(["remote", "remote"]);
+    expect(reset.activePaneId).toBe("group-b");
+    expect(reset.activeId).toBe("b");
+    expect(reset.root).not.toBe(snapshot.root);
+    expect(resetWorkspaceTerminalKeyModes(reset)).toBe(reset);
   });
 
   it("moves and splits the exact aliased view among duplicate session bindings", () => {
