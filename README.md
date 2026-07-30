@@ -832,6 +832,10 @@ Windows OpenSSH host for remote Sysmon, additional SDK versions beyond the pinne
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
 validated transfer and file-manager surfaces, and native keyring/Stronghold fault injection. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
-compatibility job, but a successful workflow run and retained artifacts are still required as native
-platform evidence. Signing, Apple notarization, and installed-application smoke tests remain release
-gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile credential migration.
+compatibility job. Its Windows package gate silently installs/extracts and launches both MSI and NSIS
+payloads; its macOS gate launches the direct app and the copy mounted from the verified DMG. Every
+launch uses an isolated data directory and must publish a loopback IPC endpoint tied to its non-empty
+Store, exit through Tauri with code zero, and remove the endpoint. A successful workflow run and
+retained artifacts are still required as native platform evidence. Signing and Apple notarization
+remain release gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile
+credential migration.

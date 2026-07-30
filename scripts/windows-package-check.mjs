@@ -15,6 +15,7 @@ import {
   inspectPortableTree,
   verifyWindowsPackageLayout,
 } from "./native-package-layout.mjs";
+import { smokePackagedApplication } from "./native-packaged-smoke.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -33,6 +34,7 @@ const nsisRoot = join(auditRoot, "nsis");
 const expectedUninstaller = join(nsisRoot, "uninstall.exe");
 let verifiedMsi;
 let verifiedNsis;
+const runtimeSmokes = [];
 let failure;
 
 try {
@@ -53,6 +55,14 @@ try {
     sourceSidecar,
     sourceLicense,
   });
+  runtimeSmokes.push({
+    package: "MSI",
+    result: await smokePackagedApplication({
+      executable: verifiedMsi.main,
+      dataDirectory: join(auditRoot, "runtime-msi", "dev.portmate.desktop"),
+      label: "MSI packaged application",
+    }),
+  });
 
   run(nsis, ["/S", `/D=${nsisRoot}`]);
   verifiedNsis = verifyWindowsPackageLayout({
@@ -60,6 +70,14 @@ try {
     sourceMain,
     sourceSidecar,
     sourceLicense,
+  });
+  runtimeSmokes.push({
+    package: "NSIS",
+    result: await smokePackagedApplication({
+      executable: verifiedNsis.main,
+      dataDirectory: join(auditRoot, "runtime-nsis", "dev.portmate.desktop"),
+      label: "NSIS installed application",
+    }),
   });
   const uninstaller = findUniqueRegularFile(
     inspectPortableTree(nsisRoot),
@@ -102,11 +120,13 @@ console.log(JSON.stringify({
     "portable package symlinks",
     "MSI administrative extraction",
     "NSIS silent install and uninstall",
+    "installed main-process IPC, Store, clean exit, and endpoint cleanup",
   ],
   payloads: {
     msi: verifiedMsi,
     nsis: verifiedNsis,
   },
+  runtimeSmokes,
 }, null, 2));
 
 function findSingleArtifact(directory, extension, label) {

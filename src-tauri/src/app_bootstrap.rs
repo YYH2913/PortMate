@@ -1,11 +1,29 @@
 use super::*;
 
+const NATIVE_SMOKE_DATA_DIR_ENV: &str = "PORTMATE_NATIVE_SMOKE_DATA_DIR";
+const NATIVE_SMOKE_EXIT_AFTER_MS_ENV: &str = "PORTMATE_NATIVE_SMOKE_EXIT_AFTER_MS";
+const MIN_NATIVE_SMOKE_EXIT_AFTER_MS: u64 = 1_000;
+const MAX_NATIVE_SMOKE_EXIT_AFTER_MS: u64 = 60_000;
+
+#[derive(Debug)]
+struct NativeSmokeConfig {
+    data_root: PathBuf,
+    data_dir: PathBuf,
+    exit_after: Duration,
+}
+
 pub fn run() {
     webkit_runtime::configure_webkit_runtime();
     tauri::Builder::default()
         .setup(|app| {
-            let data_root = app.path().data_dir()?;
-            let data_dir = app.path().app_data_dir()?;
+            let native_smoke = native_smoke_config().map_err(std::io::Error::other)?;
+            let (data_root, data_dir) = match &native_smoke {
+                Some(config) => {
+                    fs::create_dir_all(&config.data_dir)?;
+                    (config.data_root.clone(), config.data_dir.clone())
+                }
+                None => (app.path().data_dir()?, app.path().app_data_dir()?),
+            };
             migrate_legacy_app_data_dir(&data_root, &data_dir).map_err(std::io::Error::other)?;
             PORTABLE_VAULT
                 .set(PortableVaultContext {
@@ -82,6 +100,13 @@ pub fn run() {
                 Uuid::new_v4().to_string(),
             );
             app.manage(state);
+            if let Some(config) = native_smoke {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(config.exit_after);
+                    app_handle.exit(0);
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -200,4 +225,84 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn native_smoke_config() -> Result<Option<NativeSmokeConfig>, String> {
+    parse_native_smoke_config(
+        std::env::var_os(NATIVE_SMOKE_DATA_DIR_ENV),
+        std::env::var_os(NATIVE_SMOKE_EXIT_AFTER_MS_ENV),
+    )
+}
+
+fn parse_native_smoke_config(
+    data_dir: Option<std::ffi::OsString>,
+    exit_after_ms: Option<std::ffi::OsString>,
+) -> Result<Option<NativeSmokeConfig>, String> {
+    let (data_dir, exit_after_ms) = match (data_dir, exit_after_ms) {
+        (None, None) => return Ok(None),
+        (Some(data_dir), Some(exit_after_ms)) => (data_dir, exit_after_ms),
+        _ => {
+            return Err(format!(
+                "{NATIVE_SMOKE_DATA_DIR_ENV} and {NATIVE_SMOKE_EXIT_AFTER_MS_ENV} must be set together"
+            ));
+        }
+    };
+    let data_dir = PathBuf::from(data_dir);
+    if !data_dir.is_absolute() || data_dir.parent().is_none() || data_dir.file_name().is_none() {
+        return Err(format!(
+            "{NATIVE_SMOKE_DATA_DIR_ENV} must be an absolute non-root path"
+        ));
+    }
+    let exit_after_ms = exit_after_ms
+        .to_str()
+        .ok_or_else(|| format!("{NATIVE_SMOKE_EXIT_AFTER_MS_ENV} must be valid UTF-8"))?
+        .parse::<u64>()
+        .map_err(|_| format!("{NATIVE_SMOKE_EXIT_AFTER_MS_ENV} must be an integer"))?;
+    if !(MIN_NATIVE_SMOKE_EXIT_AFTER_MS..=MAX_NATIVE_SMOKE_EXIT_AFTER_MS).contains(&exit_after_ms) {
+        return Err(format!(
+            "{NATIVE_SMOKE_EXIT_AFTER_MS_ENV} must be between {MIN_NATIVE_SMOKE_EXIT_AFTER_MS} and {MAX_NATIVE_SMOKE_EXIT_AFTER_MS}"
+        ));
+    }
+    let data_root = data_dir
+        .parent()
+        .expect("absolute non-root smoke data path was validated")
+        .to_path_buf();
+    Ok(Some(NativeSmokeConfig {
+        data_root,
+        data_dir,
+        exit_after: Duration::from_millis(exit_after_ms),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_smoke_configuration_is_explicit_bounded_and_isolated() {
+        assert!(parse_native_smoke_config(None, None).unwrap().is_none());
+        assert!(parse_native_smoke_config(
+            Some(std::env::temp_dir().join("portmate-smoke").into_os_string()),
+            None,
+        )
+        .unwrap_err()
+        .contains("must be set together"));
+
+        let data_dir = std::env::temp_dir().join("portmate-smoke");
+        let config =
+            parse_native_smoke_config(Some(data_dir.clone().into_os_string()), Some("2500".into()))
+                .unwrap()
+                .expect("complete smoke configuration should be enabled");
+        assert_eq!(config.data_dir, data_dir);
+        assert_eq!(config.data_root, data_dir.parent().unwrap());
+        assert_eq!(config.exit_after, Duration::from_millis(2_500));
+
+        for delay in ["999", "60001", "not-a-number"] {
+            assert!(parse_native_smoke_config(
+                Some(data_dir.clone().into_os_string()),
+                Some(delay.into()),
+            )
+            .is_err());
+        }
+    }
 }

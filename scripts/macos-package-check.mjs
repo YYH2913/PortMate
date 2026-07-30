@@ -11,6 +11,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File, verifyMacAppBundle } from "./native-package-layout.mjs";
+import { smokePackagedApplication } from "./native-packaged-smoke.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -41,6 +42,7 @@ let verifiedApp;
 let verifiedDmg;
 let failure;
 let directBinaryVerification;
+const runtimeSmokes = [];
 
 try {
   const appMain = join(app, "Contents", "MacOS", "portmate");
@@ -54,6 +56,14 @@ try {
     directBinaryVerification = "strict Apple code-signature verification";
   }
   verifiedApp = verifyApp(app, { compareBinaries: exactReleaseBinaries });
+  runtimeSmokes.push({
+    package: "macOS app",
+    result: await smokePackagedApplication({
+      executable: verifiedApp.main,
+      dataDirectory: join(auditRoot, "runtime-app", "dev.portmate.desktop"),
+      label: "macOS application bundle",
+    }),
+  });
   run("hdiutil", ["verify", dmg]);
   mkdirSync(mountPoint, { recursive: true });
   run("hdiutil", [
@@ -69,6 +79,14 @@ try {
   verifiedDmg = verifyApp(dmgApp, {
     sourceMain: verifiedApp.main,
     sourceSidecar: verifiedApp.sidecar,
+  });
+  runtimeSmokes.push({
+    package: "DMG",
+    result: await smokePackagedApplication({
+      executable: verifiedDmg.main,
+      dataDirectory: join(auditRoot, "runtime-dmg", "dev.portmate.desktop"),
+      label: "DMG packaged application",
+    }),
   });
 } catch (error) {
   failure = error;
@@ -100,12 +118,14 @@ console.log(JSON.stringify({
     "bundle identifier, version, executable, and application category",
     "portable bundle symlinks",
     "DMG verification and read-only mount",
+    "packaged main-process IPC, Store, clean exit, and endpoint cleanup",
   ],
   payloads: {
     app: verifiedApp,
     dmg: verifiedDmg,
   },
   directBinaryVerification,
+  runtimeSmokes,
 }, null, 2));
 
 function verifyApp(path, options = {}) {
