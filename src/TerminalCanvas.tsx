@@ -9,6 +9,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
+import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
@@ -44,6 +45,13 @@ import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } 
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { normalizeTerminalProfileSettings, shouldEnableTerminalWebgl } from "./terminal-settings-state";
+import {
+  MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS,
+  terminalSemanticHighlightingEnabled,
+  terminalSemanticHighlightingSupported,
+  terminalSemanticTokens,
+} from "./terminal-semantic-highlighting";
+import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
@@ -91,6 +99,16 @@ type TerminalGotoLineContext = {
   resumeFreeInputSource: "manual" | "normal" | null;
   resumeFreeInputValue: string;
 };
+type TerminalSemanticCell = {
+  row: number;
+  column: number;
+  width: number;
+};
+type TerminalSemanticLogicalLine = {
+  text: string;
+  cells: TerminalSemanticCell[];
+  nextRow: number;
+};
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   matchBackground: "#284457",
@@ -100,6 +118,81 @@ const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   activeMatchBorder: "#ffffff",
   activeMatchColorOverviewRuler: "#f4b860",
 };
+
+function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): TerminalSemanticLogicalLine {
+  const buffer = term.buffer.active;
+  const characters: string[] = [];
+  const cells: TerminalSemanticCell[] = [];
+  let row = startRow;
+  let oversized = false;
+
+  while (row < buffer.length) {
+    const line = buffer.getLine(row);
+    if (!line || (row > startRow && !line.isWrapped)) break;
+    const physicalCharacters: string[] = [];
+    const physicalCells: TerminalSemanticCell[] = [];
+    const physicalContent: boolean[] = [];
+    const columns = Math.min(term.cols, line.length);
+    for (let column = 0; column < columns; column += 1) {
+      const cell = line.getCell(column);
+      if (!cell || cell.getWidth() === 0) continue;
+      const chars = cell.getChars();
+      const cellCharacters = Array.from(chars || " ");
+      for (const character of cellCharacters) {
+        physicalCharacters.push(character);
+        physicalCells.push({ row, column, width: Math.max(1, cell.getWidth()) });
+        physicalContent.push(Boolean(chars));
+      }
+    }
+    while (physicalCharacters.length && !physicalContent.at(-1)) {
+      physicalCharacters.pop();
+      physicalCells.pop();
+      physicalContent.pop();
+    }
+    characters.push(...physicalCharacters);
+    cells.push(...physicalCells);
+    row += 1;
+    if (characters.length > MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) {
+      oversized = true;
+      break;
+    }
+  }
+
+  if (oversized) {
+    while (row < buffer.length && buffer.getLine(row)?.isWrapped) row += 1;
+  }
+  return { text: characters.join(""), cells, nextRow: Math.max(startRow + 1, row) };
+}
+
+function terminalSemanticCellSegments(
+  cells: readonly TerminalSemanticCell[],
+  start: number,
+  end: number,
+): TerminalSemanticCell[] {
+  const segments: TerminalSemanticCell[] = [];
+  for (const cell of cells.slice(start, end)) {
+    const previous = segments.at(-1);
+    if (previous && previous.row === cell.row && cell.column <= previous.column + previous.width) {
+      previous.width = Math.max(previous.width, cell.column + cell.width - previous.column);
+    } else {
+      segments.push({ ...cell });
+    }
+  }
+  return segments;
+}
+
+function terminalSemanticColor(kind: TerminalSemanticTokenKind, theme: ITheme): string {
+  switch (kind) {
+    case "command": return theme.brightGreen ?? theme.green ?? "#86efac";
+    case "option": return theme.brightBlue ?? theme.blue ?? "#93c5fd";
+    case "string": return theme.brightYellow ?? theme.yellow ?? "#fde047";
+    case "path": return theme.brightCyan ?? theme.cyan ?? "#67e8f9";
+    case "address": return theme.cyan ?? "#5eead4";
+    case "number": return theme.brightMagenta ?? theme.magenta ?? "#d8b4fe";
+    case "variable": return theme.magenta ?? "#c084fc";
+    case "operator": return theme.brightRed ?? theme.red ?? "#ff8a8a";
+  }
+}
 
 export default function TerminalCanvas({
   viewId = "",
@@ -126,6 +219,7 @@ export default function TerminalCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
+  const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -147,6 +241,9 @@ export default function TerminalCanvas({
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
   const keySequenceRef = useRef<TerminalKeySequenceState>(emptyTerminalKeySequenceState());
+  const semanticHighlightingEnabledRef = useRef(terminalSemanticHighlightingEnabled(completionSettings));
+  const semanticHighlightingSupportedRef = useRef(false);
+  const semanticThemeRef = useRef(activeTerminalTheme);
   const localNavigationRef = useRef<LocalNavigationState | null>(null);
   const openSearchRef = useRef<() => void>(() => {});
   const openFreeInputRef = useRef<() => void>(() => {});
@@ -204,6 +301,10 @@ export default function TerminalCanvas({
   const completionSupported = active
     ? ["shell", "ssh", "tcp", "telnet", "tmux"].includes(active.profile.kind)
     : false;
+  const semanticHighlightingSupported = terminalSemanticHighlightingSupported(active?.profile.kind);
+  semanticHighlightingEnabledRef.current = terminalSemanticHighlightingEnabled(completionSettings);
+  semanticHighlightingSupportedRef.current = semanticHighlightingSupported;
+  semanticThemeRef.current = activeTerminalTheme;
   const completionCandidates = useMemo(() => (
     focused
       && completionSupported
@@ -312,6 +413,7 @@ export default function TerminalCanvas({
     setCompletionDismissedLine("");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
+    refreshSemanticHighlightingRef.current();
   }
 
   function updateCompletionInput(text: string) {
@@ -323,6 +425,7 @@ export default function TerminalCanvas({
     setCompletionDismissedLine("");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
+    refreshSemanticHighlightingRef.current();
   }
 
   acceptCompletionRef.current = (suggestion) => {
@@ -349,6 +452,7 @@ export default function TerminalCanvas({
   function applyOneKeyPromptState(state: OneKeyPromptDetectionState) {
     const previousEventId = oneKeyPromptStateRef.current.prompt?.eventId;
     oneKeyPromptStateRef.current = state;
+    refreshSemanticHighlightingRef.current();
     const prompt = state.prompt && !dismissedOneKeyPromptEventsRef.current.has(state.prompt.eventId)
       ? state.prompt
       : null;
@@ -644,8 +748,10 @@ export default function TerminalCanvas({
     term.open(host);
     host.dataset.terminalBuffer = terminalBufferType(term);
     host.dataset.terminalHasSelection = "false";
+    let scheduleSemanticHighlighting = () => {};
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+      scheduleSemanticHighlighting();
     });
     let terminalDisposed = false;
     const pendingEventIds = new Set<string>();
@@ -721,6 +827,79 @@ export default function TerminalCanvas({
 
     const resizeObserver = new ResizeObserver(fitAndReport);
     resizeObserver.observe(host);
+    let semanticFrame: number | null = null;
+    let semanticDecorations: Array<{ dispose: () => void }> = [];
+    let semanticMarkers: Array<{ dispose: () => void }> = [];
+    const clearSemanticHighlighting = () => {
+      for (const decoration of semanticDecorations.splice(0)) decoration.dispose();
+      for (const marker of semanticMarkers.splice(0)) marker.dispose();
+      host.dataset.terminalSemanticDecorationCount = "0";
+    };
+    const renderSemanticHighlighting = () => {
+      semanticFrame = null;
+      clearSemanticHighlighting();
+      if (!semanticHighlightingEnabledRef.current) {
+        host.dataset.terminalSemanticHighlighting = "disabled";
+        return;
+      }
+      if (!semanticHighlightingSupportedRef.current) {
+        host.dataset.terminalSemanticHighlighting = "unsupported";
+        return;
+      }
+      if (!completionInputRef.current.synchronized || oneKeyPromptStateRef.current.prompt) {
+        host.dataset.terminalSemanticHighlighting = "paused";
+        return;
+      }
+      const buffer = term.buffer.active;
+      if (buffer.type !== "normal") {
+        host.dataset.terminalSemanticHighlighting = "alternate";
+        return;
+      }
+
+      const cursorRow = buffer.baseY + buffer.cursorY;
+      const markerByRow = new Map<number, ReturnType<XTerm["registerMarker"]>>();
+      let firstRow = buffer.viewportY;
+      while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow -= 1;
+      const viewportEnd = Math.min(buffer.length, buffer.viewportY + term.rows);
+      let row = firstRow;
+      let decorationCount = 0;
+      while (row < viewportEnd) {
+        const logicalLine = readTerminalSemanticLogicalLine(term, row);
+        row = logicalLine.nextRow;
+        for (const token of terminalSemanticTokens(logicalLine.text)) {
+          for (const segment of terminalSemanticCellSegments(logicalLine.cells, token.start, token.end)) {
+            let marker = markerByRow.get(segment.row);
+            if (marker === undefined) {
+              marker = term.registerMarker(segment.row - cursorRow);
+              markerByRow.set(segment.row, marker);
+              if (marker) semanticMarkers.push(marker);
+            }
+            if (!marker) continue;
+            const decoration = term.registerDecoration({
+              marker,
+              x: segment.column,
+              width: segment.width,
+              foregroundColor: terminalSemanticColor(token.kind, semanticThemeRef.current),
+              layer: "top",
+            });
+            if (!decoration) continue;
+            semanticDecorations.push(decoration);
+            decorationCount += 1;
+          }
+        }
+      }
+      host.dataset.terminalSemanticHighlighting = "active";
+      host.dataset.terminalSemanticDecorationCount = String(decorationCount);
+    };
+    scheduleSemanticHighlighting = () => {
+      if (terminalDisposed || semanticFrame !== null) return;
+      semanticFrame = window.requestAnimationFrame(renderSemanticHighlighting);
+    };
+    refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
+    const semanticWriteDisposable = term.onWriteParsed(scheduleSemanticHighlighting);
+    const semanticScrollDisposable = term.onScroll(scheduleSemanticHighlighting);
+    const semanticResizeDisposable = term.onResize(scheduleSemanticHighlighting);
+    scheduleSemanticHighlighting();
     const flushInput = () => {
       inputFlushTimerRef.current = null;
       const text = pendingInputRef.current;
@@ -807,6 +986,14 @@ export default function TerminalCanvas({
       pendingInputRef.current = "";
       if (flushInputRef.current === flushInput) flushInputRef.current = () => {};
       resizeObserver.disconnect();
+      semanticWriteDisposable.dispose();
+      semanticScrollDisposable.dispose();
+      semanticResizeDisposable.dispose();
+      if (semanticFrame !== null) window.cancelAnimationFrame(semanticFrame);
+      clearSemanticHighlighting();
+      if (refreshSemanticHighlightingRef.current === scheduleSemanticHighlighting) {
+        refreshSemanticHighlightingRef.current = () => {};
+      }
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
       mouseEncodingSetDisposable.dispose();
@@ -838,6 +1025,16 @@ export default function TerminalCanvas({
       termRef.current = null;
     };
   }, [active?.profile.id]);
+
+  useEffect(() => {
+    refreshSemanticHighlightingRef.current();
+  }, [
+    completionInput.synchronized,
+    completionSettings,
+    semanticHighlightingSupported,
+    oneKeyPrompt?.eventId,
+    themeId,
+  ]);
 
   useEffect(() => {
     if (!active) return;

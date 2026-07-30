@@ -234,6 +234,7 @@ function TerminalSettingsContent({
             <SettingSelect label="输入后开始自动补全:(S)" value={prefs.completionTriggerChars} options={["1 字符", "2 字符", "3 字符"]} onChange={(value) => updatePref("completionTriggerChars", value)} />
           </SettingsSection>
           <SettingsSection title="外观">
+            <SettingCheck label="自动多色交互命令行" checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
             <SettingSelect label="完成列表高度:(H)" value={prefs.completionListHeight} options={["5 行", "7 行", "10 行"]} onChange={(value) => updatePref("completionListHeight", value)} />
             <SettingSelect label="预览最佳匹配项:(P)" value={prefs.completionPreviewMode} options={["无处", "输入框", "列表顶部"]} onChange={(value) => updatePref("completionPreviewMode", value)} />
           </SettingsSection>
@@ -506,6 +507,7 @@ function createTerminalPrefs() {
     requireMasterPassword: false,
     completionEnabled: true,
     oneKeyCompletionEnabled: true,
+    semanticHighlightingEnabled: true,
     completionCommandNames: true,
     completionCommandOptions: true,
     completionCommandArgs: true,

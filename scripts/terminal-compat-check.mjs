@@ -363,7 +363,22 @@ try {
           window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
           return null;
         }
-        if (command === "list_sessions") return initialSessions;
+        if (command === "list_sessions") {
+          const terminalTheme = localStorage.getItem("portmate.compat.terminalTheme");
+          const terminalOpacity = Number(localStorage.getItem("portmate.compat.terminalOpacity"));
+          if (!terminalTheme && !terminalOpacity) return initialSessions;
+          return initialSessions.map((session) => ({
+            ...session,
+            profile: {
+              ...session.profile,
+              terminal: {
+                ...session.profile.terminal,
+                ...(terminalTheme ? { theme: terminalTheme } : {}),
+                ...(terminalOpacity ? { backgroundOpacity: terminalOpacity } : {}),
+              },
+            },
+          }));
+        }
         if (command === "tail_log") return initialEvents[args.sessionId] ?? [];
         if (command === "list_host_keys") return { keys: [] };
         if ([
@@ -442,6 +457,75 @@ try {
   assert(initial.find((pane) => pane.paneId === "pane-a")?.owner === "active", "pane A must own the initial PTY size");
   assert(initial.find((pane) => pane.paneId === "pane-b")?.owner === "inactive", "pane B must not own the initial PTY size");
   assert(initial[0].size !== initial[1].size, `test panes need distinct dimensions: ${JSON.stringify(initial)}`);
+  const activeHost = page.locator('[data-pane-id="pane-a"] .terminal-host');
+  const inspectSemanticRendering = async (host, expectedColors) => {
+    await page.waitForTimeout(100);
+    const rendering = await host.evaluate((element) => {
+      const decorationElements = [...element.querySelectorAll(".xterm-decoration")];
+      const decorationRects = decorationElements.map((decoration) => decoration.getBoundingClientRect());
+      const hostRect = element.getBoundingClientRect();
+      return {
+        state: element.dataset.terminalSemanticHighlighting,
+        renderer: element.dataset.terminalRenderer,
+        decorations: Number(element.dataset.terminalSemanticDecorationCount ?? "-1"),
+        elements: decorationElements.length,
+        hostHeight: hostRect.height,
+        top: Math.min(...decorationRects.map((rect) => rect.top)) - hostRect.top,
+        bottom: Math.max(...decorationRects.map((rect) => rect.bottom)) - hostRect.top,
+      };
+    });
+    const screenshot = await host.screenshot();
+    const pixelColors = await page.evaluate(async ({ base64, colors, hostHeight, top, bottom }) => {
+      const expected = colors.map((color) => [
+        Number.parseInt(color.slice(1, 3), 16),
+        Number.parseInt(color.slice(3, 5), 16),
+        Number.parseInt(color.slice(5, 7), 16),
+      ]);
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const matched = new Set();
+      const firstY = Math.max(0, Math.floor(top * canvas.height / hostHeight));
+      const lastY = Math.min(canvas.height, Math.ceil(bottom * canvas.height / hostHeight));
+      for (let y = firstY; y < lastY; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const offset = (y * canvas.width + x) * 4;
+          for (let index = 0; index < expected.length; index += 1) {
+            const [red, green, blue] = expected[index];
+            if (Math.abs(pixels[offset] - red) <= 4
+              && Math.abs(pixels[offset + 1] - green) <= 4
+              && Math.abs(pixels[offset + 2] - blue) <= 4
+              && pixels[offset + 3] > 0) {
+              matched.add(colors[index]);
+            }
+          }
+        }
+      }
+      return [...matched];
+    }, {
+      base64: screenshot.toString("base64"),
+      colors: expectedColors,
+      hostHeight: rendering.hostHeight,
+      top: rendering.top,
+      bottom: rendering.bottom,
+    });
+    return { ...rendering, pixelColors };
+  };
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticHighlighting === "alternate"
+  ));
+  const initialSemanticState = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+  }));
+  assert(initialSemanticState.decorations === 0,
+    `semantic highlighting leaked into the initial alternate screen: ${JSON.stringify(initialSemanticState)}`);
 
   await clearCalls();
   await page.setViewportSize({ width: 1320, height: 820 });
@@ -533,6 +617,43 @@ try {
   const replayProbeSearch = await openAndAssertMissing(replayProbeMarker);
 
   await emitSessionEvent(createEvent("a-baseline-alt-exit", "session-a", "\x1b[?1049l"));
+  const semanticCommand = 'root@OpenWrt:~# grep -n "wireless" /etc/config/wireless 192.168.1.1 42';
+  await emitSessionEvent(createEvent("a-semantic-command", "session-a", `\r\n${semanticCommand}`));
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.dataset.terminalSemanticHighlighting === "active"
+      && Number(host.dataset.terminalSemanticDecorationCount ?? "0") >= 6
+      && host.querySelectorAll(".xterm-decoration").length >= 6;
+  });
+  const semanticDark = await inspectSemanticRendering(activeHost, [
+    "#86efac", "#93c5fd", "#fde047", "#67e8f9", "#5eead4", "#d8b4fe",
+  ]);
+  assert(semanticDark.pixelColors.length >= 4,
+    `semantic command did not render enough distinct dark-theme colors: ${JSON.stringify(semanticDark)}`);
+  const semanticSearch = await openAndAssertSearch(semanticCommand);
+  const semanticOutboundCommand = 'grep -n "wireless" /etc/config/wireless';
+  await clearCalls();
+  await page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea').focus();
+  await page.keyboard.type(semanticOutboundCommand);
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "send_text"));
+  await page.waitForTimeout(50);
+  const semanticOutboundText = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text")
+    .map((call) => call.args.text)
+    .join(""));
+  assert(semanticOutboundText === semanticOutboundCommand && !semanticOutboundText.includes("\x1b"),
+    `semantic highlighting mutated outbound terminal bytes: ${JSON.stringify(semanticOutboundText)}`);
+  await emitSessionEvent(createEvent("a-semantic-alt-enter", "session-a", "\x1b[?1049h"));
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.dataset.terminalSemanticHighlighting === "alternate"
+      && host.dataset.terminalSemanticDecorationCount === "0";
+  });
+  const semanticAlternate = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+  }));
+  await emitSessionEvent(createEvent("a-semantic-alt-exit", "session-a", "\x1b[?1049l"));
   const normalBeforeVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
   await emitSessionEvent(createEvent("a-real-vim-frame", "session-a", vimPty.alternateFrame));
   const vimSearch = await openAndAssertSearch("# PortMate");
@@ -687,6 +808,10 @@ try {
     document.querySelectorAll('.terminal-host[data-terminal-mouse-reporting="disabled"]').length === 2
     && document.querySelectorAll('[data-terminal-resize-owner="active"]').length === 1
   ));
+  await emitSessionEvent(createEvent("a-completion-alt-exit", "session-a", "\x1b[?1049l"));
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalBuffer === "normal"
+  ));
   await page.evaluate(() => { window.__invokeCalls = []; window.__clipboardWrites = []; });
   const disabledScreen = page.locator('[data-pane-id="pane-a"] .xterm-screen');
   await disabledScreen.click({ position: { x: 120, y: 80 } });
@@ -725,10 +850,24 @@ try {
   await page.keyboard.type("git s");
   await page.waitForTimeout(100);
   assert(await activeCompletion.count() === 0, "plain terminal paste did not pause command completion");
+  const semanticPaused = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+  }));
+  assert(semanticPaused.state === "paused" && semanticPaused.decorations === 0,
+    `semantic highlighting did not pause after synchronization loss: ${JSON.stringify(semanticPaused)}`);
 
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");
   await activeCompletion.waitFor();
+  await page.waitForTimeout(100);
+  const semanticResumed = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+    buffer: host.dataset.terminalBuffer,
+  }));
+  assert(semanticResumed.state === "active",
+    `semantic highlighting did not resume after the next input boundary: ${JSON.stringify(semanticResumed)}`);
   const completionAfterPasteBoundary = await activeCompletion.textContent();
   assert(completionAfterPasteBoundary?.includes("status"), `command completion did not resume after pasted line boundary: ${completionAfterPasteBoundary}`);
   await page.keyboard.press("Enter");
@@ -746,6 +885,14 @@ try {
   const completionDisabled = await activeCompletion.count() === 0;
   assert(completionDisabled, "disabled command completion still rendered candidates");
   await page.keyboard.press("Enter");
+
+  await reloadWithTerminalPrefs({ semanticHighlightingEnabled: false });
+  const semanticDisabled = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+  }));
+  assert(semanticDisabled.state === "disabled" && semanticDisabled.decorations === 0,
+    `disabled semantic highlighting still rendered decorations: ${JSON.stringify(semanticDisabled)}`);
 
   await reloadWithTerminalPrefs({
     completionEnabled: true,
@@ -787,12 +934,33 @@ try {
     completionHistory: false,
     completionQuickCommands: false,
     completionTriggerChars: "1 字符",
+    semanticHighlightingEnabled: true,
   });
   await page.keyboard.type("git");
   await page.waitForTimeout(100);
   const completionSourcesDisabled = await activeCompletion.count() === 0;
   assert(completionSourcesDisabled, "disabled completion sources still rendered candidates");
   await page.keyboard.press("Enter");
+
+  await page.evaluate(() => {
+    localStorage.setItem("portmate.compat.terminalTheme", "portmate-light");
+    localStorage.setItem("portmate.compat.terminalOpacity", "90");
+  });
+  await page.reload();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalTheme === "portmate-light"
+    && (window.__tauriEventListeners.get("portmate-session-event") || []).length >= 2
+  ));
+  await emitSessionEvent(createEvent("a-light-alt-exit", "session-a", "\x1b[?1049l"));
+  await emitSessionEvent(createEvent("a-light-semantic-command", "session-a", `\r\n${semanticCommand}`));
+  await page.waitForFunction(() => (
+    Number(document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticDecorationCount ?? "0") >= 6
+  ));
+  const semanticLight = await inspectSemanticRendering(activeHost, [
+    "#36965a", "#347cc5", "#a8740b", "#159b8e", "#087f73", "#9757b8",
+  ]);
+  assert(semanticLight.renderer === "dom" && semanticLight.pixelColors.length >= 4,
+    `semantic command did not render enough distinct light-theme colors: ${JSON.stringify(semanticLight)}`);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => [...document.querySelectorAll(".terminal-host")]
@@ -836,6 +1004,17 @@ try {
       hiddenLessSearch,
       topSearch,
       longLogSearch,
+      semanticSearch,
+    },
+    semanticHighlighting: {
+      initial: initialSemanticState,
+      dark: semanticDark,
+      light: semanticLight,
+      alternate: semanticAlternate,
+      paused: semanticPaused,
+      resumed: semanticResumed,
+      disabled: semanticDisabled,
+      outboundTextUnchanged: semanticOutboundText === semanticOutboundCommand,
     },
     vimPty: { bytes: vimPty.bytes, alternateScreen: true, restoredNormalScreen: true },
     lessPty: { bytes: lessPty.bytes, alternateScreen: true, restoredNormalScreen: true },
