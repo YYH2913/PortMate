@@ -2109,6 +2109,7 @@ Host staging
     .evaluateAll((options) => options.map((option) => Number(option.value)));
   assert(JSON.stringify(baudRateOptions) === JSON.stringify([
     110, 300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 460800, 921600,
+    1000000, 1500000,
   ]), `Serial baud-rate suggestions are incomplete: ${JSON.stringify(baudRateOptions)}`);
   await baudRateInput.fill("250000");
   assert(await baudRateInput.inputValue() === "250000",

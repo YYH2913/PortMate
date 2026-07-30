@@ -16,6 +16,8 @@ export const COMMON_SERIAL_BAUD_RATES = [
   230_400,
   460_800,
   921_600,
+  1_000_000,
+  1_500_000,
 ] as const;
 
 export const serialConnectionDefaults = {
