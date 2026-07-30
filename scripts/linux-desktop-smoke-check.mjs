@@ -1,0 +1,303 @@
+import { spawn, spawnSync } from "node:child_process";
+import { accessSync, constants, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const STARTUP_TIMEOUT_MS = boundedInteger(process.env.PORTMATE_NATIVE_SMOKE_TIMEOUT_MS, 180_000, 10_000, 600_000);
+const RENDER_TIMEOUT_MS = 30_000;
+const POLL_INTERVAL_MS = 250;
+const MAX_CAPTURE_BYTES = 128 * 1024 * 1024;
+const MAX_LOG_BYTES = 256 * 1024;
+const MIN_WINDOW_WIDTH = 480;
+const MIN_WINDOW_HEIGHT = 320;
+const MIN_UNIQUE_COLORS = 64;
+const MIN_LUMA_DEVIATION = 4;
+
+if (process.platform !== "linux") {
+  throw new Error("The native desktop smoke check requires a Linux host");
+}
+if (!process.env.DISPLAY?.trim()) {
+  throw new Error("The native desktop smoke check requires an active X11 display in DISPLAY");
+}
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const xwininfo = executablePath("xwininfo");
+const xwd = executablePath("xwd");
+const npm = executablePath("npm");
+const existingWindowIds = new Set(listPortMateWindows(xwininfo).map((window) => window.id));
+const dmiIdentity = readDmiIdentity();
+const expectsVmwareFallback = dmiIdentity.some((value) => value.toLowerCase().includes("vmware"));
+const environment = { ...process.env, GDK_BACKEND: "x11" };
+delete environment.WEBKIT_DISABLE_DMABUF_RENDERER;
+
+let output = "";
+let stopped = false;
+let desktopResult = null;
+const desktop = spawn(npm, ["run", "desktop:clean"], {
+  cwd: projectRoot,
+  detached: true,
+  env: environment,
+  stdio: ["ignore", "pipe", "pipe"],
+});
+const desktopExit = new Promise((resolveExit) => {
+  const settle = (result) => {
+    desktopResult ??= result;
+    resolveExit(desktopResult);
+  };
+  desktop.once("error", (error) => settle({ error }));
+  desktop.once("exit", (code, signal) => settle({ code, signal }));
+});
+for (const stream of [desktop.stdout, desktop.stderr]) {
+  stream.on("data", (chunk) => {
+    output = boundedAppend(output, chunk.toString());
+  });
+}
+
+const handleSignal = (signal) => {
+  void stopDesktop().finally(() => {
+    process.kill(process.pid, signal);
+  });
+};
+process.once("SIGINT", handleSignal);
+process.once("SIGTERM", handleSignal);
+
+try {
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  const window = await waitForWindow(deadline);
+  const rendered = await waitForRenderedPixels(window, Math.min(deadline, Date.now() + RENDER_TIMEOUT_MS));
+  if (expectsVmwareFallback && !output.includes("disabled WebKit DMABUF rendering for VMware compatibility")) {
+    throw new Error("The VMware desktop started without the expected WebKit DMABUF fallback marker");
+  }
+
+  const artifactPath = process.env.PORTMATE_NATIVE_SMOKE_XWD?.trim();
+  if (artifactPath) writeFileSync(resolve(artifactPath), rendered.capture);
+  console.log(JSON.stringify({
+    window: { id: window.id, width: window.width, height: window.height },
+    renderer: expectsVmwareFallback ? "automatic VMware DMABUF fallback" : "host default",
+    dmiIdentity,
+    pixels: rendered.stats,
+    artifact: artifactPath ? resolve(artifactPath) : null,
+  }, null, 2));
+} catch (error) {
+  const diagnostic = stripAnsi(output).slice(-12_000);
+  throw new Error(`${error instanceof Error ? error.message : String(error)}\n\nDesktop output:\n${diagnostic}`);
+} finally {
+  process.off("SIGINT", handleSignal);
+  process.off("SIGTERM", handleSignal);
+  await stopDesktop();
+}
+
+async function waitForWindow(deadline) {
+  while (Date.now() < deadline) {
+    if (desktopResult) throw desktopExitError(desktopResult);
+    const candidates = listPortMateWindows(xwininfo)
+      .filter((window) => !existingWindowIds.has(window.id))
+      .filter((window) => window.width >= MIN_WINDOW_WIDTH && window.height >= MIN_WINDOW_HEIGHT)
+      .sort((left, right) => right.width * right.height - left.width * left.height);
+    if (candidates[0]) return candidates[0];
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`PortMate did not create a usable native window within ${STARTUP_TIMEOUT_MS} ms`);
+}
+
+async function waitForRenderedPixels(window, deadline) {
+  let lastFailure = "no capture was available";
+  while (Date.now() < deadline) {
+    if (desktopResult) throw desktopExitError(desktopResult);
+    const result = spawnSync(xwd, ["-silent", "-id", window.id], {
+      encoding: null,
+      maxBuffer: MAX_CAPTURE_BYTES,
+    });
+    if (result.status === 0 && result.stdout?.length) {
+      try {
+        const stats = inspectXwd(result.stdout);
+        const failure = renderFailure(stats);
+        if (!failure) return { capture: result.stdout, stats };
+        lastFailure = failure;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : String(error);
+      }
+    } else {
+      lastFailure = result.stderr?.toString().trim() || `xwd exited with ${result.status}`;
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(`PortMate's native window never produced a rendered frame: ${lastFailure}`);
+}
+
+function inspectXwd(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 100) throw new Error("truncated XWD header");
+  const field = (index) => buffer.readUInt32BE(index * 4);
+  const headerSize = field(0);
+  const version = field(1);
+  const format = field(2);
+  const width = field(4);
+  const height = field(5);
+  const byteOrder = field(7);
+  const bitsPerPixel = field(11);
+  const bytesPerLine = field(12);
+  const redMask = field(14);
+  const greenMask = field(15);
+  const blueMask = field(16);
+  const colorCount = field(19);
+  if (version !== 7 || format !== 2) throw new Error(`unsupported XWD format ${format}, version ${version}`);
+  if (!width || !height || width > 16_384 || height > 16_384) throw new Error(`invalid XWD dimensions ${width}x${height}`);
+  if (![24, 32].includes(bitsPerPixel) || ![0, 1].includes(byteOrder)) {
+    throw new Error(`unsupported XWD pixel layout: ${bitsPerPixel} bpp, byte order ${byteOrder}`);
+  }
+  if (!redMask || !greenMask || !blueMask) throw new Error("XWD true-color masks are missing");
+  const bytesPerPixel = bitsPerPixel / 8;
+  const pixelOffset = headerSize + colorCount * 12;
+  const requiredBytes = pixelOffset + bytesPerLine * height;
+  if (headerSize < 100 || requiredBytes > buffer.length || bytesPerLine < width * bytesPerPixel) {
+    throw new Error("truncated XWD pixel data");
+  }
+
+  const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / 400_000)));
+  const colors = new Set();
+  let samples = 0;
+  let darkSamples = 0;
+  let brightSamples = 0;
+  let coloredSamples = 0;
+  let lumaSum = 0;
+  let lumaSquaredSum = 0;
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const offset = pixelOffset + y * bytesPerLine + x * bytesPerPixel;
+      const pixel = readPixel(buffer, offset, bytesPerPixel, byteOrder);
+      const red = channelValue(pixel, redMask);
+      const green = channelValue(pixel, greenMask);
+      const blue = channelValue(pixel, blueMask);
+      const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      samples += 1;
+      lumaSum += luma;
+      lumaSquaredSum += luma * luma;
+      if (luma < 16) darkSamples += 1;
+      if (luma > 240) brightSamples += 1;
+      if (Math.max(red, green, blue) - Math.min(red, green, blue) > 24) coloredSamples += 1;
+      colors.add((red << 16) | (green << 8) | blue);
+    }
+  }
+  const meanLuma = lumaSum / samples;
+  return {
+    width,
+    height,
+    samples,
+    uniqueColors: colors.size,
+    meanLuma: rounded(meanLuma),
+    lumaDeviation: rounded(Math.sqrt(Math.max(0, lumaSquaredSum / samples - meanLuma ** 2))),
+    darkRatio: rounded(darkSamples / samples),
+    brightRatio: rounded(brightSamples / samples),
+    coloredRatio: rounded(coloredSamples / samples),
+  };
+}
+
+function renderFailure(stats) {
+  if (stats.width < MIN_WINDOW_WIDTH || stats.height < MIN_WINDOW_HEIGHT) {
+    return `window is only ${stats.width}x${stats.height}`;
+  }
+  if (stats.uniqueColors < MIN_UNIQUE_COLORS) return `only ${stats.uniqueColors} unique colors were rendered`;
+  if (stats.lumaDeviation < MIN_LUMA_DEVIATION) return `luminance deviation is only ${stats.lumaDeviation}`;
+  if (stats.brightRatio > 0.985) return `${(stats.brightRatio * 100).toFixed(2)}% of pixels are white`;
+  if (stats.darkRatio > 0.995) return `${(stats.darkRatio * 100).toFixed(2)}% of pixels are black`;
+  return null;
+}
+
+function listPortMateWindows(command) {
+  const result = spawnSync(command, ["-root", "-tree"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(result.stderr?.trim() || `xwininfo exited with ${result.status}`);
+  const windows = [];
+  const pattern = /^\s*(0x[0-9a-f]+)\s+"[^"]*":\s+\("portmate"\s+"Portmate"\)\s+(\d+)x(\d+)/gim;
+  for (const match of result.stdout.matchAll(pattern)) {
+    windows.push({ id: match[1], width: Number(match[2]), height: Number(match[3]) });
+  }
+  return windows;
+}
+
+function readPixel(buffer, offset, bytesPerPixel, byteOrder) {
+  if (bytesPerPixel === 4) return byteOrder === 0 ? buffer.readUInt32LE(offset) : buffer.readUInt32BE(offset);
+  if (byteOrder === 0) return (buffer[offset] | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16)) >>> 0;
+  return ((buffer[offset] << 16) | (buffer[offset + 1] << 8) | buffer[offset + 2]) >>> 0;
+}
+
+function channelValue(pixel, mask) {
+  let shift = 0;
+  while (shift < 32 && ((mask >>> shift) & 1) === 0) shift += 1;
+  const maximum = mask >>> shift;
+  const value = (pixel & mask) >>> shift;
+  return Math.round(255 * value / maximum);
+}
+
+function readDmiIdentity() {
+  return ["sys_vendor", "product_name", "board_vendor"]
+    .map((name) => {
+      try {
+        return readFileSync(join("/sys/class/dmi/id", name), "utf8").trim();
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
+}
+
+function executablePath(name) {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    const candidate = join(directory, name);
+    if (!existsSync(candidate)) continue;
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  throw new Error(`The native desktop smoke check requires '${name}' in PATH`);
+}
+
+function desktopExitError(result) {
+  if (result.error) return result.error;
+  return new Error(`The desktop process exited before rendering (code ${result.code}, signal ${result.signal})`);
+}
+
+async function stopDesktop() {
+  if (stopped) return;
+  stopped = true;
+  if (!desktop.pid) return;
+  signalProcessGroup("SIGTERM");
+  const exited = await Promise.race([desktopExit.then(() => true), delay(5_000).then(() => false)]);
+  if (!exited) {
+    signalProcessGroup("SIGKILL");
+    await Promise.race([desktopExit, delay(2_000)]);
+  }
+}
+
+function signalProcessGroup(signal) {
+  try {
+    process.kill(-desktop.pid, signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
+function boundedAppend(current, next) {
+  const combined = current + next;
+  return combined.length <= MAX_LOG_BYTES ? combined : combined.slice(-MAX_LOG_BYTES);
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+function rounded(value) {
+  return Number(value.toFixed(6));
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}

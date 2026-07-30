@@ -358,6 +358,18 @@ If you launch from snap-packaged VS Code and GTK/WebKit loads `/snap/core20` lib
 npm run desktop:clean
 ```
 
+On a Linux desktop with X11/Xwayland, the native smoke gate starts that same sanitized launcher,
+waits for a newly created PortMate window, captures its client pixels with `xwd`, rejects white,
+black, or otherwise unrendered frames, and then cleans up the Tauri/Vite process group:
+
+```bash
+npm run test:linux-desktop-smoke
+```
+
+The gate forces X11 only for deterministic capture and removes any inherited
+`WEBKIT_DISABLE_DMABUF_RENDERER`, so VMware hosts exercise PortMate's automatic DMI fallback. Set
+`PORTMATE_NATIVE_SMOKE_XWD=/tmp/portmate-native-smoke.xwd` to retain the verified frame.
+
 Build desktop bundles:
 
 ```bash
