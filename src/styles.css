@@ -3216,6 +3216,10 @@ button {
   box-sizing: border-box;
 }
 
+.terminal-canvas.completion-open .terminal-host {
+  height: calc(100% - min(var(--terminal-completion-height), 45%));
+}
+
 .terminal-host .xterm {
   height: 100%;
 }
@@ -3228,10 +3232,12 @@ button {
   --terminal-completion-rows: 7;
   position: absolute;
   z-index: 5;
-  bottom: 8px;
   left: 8px;
   width: min(520px, calc(100% - 16px));
+  max-height: min(var(--terminal-completion-height), 45%);
   min-width: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #344252;
   border-radius: 4px;
@@ -3265,6 +3271,7 @@ button {
 }
 
 .terminal-completion-list {
+  min-height: 0;
   max-height: calc(var(--terminal-completion-rows) * 30px);
   overflow: auto;
   scrollbar-width: thin;

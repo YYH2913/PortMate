@@ -3,7 +3,9 @@ import {
   emptyTerminalKeySequenceState,
   normalizeTerminalKeyMode,
   resolveTerminalKeyModeEvent,
+  terminalKeyModeCursorStyle,
   terminalKeyModeLabel,
+  toggleTerminalInsertNormalMode,
   toggleTerminalRemoteLocalMode,
 } from "./terminal-key-mode";
 
@@ -22,9 +24,15 @@ describe("terminal key modes", () => {
     expect(normalizeTerminalKeyMode("command")).toBe("command");
     expect(normalizeTerminalKeyMode("REMOTE")).toBe("remote");
     expect(normalizeTerminalKeyMode(null)).toBe("remote");
-    expect(terminalKeyModeLabel("normal")).toBe("Normal 模式");
+    expect(terminalKeyModeLabel("remote")).toBe("Insert 模式");
+    expect(terminalKeyModeLabel("command")).toBe("Normal 模式");
     expect(toggleTerminalRemoteLocalMode("remote")).toBe("local");
     expect(toggleTerminalRemoteLocalMode("command")).toBe("remote");
+    expect(toggleTerminalInsertNormalMode("remote")).toBe("command");
+    expect(toggleTerminalInsertNormalMode("local")).toBe("remote");
+    expect(terminalKeyModeCursorStyle("remote")).toBe("bar");
+    expect(terminalKeyModeCursorStyle("command")).toBe("block");
+    expect(terminalKeyModeCursorStyle("normal")).toBe("underline");
   });
 
   it("leaves remote input untouched except for the WindTerm mode shortcut", () => {
@@ -36,11 +44,13 @@ describe("terminal key modes", () => {
     expect(resolveTerminalKeyModeEvent("local", key("Enter", { ctrlKey: true }))).toMatchObject({ nextMode: "remote" });
   });
 
-  it("implements Normal and Command transitions without producing remote input", () => {
+  it("switches Insert and Normal without producing accidental remote input", () => {
+    expect(resolveTerminalKeyModeEvent("remote", key("Escape"))).toMatchObject({ handled: true, nextMode: "command" });
     expect(resolveTerminalKeyModeEvent("normal", key("a"))).toMatchObject({ handled: true });
     expect(resolveTerminalKeyModeEvent("normal", key("Escape"))).toMatchObject({ nextMode: "command" });
-    expect(resolveTerminalKeyModeEvent("command", key("i"))).toMatchObject({ nextMode: "normal" });
+    expect(resolveTerminalKeyModeEvent("command", key("i"))).toMatchObject({ nextMode: "remote" });
     expect(resolveTerminalKeyModeEvent("local", key("i"))).toMatchObject({ nextMode: "remote" });
+    expect(resolveTerminalKeyModeEvent("command", key("Enter", { ctrlKey: true }))).toMatchObject({ nextMode: "remote" });
   });
 
   it("parses count prefixes and Vim-style local navigation", () => {

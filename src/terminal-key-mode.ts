@@ -49,10 +49,10 @@ export type TerminalModeKeyEvent = Pick<
 export const emptyTerminalKeySequenceState = (): TerminalKeySequenceState => ({ count: "", prefix: "" });
 
 const modeLabels: Record<TerminalKeyMode, string> = {
-  remote: "远程模式",
+  remote: "Insert 模式",
   local: "本地模式",
-  normal: "Normal 模式",
-  command: "Command 模式",
+  normal: "本地编辑",
+  command: "Normal 模式",
 };
 
 export function normalizeTerminalKeyMode(value: unknown): TerminalKeyMode {
@@ -69,6 +69,16 @@ export function toggleTerminalRemoteLocalMode(mode: TerminalKeyMode): TerminalKe
   return mode === "remote" ? "local" : "remote";
 }
 
+export function toggleTerminalInsertNormalMode(mode: TerminalKeyMode): TerminalKeyMode {
+  return mode === "remote" ? "command" : "remote";
+}
+
+export function terminalKeyModeCursorStyle(mode: TerminalKeyMode): "bar" | "block" | "underline" {
+  if (mode === "remote") return "bar";
+  if (mode === "normal") return "underline";
+  return "block";
+}
+
 export function resolveTerminalKeyModeEvent(
   mode: TerminalKeyMode,
   event: TerminalModeKeyEvent,
@@ -77,6 +87,10 @@ export function resolveTerminalKeyModeEvent(
   const empty = emptyTerminalKeySequenceState();
   if (event.isComposing) return { handled: mode !== "remote", state: empty, count: 1 };
 
+  if (mode === "remote" && event.key === "Escape" && !hasCommandModifiers(event) && !event.shiftKey) {
+    return { handled: true, state: empty, nextMode: "command", count: 1 };
+  }
+
   if (isCtrlEnter(event)) {
     const nextMode = mode === "remote"
       ? "local"
@@ -84,7 +98,7 @@ export function resolveTerminalKeyModeEvent(
         ? "remote"
         : mode === "normal"
           ? "command"
-          : "normal";
+          : "remote";
     return { handled: true, state: empty, nextMode, count: 1 };
   }
 
@@ -98,7 +112,7 @@ export function resolveTerminalKeyModeEvent(
     return {
       handled: true,
       state: empty,
-      nextMode: mode === "local" ? "remote" : "normal",
+      nextMode: "remote",
       count: 1,
     };
   }

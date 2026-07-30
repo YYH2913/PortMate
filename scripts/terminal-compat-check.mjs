@@ -842,6 +842,50 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");
   await activeCompletion.waitFor();
+  const completionPlacement = await activeCompletion.evaluate((completion) => {
+    const canvas = completion.closest(".terminal-canvas");
+    const host = canvas?.querySelector(".terminal-host");
+    const completionRect = completion.getBoundingClientRect();
+    const hostRect = host?.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    return {
+      placement: canvas?.getAttribute("data-completion-placement"),
+      cursorBottom: Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1"),
+      canvasTop: canvasRect?.top ?? -1,
+      hostBottom: hostRect?.bottom ?? -1,
+      completionTop: completionRect.top,
+      completionBottom: completionRect.bottom,
+      canvasBottom: canvasRect?.bottom ?? -1,
+    };
+  });
+  const completionCursorBottom = completionPlacement.canvasTop + completionPlacement.cursorBottom;
+  assert(completionPlacement.placement === "below"
+    && completionPlacement.cursorBottom >= 0
+    && completionPlacement.completionTop >= completionCursorBottom - 1
+    && completionPlacement.completionTop <= completionCursorBottom + 6
+    && completionPlacement.completionBottom <= completionPlacement.canvasBottom + 1,
+  `command completion obscured the terminal input surface: ${JSON.stringify(completionPlacement)}`);
+  await page.waitForTimeout(120);
+  await page.screenshot({ path: `${screenshotPrefix}-completion-below.png`, fullPage: true });
+  await emitSessionEvent(createEvent("a-completion-anchor-move", "session-a", "\r\n"));
+  await page.waitForFunction((previousCursorBottom) => {
+    const canvas = document.querySelector('[data-pane-id="pane-a"] .terminal-canvas');
+    return Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1") > previousCursorBottom;
+  }, completionPlacement.cursorBottom);
+  const completionAfterRemoteCursorMove = await activeCompletion.evaluate((completion) => {
+    const canvas = completion.closest(".terminal-canvas");
+    const canvasRect = canvas?.getBoundingClientRect();
+    const completionRect = completion.getBoundingClientRect();
+    const cursorBottom = Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1");
+    return {
+      cursorBottom,
+      gap: completionRect.top - ((canvasRect?.top ?? -1) + cursorBottom),
+    };
+  });
+  assert(completionAfterRemoteCursorMove.cursorBottom > completionPlacement.cursorBottom
+    && completionAfterRemoteCursorMove.gap >= 1
+    && completionAfterRemoteCursorMove.gap <= 6,
+  `command completion did not follow the remote cursor: ${JSON.stringify(completionAfterRemoteCursorMove)}`);
   const completionBeforePaste = await activeCompletion.textContent();
   assert(completionBeforePaste?.includes("status"), `command completion did not activate before paste: ${completionBeforePaste}`);
   await page.keyboard.press("Enter");
@@ -871,6 +915,30 @@ try {
   const completionAfterPasteBoundary = await activeCompletion.textContent();
   assert(completionAfterPasteBoundary?.includes("status"), `command completion did not resume after pasted line boundary: ${completionAfterPasteBoundary}`);
   await page.keyboard.press("Enter");
+
+  await page.evaluate(() => { window.__invokeCalls = []; });
+  await activeTextarea.focus();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.dataset.terminalKeyMode === "command"
+      && host?.dataset.terminalCursorStyle === "block";
+  });
+  const insertNormalEscapeLeaked = await page.evaluate(() => window.__invokeCalls.some((call) => (
+    call.command === "send_text" && call.args.text === "\x1b"
+  )));
+  assert(!insertNormalEscapeLeaked, "Insert -> Normal mode switch leaked Escape to the remote session");
+  await page.screenshot({ path: `${screenshotPrefix}-normal-cursor.png`, fullPage: true });
+  await page.keyboard.press("i");
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.dataset.terminalKeyMode === "remote"
+      && host?.dataset.terminalCursorStyle === "bar";
+  });
+  const insertNormalMode = await activeHost.evaluate((host) => ({
+    mode: host.dataset.terminalKeyMode,
+    cursor: host.dataset.terminalCursorStyle,
+  }));
 
   await page.evaluate(() => { window.__clipboardWrites = []; });
   const selectedWithoutPreference = await selectTerminalText();
@@ -966,6 +1034,45 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll(".terminal-host")]
     .every((host) => /^\d+x\d+$/.test(host.dataset.terminalSize ?? "")));
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
+  await reloadWithTerminalPrefs({
+    completionEnabled: true,
+    completionCommandNames: true,
+    completionCommandOptions: true,
+    completionCommandArgs: true,
+    completionHistory: true,
+    completionQuickCommands: true,
+    completionTriggerChars: "1 字符",
+    completionListHeight: "7 行",
+    completionPreviewMode: "无处",
+  });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("git s");
+  await activeCompletion.waitFor();
+  await page.waitForTimeout(120);
+  const mobileCompletionPlacement = await activeCompletion.evaluate((completion) => {
+    const canvas = completion.closest(".terminal-canvas");
+    const completionRect = completion.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    const cursorBottom = Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1");
+    return {
+      cursorBottom,
+      canvasTop: canvasRect?.top ?? -1,
+      canvasRight: canvasRect?.right ?? -1,
+      canvasBottom: canvasRect?.bottom ?? -1,
+      completionLeft: completionRect.left,
+      completionTop: completionRect.top,
+      completionRight: completionRect.right,
+      completionBottom: completionRect.bottom,
+    };
+  });
+  const mobileCursorBottom = mobileCompletionPlacement.canvasTop + mobileCompletionPlacement.cursorBottom;
+  assert(mobileCompletionPlacement.cursorBottom >= 0
+    && mobileCompletionPlacement.completionTop >= mobileCursorBottom - 1
+    && mobileCompletionPlacement.completionTop <= mobileCursorBottom + 6
+    && mobileCompletionPlacement.completionRight <= mobileCompletionPlacement.canvasRight + 1
+    && mobileCompletionPlacement.completionBottom <= mobileCompletionPlacement.canvasBottom + 1,
+  `mobile command completion obscured or overflowed the terminal: ${JSON.stringify(mobileCompletionPlacement)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-mobile-completion.png`, fullPage: true });
   const mobileLayout = await page.evaluate(() => ({
     innerWidth,
     documentWidth: document.documentElement.scrollWidth,
@@ -1030,6 +1137,10 @@ try {
       paused: true,
       resumed: completionAfterPasteBoundary?.includes("status") ?? false,
     },
+    completionPlacement,
+    completionAfterRemoteCursorMove,
+    mobileCompletionPlacement,
+    insertNormalMode,
     completionPreferences: {
       disabled: completionDisabled,
       triggerCharacters: 3,
@@ -1040,7 +1151,13 @@ try {
     disabledClipboardWrites,
     desktopLayout,
     mobileLayout,
-    screenshots: [`${screenshotPrefix}-desktop.png`, `${screenshotPrefix}-mobile.png`],
+    screenshots: [
+      `${screenshotPrefix}-completion-below.png`,
+      `${screenshotPrefix}-normal-cursor.png`,
+      `${screenshotPrefix}-desktop.png`,
+      `${screenshotPrefix}-mobile.png`,
+      `${screenshotPrefix}-mobile-completion.png`,
+    ],
   }, null, 2));
 } finally {
   await browser?.close().catch(() => {});

@@ -40,7 +40,7 @@ import type { TerminalSelectionRequestDetail } from "./terminal-selection-event"
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
-import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./terminal-key-mode";
+import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent, terminalKeyModeCursorStyle } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
@@ -220,6 +220,7 @@ export default function TerminalCanvas({
   const termRef = useRef<XTerm | null>(null);
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
+  const refreshCompletionAnchorRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -275,6 +276,7 @@ export default function TerminalCanvas({
   const [completionInput, setCompletionInput] = useState<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
+  const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0 });
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
     ? resolveTerminalGotoLine(
@@ -340,6 +342,27 @@ export default function TerminalCanvas({
     ? Math.min(completionSelection, completionCandidates.length - 1)
     : 0;
   const selectedCompletion = completionCandidates[activeCompletionIndex] ?? null;
+  const completionPanelHeight = completionCandidates.length
+    ? completionCandidates.length * 30
+      + (completionPreferences.previewMode === "input" ? 28 : 0)
+      + 16
+    : 0;
+  refreshCompletionAnchorRef.current = () => {
+    if (!completionSuggestionsRef.current.length) return;
+    const term = termRef.current;
+    const host = hostRef.current;
+    const canvas = host?.parentElement;
+    const screen = host?.querySelector<HTMLElement>(".xterm-screen");
+    if (!term || !host || !canvas || !screen) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const cellHeight = screenRect.height / Math.max(1, term.rows);
+    const cursorBottom = screenRect.top - canvasRect.top
+      + (term.buffer.active.cursorY + 1) * cellHeight;
+    const reservedHeight = Math.min(completionPanelHeight, canvasRect.height * 0.45);
+    const top = Math.max(8, Math.min(cursorBottom + 2, canvasRect.height - reservedHeight - 8));
+    setCompletionAnchor({ top, cursorBottom });
+  };
   onInputRef.current = onInput;
   focusedRef.current = focused;
   mouseReportingRef.current = mouseReporting;
@@ -626,6 +649,7 @@ export default function TerminalCanvas({
       cols: cachedState?.cols ?? terminalSettings.cols,
       rows: cachedState?.rows ?? terminalSettings.rows,
       cursorBlink: true,
+      cursorStyle: terminalKeyModeCursorStyle(keyModeRef.current),
       convertEol: false,
       drawBoldTextInBrightColors: true,
       fontFamily: terminalSettings.fontFamily,
@@ -730,6 +754,7 @@ export default function TerminalCanvas({
     host.dataset.terminalRenderer = "dom";
     host.dataset.terminalWebgl = "loading";
     host.dataset.terminalKeyMode = keyModeRef.current;
+    host.dataset.terminalCursorStyle = terminalKeyModeCursorStyle(keyModeRef.current);
     host.dataset.terminalMouseReporting = mouseReportingRef.current ? "enabled" : "disabled";
     host.dataset.terminalRestored = cachedState ? "true" : "false";
     let mouseEncoding: TerminalMouseEncoding = cachedState?.mouseEncoding ?? "default";
@@ -896,9 +921,15 @@ export default function TerminalCanvas({
       semanticFrame = window.requestAnimationFrame(renderSemanticHighlighting);
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
-    const semanticWriteDisposable = term.onWriteParsed(scheduleSemanticHighlighting);
+    const semanticWriteDisposable = term.onWriteParsed(() => {
+      scheduleSemanticHighlighting();
+      refreshCompletionAnchorRef.current();
+    });
     const semanticScrollDisposable = term.onScroll(scheduleSemanticHighlighting);
-    const semanticResizeDisposable = term.onResize(scheduleSemanticHighlighting);
+    const semanticResizeDisposable = term.onResize(() => {
+      scheduleSemanticHighlighting();
+      refreshCompletionAnchorRef.current();
+    });
     scheduleSemanticHighlighting();
     const flushInput = () => {
       inputFlushTimerRef.current = null;
@@ -1239,8 +1270,10 @@ export default function TerminalCanvas({
     const host = hostRef.current;
     if (host) {
       host.dataset.terminalKeyMode = keyMode;
+      host.dataset.terminalCursorStyle = terminalKeyModeCursorStyle(keyMode);
       host.dataset.terminalMouseReporting = mouseReporting ? "enabled" : "disabled";
     }
+    if (term) term.options.cursorStyle = terminalKeyModeCursorStyle(keyMode);
 
     if (keyMode === "local" || keyMode === "command") {
       resetCompletionInput();
@@ -1271,6 +1304,18 @@ export default function TerminalCanvas({
     setFreeInputValue("");
     window.requestAnimationFrame(() => term?.focus());
   }, [active?.profile.id, keyMode, mouseReporting, viewId]);
+
+  useEffect(() => {
+    let measureFrame = 0;
+    const fitFrame = window.requestAnimationFrame(() => {
+      fitAndReportRef.current();
+      measureFrame = window.requestAnimationFrame(() => refreshCompletionAnchorRef.current());
+    });
+    return () => {
+      window.cancelAnimationFrame(fitFrame);
+      window.cancelAnimationFrame(measureFrame);
+    };
+  }, [completionCandidates.length, completionInput.line, completionPanelHeight, completionPreferences.previewMode]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -1342,8 +1387,13 @@ export default function TerminalCanvas({
 
   return (
     <div
-      className="terminal-canvas"
-      style={{ "--terminal-background": canvasBackground ?? "#0d1117" } as CSSProperties}
+      className={completionCandidates.length ? "terminal-canvas completion-open" : "terminal-canvas"}
+      data-completion-placement={completionCandidates.length ? "below" : undefined}
+      data-completion-cursor-bottom={completionCandidates.length ? completionAnchor.cursorBottom : undefined}
+      style={{
+        "--terminal-background": canvasBackground ?? "#0d1117",
+        "--terminal-completion-height": `${completionPanelHeight}px`,
+      } as CSSProperties}
     >
       {active ? (
         <>
@@ -1455,7 +1505,10 @@ export default function TerminalCanvas({
               className="terminal-completion"
               aria-label="终端命令补全"
               data-preview-mode={completionPreferences.previewMode}
-              style={{ "--terminal-completion-rows": completionPreferences.listRows } as CSSProperties}
+              style={{
+                "--terminal-completion-rows": completionPreferences.listRows,
+                top: `${completionAnchor.top}px`,
+              } as CSSProperties}
             >
               {completionPreferences.previewMode === "input" && selectedCompletion ? (
                 <div className="terminal-completion-preview" aria-hidden="true">

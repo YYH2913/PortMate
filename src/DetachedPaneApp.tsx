@@ -21,7 +21,7 @@ import TerminalCanvas from "./TerminalCanvas";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
-import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
@@ -252,8 +252,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         <button
           type="button"
           data-key-mode={keyMode}
-          title="切换远程/本地模式 (Ctrl+Enter)"
-          onClick={() => setKeyMode(toggleTerminalRemoteLocalMode(keyMode))}
+          title="切换 Insert/Normal 模式 (Esc / i)"
+          onClick={() => setKeyMode(toggleTerminalInsertNormalMode(keyMode))}
         >
           {terminalKeyModeLabel(keyMode)}
         </button>

@@ -72,7 +72,7 @@ import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
-import { terminalKeyModeLabel, toggleTerminalRemoteLocalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
@@ -162,10 +162,10 @@ function rememberResolvedMcpApproval(resolved: Set<string>, approvalId: string) 
 }
 
 const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
-  远程模式: "remote",
+  "Insert 模式": "remote",
   本地模式: "local",
-  "Normal 模式": "normal",
-  "Command 模式": "command",
+  本地编辑: "normal",
+  "Normal 模式": "command",
 };
 
 type SettingsDialog = "terminal" | "session" | null;
@@ -3487,9 +3487,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           type="button"
           className={`sync-status terminal-key-mode-status ${syncInput ? "active" : ""}`}
           data-key-mode={activeTerminalKeyMode}
-          title="切换远程/本地模式 (Ctrl+Enter)"
-          aria-label={`当前${terminalKeyModeLabel(activeTerminalKeyMode)}，切换远程/本地模式`}
-          onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalRemoteLocalMode(activeTerminalKeyMode))}
+          title="切换 Insert/Normal 模式 (Esc / i)"
+          aria-label={`当前${terminalKeyModeLabel(activeTerminalKeyMode)}，切换 Insert/Normal 模式`}
+          onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalInsertNormalMode(activeTerminalKeyMode))}
         >
           {syncInput ? `同步 ${syncInputTargetCount} · ` : ""}{terminalKeyModeLabel(activeTerminalKeyMode)}
         </button>
