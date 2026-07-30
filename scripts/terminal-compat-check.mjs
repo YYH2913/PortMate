@@ -1016,12 +1016,15 @@ try {
 
   await page.evaluate(() => { window.__invokeCalls = []; });
   await activeTextarea.focus();
+  await page.keyboard.type("git s");
+  await activeCompletion.waitFor();
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalCursorStyle === "bar");
   const insertCursorBeforeNormal = await inspectCursorRendering(activeHost, "bar");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => {
     const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
-    return host?.dataset.terminalKeyMode === "command"
+    return document.querySelector('[data-pane-id="pane-a"] .terminal-completion') === null
+      && host?.dataset.terminalKeyMode === "command"
       && host?.dataset.terminalCursorStyle === "block";
   });
   const normalCursor = await inspectCursorRendering(activeHost, "block");

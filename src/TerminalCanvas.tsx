@@ -728,7 +728,6 @@ export default function TerminalCanvas({
         if (event.key === "Escape") {
           event.preventDefault();
           dismissCompletionRef.current();
-          return false;
         }
       }
       if (isTerminalFindShortcut(event) && mode !== "command") {
