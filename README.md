@@ -459,12 +459,12 @@ from isolated generated modules and runs the same 8-message/request lifecycle ov
 stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
 module has its own dependency checksums and never mutates PortMate's production workspace.
 
-The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, 2.2.0, and 3.0.0 from standalone
+The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, 2.2.0, and 3.0.1 from standalone
 locked Cargo modules and runs the same lifecycle through each SDK's child-process and reqwest
 Streamable HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, ping,
 tools, resources, templates, prompts, and resource reads without adding compatibility clients to
 PortMate's production workspace. The shared probe reads serialized initialization metadata so it
-accepts 3.0.0's optional `server_info` shape without weakening the identity assertion for 1.x/2.x.
+accepts 3.0.1's optional `server_info` shape without weakening the identity assertion for 1.x/2.x.
 
 The official Ruby SDK matrix uses `mcp` 0.25.0 and 1.0.0 with pinned Faraday 2.14.3 and
 `event_stream_parser` 1.0.0 in version-isolated gem homes. Their bundled Stdio and HTTP transports
@@ -500,8 +500,8 @@ These releases neither expose `StdioTransport` on Windows nor declare the `Event
 imported by their HTTP source there, so the unpatched official packages are not presented as a
 Windows-compatible matrix.
 
-As of 2026-07-29, the newest stable release published by each of these nine official SDK projects is
-present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.0.0, Ruby 1.0.0, Java 2.0.0,
+As of 2026-07-30, the newest stable release published by each of these nine official SDK projects is
+present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.0.1, Ruby 1.0.0, Java 2.0.0,
 Kotlin 0.15.0, C# 2.0.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
 API compatibility anchors; later stable releases should be added only after both real transports pass.
 
