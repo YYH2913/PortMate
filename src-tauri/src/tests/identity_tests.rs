@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn one_key_command_types_keep_stable_json_defaults() {
+    let request: SaveOneKeyRequest = serde_json::from_value(serde_json::json!({
+        "id": null,
+        "label": "Lab login",
+        "kind": "ssh",
+        "username": "operator",
+        "passwordUpdate": { "action": "preserve" },
+        "passphraseUpdate": { "action": "clear" },
+        "sessionIds": ["ssh-1"]
+    }))
+    .unwrap();
+    assert!(request.id.is_none());
+    assert!(matches!(
+        request.identity_update,
+        OneKeyIdentityUpdate::Preserve
+    ));
+    assert!(matches!(
+        request.password_update,
+        OneKeySecretUpdate::Preserve
+    ));
+    assert!(matches!(
+        request.passphrase_update,
+        OneKeySecretUpdate::Clear
+    ));
+    assert_eq!(request.session_ids, vec!["ssh-1".to_string()]);
+}
+
+#[test]
 fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
     let initialized = Mutex::new(false);
     let attempts = std::cell::Cell::new(0_u32);
