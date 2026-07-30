@@ -168,6 +168,8 @@ mod store_normalization;
 mod store_persistence;
 mod store_transactions;
 mod sysmon_commands;
+mod sysmon_linux_network;
+mod sysmon_linux_network_fallback;
 mod sysmon_metrics;
 mod sysmon_network;
 mod sysmon_network_io;
@@ -192,6 +194,8 @@ mod webkit_runtime;
 
 pub use app_bootstrap::run;
 pub use command_types::*;
+use sysmon_linux_network::*;
+use sysmon_linux_network_fallback::*;
 use sysmon_metrics::*;
 use sysmon_network::*;
 use sysmon_network_io::*;
