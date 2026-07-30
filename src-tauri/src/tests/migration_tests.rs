@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn vault_command_types_keep_stable_json_contracts() {
+    let request: ProfileSecretMigrationRequest = serde_json::from_value(serde_json::json!({
+        "targetStorage": "portable",
+        "profileIds": ["ssh-1"]
+    }))
+    .unwrap();
+    assert_eq!(request.target_storage, SecretStorage::Portable);
+    assert_eq!(request.profile_ids, vec!["ssh-1".to_string()]);
+    assert!(request.cleanup_source);
+
+    let rotate = serde_json::to_value(PortableVaultRotatePasswordRequest {
+        current_password: "current".to_string(),
+        new_password: "replacement".to_string(),
+    })
+    .unwrap();
+    assert_eq!(rotate["currentPassword"], "current");
+    assert_eq!(rotate["newPassword"], "replacement");
+
+    assert_eq!(
+        serde_json::to_value(ProfileSecretMigrationJournalState::SourceCleanupPending).unwrap(),
+        "source-cleanup-pending"
+    );
+    assert_eq!(
+        serde_json::to_value(ProfileSecretMigrationRecoveryDisposition::Committed).unwrap(),
+        "committed"
+    );
+}
+
+#[test]
 fn tcp_proxy_credentials_participate_in_migration_and_legacy_journals() {
     let mut profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
         proxy: ProxyConfig {
