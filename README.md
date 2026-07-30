@@ -842,7 +842,8 @@ Still pending: Microsoft Active Directory Kerberos/GSSAPI evidence, real FreeBSD
 integration matrix, a
 Windows OpenSSH host for remote Sysmon, additional SDK versions beyond the pinned TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift clients,
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
-validated transfer and file-manager surfaces, and native keyring/Stronghold fault injection. The
+validated transfer and file-manager surfaces, Windows/macOS locked or denied native keyring providers,
+and non-Unix Stronghold filesystem fault injection. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
 compatibility job. Its Windows package gate silently installs/extracts and launches both MSI and NSIS
 payloads; its macOS gate launches the direct app and the copy mounted from the verified DMG. Every
