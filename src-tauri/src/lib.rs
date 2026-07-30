@@ -122,6 +122,7 @@ mod store_normalization;
 mod store_persistence;
 mod store_transactions;
 mod sysmon_commands;
+mod sysmon_network;
 mod sysmon_remote_parsing;
 mod sysmon_runtime;
 mod system_event_sink;
@@ -140,6 +141,7 @@ mod webkit_runtime;
 
 pub use app_bootstrap::run;
 pub use command_types::*;
+use sysmon_network::*;
 use sysmon_runtime::*;
 
 use app_data_migration::*;
