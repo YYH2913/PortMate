@@ -1,9 +1,35 @@
 use super::SessionStore;
 use crate::host_keys::{HostKeyEvaluation, HostKeyObservation};
-use crate::models::{ConnectionConfig, HostKeyDecision, McpScope, SshConnection, TrustedHostKey};
+use crate::models::{
+    AuthMethod, ConnectionConfig, HostKeyDecision, McpScope, SshConnection, TrustedHostKey,
+};
 use chrono::Utc;
 
 impl SessionStore {
+    pub fn record_auth_success(
+        &mut self,
+        session_id: &str,
+        method: AuthMethod,
+    ) -> Result<(), String> {
+        let profile = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+
+        match &mut profile.connection {
+            ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+                ssh.identity_policy.last_successful = ssh
+                    .identity_policy
+                    .record_success
+                    .then_some(method)
+                    .filter(|method| ssh.identity_policy.auth_order.contains(method));
+                Ok(())
+            }
+            _ => Err(format!("profile is not SSH-backed: {session_id}")),
+        }
+    }
+
     pub fn evaluate_host_key(
         &self,
         profile_id: &str,

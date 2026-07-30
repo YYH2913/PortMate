@@ -1,4 +1,5 @@
-use super::{SessionStore, MAX_EVENTS_PER_SESSION};
+use super::events::MAX_EVENTS_PER_SESSION;
+use super::SessionStore;
 use crate::models::{AuditRecord, SysmonSnapshot, TimelineMark, TransferStatus, TransferTask};
 use std::collections::{HashMap, HashSet};
 
