@@ -360,7 +360,8 @@ npm run desktop:clean
 
 On a Linux desktop with X11/Xwayland, the native smoke gate starts that same sanitized launcher,
 waits for a newly created PortMate window, captures its client pixels with `xwd`, rejects white,
-black, or otherwise unrendered frames, and then cleans up the Tauri/Vite process group:
+black, or otherwise unrendered frames, and then cleans up the Tauri/Vite process group and isolated
+temporary XDG data directories:
 
 ```bash
 npm run test:linux-desktop-smoke

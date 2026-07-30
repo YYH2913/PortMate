@@ -17,6 +17,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 - [ ] `npm run test:terminal-compat`, `npm run test:vttest-compat`, `npm run test:tmux-workflow`, `npm run test:tmux-version-compat`, and `npm run test:workspace-ui` pass.
 - [ ] `npm run test:mcp-stdio-client`, `npm run test:mcp-http-client`, `npm run test:mcp-python-client`, `npm run test:mcp-go-client`, `npm run test:mcp-rust-client`, `npm run test:mcp-ruby-client`, `npm run test:mcp-java-client`, `npm run test:mcp-kotlin-client`, `npm run test:mcp-csharp-client`, and `npm run test:mcp-swift-client` pass.
 - [ ] `npm run test:ssh-server-compat` and `npm run test:tcp-telnet-server-compat` pass on a Linux Docker host.
+- [ ] `npm run test:linux-desktop-smoke` passes on a Linux X11/Xwayland desktop or isolated Xvfb display.
 - [ ] `cargo fmt --all -- --check` passes.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace -- --test-threads=4` passes without unexpected skipped integration tools.

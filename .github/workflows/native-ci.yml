@@ -82,7 +82,10 @@ jobs:
             librsvg2-dev \
             libudev-dev \
             patchelf \
-            rpm
+            rpm \
+            x11-apps \
+            x11-utils \
+            xvfb
 
       - run: npm ci
       - run: cargo fmt --all -- --check
@@ -92,6 +95,9 @@ jobs:
       - run: cargo test --workspace -- --test-threads=4 --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: npm run test:native-keyring
+      - name: Smoke-test the native Linux WebKit window
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24 -nolisten tcp" npm run test:linux-desktop-smoke
       - if: runner.os == 'Linux'
         run: npm run test:libssh-gssapi-build
       - if: runner.os == 'Linux'

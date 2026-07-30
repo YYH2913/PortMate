@@ -1,5 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -28,11 +38,21 @@ const npm = executablePath("npm");
 const existingWindowIds = new Set(listPortMateWindows(xwininfo).map((window) => window.id));
 const dmiIdentity = readDmiIdentity();
 const expectsVmwareFallback = dmiIdentity.some((value) => value.toLowerCase().includes("vmware"));
-const environment = { ...process.env, GDK_BACKEND: "x11" };
+const testRoot = mkdtempSync(join(tmpdir(), "portmate-native-smoke-"));
+const xdgDirectories = Object.fromEntries([
+  ["XDG_CACHE_HOME", "cache"],
+  ["XDG_CONFIG_HOME", "config"],
+  ["XDG_DATA_HOME", "data"],
+  ["XDG_RUNTIME_DIR", "runtime"],
+  ["XDG_STATE_HOME", "state"],
+].map(([name, directory]) => [name, join(testRoot, directory)]));
+for (const path of Object.values(xdgDirectories)) mkdirSync(path, { recursive: true, mode: 0o700 });
+const environment = { ...process.env, ...xdgDirectories, GDK_BACKEND: "x11" };
 delete environment.WEBKIT_DISABLE_DMABUF_RENDERER;
 
 let output = "";
-let stopped = false;
+let interruptedSignal = null;
+let stopPromise = null;
 let desktopResult = null;
 const desktop = spawn(npm, ["run", "desktop:clean"], {
   cwd: projectRoot,
@@ -55,13 +75,13 @@ for (const stream of [desktop.stdout, desktop.stderr]) {
 }
 
 const handleSignal = (signal) => {
-  void stopDesktop().finally(() => {
-    process.kill(process.pid, signal);
-  });
+  interruptedSignal ??= signal;
+  void stopDesktop();
 };
 process.once("SIGINT", handleSignal);
 process.once("SIGTERM", handleSignal);
 
+let failure = null;
 try {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   const window = await waitForWindow(deadline);
@@ -81,15 +101,19 @@ try {
   }, null, 2));
 } catch (error) {
   const diagnostic = stripAnsi(output).slice(-12_000);
-  throw new Error(`${error instanceof Error ? error.message : String(error)}\n\nDesktop output:\n${diagnostic}`);
+  failure = new Error(`${error instanceof Error ? error.message : String(error)}\n\nDesktop output:\n${diagnostic}`);
 } finally {
   process.off("SIGINT", handleSignal);
   process.off("SIGTERM", handleSignal);
   await stopDesktop();
+  rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
+if (interruptedSignal) process.kill(process.pid, interruptedSignal);
+if (failure) throw failure;
 
 async function waitForWindow(deadline) {
   while (Date.now() < deadline) {
+    if (interruptedSignal) throw new Error(`Native desktop smoke check interrupted by ${interruptedSignal}`);
     if (desktopResult) throw desktopExitError(desktopResult);
     const candidates = listPortMateWindows(xwininfo)
       .filter((window) => !existingWindowIds.has(window.id))
@@ -104,6 +128,7 @@ async function waitForWindow(deadline) {
 async function waitForRenderedPixels(window, deadline) {
   let lastFailure = "no capture was available";
   while (Date.now() < deadline) {
+    if (interruptedSignal) throw new Error(`Native desktop smoke check interrupted by ${interruptedSignal}`);
     if (desktopResult) throw desktopExitError(desktopResult);
     const result = spawnSync(xwd, ["-silent", "-id", window.id], {
       encoding: null,
@@ -260,9 +285,12 @@ function desktopExitError(result) {
   return new Error(`The desktop process exited before rendering (code ${result.code}, signal ${result.signal})`);
 }
 
-async function stopDesktop() {
-  if (stopped) return;
-  stopped = true;
+function stopDesktop() {
+  stopPromise ??= stopDesktopProcess();
+  return stopPromise;
+}
+
+async function stopDesktopProcess() {
   if (!desktop.pid) return;
   signalProcessGroup("SIGTERM");
   const exited = await Promise.race([desktopExit.then(() => true), delay(5_000).then(() => false)]);
