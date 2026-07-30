@@ -136,6 +136,7 @@ mod transfer_runtime;
 mod trigger_runtime;
 mod tunnel_commands;
 mod vault_commands;
+mod webkit_runtime;
 
 pub use app_bootstrap::run;
 pub use command_types::*;

@@ -1,6 +1,7 @@
 use super::*;
 
 pub fn run() {
+    webkit_runtime::configure_webkit_runtime();
     tauri::Builder::default()
         .setup(|app| {
             let data_root = app.path().data_dir()?;
