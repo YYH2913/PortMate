@@ -115,6 +115,7 @@ mod ssh_host_key_commands;
 mod ssh_host_key_scan;
 mod ssh_identity_commands;
 mod ssh_libssh_bridge;
+mod ssh_libssh_channel;
 mod ssh_libssh_transport;
 mod ssh_reader;
 mod ssh_reconnect;
@@ -235,6 +236,7 @@ use ssh_host_key_commands::{
 };
 use ssh_host_key_scan::*;
 use ssh_libssh_bridge::*;
+use ssh_libssh_channel::*;
 use ssh_libssh_transport::*;
 use ssh_reader::*;
 use ssh_reconnect::*;
