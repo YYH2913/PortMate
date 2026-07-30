@@ -1,10 +1,7 @@
 use anyhow::{anyhow, Result};
-use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use portmate_core::{
-    prompt_templates, redact_secrets, redact_session_event, redact_session_events,
-    redact_session_summary, redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
-    resource_templates, tool_definitions, McpScope, SessionEvent, SessionStore, SessionSummary,
-    TransferTask,
+    prompt_templates, redact_session_summary, resource_templates, tool_definitions, McpScope,
+    SessionStore, SessionSummary,
 };
 use serde_json::{json, Value};
 #[cfg(test)]
@@ -26,6 +23,8 @@ mod http_security;
 mod http_server;
 mod json_rpc;
 mod keyring_store;
+mod mcp_resources;
+mod mcp_tools;
 mod response_encoding;
 mod socket_io;
 mod stdio_server;
@@ -52,6 +51,10 @@ use http_server::{
 use json_rpc::MAX_JSON_RPC_BATCH_ITEMS;
 use json_rpc::{dispatch_json_rpc_value, error, JsonRpcRequest, JsonRpcResponse};
 #[cfg(test)]
+use mcp_resources::{parse_session_uri, parse_transfer_uri};
+#[cfg(test)]
+use mcp_tools::bounded_log_query_limit;
+#[cfg(test)]
 use response_encoding::{
     encode_json_rpc_response, sse_event_with_limit, try_encode_json_with_limit,
 };
@@ -59,9 +62,6 @@ use stdio_server::run_stdio_server;
 #[cfg(test)]
 use stdio_server::{read_stdio_message, StdioMessage};
 use store_loader::load_store_from_path;
-
-const DEFAULT_LOG_QUERY_LIMIT: u64 = 100;
-const MAX_LOG_QUERY_LIMIT: u64 = 1000;
 
 struct PortMateMcp {
     store: SessionStore,
@@ -175,339 +175,6 @@ impl PortMateMcp {
         })
     }
 
-    fn resources_list_result(&self) -> Value {
-        let mut resources = Vec::new();
-        if self.read_scope_enabled(McpScope::ReadSessions) {
-            resources.push(json!({
-                "uri": "portmate://sessions",
-                "name": "sessions",
-                "title": "Sessions",
-                "description": "All visible session summaries",
-                "mimeType": "application/json"
-            }));
-        }
-        let log_resources = [
-            ("screen", "Screen", "text/plain"),
-            ("log", "Log", "application/jsonl"),
-            ("timeline", "Timeline", "application/json"),
-            ("sysmon", "Sysmon", "application/json"),
-            ("tmux", "Tmux", "application/json"),
-        ];
-        for summary in self.store.summaries() {
-            let encoded_session_id = encode_mcp_uri_segment(&summary.profile.id);
-            if self.read_session_allowed(McpScope::ReadSessions, &summary.profile.id) {
-                resources.push(json!({
-                    "uri": format!("portmate://sessions/{encoded_session_id}/state"),
-                    "name": format!("session_{}_state", summary.profile.id),
-                    "title": format!("{} State", summary.profile.name),
-                    "mimeType": "application/json"
-                }));
-            }
-            if self.read_session_allowed(McpScope::ReadLogs, &summary.profile.id) {
-                for (suffix, label, mime_type) in log_resources {
-                    resources.push(json!({
-                        "uri": format!("portmate://sessions/{encoded_session_id}/{suffix}"),
-                        "name": format!("session_{}_{}", summary.profile.id, suffix),
-                        "title": format!("{} {label}", summary.profile.name),
-                        "mimeType": mime_type
-                    }));
-                }
-            }
-        }
-        for transfer in &self.store.transfers {
-            if !self.has_session(&transfer.session_id)
-                || !self.read_session_allowed(McpScope::ReadLogs, &transfer.session_id)
-            {
-                continue;
-            }
-            let encoded_transfer_id = encode_mcp_uri_segment(&transfer.id);
-            resources.push(json!({
-                "uri": format!("portmate://transfers/{encoded_transfer_id}"),
-                "name": format!("transfer_{}", transfer.id),
-                "title": format!("Transfer {}", transfer.id),
-                "mimeType": "application/json"
-            }));
-        }
-        json!({ "resources": resources })
-    }
-
-    fn prompt_get(&self, params: &Value) -> Result<Value> {
-        let name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("missing prompt name"))?;
-        let session_id = params
-            .get("arguments")
-            .and_then(|args| args.get("sessionId"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("missing prompt sessionId"))?;
-        self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-        self.require_known_session(session_id)?;
-        let screen = redact_secrets(&self.store.screen(session_id).unwrap_or_default());
-        let text = match name {
-            "diagnose_session" => format!("Diagnose PortMate session `{session_id}` using this terminal snapshot:\n\n{screen}"),
-            "compare_serial_and_ssh" => format!("Compare serial and SSH behavior for `{session_id}`. Correlate boot output, SSH state, and timeline marks."),
-            "prepare_repro_report" => format!("Prepare a reproducible report for `{session_id}` using logs, timeline marks, transfers, and MCP audit records."),
-            _ => return Err(anyhow!("unknown prompt: {name}")),
-        };
-        Ok(json!({
-            "description": name,
-            "messages": [{ "role": "user", "content": { "type": "text", "text": text } }]
-        }))
-    }
-
-    fn resource_read(&self, params: &Value) -> Result<Value> {
-        let uri = params
-            .get("uri")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("missing resource uri"))?;
-        let content = if uri == "portmate://sessions" {
-            self.guard_read_scope(McpScope::ReadSessions, None)?;
-            serde_json::to_string_pretty(
-                &self.visible_summaries(self.store.summaries(), McpScope::ReadSessions),
-            )?
-        } else if let Some((session_id, suffix)) = parse_session_uri(uri) {
-            let scope = if suffix == "state" {
-                McpScope::ReadSessions
-            } else {
-                McpScope::ReadLogs
-            };
-            self.guard_read_scope(scope, Some(&session_id))?;
-            self.require_known_session(&session_id)?;
-            match suffix {
-                "state" => serde_json::to_string_pretty(
-                    &self
-                        .store
-                        .summaries()
-                        .into_iter()
-                        .find(|summary| summary.profile.id == session_id)
-                        .map(redact_session_summary),
-                )?,
-                "screen" => redact_secrets(&self.store.screen(&session_id).unwrap_or_default()),
-                "log" => redact_session_events(self.store.tail_log(&session_id, 200))
-                    .into_iter()
-                    .map(|event| serde_json::to_string(&event).unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                "timeline" => serde_json::to_string_pretty(&redact_timeline_marks(
-                    self.store.timeline_for(&session_id),
-                ))?,
-                "sysmon" => serde_json::to_string_pretty(
-                    &self
-                        .store
-                        .sysmon_for(&session_id)
-                        .map(redact_sysmon_snapshot),
-                )?,
-                "tmux" => {
-                    if let Some(value) =
-                        self.call_ipc_value("list_tmux_state", json!({ "sessionId": session_id }))?
-                    {
-                        redact_secrets(&ipc_value_to_text(value)?)
-                    } else {
-                        serde_json::to_string_pretty(&json!({
-                            "sessions": [],
-                            "panes": [],
-                            "message": "desktop IPC is not available"
-                        }))?
-                    }
-                }
-                _ => return Err(anyhow!("unknown session resource suffix: {suffix}")),
-            }
-        } else if let Some(id) = parse_transfer_uri(uri) {
-            let transfer = self
-                .store
-                .transfer_by_id(&id)
-                .ok_or_else(|| anyhow!("unknown or unauthorized transfer resource"))?;
-            self.guard_read_scope(McpScope::ReadLogs, Some(&transfer.session_id))?;
-            self.require_known_session(&transfer.session_id)?;
-            serde_json::to_string_pretty(&redact_transfer_task(transfer))?
-        } else {
-            return Err(anyhow!("unknown resource uri: {uri}"));
-        };
-
-        Ok(json!({
-            "contents": [{
-                "uri": uri,
-                "mimeType": if uri.ends_with("/screen") { "text/plain" } else { "application/json" },
-                "text": content
-            }]
-        }))
-    }
-
-    fn tool_call(&mut self, params: &Value) -> Result<Value> {
-        let name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("missing tool name"))?;
-        let arguments = params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let mut is_error = false;
-
-        let output = match name {
-            "list_sessions" => {
-                self.guard_read_scope(McpScope::ReadSessions, None)?;
-                let summaries =
-                    if let Some(value) = self.call_ipc_value("list_sessions", json!({}))? {
-                        serde_json::from_value::<Vec<SessionSummary>>(value)
-                            .map_err(|error| anyhow!("invalid desktop session response: {error}"))?
-                    } else {
-                        self.store.summaries()
-                    };
-                serde_json::to_string_pretty(
-                    &self.visible_summaries(summaries, McpScope::ReadSessions),
-                )?
-            }
-            "read_screen" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-                self.require_known_session(session_id)?;
-                if let Some(value) = self.call_ipc_value("read_screen", arguments.clone())? {
-                    redact_secrets(&ipc_value_to_text(value)?)
-                } else {
-                    redact_secrets(&self.store.screen(session_id).unwrap_or_default())
-                }
-            }
-            "tail_log" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-                self.require_known_session(session_id)?;
-                let limit = arguments.get("limit").and_then(Value::as_u64);
-                let limit = bounded_log_query_limit(limit);
-                let mut events =
-                    if let Some(value) = self.call_ipc_value("tail_log", arguments.clone())? {
-                        serde_json::from_value::<Vec<SessionEvent>>(value)
-                            .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
-                    } else {
-                        self.store.tail_log(session_id, limit)
-                    };
-                events.retain(|event| {
-                    event.session_id == session_id
-                        && self.has_session(&event.session_id)
-                        && self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
-                });
-                serde_json::to_string_pretty(&redact_session_events(events))?
-            }
-            "search_logs" => {
-                let query = required_string(&arguments, "query")?;
-                let session_id = arguments.get("sessionId").and_then(Value::as_str);
-                self.guard_read_scope(McpScope::ReadLogs, session_id)?;
-                if let Some(session_id) = session_id {
-                    self.require_known_session(session_id)?;
-                }
-                let limit = arguments.get("limit").and_then(Value::as_u64);
-                let limit = bounded_log_query_limit(limit);
-                let mut events =
-                    if let Some(value) = self.call_ipc_value("search_logs", arguments.clone())? {
-                        serde_json::from_value::<Vec<SessionEvent>>(value)
-                            .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
-                    } else {
-                        self.store.search_logs(query, session_id, limit)
-                    };
-                events.retain(|event| {
-                    session_id.is_none_or(|session_id| event.session_id == session_id)
-                        && self.has_session(&event.session_id)
-                        && self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
-                });
-                serde_json::to_string_pretty(&redact_session_events(events))?
-            }
-            "send_text" | "send_key" | "run_command" => {
-                if let Some(output) = self.write_tool(name, &arguments)? {
-                    output
-                } else {
-                    is_error = true;
-                    format!(
-                        "{name} was NOT executed: desktop IPC is not available, so no session input was sent."
-                    )
-                }
-            }
-            "export_session_bundle" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-                self.require_known_session(session_id)?;
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    redact_secrets(&ipc_value_to_text(value)?)
-                } else {
-                    serde_json::to_string_pretty(
-                        &self.store.export_session_bundle_redacted(session_id),
-                    )?
-                }
-            }
-            "open_session" | "close_session" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    let summary = serde_json::from_value::<SessionSummary>(value)
-                        .map_err(|error| anyhow!("invalid desktop session response: {error}"))?;
-                    serde_json::to_string_pretty(&redact_session_summary(summary))?
-                } else {
-                    is_error = true;
-                    format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
-                }
-            }
-            "start_transfer" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    let transfer = serde_json::from_value::<TransferTask>(value)
-                        .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
-                    serde_json::to_string_pretty(&redact_transfer_task(transfer))?
-                } else {
-                    is_error = true;
-                    "start_transfer was NOT executed: desktop IPC is not available, so no transfer was started."
-                        .to_string()
-                }
-            }
-            "create_tunnel" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
-                } else {
-                    is_error = true;
-                    "create_tunnel was NOT executed: desktop IPC is not available, so no tunnel was created."
-                        .to_string()
-                }
-            }
-            "list_tmux_state" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;
-                self.require_known_session(session_id)?;
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    ipc_value_to_text(value)?
-                } else {
-                    serde_json::to_string_pretty(&json!({
-                        "sessions": [],
-                        "panes": [],
-                        "message": "desktop IPC is not available"
-                    }))?
-                }
-            }
-            "attach_tmux" => {
-                if let Some(output) = self.write_tool(name, &arguments)? {
-                    output
-                } else {
-                    is_error = true;
-                    "attach_tmux was NOT executed: desktop IPC is not available, so tmux was not attached."
-                        .to_string()
-                }
-            }
-            _ => return Err(anyhow!("unknown tool: {name}")),
-        };
-
-        Ok(json!({
-            "content": [{ "type": "text", "text": output }],
-            "isError": is_error
-        }))
-    }
-
-    fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
-        if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-            let event = serde_json::from_value::<SessionEvent>(value)
-                .map_err(|error| anyhow!("invalid desktop event response: {error}"))?;
-            return serde_json::to_string_pretty(&redact_session_event(event))
-                .map(Some)
-                .map_err(Into::into);
-        }
-        Ok(None)
-    }
-
     fn read_scope_enabled(&self, scope: McpScope) -> bool {
         self.store.mcp_can_read(&self.client_id, scope, None)
     }
@@ -586,14 +253,6 @@ impl PortMateMcp {
     }
 }
 
-fn ipc_value_to_text(value: Value) -> Result<String> {
-    if let Some(text) = value.as_str() {
-        Ok(text.to_string())
-    } else {
-        Ok(serde_json::to_string_pretty(&value)?)
-    }
-}
-
 fn main() -> Result<()> {
     if std::env::args().any(|arg| arg == "--http")
         || std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1")
@@ -607,92 +266,6 @@ fn main() -> Result<()> {
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
     server.refresh_runtime_sources();
     dispatch_json_rpc_value(value, |request| server.handle(request))
-}
-
-fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
-    arguments
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing string argument `{key}`"))
-}
-
-fn bounded_log_query_limit(limit: Option<u64>) -> usize {
-    limit
-        .unwrap_or(DEFAULT_LOG_QUERY_LIMIT)
-        .clamp(1, MAX_LOG_QUERY_LIMIT) as usize
-}
-
-const MCP_URI_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'%')
-    .add(b'/')
-    .add(b'<')
-    .add(b'>')
-    .add(b'?')
-    .add(b'[')
-    .add(b'\\')
-    .add(b']')
-    .add(b'^')
-    .add(b'`')
-    .add(b'{')
-    .add(b'|')
-    .add(b'}');
-
-fn encode_mcp_uri_segment(value: &str) -> String {
-    utf8_percent_encode(value, MCP_URI_SEGMENT_ENCODE_SET).to_string()
-}
-
-fn decode_mcp_uri_segment(value: &str) -> Option<String> {
-    if value.is_empty() || !has_valid_percent_encoding(value) {
-        return None;
-    }
-    percent_decode_str(value)
-        .decode_utf8()
-        .ok()
-        .map(|value| value.into_owned())
-}
-
-fn has_valid_percent_encoding(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            if index + 2 >= bytes.len()
-                || !bytes[index + 1].is_ascii_hexdigit()
-                || !bytes[index + 2].is_ascii_hexdigit()
-            {
-                return false;
-            }
-            index += 3;
-        } else {
-            index += 1;
-        }
-    }
-    true
-}
-
-fn parse_session_uri(uri: &str) -> Option<(String, &str)> {
-    let path = uri.strip_prefix("portmate://sessions/")?;
-    if path.contains(['?', '#']) {
-        return None;
-    }
-    let mut parts = path.split('/');
-    let id = decode_mcp_uri_segment(parts.next()?)?;
-    let suffix = parts.next()?;
-    if suffix.is_empty() || parts.next().is_some() {
-        return None;
-    }
-    Some((id, suffix))
-}
-
-fn parse_transfer_uri(uri: &str) -> Option<String> {
-    let id = uri.strip_prefix("portmate://transfers/")?;
-    if id.contains(['/', '?', '#']) {
-        return None;
-    }
-    decode_mcp_uri_segment(id)
 }
 
 #[cfg(test)]

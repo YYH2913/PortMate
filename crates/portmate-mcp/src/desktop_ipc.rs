@@ -18,6 +18,14 @@ const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const IPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 
+pub(super) fn ipc_value_to_text(value: Value) -> Result<String> {
+    if let Some(text) = value.as_str() {
+        Ok(text.to_string())
+    } else {
+        Ok(serde_json::to_string_pretty(&value)?)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct IpcEndpointFile {
