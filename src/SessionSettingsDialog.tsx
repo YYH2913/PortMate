@@ -26,6 +26,7 @@ import {
   MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS,
   normalizeSessionMetadataText,
   protocolTabs,
+  removeJumpSecretDraftIndex,
   sessionSettingTrees,
 } from "./session-settings-state";
 import type { ProtocolTab } from "./session-settings-state";
@@ -607,6 +608,7 @@ function SshAdvancedFields({
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps: [...ssh.jumps, next] } });
     };
     const removeJump = (index: number) => {
+      setJumpSecretDrafts((current) => removeJumpSecretDraftIndex(current, index));
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, jumps: ssh.jumps.filter((_, jumpIndex) => jumpIndex !== index) } });
     };
     const updateJumpPolicy = (index: number, patch: Partial<HostKeyPolicy>) => {
@@ -665,7 +667,7 @@ function SshAdvancedFields({
         <DialogField label="别名:(A)">
           <input value={ssh.hostKeyPolicy.alias ?? ""} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, alias: event.target.value || null } } })} />
         </DialogField>
-        <DialogField label="Jump Host:">
+        <DialogField label="Jump Host:" group>
           <div className="jump-list">
             {ssh.jumps.map((jump, index) => {
               const policy = jump.hostKeyPolicy ?? createJumpHostKeyPolicy(jump);
@@ -677,8 +679,8 @@ function SshAdvancedFields({
                     <input type="number" value={jump.port} onChange={(event) => updateJump(index, { port: Number(event.target.value) || 22 })} aria-label={`Jump ${index + 1} port`} />
                     <input value={jump.username} onChange={(event) => updateJump(index, { username: event.target.value })} placeholder="user" />
                     <input value={jump.identityRef ?? ""} onChange={(event) => updateJump(index, { identityRef: event.target.value || null })} placeholder="identity id" />
-                    <button type="button" className="icon-button" onClick={() => removeJump(index)} title="删除跳板">
-                      <X size={14} />
+                    <button type="button" className="icon-button" onClick={() => removeJump(index)} title="删除跳板" aria-label={`删除跳板 ${index + 1}`}>
+                      <Trash2 size={14} />
                     </button>
                   </div>
                   <div className="jump-hop-extra">
@@ -1366,7 +1368,15 @@ function DialogFrame({
   );
 }
 
-function DialogField({ label, children }: { label: string; children: ReactNode }) {
+function DialogField({ label, children, group = false }: { label: string; children: ReactNode; group?: boolean }) {
+  if (group) {
+    return (
+      <div className="dialog-field" role="group" aria-label={label}>
+        <span>{label}</span>
+        {children}
+      </div>
+    );
+  }
   return (
     <label className="dialog-field">
       <span>{label}</span>

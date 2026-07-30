@@ -58,6 +58,21 @@ export function normalizeSessionProfileMetadata(
   return { name, group, tags };
 }
 
+export function removeJumpSecretDraftIndex(
+  drafts: Readonly<Record<string, string>>,
+  removedIndex: number,
+): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(drafts)) {
+    const match = /^(\d+):(passwordSecretRef|passphraseSecretRef)$/.exec(key);
+    if (!match) continue;
+    const index = Number(match[1]);
+    if (index === removedIndex) continue;
+    next[`${index > removedIndex ? index - 1 : index}:${match[2]}`] = value;
+  }
+  return next;
+}
+
 function boundedTrimmedSessionMetadata(value: unknown, maxCharacters: number): string {
   if (typeof value !== "string") return "";
   const clean = Array.from(value)

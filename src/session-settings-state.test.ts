@@ -8,6 +8,7 @@ import {
   normalizeSessionMetadataText,
   normalizeSessionProfileMetadata,
   protocolTabs,
+  removeJumpSecretDraftIndex,
   sessionSettingTrees,
 } from "./session-settings-state";
 
@@ -96,5 +97,18 @@ describe("session settings navigation", () => {
       tags: [],
     }, ` ${"界".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS + 2)} `).name)
       .toBe("界".repeat(MAX_SESSION_PROFILE_NAME_CHARACTERS));
+  });
+
+  it("drops removed jump secrets and reindexes later drafts", () => {
+    expect(removeJumpSecretDraftIndex({
+      "0:passwordSecretRef": "first-password",
+      "0:passphraseSecretRef": "first-passphrase",
+      "1:passwordSecretRef": "second-password",
+      "2:passphraseSecretRef": "third-passphrase",
+      malformed: "ignored",
+    }, 0)).toEqual({
+      "0:passwordSecretRef": "second-password",
+      "1:passphraseSecretRef": "third-passphrase",
+    });
   });
 });

@@ -1125,6 +1125,50 @@ Host staging
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
+  const jumpHostDialog = page.locator(".session-settings-dialog");
+  await jumpHostDialog.waitFor();
+  await jumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  const jumpGroup = jumpHostDialog.getByRole("group", { name: "Jump Host:", exact: true });
+  await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
+  await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
+  const jumpRows = jumpGroup.locator(".jump-hop");
+  await jumpRows.nth(0).locator('input[placeholder="host"]').fill("jump-one.example.test");
+  await jumpRows.nth(0).locator('input[placeholder="password"]').fill("first-draft-secret");
+  await jumpRows.nth(1).locator('input[placeholder="host"]').fill("jump-two.example.test");
+  await jumpRows.nth(1).locator('input[placeholder="password"]').fill("second-draft-secret");
+  await jumpGroup.getByRole("button", { name: "删除跳板 1", exact: true }).click();
+  assert(await jumpRows.count() === 1
+    && await jumpRows.nth(0).locator('input[placeholder="host"]').inputValue() === "jump-two.example.test"
+    && await jumpRows.nth(0).locator('input[placeholder="password"]').inputValue() === "second-draft-secret",
+  "deleting the first Jump Host did not preserve the second hop and its local secret draft");
+  await jumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await jumpHostDialog.waitFor({ state: "detached" });
+  const savedJumpHosts = await page.evaluate(() => (
+    window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.jumps ?? []
+  ));
+  assert(savedJumpHosts.length === 1 && savedJumpHosts[0].host === "jump-two.example.test",
+    `deleted Jump Host returned after save: ${JSON.stringify(savedJumpHosts)}`);
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
+  const reopenedJumpHostDialog = page.locator(".session-settings-dialog");
+  await reopenedJumpHostDialog.waitFor();
+  await reopenedJumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  const reopenedJumpGroup = reopenedJumpHostDialog.getByRole("group", { name: "Jump Host:", exact: true });
+  assert(await reopenedJumpGroup.locator(".jump-hop").count() === 1
+    && await reopenedJumpGroup.locator('input[placeholder="host"]').inputValue() === "jump-two.example.test",
+  "saved Jump Host deletion was not restored when reopening Session Settings");
+  await reopenedJumpGroup.getByRole("button", { name: "删除跳板 1", exact: true }).click();
+  await reopenedJumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await reopenedJumpHostDialog.waitFor({ state: "detached" });
+  const clearedJumpHosts = await page.evaluate(() => (
+    window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.jumps ?? []
+  ));
+  assert(clearedJumpHosts.length === 0,
+    `last Jump Host returned after deletion: ${JSON.stringify(clearedJumpHosts)}`);
+
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const concurrentProfileDialog = page.locator(".session-settings-dialog");
   await concurrentProfileDialog.waitFor();
   const concurrentProfileSetup = await page.evaluate(() => {
