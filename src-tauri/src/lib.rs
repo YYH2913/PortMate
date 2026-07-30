@@ -171,6 +171,7 @@ mod tmux_commands;
 mod tmux_protocol;
 mod tmux_runtime;
 mod transfer_commands;
+mod transfer_request;
 mod transfer_runtime;
 mod trigger_runtime;
 mod tunnel_commands;
@@ -312,6 +313,7 @@ use telnet_protocol::*;
 use terminal_export_commands::{export_terminal_text_inner, validate_terminal_text_export_request};
 use tmux_protocol::*;
 use tmux_runtime::*;
+use transfer_request::*;
 use transfer_runtime::*;
 use trigger_runtime::*;
 
