@@ -7,6 +7,160 @@ pub(super) fn validate_profile_tunnels(profile: &SessionProfile) -> Result<(), S
     }
 }
 
+pub(super) fn apply_proxy_password_update_with_io<WriteSecret>(
+    profile: &mut SessionProfile,
+    update: Option<ProxyPasswordUpdate>,
+    mut write_secret: WriteSecret,
+) -> Result<Option<String>, String>
+where
+    WriteSecret: FnMut(Option<SecretStorage>, &str) -> Result<String, String>,
+{
+    let Some(update) = update else {
+        return Ok(None);
+    };
+    let proxy =
+        profile_proxy_mut(profile).ok_or_else(|| "当前会话协议不支持代理密码".to_string())?;
+    match update {
+        ProxyPasswordUpdate::Set { password, storage } => {
+            let password = Zeroizing::new(password);
+            validate_proxy_credentials(proxy.kind, &proxy.username, password.as_str())?;
+            let secret_ref = write_secret(storage, password.as_str())?;
+            proxy.password_secret_ref = Some(secret_ref.clone());
+            Ok(Some(secret_ref))
+        }
+        ProxyPasswordUpdate::Clear => {
+            proxy.password_secret_ref = None;
+            Ok(None)
+        }
+    }
+}
+
+pub(super) fn validate_profile_transport_change(
+    current_profile: Option<&SessionProfile>,
+    next_profile: &SessionProfile,
+    runtime_status: Option<SessionStatus>,
+) -> Result<(), String> {
+    let Some(current_profile) = current_profile else {
+        return Ok(());
+    };
+    let current_kind = current_profile.connection.kind();
+    let next_kind = next_profile.connection.kind();
+    if current_kind == next_kind {
+        return Ok(());
+    }
+    if matches!(
+        runtime_status,
+        Some(SessionStatus::Connecting | SessionStatus::Connected | SessionStatus::Reconnecting)
+    ) {
+        let status = runtime_status.expect("active runtime status was matched above");
+        return Err(format!(
+            "会话仍在运行（{status:?}，当前协议 {current_kind:?}）；切换到 {next_kind:?} 前请先关闭会话"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn merge_expected_profile_update(
+    current_profile: Option<&SessionProfile>,
+    expected_profile: Option<&SessionProfile>,
+    incoming_profile: SessionProfile,
+) -> Result<SessionProfile, String> {
+    match (current_profile, expected_profile) {
+        (Some(current), Some(expected)) => {
+            if current.id != incoming_profile.id || expected.id != incoming_profile.id {
+                return Err("expectedProfile 与保存目标不是同一个 Profile".to_string());
+            }
+            let expected = serde_json::to_value(expected)
+                .map_err(|error| format!("序列化 expectedProfile 失败: {error}"))?;
+            let current = serde_json::to_value(current)
+                .map_err(|error| format!("序列化当前 Profile 失败: {error}"))?;
+            let incoming = serde_json::to_value(&incoming_profile)
+                .map_err(|error| format!("序列化待保存 Profile 失败: {error}"))?;
+            let merged =
+                merge_expected_json_value("Profile", "profile", &expected, &current, &incoming)?;
+            serde_json::from_value(merged)
+                .map_err(|error| format!("反序列化合并后的 Profile 失败: {error}"))
+        }
+        (Some(_), None) => Err("保存现有 Profile 必须提供 expectedProfile 版本".to_string()),
+        (None, Some(_)) => Err("Profile 已被其他操作删除，请刷新会话列表".to_string()),
+        (None, None) => Ok(incoming_profile),
+    }
+}
+
+pub(super) fn validate_expected_proxy_password(
+    current_profile: Option<&SessionProfile>,
+    expected_profile: Option<&SessionProfile>,
+) -> Result<(), String> {
+    let (Some(current), Some(expected)) = (current_profile, expected_profile) else {
+        return Ok(());
+    };
+    let current_ref = profile_proxy(current).and_then(|proxy| proxy.password_secret_ref.as_deref());
+    let expected_ref =
+        profile_proxy(expected).and_then(|proxy| proxy.password_secret_ref.as_deref());
+    if current_ref != expected_ref {
+        return Err("代理密码已在其他操作中更新，请重新打开设置后再保存".to_string());
+    }
+    Ok(())
+}
+
+pub(super) fn merge_expected_json_value(
+    entity: &str,
+    path: &str,
+    expected: &serde_json::Value,
+    current: &serde_json::Value,
+    incoming: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if incoming == expected {
+        return Ok(current.clone());
+    }
+    if current == expected || incoming == current {
+        return Ok(incoming.clone());
+    }
+
+    let (
+        serde_json::Value::Object(expected),
+        serde_json::Value::Object(current),
+        serde_json::Value::Object(incoming),
+    ) = (expected, current, incoming)
+    else {
+        return Err(format!(
+            "{entity} 字段已被其他操作修改，请刷新后重试: {path}"
+        ));
+    };
+    if expected.len() != current.len()
+        || expected.len() != incoming.len()
+        || !expected
+            .keys()
+            .all(|key| current.contains_key(key) && incoming.contains_key(key))
+    {
+        return Err(format!(
+            "{entity} 结构已被其他操作修改，请刷新后重试: {path}"
+        ));
+    }
+
+    let mut merged = serde_json::Map::with_capacity(expected.len());
+    for (key, expected_value) in expected {
+        let current_value = current
+            .get(key)
+            .expect("merged JSON key sets were checked above");
+        let incoming_value = incoming
+            .get(key)
+            .expect("merged JSON key sets were checked above");
+        let child_path = format!("{path}.{key}");
+        merged.insert(
+            key.clone(),
+            merge_expected_json_value(
+                entity,
+                &child_path,
+                expected_value,
+                current_value,
+                incoming_value,
+            )?,
+        );
+    }
+    Ok(serde_json::Value::Object(merged))
+}
+
 #[tauri::command]
 pub(crate) fn save_session_profile(
     state: State<'_, AppState>,

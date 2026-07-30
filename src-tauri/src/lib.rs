@@ -99,6 +99,8 @@ mod serial_commands;
 mod serial_transport;
 mod session_commands;
 mod session_events;
+mod session_profile_delete;
+mod session_terminal;
 mod sftp_backend;
 mod shell_transport;
 mod sqlite_mirror;
@@ -190,8 +192,12 @@ use one_key_runtime::*;
 use outbound_events::*;
 use outbound_io::*;
 use portable_vault::*;
+use profile_commands::merge_expected_json_value;
 #[cfg(test)]
-use profile_commands::validate_profile_tunnels;
+use profile_commands::{
+    apply_proxy_password_update_with_io, merge_expected_profile_update,
+    validate_expected_proxy_password, validate_profile_transport_change, validate_profile_tunnels,
+};
 use profile_normalization::*;
 use profile_security::*;
 use proxy_protocol::*;
@@ -204,23 +210,22 @@ use serial_commands::{
     SerialControlLine,
 };
 use serial_transport::*;
-use session_commands::{
-    apply_proxy_password_update_with_io, merge_expected_json_value, merge_expected_profile_update,
-    validate_expected_proxy_password, validate_profile_transport_change,
-};
 #[cfg(test)]
 use session_commands::{
     apply_session_open_profile_credentials, cancel_pending_session_opens,
-    delete_session_profile_inner, register_session_open_cancellation, resize_session_inner,
-    resize_session_profile_in_store, session_has_registered_runtime, session_lifecycle_lane,
+    register_session_open_cancellation, session_has_registered_runtime, session_lifecycle_lane,
 };
 use session_commands::{
     close_session_inner, mark_session_connected_with_events, open_session_inner,
     profile_requires_runtime, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,
 };
-use session_commands::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use session_events::*;
 use session_events::{append_logging_error, append_logging_errors, sync_stored_event};
+#[cfg(test)]
+use session_profile_delete::delete_session_profile_inner;
+#[cfg(test)]
+use session_terminal::{resize_session_inner, resize_session_profile_in_store};
+use session_terminal::{terminal_key_sequence_for_protocol, terminate_command_for_protocol};
 use sftp_backend::*;
 use shell_transport::*;
 use sqlite_schema::*;
