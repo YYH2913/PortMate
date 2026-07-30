@@ -190,6 +190,13 @@ pub fn run() {
                     shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());
                     shutdown_system_event_sink(state.inner());
+                    if let Err(error) =
+                        flush_json_compatibility_snapshots(Duration::from_secs(5))
+                    {
+                        eprintln!(
+                            "PortMate: JSON compatibility snapshot did not flush during shutdown: {error}"
+                        );
+                    }
                 }
             }
         });

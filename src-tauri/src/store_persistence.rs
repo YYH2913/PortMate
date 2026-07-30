@@ -62,6 +62,9 @@ pub(super) fn load_store(path: &Path) -> Result<SessionStore, String> {
         .map_err(|error| error.to_string())?
         .insert(path.to_path_buf(), version);
     drop(snapshot_lock);
+    if initialize_store && path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+        schedule_json_compatibility_snapshot(path, &store);
+    }
     Ok(store)
 }
 
@@ -82,6 +85,9 @@ pub(super) fn save_store(path: &Path, store: &SessionStore) -> Result<(), String
         .map_err(|error| error.to_string())?
         .insert(path.to_path_buf(), expected);
     drop(snapshot_lock);
+    if result.is_ok() && path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
+        schedule_json_compatibility_snapshot(path, store);
+    }
     result
 }
 
@@ -117,6 +123,9 @@ pub(super) fn save_store_with_profile_secret_migration_checkpoint(
         .map_err(|error| error.to_string())?
         .insert(path.to_path_buf(), expected);
     drop(snapshot_lock);
+    if result.is_ok() {
+        schedule_json_compatibility_snapshot(path, store);
+    }
     result
 }
 
@@ -278,12 +287,7 @@ where
 
 fn save_store_contents(path: &Path, store: &SessionStore) -> Result<(), String> {
     if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
-        save_store_sqlite(path, store)?;
-        let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
-        if let Err(error) = save_store_json(&legacy_path, store) {
-            eprintln!("PortMate: failed to update JSON compatibility store: {error}");
-        }
-        return Ok(());
+        return save_store_sqlite(path, store);
     }
     save_store_json(path, store)
 }
@@ -300,18 +304,7 @@ fn save_store_contents_with_profile_secret_migration_checkpoint(
             migration_id,
             ProfileSecretMigrationJournalState::ProfilesCommitted,
         )),
-    )?;
-    let legacy_path = path.with_file_name(LEGACY_JSON_STORE_FILE_NAME);
-    if let Err(error) = save_store_json(&legacy_path, store) {
-        eprintln!("PortMate: failed to update JSON compatibility store: {error}");
-    }
-    Ok(())
-}
-
-pub(super) fn save_store_json(path: &Path, store: &SessionStore) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(store)
-        .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
-    write_private_atomic_file(path, &bytes, "PortMate JSON compatibility store")
+    )
 }
 
 pub(super) fn persist_store_arc(

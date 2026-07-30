@@ -62,6 +62,40 @@ fn json_compatibility_store_is_private_atomic_and_symlink_safe() {
 }
 
 #[test]
+fn json_compatibility_snapshot_queue_coalesces_to_the_latest_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("portmate-store.sqlite3");
+    let compatibility_path = temp.path().join(LEGACY_JSON_STORE_FILE_NAME);
+    let mut first = SessionStore::default();
+    first.upsert_profile(test_shell_profile());
+    let mut latest = first.clone();
+    latest.profiles[0].name = "latest compatibility snapshot".to_string();
+
+    enqueue_json_compatibility_snapshot(&store_path, &first).unwrap();
+    enqueue_json_compatibility_snapshot(&store_path, &latest).unwrap();
+    flush_json_compatibility_snapshot(&store_path, Duration::from_secs(5)).unwrap();
+
+    let persisted = load_store_json(&compatibility_path).unwrap();
+    assert_eq!(persisted.profiles[0].name, "latest compatibility snapshot");
+}
+
+#[test]
+fn sqlite_save_updates_the_json_compatibility_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("portmate-store.sqlite3");
+    let compatibility_path = temp.path().join(LEGACY_JSON_STORE_FILE_NAME);
+    let mut store = SessionStore::default();
+    store.upsert_profile(test_shell_profile());
+
+    save_store(&store_path, &store).unwrap();
+
+    let compatibility =
+        serde_json::to_value(load_store_json(&compatibility_path).unwrap()).unwrap();
+    let canonical = serde_json::to_value(load_store_sqlite(&store_path).unwrap()).unwrap();
+    assert_eq!(compatibility, canonical);
+}
+
+#[test]
 fn sqlite_mirror_incrementally_syncs_history_tables() {
     let root = std::env::temp_dir().join(format!("portmate-sqlite-mirror-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
