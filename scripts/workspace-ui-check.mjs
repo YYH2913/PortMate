@@ -1137,21 +1137,43 @@ Host staging
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
   const jumpRows = jumpGroup.locator(".jump-hop");
   await jumpRows.nth(0).locator('input[placeholder="host"]').fill("jump-one.example.test");
-  await jumpRows.nth(0).locator('input[placeholder="password"]').fill("first-draft-secret");
+  await jumpRows.nth(0).locator('input[placeholder="password"]').fill("first-staged-secret");
+  await jumpRows.nth(0).locator('button[title="保存跳板密码"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('.jump-hop input[placeholder="password secretRef"]')[0]?.value);
   await jumpRows.nth(1).locator('input[placeholder="host"]').fill("jump-two.example.test");
-  await jumpRows.nth(1).locator('input[placeholder="password"]').fill("second-draft-secret");
+  await jumpRows.nth(1).locator('input[placeholder="password"]').fill("second-staged-secret");
+  await jumpRows.nth(1).locator('button[title="保存跳板密码"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('.jump-hop input[placeholder="password secretRef"]')[1]?.value);
+  await jumpRows.nth(1).locator('input[placeholder="passphrase"]').fill("second-draft-passphrase");
+  const firstJumpSecretRef = await jumpRows.nth(0).locator('input[placeholder="password secretRef"]').inputValue();
+  const secondJumpSecretRef = await jumpRows.nth(1).locator('input[placeholder="password secretRef"]').inputValue();
+  assert(firstJumpSecretRef && secondJumpSecretRef && firstJumpSecretRef !== secondJumpSecretRef,
+    `Jump Host secret setup did not produce distinct refs: ${firstJumpSecretRef}, ${secondJumpSecretRef}`);
   await jumpGroup.getByRole("button", { name: "删除跳板 1", exact: true }).click();
   assert(await jumpRows.count() === 1
     && await jumpRows.nth(0).locator('input[placeholder="host"]').inputValue() === "jump-two.example.test"
-    && await jumpRows.nth(0).locator('input[placeholder="password"]').inputValue() === "second-draft-secret",
-  "deleting the first Jump Host did not preserve the second hop and its local secret draft");
+    && await jumpRows.nth(0).locator('input[placeholder="password secretRef"]').inputValue() === secondJumpSecretRef
+    && await jumpRows.nth(0).locator('input[placeholder="passphrase"]').inputValue() === "second-draft-passphrase",
+  "deleting the first Jump Host did not preserve the second hop, staged ref, and local secret draft");
   await jumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
   await jumpHostDialog.waitFor({ state: "detached" });
-  const savedJumpHosts = await page.evaluate(() => (
-    window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.jumps ?? []
-  ));
-  assert(savedJumpHosts.length === 1 && savedJumpHosts[0].host === "jump-two.example.test",
-    `deleted Jump Host returned after save: ${JSON.stringify(savedJumpHosts)}`);
+  const savedJumpState = await page.evaluate(({ firstSecretRef, secondSecretRef }) => ({
+    jumps: window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.jumps ?? [],
+    retainedSecrets: Object.keys(window.__secrets),
+    deletedRefs: window.__invokeCalls
+      .filter((call) => call.command === "delete_secret")
+      .map((call) => call.args.secretRef),
+    firstSecretRef,
+    secondSecretRef,
+  }), { firstSecretRef: firstJumpSecretRef, secondSecretRef: secondJumpSecretRef });
+  assert(savedJumpState.jumps.length === 1
+    && savedJumpState.jumps[0].host === "jump-two.example.test"
+    && savedJumpState.jumps[0].passwordSecretRef === secondJumpSecretRef
+    && savedJumpState.retainedSecrets.includes(secondJumpSecretRef)
+    && !savedJumpState.retainedSecrets.includes(firstJumpSecretRef)
+    && savedJumpState.deletedRefs.includes(firstJumpSecretRef)
+    && !savedJumpState.deletedRefs.includes(secondJumpSecretRef),
+  `deleted Jump Host or its staged Secret returned after save: ${JSON.stringify(savedJumpState)}`);
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();

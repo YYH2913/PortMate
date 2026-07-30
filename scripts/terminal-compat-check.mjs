@@ -257,7 +257,7 @@ const workspace = {
       id: "pane-a",
       activeViewId: "view-a",
       views: [
-        { id: "view-a", sessionId: "session-a", title: "Primary", color: "#008B8B", keyMode: "remote" },
+        { id: "view-a", sessionId: "session-a", title: "Primary", color: "#008B8B", keyMode: "command" },
         { id: "view-b", sessionId: "session-b", title: "Secondary", color: "#DAA520", keyMode: "remote" },
       ],
     },
@@ -428,6 +428,8 @@ try {
       size: host?.dataset.terminalSize,
       restored: host?.dataset.terminalRestored,
       mouse: host?.dataset.terminalMouseReporting,
+      keyMode: host?.dataset.terminalKeyMode,
+      cursor: host?.dataset.terminalCursorStyle,
     };
   }));
   const resizeCalls = () => page.evaluate(() => window.__invokeCalls
@@ -456,6 +458,8 @@ try {
   const initial = await terminalState();
   assert(initial.find((pane) => pane.paneId === "pane-a")?.owner === "active", "pane A must own the initial PTY size");
   assert(initial.find((pane) => pane.paneId === "pane-b")?.owner === "inactive", "pane B must not own the initial PTY size");
+  assert(initial.every((pane) => pane.keyMode === "remote" && pane.cursor === "bar"),
+    `persisted terminal modes did not restore as Insert/bar cursors: ${JSON.stringify(initial)}`);
   assert(initial[0].size !== initial[1].size, `test panes need distinct dimensions: ${JSON.stringify(initial)}`);
   const activeHost = page.locator('[data-pane-id="pane-a"] .terminal-host');
   const inspectSemanticRendering = async (host, expectedColors) => {
