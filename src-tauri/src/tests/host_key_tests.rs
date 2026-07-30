@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn security_command_types_keep_stable_json_contracts() {
+    let decision = serde_json::to_value(HostKeyDecisionRequest {
+        profile_id: "ssh-1".to_string(),
+        observation: HostKeyObservation {
+            host: "router.example".to_string(),
+            port: 22,
+            alias: Some("router".to_string()),
+            algorithm: "ssh-ed25519".to_string(),
+            public_key_base64: "YWJj".to_string(),
+        },
+        decision: HostKeyDecision::TrustOnce,
+    })
+    .unwrap();
+    assert_eq!(decision["profileId"], "ssh-1");
+    assert_eq!(decision["observation"]["publicKeyBase64"], "YWJj");
+    assert_eq!(decision["decision"], "trust-once");
+
+    let delete: ClientIdentityDeleteRequest = serde_json::from_value(serde_json::json!({
+        "profileId": "ssh-1",
+        "identityId": "identity-1"
+    }))
+    .unwrap();
+    assert_eq!(delete.profile_id, "ssh-1");
+    assert_eq!(delete.identity_id, "identity-1");
+    assert!(!delete.delete_secret);
+}
+
+#[test]
 fn temporary_host_key_trust_matches_without_persisting() {
     let mut store = SessionStore::default();
     let profile = test_ssh_profile();
