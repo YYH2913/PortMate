@@ -66,6 +66,25 @@ describe("native package layouts", () => {
     );
   });
 
+  it("rejects a missing Windows JetBrains Mono license", () => {
+    const fixture = windowsFixture();
+    rmSync(join(fixture.applicationDirectory, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"));
+
+    expect(() => verifyWindowsPackageLayout(fixture)).toThrow(
+      /exactly one JetBrainsMono-OFL\.txt regular file, found 0/,
+    );
+  });
+
+  it("rejects a Windows JetBrains Mono license outside its resource directory", () => {
+    const fixture = windowsFixture();
+    rmSync(join(fixture.applicationDirectory, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"));
+    write(join(fixture.applicationDirectory, "JetBrainsMono-OFL.txt"), "font-license");
+
+    expect(() => verifyWindowsPackageLayout(fixture)).toThrow(
+      /Expected Windows JetBrains Mono license at .*THIRD_PARTY_LICENSES.*JetBrainsMono-OFL\.txt/,
+    );
+  });
+
   it("accepts the expected macOS application bundle layout and metadata", () => {
     const fixture = macFixture();
 
@@ -102,6 +121,18 @@ describe("native package layouts", () => {
     );
   });
 
+  it("rejects a modified macOS JetBrains Mono license", () => {
+    const fixture = macFixture();
+    write(
+      join(fixture.app, "Contents", "Resources", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+      "modified-font-license",
+    );
+
+    expect(() => verifyMacAppBundle(fixture)).toThrow(
+      /macOS JetBrains Mono license SHA-256 does not match its reference/,
+    );
+  });
+
   it.skipIf(process.platform === "win32")("rejects a package symlink that escapes its root", () => {
     const fixture = windowsFixture();
     symlinkSync("../../../sources/portmate.exe", join(fixture.applicationDirectory, "escaped-source"));
@@ -118,15 +149,18 @@ function windowsFixture() {
   const sourceMain = write(join(sources, "portmate.exe"), "main");
   const sourceSidecar = write(join(sources, "portmate-mcp.exe"), "sidecar");
   const sourceLicense = write(join(sources, "LICENSE"), "license");
+  const sourceThirdPartyLicense = write(join(sources, "JetBrainsMono-OFL.txt"), "font-license");
   write(join(applicationDirectory, "portmate.exe"), "main");
   write(join(applicationDirectory, "portmate-mcp.exe"), "sidecar");
   write(join(applicationDirectory, "LICENSE"), "license");
+  write(join(applicationDirectory, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"), "font-license");
   return {
     root: packageRoot,
     applicationDirectory,
     sourceMain,
     sourceSidecar,
     sourceLicense,
+    sourceThirdPartyLicense,
   };
 }
 
@@ -137,15 +171,21 @@ function macFixture() {
   const sourceMain = write(join(sources, "portmate"), "main");
   const sourceSidecar = write(join(sources, "portmate-mcp"), "sidecar");
   const sourceLicense = write(join(sources, "LICENSE"), "license");
+  const sourceThirdPartyLicense = write(join(sources, "JetBrainsMono-OFL.txt"), "font-license");
   write(join(app, "Contents", "MacOS", "portmate"), "main");
   write(join(app, "Contents", "MacOS", "portmate-mcp"), "sidecar");
   write(join(app, "Contents", "Resources", "LICENSE"), "license");
+  write(
+    join(app, "Contents", "Resources", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+    "font-license",
+  );
   write(join(app, "Contents", "Info.plist"), "plist");
   return {
     app,
     sourceMain,
     sourceSidecar,
     sourceLicense,
+    sourceThirdPartyLicense,
     metadata: { ...macMetadata },
     expectedMetadata: macMetadata,
   };

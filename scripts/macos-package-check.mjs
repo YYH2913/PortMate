@@ -33,6 +33,7 @@ const bundleRoot = join(projectRoot, "target", "release", "bundle");
 const sourceMain = join(projectRoot, "target", "release", "portmate");
 const sourceSidecar = join(projectRoot, "target", "release", "portmate-mcp");
 const sourceLicense = join(projectRoot, "LICENSE");
+const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const app = findSingleBundle(join(bundleRoot, "macos"));
 const dmg = findSingleArtifact(join(bundleRoot, "dmg"), ".dmg", "DMG image");
 const auditRoot = mkdtempSync(join(tmpdir(), "portmate-macos-package-check-"));
@@ -112,9 +113,9 @@ console.log(JSON.stringify({
   verifiedPackages: ["macOS app", "DMG"],
   verified: [
     "fixed Contents/MacOS and Contents/Resources payload layout",
-    "unique non-empty main executable, MCP sidecar, license, and Info.plist",
+    "unique non-empty main executable, MCP sidecar, application license, JetBrains Mono license, and Info.plist",
     "unsigned release SHA-256 or strict code-signature verification",
-    "direct app/DMG binary and repository license SHA-256 equality",
+    "direct app/DMG binary and both repository license SHA-256 equality",
     "bundle identifier, version, executable, and application category",
     "portable bundle symlinks",
     "DMG verification and read-only mount",
@@ -139,6 +140,7 @@ function verifyApp(path, options = {}) {
     sourceMain: options.sourceMain ?? sourceMain,
     sourceSidecar: options.sourceSidecar ?? sourceSidecar,
     sourceLicense,
+    sourceThirdPartyLicense,
     metadata,
     expectedMetadata,
     compareBinaries: options.compareBinaries ?? true,

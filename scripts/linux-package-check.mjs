@@ -22,6 +22,7 @@ if (process.platform !== "linux") {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
 const tauriConfig = readJson(join(projectRoot, "src-tauri", "tauri.conf.json"));
+const jetBrainsMonoLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const defaultCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "default.json"));
 const detachedCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "detached-pane.json"));
 const productionCsp = verifyTauriSecurityConfiguration(
@@ -48,6 +49,11 @@ try {
   assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"), 0o644);
   assertFile(join(debRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"), 0o644);
   assertSameFile(join(projectRoot, "LICENSE"), join(debRoot, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertSameFile(
+    jetBrainsMonoLicense,
+    join(debRoot, "usr", "lib", "PortMate", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+    0o644,
+  );
   assertPortableTree(debRoot);
 
   const rpmRoot = join(auditRoot, "rpm");
@@ -60,6 +66,11 @@ try {
   assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "32x32", "apps", "portmate.png"), 0o644);
   assertFile(join(rpmRoot, "usr", "share", "icons", "hicolor", "128x128", "apps", "portmate.png"), 0o644);
   assertSameFile(join(projectRoot, "LICENSE"), join(rpmRoot, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertSameFile(
+    jetBrainsMonoLicense,
+    join(rpmRoot, "usr", "lib", "PortMate", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+    0o644,
+  );
   assertPortableTree(rpmRoot);
 
   const appImageRoot = join(auditRoot, "appimage");
@@ -75,6 +86,11 @@ try {
   assertSymlink(join(extracted, "PortMate.desktop"), "usr/share/applications/PortMate.desktop");
   assertSymlink(join(extracted, "portmate.png"), "usr/share/icons/hicolor/256x256@2/apps/portmate.png");
   assertSameFile(join(projectRoot, "LICENSE"), join(extracted, "usr", "lib", "PortMate", "LICENSE"), 0o644);
+  assertSameFile(
+    jetBrainsMonoLicense,
+    join(extracted, "usr", "lib", "PortMate", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+    0o644,
+  );
   assertPortableTree(extracted);
 
   for (const [kind, bridge] of [["DEB", debBridge], ["RPM", rpmBridge], ["AppImage", appImageBridge]]) {
@@ -91,7 +107,7 @@ try {
       "MCP sidecar",
       "desktop entry",
       "icons",
-      "license",
+      "application and JetBrains Mono licenses",
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",

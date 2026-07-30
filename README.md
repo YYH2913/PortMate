@@ -389,7 +389,8 @@ npm run desktop:build
 ```
 
 The build starts from a clean bundle directory, prepares a target-specific `portmate-mcp` sidecar,
-and packages it with the desktop binary, standard PNG/ICNS/ICO icons, and the Apache-2.0 license.
+and packages it with the desktop binary, standard PNG/ICNS/ICO icons, the Apache-2.0 application
+license, and the JetBrains Mono SIL OFL 1.1 license.
 Unix package inputs use release-safe `0755`/`0644` modes. Linux builds also normalize the AppImage
 tree and replace LinuxDeploy's machine-local `.DirIcon` symlink with a portable relative link before
 repacking with the original AppImage runtime. When Tauri's AppImage plugin is already cached, the
@@ -709,7 +710,7 @@ The workspace suite also resolves two log previews in reverse order, holds MCP H
 
 The workspace suite also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures a focused 1440x900 Tunnel screenshot.
 
-`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact license, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
+`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact Apache-2.0 and JetBrains Mono OFL license contents, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package. The Windows MSI/NSIS and macOS app/DMG gates enforce the same third-party license content and fixed resource-directory placement. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 

@@ -21,16 +21,25 @@ export function verifyWindowsPackageLayout({
   sourceMain,
   sourceSidecar,
   sourceLicense,
+  sourceThirdPartyLicense,
 }) {
   const files = inspectPortableTree(root);
   const main = findUniqueRegularFile(files, "portmate.exe", { caseInsensitive: true });
   const sidecar = findUniqueRegularFile(files, "portmate-mcp.exe", { caseInsensitive: true });
   const license = findUniqueRegularFile(files, "LICENSE", { caseInsensitive: true });
+  const thirdPartyLicense = findUniqueRegularFile(files, "JetBrainsMono-OFL.txt", { caseInsensitive: true });
 
   assertSameDirectory("Windows application payload", [main, sidecar, license], true);
+  assertExactPath(
+    "Windows JetBrains Mono license",
+    thirdPartyLicense,
+    join(dirname(main), "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+    true,
+  );
   assertSameFile(sourceMain, main, "Windows main executable");
   assertSameFile(sourceSidecar, sidecar, "Windows MCP sidecar");
   assertSameFile(sourceLicense, license, "Windows license");
+  assertSameFile(sourceThirdPartyLicense, thirdPartyLicense, "Windows JetBrains Mono license");
 
   return {
     root: resolve(root),
@@ -38,10 +47,12 @@ export function verifyWindowsPackageLayout({
     main,
     sidecar,
     license,
+    thirdPartyLicense,
     sha256: {
       main: sha256File(main),
       sidecar: sha256File(sidecar),
       license: sha256File(license),
+      thirdPartyLicense: sha256File(thirdPartyLicense),
     },
   };
 }
@@ -51,6 +62,7 @@ export function verifyMacAppBundle({
   sourceMain,
   sourceSidecar,
   sourceLicense,
+  sourceThirdPartyLicense,
   metadata,
   expectedMetadata,
   compareBinaries = true,
@@ -64,6 +76,7 @@ export function verifyMacAppBundle({
   const main = findUniqueRegularFile(files, "portmate");
   const sidecar = findUniqueRegularFile(files, "portmate-mcp");
   const license = findUniqueRegularFile(files, "LICENSE");
+  const thirdPartyLicense = findUniqueRegularFile(files, "JetBrainsMono-OFL.txt");
   const infoPlist = join(appRoot, "Contents", "Info.plist");
 
   assertExactPath("macOS main executable", main, join(appRoot, "Contents", "MacOS", "portmate"));
@@ -77,6 +90,11 @@ export function verifyMacAppBundle({
     license,
     join(appRoot, "Contents", "Resources", "LICENSE"),
   );
+  assertExactPath(
+    "macOS JetBrains Mono license",
+    thirdPartyLicense,
+    join(appRoot, "Contents", "Resources", "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
+  );
   assertExactPath("macOS Info.plist", infoPlist, join(appRoot, "Contents", "Info.plist"));
   assertNonEmptyRegularFile(infoPlist, "macOS Info.plist");
   if (compareBinaries) {
@@ -89,6 +107,7 @@ export function verifyMacAppBundle({
     assertNonEmptyRegularFile(sidecar, "macOS MCP sidecar");
   }
   assertSameFile(sourceLicense, license, "macOS license");
+  assertSameFile(sourceThirdPartyLicense, thirdPartyLicense, "macOS JetBrains Mono license");
   verifyMacBundleMetadata(metadata, expectedMetadata);
 
   return {
@@ -96,6 +115,7 @@ export function verifyMacAppBundle({
     main,
     sidecar,
     license,
+    thirdPartyLicense,
     infoPlist,
     compareBinaries,
     metadata: { ...metadata },
@@ -103,6 +123,7 @@ export function verifyMacAppBundle({
       main: sha256File(main),
       sidecar: sha256File(sidecar),
       license: sha256File(license),
+      thirdPartyLicense: sha256File(thirdPartyLicense),
     },
   };
 }
@@ -204,8 +225,8 @@ function assertSameDirectory(label, paths, caseInsensitive) {
   }
 }
 
-function assertExactPath(label, actual, expected) {
-  if (resolve(actual) !== resolve(expected)) {
+function assertExactPath(label, actual, expected, caseInsensitive = false) {
+  if (normalizedPath(actual, caseInsensitive) !== normalizedPath(expected, caseInsensitive)) {
     throw new Error(`Expected ${label} at ${resolve(expected)}, found ${resolve(actual)}`);
   }
 }

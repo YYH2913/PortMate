@@ -26,6 +26,7 @@ const bundleRoot = join(projectRoot, "target", "release", "bundle");
 const sourceMain = join(projectRoot, "target", "release", "portmate.exe");
 const sourceSidecar = join(projectRoot, "target", "release", "portmate-mcp.exe");
 const sourceLicense = join(projectRoot, "LICENSE");
+const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const msi = findSingleArtifact(join(bundleRoot, "msi"), ".msi", "MSI installer");
 const nsis = findSingleArtifact(join(bundleRoot, "nsis"), ".exe", "NSIS installer");
 const auditRoot = mkdtempSync(join(tmpdir(), "portmate-windows-package-check-"));
@@ -54,6 +55,7 @@ try {
     sourceMain,
     sourceSidecar,
     sourceLicense,
+    sourceThirdPartyLicense,
   });
   runtimeSmokes.push({
     package: "MSI",
@@ -70,6 +72,7 @@ try {
     sourceMain,
     sourceSidecar,
     sourceLicense,
+    sourceThirdPartyLicense,
   });
   runtimeSmokes.push({
     package: "NSIS",
@@ -114,9 +117,9 @@ console.log(JSON.stringify({
   nsis,
   verifiedPackages: ["MSI", "NSIS"],
   verified: [
-    "unique co-located main executable, MCP sidecar, and license",
+    "unique main executable, MCP sidecar, application license, and JetBrains Mono license",
     "non-empty regular payload files",
-    "release-binary and license SHA-256 equality",
+    "release-binary and both license SHA-256 equality",
     "portable package symlinks",
     "MSI administrative extraction",
     "NSIS silent install and uninstall",
@@ -140,7 +143,7 @@ function findSingleArtifact(directory, extension, label) {
 }
 
 function assertNsisPayloadRemoved(payload) {
-  for (const path of [payload.main, payload.sidecar, payload.license]) {
+  for (const path of [payload.main, payload.sidecar, payload.license, payload.thirdPartyLicense]) {
     if (existsSync(path)) throw new Error(`NSIS uninstall left an application payload file: ${path}`);
   }
 }
