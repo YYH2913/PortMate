@@ -21,10 +21,8 @@ use portmate_core::{
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
-use russh::keys::agent::client::{AgentClient, AgentStream};
-use russh::keys::agent::AgentIdentity;
 use russh::keys::{
-    decode_secret_key, load_secret_key, ssh_key, HashAlg, PrivateKeyWithHashAlg, PublicKeyBase64,
+    decode_secret_key, load_secret_key, ssh_key, PrivateKeyWithHashAlg, PublicKeyBase64,
 };
 use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
@@ -126,6 +124,7 @@ mod shell_transport;
 mod sqlite_mirror;
 mod sqlite_schema;
 mod sqlite_store;
+mod ssh_agent;
 mod ssh_authentication;
 mod ssh_auxiliary;
 mod ssh_backend;
@@ -276,6 +275,7 @@ use sftp_transfer::*;
 use shell_transport::*;
 use sqlite_schema::*;
 use sqlite_store::*;
+use ssh_agent::*;
 use ssh_authentication::*;
 use ssh_auxiliary::*;
 use ssh_backend::*;
