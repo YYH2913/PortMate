@@ -4,6 +4,8 @@ const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct SshRuntime {
     pub(super) runtime_id: String,
+    pub(super) backend: SshBackendKind,
+    pub(super) auth_method: AuthMethod,
     pub(super) handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     pub(super) sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
     pub(super) jump_handles: Vec<Arc<tokio::sync::Mutex<client::Handle<PortMateSshHandler>>>>,
@@ -14,6 +16,7 @@ pub(super) struct SshRuntime {
     pub(super) agent_forwarder_finished: Option<tokio::sync::oneshot::Receiver<()>>,
     pub(super) transport_bridge_finished: Option<tokio::sync::oneshot::Receiver<()>>,
     pub(super) closed: Arc<AtomicBool>,
+    pub(super) terminal_channel_open: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Receiver<()>,
 }
 
@@ -24,6 +27,7 @@ pub(super) struct EstablishedSshRuntime {
     pub(super) read_half: SshBackendChannelReader,
     pub(super) auth_method: AuthMethod,
     pub(super) closed: Arc<AtomicBool>,
+    pub(super) terminal_channel_open: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Sender<()>,
 }
 

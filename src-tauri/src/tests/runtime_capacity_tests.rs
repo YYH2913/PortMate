@@ -234,6 +234,8 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
             profile.id.clone(),
             SshRuntime {
                 runtime_id: "tmux-lease-runtime".to_string(),
+                backend: SshBackendKind::Russh,
+                auth_method: AuthMethod::Password,
                 handle: Arc::clone(&handle),
                 sftp: Arc::new(tokio::sync::Mutex::new(None)),
                 jump_handles: Vec::new(),
@@ -244,6 +246,7 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
                 agent_forwarder_finished: None,
                 transport_bridge_finished: None,
                 closed: Arc::new(AtomicBool::new(false)),
+                terminal_channel_open: Arc::new(AtomicBool::new(true)),
                 reader_finished,
             },
         );

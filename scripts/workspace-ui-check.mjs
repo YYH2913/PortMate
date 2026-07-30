@@ -603,10 +603,14 @@ try {
             runtimeId: "runtime-health-check",
             checkedAt: new Date().toISOString(),
             status: "healthy",
+            backend: "russh",
+            authenticationMethod: "public-key",
+            terminalChannelOpen: true,
             transportRoundTripMs: 7,
             channelRoundTripMs: 11,
             sftpRoundTripMs: args.probeSftp ? 13 : null,
             transportError: null,
+            terminalError: null,
             channelError: null,
             sftpError: null,
             sftpProbed: Boolean(args.probeSftp),
@@ -2131,7 +2135,7 @@ Host staging
     form: await page.locator(".session-settings-dialog .session-form").textContent(),
   })}`);
   await sshHealthButton.click();
-  await page.getByText("健康 · SSH 7 ms · Channel 11 ms · SFTP 13 ms", { exact: true }).waitFor();
+  await page.getByText("健康 · russh · 公钥 · SSH 7 ms · Channel 11 ms · SFTP 13 ms", { exact: true }).waitFor();
   const sshHealthCall = await page.evaluate(() => window.__invokeCalls.findLast((call) => call.command === "check_ssh_health"));
   assert(sshHealthCall?.args?.probeSftp === true,
     `SSH health UI omitted the SFTP probe: ${JSON.stringify(sshHealthCall)}`);

@@ -358,6 +358,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split();
     let (tap, _) = broadcast::channel(1024);
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
+    let terminal_channel_open = Arc::new(AtomicBool::new(true));
     let agent_forwarder_finished = agent_forward_socket.map(|socket_path| {
         start_libssh_agent_forwarder(session.clone(), socket_path, Arc::clone(&closed))
     });
@@ -366,6 +367,8 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id,
+            backend: SshBackendKind::Libssh,
+            auth_method,
             handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_libssh(
                 session,
             ))),
@@ -381,12 +384,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             agent_forwarder_finished,
             transport_bridge_finished,
             closed: Arc::clone(&closed),
+            terminal_channel_open: Arc::clone(&terminal_channel_open),
             reader_finished,
         },
         tap,
         read_half,
         auth_method,
         closed,
+        terminal_channel_open,
         reader_finished: reader_finished_sender,
     })
 }

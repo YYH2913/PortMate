@@ -1403,13 +1403,24 @@ function sshHealthSummary(report: SshHealthReport) {
     report.channelRoundTripMs == null ? null : `Channel ${report.channelRoundTripMs} ms`,
     report.sftpRoundTripMs == null ? null : `SFTP ${report.sftpRoundTripMs} ms`,
   ].filter(Boolean);
-  return timings.length ? `${label} · ${timings.join(" · ")}` : label;
+  const connection = `${report.backend} · ${sshAuthenticationLabel(report.authenticationMethod)}`;
+  return timings.length ? `${label} · ${connection} · ${timings.join(" · ")}` : `${label} · ${connection}`;
 }
 
 function sshHealthDiagnostic(report: SshHealthReport) {
-  return [report.transportError, report.channelError, report.sftpError]
+  return [report.transportError, report.terminalError, report.channelError, report.sftpError]
     .filter((value): value is string => Boolean(value))
     .join("；") || sshHealthSummary(report);
+}
+
+function sshAuthenticationLabel(method: AuthMethod) {
+  switch (method) {
+    case "public-key": return "公钥";
+    case "keyboard-interactive": return "键盘交互";
+    case "password": return "密码";
+    case "gssapi-with-mic": return "GSSAPI";
+    case "none": return "无认证";
+  }
 }
 
 function formatError(error: unknown) {

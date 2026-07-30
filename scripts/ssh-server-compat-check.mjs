@@ -290,7 +290,7 @@ function validateHealthFaultEntry(entry) {
   if (entry.expectedStatus !== undefined && !["degraded", "unresponsive"].includes(entry.expectedStatus)) {
     throw new Error(`Invalid SSH health expected status: ${JSON.stringify(entry)}`);
   }
-  if (entry.expectedErrorField !== undefined && !["transportError", "channelError", "sftpError"].includes(entry.expectedErrorField)) {
+  if (entry.expectedErrorField !== undefined && !["transportError", "terminalError", "channelError", "sftpError"].includes(entry.expectedErrorField)) {
     throw new Error(`Invalid SSH health error field: ${JSON.stringify(entry)}`);
   }
   const expectsReport = entry.expectedStatus !== undefined && entry.expectedErrorField !== undefined;

@@ -80,6 +80,7 @@ pub(super) async fn open_ssh_session(
         read_half,
         auth_method,
         closed,
+        terminal_channel_open,
         reader_finished,
     } = established;
     {
@@ -136,6 +137,7 @@ pub(super) async fn open_ssh_session(
         tap,
         read_half,
         closed,
+        terminal_channel_open,
         reader_finished,
     }));
     Ok(summary)

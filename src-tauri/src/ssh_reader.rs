@@ -8,14 +8,19 @@ pub(super) struct SshReadTask {
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) read_half: SshBackendChannelReader,
     pub(super) closed: Arc<AtomicBool>,
+    pub(super) terminal_channel_open: Arc<AtomicBool>,
     pub(super) reader_finished: tokio::sync::oneshot::Sender<()>,
 }
 
-struct SshReaderCompletionGuard(Option<tokio::sync::oneshot::Sender<()>>);
+struct SshReaderCompletionGuard {
+    terminal_channel_open: Arc<AtomicBool>,
+    reader_finished: Option<tokio::sync::oneshot::Sender<()>>,
+}
 
 impl Drop for SshReaderCompletionGuard {
     fn drop(&mut self) {
-        if let Some(sender) = self.0.take() {
+        self.terminal_channel_open.store(false, Ordering::SeqCst);
+        if let Some(sender) = self.reader_finished.take() {
             let _ = sender.send(());
         }
     }
@@ -32,9 +37,13 @@ pub(super) fn read_ssh_channel(
             tap,
             mut read_half,
             closed,
+            terminal_channel_open,
             reader_finished,
         } = task;
-        let _reader_completion = SshReaderCompletionGuard(Some(reader_finished));
+        let _reader_completion = SshReaderCompletionGuard {
+            terminal_channel_open,
+            reader_finished: Some(reader_finished),
+        };
         let io = state.session_io();
         let session_id = profile.id.clone();
         let mut last_persist = Instant::now();
@@ -244,5 +253,24 @@ pub(super) fn ssh_channel_disconnect_reason(message: &SshBackendMessage) -> Opti
         }
         SshBackendMessage::Error(error) => Some(format!("SSH channel read failed: {error}")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_reader_completion_closes_the_terminal_health_flag() {
+        let terminal_channel_open = Arc::new(AtomicBool::new(true));
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        {
+            let _guard = SshReaderCompletionGuard {
+                terminal_channel_open: Arc::clone(&terminal_channel_open),
+                reader_finished: Some(sender),
+            };
+        }
+        assert!(!terminal_channel_open.load(Ordering::SeqCst));
+        assert_eq!(receiver.try_recv(), Ok(()));
     }
 }

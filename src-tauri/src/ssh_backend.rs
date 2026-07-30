@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SshBackendKind {
+    Russh,
+    Libssh,
+}
+
 pub(super) enum SshBackendSession<H = PortMateSshHandler>
 where
     H: client::Handler,

@@ -278,12 +278,15 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
+    let terminal_channel_open = Arc::new(AtomicBool::new(true));
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
 
     Ok(EstablishedSshRuntime {
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id: runtime_id.clone(),
+            backend: SshBackendKind::Russh,
+            auth_method,
             handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
                 session,
             ))),
@@ -296,12 +299,14 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             agent_forwarder_finished: None,
             transport_bridge_finished: None,
             closed: Arc::clone(&closed),
+            terminal_channel_open: Arc::clone(&terminal_channel_open),
             reader_finished,
         },
         tap,
         read_half,
         auth_method,
         closed,
+        terminal_channel_open,
         reader_finished: reader_finished_sender,
     })
 }

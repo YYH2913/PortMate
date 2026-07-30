@@ -756,9 +756,38 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
             .await
             .unwrap();
         assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
+        assert_eq!(health.backend, SshBackendKind::Libssh);
+        assert_eq!(health.authentication_method, AuthMethod::PublicKey);
+        assert!(health.terminal_channel_open);
+        assert!(health.terminal_error.is_none());
         assert!(health.sftp_probed);
         assert!(health.sftp_round_trip_ms.is_some());
         assert!(health.sftp_error.is_none());
+
+        let terminal_channel_open = state
+            .ssh
+            .lock()
+            .unwrap()
+            .get(&profile.id)
+            .unwrap()
+            .terminal_channel_open
+            .clone();
+        terminal_channel_open.store(false, Ordering::SeqCst);
+        let terminal_closed_health = ssh_health::check_ssh_health_inner(&state, &profile.id, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            terminal_closed_health.status,
+            ssh_health::SshHealthStatus::Degraded
+        );
+        assert!(!terminal_closed_health.terminal_channel_open);
+        assert!(terminal_closed_health.transport_round_trip_ms.is_some());
+        assert!(terminal_closed_health.channel_round_trip_ms.is_some());
+        assert!(terminal_closed_health
+            .terminal_error
+            .as_deref()
+            .is_some_and(|error| error.contains("交互输入不可用")));
+        terminal_channel_open.store(true, Ordering::SeqCst);
 
         state
             .store

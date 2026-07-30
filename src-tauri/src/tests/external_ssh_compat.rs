@@ -42,6 +42,10 @@ fn external_ssh_server_sftp_scp_compatibility() {
             .await
             .unwrap_or_else(|error| panic!("{label} SSH open failed: {error}"));
         assert_eq!(connected.runtime.status, SessionStatus::Connected);
+        assert_eq!(
+            state.ssh.lock().unwrap().get(&profile.id).unwrap().backend,
+            SshBackendKind::Russh
+        );
         let mut health_attempts = Vec::new();
         for attempt in 0..3 {
             let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
@@ -62,6 +66,10 @@ fn external_ssh_server_sftp_scp_compatibility() {
             ssh_health::SshHealthStatus::Healthy,
             "{label} SSH health did not stabilize: {health_attempts:?}"
         );
+        assert_eq!(health.backend, SshBackendKind::Russh);
+        assert_eq!(health.authentication_method, AuthMethod::Password);
+        assert!(health.terminal_channel_open);
+        assert!(health.terminal_error.is_none());
         assert!(health.transport_round_trip_ms.is_some());
         assert!(health.channel_round_trip_ms.is_some());
         assert!(health.sftp_round_trip_ms.is_some());
@@ -549,6 +557,17 @@ fn external_ssh_health_fault_matrix_case() {
             .unwrap_or_else(|error| panic!("{fault} SSH open failed: {error}"));
         assert_eq!(connected.runtime.status, SessionStatus::Connected);
 
+        if fault == "terminal-channel-closed" {
+            state
+                .ssh
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .terminal_channel_open
+                .store(false, Ordering::SeqCst);
+        }
+
         if fault == "runtime-replaced" {
             let mut check = Box::pin(ssh_health::check_ssh_health_inner(
                 &state,
@@ -613,8 +632,11 @@ fn external_ssh_health_fault_matrix_case() {
                 value => panic!("unsupported expected SSH health status: {value}"),
             };
             assert_eq!(health.status, expected_health_status, "{fault}: {health:?}");
+            assert_eq!(health.backend, SshBackendKind::Russh);
+            assert_eq!(health.authentication_method, AuthMethod::Password);
             let field_error = match expected_error_field.as_str() {
                 "transportError" => health.transport_error.as_deref(),
+                "terminalError" => health.terminal_error.as_deref(),
                 "channelError" => health.channel_error.as_deref(),
                 "sftpError" => health.sftp_error.as_deref(),
                 value => panic!("unsupported SSH health error field: {value}"),

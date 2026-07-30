@@ -128,6 +128,10 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                 let health = ssh_health::check_ssh_health_inner(&state, &profile.id, true)
                     .await
                     .unwrap();
+                assert_eq!(health.backend, SshBackendKind::Libssh);
+                assert_eq!(health.authentication_method, expected_auth);
+                assert!(health.terminal_channel_open);
+                assert!(health.terminal_error.is_none());
                 assert!(health.transport_round_trip_ms.is_some());
                 assert!(health.channel_round_trip_ms.is_some());
                 if matches!(case.as_str(), "sftp-rejected" | "sftp-operation-denied") {

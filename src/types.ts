@@ -551,10 +551,14 @@ export interface SshHealthReport {
   runtimeId: string;
   checkedAt: string;
   status: "healthy" | "degraded" | "unresponsive";
+  backend: "russh" | "libssh";
+  authenticationMethod: AuthMethod;
+  terminalChannelOpen: boolean;
   transportRoundTripMs?: number | null;
   channelRoundTripMs?: number | null;
   sftpRoundTripMs?: number | null;
   transportError?: string | null;
+  terminalError?: string | null;
   channelError?: string | null;
   sftpError?: string | null;
   sftpProbed: boolean;

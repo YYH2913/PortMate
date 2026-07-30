@@ -131,6 +131,7 @@ pub(super) async fn reconnect_ssh_session(
             read_half,
             auth_method,
             closed: next_closed,
+            terminal_channel_open,
             reader_finished,
         } = established;
         let mut runtime = Some(runtime);
@@ -257,6 +258,7 @@ pub(super) async fn reconnect_ssh_session(
             tap,
             read_half,
             closed: Arc::clone(&next_closed),
+            terminal_channel_open,
             reader_finished,
         }));
 

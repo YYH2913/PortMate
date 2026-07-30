@@ -14,6 +14,13 @@
     "expectedErrorContains": "Channel send error"
   },
   {
+    "name": "terminal-channel-closed",
+    "probeSftp": false,
+    "expectedStatus": "degraded",
+    "expectedErrorField": "terminalError",
+    "expectedErrorContains": "交互输入不可用"
+  },
+  {
     "name": "exec-rejected",
     "probeSftp": false,
     "expectedStatus": "degraded",

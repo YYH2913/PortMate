@@ -20,10 +20,14 @@ pub(crate) struct SshHealthReport {
     pub runtime_id: String,
     pub checked_at: DateTime<Utc>,
     pub status: SshHealthStatus,
+    pub backend: SshBackendKind,
+    pub authentication_method: AuthMethod,
+    pub terminal_channel_open: bool,
     pub transport_round_trip_ms: Option<u64>,
     pub channel_round_trip_ms: Option<u64>,
     pub sftp_round_trip_ms: Option<u64>,
     pub transport_error: Option<String>,
+    pub terminal_error: Option<String>,
     pub channel_error: Option<String>,
     pub sftp_error: Option<String>,
     pub sftp_probed: bool,
@@ -48,11 +52,18 @@ pub(super) async fn check_ssh_health_inner(
     session_id: &str,
     probe_sftp: bool,
 ) -> Result<SshHealthReport, String> {
-    let runtime_id = {
+    let (runtime_id, backend, authentication_method, terminal_channel_open) = {
         let runtimes = state.ssh.lock().map_err(|error| error.to_string())?;
         runtimes
             .get(session_id)
-            .map(|runtime| runtime.runtime_id.clone())
+            .map(|runtime| {
+                (
+                    runtime.runtime_id.clone(),
+                    runtime.backend,
+                    runtime.auth_method,
+                    runtime.terminal_channel_open.load(Ordering::SeqCst),
+                )
+            })
             .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行健康检查".to_string())?
     };
     let auxiliary = ssh_auxiliary_lease(state, session_id)?;
@@ -61,11 +72,20 @@ pub(super) async fn check_ssh_health_inner(
         session_id: session_id.to_string(),
         runtime_id: runtime_id.clone(),
         checked_at: Utc::now(),
-        status: SshHealthStatus::Healthy,
+        status: if terminal_channel_open {
+            SshHealthStatus::Healthy
+        } else {
+            SshHealthStatus::Degraded
+        },
+        backend,
+        authentication_method,
+        terminal_channel_open,
         transport_round_trip_ms: None,
         channel_round_trip_ms: None,
         sftp_round_trip_ms: None,
         transport_error: None,
+        terminal_error: (!terminal_channel_open)
+            .then(|| "SSH 主终端 channel 已关闭或正在重连，交互输入不可用".to_string()),
         channel_error: None,
         sftp_error: None,
         sftp_probed: probe_sftp,
@@ -194,16 +214,31 @@ async fn probe_sftp_health(
 fn finish_health_report(
     state: &AppState,
     expected_runtime_id: String,
-    report: SshHealthReport,
+    mut report: SshHealthReport,
 ) -> Result<SshHealthReport, String> {
-    let current_runtime_id = state
-        .ssh
-        .lock()
-        .map_err(|error| error.to_string())?
-        .get(&report.session_id)
-        .map(|runtime| runtime.runtime_id.clone());
+    let (current_runtime_id, terminal_channel_open) = {
+        let runtimes = state.ssh.lock().map_err(|error| error.to_string())?;
+        runtimes
+            .get(&report.session_id)
+            .map(|runtime| {
+                (
+                    Some(runtime.runtime_id.clone()),
+                    runtime.terminal_channel_open.load(Ordering::SeqCst),
+                )
+            })
+            .unwrap_or((None, false))
+    };
     if current_runtime_id.as_deref() != Some(expected_runtime_id.as_str()) {
         return Err("SSH runtime 在健康检查期间已变化，请重试".to_string());
+    }
+    if !terminal_channel_open {
+        report.terminal_channel_open = false;
+        report.terminal_error.get_or_insert_with(|| {
+            "SSH 主终端 channel 已关闭或正在重连，交互输入不可用".to_string()
+        });
+        if report.status == SshHealthStatus::Healthy {
+            report.status = SshHealthStatus::Degraded;
+        }
     }
     Ok(report)
 }
@@ -240,6 +275,14 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SshHealthStatus::Unresponsive).unwrap(),
             "\"unresponsive\""
+        );
+    }
+
+    #[test]
+    fn ssh_health_backend_serializes_as_stable_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&SshBackendKind::Libssh).unwrap(),
+            "\"libssh\""
         );
     }
 }

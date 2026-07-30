@@ -20,7 +20,7 @@ This repository currently contains the active desktop implementation slice:
 - Profile-configurable TLS for raw TCP and Telnet, with system-CA verification, an optional server-name override, and an explicit insecure certificate override
 - Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
 - A persistent current-session Sysmon sidebar with process, disk, network, and trend drill-down
-- Three-stage SSH health reports for transport keepalive, exec-channel round trips, and optional SFTP initialization
+- SSH health reports covering the primary terminal channel, transport keepalive, exec-channel round trips, optional SFTP initialization, backend, and authentication method
 - SSH `profile-vault` private keys, optional saved passwords/passphrases, and the live MCP IPC token stored in a persistent OS keyring with only `secretRef` metadata persisted in files/SQLite
 - SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a private atomic JSON compatibility export
 - Standalone `portmate-mcp` stdio bridge exposing MCP resources, tools, prompts, and local IPC control over JSON-RPC
@@ -726,8 +726,11 @@ This prevents common embedded lab failures where several devices reuse `192.168.
 For an active SSH/Tmux runtime, Session Settings can request a health report without opening another
 transport. A keepalive failure is `unresponsive`; a successful keepalive followed by exec-marker or
 optional SFTP failure is `degraded`; all requested stages succeeding is `healthy`. Every report is
-bound to the runtime generation captured at the start, so reconnect or replacement during the probe
-returns an explicit retry error instead of publishing stale latency data. The optional SFTP stage gives
+also bound to the primary interactive terminal channel: reader completion immediately marks that
+channel closed, so a still-responsive transport cannot be reported healthy while terminal input is
+unavailable. Reports identify the russh/libssh backend and actual successful authentication method,
+and remain bound to the runtime generation captured at the start, so reconnect or replacement during
+the probe returns an explicit retry error instead of publishing stale latency data. The optional SFTP stage gives
 initialization, canonicalization, and directory reading one shared five-second budget, so a server that
 accepts the subsystem request without completing the protocol cannot hang the health command.
 
