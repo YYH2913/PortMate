@@ -5349,6 +5349,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "libc",
+ "libloading 0.8.9",
  "libssh-rs",
  "native-tls",
  "portable-pty",

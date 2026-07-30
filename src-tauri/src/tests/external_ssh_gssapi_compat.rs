@@ -38,7 +38,10 @@ fn external_ssh_gssapi_runtime_matrix_case() {
         };
         let mixed_auth = matches!(
             case.as_str(),
-            "gssapi-preferred" | "password-fallback" | "server-disabled-password-fallback"
+            "gssapi-preferred"
+                | "corrupt-ticket-password-fallback"
+                | "password-fallback"
+                | "server-disabled-password-fallback"
         );
         ssh.identity_policy.auth_order = if mixed_auth {
             vec![AuthMethod::GssapiWithMic, AuthMethod::Password]
@@ -53,9 +56,9 @@ fn external_ssh_gssapi_runtime_matrix_case() {
         let state = test_app_state(profile.clone(), local_root.join("portmate-store.sqlite3"));
         let password = match case.as_str() {
             "gssapi-preferred" => Some("deliberately-wrong-password".to_string()),
-            "password-fallback" | "server-disabled-password-fallback" => {
-                Some("portmate".to_string())
-            }
+            "corrupt-ticket-password-fallback"
+            | "password-fallback"
+            | "server-disabled-password-fallback" => Some("portmate".to_string()),
             _ => None,
         };
         let opened = open_ssh_session(&state, profile.clone(), password, None).await;
@@ -65,7 +68,7 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                 let error = opened.unwrap_err();
                 assert!(error.contains("SSH host key 未受信任"), "{error}");
             }
-            "no-ticket" => {
+            "corrupt-ticket" | "no-ticket" => {
                 let error = opened.unwrap_err();
                 assert!(error.contains("GSSAPI authentication"), "{error}");
             }
@@ -78,6 +81,7 @@ fn external_ssh_gssapi_runtime_matrix_case() {
             }
             "success"
             | "gssapi-preferred"
+            | "corrupt-ticket-password-fallback"
             | "password-fallback"
             | "server-disabled-password-fallback"
             | "sftp-rejected"
@@ -87,7 +91,9 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                 assert_eq!(connected.runtime.status, SessionStatus::Connected);
                 let expected_auth = if matches!(
                     case.as_str(),
-                    "password-fallback" | "server-disabled-password-fallback"
+                    "corrupt-ticket-password-fallback"
+                        | "password-fallback"
+                        | "server-disabled-password-fallback"
                 ) {
                     AuthMethod::Password
                 } else {

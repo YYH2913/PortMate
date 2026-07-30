@@ -683,8 +683,9 @@ ser2net remain data-path checks because those adapters do not propagate NAWS to 
 Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. It also
 provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each pairing verifies successful
 `gssapi-with-mic`, GSSAPI precedence over a deliberately wrong fallback password, strict host-key
-rejection, a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and
-password fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
+rejection, safe rejection of a corrupt FILE credential cache, password fallback after that rejection,
+a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and password
+fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
 The OpenSSH success cases also cover TOFU persistence, PTY shell I/O and resize, keepalive/exec/SFTP
 health, recorded authentication method, and bounded runtime cleanup. Apache MINA covers the same
 authentication and health behavior plus interactive process-shell I/O; its shell accepts resize
@@ -765,8 +766,11 @@ channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian
 Kerberos matrices, Apache MINA SSHD 2.19.0 with MIT Kerberos, and Ubuntu OpenSSH with a Samba 4.19.5
 AD-compatible KDC, covering successful
 authentication, GSSAPI precedence, strict host-key rejection,
-a missing ticket, password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback,
-SFTP subsystem rejection, and SFTP directory-operation rejection.
+a corrupt FILE credential cache and password fallback after its safe rejection, a missing ticket,
+password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback, SFTP subsystem
+rejection, and SFTP directory-operation rejection. Linux validates explicit FILE caches before
+calling libssh so malformed cache data cannot enter the crashing libssh/Kerberos path; non-FILE
+backends such as KEYRING, KCM, and DIR remain owned by the system Kerberos implementation.
 Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
 subsystem, canonicalize the working directory, and read its entries through the health probe.
 The Apache MINA path verifies interactive shell I/O but does not claim real process-PTY resize.

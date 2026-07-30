@@ -258,6 +258,45 @@ fn libssh_backend_selection_accepts_supported_gssapi_mixed_auth_order() {
     assert!(!ssh_uses_libssh_gssapi_backend(&ssh));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn libssh_gssapi_file_cache_validation_rejects_corruption_without_restricting_other_backends() {
+    use std::ffi::OsString;
+
+    let root = std::env::temp_dir().join(format!(
+        "portmate-gssapi-cache-validation-{}",
+        Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let cache_path = root.join("ticket.ccache");
+    let cache_name = OsString::from(format!("FILE:{}", cache_path.display()));
+
+    assert!(validate_libssh_gssapi_credential_cache(Some(cache_name.as_os_str())).is_ok());
+    assert!(
+        validate_libssh_gssapi_credential_cache(Some(std::ffi::OsStr::new(
+            "KEYRING:persistent:1000"
+        )))
+        .is_ok()
+    );
+
+    fs::write(&cache_path, []).unwrap();
+    let truncated =
+        validate_libssh_gssapi_credential_cache(Some(cache_name.as_os_str())).unwrap_err();
+    assert!(truncated.contains("truncated"), "{truncated}");
+
+    fs::write(&cache_path, b"not-a-valid-cache").unwrap();
+    let invalid =
+        validate_libssh_gssapi_credential_cache(Some(cache_name.as_os_str())).unwrap_err();
+    assert!(invalid.contains("invalid"), "{invalid}");
+
+    fs::write(&cache_path, [5, 4]).unwrap();
+    let short_header =
+        validate_libssh_gssapi_credential_cache(Some(cache_name.as_os_str())).unwrap_err();
+    assert!(short_header.contains("truncated"), "{short_header}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn libssh_mixed_auth_falls_back_to_keyboard_interactive() {

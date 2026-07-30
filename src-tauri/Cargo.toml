@@ -25,6 +25,7 @@ getrandom = "0.3"
 iota_stronghold = "2.1.0"
 keyring = "4.0.1"
 keyring-core = "1.0.0"
+libloading = "0.8.9"
 libssh-rs = { path = "../crates/libssh-rs" }
 libc = "0.2"
 russh = { version = "0.62.4", features = ["async-trait"] }

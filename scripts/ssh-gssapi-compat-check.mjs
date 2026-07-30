@@ -85,6 +85,9 @@ try {
       runCase("success", server, kerberos, cases);
       runCase("gssapi-preferred", server, kerberos, cases);
       runCase("host-key-reject", server, kerberos, cases);
+      corruptTicket(kerberos);
+      runCase("corrupt-ticket", server, kerberos, cases);
+      runCase("corrupt-ticket-password-fallback", server, kerberos, cases);
       destroyTicket(kerberos);
       runCase("no-ticket", server, kerberos, cases);
       runCase("password-fallback", server, kerberos, cases);
@@ -277,6 +280,10 @@ function acquireTicket(server, kerberos) {
 
 function destroyTicket(kerberos) {
   rmSync(kerberos.cache, { force: true });
+}
+
+function corruptTicket(kerberos) {
+  writeFileSync(kerberos.cache, "PORTMATE_CORRUPT_KRB5_CCACHE\n", { mode: 0o600 });
 }
 
 function runCase(name, server, kerberos, cases) {
