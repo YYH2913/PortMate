@@ -12,6 +12,14 @@ export const TERMINAL_PROFILE_BOUNDS = {
   backgroundOpacity: { min: 20, max: 100, fallback: 100 },
 } as const;
 
+export function shouldEnableTerminalWebgl(desktopBackend: boolean, userAgent: string) {
+  if (!desktopBackend) return true;
+  const linuxWebKit = /Linux/i.test(userAgent)
+    && /AppleWebKit/i.test(userAgent)
+    && !/(?:Chrome|Chromium|Edg)\//i.test(userAgent);
+  return !linuxWebKit;
+}
+
 const DEFAULT_TERMINAL_NAME = "xterm-256color";
 const DEFAULT_TERMINAL_FONT_FAMILY = "Roboto Mono, JetBrains Mono, monospace";
 const terminalNamePattern = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;

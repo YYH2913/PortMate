@@ -43,7 +43,7 @@ import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent } from "./te
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
-import { normalizeTerminalProfileSettings } from "./terminal-settings-state";
+import { normalizeTerminalProfileSettings, shouldEnableTerminalWebgl } from "./terminal-settings-state";
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
@@ -660,6 +660,7 @@ export default function TerminalCanvas({
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
     let webglGeneration = 0;
+    const webglEnabled = shouldEnableTerminalWebgl(isBackendAvailable(), navigator.userAgent);
     const configureWebgl = (enabled: boolean) => {
       const generation = ++webglGeneration;
       if (!enabled) {
@@ -668,7 +669,7 @@ export default function TerminalCanvas({
         webglAddon?.dispose();
         webglAddon = null;
         host.dataset.terminalRenderer = "dom";
-        host.dataset.terminalWebgl = "disabled-transparency";
+        host.dataset.terminalWebgl = webglEnabled ? "disabled-transparency" : "disabled-webkitgtk";
         return;
       }
       if (webglAddon) return;
@@ -699,7 +700,7 @@ export default function TerminalCanvas({
       });
     };
     configureWebglRef.current = configureWebgl;
-    configureWebgl(terminalSettings.backgroundOpacity === 100);
+    configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
     if (focused) term.focus();
     const fitAndReport = () => {
       fit.fit();
@@ -847,7 +848,10 @@ export default function TerminalCanvas({
     const appliedTheme = applyTerminalPresentation(term, normalized);
     host.dataset.terminalTheme = appliedTheme;
     host.dataset.terminalOpacity = String(normalized.backgroundOpacity);
-    configureWebglRef.current(normalized.backgroundOpacity === 100);
+    configureWebglRef.current(
+      shouldEnableTerminalWebgl(isBackendAvailable(), navigator.userAgent)
+        && normalized.backgroundOpacity === 100,
+    );
     const frame = window.requestAnimationFrame(() => fitAndReportRef.current());
     return () => window.cancelAnimationFrame(frame);
   }, [

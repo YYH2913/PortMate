@@ -4,6 +4,7 @@ import {
   MAX_TERMINAL_STARTUP_SESSION_ID_CHARACTERS,
   normalizeTerminalProfileSettings,
   normalizeTerminalStartupSessionIds,
+  shouldEnableTerminalWebgl,
   TERMINAL_PROFILE_BOUNDS,
   terminalStartupSessionOptions,
 } from "./terminal-settings-state";
@@ -72,6 +73,15 @@ describe("terminal settings state", () => {
     expect(normalized.term).toBe("xterm-256color");
     expect(normalized.fontFamily).toBe("Roboto Mono, JetBrains Mono, monospace");
     expect(normalized.backgroundOpacity).toBe(TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback);
+  });
+
+  it("uses the DOM renderer only in Linux Tauri WebKitGTK", () => {
+    const webkitGtk = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+    const chromiumLinux = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36";
+
+    expect(shouldEnableTerminalWebgl(true, webkitGtk)).toBe(false);
+    expect(shouldEnableTerminalWebgl(false, webkitGtk)).toBe(true);
+    expect(shouldEnableTerminalWebgl(true, chromiumLinux)).toBe(true);
   });
 });
 
