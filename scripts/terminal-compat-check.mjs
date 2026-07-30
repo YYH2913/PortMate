@@ -517,6 +517,89 @@ try {
     });
     return { ...rendering, pixelColors };
   };
+  const inspectCursorRendering = async (host, expectedStyle) => {
+    const renderer = await host.getAttribute("data-terminal-renderer");
+    if (renderer === "dom") {
+      const rendered = await host.locator(`.xterm-rows .xterm-cursor.xterm-cursor-${expectedStyle}`).count() > 0;
+      assert(rendered, `DOM renderer did not draw the ${expectedStyle} cursor`);
+      return { renderer, style: expectedStyle, renderedClass: `xterm-cursor-${expectedStyle}` };
+    }
+
+    const screenshot = await host.screenshot();
+    const components = await page.evaluate(async ({ base64, color }) => {
+      const expected = [
+        Number.parseInt(color.slice(1, 3), 16),
+        Number.parseInt(color.slice(3, 5), 16),
+        Number.parseInt(color.slice(5, 7), 16),
+      ];
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const matches = new Set();
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const offset = (y * canvas.width + x) * 4;
+          if (Math.abs(pixels[offset] - expected[0]) <= 4
+            && Math.abs(pixels[offset + 1] - expected[1]) <= 4
+            && Math.abs(pixels[offset + 2] - expected[2]) <= 4
+            && pixels[offset + 3] > 0) {
+            matches.add(y * canvas.width + x);
+          }
+        }
+      }
+      const found = [];
+      while (matches.size) {
+        const start = matches.values().next().value;
+        const queue = [start];
+        matches.delete(start);
+        let minX = start % canvas.width;
+        let maxX = minX;
+        let minY = Math.floor(start / canvas.width);
+        let maxY = minY;
+        let area = 0;
+        for (let index = 0; index < queue.length; index += 1) {
+          const point = queue[index];
+          const x = point % canvas.width;
+          const y = Math.floor(point / canvas.width);
+          area += 1;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          for (let dy = -1; dy <= 1; dy += 1) {
+            for (let dx = -1; dx <= 1; dx += 1) {
+              const nextX = x + dx;
+              const nextY = y + dy;
+              if ((dx === 0 && dy === 0) || nextX < 0 || nextX >= canvas.width
+                || nextY < 0 || nextY >= canvas.height) continue;
+              const next = nextY * canvas.width + nextX;
+              if (!matches.delete(next)) continue;
+              queue.push(next);
+            }
+          }
+        }
+        if (area >= 4) found.push({
+          area,
+          width: maxX - minX + 1,
+          height: maxY - minY + 1,
+          bottom: maxY,
+        });
+      }
+      return found.sort((left, right) => right.bottom - left.bottom || right.area - left.area).slice(0, 8);
+    }, { base64: screenshot.toString("base64"), color: "#5eead4" });
+    const cursor = components[0];
+    const rendered = expectedStyle === "block"
+      ? cursor?.width >= 5 && cursor.height >= 8 && cursor.area >= cursor.width * cursor.height * 0.6
+      : cursor?.width <= 3 && cursor.height >= 8;
+    assert(rendered, `WebGL renderer did not draw the ${expectedStyle} cursor: ${JSON.stringify(components)}`);
+    return { renderer, style: expectedStyle, pixels: cursor };
+  };
   await page.waitForFunction(() => (
     document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticHighlighting === "alternate"
   ));
@@ -933,12 +1016,15 @@ try {
 
   await page.evaluate(() => { window.__invokeCalls = []; });
   await activeTextarea.focus();
+  await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalCursorStyle === "bar");
+  const insertCursorBeforeNormal = await inspectCursorRendering(activeHost, "bar");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => {
     const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
     return host?.dataset.terminalKeyMode === "command"
       && host?.dataset.terminalCursorStyle === "block";
   });
+  const normalCursor = await inspectCursorRendering(activeHost, "block");
   const insertNormalEscapeLeaked = await page.evaluate(() => window.__invokeCalls.some((call) => (
     call.command === "send_text" && call.args.text === "\x1b"
   )));
@@ -950,10 +1036,16 @@ try {
     return host?.dataset.terminalKeyMode === "remote"
       && host?.dataset.terminalCursorStyle === "bar";
   });
+  const insertCursorAfterNormal = await inspectCursorRendering(activeHost, "bar");
   const insertNormalMode = await activeHost.evaluate((host) => ({
     mode: host.dataset.terminalKeyMode,
     cursor: host.dataset.terminalCursorStyle,
   }));
+  insertNormalMode.rendering = {
+    before: insertCursorBeforeNormal,
+    normal: normalCursor,
+    after: insertCursorAfterNormal,
+  };
 
   await page.evaluate(() => { window.__clipboardWrites = []; });
   const selectedWithoutPreference = await selectTerminalText();
