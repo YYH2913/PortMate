@@ -105,6 +105,7 @@ mod secret_commands;
 mod secret_provider;
 mod serial_capture;
 mod serial_commands;
+mod serial_reconnect;
 mod serial_transport;
 mod session_commands;
 mod session_events;
@@ -233,6 +234,7 @@ use serial_commands::{
     apply_serial_line_updates_with, pulse_serial_break_with, record_applied_serial_line_state,
     SerialControlLine,
 };
+use serial_reconnect::*;
 use serial_transport::*;
 #[cfg(test)]
 use session_commands::{
