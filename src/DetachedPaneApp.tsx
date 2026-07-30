@@ -32,6 +32,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
+  const sessionRefreshGenerationRef = useRef(0);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
@@ -64,11 +65,14 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     async function refreshSessions() {
       if (sessionsRefreshing) return;
       sessionsRefreshing = true;
+      const generation = sessionRefreshGenerationRef.current;
       try {
         const nextSessions = isBackendAvailable()
           ? await invokeBackend<SessionSummary[]>("list_sessions", {})
           : loadLocalSessions();
-        if (!disposed) setSessions(nextSessions);
+        if (!disposed && generation === sessionRefreshGenerationRef.current) {
+          setSessions(nextSessions);
+        }
       } catch {
         // Keep the last confirmed session state during transient backend failures.
       } finally {
@@ -106,6 +110,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     const unlisten = new Set<() => void>();
     void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
       if (disposed || event.payload !== request.sessionId) return;
+      sessionRefreshGenerationRef.current += 1;
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
       setError("会话 Profile 已删除");
       void getCurrentWebviewWindow().close().catch(() => {});
@@ -115,6 +120,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     }).catch(() => {});
     void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
       if (disposed || event.payload?.profile?.id !== request.sessionId) return;
+      sessionRefreshGenerationRef.current += 1;
       setSessions((current) => upsertDetachedSessionSummary(current, event.payload));
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
@@ -146,6 +152,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === SESSION_SUMMARY_CACHE_STORAGE_KEY || event.key === null) {
+        sessionRefreshGenerationRef.current += 1;
         setSessions(loadLocalSessions());
       }
       if (["portmate.terminalPrefs", COMMAND_HISTORY_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {

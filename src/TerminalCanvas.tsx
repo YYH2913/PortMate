@@ -86,6 +86,7 @@ const MAX_SERIALIZED_SCROLLBACK = 2000;
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
 const EMPTY_COMPLETION_QUICK_COMMANDS: readonly TerminalCompletionQuickCommand[] = [];
+let terminalInstanceSequence = 0;
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
@@ -218,6 +219,7 @@ export default function TerminalCanvas({
   const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
+  const terminalMountGenerationRef = useRef(0);
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
@@ -651,6 +653,10 @@ export default function TerminalCanvas({
     if (!active || !hostRef.current) return;
 
     const host = hostRef.current;
+    const mountGeneration = ++terminalMountGenerationRef.current;
+    const terminalInstanceId = String(++terminalInstanceSequence);
+    host.dataset.terminalInstanceId = terminalInstanceId;
+    host.dataset.terminalReady = "false";
     const cachedState = terminalStateCache.get(active.profile.id);
     const terminalSettings = normalizeTerminalProfileSettings(active.profile.terminal);
     seenEventsRef.current = new Set(cachedState?.seenEventIds ?? []);
@@ -1012,9 +1018,20 @@ export default function TerminalCanvas({
     host.addEventListener("auxclick", pasteOnMiddleClick);
 
     termRef.current = term;
+    let readyFrame = window.requestAnimationFrame(() => {
+      readyFrame = window.requestAnimationFrame(() => {
+        if (!terminalDisposed
+          && termRef.current === term
+          && (!import.meta.env.DEV || mountGeneration > 1)) {
+          host.dataset.terminalReady = "true";
+        }
+      });
+    });
 
     return () => {
       terminalDisposed = true;
+      window.cancelAnimationFrame(readyFrame);
+      if (host.dataset.terminalInstanceId === terminalInstanceId) host.dataset.terminalReady = "false";
       searchResultDisposable.dispose();
       inputDisposable.dispose();
       selectionDisposable.dispose();

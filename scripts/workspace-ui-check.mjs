@@ -2290,9 +2290,14 @@ Host staging
   const detachedPageErrors = [];
   detachedPage.on("pageerror", (error) => detachedPageErrors.push(error.message));
   await detachedPage.goto(detachedUrl.toString());
-  const detachedXterm = detachedPage.locator(".detached-pane-terminal .xterm");
-  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-dark"]').waitFor();
-  await detachedXterm.evaluate((element) => { element.dataset.profileUpdateIdentity = "retained"; });
+  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-dark"][data-terminal-ready="true"]').waitFor();
+  await detachedPage.waitForFunction(() => (
+    window.__tauriEventListeners.get("portmate-session-profile-updated")?.length ?? 0
+  ) > 0);
+  const detachedTerminalInstanceId = await detachedPage
+    .locator(".detached-pane-terminal .terminal-host")
+    .getAttribute("data-terminal-instance-id");
+  assert(detachedTerminalInstanceId, "detached terminal did not expose its mounted XTerm instance");
   await detachedPage.evaluate(() => {
     const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
     const updated = structuredClone(window.__sessions[index]);
@@ -2303,12 +2308,45 @@ Host staging
   await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-light"]').waitFor();
   const detachedThemeState = await detachedPage.locator(".detached-pane-terminal .terminal-canvas").evaluate((canvas) => ({
     background: getComputedStyle(canvas).backgroundColor,
-    retained: canvas.querySelector(".xterm")?.dataset.profileUpdateIdentity ?? "",
+    instanceId: canvas.querySelector(".terminal-host")?.getAttribute("data-terminal-instance-id"),
   }));
   assert(detachedThemeState.background === "rgb(247, 248, 250)"
-    && detachedThemeState.retained === "retained"
+    && detachedThemeState.instanceId === detachedTerminalInstanceId
     && detachedPageErrors.length === 0,
   `detached profile update did not apply in place: ${JSON.stringify({ detachedThemeState, detachedPageErrors })}`);
+  await detachedPage.evaluate(() => { window.__deferSessionLists = true; });
+  await detachedPage.waitForFunction(() => window.__pendingSessionLists.length > 0);
+  await detachedPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.terminal.theme = "graphite";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="graphite"]').waitFor();
+  await detachedPage.evaluate(() => {
+    for (const pending of window.__pendingSessionLists) pending.resolve(pending.result);
+    window.__pendingSessionLists = [];
+    window.__deferSessionLists = false;
+  });
+  await detachedPage.waitForTimeout(100);
+  const detachedStaleRefreshState = await detachedPage.locator(".detached-pane-terminal .terminal-canvas").evaluate((canvas) => ({
+    theme: canvas.querySelector(".terminal-host")?.getAttribute("data-terminal-theme"),
+    background: getComputedStyle(canvas).backgroundColor,
+    instanceId: canvas.querySelector(".terminal-host")?.getAttribute("data-terminal-instance-id"),
+  }));
+  assert(detachedStaleRefreshState.theme === "graphite"
+    && detachedStaleRefreshState.background === "rgb(23, 23, 23)"
+    && detachedStaleRefreshState.instanceId === detachedTerminalInstanceId,
+  `stale detached session refresh replaced a newer profile event: ${JSON.stringify({ detachedTerminalInstanceId, detachedStaleRefreshState })}`);
+  await detachedPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.terminal.theme = "portmate-light";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-light"]').waitFor();
   const detachedHealth = await detachedPage.evaluate(() => {
     const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
     const updated = structuredClone(window.__sessions[index]);
