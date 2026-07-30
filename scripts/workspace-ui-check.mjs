@@ -2103,6 +2103,16 @@ Host staging
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 0
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "XModem:" }).count() === 1,
   "Serial transfer page exposes capabilities from another protocol");
+  await sectionSelect.selectOption("串口");
+  const baudRateInput = page.locator('.session-settings-dialog input[list="serial-baud-rate-options"]');
+  const baudRateOptions = await page.locator("#serial-baud-rate-options option")
+    .evaluateAll((options) => options.map((option) => Number(option.value)));
+  assert(JSON.stringify(baudRateOptions) === JSON.stringify([
+    110, 300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 460800, 921600,
+  ]), `Serial baud-rate suggestions are incomplete: ${JSON.stringify(baudRateOptions)}`);
+  await baudRateInput.fill("250000");
+  assert(await baudRateInput.inputValue() === "250000",
+    "Serial baud-rate suggestions prevent a custom adapter rate");
   const sessionSettingsText = await page.locator(".session-settings-dialog").textContent();
   assert(!sessionSettingsText.includes("保存为默认设置")
     && !sessionSettingsText.includes("密钥交换")

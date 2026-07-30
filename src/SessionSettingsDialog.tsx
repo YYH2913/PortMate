@@ -29,7 +29,7 @@ import {
   sessionSettingTrees,
 } from "./session-settings-state";
 import type { ProtocolTab } from "./session-settings-state";
-import { serialConnectionBounds } from "./serial-connection-settings";
+import { COMMON_SERIAL_BAUD_RATES, serialConnectionBounds } from "./serial-connection-settings";
 import { SSH_AUTH_ORDER_OPTIONS, sshConnectionBounds } from "./ssh-connection-settings";
 import { tcpConnectionBounds } from "./tcp-connection-settings";
 import {
@@ -1258,7 +1258,18 @@ function SerialAdvancedFields({
         </select>
       </DialogField>
       <DialogField label="波特率:(B)">
-        <input type="number" value={serial.baudRate} onChange={(event) => update({ baudRate: Number(event.target.value) })} />
+        <input
+          type="number"
+          min={serialConnectionBounds.baudRate.min}
+          max={serialConnectionBounds.baudRate.max}
+          step={1}
+          list="serial-baud-rate-options"
+          value={serial.baudRate}
+          onChange={(event) => update({ baudRate: Number(event.target.value) })}
+        />
+        <datalist id="serial-baud-rate-options">
+          {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
+        </datalist>
       </DialogField>
       <DialogField label="数据位:(D)">
         <select value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>

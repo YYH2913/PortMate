@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMMON_SERIAL_BAUD_RATES,
   normalizeSerialConnectionSettings,
   serialConnectionBounds,
   serialConnectionDefaults,
@@ -22,6 +23,26 @@ function baseConnection(): SerialConnection {
 }
 
 describe("serial connection settings", () => {
+  it("offers common baud rates from legacy devices through high-speed adapters", () => {
+    expect(COMMON_SERIAL_BAUD_RATES).toEqual([
+      110,
+      300,
+      600,
+      1_200,
+      2_400,
+      4_800,
+      9_600,
+      14_400,
+      19_200,
+      38_400,
+      57_600,
+      115_200,
+      230_400,
+      460_800,
+      921_600,
+    ]);
+  });
+
   it("fills health defaults for legacy profiles", () => {
     const legacy = baseConnection() as Partial<SerialConnection>;
     delete legacy.reconnect;
