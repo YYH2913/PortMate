@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn file_command_types_keep_stable_serde_contract() {
+    let rename: RenamePathRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "ssh-session-1",
+        "oldPath": "/tmp/old name.txt",
+        "newPath": r"C:\Users\operator\new name.txt",
+        "remote": true
+    }))
+    .unwrap();
+    assert_eq!(rename.session_id.as_deref(), Some("ssh-session-1"));
+    assert_eq!(rename.old_path, "/tmp/old name.txt");
+    assert_eq!(rename.new_path, r"C:\Users\operator\new name.txt");
+    assert!(rename.remote);
+
+    let properties = FileProperties {
+        name: "link".to_string(),
+        path: "/tmp/link".to_string(),
+        remote: false,
+        kind: "symlink".to_string(),
+        is_dir: false,
+        is_file: false,
+        is_symlink: true,
+        size: 0,
+        permissions: Some(0o777),
+        modified: None,
+        accessed: None,
+        created: None,
+    };
+    let value = serde_json::to_value(properties).unwrap();
+    assert_eq!(value["isSymlink"], true);
+    assert_eq!(value["permissions"], 0o777);
+    assert!(value.get("is_symlink").is_none());
+}
+
+#[test]
 fn default_transfer_directory_resolves_only_relative_local_paths() {
     let mut profile = test_ssh_profile();
     let default_dir = std::env::temp_dir().join("portmate-transfer-default");
