@@ -43,6 +43,29 @@ async def terminate_child(child: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(child.wait(), timeout=2)
 
 
+async def forward_ssh_input(
+    reader: asyncssh.SSHReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    finally:
+        writer.close()
+        with suppress(BrokenPipeError, ConnectionError):
+            await writer.wait_closed()
+
+
+async def forward_child_output(
+    reader: asyncio.StreamReader,
+    writer: asyncssh.SSHWriter,
+) -> None:
+    while data := await reader.read(65536):
+        writer.write(data)
+        await writer.drain()
+
+
 async def handle_process(process: asyncssh.SSHServerProcess) -> None:
     if process.subsystem:
         process.stderr.write(f"Unsupported subsystem: {process.subsystem}\n".encode())
@@ -73,14 +96,23 @@ async def handle_process(process: asyncssh.SSHServerProcess) -> None:
     assert child.stdout is not None
     assert child.stderr is not None
 
+    input_task = asyncio.create_task(forward_ssh_input(process.stdin, child.stdin))
+    output_tasks = [
+        asyncio.create_task(forward_child_output(child.stdout, process.stdout)),
+        asyncio.create_task(forward_child_output(child.stderr, process.stderr)),
+    ]
+    tasks = [input_task, *output_tasks]
     try:
-        await process.redirect(child.stdin, child.stdout, child.stderr)
         returncode = await child.wait()
+        await asyncio.gather(*output_tasks)
         status = returncode if returncode >= 0 else 128 - returncode
         with suppress(asyncssh.Error, BrokenPipeError, ConnectionError):
             process.exit(status)
             await process.wait_closed()
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await terminate_child(child)
 
 
