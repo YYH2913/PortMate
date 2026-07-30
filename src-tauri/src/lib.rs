@@ -71,6 +71,7 @@ mod file_operations;
 mod file_transfer;
 mod log_bytes_ref;
 mod log_commands;
+mod log_retention;
 mod log_storage;
 mod mcp_authorization;
 mod mcp_commands;
@@ -198,6 +199,7 @@ use file_operations::*;
 use file_transfer::*;
 use log_bytes_ref::*;
 use log_commands::bounded_log_query_limit;
+use log_retention::*;
 use log_storage::*;
 use mcp_authorization::*;
 #[cfg(test)]
