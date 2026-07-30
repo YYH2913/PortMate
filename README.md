@@ -645,7 +645,9 @@ version 3 negotiation; the local `russh-sftp` compatibility patch also retains u
 instead of dropping them until timeout, fails pending requests immediately on malformed packet types,
 zero-length frames, field-truncated payloads, or unknown response IDs, enforces the configured inbound
 packet-length limit before allocating the declared payload, and routes valid out-of-order responses by
-request ID. The matrix kills each of the
+request ID. SFTP v3 `SSH_FILEXFER_ATTR_EXTENDED` file attributes are retained as ordered type/data
+pairs, preserve non-UTF-8 binary data, and consume their complete count-delimited wire payload before
+the next directory entry is decoded. The matrix kills each of the
 ten OpenSSH/Dropbear servers
 during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no committed final file, and a
 nonempty resumable `.portmate-part` copied from the stopped container.

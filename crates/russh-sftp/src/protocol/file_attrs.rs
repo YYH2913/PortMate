@@ -189,6 +189,13 @@ impl From<u32> for FilePermissions {
 /// clients that can be displayed in longname. Can be omitted.
 ///
 /// The `flags` field is omitted because it is set by itself depending on the fields
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAttributeExtension {
+    pub extended_type: String,
+    #[serde(with = "serde_bytes")]
+    pub extended_data: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileAttributes {
     pub size: Option<u64>,
@@ -199,6 +206,7 @@ pub struct FileAttributes {
     pub permissions: Option<u32>,
     pub atime: Option<u32>,
     pub mtime: Option<u32>,
+    pub extended: Vec<FileAttributeExtension>,
 }
 
 macro_rules! impl_fn_type {
@@ -290,6 +298,7 @@ impl FileAttributes {
             permissions: None,
             atime: None,
             mtime: None,
+            extended: Vec::new(),
         }
     }
 }
@@ -306,6 +315,7 @@ impl Default for FileAttributes {
             permissions: Some(0o777 | FileMode::DIR.bits()),
             atime: Some(0),
             mtime: Some(0),
+            extended: Vec::new(),
         }
     }
 }
@@ -367,6 +377,11 @@ impl Serialize for FileAttributes {
             field_count += 2;
         }
 
+        if !self.extended.is_empty() {
+            attrs |= FileAttr::EXTENDED;
+            field_count += 1;
+        }
+
         let mut s = serializer.serialize_struct("FileAttributes", field_count)?;
         s.serialize_field("attrs", &attrs)?;
 
@@ -388,7 +403,9 @@ impl Serialize for FileAttributes {
             s.serialize_field("mtime", &self.mtime.unwrap_or(0))?;
         }
 
-        // todo: extended implementation
+        if !self.extended.is_empty() {
+            s.serialize_field("extended", &self.extended)?;
+        }
 
         s.end()
     }
@@ -447,10 +464,88 @@ impl<'de> Deserialize<'de> for FileAttributes {
                     } else {
                         None
                     },
+                    extended: if attrs.contains(FileAttr::EXTENDED) {
+                        seq.next_element::<Vec<FileAttributeExtension>>()?
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
                 })
             }
         }
 
         deserializer.deserialize_any(FileAttributesVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::{BufMut, BytesMut};
+
+    use super::*;
+    use crate::protocol::{File, Name};
+
+    fn extension(extended_type: &str, extended_data: &[u8]) -> FileAttributeExtension {
+        FileAttributeExtension {
+            extended_type: extended_type.to_owned(),
+            extended_data: extended_data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn extended_attributes_use_sftp_v3_wire_format_and_preserve_binary_data() {
+        let mut attrs = FileAttributes::empty();
+        attrs.extended = vec![
+            extension("vendor@example.com", &[0, 0xff, b'\n']),
+            extension("text@example.com", b"value"),
+        ];
+
+        let encoded = crate::ser::to_bytes(&attrs).unwrap();
+        let mut expected = BytesMut::new();
+        expected.put_u32(FileAttr::EXTENDED.bits());
+        expected.put_u32(2);
+        expected.put_u32(18);
+        expected.put_slice(b"vendor@example.com");
+        expected.put_u32(3);
+        expected.put_slice(&[0, 0xff, b'\n']);
+        expected.put_u32(16);
+        expected.put_slice(b"text@example.com");
+        expected.put_u32(5);
+        expected.put_slice(b"value");
+        assert_eq!(encoded, expected.freeze());
+
+        let mut encoded = encoded;
+        let decoded: FileAttributes = crate::de::from_bytes(&mut encoded).unwrap();
+        assert_eq!(decoded.extended, attrs.extended);
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn extended_attributes_do_not_consume_the_next_directory_entry() {
+        let mut first_attrs = FileAttributes::empty();
+        first_attrs.extended = vec![extension("vendor@example.com", &[0xff, 0])];
+        let name = Name {
+            id: 7,
+            files: vec![
+                File {
+                    filename: "first".to_owned(),
+                    longname: String::new(),
+                    attrs: first_attrs,
+                },
+                File::dummy("second"),
+            ],
+        };
+
+        let mut encoded = crate::ser::to_bytes(&name).unwrap();
+        let decoded: Name = crate::de::from_bytes(&mut encoded).unwrap();
+        assert_eq!(decoded.files.len(), 2);
+        assert_eq!(decoded.files[0].filename, "first");
+        assert_eq!(
+            decoded.files[0].attrs.extended,
+            vec![extension("vendor@example.com", &[0xff, 0])]
+        );
+        assert_eq!(decoded.files[1].filename, "second");
+        assert!(decoded.files[1].attrs.extended.is_empty());
+        assert!(encoded.is_empty());
     }
 }
