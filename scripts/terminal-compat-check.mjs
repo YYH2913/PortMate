@@ -839,6 +839,10 @@ try {
     ));
     await activeTextarea.focus();
   }
+  await emitSessionEvent(createEvent("a-completion-bottom-anchor", "session-a", "\x1b[999;1H"));
+  await page.waitForTimeout(100);
+  const terminalSizeBeforeCompletion = await activeHost.getAttribute("data-terminal-size");
+  await clearCalls();
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");
   await activeCompletion.waitFor();
@@ -851,7 +855,10 @@ try {
     return {
       placement: canvas?.getAttribute("data-completion-placement"),
       cursorBottom: Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1"),
+      shift: Number(canvas?.getAttribute("data-completion-shift") ?? "-1"),
       canvasTop: canvasRect?.top ?? -1,
+      canvasHeight: canvasRect?.height ?? -1,
+      hostHeight: hostRect?.height ?? -1,
       hostBottom: hostRect?.bottom ?? -1,
       completionTop: completionRect.top,
       completionBottom: completionRect.bottom,
@@ -861,17 +868,19 @@ try {
   const completionCursorBottom = completionPlacement.canvasTop + completionPlacement.cursorBottom;
   assert(completionPlacement.placement === "below"
     && completionPlacement.cursorBottom >= 0
+    && completionPlacement.shift > 0
+    && Math.abs(completionPlacement.hostHeight - completionPlacement.canvasHeight) <= 1
     && completionPlacement.completionTop >= completionCursorBottom - 1
     && completionPlacement.completionTop <= completionCursorBottom + 6
     && completionPlacement.completionBottom <= completionPlacement.canvasBottom + 1,
   `command completion obscured the terminal input surface: ${JSON.stringify(completionPlacement)}`);
   await page.waitForTimeout(120);
   await page.screenshot({ path: `${screenshotPrefix}-completion-below.png`, fullPage: true });
-  await emitSessionEvent(createEvent("a-completion-anchor-move", "session-a", "\r\n"));
-  await page.waitForFunction((previousCursorBottom) => {
+  await emitSessionEvent(createEvent("a-completion-anchor-move", "session-a", "\x1b[5A"));
+  await page.waitForFunction((previousShift) => {
     const canvas = document.querySelector('[data-pane-id="pane-a"] .terminal-canvas');
-    return Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1") > previousCursorBottom;
-  }, completionPlacement.cursorBottom);
+    return Number(canvas?.getAttribute("data-completion-shift") ?? "-1") < previousShift;
+  }, completionPlacement.shift);
   const completionAfterRemoteCursorMove = await activeCompletion.evaluate((completion) => {
     const canvas = completion.closest(".terminal-canvas");
     const canvasRect = canvas?.getBoundingClientRect();
@@ -879,16 +888,22 @@ try {
     const cursorBottom = Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1");
     return {
       cursorBottom,
+      shift: Number(canvas?.getAttribute("data-completion-shift") ?? "-1"),
       gap: completionRect.top - ((canvasRect?.top ?? -1) + cursorBottom),
     };
   });
-  assert(completionAfterRemoteCursorMove.cursorBottom > completionPlacement.cursorBottom
+  assert(completionAfterRemoteCursorMove.shift < completionPlacement.shift
     && completionAfterRemoteCursorMove.gap >= 1
     && completionAfterRemoteCursorMove.gap <= 6,
   `command completion did not follow the remote cursor: ${JSON.stringify(completionAfterRemoteCursorMove)}`);
   const completionBeforePaste = await activeCompletion.textContent();
   assert(completionBeforePaste?.includes("status"), `command completion did not activate before paste: ${completionBeforePaste}`);
   await page.keyboard.press("Enter");
+  await page.waitForTimeout(100);
+  const terminalSizeAfterCompletion = await activeHost.getAttribute("data-terminal-size");
+  const completionResizeCalls = await resizeCalls();
+  assert(terminalSizeBeforeCompletion === terminalSizeAfterCompletion && completionResizeCalls.length === 0,
+    `command completion changed the remote PTY size: ${JSON.stringify({ terminalSizeBeforeCompletion, terminalSizeAfterCompletion, completionResizeCalls })}`);
 
   await activeTextarea.dispatchEvent("paste", { bubbles: true, cancelable: true });
   await page.keyboard.type("git s");

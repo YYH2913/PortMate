@@ -276,7 +276,7 @@ export default function TerminalCanvas({
   const [completionInput, setCompletionInput] = useState<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
-  const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0 });
+  const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
     ? resolveTerminalGotoLine(
@@ -355,13 +355,26 @@ export default function TerminalCanvas({
     const screen = host?.querySelector<HTMLElement>(".xterm-screen");
     if (!term || !host || !canvas || !screen) return;
     const canvasRect = canvas.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
     const screenRect = screen.getBoundingClientRect();
     const cellHeight = screenRect.height / Math.max(1, term.rows);
-    const cursorBottom = screenRect.top - canvasRect.top
+    const naturalCursorBottom = host.offsetTop + screenRect.top - hostRect.top
       + (term.buffer.active.cursorY + 1) * cellHeight;
     const reservedHeight = Math.min(completionPanelHeight, canvasRect.height * 0.45);
+    const requiredShift = Math.max(
+      0,
+      naturalCursorBottom + reservedHeight + 10 - canvasRect.height,
+    );
+    const shift = Math.min(requiredShift, Math.max(0, naturalCursorBottom - 8));
+    const cursorBottom = naturalCursorBottom - shift;
     const top = Math.max(8, Math.min(cursorBottom + 2, canvasRect.height - reservedHeight - 8));
-    setCompletionAnchor({ top, cursorBottom });
+    setCompletionAnchor((current) => (
+      Math.abs(current.top - top) < 0.5
+        && Math.abs(current.cursorBottom - cursorBottom) < 0.5
+        && Math.abs(current.shift - shift) < 0.5
+        ? current
+        : { top, cursorBottom, shift }
+    ));
   };
   onInputRef.current = onInput;
   focusedRef.current = focused;
@@ -1306,13 +1319,8 @@ export default function TerminalCanvas({
   }, [active?.profile.id, keyMode, mouseReporting, viewId]);
 
   useEffect(() => {
-    let measureFrame = 0;
-    const fitFrame = window.requestAnimationFrame(() => {
-      fitAndReportRef.current();
-      measureFrame = window.requestAnimationFrame(() => refreshCompletionAnchorRef.current());
-    });
+    const measureFrame = window.requestAnimationFrame(() => refreshCompletionAnchorRef.current());
     return () => {
-      window.cancelAnimationFrame(fitFrame);
       window.cancelAnimationFrame(measureFrame);
     };
   }, [completionCandidates.length, completionInput.line, completionPanelHeight, completionPreferences.previewMode]);
@@ -1390,9 +1398,11 @@ export default function TerminalCanvas({
       className={completionCandidates.length ? "terminal-canvas completion-open" : "terminal-canvas"}
       data-completion-placement={completionCandidates.length ? "below" : undefined}
       data-completion-cursor-bottom={completionCandidates.length ? completionAnchor.cursorBottom : undefined}
+      data-completion-shift={completionCandidates.length ? completionAnchor.shift : undefined}
       style={{
         "--terminal-background": canvasBackground ?? "#0d1117",
         "--terminal-completion-height": `${completionPanelHeight}px`,
+        "--terminal-completion-shift": `${completionAnchor.shift}px`,
       } as CSSProperties}
     >
       {active ? (

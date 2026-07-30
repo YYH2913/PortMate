@@ -3217,7 +3217,7 @@ button {
 }
 
 .terminal-canvas.completion-open .terminal-host {
-  height: calc(100% - min(var(--terminal-completion-height), 45%));
+  transform: translateY(calc(-1 * var(--terminal-completion-shift)));
 }
 
 .terminal-host .xterm {
