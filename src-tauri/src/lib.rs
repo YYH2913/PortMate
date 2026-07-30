@@ -150,6 +150,7 @@ mod sysmon_network_io;
 mod sysmon_remote_parsing;
 mod sysmon_runtime;
 mod system_event_sink;
+mod tcp_reconnect;
 mod tcp_transport;
 mod telnet_protocol;
 mod terminal_export_commands;
@@ -278,6 +279,7 @@ use store_persistence::*;
 use store_transactions::*;
 use sysmon_remote_parsing::*;
 use system_event_sink::*;
+use tcp_reconnect::*;
 use tcp_transport::*;
 use telnet_protocol::*;
 #[cfg(test)]
