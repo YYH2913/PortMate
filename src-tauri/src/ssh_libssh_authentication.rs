@@ -15,15 +15,16 @@ pub(super) fn ssh_uses_libssh_gssapi_backend(ssh: &SshConnection) -> bool {
                     | AuthMethod::None
             )
         });
-    uses_supported_methods && !libssh_auth_order_requires_filtered_agent(ssh)
+    uses_supported_methods && (!libssh_auth_order_requires_filtered_agent(ssh) || cfg!(unix))
 }
 
-fn libssh_auth_order_requires_filtered_agent(ssh: &SshConnection) -> bool {
+pub(super) fn libssh_auth_order_requires_filtered_agent(ssh: &SshConnection) -> bool {
     if !ssh
         .identity_policy
         .auth_order
         .contains(&AuthMethod::PublicKey)
         || !ssh.agent_policy.enabled
+        || ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::Disabled
     {
         return false;
     }
@@ -32,6 +33,33 @@ fn libssh_auth_order_requires_filtered_agent(ssh: &SshConnection) -> bool {
         .iter()
         .any(|identity| identity.source == IdentitySource::Agent);
     has_agent_identity
+}
+
+pub(super) fn libssh_agent_offer_positions(
+    ssh: &SshConnection,
+    agent_socket_available: bool,
+) -> (bool, bool) {
+    if !agent_socket_available
+        || !ssh.agent_policy.enabled
+        || ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::Disabled
+        || !ssh
+            .identity_policy
+            .auth_order
+            .contains(&AuthMethod::PublicKey)
+    {
+        return (false, false);
+    }
+    let has_agent_identity = ssh
+        .identity_refs
+        .iter()
+        .any(|identity| identity.source == IdentitySource::Agent);
+    let before = !ssh.identity_policy.identities_only
+        && ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::BeforeProfileKeys;
+    let after = !before
+        && (ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::AfterProfileKeys
+            || has_agent_identity)
+        && (!ssh.identity_policy.identities_only || has_agent_identity);
+    (before, after)
 }
 
 pub(super) fn authenticate_libssh_with_order(

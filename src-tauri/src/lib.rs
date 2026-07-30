@@ -132,6 +132,7 @@ mod sqlite_mirror;
 mod sqlite_schema;
 mod sqlite_store;
 mod ssh_agent;
+mod ssh_agent_filter;
 mod ssh_authentication;
 mod ssh_auxiliary;
 mod ssh_backend;

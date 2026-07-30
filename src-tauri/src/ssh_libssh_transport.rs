@@ -18,6 +18,21 @@ pub(super) async fn establish_libssh_gssapi_runtime(
 ) -> Result<EstablishedSshRuntime, String> {
     let agent_socket_path = agent_socket_path
         .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from));
+    #[cfg(unix)]
+    let mut filtered_agent_proxy = if libssh_auth_order_requires_filtered_agent(ssh) {
+        match agent_socket_path.as_ref() {
+            Some(upstream_socket) => Some(
+                ssh_agent_filter::start_filtered_agent_proxy(
+                    upstream_socket.clone(),
+                    &ssh.identity_refs,
+                )
+                .await?,
+            ),
+            None => None,
+        }
+    } else {
+        None
+    };
     let host = ssh.endpoint.host.clone();
     let port = ssh.endpoint.port;
     let username = ssh.username.clone();
@@ -96,14 +111,21 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             connect_timeout.as_millis()
         ));
     }
-    let identity_agent = agent_socket_path
-        .clone()
+    #[cfg(unix)]
+    let identity_agent_path = filtered_agent_proxy
+        .as_ref()
+        .map(|proxy| proxy.socket_path().to_path_buf())
+        .or_else(|| agent_socket_path.clone());
+    #[cfg(not(unix))]
+    let identity_agent_path = agent_socket_path.clone();
+    let identity_agent = identity_agent_path
         .map(|path| {
             path.into_os_string()
                 .into_string()
                 .map_err(|_| "libssh SSH agent socket path is not valid UTF-8".to_string())
         })
         .transpose()?;
+    let agent_socket_available = identity_agent.is_some();
     let connected = tokio::time::timeout(
         remaining_connect_timeout,
         tokio::task::spawn_blocking(move || {
@@ -230,16 +252,8 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         .or(saved_passphrase);
     let auth_order = ordered_auth_methods(ssh);
     let identity_refs = ssh.identity_refs.clone();
-    let offer_unfiltered_agent = ssh.agent_policy.enabled
-        && !ssh.identity_policy.identities_only
-        && !ssh
-            .identity_refs
-            .iter()
-            .any(|identity| identity.source == IdentitySource::Agent);
-    let offer_agent_before = offer_unfiltered_agent
-        && ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::BeforeProfileKeys;
-    let offer_agent_after = offer_unfiltered_agent
-        && ssh.agent_policy.offer_mode == portmate_core::AgentOfferMode::AfterProfileKeys;
+    let (offer_agent_before, offer_agent_after) =
+        libssh_agent_offer_positions(ssh, agent_socket_available);
     let auth_session = session.clone();
     let auth = match tokio::time::timeout(
         connect_timeout,
@@ -264,6 +278,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             connect_timeout.as_millis()
         )),
     };
+    #[cfg(unix)]
+    if let Some(proxy) = filtered_agent_proxy.take() {
+        if let Err(error) = proxy.stop().await {
+            let cleanup = session.clone();
+            let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+            return Err(error);
+        }
+    }
     let auth_method = match auth {
         Ok(method) => method,
         Err(error) => {

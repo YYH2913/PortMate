@@ -527,6 +527,70 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
             path: Some(accepted_comment.clone()),
             secret_ref: None,
         };
+        let mut filtered_libssh = profile.clone();
+        if let ConnectionConfig::Ssh(ssh) = &mut filtered_libssh.connection {
+            ssh.identity_policy.auth_order = vec![AuthMethod::GssapiWithMic, AuthMethod::PublicKey];
+            ssh.identity_policy.identities_only = true;
+            ssh.identity_refs = vec![matching_ref.clone()];
+        }
+        let filtered_libssh_runtime = establish_ssh_runtime_with_timeout(
+            &state,
+            &filtered_libssh,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(filtered_libssh_runtime.auth_method, AuthMethod::PublicKey);
+        assert!(filtered_libssh_runtime
+            .runtime
+            .handle
+            .lock()
+            .await
+            .is_libssh());
+        let EstablishedSshRuntime {
+            runtime, read_half, ..
+        } = filtered_libssh_runtime;
+        let SshRuntime {
+            handle,
+            writer,
+            closed,
+            ..
+        } = runtime;
+        closed.store(true, Ordering::SeqCst);
+        drop(read_half);
+        drop(writer);
+        handle
+            .lock()
+            .await
+            .disconnect("PortMate filtered libssh agent test")
+            .await
+            .unwrap();
+
+        let mut mismatched_libssh = filtered_libssh;
+        if let ConnectionConfig::Ssh(ssh) = &mut mismatched_libssh.connection {
+            ssh.identity_refs[0].fingerprint_sha256 =
+                Some("SHA256:deliberately-wrong-fingerprint".to_string());
+        }
+        let error = establish_ssh_runtime_with_timeout(
+            &state,
+            &mismatched_libssh,
+            None,
+            None,
+            SSH_CONNECT_TIMEOUT,
+            Some(agent_socket.clone()),
+        )
+        .await
+        .err()
+        .expect("libssh bypassed a mismatched agent fingerprint");
+        assert!(
+            error.contains("libssh SSH authentication failed"),
+            "{error}"
+        );
+        assert!(error.contains("SSH agent"), "{error}");
+
         let mut filtered = profile.clone();
         if let ConnectionConfig::Ssh(ssh) = &mut filtered.connection {
             ssh.identity_policy.identities_only = true;

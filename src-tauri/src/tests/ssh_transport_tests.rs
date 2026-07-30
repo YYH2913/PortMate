@@ -251,7 +251,15 @@ fn libssh_backend_selection_accepts_supported_gssapi_mixed_auth_order() {
         path: None,
         secret_ref: None,
     });
-    assert!(!ssh_uses_libssh_gssapi_backend(&ssh));
+    assert_eq!(ssh_uses_libssh_gssapi_backend(&ssh), cfg!(unix));
+    assert_eq!(libssh_agent_offer_positions(&ssh, true), (false, true));
+
+    ssh.identity_policy.identities_only = false;
+    assert_eq!(libssh_agent_offer_positions(&ssh, true), (true, false));
+    assert_eq!(libssh_agent_offer_positions(&ssh, false), (false, false));
+
+    ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+    assert_eq!(libssh_agent_offer_positions(&ssh, true), (false, false));
 
     ssh.agent_policy.enabled = false;
     ssh.identity_policy.auth_order = vec![AuthMethod::Password];
