@@ -89,6 +89,7 @@ mod migration_runtime;
 mod migration_types;
 mod modem_protocol;
 mod modem_remote;
+mod modem_runtime;
 mod modem_transfer;
 mod modem_xmodem;
 mod modem_ymodem;
@@ -229,8 +230,7 @@ use migration_runtime::*;
 use migration_types::*;
 use modem_protocol::*;
 use modem_remote::*;
-#[cfg(test)]
-use modem_transfer::runtime_tap_receiver;
+use modem_runtime::*;
 use modem_transfer::*;
 use modem_xmodem::*;
 use modem_ymodem::*;
