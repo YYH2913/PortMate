@@ -91,6 +91,7 @@ mod profile_commands;
 mod profile_normalization;
 mod profile_security;
 mod proxy_protocol;
+mod remote_copy;
 mod scp_protocol;
 mod secret_commands;
 mod secret_provider;
@@ -202,6 +203,7 @@ use profile_commands::{
 use profile_normalization::*;
 use profile_security::*;
 use proxy_protocol::*;
+use remote_copy::*;
 use scp_protocol::*;
 use secret_provider::*;
 use serial_capture::*;
