@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn tmux_command_types_keep_stable_serde_contract() {
+    let request: TmuxMutationRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "ssh-session-1",
+        "action": "select-layout",
+        "target": "lab:2",
+        "layout": "main-horizontal",
+        "amount": 12
+    }))
+    .unwrap();
+    assert_eq!(request.session_id, "ssh-session-1");
+    assert_eq!(request.action, TmuxMutationAction::SelectLayout);
+    assert_eq!(request.target, "lab:2");
+    assert_eq!(request.layout, Some(TmuxWindowLayout::MainHorizontal));
+    assert_eq!(request.amount, Some(12));
+    assert!(request.name.is_none());
+    assert!(request.destination.is_none());
+
+    let legacy_status: TmuxControlStatus = serde_json::from_value(serde_json::json!({
+        "sessionId": "ssh-session-1",
+        "target": "lab",
+        "active": true
+    }))
+    .unwrap();
+    assert!(legacy_status.runtime_id.is_none());
+    assert_eq!(
+        serde_json::to_value(legacy_status).unwrap(),
+        serde_json::json!({
+            "sessionId": "ssh-session-1",
+            "target": "lab",
+            "active": true,
+            "runtimeId": null
+        })
+    );
+}
+
+#[test]
 fn tmux_targets_are_bounded_and_shell_quoted() {
     assert!(tmux_attach_command("  ").is_err());
     assert!(tmux_attach_command("bad\nname").is_err());
