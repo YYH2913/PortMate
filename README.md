@@ -713,6 +713,18 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 
 Without those packages, `cargo check -p portmate` stops at pkg-config errors for libraries such as `cairo` or `gdk-pixbuf-2.0`.
 
+The Linux libssh/GSSAPI build and server matrices additionally require Docker plus the system
+libssh and Kerberos development metadata. On Debian/Ubuntu, install the local build-check tools with:
+
+```bash
+sudo apt install libssh-dev libkrb5-dev pkg-config jq binutils
+```
+
+`libssh-dev` supplies `libssh.pc`, while `binutils` supplies the `nm` and `readelf` checks used to
+prove that the test binary references `ssh_userauth_gssapi` and that the resolved libssh runtime is
+linked to GSSAPI. Docker is used only by `npm run test:ssh-gssapi-compat`; the standalone
+`npm run test:libssh-gssapi-build` check does not start containers.
+
 ## SSH Trust Model
 
 PortMate intentionally does not use the system `known_hosts` file as the source of truth. Each SSH profile owns:

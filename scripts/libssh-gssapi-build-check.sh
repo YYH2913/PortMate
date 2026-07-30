@@ -9,12 +9,14 @@ fi
 for command in cargo jq ldd nm pkg-config readelf; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "required command is unavailable: $command" >&2
+    echo "Debian/Ubuntu test dependencies: sudo apt install libssh-dev libkrb5-dev pkg-config jq binutils" >&2
     exit 1
   fi
 done
 
 if ! pkg-config --atleast-version=0.9.7 libssh; then
   echo "libssh >= 0.9.7 development metadata is unavailable" >&2
+  echo "Debian/Ubuntu test dependencies: sudo apt install libssh-dev libkrb5-dev pkg-config jq binutils" >&2
   exit 1
 fi
 
