@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn transport_command_types_keep_stable_json_contracts() {
+    let external_drop: StartExternalDropRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "ssh-1",
+        "paths": ["/tmp/source.bin"],
+        "destination": "/srv/uploads",
+        "remote": true
+    }))
+    .unwrap();
+    assert!(matches!(
+        external_drop.conflict_policy,
+        TransferConflictPolicy::Fail
+    ));
+
+    let batch = serde_json::to_value(StartFileBatchRequest {
+        session_id: "ssh-2".to_string(),
+        paths: vec!["C:\\local\\source.bin".to_string()],
+        source_remote: false,
+        destination: "/srv/archive".to_string(),
+        destination_remote: true,
+        conflict_policy: TransferConflictPolicy::Rename,
+    })
+    .unwrap();
+    assert_eq!(batch["sessionId"], "ssh-2");
+    assert_eq!(batch["sourceRemote"], false);
+    assert_eq!(batch["destinationRemote"], true);
+    assert_eq!(batch["conflictPolicy"], "rename");
+
+    let serial_line: SerialLineRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "serial-1",
+        "dtr": true
+    }))
+    .unwrap();
+    assert_eq!(serial_line.dtr, Some(true));
+    assert_eq!(serial_line.rts, None);
+}
+
+#[test]
 fn tcp_connection_details_validate_endpoint_and_reconnect_flag() {
     let mut profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
         host: " 127.0.0.1 ".to_string(),
