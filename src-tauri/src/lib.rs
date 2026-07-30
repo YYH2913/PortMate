@@ -113,6 +113,7 @@ mod ssh_health;
 mod ssh_host_key_commands;
 mod ssh_host_key_scan;
 mod ssh_identity_commands;
+mod ssh_libssh_transport;
 mod ssh_runtime;
 mod ssh_security;
 mod ssh_transport;
@@ -227,6 +228,7 @@ use ssh_host_key_commands::{
     delete_host_keys_from_store, merge_expected_host_key_update, update_host_key_in_store,
 };
 use ssh_host_key_scan::*;
+use ssh_libssh_transport::*;
 use ssh_runtime::*;
 use ssh_security::*;
 use ssh_transport::*;
