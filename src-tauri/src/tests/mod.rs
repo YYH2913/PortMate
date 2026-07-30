@@ -5,6 +5,8 @@ use std::process::Command;
 mod app_migration_tests;
 #[path = "archive_tests.rs"]
 mod archive_tests;
+#[path = "command_type_tests.rs"]
+mod command_type_tests;
 #[path = "connection_config_tests.rs"]
 mod connection_config_tests;
 #[path = "export_tests.rs"]
