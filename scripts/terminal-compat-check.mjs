@@ -889,6 +889,20 @@ try {
   assert(onlineFallbackWrites.length === 0,
     `fallback online search wrote terminal input: ${JSON.stringify(onlineFallbackWrites)}`);
 
+  await activeScreen.dispatchEvent("contextmenu", {
+    bubbles: true,
+    button: 2,
+    cancelable: true,
+    clientX: 420,
+    clientY: 180,
+  });
+  await page.locator(".terminal-context-menu").waitFor();
+  const terminalBox = await activeScreen.boundingBox();
+  assert(terminalBox, "terminal screen has no bounding box for internal-scroll menu regression");
+  await page.mouse.move(terminalBox.x + terminalBox.width / 2, terminalBox.y + terminalBox.height / 2);
+  await page.mouse.wheel(0, 240);
+  await page.locator(".terminal-context-menu").waitFor({ state: "detached" });
+
   await clearCalls();
   await activeScreen.click({ position: { x: 120, y: 80 } });
   await page.waitForFunction(() => window.__invokeCalls.some((call) => (

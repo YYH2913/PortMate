@@ -960,14 +960,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     if (!contextMenu) return;
     const closeOnScroll = (event: Event) => {
+      // XTerm can emit a deferred scroll after selection/search work. Keep that
+      // bookkeeping event from immediately dismissing a newly opened menu;
+      // actual terminal wheel input is handled separately below.
       if (event.target instanceof Element && event.target.closest(".terminal-canvas")) return;
       setContextMenu(null);
     };
+    const closeOnWheel = () => setContextMenu(null);
     const closeOnResize = () => setContextMenu(null);
     window.addEventListener("scroll", closeOnScroll, true);
+    window.addEventListener("wheel", closeOnWheel, true);
     window.addEventListener("resize", closeOnResize);
     return () => {
       window.removeEventListener("scroll", closeOnScroll, true);
+      window.removeEventListener("wheel", closeOnWheel, true);
       window.removeEventListener("resize", closeOnResize);
     };
   }, [contextMenu]);
