@@ -396,6 +396,8 @@ fn portable_vault_cross_process_fault_matrix() {
     verify_portable_vault_cross_process_conflict(temp.path()).unwrap();
     #[cfg(unix)]
     verify_portable_vault_unix_file_security(temp.path()).unwrap();
+    #[cfg(windows)]
+    verify_portable_vault_windows_file_security(temp.path()).unwrap();
 
     println!(
         "PortMate portable vault probe passed on {} ({}-byte cross-process secret)",
@@ -784,6 +786,68 @@ fn verify_portable_vault_unix_file_security(root: &Path) -> Result<(), String> {
     .is_ok()
     {
         return Err("portable vault accepted a symlinked parent directory".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_portable_vault_windows_file_security(root: &Path) -> Result<(), String> {
+    let protected = root.join("portable-vault-windows-protected.txt");
+    fs::write(&protected, b"must remain unchanged")
+        .map_err(|error| format!("write portable vault protected file failed: {error}"))?;
+    for (label, target) in [
+        ("snapshot", PORTABLE_VAULT_FILE_NAME),
+        ("salt", PORTABLE_VAULT_SALT_FILE_NAME),
+        ("lock", "portmate-vault.hold.lock"),
+    ] {
+        let hard_linked =
+            PortableVaultProbeConfig::new(root.join(format!("windows-{label}-hard-link")), label);
+        fs::create_dir_all(&hard_linked.root)
+            .map_err(|error| format!("create portable vault hard-link root failed: {error}"))?;
+        let linked_path = hard_linked.root.join(target);
+        fs::hard_link(&protected, &linked_path)
+            .map_err(|error| format!("create portable vault {label} hard link failed: {error}"))?;
+        let error = portable_vault_file_exists(&linked_path, label)
+            .expect_err("portable vault accepted a multiply-linked Windows file");
+        if !error.contains("多个硬链接") {
+            return Err(format!(
+                "portable vault {label} hard-link probe returned the wrong error: {error}"
+            ));
+        }
+        if fs::read(&protected).ok().as_deref() != Some(b"must remain unchanged".as_slice()) {
+            return Err(format!(
+                "portable vault {label} hard-link probe modified the protected target"
+            ));
+        }
+    }
+
+    let real_parent = root.join("windows-real-parent");
+    fs::create_dir_all(&real_parent)
+        .map_err(|error| format!("create portable vault real parent failed: {error}"))?;
+    let linked_parent = root.join("windows-parent-junction");
+    let result = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&linked_parent)
+        .arg(&real_parent)
+        .output()
+        .map_err(|error| format!("start Windows junction command failed: {error}"))?;
+    if !result.status.success() {
+        return Err(format!(
+            "create portable vault Windows parent junction failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+    let parent_linked = PortableVaultProbeConfig::new(linked_parent, "parent-junction");
+    let error = open_portable_vault(
+        &parent_linked.snapshot_path(),
+        &parent_linked.salt_path(),
+        &parent_linked.password,
+    )
+    .expect_err("portable vault accepted a Windows parent junction");
+    if !error.contains("真实目录") {
+        return Err(format!(
+            "portable vault parent-junction probe returned the wrong error: {error}"
+        ));
     }
     Ok(())
 }

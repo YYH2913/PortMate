@@ -62,7 +62,7 @@ pub(super) fn secure_portable_vault_parent(snapshot_path: &Path) -> Result<(), S
         .map_err(|error| format!("无法创建 portable vault 目录 {}: {error}", parent.display()))?;
     let metadata = fs::symlink_metadata(parent)
         .map_err(|error| format!("无法检查 portable vault 目录 {}: {error}", parent.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if portable_vault_metadata_is_link(&metadata) || !metadata.is_dir() {
         return Err(format!(
             "portable vault 目录必须是真实目录: {}",
             parent.display()
@@ -82,7 +82,7 @@ fn validate_portable_vault_file_metadata(
     metadata: &fs::Metadata,
     label: &str,
 ) -> Result<(), String> {
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if portable_vault_metadata_is_link(metadata) || !metadata.is_file() {
         return Err(format!("portable vault {label} 必须是普通文件"));
     }
     #[cfg(unix)]
@@ -92,7 +92,28 @@ fn validate_portable_vault_file_metadata(
             return Err(format!("portable vault {label} 不得存在多个硬链接"));
         }
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.number_of_links().is_some_and(|count| count != 1) {
+            return Err(format!("portable vault {label} 不得存在多个硬链接"));
+        }
+    }
     Ok(())
+}
+
+fn portable_vault_metadata_is_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 pub(super) fn portable_vault_file_exists(path: &Path, label: &str) -> Result<bool, String> {
