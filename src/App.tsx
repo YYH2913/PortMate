@@ -3226,25 +3226,31 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function rememberCommand(command: string) {
-    void import("./command-history-state").then(({ recordCommandHistory }) => {
-      const normalized = recordCommandHistory(
+    void import("./command-history-state").then((history) => {
+      const valid = history.normalizeCommandHistoryCommand(command);
+      if (!valid) return;
+      const normalized = history.recordCommandHistory(
         commandHistoryEntriesRef.current,
-        command,
+        valid,
         commandHistoryPolicyRef.current,
       );
       commandHistoryEntriesRef.current = normalized;
       setCommandHistoryEntries(normalized);
       setCommandHistoryReady(true);
       if (!commandHistoryEnabledRef.current || !isBackendAvailable()) return;
-      pendingCommandHistoryRef.current.push(command);
+      pendingCommandHistoryRef.current = history.queuePendingCommandHistory(
+        pendingCommandHistoryRef.current,
+        valid,
+        commandHistoryPolicyRef.current,
+      );
       if (!commandHistoryBackendReadyRef.current) return;
       enqueueCommandHistoryOperation(
         () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
-          command,
+          command: valid,
           limit: commandHistoryPolicyRef.current.limit,
           retentionDays: commandHistoryPolicyRef.current.retentionDays,
         }),
-        command,
+        valid,
       );
     });
   }

@@ -5,8 +5,10 @@ import {
   commandHistorySnapshot,
   MAX_COMMAND_HISTORY_COMMAND_CHARACTERS,
   MAX_COMMAND_HISTORY_STORAGE_BYTES,
+  normalizeCommandHistoryCommand,
   normalizeCommandHistory,
   normalizeCommandHistoryPolicy,
+  queuePendingCommandHistory,
   recordCommandHistory,
 } from "./command-history-state";
 
@@ -66,6 +68,38 @@ describe("command history state", () => {
       { command: "npm test", recordedAt: 200 },
     ]);
     expect(recordCommandHistory(repeated, "   ", policy, 400)).toEqual(repeated);
+  });
+
+  it("keeps pending backend writes valid, unique, newest, and bounded", () => {
+    const policy = { limit: 2, retentionDays: 30 };
+    expect(normalizeCommandHistoryCommand("  git status  ")).toBe("  git status  ");
+    expect(normalizeCommandHistoryCommand("   ")).toBeNull();
+    expect(normalizeCommandHistoryCommand("bad\0command")).toBeNull();
+    expect(normalizeCommandHistoryCommand("x".repeat(MAX_COMMAND_HISTORY_COMMAND_CHARACTERS + 1))).toBeNull();
+
+    let pending = queuePendingCommandHistory([], "a", policy, 1_000);
+    pending = queuePendingCommandHistory(pending, "b", policy, 1_001);
+    pending = queuePendingCommandHistory(pending, "a", policy, 1_002);
+    expect(pending).toEqual(["b", "a"]);
+    expect(queuePendingCommandHistory(pending, "   ", policy, 1_003)).toEqual(pending);
+    expect(queuePendingCommandHistory(pending, "c", policy, 1_004)).toEqual(["a", "c"]);
+  });
+
+  it("bounds pending backend writes by the persisted UTF-8 payload budget", () => {
+    const command = "\"\\\n界".repeat(2_000);
+    let pending: string[] = [];
+    for (let index = 0; index < 200; index += 1) {
+      pending = queuePendingCommandHistory(
+        pending,
+        `${index}-${command}`,
+        { limit: 10_000, retentionDays: 0 },
+        10_000 + index,
+      );
+    }
+    const entries = [...pending].reverse().map((item, index) => ({ command: item, recordedAt: 20_000 - index }));
+    const bytes = new TextEncoder().encode(JSON.stringify({ version: 2, entries })).byteLength;
+    expect(bytes).toBeLessThanOrEqual(MAX_COMMAND_HISTORY_STORAGE_BYTES);
+    expect(pending.length).toBeLessThan(200);
   });
 
   it("bounds the serialized UTF-8 payload and returns defensive snapshots", () => {

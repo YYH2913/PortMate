@@ -47,9 +47,9 @@ export function normalizeCommandHistory(
   for (let index = 0; index < Math.min(source.length, MAX_COMMAND_HISTORY_LIMIT * 2); index += 1) {
     const item = source[index];
     const command = typeof item === "string"
-      ? validCommandHistoryText(item)
+      ? normalizeCommandHistoryCommand(item)
       : item && typeof item === "object" && !Array.isArray(item)
-        ? validCommandHistoryText((item as Record<string, unknown>).command)
+        ? normalizeCommandHistoryCommand((item as Record<string, unknown>).command)
         : null;
     if (!command || seen.has(command)) continue;
     const rawTimestamp = typeof item === "string"
@@ -74,7 +74,7 @@ export function recordCommandHistory(
   policy: CommandHistoryPolicy,
   now = Date.now(),
 ): CommandHistoryEntry[] {
-  const valid = validCommandHistoryText(command);
+  const valid = normalizeCommandHistoryCommand(command);
   const withoutDuplicate = valid
     ? current.filter((entry) => entry.command !== valid)
     : current;
@@ -82,6 +82,24 @@ export function recordCommandHistory(
     version: COMMAND_HISTORY_VERSION,
     entries: valid ? [{ command: valid, recordedAt: now }, ...withoutDuplicate] : withoutDuplicate,
   }, policy, now);
+}
+
+export function queuePendingCommandHistory(
+  current: readonly string[],
+  command: string,
+  policy: CommandHistoryPolicy,
+  now = Date.now(),
+): string[] {
+  const valid = normalizeCommandHistoryCommand(command);
+  if (!valid) return [...current];
+  const candidates = [...current.filter((item) => item !== valid), valid]
+    .slice(-MAX_COMMAND_HISTORY_LIMIT * 2)
+    .reverse()
+    .map((item, index) => ({ command: item, recordedAt: Math.max(0, now - index) }));
+  return commandHistoryCommands(normalizeCommandHistory({
+    version: COMMAND_HISTORY_VERSION,
+    entries: candidates,
+  }, policy, now)).reverse();
 }
 
 export function commandHistoryCommands(entries: readonly CommandHistoryEntry[]): string[] {
@@ -114,7 +132,7 @@ function commandHistorySource(value: unknown): unknown[] {
     : [];
 }
 
-function validCommandHistoryText(value: unknown): string | null {
+export function normalizeCommandHistoryCommand(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim() || value.includes("\0")) return null;
   return Array.from(value).length <= MAX_COMMAND_HISTORY_COMMAND_CHARACTERS ? value : null;
 }
