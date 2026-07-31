@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle, X } from "lucide-react";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
@@ -16,18 +16,31 @@ export default function TransferList({
   onCancel: (task: TransferTask) => void;
 }) {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const dismissDeadlines = useRef(new Map<string, number>());
 
   useEffect(() => {
+    const now = Date.now();
+    const completedIds = new Set<string>();
     const timers = transfers
       .filter((task) => task.status === "completed")
-      .map((task) => window.setTimeout(() => {
-        setDismissed((current) => {
-          if (current.has(task.id)) return current;
-          const next = new Set(current);
-          next.add(task.id);
-          return next;
-        });
-      }, COMPLETED_TRANSFER_AUTO_DISMISS_MS));
+      .map((task) => {
+        completedIds.add(task.id);
+        const deadline = dismissDeadlines.current.get(task.id) ?? now + COMPLETED_TRANSFER_AUTO_DISMISS_MS;
+        dismissDeadlines.current.set(task.id, deadline);
+        return window.setTimeout(() => {
+          setDismissed((current) => {
+            if (current.has(task.id)) return current;
+            const next = new Set(current);
+            next.add(task.id);
+            return next;
+          });
+        }, Math.max(0, deadline - Date.now()));
+      });
+    for (const id of dismissDeadlines.current.keys()) {
+      if (!completedIds.has(id) && !transfers.some((task) => task.id === id && task.status === "completed")) {
+        dismissDeadlines.current.delete(id);
+      }
+    }
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [transfers]);
 
