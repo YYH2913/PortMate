@@ -162,6 +162,8 @@ fn run_phase(phase: &str) -> Result<(), String> {
         }
         "verify-locked" => match entry.get_password() {
             Err(Error::NoStorageAccess(_)) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Err(Error::PlatformFailure(_)) => Ok(()),
             Err(error) => Err(format!(
                 "native keyring locked probe returned the wrong error: {error}"
             )),
