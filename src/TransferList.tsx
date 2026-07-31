@@ -1,7 +1,10 @@
-import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle, X } from "lucide-react";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
 import type { TransferTask } from "./types";
+
+const COMPLETED_TRANSFER_AUTO_DISMISS_MS = 6_000;
 
 export default function TransferList({
   transfers,
@@ -12,10 +15,27 @@ export default function TransferList({
   onRetry: (task: TransferTask) => void;
   onCancel: (task: TransferTask) => void;
 }) {
-  if (!transfers.length) return <div className="empty-pane top">没有传输任务</div>;
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const timers = transfers
+      .filter((task) => task.status === "completed")
+      .map((task) => window.setTimeout(() => {
+        setDismissed((current) => {
+          if (current.has(task.id)) return current;
+          const next = new Set(current);
+          next.add(task.id);
+          return next;
+        });
+      }, COMPLETED_TRANSFER_AUTO_DISMISS_MS));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [transfers]);
+
+  const visibleTransfers = transfers.filter((task) => !dismissed.has(task.id));
+  if (!visibleTransfers.length) return <div className="empty-pane top">没有传输任务</div>;
   return (
     <div className="transfer-list">
-      {transfers.slice().reverse().map((task) => {
+      {visibleTransfers.slice().reverse().map((task) => {
         const message = transferDisplayMessage(task);
         const StatusIcon = task.status === "queued" ? Clock3
           : task.status === "running" ? LoaderCircle
@@ -43,6 +63,17 @@ export default function TransferList({
                     onClick={() => void navigator.clipboard?.writeText(transferDiagnosticText(task)).catch(() => {})}
                   >
                     <Copy size={14} />
+                  </button>
+                ) : null}
+                {task.status === "completed" || task.status === "failed" || task.status === "cancelled" ? (
+                  <button
+                    className="transfer-icon-button"
+                    type="button"
+                    title={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
+                    aria-label={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
+                    onClick={() => setDismissed((current) => new Set(current).add(task.id))}
+                  >
+                    <X size={14} />
                   </button>
                 ) : null}
               </div>
