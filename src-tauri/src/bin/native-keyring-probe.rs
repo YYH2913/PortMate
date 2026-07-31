@@ -160,20 +160,28 @@ fn run_phase(phase: &str) -> Result<(), String> {
                 )),
             }
         }
-        "verify-locked" => match entry.get_password() {
-            Err(Error::NoStorageAccess(_)) => Ok(()),
-            #[cfg(target_os = "macos")]
-            Err(Error::PlatformFailure(_)) => Ok(()),
-            Err(error) => Err(format!(
-                "native keyring locked probe returned the wrong error: {error}"
-            )),
-            Ok(_) => Err("native keyring unexpectedly read a locked credential".to_string()),
-        },
+        "verify-locked" => verify_locked_provider(&entry),
         "cleanup" => match entry.delete_credential() {
             Ok(()) | Err(Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("native keyring probe cleanup failed: {error}")),
         },
         _ => Err(format!("unsupported native keyring probe phase: {phase}")),
+    }
+}
+
+fn verify_locked_provider(entry: &Entry) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let _interaction_lock =
+        security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+            .map_err(|error| format!("disable macOS keychain user interaction failed: {error}"))?;
+    match entry.get_password() {
+        Err(Error::NoStorageAccess(_)) => Ok(()),
+        #[cfg(target_os = "macos")]
+        Err(Error::PlatformFailure(_)) => Ok(()),
+        Err(error) => Err(format!(
+            "native keyring locked probe returned the wrong error: {error}"
+        )),
+        Ok(_) => Err("native keyring unexpectedly read a locked credential".to_string()),
     }
 }
 
