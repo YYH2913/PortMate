@@ -426,7 +426,7 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 ## 建议的近期执行顺序
 
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
-2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；Linux Secret Service 跨进程 CRUD、provider unavailable 和 locked/prompt-denied，以及 Linux Stronghold 跨进程 CRUD/CAS、错误密码、损坏/缺失文件、commit rollback 和 Unix 私有文件边界均已实测；macOS Native CI probe 现在会创建临时 default keychain，并验证锁定后上游按系统错误返回的 `NoStorageAccess`/`PlatformFailure` 不可访问语义，Windows/macOS 两类 CRUD probe 已接入 CI，durable migration journal、异常提交核对、重载 UX、双向迁移和 conflict 诊断导出已完成；仍需 Windows/macOS runner 成功、Windows denied provider 和对应文件系统故障证据。
+2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；Linux Secret Service 跨进程 CRUD、provider unavailable 和 locked/prompt-denied，以及 Linux Stronghold 跨进程 CRUD/CAS、错误密码、损坏/缺失文件、commit rollback 和 Unix 私有文件边界均已实测；macOS Native CI probe 现在会创建临时 default keychain，锁定后用进程级 RAII guard 禁止认证 UI，并验证上游按系统错误返回的 `NoStorageAccess`/`PlatformFailure` 不可访问语义，Windows/macOS 两类 CRUD probe 已接入 CI，durable migration journal、异常提交核对、重载 UX、双向迁移和 conflict 诊断导出已完成；仍需 Windows/macOS runner 成功、Windows denied provider 和对应文件系统故障证据。
 3. SSH 三层健康与服务端故障矩阵已完成；继续扩展跨平台传输、Serial 物理设备与远端 OS 故障矩阵。
 4. vttest、真实 tmux、四发行版全屏程序和全部浏览器 Playwright 回归已完成；继续收集三平台 native CI/安装 smoke test 证据。
 
