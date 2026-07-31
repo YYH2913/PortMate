@@ -9,6 +9,7 @@ import {
   compatibilityUsesCachedImages,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
+import { prepareGssapiBuildEnvironment } from "./gssapi-build-environment.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The SSH GSSAPI compatibility matrix requires Linux");
@@ -19,8 +20,12 @@ const controlTimeoutMs = 180_000;
 const cargoTargetDir = process.env.PORTMATE_GSSAPI_TARGET_DIR
   ? resolve(process.env.PORTMATE_GSSAPI_TARGET_DIR)
   : resolve(projectRoot, "target/gssapi-compat");
+const gssapiEnvironment = prepareGssapiBuildEnvironment({
+  projectRoot,
+  defaultSysroot: resolve(projectRoot, "target/gssapi-compat/sysroot"),
+});
 const baseEnvironment = {
-  ...process.env,
+  ...gssapiEnvironment.env,
   CARGO_TARGET_DIR: cargoTargetDir,
 };
 const matrix = JSON.parse(readFileSync(
