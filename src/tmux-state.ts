@@ -1,5 +1,7 @@
 import type { TmuxPaneInfo, TmuxWindowInfo } from "./types";
 
+export const MAX_STOPPED_TMUX_CONTROL_RUNTIME_IDS = 256;
+
 export interface TmuxWindowGroup {
   target: string;
   session: string;
@@ -9,6 +11,21 @@ export interface TmuxWindowGroup {
   active: boolean;
   synchronized: boolean;
   panes: TmuxPaneInfo[];
+}
+
+export function rememberStoppedTmuxControlRuntimeId(
+  runtimeIds: Set<string>,
+  runtimeId: string,
+  limit = MAX_STOPPED_TMUX_CONTROL_RUNTIME_IDS,
+) {
+  if (!runtimeId) return;
+  runtimeIds.delete(runtimeId);
+  runtimeIds.add(runtimeId);
+  while (runtimeIds.size > Math.max(1, Math.trunc(limit))) {
+    const oldest = runtimeIds.values().next().value;
+    if (oldest === undefined) break;
+    runtimeIds.delete(oldest);
+  }
 }
 
 export function groupTmuxPanes(

@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Check, Pencil, Play, Plus, Radio, RefreshCw, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
-import { groupTmuxPanes } from "./tmux-state";
+import { groupTmuxPanes, rememberStoppedTmuxControlRuntimeId } from "./tmux-state";
 import type { TmuxWindowGroup } from "./tmux-state";
 import type {
   SessionEvent,
@@ -150,7 +150,7 @@ export default function TmuxDialog({
         return;
       }
       if (controlRequestedTargetsRef.current.has(payload.target)) {
-        stoppedControlRuntimeIdsRef.current.add(payload.runtimeId);
+        rememberStoppedTmuxControlRuntimeId(stoppedControlRuntimeIdsRef.current, payload.runtimeId);
       }
       if (controlRuntimesRef.current.get(payload.target) !== payload.runtimeId) return;
       controlOwnedTargetsRef.current.delete(payload.target);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupTmuxPanes } from "./tmux-state";
+import { groupTmuxPanes, rememberStoppedTmuxControlRuntimeId } from "./tmux-state";
 import type { TmuxPaneInfo } from "./types";
 
 describe("tmux state", () => {
@@ -46,6 +46,17 @@ describe("tmux state", () => {
       active: true,
       synchronized: true,
     });
+  });
+
+  it("bounds stopped control runtime markers while retaining the newest ids", () => {
+    const runtimeIds = new Set<string>();
+    rememberStoppedTmuxControlRuntimeId(runtimeIds, "runtime-1", 2);
+    rememberStoppedTmuxControlRuntimeId(runtimeIds, "runtime-2", 2);
+    rememberStoppedTmuxControlRuntimeId(runtimeIds, "runtime-1", 2);
+    rememberStoppedTmuxControlRuntimeId(runtimeIds, "runtime-3", 2);
+    rememberStoppedTmuxControlRuntimeId(runtimeIds, "", 2);
+
+    expect([...runtimeIds]).toEqual(["runtime-1", "runtime-3"]);
   });
 });
 
