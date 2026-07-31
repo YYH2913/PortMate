@@ -113,6 +113,11 @@ fn mcp_resource_uris_round_trip_opaque_session_and_transfer_ids() {
         .find(|resource| resource["title"] == "opaque session Screen")
         .and_then(|resource| resource["uri"].as_str())
         .unwrap();
+    let log_resource = resources
+        .iter()
+        .find(|resource| resource["title"] == "opaque session Log")
+        .unwrap();
+    let log_uri = log_resource["uri"].as_str().unwrap();
     let transfer_uri = resources
         .iter()
         .find(|resource| resource["title"] == format!("Transfer {transfer_id}"))
@@ -126,12 +131,21 @@ fn mcp_resource_uris_round_trip_opaque_session_and_transfer_ids() {
         transfer_uri,
         "portmate://transfers/transfer%2F1%20%25%E6%B8%A9%E5%BA%A6"
     );
+    let screen = server.resource_read(&json!({ "uri": screen_uri })).unwrap();
+    assert_eq!(screen["contents"][0]["mimeType"], "text/plain");
     assert!(
-        server.resource_read(&json!({ "uri": screen_uri })).unwrap()["contents"][0]["text"]
+        screen["contents"][0]["text"]
             .as_str()
             .unwrap()
             .contains("opaque resource content")
     );
+    assert_eq!(log_resource["mimeType"], "application/jsonl");
+    let log = server.resource_read(&json!({ "uri": log_uri })).unwrap();
+    assert_eq!(log["contents"][0]["mimeType"], "application/jsonl");
+    assert!(log["contents"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("opaque resource content"));
     assert!(server
         .resource_read(&json!({ "uri": transfer_uri }))
         .unwrap()["contents"][0]["text"]

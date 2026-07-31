@@ -163,10 +163,18 @@ impl PortMateMcp {
         Ok(json!({
             "contents": [{
                 "uri": uri,
-                "mimeType": if uri.ends_with("/screen") { "text/plain" } else { "application/json" },
+                "mimeType": resource_mime_type(uri),
                 "text": content
             }]
         }))
+    }
+}
+
+fn resource_mime_type(uri: &str) -> &'static str {
+    match parse_session_uri(uri).map(|(_, suffix)| suffix) {
+        Some("screen") => "text/plain",
+        Some("log") => "application/jsonl",
+        _ => "application/json",
     }
 }
 
