@@ -86,6 +86,10 @@ fn sqlite_save_updates_the_json_compatibility_snapshot() {
     let compatibility_path = temp.path().join(LEGACY_JSON_STORE_FILE_NAME);
     let mut store = SessionStore::default();
     store.upsert_profile(test_shell_profile());
+    let history_recorded_at = Utc::now().timestamp_millis();
+    store
+        .record_command_history("git status".to_string(), 100, 30, history_recorded_at)
+        .unwrap();
 
     save_store(&store_path, &store).unwrap();
 
@@ -93,6 +97,8 @@ fn sqlite_save_updates_the_json_compatibility_snapshot() {
         serde_json::to_value(load_store_json(&compatibility_path).unwrap()).unwrap();
     let canonical = serde_json::to_value(load_store_sqlite(&store_path).unwrap()).unwrap();
     assert_eq!(compatibility, canonical);
+    assert_eq!(canonical["commandHistory"][0]["command"], "git status");
+    assert_eq!(canonical["commandHistoryRevision"], 1);
 }
 
 #[test]

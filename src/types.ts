@@ -427,6 +427,12 @@ export interface TransferTask {
   averageBytesPerSecond?: number | null;
 }
 
+export interface CommandHistorySnapshot {
+  entries: Array<{ command: string; recordedAt: number }>;
+  migrated: boolean;
+  revision: number;
+}
+
 export interface SysmonSnapshot {
   sessionId: string;
   ts: string;

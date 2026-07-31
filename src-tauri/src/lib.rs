@@ -16,8 +16,9 @@ use portmate_core::{
     OneKeyIdentity, OneKeyKind, ProxyConfig, SessionEvent, SessionKind, SessionProfile,
     SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface,
     SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
-    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec, MAX_TUNNELS_PER_PROFILE,
-    MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
+    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
+    MAX_COMMAND_HISTORY_ENTRIES, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
+    MAX_TUNNEL_LABEL_CHARACTERS,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
@@ -59,6 +60,7 @@ mod app_data_migration;
 mod archive_support;
 mod bundle_export;
 mod bundle_signing;
+mod command_history_commands;
 mod command_types;
 mod external_drop_execution;
 mod external_drop_planning;

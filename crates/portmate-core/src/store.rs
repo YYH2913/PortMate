@@ -22,6 +22,10 @@ use histories::{
     AUX_HISTORY_TRIM_BATCH, MAX_AUDIT_RECORDS_PER_SCOPE, MAX_SYSMON_SNAPSHOTS_PER_SESSION,
     MAX_TERMINAL_TRANSFERS_PER_SESSION, MAX_TIMELINE_MARKS_PER_SESSION,
 };
+pub use histories::{
+    MAX_COMMAND_HISTORY_COMMAND_CHARACTERS, MAX_COMMAND_HISTORY_ENTRIES,
+    MAX_COMMAND_HISTORY_RETENTION_DAYS, MAX_COMMAND_HISTORY_STORAGE_BYTES,
+};
 pub use sessions::{
     normalize_session_disconnect_reason, MAX_SESSION_DISCONNECT_REASON_CHARACTERS,
     MAX_SESSION_PROFILES,
@@ -34,6 +38,12 @@ pub struct SessionStore {
     pub runtimes: Vec<SessionRuntime>,
     pub events: Vec<SessionEvent>,
     pub transfers: Vec<TransferTask>,
+    #[serde(default)]
+    pub command_history: Vec<CommandHistoryEntry>,
+    #[serde(default)]
+    pub command_history_migrated: bool,
+    #[serde(default)]
+    pub command_history_revision: u64,
     #[serde(default)]
     pub one_keys: Vec<OneKeyCredential>,
     pub host_keys: HostKeyStore,

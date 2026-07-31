@@ -1,6 +1,8 @@
 use super::events::MAX_EVENTS_PER_SESSION;
 use super::SessionStore;
-use crate::models::{AuditRecord, SysmonSnapshot, TimelineMark, TransferStatus, TransferTask};
+use crate::models::{
+    AuditRecord, CommandHistoryEntry, SysmonSnapshot, TimelineMark, TransferStatus, TransferTask,
+};
 use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_AUDIT_RECORDS_PER_SCOPE: usize = 5000;
@@ -8,8 +10,147 @@ pub(super) const MAX_TIMELINE_MARKS_PER_SESSION: usize = 2000;
 pub(super) const MAX_SYSMON_SNAPSHOTS_PER_SESSION: usize = 1024;
 pub(super) const MAX_TERMINAL_TRANSFERS_PER_SESSION: usize = 1000;
 pub(super) const AUX_HISTORY_TRIM_BATCH: usize = 128;
+pub const MAX_COMMAND_HISTORY_ENTRIES: usize = 10_000;
+pub const MAX_COMMAND_HISTORY_RETENTION_DAYS: u32 = 3_650;
+pub const MAX_COMMAND_HISTORY_COMMAND_CHARACTERS: usize = 8_192;
+pub const MAX_COMMAND_HISTORY_STORAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_COMMAND_HISTORY_INPUT_ENTRIES: usize = MAX_COMMAND_HISTORY_ENTRIES * 2;
+const COMMAND_HISTORY_EMPTY_SNAPSHOT_BYTES: usize = b"{\"version\":2,\"entries\":[]}".len();
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 impl SessionStore {
+    pub fn normalized_command_history(
+        entries: &[CommandHistoryEntry],
+        limit: usize,
+        retention_days: u32,
+        now_ms: i64,
+    ) -> Result<Vec<CommandHistoryEntry>, String> {
+        if !(1..=MAX_COMMAND_HISTORY_ENTRIES).contains(&limit) {
+            return Err(format!(
+                "command history limit must be between 1 and {MAX_COMMAND_HISTORY_ENTRIES}"
+            ));
+        }
+        if retention_days > MAX_COMMAND_HISTORY_RETENTION_DAYS {
+            return Err(format!(
+                "command history retention must be between 0 and {MAX_COMMAND_HISTORY_RETENTION_DAYS} days"
+            ));
+        }
+        let retention_ms = i64::from(retention_days).saturating_mul(24 * 60 * 60 * 1_000);
+        let cutoff = if retention_days == 0 {
+            i64::MIN
+        } else {
+            now_ms.saturating_sub(retention_ms)
+        };
+        let mut seen = HashSet::new();
+        let mut normalized = Vec::new();
+        let mut bytes = COMMAND_HISTORY_EMPTY_SNAPSHOT_BYTES;
+        for entry in entries.iter().take(MAX_COMMAND_HISTORY_INPUT_ENTRIES) {
+            if entry.command.trim().is_empty()
+                || entry.command.contains('\0')
+                || entry.command.chars().count() > MAX_COMMAND_HISTORY_COMMAND_CHARACTERS
+                || seen.contains(&entry.command)
+            {
+                continue;
+            }
+            let recorded_at = entry.recorded_at.clamp(0, now_ms.max(0));
+            if recorded_at < cutoff {
+                continue;
+            }
+            let candidate = CommandHistoryEntry {
+                command: entry.command.clone(),
+                recorded_at,
+            };
+            let entry_bytes = serde_json::to_vec(&candidate)
+                .map_err(|error| format!("failed to size command history entry: {error}"))?
+                .len()
+                .saturating_add(usize::from(!normalized.is_empty()));
+            if bytes.saturating_add(entry_bytes) > MAX_COMMAND_HISTORY_STORAGE_BYTES {
+                continue;
+            }
+            bytes += entry_bytes;
+            seen.insert(candidate.command.clone());
+            normalized.push(candidate);
+            if normalized.len() >= limit {
+                break;
+            }
+        }
+        Ok(normalized)
+    }
+
+    pub fn replace_command_history(
+        &mut self,
+        entries: &[CommandHistoryEntry],
+        limit: usize,
+        retention_days: u32,
+        now_ms: i64,
+    ) -> Result<Vec<CommandHistoryEntry>, String> {
+        let normalized = Self::normalized_command_history(entries, limit, retention_days, now_ms)?;
+        let changed = self.command_history != normalized || !self.command_history_migrated;
+        if changed && self.command_history_revision >= MAX_JAVASCRIPT_SAFE_INTEGER {
+            return Err(
+                "command history revision is exhausted; restart with a repaired Store".to_string(),
+            );
+        }
+        self.command_history.clone_from(&normalized);
+        self.command_history_migrated = true;
+        if changed {
+            self.command_history_revision += 1;
+        }
+        Ok(normalized)
+    }
+
+    pub fn merge_command_history(
+        &mut self,
+        entries: &[CommandHistoryEntry],
+        limit: usize,
+        retention_days: u32,
+        now_ms: i64,
+    ) -> Result<Vec<CommandHistoryEntry>, String> {
+        let mut merged =
+            Vec::with_capacity(entries.len().saturating_add(self.command_history.len()));
+        merged.extend_from_slice(entries);
+        merged.extend(self.command_history.iter().cloned());
+        merged.sort_by(|left, right| right.recorded_at.cmp(&left.recorded_at));
+        self.replace_command_history(&merged, limit, retention_days, now_ms)
+    }
+
+    pub fn record_command_history(
+        &mut self,
+        command: String,
+        limit: usize,
+        retention_days: u32,
+        now_ms: i64,
+    ) -> Result<Vec<CommandHistoryEntry>, String> {
+        let candidate = Self::normalized_command_history(
+            &[CommandHistoryEntry {
+                command: command.clone(),
+                recorded_at: now_ms,
+            }],
+            1,
+            0,
+            now_ms,
+        )?;
+        if candidate.is_empty() {
+            return Err(
+                "command history entry is empty, invalid, or exceeds its character limit"
+                    .to_string(),
+            );
+        }
+        let recorded_command = command.clone();
+        let mut entries = Vec::with_capacity(self.command_history.len().saturating_add(1));
+        entries.push(CommandHistoryEntry {
+            command,
+            recorded_at: now_ms,
+        });
+        entries.extend(
+            self.command_history
+                .iter()
+                .filter(|entry| entry.command != recorded_command)
+                .cloned(),
+        );
+        self.replace_command_history(&entries, limit, retention_days, now_ms)
+    }
+
     pub fn transfer_by_id(&self, id: &str) -> Option<TransferTask> {
         self.transfers
             .iter()
@@ -91,6 +232,17 @@ impl SessionStore {
     }
 
     pub fn normalize_bounded_histories(&mut self) {
+        self.command_history_revision = self
+            .command_history_revision
+            .min(MAX_JAVASCRIPT_SAFE_INTEGER.saturating_sub(1));
+        if let Ok(normalized) = Self::normalized_command_history(
+            &self.command_history,
+            MAX_COMMAND_HISTORY_ENTRIES,
+            0,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            self.command_history = normalized;
+        }
         let mut remaining_event_counts = HashMap::<String, usize>::new();
         for event in &self.events {
             *remaining_event_counts

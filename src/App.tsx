@@ -86,7 +86,7 @@ import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, Worksp
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
-import type { AuditRecord, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
+import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import type { OneKeyPromptField } from "./one-key-completion-state";
@@ -129,6 +129,7 @@ const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 const MAX_RESOLVED_MCP_APPROVAL_IDS = 256;
+const COMMAND_HISTORY_UPDATED_EVENT = "portmate-command-history-updated";
 type StartupHydrationDomain = "transfers" | "audit" | "grants" | "host-keys" | "one-keys" | "serial-ports";
 const workspaceUtilityIcons = { Folder, Search, X };
 const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon: LucideIcon }> = {
@@ -277,6 +278,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   );
   const [commandHistoryEntries, setCommandHistoryEntries] = useState<CommandHistoryEntry[]>([]);
   const [commandHistoryReady, setCommandHistoryReady] = useState(false);
+  const commandHistoryEntriesRef = useRef<CommandHistoryEntry[]>([]);
+  const commandHistoryRevisionRef = useRef(0);
+  const commandHistoryBackendReadyRef = useRef(false);
+  const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingCommandHistoryRef = useRef<string[]>([]);
+  const commandHistoryPolicyRef = useRef(commandHistoryPolicy);
+  const commandHistoryEnabledRef = useRef(terminalPrefs.historyEnabled);
+  const commandHistoryPersistedSettingsRef = useRef<{ enabled: boolean; limit: number; retentionDays: number } | null>(null);
+  commandHistoryPolicyRef.current = commandHistoryPolicy;
+  commandHistoryEnabledRef.current = terminalPrefs.historyEnabled;
   const commandHistory = commandHistoryEntries.map((entry) => entry.command);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
     normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
@@ -421,6 +432,41 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function updateTransfers(update: SetStateAction<TransferTask[]>) {
     startupHydrationGateRef.current.invalidate("transfers");
     setTransfers(update);
+  }
+
+  function applyCommandHistorySnapshot(snapshot: CommandHistorySnapshot, committedCommand?: string) {
+    if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < commandHistoryRevisionRef.current) return;
+    commandHistoryRevisionRef.current = snapshot.revision;
+    if (committedCommand !== undefined) {
+      const index = pendingCommandHistoryRef.current.indexOf(committedCommand);
+      if (index >= 0) pendingCommandHistoryRef.current.splice(index, 1);
+    }
+    if (!commandHistoryEnabledRef.current) return;
+    void import("./command-history-state").then(({ normalizeCommandHistory, recordCommandHistory }) => {
+      if (snapshot.revision < commandHistoryRevisionRef.current) return;
+      let entries = normalizeCommandHistory(
+        { version: 2, entries: Array.isArray(snapshot.entries) ? snapshot.entries : [] },
+        commandHistoryPolicyRef.current,
+      );
+      for (const command of pendingCommandHistoryRef.current) {
+        entries = recordCommandHistory(entries, command, commandHistoryPolicyRef.current);
+      }
+      commandHistoryEntriesRef.current = entries;
+      setCommandHistoryEntries(entries);
+    });
+  }
+
+  function enqueueCommandHistoryOperation(
+    operation: () => Promise<CommandHistorySnapshot>,
+    committedCommand?: string,
+  ) {
+    commandHistoryOperationRef.current = commandHistoryOperationRef.current.then(async () => {
+      try {
+        applyCommandHistorySnapshot(await operation(), committedCommand);
+      } catch (error) {
+        console.warn("PortMate command history persistence failed", error);
+      }
+    });
   }
 
   const dismissTransfer = useCallback((transferId: string) => {
@@ -875,17 +921,72 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   useEffect(() => {
     let disposed = false;
-    void import("./command-history-state").then(({ normalizeCommandHistory }) => {
+    let stopListening: (() => void) | undefined;
+    void import("./command-history-state").then(async ({ normalizeCommandHistory }) => {
       if (disposed) return;
-      setCommandHistoryEntries(normalizeCommandHistory(
-        terminalPrefs.historyEnabled
-          ? loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null)
-          : null,
-        commandHistoryPolicy,
-      ));
-      setCommandHistoryReady(true);
+      const localEntries = normalizeCommandHistory(
+        loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null),
+        commandHistoryPolicyRef.current,
+      );
+      if (!isBackendAvailable()) {
+        const entries = commandHistoryEnabledRef.current ? localEntries : [];
+        commandHistoryEntriesRef.current = entries;
+        setCommandHistoryEntries(entries);
+        setCommandHistoryReady(true);
+        return;
+      }
+      try {
+        const initial = await invokeBackend<CommandHistorySnapshot>("list_command_history", {
+          limit: commandHistoryPolicyRef.current.limit,
+          retentionDays: commandHistoryPolicyRef.current.retentionDays,
+        });
+        if (disposed) return;
+        const snapshot = initial.migrated
+          ? await invokeBackend<CommandHistorySnapshot>("merge_command_history", {
+            entries: commandHistoryEnabledRef.current ? localEntries : [],
+            limit: commandHistoryPolicyRef.current.limit,
+            retentionDays: commandHistoryPolicyRef.current.retentionDays,
+          })
+          : await invokeBackend<CommandHistorySnapshot>("migrate_command_history", {
+            entries: commandHistoryEnabledRef.current ? localEntries : [],
+            limit: commandHistoryPolicyRef.current.limit,
+            retentionDays: commandHistoryPolicyRef.current.retentionDays,
+          });
+        if (disposed) return;
+        const enabledSnapshot = !commandHistoryEnabledRef.current && snapshot.entries.length
+          ? await invokeBackend<CommandHistorySnapshot>("clear_command_history", {})
+          : snapshot;
+        if (disposed) return;
+        commandHistoryBackendReadyRef.current = true;
+        applyCommandHistorySnapshot(enabledSnapshot);
+        for (const command of [...pendingCommandHistoryRef.current]) {
+          enqueueCommandHistoryOperation(
+            () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
+              command,
+              limit: commandHistoryPolicyRef.current.limit,
+              retentionDays: commandHistoryPolicyRef.current.retentionDays,
+            }),
+            command,
+          );
+        }
+        stopListening = await listen<CommandHistorySnapshot>(COMMAND_HISTORY_UPDATED_EVENT, (event) => {
+          if (!disposed) applyCommandHistorySnapshot(event.payload);
+        });
+        if (disposed) stopListening();
+      } catch (error) {
+        if (disposed) return;
+        console.warn("PortMate command history initialization failed", error);
+        const entries = commandHistoryEnabledRef.current ? localEntries : [];
+        commandHistoryEntriesRef.current = entries;
+        setCommandHistoryEntries(entries);
+      } finally {
+        if (!disposed) setCommandHistoryReady(true);
+      }
     });
-    return () => { disposed = true; };
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -921,6 +1022,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         commandHistoryPolicy,
       );
       if (!history.commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
+        commandHistoryEntriesRef.current = normalized;
         setCommandHistoryEntries(normalized);
         return;
       }
@@ -932,6 +1034,32 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }
       } catch {
         // History persistence is best-effort; the in-memory list remains available.
+      }
+
+      if (!commandHistoryBackendReadyRef.current) return;
+      const settings = {
+        enabled: terminalPrefs.historyEnabled,
+        limit: commandHistoryPolicy.limit,
+        retentionDays: commandHistoryPolicy.retentionDays,
+      };
+      const previous = commandHistoryPersistedSettingsRef.current;
+      commandHistoryPersistedSettingsRef.current = settings;
+      if (!previous) return;
+      if (!settings.enabled) {
+        if (previous.enabled) {
+          enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("clear_command_history", {}));
+        }
+      } else if (!previous.enabled) {
+        enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("merge_command_history", {
+          entries: normalized,
+          limit: settings.limit,
+          retentionDays: settings.retentionDays,
+        }));
+      } else if (previous.limit !== settings.limit || previous.retentionDays !== settings.retentionDays) {
+        enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("normalize_command_history", {
+          limit: settings.limit,
+          retentionDays: settings.retentionDays,
+        }));
       }
     });
     return () => { disposed = true; };
@@ -3092,17 +3220,39 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function rememberCommand(command: string) {
     void import("./command-history-state").then(({ recordCommandHistory }) => {
-      setCommandHistoryEntries((current) => recordCommandHistory(current, command, commandHistoryPolicy));
+      const normalized = recordCommandHistory(
+        commandHistoryEntriesRef.current,
+        command,
+        commandHistoryPolicyRef.current,
+      );
+      commandHistoryEntriesRef.current = normalized;
+      setCommandHistoryEntries(normalized);
       setCommandHistoryReady(true);
+      if (!commandHistoryEnabledRef.current || !isBackendAvailable()) return;
+      pendingCommandHistoryRef.current.push(command);
+      if (!commandHistoryBackendReadyRef.current) return;
+      enqueueCommandHistoryOperation(
+        () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
+          command,
+          limit: commandHistoryPolicyRef.current.limit,
+          retentionDays: commandHistoryPolicyRef.current.retentionDays,
+        }),
+        command,
+      );
     });
   }
 
   function clearCommandHistory() {
+    pendingCommandHistoryRef.current = [];
+    commandHistoryEntriesRef.current = [];
     setCommandHistoryEntries([]);
     try {
       window.localStorage.removeItem(COMMAND_HISTORY_STORAGE_KEY);
     } catch {
       // Clearing the in-memory list still succeeds when storage is unavailable.
+    }
+    if (commandHistoryBackendReadyRef.current) {
+      enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("clear_command_history", {}));
     }
   }
 

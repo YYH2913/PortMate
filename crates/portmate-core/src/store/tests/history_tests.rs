@@ -23,6 +23,129 @@ fn stream_events_are_bounded_per_session() {
 }
 
 #[test]
+fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
+    let mut store = test_store();
+    let now = 1_800_000_000_000_i64;
+    let old = now - 31 * 24 * 60 * 60 * 1_000;
+    let future = now + 60_000;
+    let entries = vec![
+        CommandHistoryEntry {
+            command: "git status".to_string(),
+            recorded_at: future,
+        },
+        CommandHistoryEntry {
+            command: "npm test".to_string(),
+            recorded_at: now - 1,
+        },
+        CommandHistoryEntry {
+            command: "git status".to_string(),
+            recorded_at: now - 2,
+        },
+        CommandHistoryEntry {
+            command: "expired".to_string(),
+            recorded_at: old,
+        },
+        CommandHistoryEntry {
+            command: "bad\0command".to_string(),
+            recorded_at: now,
+        },
+        CommandHistoryEntry {
+            command: "界".repeat(MAX_COMMAND_HISTORY_COMMAND_CHARACTERS + 1),
+            recorded_at: now,
+        },
+    ];
+
+    let normalized = store
+        .replace_command_history(&entries, 10, 30, now)
+        .unwrap();
+    assert_eq!(
+        normalized,
+        vec![
+            CommandHistoryEntry {
+                command: "git status".to_string(),
+                recorded_at: now,
+            },
+            CommandHistoryEntry {
+                command: "npm test".to_string(),
+                recorded_at: now - 1,
+            },
+        ]
+    );
+    assert!(store.command_history_migrated);
+    assert_eq!(store.command_history_revision, 1);
+
+    store
+        .replace_command_history(&normalized, 10, 30, now)
+        .unwrap();
+    assert_eq!(store.command_history_revision, 1);
+    let recorded = store
+        .record_command_history("npm test".to_string(), 10, 30, now + 1)
+        .unwrap();
+    assert_eq!(recorded[0].command, "npm test");
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(store.command_history_revision, 2);
+    assert!(store
+        .record_command_history("bad\0command".to_string(), 10, 30, now + 2)
+        .is_err());
+
+    let merged = store
+        .merge_command_history(
+            &[CommandHistoryEntry {
+                command: "local while disabled".to_string(),
+                recorded_at: now + 2,
+            }],
+            10,
+            30,
+            now + 3,
+        )
+        .unwrap();
+    assert_eq!(
+        merged
+            .iter()
+            .map(|entry| entry.command.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local while disabled", "npm test", "git status"]
+    );
+
+    store.command_history_revision = 9_007_199_254_740_991;
+    let before = store.command_history.clone();
+    assert!(store
+        .record_command_history("must fail closed".to_string(), 10, 30, now + 4)
+        .is_err());
+    assert_eq!(store.command_history, before);
+}
+
+#[test]
+fn command_history_rejects_invalid_policy_and_bounds_utf8_storage() {
+    let now = 1_800_000_000_000_i64;
+    assert!(SessionStore::normalized_command_history(&[], 0, 0, now).is_err());
+    assert!(
+        SessionStore::normalized_command_history(&[], MAX_COMMAND_HISTORY_ENTRIES + 1, 0, now)
+            .is_err()
+    );
+    assert!(SessionStore::normalized_command_history(
+        &[],
+        1,
+        MAX_COMMAND_HISTORY_RETENTION_DAYS + 1,
+        now
+    )
+    .is_err());
+
+    let command = "\"\\\n界".repeat(2_000);
+    let entries = (0..200)
+        .map(|index| CommandHistoryEntry {
+            command: format!("{index}-{command}"),
+            recorded_at: now - index,
+        })
+        .collect::<Vec<_>>();
+    let normalized =
+        SessionStore::normalized_command_history(&entries, MAX_COMMAND_HISTORY_ENTRIES, 0, now)
+            .unwrap();
+    let snapshot = serde_json::json!({ "version": 2, "entries": normalized });
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() <= MAX_COMMAND_HISTORY_STORAGE_BYTES);
+}
+
+#[test]
 fn loaded_event_histories_are_normalized_and_rebuild_the_count_cache() {
     let mut store = test_store();
     let overflow = 37;

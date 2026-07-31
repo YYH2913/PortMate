@@ -844,6 +844,13 @@ pub enum TransferStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandHistoryEntry {
+    pub command: String,
+    pub recorded_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferTask {

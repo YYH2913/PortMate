@@ -379,6 +379,7 @@ try {
     window.__pendingVaultMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__transfers = [];
+    window.__commandHistory = { entries: [], migrated: false, revision: 0 };
     window.__clipboardText = "";
     window.__closeSessionError = false;
     window.__deferSessionOpens = false;
@@ -452,6 +453,63 @@ try {
           return new Promise((resolve) => {
             window.__pendingSessionLists.push({ result: structuredClone(window.__sessions), resolve });
           });
+        }
+        if (command === "list_command_history") {
+          return structuredClone(window.__commandHistory);
+        }
+        if (command === "migrate_command_history") {
+          if (!window.__commandHistory.migrated) {
+            window.__commandHistory.entries = structuredClone(args.entries ?? []);
+            window.__commandHistory.migrated = true;
+            window.__commandHistory.revision += 1;
+          }
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
+        }
+        if (command === "record_command_history") {
+          window.__commandHistory.entries = [
+            { command: args.command, recordedAt: Date.now() },
+            ...window.__commandHistory.entries.filter((entry) => entry.command !== args.command),
+          ].slice(0, args.limit);
+          window.__commandHistory.migrated = true;
+          window.__commandHistory.revision += 1;
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
+        }
+        if (command === "merge_command_history") {
+          const byCommand = new Map();
+          for (const entry of [...(args.entries ?? []), ...window.__commandHistory.entries]) {
+            const current = byCommand.get(entry.command);
+            if (!current || entry.recordedAt > current.recordedAt) byCommand.set(entry.command, entry);
+          }
+          window.__commandHistory.entries = [...byCommand.values()]
+            .sort((left, right) => right.recordedAt - left.recordedAt)
+            .slice(0, args.limit);
+          window.__commandHistory.migrated = true;
+          window.__commandHistory.revision += 1;
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
+        }
+        if (command === "normalize_command_history") {
+          const normalized = window.__commandHistory.entries.slice(0, args.limit);
+          if (JSON.stringify(normalized) !== JSON.stringify(window.__commandHistory.entries)) {
+            window.__commandHistory.entries = normalized;
+            window.__commandHistory.revision += 1;
+          }
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
+        }
+        if (command === "clear_command_history") {
+          window.__commandHistory.entries = [];
+          window.__commandHistory.migrated = true;
+          window.__commandHistory.revision += 1;
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
         }
         if (command === "save_session_profile") {
           if (window.__failNextProfileSave) {
@@ -924,6 +982,19 @@ try {
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
   await page.waitForFunction(() => localStorage.getItem("portmate.workspacePanels.v2") !== null);
   await page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor();
+  await page.waitForFunction(() => window.__commandHistory.migrated
+    && window.__commandHistory.entries.length === 2);
+  const migratedCommandHistory = await page.evaluate(() => ({
+    snapshot: structuredClone(window.__commandHistory),
+    listCalls: window.__invokeCalls.filter((call) => call.command === "list_command_history").length,
+    migrationCalls: window.__invokeCalls.filter((call) => call.command === "migrate_command_history").length,
+    local: JSON.parse(localStorage.getItem("portmate.commandHistory") || "null"),
+  }));
+  assert(migratedCommandHistory.listCalls === 1
+    && migratedCommandHistory.migrationCalls === 1
+    && migratedCommandHistory.snapshot.revision === 1
+    && JSON.stringify(migratedCommandHistory.snapshot.entries) === JSON.stringify(migratedCommandHistory.local.entries),
+  `legacy command history did not migrate once into the canonical Store: ${JSON.stringify(migratedCommandHistory)}`);
 
   const initial = await page.evaluate(() => {
     const panels = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2"));
@@ -1882,6 +1953,21 @@ Host staging
   assert(await advancedSendButton.getAttribute("data-active") === "false",
     "sender advanced-settings indicator did not clear after restoring defaults");
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
+  await sender.getByRole("button", { name: "发送", exact: true }).click();
+  await sender.getByRole("textbox", { name: "send text", exact: true }).fill("uname -a");
+  await sender.getByRole("button", { name: "发送", exact: true }).click();
+  await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");
+  const recordedCommandHistory = await page.evaluate(() => ({
+    commands: window.__commandHistory.entries.map((entry) => entry.command),
+    calls: window.__invokeCalls.filter((call) => call.command === "record_command_history")
+      .map((call) => call.args.command),
+    revision: window.__commandHistory.revision,
+  }));
+  assert(JSON.stringify(recordedCommandHistory.calls) === JSON.stringify(["docker compose\nup -d", "uname -a"])
+    && JSON.stringify(recordedCommandHistory.commands.slice(0, 3)) === JSON.stringify(["uname -a", "docker compose\nup -d", "git status --short"])
+    && recordedCommandHistory.revision === 3,
+  `rapid commands were not serialized into canonical history: ${JSON.stringify(recordedCommandHistory)}`);
 
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
   await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').waitFor();
@@ -4330,9 +4416,23 @@ Host staging
   await savingShellImport.getByRole("button", { name: "取消", exact: true }).click();
   await savingShellImport.waitFor({ state: "detached" });
 
+  await openTerminalSettings();
+  await page.locator(".terminal-settings-dialog .settings-tabs > button", { hasText: "命令历史" }).click();
+  await page.locator(".terminal-settings-dialog .settings-secondary-button", { hasText: "清除" }).click();
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "clear_command_history")
+    && window.__commandHistory.entries.length === 0
+    && localStorage.getItem("portmate.commandHistory") === null);
+  await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
+    commandHistory: {
+      migratedRevision: migratedCommandHistory.snapshot.revision,
+      recordedRevision: recordedCommandHistory.revision,
+      cleared: true,
+    },
     contextMenu: "single synchronized-input, split, move, merge, swap, zoom, detach, close-pane, and profile-delete actions",
     transferProtocols: {
       ssh: sshTransferOptions.map((option) => option.value),
