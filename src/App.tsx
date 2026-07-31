@@ -936,6 +936,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       }
       try {
+        stopListening = await listen<CommandHistorySnapshot>(COMMAND_HISTORY_UPDATED_EVENT, (event) => {
+          if (!disposed) applyCommandHistorySnapshot(event.payload);
+        });
+        if (disposed) {
+          stopListening();
+          return;
+        }
+      } catch (error) {
+        console.warn("PortMate command history live synchronization failed", error);
+      }
+      try {
         const initial = await invokeBackend<CommandHistorySnapshot>("list_command_history", {
           limit: commandHistoryPolicyRef.current.limit,
           retentionDays: commandHistoryPolicyRef.current.retentionDays,
@@ -969,10 +980,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             command,
           );
         }
-        stopListening = await listen<CommandHistorySnapshot>(COMMAND_HISTORY_UPDATED_EVENT, (event) => {
-          if (!disposed) applyCommandHistorySnapshot(event.payload);
-        });
-        if (disposed) stopListening();
       } catch (error) {
         if (disposed) return;
         console.warn("PortMate command history initialization failed", error);

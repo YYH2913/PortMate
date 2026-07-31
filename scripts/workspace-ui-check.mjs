@@ -380,6 +380,7 @@ try {
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__transfers = [];
     window.__commandHistory = { entries: [], migrated: false, revision: 0 };
+    window.__injectCommandHistoryStartupRace = true;
     window.__clipboardText = "";
     window.__closeSessionError = false;
     window.__deferSessionOpens = false;
@@ -465,6 +466,18 @@ try {
           }
           const snapshot = structuredClone(window.__commandHistory);
           window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          if (window.__injectCommandHistoryStartupRace) {
+            window.__injectCommandHistoryStartupRace = false;
+            window.__commandHistory.entries = [
+              { command: "cross-window during startup", recordedAt: Date.now() },
+              ...window.__commandHistory.entries,
+            ];
+            window.__commandHistory.revision += 1;
+            window.__emitTauriEvent(
+              "portmate-command-history-updated",
+              structuredClone(window.__commandHistory),
+            );
+          }
           return snapshot;
         }
         if (command === "record_command_history") {
@@ -983,18 +996,24 @@ try {
   await page.waitForFunction(() => localStorage.getItem("portmate.workspacePanels.v2") !== null);
   await page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor();
   await page.waitForFunction(() => window.__commandHistory.migrated
-    && window.__commandHistory.entries.length === 2);
+    && window.__commandHistory.entries.length === 3
+    && JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "cross-window during startup");
   const migratedCommandHistory = await page.evaluate(() => ({
     snapshot: structuredClone(window.__commandHistory),
     listCalls: window.__invokeCalls.filter((call) => call.command === "list_command_history").length,
     migrationCalls: window.__invokeCalls.filter((call) => call.command === "migrate_command_history").length,
+    listenerCallIndex: window.__invokeCalls.findIndex((call) => call.command === "plugin:event|listen"
+      && call.args.event === "portmate-command-history-updated"),
+    listCallIndex: window.__invokeCalls.findIndex((call) => call.command === "list_command_history"),
     local: JSON.parse(localStorage.getItem("portmate.commandHistory") || "null"),
   }));
   assert(migratedCommandHistory.listCalls === 1
     && migratedCommandHistory.migrationCalls === 1
-    && migratedCommandHistory.snapshot.revision === 1
+    && migratedCommandHistory.listenerCallIndex >= 0
+    && migratedCommandHistory.listenerCallIndex < migratedCommandHistory.listCallIndex
+    && migratedCommandHistory.snapshot.revision === 2
     && JSON.stringify(migratedCommandHistory.snapshot.entries) === JSON.stringify(migratedCommandHistory.local.entries),
-  `legacy command history did not migrate once into the canonical Store: ${JSON.stringify(migratedCommandHistory)}`);
+  `legacy command history migration lost its startup event barrier: ${JSON.stringify(migratedCommandHistory)}`);
 
   const initial = await page.evaluate(() => {
     const panels = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2"));
@@ -1965,8 +1984,8 @@ Host staging
     revision: window.__commandHistory.revision,
   }));
   assert(JSON.stringify(recordedCommandHistory.calls) === JSON.stringify(["docker compose\nup -d", "uname -a"])
-    && JSON.stringify(recordedCommandHistory.commands.slice(0, 3)) === JSON.stringify(["uname -a", "docker compose\nup -d", "git status --short"])
-    && recordedCommandHistory.revision === 3,
+    && JSON.stringify(recordedCommandHistory.commands.slice(0, 4)) === JSON.stringify(["uname -a", "docker compose\nup -d", "cross-window during startup", "git status --short"])
+    && recordedCommandHistory.revision === 4,
   `rapid commands were not serialized into canonical history: ${JSON.stringify(recordedCommandHistory)}`);
 
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
