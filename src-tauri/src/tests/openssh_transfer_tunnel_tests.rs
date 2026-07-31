@@ -111,6 +111,66 @@ fn openssh_sftp_scp_and_tunnels_end_to_end() {
         .unwrap();
         assert!(entries.iter().all(|entry| !entry.name.is_empty()));
 
+        let default_drop_name = format!("portmate-default-drop-{}.txt", Uuid::new_v4());
+        let default_drop_source = root.join(&default_drop_name);
+        fs::write(&default_drop_source, b"default remote directory").unwrap();
+        let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+        let sftp = auxiliary.sftp().await.unwrap();
+        let default_remote_directory = resolve_remote_drop_destination(&sftp, ".").await.unwrap();
+        assert_eq!(
+            default_remote_directory,
+            sftp.canonicalize(".").await.unwrap(),
+            "the default SFTP target must resolve to the server current directory"
+        );
+        drop(sftp);
+        drop(auxiliary);
+        let default_drop = start_external_drop_inner(
+            &state,
+            StartExternalDropRequest {
+                session_id: profile.id.clone(),
+                paths: vec![default_drop_source.display().to_string()],
+                destination: ".".to_string(),
+                remote: true,
+                conflict_policy: TransferConflictPolicy::Fail,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(default_drop.tasks.len(), 1);
+        let default_drop_task =
+            wait_for_transfer_terminal_state(&state, &default_drop.tasks[0].id).await;
+        assert_eq!(
+            default_drop_task.status,
+            TransferStatus::Completed,
+            "default-directory SFTP drop failed: {:?}",
+            default_drop_task.message
+        );
+        let default_remote_path = remote_join_path(&default_remote_directory, &default_drop_name);
+        let default_entries = list_files_inner(
+            &state,
+            ListFilesRequest {
+                session_id: Some(profile.id.clone()),
+                path: default_remote_directory,
+                remote: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(default_entries
+            .iter()
+            .any(|entry| entry.path == default_remote_path));
+        file_operation_inner(
+            &state,
+            FileOperationRequest {
+                session_id: Some(profile.id.clone()),
+                path: default_remote_path,
+                remote: true,
+            },
+            FileOperation::Delete,
+        )
+        .await
+        .unwrap();
+
         let sftp_root = root.join("sftp-workspace");
         let sftp_nested = sftp_root.join("nested");
         file_operation_inner(

@@ -216,16 +216,16 @@ pub(super) fn validate_batch_relative_path(path: &str) -> Result<(), String> {
 pub(super) async fn validate_remote_batch_destination(
     sftp: &SftpBackendSession,
     path: &str,
-) -> Result<(), String> {
-    validate_remote_drop_destination(path)?;
+) -> Result<String, String> {
+    let path = resolve_remote_drop_destination(sftp, path).await?;
     let metadata = sftp
-        .symlink_metadata(path.trim().to_string())
+        .symlink_metadata(path.clone())
         .await
-        .map_err(|error| format!("SFTP 读取远端目标目录失败 {}: {error}", path.trim()))?;
+        .map_err(|error| format!("SFTP 读取远端目标目录失败 {path}: {error}"))?;
     if !metadata.is_dir() || metadata.is_symlink() {
-        return Err(format!("远端批次目标不是普通目录: {}", path.trim()));
+        return Err(format!("远端批次目标不是普通目录: {path}"));
     }
-    Ok(())
+    Ok(path)
 }
 
 pub(super) fn batch_destination_path(

@@ -99,34 +99,35 @@ pub(super) async fn start_external_drop_inner(
     }
 
     let local_destination = if request.remote {
-        validate_remote_drop_destination(&request.destination)?;
         None
     } else {
         Some(validate_local_drop_destination(&request.destination)?)
     };
     let mut plan = plan_external_drop(&request.paths, local_destination.as_deref())?;
+    let mut resolved_remote_destination = None;
 
     if request.remote {
         if !plan.directories.is_empty() || !plan.files.is_empty() {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
             let sftp = auxiliary.sftp().await?;
             let result = async {
+                let destination =
+                    resolve_remote_drop_destination(&sftp, &request.destination).await?;
+                resolved_remote_destination = Some(destination.clone());
                 apply_external_drop_conflicts(
                     &mut plan,
                     Some(&sftp),
-                    request.destination.trim(),
+                    &destination,
                     None,
                     true,
                     request.conflict_policy,
                 )
                 .await?;
                 ensure_transfer_batch_capacity(state, &request.session_id, plan.files.len())?;
-                sftp_create_dir_all(&sftp, request.destination.trim()).await?;
+                sftp_create_dir_all(&sftp, &destination).await?;
                 for relative in &plan.directories {
-                    let target = remote_join_path(
-                        request.destination.trim(),
-                        &external_relative_remote_path(relative)?,
-                    );
+                    let target =
+                        remote_join_path(&destination, &external_relative_remote_path(relative)?);
                     sftp_create_dir_all(&sftp, &target).await?;
                 }
                 Ok::<(), String>(())
@@ -166,7 +167,9 @@ pub(super) async fn start_external_drop_inner(
             format!(
                 "remote:{}",
                 remote_join_path(
-                    request.destination.trim(),
+                    resolved_remote_destination
+                        .as_deref()
+                        .unwrap_or_else(|| request.destination.trim()),
                     &external_relative_remote_path(&file.relative)?,
                 )
             )

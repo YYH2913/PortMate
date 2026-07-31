@@ -300,7 +300,6 @@ fn file_manager_remote_mutating_paths_reject_parent_components() {
         "/tmp/./file",
         "nested/../outside",
         "../outside",
-        "/",
         "//",
         "~",
     ] {
@@ -311,6 +310,9 @@ fn file_manager_remote_mutating_paths_reject_parent_components() {
         assert!(normalize_remote_batch_source(path).is_err());
         assert!(validate_remote_drop_destination(path).is_err());
     }
+    assert!(validate_remote_mutating_path("/").is_err());
+    assert!(normalize_remote_batch_source("/").is_err());
+    assert!(validate_remote_drop_destination("/").is_ok());
     assert!(validate_remote_drop_destination("/tmp/portmate/").is_ok());
     assert_eq!(
         validate_remote_mutating_path("/tmp/portmate/file").unwrap(),

@@ -55,18 +55,21 @@ pub(super) async fn start_file_batch_inner(
         } else {
             plan_local_file_batch(&request.paths)?
         };
-        let local_destination = if request.destination_remote {
-            validate_remote_batch_destination(&sftp, &request.destination).await?;
-            None
+        let (destination, local_destination) = if request.destination_remote {
+            (
+                validate_remote_batch_destination(&sftp, &request.destination).await?,
+                None,
+            )
         } else {
-            Some(validate_local_drop_destination(&request.destination)?)
+            let destination = validate_local_drop_destination(&request.destination)?;
+            (destination.display().to_string(), Some(destination))
         };
 
         let mut directory_targets = Vec::with_capacity(plan.directories.len());
         for relative in &plan.directories {
             validate_batch_relative_path(relative)?;
             let target = batch_destination_path(
-                request.destination.trim(),
+                &destination,
                 local_destination.as_deref(),
                 relative,
                 request.destination_remote,
@@ -87,7 +90,7 @@ pub(super) async fn start_file_batch_inner(
             validate_batch_relative_path(&file.relative)?;
             let mut relative = file.relative.clone();
             let mut target = batch_destination_path(
-                request.destination.trim(),
+                &destination,
                 local_destination.as_deref(),
                 &relative,
                 request.destination_remote,
@@ -117,7 +120,7 @@ pub(super) async fn start_file_batch_inner(
                             let candidate_relative =
                                 numbered_batch_relative_path(&file.relative, suffix)?;
                             let candidate = batch_destination_path(
-                                request.destination.trim(),
+                                &destination,
                                 local_destination.as_deref(),
                                 &candidate_relative,
                                 request.destination_remote,

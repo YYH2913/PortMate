@@ -1,16 +1,41 @@
 use super::*;
 
 pub(super) fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
-    let path = path.trim().trim_end_matches('/');
+    let path = path.trim();
+    if path == "/" {
+        return Ok(());
+    }
+    let path = path.trim_end_matches('/');
     if path.is_empty()
         || matches!(path, "." | ".." | "~")
         || path.contains('\0')
-        || path == "/"
         || remote_path_has_dot_components(path)
     {
-        return Err("远端拖放目标路径不能为空、包含 NUL、使用 . / .. 分量或指向根目录".to_string());
+        return Err("远端拖放目标路径不能为空、包含 NUL 或使用 . / .. 分量".to_string());
     }
     Ok(())
+}
+
+pub(super) async fn resolve_remote_drop_destination(
+    sftp: &SftpBackendSession,
+    path: &str,
+) -> Result<String, String> {
+    let trimmed = path.trim();
+    let candidate = trimmed.trim_end_matches('/');
+    if candidate == "." {
+        let canonical = sftp
+            .canonicalize(".")
+            .await
+            .map_err(|error| format!("解析 SSH 默认远端目录失败: {error}"))?;
+        validate_remote_drop_destination(&canonical)?;
+        return Ok(canonical.trim_end_matches('/').to_string());
+    }
+    validate_remote_drop_destination(trimmed)?;
+    Ok(if candidate.is_empty() {
+        "/".to_string()
+    } else {
+        candidate.to_string()
+    })
 }
 
 pub(super) fn validate_local_drop_destination(path: &str) -> Result<PathBuf, String> {
