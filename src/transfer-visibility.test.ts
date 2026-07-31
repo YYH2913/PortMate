@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDismissedTransferId,
   COMPLETED_TRANSFER_AUTO_DISMISS_MS,
   completedTransferDismissDeadline,
 } from "./transfer-visibility";
@@ -30,5 +31,13 @@ describe("completed transfer visibility", () => {
     expect(completedTransferDismissDeadline(finishedAt, observedAt)).toBe(
       observedAt + COMPLETED_TRANSFER_AUTO_DISMISS_MS,
     );
+  });
+
+  it("shares idempotent dismissals through a bounded insertion-ordered set", () => {
+    const first = addDismissedTransferId(new Set(), "first", 2);
+    expect(addDismissedTransferId(first, "first", 2)).toBe(first);
+    const second = addDismissedTransferId(first, "second", 2);
+    const third = addDismissedTransferId(second, "third", 2);
+    expect([...third]).toEqual(["second", "third"]);
   });
 });

@@ -81,12 +81,16 @@ type ExternalDropState = {
 export default function FileManagerPanel({
   active,
   transfers,
+  dismissedTransferIds,
   onTransfer,
+  onDismissTransfer,
   onNotice,
 }: {
   active?: SessionSummary;
   transfers: TransferTask[];
+  dismissedTransferIds: ReadonlySet<string>;
   onTransfer: (task: TransferTask) => void;
+  onDismissTransfer: (transferId: string) => void;
   onNotice: (notice: NoticeState) => void;
 }) {
   const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), entries: [], selected: [], busy: false, error: "" }));
@@ -657,7 +661,13 @@ export default function FileManagerPanel({
           />
         ) : null}
       </div>
-      <TransferList transfers={transfers.slice(-3)} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
+      <TransferList
+        transfers={transfers.slice(-3)}
+        dismissedTransferIds={dismissedTransferIds}
+        onRetry={(task) => void retryTransfer(task)}
+        onCancel={(task) => void cancelTransfer(task)}
+        onDismiss={onDismissTransfer}
+      />
       {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={closePropertiesDialog} /> : null}
     </div>
   );

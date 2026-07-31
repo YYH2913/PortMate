@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -36,6 +36,7 @@ import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
+import { addDismissedTransferId } from "./transfer-visibility";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
@@ -239,6 +240,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
+  const [dismissedTransferIds, setDismissedTransferIds] = useState<ReadonlySet<string>>(() => new Set());
   const [audit, setAudit] = useState<AuditRecord[]>(emptyAudit);
   const [grants, setGrants] = useState<McpGrant[]>(emptyGrants);
   const [mcpApprovals, setMcpApprovals] = useState<McpApprovalRequest[]>([]);
@@ -420,6 +422,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     startupHydrationGateRef.current.invalidate("transfers");
     setTransfers(update);
   }
+
+  const dismissTransfer = useCallback((transferId: string) => {
+    setDismissedTransferIds((current) => addDismissedTransferId(current, transferId));
+  }, []);
 
   function updateAudit(next: AuditRecord[]) {
     startupHydrationGateRef.current.invalidate("audit");
@@ -3223,7 +3229,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (panel === "fileManager") {
       return (
         <Suspense fallback={null}>
-          <LazyFileManagerPanel active={active} transfers={transfers} onTransfer={(task) => updateTransfers((current) => mergeTransfers(current, task))} onNotice={setNotice} />
+          <LazyFileManagerPanel
+            active={active}
+            transfers={transfers}
+            dismissedTransferIds={dismissedTransferIds}
+            onTransfer={(task) => updateTransfers((current) => mergeTransfers(current, task))}
+            onDismissTransfer={dismissTransfer}
+            onNotice={setNotice}
+          />
         </Suspense>
       );
     }
@@ -3628,11 +3641,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {utilityDialog === "transfer" && active && (
         <Suspense fallback={null}>
-          <LazyTransferDialog session={active} transfers={transfers} onClose={() => setUtilityDialog(null)} onTask={(task) => {
-            updateTransfers((current) => mergeTransfers(current, task));
-          }} onNotice={(message) => {
-            setNotice({ title: "传输任务", message });
-          }} />
+          <LazyTransferDialog
+            session={active}
+            transfers={transfers}
+            dismissedTransferIds={dismissedTransferIds}
+            onClose={() => setUtilityDialog(null)}
+            onTask={(task) => {
+              updateTransfers((current) => mergeTransfers(current, task));
+            }}
+            onDismissTransfer={dismissTransfer}
+            onNotice={(message) => {
+              setNotice({ title: "传输任务", message });
+            }}
+          />
         </Suspense>
       )}
       {utilityDialog === "tunnel" && active && (

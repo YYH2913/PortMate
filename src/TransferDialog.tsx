@@ -10,14 +10,18 @@ import type { SessionSummary, TransferTask } from "./types";
 export default function TransferDialog({
   session,
   transfers,
+  dismissedTransferIds,
   onClose,
   onTask,
+  onDismissTransfer,
   onNotice,
 }: {
   session: SessionSummary;
   transfers: TransferTask[];
+  dismissedTransferIds: ReadonlySet<string>;
   onClose: () => void;
   onTask: (task: TransferTask) => void;
+  onDismissTransfer: (transferId: string) => void;
   onNotice: (message: string) => void;
 }) {
   const protocols = useMemo(() => transferProtocolsForProfile(session.profile), [session.profile]);
@@ -116,7 +120,13 @@ export default function TransferDialog({
                 <button type="button" onClick={() => void cancelRunningTransfers()} disabled={!runningTransfers.length}>取消运行中</button>
               </div>
             </header>
-            <TransferList transfers={sessionTransfers} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} />
+            <TransferList
+              transfers={sessionTransfers}
+              dismissedTransferIds={dismissedTransferIds}
+              onRetry={(task) => void retryTransfer(task)}
+              onCancel={(task) => void cancelTransfer(task)}
+              onDismiss={onDismissTransfer}
+            />
           </div>
           {!connected ? <div className="utility-status">当前会话未连接，只能查看和管理已有任务。</div> : null}
           {connected && !protocols.length ? <div className="utility-status">当前 Profile 未启用适用于此协议的传输方式。</div> : null}

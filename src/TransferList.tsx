@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle, X } from "lucide-react";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
@@ -7,14 +7,17 @@ import type { TransferTask } from "./types";
 
 export default function TransferList({
   transfers,
+  dismissedTransferIds,
   onRetry,
   onCancel,
+  onDismiss,
 }: {
   transfers: readonly TransferTask[];
+  dismissedTransferIds: ReadonlySet<string>;
   onRetry: (task: TransferTask) => void;
   onCancel: (task: TransferTask) => void;
+  onDismiss: (transferId: string) => void;
 }) {
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const dismissDeadlines = useRef(new Map<string, number>());
 
   useEffect(() => {
@@ -31,12 +34,7 @@ export default function TransferList({
           : Math.min(existingDeadline, completedDeadline);
         dismissDeadlines.current.set(task.id, deadline);
         return window.setTimeout(() => {
-          setDismissed((current) => {
-            if (current.has(task.id)) return current;
-            const next = new Set(current);
-            next.add(task.id);
-            return next;
-          });
+          onDismiss(task.id);
         }, Math.max(0, deadline - Date.now()));
       });
     for (const id of dismissDeadlines.current.keys()) {
@@ -45,9 +43,9 @@ export default function TransferList({
       }
     }
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [transfers]);
+  }, [onDismiss, transfers]);
 
-  const visibleTransfers = transfers.filter((task) => !dismissed.has(task.id));
+  const visibleTransfers = transfers.filter((task) => !dismissedTransferIds.has(task.id));
   if (!visibleTransfers.length) return <div className="empty-pane top">没有传输任务</div>;
   return (
     <div className="transfer-list">
@@ -87,7 +85,7 @@ export default function TransferList({
                     type="button"
                     title={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
                     aria-label={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
-                    onClick={() => setDismissed((current) => new Set(current).add(task.id))}
+                    onClick={() => onDismiss(task.id)}
                   >
                     <X size={14} />
                   </button>

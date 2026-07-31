@@ -3183,6 +3183,12 @@ Host staging
   }, { task: hydrationTransfer, completedAt });
   await startupTransferRow.getByRole("button", { name: "关闭已完成传输", exact: true }).click();
   await startupTransferRow.waitFor({ state: "detached" });
+  await startupDomainPage.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
+  await startupDomainPage.locator(".transfer-dialog").waitFor({ state: "detached" });
+  await startupDomainPage.getByRole("button", { name: "工具", exact: true }).click();
+  await startupDomainPage.getByRole("button", { name: "传输任务", exact: true }).click();
+  await startupDomainPage.locator(".transfer-dialog").waitFor();
+  await startupTransferRow.waitFor({ state: "detached", timeout: 1_000 });
   const restoredCompletedTransfer = {
     ...hydrationTransfer,
     id: "startup-restored-completed-transfer",
