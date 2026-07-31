@@ -29,6 +29,7 @@ try {
     } else {
       runProbe(process.env);
       if (process.platform === "linux") verifyLockedLinuxSecretService();
+      if (process.platform === "win32") verifyDeniedWindowsCredentialManager();
     }
   }
 } catch (error) {
@@ -127,6 +128,17 @@ function verifyLockedLinuxSecretService() {
   ], { stdio: "pipe" });
   runProbePhase("verify-locked", environment);
   console.log("PortMate native keyring fault probe passed on linux (unavailable and locked provider)");
+}
+
+function verifyDeniedWindowsCredentialManager() {
+  const environment = {
+    ...process.env,
+    [accountEnvironment]: `native-probe-windows-denied-${randomUUID()}`,
+    [secretEnvironment]: probeSecret("windows-denied"),
+    [rotatedSecretEnvironment]: probeSecret("windows-denied-rotated"),
+  };
+  runProbePhase("verify-denied", environment);
+  console.log("PortMate native keyring fault probe passed on windows (anonymous token denied provider)");
 }
 
 function verifyIsolatedMacOSKeychain() {

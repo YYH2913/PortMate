@@ -161,6 +161,8 @@ fn run_phase(phase: &str) -> Result<(), String> {
             }
         }
         "verify-locked" => verify_locked_provider(&entry),
+        #[cfg(windows)]
+        "verify-denied" => verify_denied_windows_provider(&entry),
         "cleanup" => match entry.delete_credential() {
             Ok(()) | Err(Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("native keyring probe cleanup failed: {error}")),
@@ -183,6 +185,27 @@ fn verify_locked_provider(entry: &Entry) -> Result<(), String> {
         )),
         Ok(_) => Err("native keyring unexpectedly read a locked credential".to_string()),
     }
+}
+
+#[cfg(windows)]
+fn verify_denied_windows_provider(entry: &Entry) -> Result<(), String> {
+    use windows_sys::Win32::Security::{ImpersonateAnonymousToken, RevertToSelf};
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+
+    if unsafe { ImpersonateAnonymousToken(GetCurrentThread()) } == 0 {
+        return Err("impersonate anonymous Windows token failed".to_string());
+    }
+    let result = match entry.get_password() {
+        Err(Error::NoStorageAccess(_)) => Ok(()),
+        Err(error) => Err(format!(
+            "anonymous Windows credential probe returned the wrong error: {error}"
+        )),
+        Ok(_) => Err("anonymous Windows token unexpectedly read a credential".to_string()),
+    };
+    if unsafe { RevertToSelf() } == 0 {
+        return Err("revert anonymous Windows token failed".to_string());
+    }
+    result
 }
 
 fn expect_password(entry: &Entry, expected: &str, label: &str) -> Result<(), String> {
