@@ -3183,6 +3183,44 @@ Host staging
   }, { task: hydrationTransfer, completedAt });
   await startupTransferRow.getByRole("button", { name: "关闭已完成传输", exact: true }).click();
   await startupTransferRow.waitFor({ state: "detached" });
+  const restoredCompletedTransfer = {
+    ...hydrationTransfer,
+    id: "startup-restored-completed-transfer",
+    source: "/tmp/restored-completed-source.bin",
+    destination: "/srv/restored-completed-target.bin",
+    bytesDone: hydrationTransfer.bytesTotal,
+    status: "completed",
+    message: "completed",
+    finishedAt: new Date(Date.now() - 60_000).toISOString(),
+  };
+  await startupDomainPage.evaluate((task) => {
+    window.__emitTauriEvent("portmate-transfer-task", task);
+  }, restoredCompletedTransfer);
+  const restoredCompletedTransferRow = startupDomainPage.locator(".transfer-row", {
+    hasText: "/tmp/restored-completed-source.bin",
+  });
+  await restoredCompletedTransferRow.waitFor({ state: "detached", timeout: 1_000 });
+  const lateTimestampTransfer = {
+    ...restoredCompletedTransfer,
+    id: "startup-late-completion-timestamp",
+    source: "/tmp/late-completion-source.bin",
+    destination: "/srv/late-completion-target.bin",
+    finishedAt: null,
+  };
+  await startupDomainPage.evaluate((task) => {
+    window.__emitTauriEvent("portmate-transfer-task", task);
+  }, lateTimestampTransfer);
+  const lateTimestampTransferRow = startupDomainPage.locator(".transfer-row", {
+    hasText: "/tmp/late-completion-source.bin",
+  });
+  await lateTimestampTransferRow.waitFor();
+  await startupDomainPage.evaluate((task) => {
+    window.__emitTauriEvent("portmate-transfer-task", {
+      ...task,
+      finishedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+  }, lateTimestampTransfer);
+  await lateTimestampTransferRow.waitFor({ state: "detached", timeout: 1_000 });
   const autoDismissTransfer = {
     ...hydrationTransfer,
     id: "startup-auto-dismiss-transfer",

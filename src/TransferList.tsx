@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle, X } from "lucide-react";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
 import { transferDiagnosticText, transferDisplayMessage, transferStatusLabel } from "./transfer-presentation";
+import { completedTransferDismissDeadline } from "./transfer-visibility";
 import type { TransferTask } from "./types";
-
-const COMPLETED_TRANSFER_AUTO_DISMISS_MS = 6_000;
 
 export default function TransferList({
   transfers,
@@ -25,7 +24,11 @@ export default function TransferList({
       .filter((task) => task.status === "completed")
       .map((task) => {
         completedIds.add(task.id);
-        const deadline = dismissDeadlines.current.get(task.id) ?? now + COMPLETED_TRANSFER_AUTO_DISMISS_MS;
+        const completedDeadline = completedTransferDismissDeadline(task.finishedAt, now);
+        const existingDeadline = dismissDeadlines.current.get(task.id);
+        const deadline = existingDeadline === undefined
+          ? completedDeadline
+          : Math.min(existingDeadline, completedDeadline);
         dismissDeadlines.current.set(task.id, deadline);
         return window.setTimeout(() => {
           setDismissed((current) => {
