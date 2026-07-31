@@ -1988,6 +1988,38 @@ Host staging
     && recordedCommandHistory.revision === 4,
   `rapid commands were not serialized into canonical history: ${JSON.stringify(recordedCommandHistory)}`);
 
+  await historyFilter.fill("");
+  const invalidHistoryBaseline = await page.evaluate(() => ({
+    revision: window.__commandHistory.revision,
+    recordCalls: window.__invokeCalls.filter((call) => call.command === "record_command_history").length,
+    local: localStorage.getItem("portmate.commandHistory"),
+  }));
+  const historyRowsBeforeInvalid = await page.locator(".history-list button").allTextContents();
+  for (const invalidCommand of ["bad\0command", "界".repeat(8_193)]) {
+    await sender.getByRole("textbox", { name: "send text", exact: true }).evaluate((textarea, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, value);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }, invalidCommand);
+    await sender.getByRole("button", { name: "发送", exact: true }).click();
+    await sender.getByRole("button", { name: "发送", exact: true }).waitFor({ state: "visible" });
+  }
+  await page.waitForTimeout(50);
+  const invalidHistoryResult = await page.evaluate(() => ({
+    revision: window.__commandHistory.revision,
+    recordCalls: window.__invokeCalls.filter((call) => call.command === "record_command_history").length,
+    local: localStorage.getItem("portmate.commandHistory"),
+  }));
+  const historyRowsAfterInvalid = await page.locator(".history-list button").allTextContents();
+  assert(JSON.stringify(invalidHistoryResult) === JSON.stringify(invalidHistoryBaseline)
+    && JSON.stringify(historyRowsAfterInvalid) === JSON.stringify(historyRowsBeforeInvalid),
+  `invalid commands reached command history state or persistence: ${JSON.stringify({
+    baseline: invalidHistoryBaseline,
+    result: invalidHistoryResult,
+    rowsBefore: historyRowsBeforeInvalid.length,
+    rowsAfter: historyRowsAfterInvalid.length,
+  })}`);
+
   await leftDock.locator('.workspace-dock-tab[data-panel="explorer"] .workspace-dock-tab-label').click();
   await leftDock.locator('.workspace-dock-content[data-panel="explorer"]').waitFor();
   const focusedDockPanels = await leftDock.evaluate((dock) => Object.fromEntries(
@@ -4450,6 +4482,7 @@ Host staging
     commandHistory: {
       migratedRevision: migratedCommandHistory.snapshot.revision,
       recordedRevision: recordedCommandHistory.revision,
+      invalidRejected: true,
       cleared: true,
     },
     contextMenu: "single synchronized-input, split, move, merge, swap, zoom, detach, close-pane, and profile-delete actions",
