@@ -3171,6 +3171,34 @@ Host staging
   await startupDomainPage.getByRole("button", { name: "传输任务", exact: true }).click();
   const startupTransferRow = startupDomainPage.locator(".transfer-row", { hasText: "/tmp/startup-source.bin" });
   await startupTransferRow.waitFor();
+  const completedAt = new Date().toISOString();
+  await startupDomainPage.evaluate(({ task, completedAt }) => {
+    window.__emitTauriEvent("portmate-transfer-task", {
+      ...task,
+      bytesDone: task.bytesTotal,
+      status: "completed",
+      message: "completed",
+      finishedAt: completedAt,
+    });
+  }, { task: hydrationTransfer, completedAt });
+  await startupTransferRow.getByRole("button", { name: "关闭已完成传输", exact: true }).click();
+  await startupTransferRow.waitFor({ state: "detached" });
+  const autoDismissTransfer = {
+    ...hydrationTransfer,
+    id: "startup-auto-dismiss-transfer",
+    source: "/tmp/auto-dismiss-source.bin",
+    destination: "/srv/auto-dismiss-target.bin",
+    bytesDone: hydrationTransfer.bytesTotal,
+    status: "completed",
+    message: "completed",
+    finishedAt: completedAt,
+  };
+  await startupDomainPage.evaluate((task) => {
+    window.__emitTauriEvent("portmate-transfer-task", task);
+  }, autoDismissTransfer);
+  const autoDismissTransferRow = startupDomainPage.locator(".transfer-row", { hasText: "/tmp/auto-dismiss-source.bin" });
+  await autoDismissTransferRow.waitFor();
+  await autoDismissTransferRow.waitFor({ state: "detached", timeout: 8_000 });
   const startupDomainState = await startupDomainPage.evaluate(() => ({
     transfers: window.__transfers.map((task) => task.id),
     grants: window.__mcpGrants.map((grant) => grant.clientId),
