@@ -8,6 +8,7 @@ import {
   normalizeCommandHistoryCommand,
   normalizeCommandHistory,
   normalizeCommandHistoryPolicy,
+  normalizePendingCommandHistory,
   queuePendingCommandHistory,
   recordCommandHistory,
 } from "./command-history-state";
@@ -83,6 +84,12 @@ describe("command history state", () => {
     expect(pending).toEqual(["b", "a"]);
     expect(queuePendingCommandHistory(pending, "   ", policy, 1_003)).toEqual(pending);
     expect(queuePendingCommandHistory(pending, "c", policy, 1_004)).toEqual(["a", "c"]);
+    expect(normalizePendingCommandHistory(
+      ["old", "a", "bad\0command", "b", "a"],
+      policy,
+      1_005,
+    )).toEqual(["b", "a"]);
+    expect(normalizePendingCommandHistory(pending, { ...policy, limit: 1 }, 1_006)).toEqual(["a"]);
   });
 
   it("bounds pending backend writes by the persisted UTF-8 payload budget", () => {

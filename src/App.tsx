@@ -1024,6 +1024,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     let disposed = false;
     void import("./command-history-state").then((history) => {
       if (disposed) return;
+      pendingCommandHistoryRef.current = terminalPrefs.historyEnabled
+        ? history.normalizePendingCommandHistory(
+          pendingCommandHistoryRef.current,
+          commandHistoryPolicy,
+        )
+        : [];
       const normalized = history.normalizeCommandHistory(
         history.commandHistorySnapshot(commandHistoryEntries),
         commandHistoryPolicy,

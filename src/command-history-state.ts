@@ -92,7 +92,19 @@ export function queuePendingCommandHistory(
 ): string[] {
   const valid = normalizeCommandHistoryCommand(command);
   if (!valid) return [...current];
-  const candidates = [...current.filter((item) => item !== valid), valid]
+  return normalizePendingCommandHistory(
+    [...current.filter((item) => item !== valid), valid],
+    policy,
+    now,
+  );
+}
+
+export function normalizePendingCommandHistory(
+  current: readonly string[],
+  policy: CommandHistoryPolicy,
+  now = Date.now(),
+): string[] {
+  const candidates = current
     .slice(-MAX_COMMAND_HISTORY_LIMIT * 2)
     .reverse()
     .map((item, index) => ({ command: item, recordedAt: Math.max(0, now - index) }));
