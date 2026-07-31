@@ -34,10 +34,22 @@ fn export_bundle_includes_diagnostics_and_redacts_text() {
     store
         .send_text("client", "test-session", "token=abc123")
         .unwrap();
+    store
+        .record_command_history(
+            "deploy --password command-history-secret".to_string(),
+            100,
+            30,
+            Utc::now().timestamp_millis(),
+        )
+        .unwrap();
 
+    let plain = store.export_session_bundle("test-session");
     let bundle = store.export_session_bundle_redacted("test-session");
+    let plain_rendered = serde_json::to_string(&plain).unwrap();
     let rendered = serde_json::to_string(&bundle).unwrap();
 
+    assert!(!plain_rendered.contains("command-history-secret"));
+    assert!(!rendered.contains("command-history-secret"));
     assert!(!rendered.contains("test.raw:0:16"));
     assert!(rendered.contains("transfer-1"));
     assert!(rendered.contains("send_text"));

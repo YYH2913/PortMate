@@ -274,6 +274,14 @@ fn sensitive_snapshot_store() -> SessionStore {
         average_bytes_per_second: Some(6.0),
     });
     store
+        .record_command_history(
+            "deploy --password command-history-secret".to_string(),
+            100,
+            30,
+            diagnostic_ts.timestamp_millis(),
+        )
+        .unwrap();
+    store
 }
 
 fn list_sessions_text(server: &mut PortMateMcp) -> String {
@@ -516,6 +524,7 @@ fn mcp_read_surfaces_redact_sensitive_metadata_without_mutating_the_store() {
         "/home/operator/source-secret.txt",
         "/srv/private/destination-secret.txt",
         "transfer-message-secret",
+        "command-history-secret",
         "trigger-label-secret",
         "trigger-match-secret",
         "/home/operator/private-scripts/deploy",

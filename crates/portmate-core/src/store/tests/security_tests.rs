@@ -3,9 +3,16 @@ use super::*;
 #[test]
 fn legacy_store_without_one_keys_deserializes_empty() {
     let mut value = serde_json::to_value(SessionStore::default()).unwrap();
-    value.as_object_mut().unwrap().remove("oneKeys");
+    let object = value.as_object_mut().unwrap();
+    object.remove("oneKeys");
+    object.remove("commandHistory");
+    object.remove("commandHistoryMigrated");
+    object.remove("commandHistoryRevision");
     let store: SessionStore = serde_json::from_value(value).unwrap();
     assert!(store.one_keys.is_empty());
+    assert!(store.command_history.is_empty());
+    assert!(!store.command_history_migrated);
+    assert_eq!(store.command_history_revision, 0);
 }
 
 #[test]
