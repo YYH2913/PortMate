@@ -26,7 +26,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 新稳定版发布后的兼容适配，以及发布签名与 Apple notarization。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义；Windows MSI/NSIS 与 macOS app/DMG 的包内主程序也已接入隔离 Store、IPC 发布、正常退出和 endpoint 清理 smoke，但仍需真实 runner 成功记录作为原生证据。
+但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 新稳定版发布后的兼容适配，以及发布签名与 Apple notarization。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义；Windows MSI/NSIS 与 macOS app/DMG 的包内主程序也已接入隔离 Store、IPC 发布、正常退出和 endpoint 清理 smoke。Native keyring 脚本现对 macOS 使用临时 default keychain 验证 locked provider，仍需真实 runner 成功记录作为原生证据。
 
 ## 当前实现快照
 
@@ -426,7 +426,7 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 ## 建议的近期执行顺序
 
 1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
-2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；Linux Secret Service 跨进程 CRUD、provider unavailable 和 locked/prompt-denied，以及 Linux Stronghold 跨进程 CRUD/CAS、错误密码、损坏/缺失文件、commit rollback 和 Unix 私有文件边界均已实测，Windows/macOS 两类 CRUD probe 已接入 CI，durable migration journal、异常提交核对、重载 UX、双向迁移和 conflict 诊断导出已完成；仍需 Windows/macOS runner 成功、locked/denied provider 和对应文件系统故障证据。
+2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；Linux Secret Service 跨进程 CRUD、provider unavailable 和 locked/prompt-denied，以及 Linux Stronghold 跨进程 CRUD/CAS、错误密码、损坏/缺失文件、commit rollback 和 Unix 私有文件边界均已实测；macOS Native CI probe 现在会创建临时 default keychain，并验证锁定后上游按系统错误返回的 `NoStorageAccess`/`PlatformFailure` 不可访问语义，Windows/macOS 两类 CRUD probe 已接入 CI，durable migration journal、异常提交核对、重载 UX、双向迁移和 conflict 诊断导出已完成；仍需 Windows/macOS runner 成功、Windows denied provider 和对应文件系统故障证据。
 3. SSH 三层健康与服务端故障矩阵已完成；继续扩展跨平台传输、Serial 物理设备与远端 OS 故障矩阵。
 4. vttest、真实 tmux、四发行版全屏程序和全部浏览器 Playwright 回归已完成；继续收集三平台 native CI/安装 smoke test 证据。
 
