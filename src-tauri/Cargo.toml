@@ -48,5 +48,8 @@ uuid.workspace = true
 zeroize = "1"
 zmodem2 = "0.5.0"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 rcgen = "0.14.8"

@@ -5372,6 +5372,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
  "zmodem2",
 ]

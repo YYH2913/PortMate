@@ -92,12 +92,31 @@ fn validate_portable_vault_file_metadata(
             return Err(format!("portable vault {label} 不得存在多个硬链接"));
         }
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.number_of_links().is_some_and(|count| count != 1) {
-            return Err(format!("portable vault {label} 不得存在多个硬链接"));
-        }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_opened_portable_vault_file_link_count(
+    file: &fs::File,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the borrowed std::fs::File keeps the HANDLE valid for the call and
+    // the output points to a fully allocated BY_HANDLE_FILE_INFORMATION value.
+    let result = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if result == 0 {
+        return Err(format!(
+            "无法检查 portable vault {label} 硬链接数量: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if information.nNumberOfLinks != 1 {
+        return Err(format!("portable vault {label} 不得存在多个硬链接"));
     }
     Ok(())
 }
@@ -128,6 +147,20 @@ pub(super) fn portable_vault_file_exists(path: &Path, label: &str) -> Result<boo
         }
     };
     validate_portable_vault_file_metadata(&metadata, label)?;
+    #[cfg(windows)]
+    {
+        let file = fs::File::open(path).map_err(|error| {
+            format!(
+                "无法打开 portable vault {label} 检查文件身份 {}: {error}",
+                path.display()
+            )
+        })?;
+        let opened_metadata = file
+            .metadata()
+            .map_err(|error| format!("无法检查已打开的 portable vault {label}: {error}"))?;
+        validate_portable_vault_file_metadata(&opened_metadata, label)?;
+        validate_opened_portable_vault_file_link_count(&file, label)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -149,6 +182,8 @@ pub(super) fn secure_opened_portable_vault_file(
         .metadata()
         .map_err(|error| format!("无法检查已打开的 portable vault {label}: {error}"))?;
     validate_portable_vault_file_metadata(&metadata, label)?;
+    #[cfg(windows)]
+    validate_opened_portable_vault_file_link_count(file, label)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
