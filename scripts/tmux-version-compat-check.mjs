@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   compatibilityUsesCachedImages,
+  filterCompatibilityEntries,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
 
@@ -13,10 +14,13 @@ if (process.platform !== "linux") {
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const commandTimeoutMs = 300_000;
 const useCachedImages = compatibilityUsesCachedImages();
 const fieldSeparator = "|PORTMATE:8f41c2d7:|";
-const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/tmux-version-matrix.json"), "utf8"));
-if (!Array.isArray(matrix) || matrix.length < 4) throw new Error("tmux version matrix must contain at least four entries");
+const allEntries = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/tmux-version-matrix.json"), "utf8"));
+if (!Array.isArray(allEntries) || allEntries.length < 4) throw new Error("tmux version matrix must contain at least four entries");
+allEntries.forEach(validateEntry);
+const matrix = filterCompatibilityEntries(allEntries);
 
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 run("cargo", ["build", "-p", "portmate", "--bin", "tmux-compat-probe"]);
@@ -24,7 +28,6 @@ const probe = resolve(projectRoot, "target/debug", process.platform === "win32" 
 const results = [];
 
 for (const entry of matrix) {
-  validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
   await prepareCompatibilityImage({
@@ -128,8 +131,14 @@ function run(command, args, options = {}) {
     input: options.input,
     stdio: options.capture || options.quiet ? [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] : "inherit",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout ?? commandTimeoutMs,
   });
-  if (result.error && !options.allowFailure) throw result.error;
+  if (result.error && !options.allowFailure) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(`${command} ${args.join(" ")} exceeded its ${options.timeout ?? commandTimeoutMs} ms timeout`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
     const details = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);

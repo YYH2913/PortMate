@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import {
   compatibilityUsesCachedImages,
+  filterCompatibilityEntries,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
 
@@ -17,7 +18,7 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const useCachedImages = compatibilityUsesCachedImages();
-const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/terminal-program-matrix.json"), "utf8"));
+const allEntries = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/terminal-program-matrix.json"), "utf8"));
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_VTTEST_SCREENSHOT_PREFIX ?? "/tmp/portmate-vttest-compat";
 const maxPtyBytes = 16 * 1024 * 1024;
@@ -68,13 +69,14 @@ const fullScreenPrograms = [
   },
 ];
 
-if (!Array.isArray(matrix) || matrix.length < 4) {
+if (!Array.isArray(allEntries) || allEntries.length < 4) {
   throw new Error("terminal program matrix must contain at least four entries");
 }
+allEntries.forEach(validateEntry);
+const matrix = filterCompatibilityEntries(allEntries);
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 
 for (const entry of matrix) {
-  validateEntry(entry);
   entry.image = `portmate-compat-terminal-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
   await prepareCompatibilityImage({

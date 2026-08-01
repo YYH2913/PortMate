@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   compatibilityUsesCachedImages,
+  filterCompatibilityEntries,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
 
@@ -16,15 +17,16 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerControlTimeoutMs = 180_000;
 const useCachedImages = compatibilityUsesCachedImages();
 const matrixPath = resolve(projectRoot, "tests/compat/tcp-telnet-server-matrix.json");
-const matrix = JSON.parse(readFileSync(matrixPath, "utf8"));
-if (!Array.isArray(matrix) || !matrix.length) {
+const allEntries = JSON.parse(readFileSync(matrixPath, "utf8"));
+if (!Array.isArray(allEntries) || !allEntries.length) {
   throw new Error("TCP/Telnet server compatibility matrix is empty");
 }
+allEntries.forEach(validateEntry);
+const matrix = filterCompatibilityEntries(allEntries);
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 
 const verifiedServers = [];
 for (const entry of matrix) {
-  validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
   await prepareCompatibilityImage({

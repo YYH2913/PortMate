@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   compatibilityUsesCachedImages,
+  filterCompatibilityEntries,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
 
@@ -16,19 +17,31 @@ if (process.platform !== "linux") {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerControlTimeoutMs = 180_000;
 const useCachedImages = compatibilityUsesCachedImages();
-const matrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
-const healthFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
-const transferFaultMatrix = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-transfer-fault-matrix.json"), "utf8"));
-if (!Array.isArray(matrix) || !matrix.length) throw new Error("SSH server compatibility matrix is empty");
-if (!Array.isArray(healthFaultMatrix) || !healthFaultMatrix.length) throw new Error("SSH health fault matrix is empty");
-if (!Array.isArray(transferFaultMatrix) || !transferFaultMatrix.length) throw new Error("SSH transfer fault matrix is empty");
-transferFaultMatrix.forEach(validateTransferFaultEntry);
-validateTransferFaultStatusCoverage(transferFaultMatrix);
+const allServers = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
+const allHealthFaults = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
+const allTransferFaults = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-transfer-fault-matrix.json"), "utf8"));
+if (!Array.isArray(allServers) || !allServers.length) throw new Error("SSH server compatibility matrix is empty");
+if (!Array.isArray(allHealthFaults) || !allHealthFaults.length) throw new Error("SSH health fault matrix is empty");
+if (!Array.isArray(allTransferFaults) || !allTransferFaults.length) throw new Error("SSH transfer fault matrix is empty");
+allServers.forEach(validateEntry);
+allHealthFaults.forEach(validateHealthFaultEntry);
+allTransferFaults.forEach(validateTransferFaultEntry);
+validateTransferFaultStatusCoverage(allTransferFaults);
+const filterEntries = [
+  ...allServers.map(({ name }) => ({ name: `server.${name}` })),
+  ...allHealthFaults.map(({ name }) => ({ name: `health.${name}` })),
+  ...allTransferFaults.map(({ name }) => ({ name: `transfer.${name}` })),
+];
+const selectedFilterNames = new Set(
+  filterCompatibilityEntries(filterEntries).map(({ name }) => name),
+);
+const matrix = allServers.filter(({ name }) => selectedFilterNames.has(`server.${name}`));
+const healthFaultMatrix = allHealthFaults.filter(({ name }) => selectedFilterNames.has(`health.${name}`));
+const transferFaultMatrix = allTransferFaults.filter(({ name }) => selectedFilterNames.has(`transfer.${name}`));
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 
 const results = [];
 for (const entry of matrix) {
-  validateEntry(entry);
   const image = `portmate-compat-${entry.name}:local`;
   const buildArgs = Object.entries(entry.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]);
   await prepareCompatibilityImage({
@@ -112,23 +125,24 @@ for (const entry of matrix) {
 }
 
 const healthFaultImage = "portmate-compat-ssh-health-faults:local";
-await prepareCompatibilityImage({
-  run,
-  image: healthFaultImage,
-  useCachedImages,
-  buildArgs: [
-    "build",
-    "--tag",
-    healthFaultImage,
-    "--file",
-    resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
-    projectRoot,
-  ],
-  inspectOptions: { timeout: dockerControlTimeoutMs },
-});
+if (healthFaultMatrix.length || transferFaultMatrix.length) {
+  await prepareCompatibilityImage({
+    run,
+    image: healthFaultImage,
+    useCachedImages,
+    buildArgs: [
+      "build",
+      "--tag",
+      healthFaultImage,
+      "--file",
+      resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
+      projectRoot,
+    ],
+    inspectOptions: { timeout: dockerControlTimeoutMs },
+  });
+}
 const verifiedHealthFaults = [];
 for (const entry of healthFaultMatrix) {
-  validateHealthFaultEntry(entry);
   const container = `portmate-compat-${randomUUID()}`;
   try {
     run("docker", [
