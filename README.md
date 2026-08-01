@@ -705,6 +705,19 @@ starting Samba and OpenSSH. This is Samba AD-compatible coverage, not evidence f
 All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
 times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
 matrices without registry access; each command fails closed if a required image is absent.
+Set `PORTMATE_COMPAT_FILTER` to a comma-separated list of exact matrix names to run a bounded subset;
+empty, duplicate, malformed, and unknown names are rejected before Docker starts. Tmux, TCP/Telnet,
+and vttest use the names from their JSON matrices directly. The combined SSH matrix uses qualified
+names such as `server.openssh-alpine-3.19`, `health.exec-rejected`, and
+`transfer.sftp-status-31` so identically named health and transfer faults remain unambiguous. Every
+script validates its complete checked-in matrix before applying the filter, so a focused run cannot
+hide an invalid unselected entry. For example:
+
+```bash
+PORTMATE_COMPAT_USE_CACHED_IMAGES=1 \
+PORTMATE_COMPAT_FILTER=server.openssh-alpine-3.19,health.exec-rejected \
+npm run test:ssh-server-compat
+```
 
 The workspace suite also resolves two log previews in reverse order, holds MCP HTTP configuration across repeated tab activation, closes and reopens the OneKey manager while resolving two saves in reverse order, and exercises three-stage Host Key import and Client Identity edit lifecycles. It opens Session Settings, applies a newer Profile through the normal background poll, then verifies that the save request still carries the dialog's edit-time baseline so the backend can preserve the concurrent field. The Client Identity sequence first proves that a response released after close still reaches the parent list, then holds an older edit across another close/reopen cycle while a newer manager commits the final value before that stale response is released. A private-key import lifecycle freezes Secret creation across the same close/reopen boundary, lets the replacement manager commit the current identity, then verifies that releasing the old write performs no Profile save and removes the orphan Secret. Connection-credential checks fail the second of two Secret writes and then fail the Profile commit after one successful write, proving both cleanup paths leave no retained Secret and no false saved-password state. Session Settings checks freeze a staged Vault-key write to prove every close/submit control remains disabled, then separately prove cancellation deletes the ref while a successful Profile commit retains it without an erroneous cleanup call. A separate Vault lifecycle freezes an unlock across close/reopen, verifies that the replacement manager remains disabled without issuing a duplicate mutation, then confirms automatic state convergence before locking the Vault again. Profile-mutation failure checks additionally prove that a complete compensation read accepts both changed Profile fields with unchanged runtime counters and an authoritative empty session list. These checks cover dialog and app-lifetime request gates rather than relying only on unit-level gate behavior.
 
