@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-08-02
+审查日期：2026-08-03
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -250,6 +250,8 @@ npm run test:linux-appimage-smoke
 
 本轮缓存镜像复验确认 SSH 矩阵的 20 个正常服务端、10 组 SFTP/SCP 活动断线、10 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；TCP/Telnet 矩阵的 18 个服务端也全部通过。Ubuntu libssh 0.10.6 的 `ssh_userauth_gssapi` 符号和 `libgssapi_krb5` 动态依赖先经构建门禁确认，随后五个 GSSAPI/Kerberos 服务端组合的 55 个场景全部通过；vttest 三版本各 13 套件、四发行版 Vim/less/top/dialog 和 tmux 3.1c/3.3a/3.5a/3.7b 也完成本轮复验。
 
+2026-08-03 增量复验确认 `cargo test --locked -p portmate --lib` 的 391 项测试全部通过，`npm test` 的 439 项测试、`npm run build`、workspace UI、terminal compatibility、vttest、Tmux workflow/version、SSH/TCP/Telnet 兼容矩阵也全部通过。`npm run test:linux-desktop-smoke` 已实际执行，但脚本在启动应用前因本机 `PATH` 缺少 `wmctrl` 退出；`xwininfo` 和 `xwd` 已存在，当前账号不能无交互使用 `sudo` 安装缺失依赖，因此该项保留为环境阻塞，不修改测试脚本绕过依赖。
+
 Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_COMPAT_FILTER`，空项、重复、非法字符、超长和未知名称都会在 Docker 启动前失败。SSH 综合矩阵使用 `server.`、`health.`、`transfer.` 限定名，避免同名 SFTP 健康与传输故障产生歧义；TCP/Telnet、Tmux 和 vttest 直接使用各自 JSON 条目名。所有脚本在筛选前仍验证完整清单，SFTP v3-v6 状态码覆盖也继续对完整故障矩阵执行。Tmux 的 Docker、Cargo 和 probe 子进程同时获得 5 分钟总时限，不再存在单项无界等待。
 
 `npm run build` 已把应用壳、文件管理器、会话设置、终端设置、密钥管理器、MCP Bridge、Sysmon 详情、日志管理、低频传输任务弹窗、端口转发弹窗、工作区辅助筛选面板、session/终端右键菜单、搜索、view 右键菜单/重命名弹窗、Quick Command 管理器、命令历史状态、SessionSummary cache 校验、串口分析器/窗口创建器、浏览器终端导出、终端 buffer/选择/在线搜索动作、xterm core/命令目录、WebGL 和 CSS 拆为真实 lazy chunk。当前主 JS 约 378.96 kB、文件管理器约 21.76 kB、会话设置约 40.59 kB、终端设置约 11.75 kB、Tmux 管理器约 18.05 kB、密钥管理器约 48.52 kB、Sysmon 详情约 11.47 kB、日志管理约 11.23 kB、端口转发弹窗约 5.57 kB、传输任务弹窗约 4.35 kB、SessionSummary cache 校验约 6.96 kB、MCP Bridge 约 13.32 kB、独立终端窗口约 9.32 kB、终端 core JS 约 475.39 kB、WebGL JS 约 120.37 kB、主 CSS 约 153.75 kB、终端 CSS 约 3.93 kB；共享 session 搜索状态约 1.94 kB、工作区辅助筛选约 2.87 kB、命令历史状态约 2.12 kB、session/终端菜单约 4.84 kB、view 右键菜单约 4.63 kB、终端 buffer 约 1.39 kB、选择/在线搜索约 2.19 kB。主包与终端 chunk 均低于 500 kB，没有通过抬高阈值隐藏 warning。
@@ -329,7 +331,7 @@ Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_
 - Profile 总量回归覆盖 10,000 项边界下已有 ID 更新、新 ID 拒绝、10,001 项 Store 拒绝，以及桌面 normalize 和 standalone MCP 快照加载的同一 fail-closed 规则。
 - 日志保留检查 registry 回归覆盖同 Profile 天数覆盖、禁用/显式清理和一小时遗留项回收，确保配置 churn 不会留下乘法增长的缓存 key。
 
-当前 Rust workspace 单元测试总数为 495：`portmate` 390、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 36、`libssh-rs` 2、`russh-sftp` 11，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 75 个文件、439 个前端与脚本 desktop-clean/display-formatter/menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-profile-helper/session-runtime/session-search/session-cache/screen-lock/detached-pane/trigger/tunnel/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-key-mode/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/OpenSSH-config/GSSAPI-build-environment/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate/file-navigation/window-geometry/workspace-window-route/font-assets/native-package-layout/compatibility-matrix 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 单元测试总数为 495：`portmate` 391、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 36、`libssh-rs` 2、`russh-sftp` 11，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 75 个文件、439 个前端与脚本 desktop-clean/display-formatter/menu-capability/transfer-capability/selection/presentation/log-shard/workspace/workspace-hotkey/workspace-view-context/workspace-panel/workspace-utility/context-menu/terminal-settings/session-settings/session-profile-helper/session-runtime/session-search/session-cache/screen-lock/detached-pane/trigger/tunnel/sync-input/terminal-state/terminal-search/terminal-export/terminal-buffer/terminal-selection/terminal-goto-line/terminal-key-mode/terminal-mouse/terminal-theme/command-history/Tmux/free-input/quick-command/OneKey/clipboard/secret-migration/SSH-health/TCP-health/Serial-health/Serial-capture/proxy/OpenSSH-config/GSSAPI-build-environment/Sysmon-history/MCP-audit/MCP-approval/AppImage-runtime/keyed-request-gate/file-navigation/window-geometry/workspace-window-route/font-assets/native-package-layout/compatibility-matrix 单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
