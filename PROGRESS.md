@@ -250,7 +250,7 @@ npm run test:linux-appimage-smoke
 
 本轮缓存镜像复验确认 SSH 矩阵的 20 个正常服务端、10 组 SFTP/SCP 活动断线、10 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；TCP/Telnet 矩阵的 18 个服务端也全部通过。Ubuntu libssh 0.10.6 的 `ssh_userauth_gssapi` 符号和 `libgssapi_krb5` 动态依赖先经构建门禁确认，随后五个 GSSAPI/Kerberos 服务端组合的 55 个场景全部通过；vttest 三版本各 13 套件、四发行版 Vim/less/top/dialog 和 tmux 3.1c/3.3a/3.5a/3.7b 也完成本轮复验。
 
-2026-08-03 增量复验确认 `cargo test --locked -p portmate --lib` 的 391 项测试全部通过，`npm test` 的 439 项测试、`npm run build`、workspace UI、terminal compatibility、vttest、Tmux workflow/version、SSH/TCP/Telnet 兼容矩阵也全部通过。`npm run test:linux-desktop-smoke` 已实际执行，但脚本在启动应用前因本机 `PATH` 缺少 `wmctrl` 退出；`xwininfo` 和 `xwd` 已存在，当前账号不能无交互使用 `sudo` 安装缺失依赖，因此该项保留为环境阻塞，不修改测试脚本绕过依赖。
+2026-08-03 增量复验确认 `cargo test --locked -p portmate --lib` 的 391 项测试全部通过，`npm test` 的 439 项测试、`npm run build`、workspace UI、terminal compatibility、vttest、Tmux workflow/version、SSH/TCP/Telnet 兼容矩阵也全部通过。`npm run test:linux-desktop-smoke` 首次执行因本机 `PATH` 缺少 `wmctrl` 在启动前退出；使用临时解包的 `wmctrl` 重跑时发现并修复了 `desktop-clean` 将稳定探测窗口和总超时都设为 750 ms 的竞态，随后 native smoke 完整通过：1440x920 窗口、VMware WebKit DMABUF fallback、非空像素、IPC endpoint 发布/回收和 Store 持久化均通过。系统包未写入仓库或全局环境，测试脚本没有绕过依赖检查。
 
 Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_COMPAT_FILTER`，空项、重复、非法字符、超长和未知名称都会在 Docker 启动前失败。SSH 综合矩阵使用 `server.`、`health.`、`transfer.` 限定名，避免同名 SFTP 健康与传输故障产生歧义；TCP/Telnet、Tmux 和 vttest 直接使用各自 JSON 条目名。所有脚本在筛选前仍验证完整清单，SFTP v3-v6 状态码覆盖也继续对完整故障矩阵执行。Tmux 的 Docker、Cargo 和 probe 子进程同时获得 5 分钟总时限，不再存在单项无界等待。
 
