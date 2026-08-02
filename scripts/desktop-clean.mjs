@@ -15,6 +15,9 @@ import { assertSupportedNodeVersion } from "./ensure-node-version.mjs";
 
 const PORT_RELEASE_POLL_MS = 100;
 const PORT_RELEASE_STABLE_MS = 750;
+// The total probe budget must exceed the stability window; otherwise normal
+// socket-probe overhead can make an already-free port look busy.
+const PORT_RELEASE_INITIAL_WAIT_MS = PORT_RELEASE_STABLE_MS * 2;
 
 assertSupportedNodeVersion();
 
@@ -45,7 +48,7 @@ async function releaseConfiguredDevPort() {
   await releaseProjectDevPort({
     host: devHost,
     port: devPort,
-    initialWaitMs: PORT_RELEASE_STABLE_MS,
+    initialWaitMs: PORT_RELEASE_INITIAL_WAIT_MS,
     terminateWaitMs: 2_000,
     forceWaitMs: 1_000,
     waitForPort,
