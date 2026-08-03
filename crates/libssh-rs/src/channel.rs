@@ -1,6 +1,8 @@
-use crate::{opt_cstring_to_cstr, opt_str_to_cstring, Error, SessionHolder, SshResult};
+use crate::{
+    checked_c_int, duration_millis_c_int, duration_millis_u32, ffi_io_count, opt_cstring_to_cstr,
+    opt_str_to_cstring, Error, SessionHolder, SshResult,
+};
 use libssh_rs_sys as sys;
-use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -110,8 +112,7 @@ impl Channel {
     /// Returns a newly created `Channel`, or `None` if no X11 request from the server.
     pub fn accept_x11(&self, timeout: std::time::Duration) -> Option<Self> {
         let (_sess, chan) = self.lock_session();
-        let timeout = timeout.as_millis();
-        let chan = unsafe { sys::ssh_channel_accept_x11(chan, timeout.try_into().unwrap()) };
+        let chan = unsafe { sys::ssh_channel_accept_x11(chan, duration_millis_c_int(timeout)) };
         if chan.is_null() {
             None
         } else {
@@ -304,29 +305,20 @@ impl Channel {
     /// `term = "xterm"`, `columns = 80` and `rows = 24` are reasonable
     /// defaults.
     pub fn request_pty(&self, term: &str, columns: u32, rows: u32) -> SshResult<()> {
-        let (sess, chan) = self.lock_session();
         let term = CString::new(term)?;
-        let res = unsafe {
-            sys::ssh_channel_request_pty_size(
-                chan,
-                term.as_ptr(),
-                columns.try_into().unwrap(),
-                rows.try_into().unwrap(),
-            )
-        };
+        let columns = checked_c_int(columns, "PTY columns")?;
+        let rows = checked_c_int(rows, "PTY rows")?;
+        let (sess, chan) = self.lock_session();
+        let res = unsafe { sys::ssh_channel_request_pty_size(chan, term.as_ptr(), columns, rows) };
         sess.basic_status(res, "ssh_channel_request_pty_size failed")
     }
 
     /// Informs the server that the local size of the PTY has changed
     pub fn change_pty_size(&self, columns: u32, rows: u32) -> SshResult<()> {
+        let columns = checked_c_int(columns, "PTY columns")?;
+        let rows = checked_c_int(rows, "PTY rows")?;
         let (sess, chan) = self.lock_session();
-        let res = unsafe {
-            sys::ssh_channel_change_pty_size(
-                chan,
-                columns.try_into().unwrap(),
-                rows.try_into().unwrap(),
-            )
-        };
+        let res = unsafe { sys::ssh_channel_change_pty_size(chan, columns, rows) };
         sess.basic_status(res, "ssh_channel_change_pty_size failed")
     }
 
@@ -336,7 +328,7 @@ impl Channel {
     /// be silently ignored.
     pub fn request_send_break(&self, length: Duration) -> SshResult<()> {
         let (sess, chan) = self.lock_session();
-        let res = unsafe { sys::ssh_channel_request_send_break(chan, length.as_millis() as _) };
+        let res = unsafe { sys::ssh_channel_request_send_break(chan, duration_millis_u32(length)) };
         sess.basic_status(res, "ssh_channel_request_send_break failed")
     }
 
@@ -461,7 +453,7 @@ impl Channel {
     ) -> SshResult<PollStatus> {
         let (sess, chan) = self.lock_session();
         let timeout = match timeout {
-            Some(t) => t.as_millis() as c_int,
+            Some(t) => duration_millis_c_int(t),
             None => -1,
         };
         let res =
@@ -494,14 +486,14 @@ impl Channel {
         let (sess, chan) = self.lock_session();
 
         let timeout = match timeout {
-            Some(t) => t.as_millis() as c_int,
+            Some(t) => duration_millis_c_int(t),
             None => -1,
         };
         let res = unsafe {
             sys::ssh_channel_read_timeout(
                 chan,
                 buf.as_mut_ptr() as _,
-                buf.len() as u32,
+                ffi_io_count(buf.len()),
                 if is_stderr { 1 } else { 0 },
                 timeout,
             )
@@ -533,7 +525,7 @@ impl Channel {
             sys::ssh_channel_read_nonblocking(
                 chan,
                 buf.as_mut_ptr() as _,
-                buf.len() as u32,
+                ffi_io_count(buf.len()),
                 if is_stderr { 1 } else { 0 },
             )
         };
@@ -562,7 +554,7 @@ impl Channel {
     /// until the window grows back.
     pub fn window_size(&self) -> usize {
         let (_sess, chan) = self.lock_session();
-        unsafe { sys::ssh_channel_window_size(chan).try_into().unwrap() }
+        unsafe { sys::ssh_channel_window_size(chan) as usize }
     }
 
     fn read_impl(&self, buf: &mut [u8], is_stderr: bool) -> std::io::Result<usize> {
@@ -577,7 +569,7 @@ impl Channel {
                 sys::ssh_channel_write_stderr
             } else {
                 sys::ssh_channel_write
-            })(chan, buf.as_ptr() as _, buf.len() as _)
+            })(chan, buf.as_ptr() as _, ffi_io_count(buf.len()))
         };
 
         match res {

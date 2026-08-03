@@ -74,6 +74,33 @@ impl Drop for LibraryState {
 static LIB: LazyLock<Option<LibraryState>> = LazyLock::new(|| LibraryState::new());
 const MAX_PENDING_AGENT_FORWARD_CHANNELS: usize = 32;
 
+pub(crate) fn duration_millis_c_int(duration: Duration) -> c_int {
+    duration.as_millis().min(c_int::MAX as u128) as c_int
+}
+
+pub(crate) fn duration_millis_u32(duration: Duration) -> u32 {
+    duration.as_millis().min(u32::MAX as u128) as u32
+}
+
+fn duration_micros_c_ulong(duration: Duration) -> c_ulong {
+    duration.as_micros().min(c_ulong::MAX as u128) as c_ulong
+}
+
+pub(crate) fn ffi_io_count(length: usize) -> u32 {
+    length.min(c_int::MAX as usize) as u32
+}
+
+pub(crate) fn checked_c_int(value: u32, label: &str) -> SshResult<c_int> {
+    if value > c_int::MAX as u32 {
+        Err(Error::fatal(format!(
+            "{label} exceeds the libssh limit of {}",
+            c_int::MAX
+        )))
+    } else {
+        Ok(value as c_int)
+    }
+}
+
 fn initialize() -> SshResult<()> {
     if LIB.is_none() {
         Err(Error::fatal("ssh_init failed"))
@@ -148,7 +175,7 @@ impl SessionHolder {
 
     fn blocking_flush(&self, timeout: Option<Duration>) -> SshResult<()> {
         let timeout = match timeout {
-            Some(t) => t.as_millis() as c_int,
+            Some(t) => duration_millis_c_int(t),
             None => -1,
         };
         let res = unsafe { sys::ssh_blocking_flush(self.sess, timeout) };
@@ -709,7 +736,7 @@ impl Session {
                 )
             },
             SshOption::Timeout(duration) => unsafe {
-                let micros: c_ulong = duration.as_micros() as c_ulong;
+                let micros = duration_micros_c_ulong(duration);
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
@@ -1165,8 +1192,9 @@ impl Session {
     pub fn accept_forward(&self, timeout: Duration) -> SshResult<(u16, Channel)> {
         let mut port = 0;
         let sess = self.lock_session();
-        let chan =
-            unsafe { sys::ssh_channel_accept_forward(**sess, timeout.as_millis() as _, &mut port) };
+        let chan = unsafe {
+            sys::ssh_channel_accept_forward(**sess, duration_millis_c_int(timeout), &mut port)
+        };
         if chan.is_null() {
             if let Some(err) = sess.last_error() {
                 Err(err)
@@ -1673,5 +1701,23 @@ mod test {
         let sess = Session::new().unwrap();
         let error = sess.send_ignore(b"prefix\0suffix").unwrap_err();
         assert!(matches!(error, Error::Fatal(message) if message.contains("nul byte")));
+    }
+
+    #[test]
+    fn ffi_numeric_conversions_do_not_wrap_or_panic() {
+        let huge = Duration::from_secs(u64::MAX);
+        assert_eq!(duration_millis_c_int(Duration::from_millis(17)), 17);
+        assert_eq!(duration_millis_c_int(huge), c_int::MAX);
+        assert_eq!(duration_millis_u32(huge), u32::MAX);
+        assert_eq!(duration_micros_c_ulong(huge), c_ulong::MAX);
+        assert_eq!(ffi_io_count(usize::MAX), c_int::MAX as u32);
+        assert_eq!(
+            checked_c_int(c_int::MAX as u32, "PTY columns"),
+            Ok(c_int::MAX)
+        );
+        assert!(matches!(
+            checked_c_int(c_int::MAX as u32 + 1, "PTY columns"),
+            Err(Error::Fatal(message)) if message.contains("PTY columns")
+        ));
     }
 }
