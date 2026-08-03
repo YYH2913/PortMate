@@ -1586,7 +1586,26 @@ Host staging
   await activeTerminalHost.dispatchEvent("wheel", { deltaY: 120 });
   await terminalContextMenu.waitFor({ state: "detached" });
   const terminalInputProbe = "portmate-input-probe\r";
-  await activeTerminalHost.locator(".xterm-helper-textarea").focus();
+  const activeTerminalInput = activeTerminalHost.locator(".xterm-helper-textarea");
+  assert(await activeTerminalHost.getAttribute("data-terminal-key-mode") === "remote"
+    && await activeTerminalHost.getAttribute("data-terminal-cursor-style") === "bar",
+  "SSH terminal did not start in Insert mode with a bar cursor");
+  await activeTerminalInput.focus();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => {
+    const host = document.querySelector(".terminal-pane.active .terminal-host");
+    return host?.getAttribute("data-terminal-key-mode") === "command"
+      && host?.getAttribute("data-terminal-cursor-style") === "block";
+  });
+  await page.keyboard.press("i");
+  await page.waitForFunction(() => {
+    const host = document.querySelector(".terminal-pane.active .terminal-host");
+    return host?.getAttribute("data-terminal-key-mode") === "remote"
+      && host?.getAttribute("data-terminal-cursor-style") === "bar";
+  });
+  assert(await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text").length) === 0,
+  "Insert/Normal mode controls leaked into SSH terminal input");
   await page.keyboard.type("portmate-input-probe");
   await page.keyboard.press("Enter");
   await page.waitForFunction((expected) => window.__invokeCalls
