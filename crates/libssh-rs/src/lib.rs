@@ -25,7 +25,7 @@
 pub use libssh_rs_sys as sys;
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_int, c_uint, c_ulong};
+use std::os::raw::{c_int, c_long, c_uint};
 #[cfg(unix)]
 use std::os::unix::io::RawFd as RawSocket;
 #[cfg(windows)]
@@ -84,8 +84,8 @@ pub(crate) fn duration_millis_u32(duration: Duration) -> u32 {
     duration.as_millis().min(u32::MAX as u128) as u32
 }
 
-fn duration_micros_c_ulong(duration: Duration) -> c_ulong {
-    duration.as_micros().min(c_ulong::MAX as u128) as c_ulong
+fn duration_micros_c_long(duration: Duration) -> c_long {
+    duration.as_micros().min(c_long::MAX as u128) as c_long
 }
 
 pub(crate) fn ffi_io_count(length: usize) -> u32 {
@@ -830,7 +830,7 @@ impl Session {
                 )
             },
             SshOption::Timeout(duration) => unsafe {
-                let micros = duration_micros_c_ulong(duration);
+                let micros = duration_micros_c_long(duration);
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
@@ -870,7 +870,6 @@ impl Session {
                 )
             },
             SshOption::ProcessConfig(value) => unsafe {
-                let value: c_uint = value.into();
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_PROCESS_CONFIG,
@@ -1858,7 +1857,7 @@ mod test {
         assert_eq!(duration_millis_c_int(Duration::from_millis(17)), 17);
         assert_eq!(duration_millis_c_int(huge), c_int::MAX);
         assert_eq!(duration_millis_u32(huge), u32::MAX);
-        assert_eq!(duration_micros_c_ulong(huge), c_ulong::MAX);
+        assert_eq!(duration_micros_c_long(huge), c_long::MAX);
         assert_eq!(ffi_io_count(usize::MAX), c_int::MAX as u32);
         assert_eq!(
             checked_c_int(c_int::MAX as u32, "PTY columns"),
@@ -1872,6 +1871,11 @@ mod test {
         assert_eq!(checked_ffi_port(u16::MAX as c_int, "port"), Ok(u16::MAX));
         assert!(checked_ffi_port(-1, "port").is_err());
         assert!(checked_ffi_port(u16::MAX as c_int + 1, "port").is_err());
+
+        let sess = Session::new().unwrap();
+        sess.set_option(SshOption::Timeout(huge)).unwrap();
+        sess.set_option(SshOption::ProcessConfig(true)).unwrap();
+        sess.set_option(SshOption::ProcessConfig(false)).unwrap();
     }
 
     #[test]
