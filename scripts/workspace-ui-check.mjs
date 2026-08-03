@@ -200,7 +200,9 @@ const events = sessions.map((session) => ({
   direction: "inbound",
   stream: "stdout",
   bytesRef: null,
-  text: `${session.profile.name}\r\n$ `,
+  text: session.profile.id === "edge-router"
+    ? `${session.profile.name}\r\n$ \r\nroot@OpenWrt:~# grep -n "wireless lan" /etc/config/wireless 192.168.1.1 42\r\n`
+    : `${session.profile.name}\r\n$ `,
   annotations: {},
 }));
 
@@ -993,6 +995,11 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(appUrl);
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
+  await page.waitForFunction(() => {
+    const host = document.querySelector(".terminal-pane.active .terminal-host");
+    return host?.getAttribute("data-terminal-semantic-highlighting") === "active"
+      && Number(host.getAttribute("data-terminal-semantic-decoration-count")) >= 6;
+  });
   await page.waitForFunction(() => localStorage.getItem("portmate.workspacePanels.v2") !== null);
   await page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true }).waitFor();
   await page.waitForFunction(() => window.__commandHistory.migrated
