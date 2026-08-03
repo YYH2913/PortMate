@@ -1576,6 +1576,16 @@ Host staging
   assert(await page.evaluate(() => window.__clipboardText) === "Edge Router",
     "resource context menu targeted a different session");
 
+  const activeTerminalHost = page.locator(".terminal-pane.active .terminal-host");
+  await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
+  const terminalContextMenu = page.locator(".terminal-context-menu");
+  await terminalContextMenu.waitFor();
+  await activeTerminalHost.dispatchEvent("scroll");
+  assert(await terminalContextMenu.isVisible(),
+    "XTerm's internal scroll bookkeeping dismissed the terminal context menu");
+  await activeTerminalHost.dispatchEvent("wheel", { deltaY: 120 });
+  await terminalContextMenu.waitFor({ state: "detached" });
+
   await togglePanel("文件管理器");
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
   await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').waitFor();
