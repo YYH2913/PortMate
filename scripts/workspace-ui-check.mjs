@@ -1585,6 +1585,20 @@ Host staging
     "XTerm's internal scroll bookkeeping dismissed the terminal context menu");
   await activeTerminalHost.dispatchEvent("wheel", { deltaY: 120 });
   await terminalContextMenu.waitFor({ state: "detached" });
+  const terminalInputProbe = "portmate-input-probe\r";
+  await activeTerminalHost.locator(".xterm-helper-textarea").focus();
+  await page.keyboard.type("portmate-input-probe");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction((expected) => window.__invokeCalls
+    .filter((call) => call.command === "send_text")
+    .map((call) => call.args.text)
+    .join("") === expected, terminalInputProbe);
+  const terminalInputWrites = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text"));
+  assert(terminalInputWrites.length > 0
+    && terminalInputWrites.every((call) => call.args.sessionId === "edge-router")
+    && terminalInputWrites.map((call) => call.args.text).join("") === terminalInputProbe,
+  `terminal keyboard input was lost or routed to another session: ${JSON.stringify(terminalInputWrites)}`);
 
   await togglePanel("文件管理器");
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
