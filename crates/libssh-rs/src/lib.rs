@@ -73,6 +73,8 @@ impl Drop for LibraryState {
 
 static LIB: LazyLock<Option<LibraryState>> = LazyLock::new(|| LibraryState::new());
 const MAX_PENDING_AGENT_FORWARD_CHANNELS: usize = 32;
+const MAX_KEYBOARD_INTERACTIVE_PROMPTS: usize = 64;
+const MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES: usize = 64 * 1024;
 
 pub(crate) fn duration_millis_c_int(duration: Duration) -> c_int {
     duration.as_millis().min(c_int::MAX as u128) as c_int
@@ -115,6 +117,23 @@ fn write_auth_callback_response(buf: &mut [u8], response: &str) -> SshResult<()>
     }
     buf[..response.len()].copy_from_slice(response.as_bytes());
     Ok(())
+}
+
+unsafe fn bounded_c_string(
+    value: *const ::std::os::raw::c_char,
+    label: &str,
+    max_bytes: usize,
+) -> SshResult<String> {
+    if value.is_null() {
+        return Err(Error::fatal(format!("libssh returned a null {label}")));
+    }
+    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+    if bytes.len() > max_bytes {
+        return Err(Error::fatal(format!(
+            "libssh {label} exceeds the {max_bytes}-byte limit"
+        )));
+    }
+    Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn initialize() -> SshResult<()> {
@@ -1019,28 +1038,47 @@ impl Session {
     /// [userauth_keyboard_interactive_set_answers](#method.userauth_keyboard_interactive_set_answers).
     pub fn userauth_keyboard_interactive_info(&self) -> SshResult<InteractiveAuthInfo> {
         let sess = self.lock_session();
-        let name = unsafe { sys::ssh_userauth_kbdint_getname(**sess) };
-        let name = unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .to_string();
-
-        let instruction = unsafe { sys::ssh_userauth_kbdint_getinstruction(**sess) };
-        let instruction = unsafe { CStr::from_ptr(instruction) }
-            .to_string_lossy()
-            .to_string();
-
         let n_prompts = unsafe { sys::ssh_userauth_kbdint_getnprompts(**sess) };
-        assert!(n_prompts >= 0);
-        let n_prompts = n_prompts as u32;
-        let mut prompts = vec![];
+        if n_prompts < 0 {
+            return Err(sess.last_error().unwrap_or_else(|| {
+                Error::fatal("failed to read keyboard-interactive prompt count")
+            }));
+        }
+        let n_prompts = n_prompts as usize;
+        if n_prompts > MAX_KEYBOARD_INTERACTIVE_PROMPTS {
+            return Err(Error::fatal(format!(
+                "keyboard-interactive prompt count exceeds the {MAX_KEYBOARD_INTERACTIVE_PROMPTS}-prompt limit"
+            )));
+        }
+
+        let name = unsafe {
+            bounded_c_string(
+                sys::ssh_userauth_kbdint_getname(**sess),
+                "keyboard-interactive name",
+                MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+            )?
+        };
+        let instruction = unsafe {
+            bounded_c_string(
+                sys::ssh_userauth_kbdint_getinstruction(**sess),
+                "keyboard-interactive instruction",
+                MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+            )?
+        };
+
+        let mut prompts = Vec::with_capacity(n_prompts);
         for i in 0..n_prompts {
             let mut echo = 0;
-            let prompt = unsafe { sys::ssh_userauth_kbdint_getprompt(**sess, i, &mut echo) };
+            let prompt = unsafe {
+                bounded_c_string(
+                    sys::ssh_userauth_kbdint_getprompt(**sess, i as u32, &mut echo),
+                    "keyboard-interactive prompt",
+                    MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+                )?
+            };
 
             prompts.push(InteractiveAuthPrompt {
-                prompt: unsafe { CStr::from_ptr(prompt) }
-                    .to_string_lossy()
-                    .to_string(),
+                prompt,
                 echo: echo != 0,
             });
         }
@@ -1774,5 +1812,44 @@ mod test {
         let error = write_auth_callback_response(&mut buf, "secret\0tail").unwrap_err();
         assert!(matches!(error, Error::Fatal(message) if message.contains("embedded NUL")));
         assert_eq!(buf, [0; 8]);
+    }
+
+    #[test]
+    fn keyboard_interactive_info_rejects_missing_or_oversized_data() {
+        let sess = Session::new().unwrap();
+        assert!(sess.userauth_keyboard_interactive_info().is_err());
+
+        let exact = CString::new(vec![b'x'; MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES]).unwrap();
+        let value = unsafe {
+            bounded_c_string(
+                exact.as_ptr(),
+                "keyboard-interactive prompt",
+                MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+            )
+        }
+        .unwrap();
+        assert_eq!(value.len(), MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES);
+
+        let oversized = CString::new(vec![b'x'; MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES + 1]).unwrap();
+        assert!(matches!(
+            unsafe {
+                bounded_c_string(
+                    oversized.as_ptr(),
+                    "keyboard-interactive prompt",
+                    MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+                )
+            },
+            Err(Error::Fatal(message)) if message.contains("byte limit")
+        ));
+        assert!(matches!(
+            unsafe {
+                bounded_c_string(
+                    std::ptr::null(),
+                    "keyboard-interactive prompt",
+                    MAX_KEYBOARD_INTERACTIVE_TEXT_BYTES,
+                )
+            },
+            Err(Error::Fatal(message)) if message.contains("null")
+        ));
     }
 }
