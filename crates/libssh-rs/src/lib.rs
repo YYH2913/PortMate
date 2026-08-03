@@ -191,7 +191,8 @@ fn initialize() -> SshResult<()> {
 pub(crate) struct SessionHolder {
     sess: sys::ssh_session,
     callbacks: sys::ssh_callbacks_struct,
-    auth_callback: Option<Box<dyn FnMut(&str, bool, bool, Option<String>) -> SshResult<String>>>,
+    auth_callback:
+        Option<Box<dyn FnMut(&str, bool, bool, Option<String>) -> SshResult<String> + Send>>,
     pending_agent_forward_channels: Vec<sys::ssh_channel>,
     owned_socket: Option<std::net::TcpStream>,
 }
@@ -371,6 +372,7 @@ impl Session {
         if prompt.is_null() || buf.is_null() || userdata.is_null() || len == 0 {
             return sys::SSH_ERROR;
         }
+        unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) }.fill(0);
         let prompt = CStr::from_ptr(prompt).to_string_lossy().to_string();
         let echo = if echo == 0 { false } else { true };
         let verify = if verify == 0 { false } else { true };
@@ -475,7 +477,7 @@ impl Session {
     /// ```
     pub fn set_auth_callback<F>(&self, callback: F)
     where
-        F: FnMut(&str, bool, bool, Option<String>) -> SshResult<String> + 'static,
+        F: FnMut(&str, bool, bool, Option<String>) -> SshResult<String> + Send + 'static,
     {
         let mut sess = self.lock_session();
         sess.auth_callback.replace(Box::new(callback));
@@ -1873,6 +1875,44 @@ mod test {
             sess.userauth_password(None, Some("secret\0ignored")),
             Err(Error::Fatal(message)) if message.contains("nul byte")
         ));
+    }
+
+    fn invoke_auth_callback<F>(callback: F) -> [u8; 16]
+    where
+        F: FnMut(&str, bool, bool, Option<String>) -> SshResult<String> + Send + 'static,
+    {
+        let session = Session::new().unwrap();
+        session.set_auth_callback(callback);
+        let prompt = CString::new("passphrase").unwrap();
+        let mut buf = [0xa5; 16];
+        let status = {
+            let mut sess = session.sess.lock().unwrap();
+            let userdata = &mut *sess as *mut SessionHolder as *mut _;
+            unsafe {
+                Session::bridge_auth_callback(
+                    prompt.as_ptr(),
+                    buf.as_mut_ptr() as *mut _,
+                    buf.len(),
+                    0,
+                    0,
+                    userdata,
+                )
+            }
+        };
+        assert_eq!(status, sys::SSH_ERROR);
+        buf
+    }
+
+    #[test]
+    fn auth_callback_failures_clear_the_ffi_output_buffer() {
+        let error_buffer =
+            invoke_auth_callback(|_, _, _, _| Err(Error::fatal("test callback failure")));
+        assert_eq!(error_buffer, [0; 16]);
+
+        let panic_buffer = invoke_auth_callback(|_, _, _, _| -> SshResult<String> {
+            panic!("test callback panic")
+        });
+        assert_eq!(panic_buffer, [0; 16]);
     }
 
     #[test]
