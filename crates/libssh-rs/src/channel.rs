@@ -421,8 +421,8 @@ impl Channel {
         screen_number: c_int,
     ) -> SshResult<()> {
         let (sess, chan) = self.lock_session();
-        let protocol = opt_str_to_cstring(protocol);
-        let cookie = opt_str_to_cstring(cookie);
+        let protocol = opt_str_to_cstring(protocol)?;
+        let cookie = opt_str_to_cstring(cookie)?;
         let res = unsafe {
             sys::ssh_channel_request_x11(
                 chan,

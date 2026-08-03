@@ -516,7 +516,7 @@ impl Session {
     /// if `file_name` is None the default `~/.ssh/config` will be used.
     pub fn options_parse_config(&self, file_name: Option<&str>) -> SshResult<()> {
         let sess = self.lock_session();
-        let file_name = opt_str_to_cstring(file_name);
+        let file_name = opt_str_to_cstring(file_name)?;
         let res = unsafe { sys::ssh_options_parse_config(**sess, opt_cstring_to_cstr(&file_name)) };
         if res == 0 {
             Ok(())
@@ -679,7 +679,7 @@ impl Session {
                 )
             },
             SshOption::IdentityAgent(name) => unsafe {
-                let name = opt_string_to_cstring(name);
+                let name = opt_string_to_cstring(name)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_IDENTITY_AGENT,
@@ -687,7 +687,7 @@ impl Session {
                 )
             },
             SshOption::User(name) => unsafe {
-                let name = opt_string_to_cstring(name);
+                let name = opt_string_to_cstring(name)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_USER,
@@ -695,7 +695,7 @@ impl Session {
                 )
             },
             SshOption::SshDir(name) => unsafe {
-                let name = opt_string_to_cstring(name);
+                let name = opt_string_to_cstring(name)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_SSH_DIR,
@@ -703,7 +703,7 @@ impl Session {
                 )
             },
             SshOption::KnownHosts(known_hosts) => unsafe {
-                let known_hosts = opt_string_to_cstring(known_hosts);
+                let known_hosts = opt_string_to_cstring(known_hosts)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_KNOWNHOSTS,
@@ -711,7 +711,7 @@ impl Session {
                 )
             },
             SshOption::ProxyCommand(cmd) => unsafe {
-                let cmd = opt_string_to_cstring(cmd);
+                let cmd = opt_string_to_cstring(cmd)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_PROXYCOMMAND,
@@ -784,7 +784,7 @@ impl Session {
                 )
             },
             SshOption::GlobalKnownHosts(known_hosts) => unsafe {
-                let known_hosts = opt_string_to_cstring(known_hosts);
+                let known_hosts = opt_string_to_cstring(known_hosts)?;
                 sys::ssh_options_set(
                     **sess,
                     sys::ssh_options_e::SSH_OPTIONS_GLOBAL_KNOWNHOSTS,
@@ -855,7 +855,7 @@ impl Session {
     ) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
 
-        let username = opt_str_to_cstring(username);
+        let username = opt_str_to_cstring(username)?;
 
         let res = unsafe {
             sys::ssh_userauth_try_publickey(**sess, opt_cstring_to_cstr(&username), pubkey.key)
@@ -878,7 +878,7 @@ impl Session {
     ) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
 
-        let username = opt_str_to_cstring(username);
+        let username = opt_str_to_cstring(username)?;
 
         let res = unsafe {
             sys::ssh_userauth_publickey(**sess, opt_cstring_to_cstr(&username), privkey.key)
@@ -897,7 +897,7 @@ impl Session {
     pub fn userauth_agent(&self, username: Option<&str>) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
 
-        let username = opt_str_to_cstring(username);
+        let username = opt_str_to_cstring(username)?;
 
         let res = unsafe { sys::ssh_userauth_agent(**sess, opt_cstring_to_cstr(&username)) };
 
@@ -940,8 +940,8 @@ impl Session {
     ) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
 
-        let username = opt_str_to_cstring(username);
-        let password = opt_str_to_cstring(password);
+        let username = opt_str_to_cstring(username)?;
+        let password = opt_str_to_cstring(password)?;
 
         let res = unsafe {
             sys::ssh_userauth_publickey_auto(
@@ -968,7 +968,7 @@ impl Session {
     /// do not allow changing the username during authentication.
     pub fn userauth_none(&self, username: Option<&str>) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
-        let username = opt_str_to_cstring(username);
+        let username = opt_str_to_cstring(username)?;
         let res = unsafe { sys::ssh_userauth_none(**sess, opt_cstring_to_cstr(&username)) };
 
         sess.auth_result(res, "authentication error")
@@ -990,7 +990,7 @@ impl Session {
     /// do not allow changing the username during authentication.
     pub fn userauth_list(&self, username: Option<&str>) -> SshResult<AuthMethods> {
         let sess = self.lock_session();
-        let username = opt_str_to_cstring(username);
+        let username = opt_str_to_cstring(username)?;
         Ok(unsafe {
             AuthMethods::from_bits_unchecked(sys::ssh_userauth_list(
                 **sess,
@@ -1095,8 +1095,8 @@ impl Session {
     ) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
 
-        let username = opt_str_to_cstring(username);
-        let sub_methods = opt_str_to_cstring(sub_methods);
+        let username = opt_str_to_cstring(username)?;
+        let sub_methods = opt_str_to_cstring(sub_methods)?;
 
         let res = unsafe {
             sys::ssh_userauth_kbdint(
@@ -1128,8 +1128,8 @@ impl Session {
         password: Option<&str>,
     ) -> SshResult<AuthStatus> {
         let sess = self.lock_session();
-        let username = opt_str_to_cstring(username);
-        let password = opt_str_to_cstring(password);
+        let username = opt_str_to_cstring(username)?;
+        let password = opt_str_to_cstring(password)?;
         let res = unsafe {
             sys::ssh_userauth_password(
                 **sess,
@@ -1154,7 +1154,7 @@ impl Session {
     /// wait for a forwarded connection from the address you specified.
     pub fn listen_forward(&self, bind_address: Option<&str>, port: u16) -> SshResult<u16> {
         let sess = self.lock_session();
-        let bind_address = opt_str_to_cstring(bind_address);
+        let bind_address = opt_str_to_cstring(bind_address)?;
         let mut bound_port = 0;
         let res = unsafe {
             sys::ssh_channel_listen_forward(
@@ -1176,7 +1176,7 @@ impl Session {
     /// Cancel a remote port forward previously created by [`Session::listen_forward`].
     pub fn cancel_forward(&self, bind_address: Option<&str>, port: u16) -> SshResult<()> {
         let sess = self.lock_session();
-        let bind_address = opt_str_to_cstring(bind_address);
+        let bind_address = opt_str_to_cstring(bind_address)?;
         let res = unsafe {
             sys::ssh_channel_cancel_forward(**sess, opt_cstring_to_cstr(&bind_address), port as i32)
         };
@@ -1436,7 +1436,7 @@ impl SshKey {
     pub fn from_privkey_base64(b64_key: &str, passphrase: Option<&str>) -> SshResult<SshKey> {
         let b64_key = CString::new(b64_key)
             .map_err(|e| Error::Fatal(format!("Failed to process ssh key: {:?}", e)))?;
-        let passphrase = opt_str_to_cstring(passphrase);
+        let passphrase = opt_str_to_cstring(passphrase)?;
         unsafe {
             let mut key = sys::ssh_key_new();
             if sys::ssh_pki_import_privkey_base64(
@@ -1460,7 +1460,7 @@ impl SshKey {
                 "Could not make CString from filename '{filename}': {e:#}"
             ))
         })?;
-        let passphrase = opt_str_to_cstring(passphrase);
+        let passphrase = opt_str_to_cstring(passphrase)?;
         unsafe {
             let mut key = sys::ssh_key_new();
             if sys::ssh_pki_import_privkey_file(
@@ -1664,12 +1664,12 @@ pub fn get_input(
     }
 }
 
-fn opt_str_to_cstring(s: Option<&str>) -> Option<CString> {
-    s.and_then(|s| CString::new(s).ok())
+fn opt_str_to_cstring(s: Option<&str>) -> SshResult<Option<CString>> {
+    s.map(CString::new).transpose().map_err(Error::from)
 }
 
-fn opt_string_to_cstring(s: Option<String>) -> Option<CString> {
-    s.and_then(|s| CString::new(s).ok())
+fn opt_string_to_cstring(s: Option<String>) -> SshResult<Option<CString>> {
+    s.map(CString::new).transpose().map_err(Error::from)
 }
 
 fn opt_cstring_to_cstr(s: &Option<CString>) -> *const ::std::os::raw::c_char {
@@ -1718,6 +1718,32 @@ mod test {
         assert!(matches!(
             checked_c_int(c_int::MAX as u32 + 1, "PTY columns"),
             Err(Error::Fatal(message)) if message.contains("PTY columns")
+        ));
+    }
+
+    #[test]
+    fn optional_c_strings_reject_embedded_nul_instead_of_becoming_none() {
+        assert!(opt_str_to_cstring(None).unwrap().is_none());
+        assert_eq!(
+            opt_str_to_cstring(Some("portmate"))
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+            b"portmate"
+        );
+        assert!(matches!(
+            opt_str_to_cstring(Some("user\0fallback")),
+            Err(Error::Fatal(message)) if message.contains("nul byte")
+        ));
+
+        let sess = Session::new().unwrap();
+        assert!(matches!(
+            sess.set_option(SshOption::User(Some("user\0fallback".to_string()))),
+            Err(Error::Fatal(message)) if message.contains("nul byte")
+        ));
+        assert!(matches!(
+            sess.userauth_password(None, Some("secret\0ignored")),
+            Err(Error::Fatal(message)) if message.contains("nul byte")
         ));
     }
 }
