@@ -35,6 +35,12 @@ use std::sync::LazyLock;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+#[cfg(windows)]
+extern "C" {
+    #[link_name = "ssh_get_fd"]
+    fn ssh_get_fd_windows(session: sys::ssh_session) -> RawSocket;
+}
+
 mod channel;
 mod error;
 mod sftp;
@@ -1413,7 +1419,7 @@ impl std::os::unix::io::AsRawFd for Session {
 #[cfg(windows)]
 impl std::os::windows::io::AsRawSocket for Session {
     fn as_raw_socket(&self) -> RawSocket {
-        unsafe { sys::ssh_get_fd(**self.lock_session()) as RawSocket }
+        unsafe { ssh_get_fd_windows(**self.lock_session()) }
     }
 }
 
