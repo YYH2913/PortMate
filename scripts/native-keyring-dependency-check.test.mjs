@@ -4,8 +4,9 @@ import { findNativeKeyringDependencyViolations } from "./native-keyring-dependen
 const providers = [
   {
     name: "dbus-secret-service-keyring-store",
-    target: 'cfg(any(target_os = "linux", target_os = "freebsd"))',
+    target: 'cfg(target_os = "linux")',
   },
+  { name: "zbus-secret-service-keyring-store", target: 'cfg(target_os = "freebsd")' },
   { name: "apple-native-keyring-store", target: 'cfg(target_os = "macos")' },
   { name: "windows-native-keyring-store", target: "cfg(windows)" },
 ];

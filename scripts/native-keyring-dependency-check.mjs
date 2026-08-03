@@ -13,8 +13,9 @@ const forbiddenPackages = new Set([
 const providerTargets = new Map([
   [
     "dbus-secret-service-keyring-store",
-    'cfg(any(target_os = "linux", target_os = "freebsd"))',
+    'cfg(target_os = "linux")',
   ],
+  ["zbus-secret-service-keyring-store", 'cfg(target_os = "freebsd")'],
   ["apple-native-keyring-store", 'cfg(target_os = "macos")'],
   ["windows-native-keyring-store", "cfg(windows)"],
 ]);
