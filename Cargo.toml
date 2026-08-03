@@ -3,6 +3,7 @@ members = [
   "crates/libssh-rs",
   "crates/portmate-core",
   "crates/portmate-kdf",
+  "crates/portmate-keyring",
   "crates/portmate-mcp",
   "crates/russh-sftp",
   "src-tauri",

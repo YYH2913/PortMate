@@ -113,7 +113,7 @@ fn wait_for_child(child: &mut Child, phase: &str) -> Result<(), String> {
 
 fn run_phase(phase: &str) -> Result<(), String> {
     if phase == "expect-unavailable" {
-        return match keyring::use_native_store(true) {
+        return match portmate_keyring::initialize_persistent_native_store() {
             Err(Error::PlatformFailure(_)) => Ok(()),
             Err(error) => Err(format!(
                 "native keyring unavailable probe returned the wrong error: {error}"
@@ -122,7 +122,7 @@ fn run_phase(phase: &str) -> Result<(), String> {
         };
     }
 
-    keyring::use_native_store(true)
+    portmate_keyring::initialize_persistent_native_store()
         .map_err(|error| format!("initialize persistent native keyring failed: {error}"))?;
     let account = required_environment(ACCOUNT_ENV)?;
     let secret = required_environment(SECRET_ENV)?;

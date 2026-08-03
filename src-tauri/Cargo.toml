@@ -17,13 +17,13 @@ tauri-build = { version = "2.5.3", features = [] }
 [dependencies]
 portmate-core = { path = "../crates/portmate-core" }
 portmate-kdf = { path = "../crates/portmate-kdf" }
+portmate-keyring = { path = "../crates/portmate-keyring" }
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = "3.0.0"
 flate2 = "1.1.9"
 getrandom = "0.3"
 iota_stronghold = "2.1.0"
-keyring = "4.0.1"
 keyring-core = "1.0.0"
 libloading = "0.8.9"
 libssh-rs = { path = "../crates/libssh-rs" }

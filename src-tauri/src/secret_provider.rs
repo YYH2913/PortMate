@@ -25,8 +25,8 @@ where
 }
 
 fn initialize_persistent_native_keyring() -> Result<(), String> {
-    initialize_persistent_native_keyring_with(|not_keyutils| {
-        keyring::use_native_store(not_keyutils)
+    initialize_persistent_native_keyring_with(|| {
+        portmate_keyring::initialize_persistent_native_store()
             .map_err(|error| format!("系统密钥库初始化失败: {error}"))
     })
 }
@@ -35,10 +35,9 @@ pub(super) fn initialize_persistent_native_keyring_with<UseNative>(
     use_native: UseNative,
 ) -> Result<(), String>
 where
-    UseNative: FnOnce(bool) -> Result<(), String>,
+    UseNative: FnOnce() -> Result<(), String>,
 {
-    // On Linux, true selects persistent Secret Service instead of reboot-volatile keyutils.
-    use_native(true)
+    use_native()
 }
 
 pub(super) fn write_secret_to_store(secret_ref: &str, secret: &str) -> Result<(), String> {

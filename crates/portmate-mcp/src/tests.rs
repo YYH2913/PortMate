@@ -38,14 +38,14 @@ fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
     })
     .unwrap();
 
-    let selectors = std::cell::RefCell::new(Vec::new());
-    let error = initialize_persistent_native_keyring_with(|not_keyutils| {
-        selectors.borrow_mut().push(not_keyutils);
+    let calls = std::cell::Cell::new(0_u32);
+    let error = initialize_persistent_native_keyring_with(|| {
+        calls.set(calls.get() + 1);
         Err(anyhow!("persistent store unavailable"))
     })
     .unwrap_err();
     assert_eq!(error.to_string(), "persistent store unavailable");
-    assert_eq!(selectors.into_inner(), vec![true]);
+    assert_eq!(calls.get(), 1);
 }
 
 fn test_http_config() -> HttpConfig {
