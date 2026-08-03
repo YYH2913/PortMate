@@ -1434,6 +1434,17 @@ impl Drop for SshKey {
 }
 
 impl SshKey {
+    fn from_import_result(status: c_int, key: sys::ssh_key, error: String) -> SshResult<Self> {
+        if status != sys::SSH_OK as c_int || key.is_null() {
+            if !key.is_null() {
+                unsafe { sys::ssh_key_free(key) };
+            }
+            Err(Error::Fatal(error))
+        } else {
+            Ok(Self { key })
+        }
+    }
+
     /// Returns the libssh algorithm name for this key.
     pub fn key_type_name(&self) -> SshResult<String> {
         let name = unsafe { sys::ssh_key_type_to_char(sys::ssh_key_type(self.key)) };
@@ -1518,19 +1529,15 @@ impl SshKey {
             .map_err(|e| Error::Fatal(format!("Failed to process ssh key: {:?}", e)))?;
         let passphrase = opt_str_to_cstring(passphrase)?;
         unsafe {
-            let mut key = sys::ssh_key_new();
-            if sys::ssh_pki_import_privkey_base64(
+            let mut key = std::ptr::null_mut();
+            let status = sys::ssh_pki_import_privkey_base64(
                 b64_key.as_ptr(),
                 opt_cstring_to_cstr(&passphrase),
                 None,
                 null_mut(),
                 &mut key,
-            ) != sys::SSH_OK as i32
-            {
-                sys::ssh_key_free(key);
-                return Err(Error::Fatal(format!("Failed to parse ssh key")));
-            }
-            return Ok(SshKey { key });
+            );
+            SshKey::from_import_result(status, key, "Failed to parse ssh key".to_string())
         }
     }
 
@@ -1542,21 +1549,19 @@ impl SshKey {
         })?;
         let passphrase = opt_str_to_cstring(passphrase)?;
         unsafe {
-            let mut key = sys::ssh_key_new();
-            if sys::ssh_pki_import_privkey_file(
+            let mut key = std::ptr::null_mut();
+            let status = sys::ssh_pki_import_privkey_file(
                 filename_cstr.as_ptr(),
                 opt_cstring_to_cstr(&passphrase),
                 None,
                 null_mut(),
                 &mut key,
-            ) != sys::SSH_OK as i32
-            {
-                sys::ssh_key_free(key);
-                return Err(Error::Fatal(format!(
-                    "Failed to parse ssh key from file '{filename}'"
-                )));
-            }
-            return Ok(SshKey { key });
+            );
+            SshKey::from_import_result(
+                status,
+                key,
+                format!("Failed to parse ssh key from file '{filename}'"),
+            )
         }
     }
 }
@@ -1758,6 +1763,33 @@ fn opt_cstring_to_cstr(s: &Option<CString>) -> *const ::std::os::raw::c_char {
 mod test {
     use super::*;
 
+    fn generated_private_key() -> SshKey {
+        let mut key = std::ptr::null_mut();
+        let status =
+            unsafe { sys::ssh_pki_generate(sys::ssh_keytypes_e_SSH_KEYTYPE_ED25519, 0, &mut key) };
+        SshKey::from_import_result(status, key, "failed to generate test key".to_string()).unwrap()
+    }
+
+    fn export_private_key_base64(key: &SshKey) -> String {
+        let mut encoded = std::ptr::null_mut();
+        let status = unsafe {
+            sys::ssh_pki_export_privkey_base64(
+                key.key,
+                std::ptr::null(),
+                None,
+                std::ptr::null_mut(),
+                &mut encoded,
+            )
+        };
+        assert_eq!(status, sys::SSH_OK as c_int);
+        assert!(!encoded.is_null());
+        let value = unsafe { CStr::from_ptr(encoded) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { sys::ssh_string_free_char(encoded) };
+        value
+    }
+
     #[test]
     fn init() {
         let sess = Session::new().unwrap();
@@ -1896,5 +1928,51 @@ mod test {
 
         initialize_getpass_buffer(&mut buf, None).unwrap();
         assert_eq!(buf, [0; 8]);
+    }
+
+    #[test]
+    fn private_key_imports_require_a_successful_non_null_output() {
+        let generated = generated_private_key();
+        let encoded = export_private_key_base64(&generated);
+        let imported = SshKey::from_privkey_base64(&encoded, None).unwrap();
+        assert_eq!(imported.key_type_name().unwrap(), "ssh-ed25519");
+
+        assert!(SshKey::from_privkey_base64("not a private key", None).is_err());
+        assert!(matches!(
+            SshKey::from_import_result(
+                sys::SSH_OK as c_int,
+                std::ptr::null_mut(),
+                "missing imported key".to_string(),
+            ),
+            Err(Error::Fatal(message)) if message == "missing imported key"
+        ));
+    }
+
+    #[test]
+    fn private_key_file_import_accepts_a_valid_export() {
+        static NEXT_TEMP_KEY_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
+        let generated = generated_private_key();
+        let path = std::env::temp_dir().join(format!(
+            "portmate-libssh-import-{}-{}.key",
+            std::process::id(),
+            NEXT_TEMP_KEY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let path_cstr = CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let status = unsafe {
+            sys::ssh_pki_export_privkey_file(
+                generated.key,
+                std::ptr::null(),
+                None,
+                std::ptr::null_mut(),
+                path_cstr.as_ptr(),
+            )
+        };
+        assert_eq!(status, sys::SSH_OK as c_int);
+
+        let imported = SshKey::from_privkey_file(path.to_str().unwrap(), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(imported.key_type_name().unwrap(), "ssh-ed25519");
     }
 }
