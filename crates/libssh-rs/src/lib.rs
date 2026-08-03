@@ -103,6 +103,16 @@ pub(crate) fn checked_c_int(value: u32, label: &str) -> SshResult<c_int> {
     }
 }
 
+fn checked_ffi_port(value: c_int, label: &str) -> SshResult<u16> {
+    if !(0..=u16::MAX as c_int).contains(&value) {
+        Err(Error::fatal(format!(
+            "libssh returned an invalid {label}: {value}"
+        )))
+    } else {
+        Ok(value as u16)
+    }
+}
+
 fn write_auth_callback_response(buf: &mut [u8], response: &str) -> SshResult<()> {
     buf.fill(0);
     if response.as_bytes().contains(&0) {
@@ -1228,7 +1238,7 @@ impl Session {
             )
         };
         if res == sys::SSH_OK as i32 {
-            Ok(bound_port as u16)
+            checked_ffi_port(bound_port, "remote forwarding port")
         } else if let Some(err) = sess.last_error() {
             Err(err)
         } else {
@@ -1265,9 +1275,16 @@ impl Session {
                 Err(Error::TryAgain)
             }
         } else {
+            let destination_port = match checked_ffi_port(port, "forwarded destination port") {
+                Ok(port) => port,
+                Err(error) => {
+                    unsafe { sys::ssh_channel_free(chan) };
+                    return Err(error);
+                }
+            };
             let channel = Channel::new(&self.sess, chan);
 
-            Ok((port as u16, channel))
+            Ok((destination_port, channel))
         }
     }
 
@@ -1777,6 +1794,10 @@ mod test {
             checked_c_int(c_int::MAX as u32 + 1, "PTY columns"),
             Err(Error::Fatal(message)) if message.contains("PTY columns")
         ));
+        assert_eq!(checked_ffi_port(0, "port"), Ok(0));
+        assert_eq!(checked_ffi_port(u16::MAX as c_int, "port"), Ok(u16::MAX));
+        assert!(checked_ffi_port(-1, "port").is_err());
+        assert!(checked_ffi_port(u16::MAX as c_int + 1, "port").is_err());
     }
 
     #[test]
