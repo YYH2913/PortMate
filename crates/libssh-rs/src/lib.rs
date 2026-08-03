@@ -418,18 +418,33 @@ impl Session {
         session: sys::ssh_session,
         userdata: *mut ::std::os::raw::c_void,
     ) -> sys::ssh_channel {
-        let sess: &mut SessionHolder = &mut *(userdata as *mut SessionHolder);
-        if sess.pending_agent_forward_channels.len() >= MAX_PENDING_AGENT_FORWARD_CHANNELS {
+        if session.is_null() || userdata.is_null() {
             return std::ptr::null_mut();
         }
-        let chan = sys::ssh_channel_new(session);
-        if chan.is_null() {
-            eprintln!("ssh_channel_new failed: {:?}", sess.last_error());
-            return std::ptr::null_mut();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let sess: &mut SessionHolder = &mut *(userdata as *mut SessionHolder);
+            if sess.pending_agent_forward_channels.len() >= MAX_PENDING_AGENT_FORWARD_CHANNELS {
+                return None;
+            }
+            let chan = sys::ssh_channel_new(session);
+            if chan.is_null() {
+                eprintln!("ssh_channel_new failed: {:?}", sess.last_error());
+                return None;
+            }
+            // We are guaranteed to be holding a session lock here.
+            sess.pending_agent_forward_channels.push(chan);
+            Some(chan)
+        }));
+
+        match result {
+            Ok(Some(chan)) => chan,
+            Ok(None) => std::ptr::null_mut(),
+            Err(error) => {
+                eprintln!("Error in auth-agent channel callback: {:?}", error);
+                std::ptr::null_mut()
+            }
         }
-        // We are guarenteed to be holding a session lock here.
-        sess.pending_agent_forward_channels.push(chan);
-        chan
     }
 
     /// Sets a callback that is used by libssh when it needs to prompt
@@ -1913,6 +1928,17 @@ mod test {
             panic!("test callback panic")
         });
         assert_eq!(panic_buffer, [0; 16]);
+    }
+
+    #[test]
+    fn auth_agent_callback_rejects_invalid_context() {
+        let channel = unsafe {
+            Session::channel_open_request_auth_agent_callback(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(channel.is_null());
     }
 
     #[test]
