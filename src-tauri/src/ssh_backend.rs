@@ -79,7 +79,7 @@ where
                 .map_err(|error| format!("libssh SFTP initialization failed: {error}"))?;
             sftp.canonicalize(".")
                 .map_err(|error| format!("libssh SFTP canonicalize failed: {error}"))?;
-            sftp.read_dir(".")
+            sftp.read_dir_bounded(".", MAX_FILE_DIRECTORY_ENTRIES)
                 .map_err(|error| format!("libssh SFTP read_dir failed: {error}"))?;
             Ok::<_, String>(())
         })

@@ -189,29 +189,54 @@ impl SftpSession {
 
     /// Returns an iterator over the entries within a directory.
     pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
-        let mut files = vec![];
+        self.read_dir_bounded(path, usize::MAX).await
+    }
+
+    /// Returns at most `max_entries` entries and fails instead of returning a
+    /// partial directory when the server exceeds that limit.
+    pub async fn read_dir_bounded<P: Into<String>>(
+        &self,
+        path: P,
+        max_entries: usize,
+    ) -> SftpResult<ReadDir> {
+        const MAX_CONSECUTIVE_EMPTY_PAGES: usize = 8;
+
+        let mut files = std::collections::VecDeque::new();
+        let mut empty_pages = 0_usize;
         let handle = self.session.opendir(path).await?.handle;
 
-        loop {
+        let read_result = loop {
             match self.session.readdir(handle.as_str()).await {
                 Ok(name) => {
-                    files = name
-                        .files
-                        .into_iter()
-                        .map(|f| (f.filename, f.attrs))
-                        .chain(files.into_iter())
-                        .collect();
+                    if name.files.is_empty() {
+                        empty_pages += 1;
+                        if empty_pages > MAX_CONSECUTIVE_EMPTY_PAGES {
+                            break Err(Error::UnexpectedBehavior(format!(
+                                "SFTP server returned more than {MAX_CONSECUTIVE_EMPTY_PAGES} consecutive empty directory pages before EOF"
+                            )));
+                        }
+                        continue;
+                    }
+                    empty_pages = 0;
+                    if name.files.len() > max_entries.saturating_sub(files.len()) {
+                        break Err(Error::Limited(format!(
+                            "directory entry count exceeds {max_entries}"
+                        )));
+                    }
+                    for file in name.files.into_iter().rev() {
+                        files.push_front((file.filename, file.attrs));
+                    }
                 }
-                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
-                Err(err) => return Err(err),
+                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break Ok(()),
+                Err(error) => break Err(error),
             }
-        }
+        };
 
-        self.session.close(handle).await?;
+        let close_result = self.session.close(handle).await.map(|_| ());
+        read_result?;
+        close_result?;
 
-        Ok(ReadDir {
-            entries: files.into(),
-        })
+        Ok(ReadDir { entries: files })
     }
 
     /// Reads a symbolic link, returning the file that the link points to.

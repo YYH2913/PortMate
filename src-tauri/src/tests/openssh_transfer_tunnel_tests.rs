@@ -185,6 +185,27 @@ fn openssh_sftp_scp_and_tunnels_end_to_end() {
         .await
         .unwrap();
         assert!(sftp_nested.is_dir());
+        fs::write(sftp_nested.join("limit-alpha"), b"alpha").unwrap();
+        fs::write(sftp_nested.join("limit-beta"), b"beta").unwrap();
+        let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+        let bounded_sftp = auxiliary.sftp().await.unwrap();
+        let SftpBackendSession::Russh(session) = &*bounded_sftp else {
+            panic!("expected russh SFTP backend");
+        };
+        let error = match session
+            .read_dir_bounded(sftp_nested.display().to_string(), 1)
+            .await
+        {
+            Ok(_) => panic!("russh SFTP returned a silently truncated directory"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("directory entry count exceeds 1"));
+        drop(bounded_sftp);
+        drop(auxiliary);
+        fs::remove_file(sftp_nested.join("limit-alpha")).unwrap();
+        fs::remove_file(sftp_nested.join("limit-beta")).unwrap();
 
         let sftp_new_file = root.join("sftp-created-file.txt");
         file_operation_inner(

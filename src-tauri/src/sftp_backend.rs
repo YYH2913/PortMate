@@ -7,6 +7,8 @@ pub(super) use file::SftpBackendFile;
 use metadata::SftpBackendMetadataRaw;
 pub(super) use metadata::{SftpBackendDirEntry, SftpBackendMetadata};
 
+const MAX_SFTP_DIRECTORY_ENTRIES: usize = super::file_metadata::MAX_FILE_DIRECTORY_ENTRIES;
+
 pub(super) enum SftpBackendSession {
     Russh(SftpSession),
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Sftp>>),
@@ -34,7 +36,7 @@ impl SftpBackendSession {
         let path = path.into();
         let entries = match self {
             Self::Russh(session) => session
-                .read_dir(path)
+                .read_dir_bounded(path, MAX_SFTP_DIRECTORY_ENTRIES)
                 .await
                 .map_err(|error| error.to_string())?
                 .map(SftpBackendDirEntry::from_russh)
@@ -44,7 +46,7 @@ impl SftpBackendSession {
                 tokio::task::spawn_blocking(move || {
                     session
                         .blocking_lock()
-                        .read_dir(&path)
+                        .read_dir_bounded(&path, MAX_SFTP_DIRECTORY_ENTRIES)
                         .map(|entries| {
                             entries
                                 .into_iter()

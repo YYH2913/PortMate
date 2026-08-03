@@ -883,6 +883,22 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
                 .collect::<HashSet<_>>(),
             HashSet::from(["uploaded.bin", "copied.bin"])
         );
+        let SftpBackendSession::Libssh(session) = &*sftp else {
+            panic!("expected libssh SFTP backend");
+        };
+        let session = Arc::clone(session);
+        let bounded_root = remote_root.clone();
+        let error = tokio::task::spawn_blocking(move || {
+            match session.blocking_lock().read_dir_bounded(&bounded_root, 1) {
+                Ok(_) => panic!("libssh SFTP returned a silently truncated directory"),
+                Err(error) => error,
+            }
+        })
+        .await
+        .unwrap();
+        assert!(error
+            .to_string()
+            .contains("SFTP directory entry count exceeds 1"));
         let properties = remote_file_properties(&sftp, &copied).await.unwrap();
         assert!(properties.is_file);
         assert_eq!(properties.size, payload.len() as u64);

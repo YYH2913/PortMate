@@ -35,6 +35,23 @@ fn file_command_types_keep_stable_serde_contract() {
 }
 
 #[test]
+fn local_file_listing_rejects_oversized_directories_without_partial_results() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["alpha", "beta", "gamma"] {
+        fs::write(root.path().join(name), name).unwrap();
+    }
+
+    let error = list_local_files_with_limit(root.path().to_str().unwrap(), 2).unwrap_err();
+    assert!(error.contains("目录条目超过 2 条"), "{error}");
+    assert_eq!(
+        list_local_files_with_limit(root.path().to_str().unwrap(), 3)
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
 fn default_transfer_directory_resolves_only_relative_local_paths() {
     let mut profile = test_ssh_profile();
     let default_dir = std::env::temp_dir().join("portmate-transfer-default");

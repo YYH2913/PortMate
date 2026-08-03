@@ -1,6 +1,15 @@
 use super::*;
 
+pub(super) const MAX_FILE_DIRECTORY_ENTRIES: usize = 20_000;
+
 pub(super) fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
+    list_local_files_with_limit(path, MAX_FILE_DIRECTORY_ENTRIES)
+}
+
+pub(super) fn list_local_files_with_limit(
+    path: &str,
+    max_entries: usize,
+) -> Result<Vec<FileEntry>, String> {
     let path = validate_native_local_path(if path.trim().is_empty() {
         "."
     } else {
@@ -11,6 +20,9 @@ pub(super) fn list_local_files(path: &str) -> Result<Vec<FileEntry>, String> {
         .map_err(|error| format!("读取本地目录失败 {}: {error}", path.display()))?
     {
         let entry = entry.map_err(|error| format!("读取本地目录项失败: {error}"))?;
+        if entries.len() >= max_entries {
+            return Err(format!("目录条目超过 {max_entries} 条，请缩小目录范围"));
+        }
         let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| format!("读取本地文件元数据失败: {error}"))?;
         let modified = metadata

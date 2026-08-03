@@ -262,9 +262,20 @@ impl Sftp {
     /// you may wish to directly use [open_dir](#method.open_dir)
     /// and manually iterate the directory contents.
     pub fn read_dir(&self, filename: &str) -> SshResult<Vec<Metadata>> {
+        self.read_dir_bounded(filename, usize::MAX)
+    }
+
+    /// Reads a directory while enforcing an explicit entry limit.
+    /// The result is never silently truncated.
+    pub fn read_dir_bounded(&self, filename: &str, max_entries: usize) -> SshResult<Vec<Metadata>> {
         let dir = self.open_dir(filename)?;
-        let mut res = vec![];
+        let mut res = Vec::with_capacity(max_entries.min(1024));
         while let Some(item) = dir.read_dir() {
+            if res.len() >= max_entries {
+                return Err(Error::fatal(format!(
+                    "SFTP directory entry count exceeds {max_entries}"
+                )));
+            }
             res.push(item?);
         }
         Ok(res)
