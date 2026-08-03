@@ -40,6 +40,9 @@ impl SftpBackendSession {
                 .await
                 .map_err(|error| error.to_string())?
                 .map(SftpBackendDirEntry::from_russh)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
                 .collect(),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
@@ -47,13 +50,11 @@ impl SftpBackendSession {
                     session
                         .blocking_lock()
                         .read_dir_bounded(&path, MAX_SFTP_DIRECTORY_ENTRIES)
-                        .map(|entries| {
-                            entries
-                                .into_iter()
-                                .filter_map(SftpBackendDirEntry::from_libssh)
-                                .collect::<Vec<_>>()
-                        })
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .map(SftpBackendDirEntry::from_libssh)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|entries| entries.into_iter().flatten().collect::<Vec<_>>())
                 })
                 .await
                 .map_err(|error| format!("libssh SFTP read_dir worker failed: {error}"))??

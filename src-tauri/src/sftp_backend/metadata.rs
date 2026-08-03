@@ -1,27 +1,40 @@
 use std::time::SystemTime;
 
+const MAX_SFTP_DIRECTORY_ENTRY_NAME_BYTES: usize = 4096;
+
 pub(crate) struct SftpBackendDirEntry {
     name: String,
     metadata: SftpBackendMetadata,
 }
 
 impl SftpBackendDirEntry {
-    pub(super) fn from_russh(entry: russh_sftp::client::fs::DirEntry) -> Self {
-        Self {
-            name: entry.file_name(),
-            metadata: SftpBackendMetadata::from_russh(entry.metadata()),
+    pub(super) fn from_russh(
+        entry: russh_sftp::client::fs::DirEntry,
+    ) -> Result<Option<Self>, String> {
+        let name = entry.file_name();
+        if matches!(name.as_str(), "." | "..") {
+            return Ok(None);
         }
+        validate_sftp_directory_entry_name(&name)?;
+        Ok(Some(Self {
+            name,
+            metadata: SftpBackendMetadata::from_russh(entry.metadata()),
+        }))
     }
 
-    pub(super) fn from_libssh(metadata: libssh_rs::Metadata) -> Option<Self> {
-        let name = metadata.name()?.to_string();
+    pub(super) fn from_libssh(metadata: libssh_rs::Metadata) -> Result<Option<Self>, String> {
+        let name = metadata
+            .name()
+            .ok_or_else(|| "SFTP 服务端返回了缺失或非 UTF-8 的目录项名称".to_string())?
+            .to_string();
         if matches!(name.as_str(), "." | "..") {
-            return None;
+            return Ok(None);
         }
-        Some(Self {
+        validate_sftp_directory_entry_name(&name)?;
+        Ok(Some(Self {
             name,
             metadata: SftpBackendMetadata::from_libssh(metadata),
-        })
+        }))
     }
 
     pub(crate) fn file_name(&self) -> String {
@@ -31,6 +44,19 @@ impl SftpBackendDirEntry {
     pub(crate) fn metadata(&self) -> SftpBackendMetadata {
         self.metadata.clone()
     }
+}
+
+fn validate_sftp_directory_entry_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.len() > MAX_SFTP_DIRECTORY_ENTRY_NAME_BYTES
+        || name
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+    {
+        return Err("SFTP 服务端返回了不安全的目录项名称".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -111,4 +137,33 @@ enum SftpBackendFileType {
     Regular,
     Symlink,
     Other,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sftp_directory_entry_names_cannot_escape_the_listed_directory() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "child/file",
+            "child\\file",
+            "line\nfeed",
+            "nul\0name",
+        ] {
+            assert!(
+                validate_sftp_directory_entry_name(name).is_err(),
+                "{name:?}"
+            );
+        }
+        assert!(validate_sftp_directory_entry_name("normal file.txt").is_ok());
+        assert!(validate_sftp_directory_entry_name(
+            &"a".repeat(MAX_SFTP_DIRECTORY_ENTRY_NAME_BYTES + 1)
+        )
+        .is_err());
+    }
 }
