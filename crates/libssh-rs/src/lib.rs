@@ -101,6 +101,22 @@ pub(crate) fn checked_c_int(value: u32, label: &str) -> SshResult<c_int> {
     }
 }
 
+fn write_auth_callback_response(buf: &mut [u8], response: &str) -> SshResult<()> {
+    buf.fill(0);
+    if response.as_bytes().contains(&0) {
+        return Err(Error::fatal("passphrase contains an embedded NUL byte"));
+    }
+    if response.len() >= buf.len() {
+        return Err(Error::fatal(format!(
+            "passphrase requires {} bytes including its NUL terminator, but the buffer allows {}",
+            response.len().saturating_add(1),
+            buf.len()
+        )));
+    }
+    buf[..response.len()].copy_from_slice(response.as_bytes());
+    Ok(())
+}
+
 fn initialize() -> SshResult<()> {
     if LIB.is_none() {
         Err(Error::fatal("ssh_init failed"))
@@ -286,6 +302,9 @@ impl Session {
         verify: ::std::os::raw::c_int,
         userdata: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int {
+        if prompt.is_null() || buf.is_null() || userdata.is_null() || len == 0 {
+            return sys::SSH_ERROR;
+        }
         let prompt = CStr::from_ptr(prompt).to_string_lossy().to_string();
         let echo = if echo == 0 { false } else { true };
         let verify = if verify == 0 { false } else { true };
@@ -305,21 +324,13 @@ impl Session {
                 }
             };
 
-            let cb = sess.auth_callback.as_mut().unwrap();
+            let cb = sess
+                .auth_callback
+                .as_mut()
+                .ok_or_else(|| Error::fatal("libssh auth callback is not configured"))?;
             let response = (cb)(&prompt, echo, verify, identity)?;
-            if response.len() > len {
-                return Err(Error::Fatal(format!(
-                    "passphrase is larger than buffer allows {} vs available {}",
-                    response.len(),
-                    len
-                )));
-            }
-
-            let len = response.len().min(len);
             let buf = std::slice::from_raw_parts_mut(buf as *mut u8, len);
-            buf.copy_from_slice(response.as_bytes());
-
-            Ok(())
+            write_auth_callback_response(buf, &response)
         });
 
         match result {
@@ -1745,5 +1756,23 @@ mod test {
             sess.userauth_password(None, Some("secret\0ignored")),
             Err(Error::Fatal(message)) if message.contains("nul byte")
         ));
+    }
+
+    #[test]
+    fn auth_callback_response_is_bounded_terminated_and_cleared() {
+        let mut buf = [0xa5; 8];
+        write_auth_callback_response(&mut buf, "secret").unwrap();
+        assert_eq!(&buf, b"secret\0\0");
+
+        write_auth_callback_response(&mut buf, "1234567").unwrap();
+        assert_eq!(&buf, b"1234567\0");
+
+        let error = write_auth_callback_response(&mut buf, "12345678").unwrap_err();
+        assert!(matches!(error, Error::Fatal(message) if message.contains("NUL terminator")));
+        assert_eq!(buf, [0; 8]);
+
+        let error = write_auth_callback_response(&mut buf, "secret\0tail").unwrap_err();
+        assert!(matches!(error, Error::Fatal(message) if message.contains("embedded NUL")));
+        assert_eq!(buf, [0; 8]);
     }
 }
