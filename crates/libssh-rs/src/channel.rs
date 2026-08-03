@@ -118,11 +118,11 @@ impl Channel {
         if chan.is_null() {
             None
         } else {
-            Some(Self::new(&self.sess, chan))
+            Self::new(&self.sess, chan).ok()
         }
     }
 
-    pub(crate) fn new(sess: &Arc<Mutex<SessionHolder>>, chan: sys::ssh_channel) -> Self {
+    pub(crate) fn new(sess: &Arc<Mutex<SessionHolder>>, chan: sys::ssh_channel) -> SshResult<Self> {
         let callback_state = Box::new(CallbackState {
             signal_state: Mutex::new(None),
         });
@@ -149,14 +149,20 @@ impl Channel {
             channel_request_response_function: None,
         });
 
-        unsafe { sys::ssh_set_channel_callbacks(chan, callbacks.as_ref() as *const _ as *mut _) };
+        let status = unsafe {
+            sys::ssh_set_channel_callbacks(chan, callbacks.as_ref() as *const _ as *mut _)
+        };
+        if status != sys::SSH_OK as c_int {
+            unsafe { sys::ssh_channel_free(chan) };
+            return Err(Error::fatal("failed to register libssh channel callbacks"));
+        }
 
-        Self {
+        Ok(Self {
             sess: Arc::clone(&sess),
             chan_inner: chan,
             callback_state,
             _callbacks: callbacks,
-        }
+        })
     }
 
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::ssh_channel) {
@@ -712,5 +718,14 @@ mod tests {
         assert!(state.core_dumped);
         assert_eq!(state.error_message.as_deref(), Some("terminated"));
         assert_eq!(state.language.as_deref(), Some("en-US"));
+    }
+
+    #[test]
+    fn channel_construction_rejects_callback_registration_failure() {
+        let session = crate::Session::new().unwrap();
+        assert!(matches!(
+            Channel::new(&session.sess, std::ptr::null_mut()),
+            Err(Error::Fatal(message)) if message.contains("register libssh channel callbacks")
+        ));
     }
 }

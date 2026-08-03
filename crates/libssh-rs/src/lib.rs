@@ -348,8 +348,11 @@ impl Session {
                 let ptr: *mut SessionHolder = &mut *sess;
                 sess.callbacks.userdata = ptr as _;
 
-                unsafe {
-                    sys::ssh_set_callbacks(**sess, &mut sess.callbacks);
+                let status = unsafe { sys::ssh_set_callbacks(**sess, &mut sess.callbacks) };
+                if status != sys::SSH_OK as c_int {
+                    return Err(sess
+                        .last_error()
+                        .unwrap_or_else(|| Error::fatal("failed to register libssh callbacks")));
                 }
             }
 
@@ -500,7 +503,7 @@ impl Session {
     pub fn accept_agent_forward(&self) -> Option<Channel> {
         let mut sess = self.lock_session();
         let chan = sess.pending_agent_forward_channels.pop()?;
-        Some(Channel::new(&self.sess, chan))
+        Channel::new(&self.sess, chan).ok()
     }
 
     /// Create a new channel.
@@ -515,7 +518,7 @@ impl Session {
                 Err(Error::fatal("ssh_channel_new failed"))
             }
         } else {
-            Ok(Channel::new(&self.sess, chan))
+            Channel::new(&self.sess, chan)
         }
     }
 
@@ -1299,7 +1302,7 @@ impl Session {
                     return Err(error);
                 }
             };
-            let channel = Channel::new(&self.sess, chan);
+            let channel = Channel::new(&self.sess, chan)?;
 
             Ok((destination_port, channel))
         }
