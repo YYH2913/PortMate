@@ -51,6 +51,20 @@ fn local_file_listing_rejects_oversized_directories_without_partial_results() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn local_file_listing_does_not_publish_lossy_non_utf8_paths() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let invalid_name =
+        std::ffi::OsString::from_vec(vec![b'i', b'n', b'v', b'a', b'l', b'i', b'd', 0xff]);
+    fs::write(root.path().join(invalid_name), b"payload").unwrap();
+
+    let error = list_local_files(root.path().to_str().unwrap()).unwrap_err();
+    assert!(error.contains("非 UTF-8 文件名"), "{error}");
+}
+
 #[test]
 fn default_transfer_directory_resolves_only_relative_local_paths() {
     let mut profile = test_ssh_profile();

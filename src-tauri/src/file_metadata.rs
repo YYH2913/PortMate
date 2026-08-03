@@ -23,7 +23,15 @@ pub(super) fn list_local_files_with_limit(
         if entries.len() >= max_entries {
             return Err(format!("目录条目超过 {max_entries} 条，请缩小目录范围"));
         }
-        let metadata = fs::symlink_metadata(entry.path())
+        let entry_path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "本地目录包含无法由 PortMate 安全表示的非 UTF-8 文件名".to_string())?;
+        let entry_path_text = entry_path
+            .to_str()
+            .ok_or_else(|| "本地目录包含无法由 PortMate 安全表示的非 UTF-8 路径".to_string())?;
+        let metadata = fs::symlink_metadata(&entry_path)
             .map_err(|error| format!("读取本地文件元数据失败: {error}"))?;
         let modified = metadata
             .modified()
@@ -33,8 +41,8 @@ pub(super) fn list_local_files_with_limit(
                 chrono::DateTime::<Utc>::from(std::time::UNIX_EPOCH + duration).to_rfc3339()
             });
         entries.push(FileEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
-            path: entry.path().display().to_string(),
+            name,
+            path: entry_path_text.to_string(),
             is_dir: metadata.is_dir() && !metadata.file_type().is_symlink(),
             size: if metadata.is_file() && !metadata.file_type().is_symlink() {
                 metadata.len()
