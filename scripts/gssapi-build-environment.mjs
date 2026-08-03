@@ -127,7 +127,7 @@ function findFiles(root, basename) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) found.push(...findFiles(path, basename));
-    else if (entry.isFile() && entry.name === basename) found.push(path);
+    else if ((entry.isFile() || entry.isSymbolicLink()) && entry.name === basename) found.push(path);
   }
   return found;
 }

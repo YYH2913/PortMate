@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -53,6 +53,22 @@ describe("GSSAPI build environment", () => {
     expect(result.env.PKG_CONFIG_PATH).toContain("/opt/pkg");
     expect(result.env.LD_LIBRARY_PATH).toContain(`${root}/usr/lib/x86_64-linux-gnu`);
     expect(result.env.LD_LIBRARY_PATH).toContain("/opt/lib");
+  });
+
+  it("accepts Debian shared-library symlinks", () => {
+    const root = mkdtempSync(join(tmpdir(), "portmate-gssapi-env-test-"));
+    temporaryRoots.push(root);
+    const libraryDirectory = join(root, "usr/lib/x86_64-linux-gnu");
+    const pkgConfigDirectory = join(libraryDirectory, "pkgconfig");
+    mkdirSync(pkgConfigDirectory, { recursive: true });
+    writeFileSync(join(pkgConfigDirectory, "libssh.pc"), "Name: libssh\nVersion: 0.10.6\n");
+    writeFileSync(join(libraryDirectory, "libssh.so.4.9.6"), "fake");
+    symlinkSync("libssh.so.4.9.6", join(libraryDirectory, "libssh.so.4"));
+    symlinkSync("libssh.so.4", join(libraryDirectory, "libssh.so"));
+
+    const result = buildSysrootEnvironment(root, {});
+
+    expect(result.LD_LIBRARY_PATH).toContain(libraryDirectory);
   });
 
   it("downloads and extracts both Debian packages once", () => {
