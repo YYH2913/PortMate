@@ -5,6 +5,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
+
+const FSYNC_EXTENSION_NAME: &[u8] = b"fsync@openssh.com\0";
+const FSYNC_EXTENSION_VERSION: &[u8] = b"1\0";
 use thiserror::Error;
 
 fn sftp_v3_timestamp(time: SystemTime) -> SshResult<u32> {
@@ -331,6 +334,30 @@ impl SftpFile {
             Ok(Metadata { attr })
         }
     }
+
+    /// Attempts to synchronize remote file data when the server advertises
+    /// the OpenSSH fsync extension. Servers without the extension require no
+    /// request because libssh does not buffer file writes locally.
+    pub fn sync_all(&self) -> std::io::Result<()> {
+        let (_sess, file) = self.lock_session();
+        let supported = unsafe {
+            sys::sftp_extension_supported(
+                self.sftp.sftp_inner,
+                FSYNC_EXTENSION_NAME.as_ptr().cast(),
+                FSYNC_EXTENSION_VERSION.as_ptr().cast(),
+            )
+        };
+        if supported != 1 {
+            return Ok(());
+        }
+
+        let res = unsafe { sys::sftp_fsync(file) };
+        if res == sys::SSH_OK as i32 {
+            Ok(())
+        } else {
+            Err(io_err_from_sftp(self.sftp.sftp_inner, "fsync"))
+        }
+    }
 }
 
 fn io_err_from_sftp(sftp: sys::sftp_session, reason: &str) -> std::io::Error {
@@ -377,13 +404,7 @@ impl std::io::Read for SftpFile {
 
 impl std::io::Write for SftpFile {
     fn flush(&mut self) -> std::io::Result<()> {
-        let (_sess, file) = self.lock_session();
-        let res = unsafe { sys::sftp_fsync(file) };
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(io_err_from_sftp(self.sftp.sftp_inner, "fsync"))
-        }
+        self.sync_all()
     }
 
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

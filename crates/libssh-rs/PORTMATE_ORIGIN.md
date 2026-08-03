@@ -19,6 +19,10 @@ PortMate carries five API additions in `src/lib.rs`:
 PortMate also corrects the argument order in `Channel::poll_timeout()` to match
 libssh's `(channel, timeout, is_stderr)` C API.
 
+`SftpFile::flush()` checks for `fsync@openssh.com` before sending the optional
+extension request. This matches the russh backend and keeps uploads compatible
+with SFTP servers that do not implement OpenSSH extensions.
+
 Source-level attributes also allow the finite set of newer Clippy lints emitted
 by the otherwise unchanged 0.3.8 sources, so workspace `-D warnings` checks can
 keep treating this vendored package as a primary member.
