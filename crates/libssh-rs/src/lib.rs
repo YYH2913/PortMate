@@ -1238,8 +1238,9 @@ impl Session {
 
     /// Send a message that should be ignored by the peer
     pub fn send_ignore(&self, data: &[u8]) -> SshResult<()> {
+        let data = CString::new(data)?;
         let sess = self.lock_session();
-        let status = unsafe { sys::ssh_send_ignore(**sess, data.as_ptr() as _) };
+        let status = unsafe { sys::ssh_send_ignore(**sess, data.as_ptr()) };
         if status != sys::SSH_OK as i32 {
             if let Some(err) = sess.last_error() {
                 Err(err)
@@ -1665,5 +1666,12 @@ mod test {
     fn gssapi_entrypoint_links_without_calling_an_unconnected_session() {
         let entrypoint: fn(&Session) -> SshResult<AuthStatus> = Session::userauth_gssapi;
         std::hint::black_box(entrypoint);
+    }
+
+    #[test]
+    fn send_ignore_rejects_embedded_nul_without_panicking() {
+        let sess = Session::new().unwrap();
+        let error = sess.send_ignore(b"prefix\0suffix").unwrap_err();
+        assert!(matches!(error, Error::Fatal(message) if message.contains("nul byte")));
     }
 }
