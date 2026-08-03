@@ -672,6 +672,9 @@ impl Session {
             sys::ssh_options_get(**sess, sys::ssh_options_e::SSH_OPTIONS_USER, &mut name)
         };
         if res != sys::SSH_OK as i32 || name.is_null() {
+            if !name.is_null() {
+                unsafe { sys::ssh_string_free_char(name) };
+            }
             if let Some(err) = sess.last_error() {
                 Err(err)
             } else {
@@ -918,13 +921,12 @@ impl Session {
         let sess = self.lock_session();
         let mut key = std::ptr::null_mut();
         let res = unsafe { sys::ssh_get_server_publickey(**sess, &mut key) };
-        if res == sys::SSH_OK as i32 && !key.is_null() {
-            Ok(SshKey { key })
-        } else if let Some(err) = sess.last_error() {
-            Err(err)
+        let error = if let Some(err) = sess.last_error() {
+            err
         } else {
-            Err(Error::fatal("failed to get server public key"))
-        }
+            Error::fatal("failed to get server public key")
+        };
+        SshKey::from_ffi_result(res, key, error)
     }
 
     /// Try to authenticate with the given public key.
@@ -1468,12 +1470,12 @@ impl Drop for SshKey {
 }
 
 impl SshKey {
-    fn from_import_result(status: c_int, key: sys::ssh_key, error: String) -> SshResult<Self> {
+    fn from_ffi_result(status: c_int, key: sys::ssh_key, error: Error) -> SshResult<Self> {
         if status != sys::SSH_OK as c_int || key.is_null() {
             if !key.is_null() {
                 unsafe { sys::ssh_key_free(key) };
             }
-            Err(Error::Fatal(error))
+            Err(error)
         } else {
             Ok(Self { key })
         }
@@ -1496,6 +1498,9 @@ impl SshKey {
         let mut encoded = std::ptr::null_mut();
         let status = unsafe { sys::ssh_pki_export_pubkey_base64(self.key, &mut encoded) };
         if status != sys::SSH_OK as i32 || encoded.is_null() {
+            if !encoded.is_null() {
+                unsafe { sys::ssh_string_free_char(encoded) };
+            }
             Err(Error::fatal("failed to export public key"))
         } else {
             let value = unsafe { CStr::from_ptr(encoded) }
@@ -1531,6 +1536,9 @@ impl SshKey {
         };
 
         if res != 0 || bytes.is_null() {
+            if !bytes.is_null() {
+                unsafe { sys::ssh_clean_pubkey_hash(&mut bytes) };
+            }
             Err(Error::fatal("failed to get public key hash"))
         } else {
             let data = unsafe { std::slice::from_raw_parts(bytes, len).to_vec() };
@@ -1571,7 +1579,7 @@ impl SshKey {
                 null_mut(),
                 &mut key,
             );
-            SshKey::from_import_result(status, key, "Failed to parse ssh key".to_string())
+            SshKey::from_ffi_result(status, key, Error::fatal("Failed to parse ssh key"))
         }
     }
 
@@ -1591,10 +1599,10 @@ impl SshKey {
                 null_mut(),
                 &mut key,
             );
-            SshKey::from_import_result(
+            SshKey::from_ffi_result(
                 status,
                 key,
-                format!("Failed to parse ssh key from file '{filename}'"),
+                Error::fatal(format!("Failed to parse ssh key from file '{filename}'")),
             )
         }
     }
@@ -1801,7 +1809,7 @@ mod test {
         let mut key = std::ptr::null_mut();
         let status =
             unsafe { sys::ssh_pki_generate(sys::ssh_keytypes_e_SSH_KEYTYPE_ED25519, 0, &mut key) };
-        SshKey::from_import_result(status, key, "failed to generate test key".to_string()).unwrap()
+        SshKey::from_ffi_result(status, key, Error::fatal("failed to generate test key")).unwrap()
     }
 
     fn export_private_key_base64(key: &SshKey) -> String {
@@ -2033,15 +2041,39 @@ mod test {
         let encoded = export_private_key_base64(&generated);
         let imported = SshKey::from_privkey_base64(&encoded, None).unwrap();
         assert_eq!(imported.key_type_name().unwrap(), "ssh-ed25519");
+        assert!(!imported.export_public_key_base64().unwrap().is_empty());
+        assert_eq!(
+            imported
+                .get_public_key_hash(PublicKeyHashType::Sha256)
+                .unwrap()
+                .len(),
+            32
+        );
+        assert!(!imported
+            .get_public_key_hash_hexa(PublicKeyHashType::Sha256)
+            .unwrap()
+            .is_empty());
 
         assert!(SshKey::from_privkey_base64("not a private key", None).is_err());
         assert!(matches!(
-            SshKey::from_import_result(
+            SshKey::from_ffi_result(
                 sys::SSH_OK as c_int,
                 std::ptr::null_mut(),
-                "missing imported key".to_string(),
+                Error::fatal("missing imported key"),
             ),
             Err(Error::Fatal(message)) if message == "missing imported key"
+        ));
+
+        let rejected = generated_private_key();
+        let rejected_raw = rejected.key;
+        std::mem::forget(rejected);
+        assert!(matches!(
+            SshKey::from_ffi_result(
+                sys::SSH_ERROR,
+                rejected_raw,
+                Error::RequestDenied("preserved failure".to_string()),
+            ),
+            Err(Error::RequestDenied(message)) if message == "preserved failure"
         ));
     }
 
