@@ -44,13 +44,11 @@ unsafe impl Send for Channel {}
 
 impl Drop for Channel {
     fn drop(&mut self) {
+        let _sess = self.sess.lock().unwrap();
         unsafe {
             // Prevent any callbacks firing as part the remainder of this drop operation
             sys::ssh_remove_channel_callbacks(self.chan_inner, self._callbacks.as_mut());
-        }
-        let (_sess, chan) = self.lock_session();
-        unsafe {
-            sys::ssh_channel_free(chan);
+            sys::ssh_channel_free(self.chan_inner);
         }
     }
 }
@@ -89,22 +87,26 @@ unsafe extern "C" fn handle_exit_signal(
     lang: *const ::std::os::raw::c_char,
     userdata: *mut ::std::os::raw::c_void,
 ) {
-    let callback_state: &CallbackState = &*(userdata as *const CallbackState);
+    if userdata.is_null() {
+        return;
+    }
 
-    let signal_name = cstr_to_opt_string(signal);
-    let error_message = cstr_to_opt_string(errmsg);
-    let language = cstr_to_opt_string(lang);
-
-    callback_state
-        .signal_state
-        .lock()
-        .unwrap()
-        .replace(SignalState {
-            signal_name,
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let callback_state: &CallbackState = &*(userdata as *const CallbackState);
+        let mut state = callback_state
+            .signal_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.replace(SignalState {
+            signal_name: cstr_to_opt_string(signal),
             core_dumped: if core_dumped == 0 { false } else { true },
-            error_message,
-            language,
+            error_message: cstr_to_opt_string(errmsg),
+            language: cstr_to_opt_string(lang),
         });
+    }));
+    if let Err(error) = result {
+        eprintln!("Error in channel exit-signal callback: {:?}", error);
+    }
 }
 
 impl Channel {
@@ -658,4 +660,57 @@ pub enum PollStatus {
     AvailableBytes(u32),
     /// The channel is in the EOF state
     EndOfFile,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_signal_callback_tolerates_missing_and_poisoned_state() {
+        unsafe {
+            handle_exit_signal(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+        }
+
+        let callback_state = CallbackState {
+            signal_state: Mutex::new(None),
+        };
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = callback_state.signal_state.lock().unwrap();
+            panic!("poison callback state for regression coverage");
+        });
+        let signal = CString::new("TERM").unwrap();
+        let error = CString::new("terminated").unwrap();
+        let language = CString::new("en-US").unwrap();
+
+        unsafe {
+            handle_exit_signal(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                signal.as_ptr(),
+                1,
+                error.as_ptr(),
+                language.as_ptr(),
+                &callback_state as *const CallbackState as *mut _,
+            );
+        }
+        let state = callback_state
+            .signal_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap();
+        assert_eq!(state.signal_name.as_deref(), Some("TERM"));
+        assert!(state.core_dumped);
+        assert_eq!(state.error_message.as_deref(), Some("terminated"));
+        assert_eq!(state.language.as_deref(), Some("en-US"));
+    }
 }
