@@ -136,6 +136,20 @@ unsafe fn bounded_c_string(
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
+fn initialize_getpass_buffer(buf: &mut [u8], default_value: Option<&str>) -> Option<()> {
+    buf.fill(0);
+    let Some(default_value) = default_value else {
+        return Some(());
+    };
+    let default_value = CString::new(default_value).ok()?;
+    if default_value.as_bytes_with_nul().len() > buf.len() {
+        return None;
+    }
+    let bytes = default_value.as_bytes();
+    buf[..bytes.len()].copy_from_slice(bytes);
+    Some(())
+}
+
 fn initialize() -> SshResult<()> {
     if LIB.is_none() {
         Err(Error::fatal("ssh_init failed"))
@@ -1683,12 +1697,7 @@ pub fn get_input(
 ) -> Option<String> {
     const BUF_LEN: usize = 128;
     let mut buf = [0u8; BUF_LEN];
-
-    if let Some(def) = default_value {
-        let def = def.as_bytes();
-        let len = buf.len().min(def.len());
-        buf[0..len].copy_from_slice(&def[0..len]);
-    }
+    initialize_getpass_buffer(&mut buf, default_value)?;
 
     let prompt = CString::new(prompt).ok()?;
 
@@ -1851,5 +1860,20 @@ mod test {
             },
             Err(Error::Fatal(message)) if message.contains("null")
         ));
+    }
+
+    #[test]
+    fn getpass_default_always_leaves_a_nul_terminator() {
+        let mut buf = [0xa5; 8];
+        initialize_getpass_buffer(&mut buf, Some("portmat")).unwrap();
+        assert_eq!(&buf, b"portmat\0");
+
+        assert!(initialize_getpass_buffer(&mut buf, Some("portmate")).is_none());
+        assert_eq!(buf, [0; 8]);
+        assert!(initialize_getpass_buffer(&mut buf, Some("bad\0default")).is_none());
+        assert_eq!(buf, [0; 8]);
+
+        initialize_getpass_buffer(&mut buf, None).unwrap();
+        assert_eq!(buf, [0; 8]);
     }
 }
