@@ -7,6 +7,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
+fn sftp_v3_timestamp(time: SystemTime) -> SshResult<u32> {
+    let seconds = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| Error::fatal("SFTP v3 timestamps cannot represent times before Unix epoch"))?
+        .as_secs();
+    seconds
+        .try_into()
+        .map_err(|_| Error::fatal("SFTP v3 timestamp exceeds the 32-bit seconds range"))
+}
+
+fn system_time_from_sftp_timestamp(seconds: u64, nanoseconds: u32) -> Option<SystemTime> {
+    let duration =
+        Duration::from_secs(seconds).checked_add(Duration::from_nanos(u64::from(nanoseconds)))?;
+    SystemTime::UNIX_EPOCH.checked_add(duration)
+}
+
 #[derive(Error, Debug, PartialEq, Eq)]
 #[error("Sftp error code {}", .0)]
 pub struct SftpError(u32);
@@ -111,7 +127,6 @@ impl Sftp {
     /// Change certain metadata attributes of the named file.
     pub fn set_metadata(&self, filename: &str, metadata: &SetAttributes) -> SshResult<()> {
         let filename = CString::new(filename)?;
-        let (_sess, sftp) = self.lock_session();
         let mut attributes: sys::sftp_attributes_struct = unsafe { std::mem::zeroed() };
 
         if let Some(size) = metadata.size {
@@ -131,21 +146,12 @@ impl Sftp {
         }
 
         if let Some((atime, mtime)) = metadata.atime_mtime {
-            attributes.atime = atime
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("SystemTime to always be > UNIX_EPOCH")
-                .as_secs()
-                .try_into()
-                .unwrap();
-            attributes.mtime = mtime
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("SystemTime to always be > UNIX_EPOCH")
-                .as_secs()
-                .try_into()
-                .unwrap();
+            attributes.atime = sftp_v3_timestamp(atime)?;
+            attributes.mtime = sftp_v3_timestamp(mtime)?;
             attributes.flags |= sys::SSH_FILEXFER_ATTR_ACMODTIME;
         }
 
+        let (_sess, sftp) = self.lock_session();
         let res = unsafe { sys::sftp_setstat(sftp, filename.as_ptr(), &mut attributes) };
         SftpError::result(sftp, res, ())
     }
@@ -555,57 +561,53 @@ impl Metadata {
 
     /// The last-accessed time
     pub fn accessed(&self) -> Option<SystemTime> {
-        let duration = if self.attr().flags & sys::SSH_FILEXFER_ATTR_ACCESSTIME != 0 {
-            Duration::from_secs(self.attr().atime64)
-                + Duration::from_nanos(
-                    if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
-                        self.attr().atime_nseconds.into()
-                    } else {
-                        0
-                    },
-                )
+        let (seconds, nanoseconds) = if self.attr().flags & sys::SSH_FILEXFER_ATTR_ACCESSTIME != 0 {
+            (
+                self.attr().atime64,
+                if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
+                    self.attr().atime_nseconds
+                } else {
+                    0
+                },
+            )
         } else if self.attr().flags & sys::SSH_FILEXFER_ATTR_ACMODTIME != 0 {
-            Duration::from_secs(self.attr().atime.into())
+            (self.attr().atime.into(), 0)
         } else {
             return None;
         };
-        SystemTime::UNIX_EPOCH.checked_add(duration)
+        system_time_from_sftp_timestamp(seconds, nanoseconds)
     }
 
     /// The file creation time
     pub fn created(&self) -> Option<SystemTime> {
-        let duration = if self.attr().flags & sys::SSH_FILEXFER_ATTR_CREATETIME != 0 {
-            Duration::from_secs(self.attr().createtime)
-                + Duration::from_nanos(
-                    if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
-                        self.attr().createtime_nseconds.into()
-                    } else {
-                        0
-                    },
-                )
-        } else {
+        if self.attr().flags & sys::SSH_FILEXFER_ATTR_CREATETIME == 0 {
             return None;
+        }
+        let nanoseconds = if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
+            self.attr().createtime_nseconds
+        } else {
+            0
         };
-        SystemTime::UNIX_EPOCH.checked_add(duration)
+        system_time_from_sftp_timestamp(self.attr().createtime, nanoseconds)
     }
 
     /// The file modification time
     pub fn modified(&self) -> Option<SystemTime> {
-        let duration = if self.attr().flags & sys::SSH_FILEXFER_ATTR_MODIFYTIME != 0 {
-            Duration::from_secs(self.attr().mtime64)
-                + Duration::from_nanos(
-                    if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
-                        self.attr().mtime_nseconds.into()
-                    } else {
-                        0
-                    },
-                )
+        let (seconds, nanoseconds) = if self.attr().flags & sys::SSH_FILEXFER_ATTR_MODIFYTIME != 0 {
+            (
+                self.attr().mtime64,
+                if self.attr().flags & sys::SSH_FILEXFER_ATTR_SUBSECOND_TIMES != 0 {
+                    self.attr().mtime_nseconds
+                } else {
+                    0
+                },
+            )
         } else if self.attr().flags & sys::SSH_FILEXFER_ATTR_ACMODTIME != 0 {
-            Duration::from_secs(self.attr().mtime.into())
+            (self.attr().mtime.into(), 0)
         } else {
             return None;
         };
-        SystemTime::UNIX_EPOCH.checked_add(duration)
+        system_time_from_sftp_timestamp(seconds, nanoseconds)
     }
 }
 
@@ -680,5 +682,47 @@ bitflags::bitflags! {
         ///
         /// This is an alias for `CREATE | EXCLUSIVE`.
         const CREATE_NEW = libc::O_CREAT | libc::O_EXCL;
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn sftp_v3_timestamp_accepts_its_full_wire_range() {
+        assert_eq!(sftp_v3_timestamp(SystemTime::UNIX_EPOCH).unwrap(), 0);
+        assert_eq!(
+            sftp_v3_timestamp(SystemTime::UNIX_EPOCH + Duration::from_secs(u64::from(u32::MAX)))
+                .unwrap(),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn sftp_v3_timestamp_rejects_unrepresentable_times_without_panicking() {
+        let before_epoch = SystemTime::UNIX_EPOCH
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
+        assert!(sftp_v3_timestamp(before_epoch)
+            .unwrap_err()
+            .to_string()
+            .contains("before Unix epoch"));
+
+        let after_wire_range =
+            SystemTime::UNIX_EPOCH + Duration::from_secs(u64::from(u32::MAX) + 1);
+        assert!(sftp_v3_timestamp(after_wire_range)
+            .unwrap_err()
+            .to_string()
+            .contains("32-bit seconds range"));
+    }
+
+    #[test]
+    fn remote_sftp_timestamp_overflow_is_treated_as_unavailable() {
+        assert_eq!(
+            system_time_from_sftp_timestamp(1, 500_000_000),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1_500))
+        );
+        assert_eq!(system_time_from_sftp_timestamp(u64::MAX, u32::MAX), None);
     }
 }
