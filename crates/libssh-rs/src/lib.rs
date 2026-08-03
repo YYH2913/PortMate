@@ -146,6 +146,26 @@ unsafe fn bounded_c_string(
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
+fn take_ssh_string(value: sys::ssh_string, label: &str) -> SshResult<String> {
+    if value.is_null() {
+        return Err(Error::fatal(format!("libssh returned a null {label}")));
+    }
+
+    let chars = unsafe { sys::ssh_string_to_char(value) };
+    unsafe { sys::ssh_string_free(value) };
+    if chars.is_null() {
+        return Err(Error::fatal(format!(
+            "libssh failed to convert {label} to text"
+        )));
+    }
+
+    let result = unsafe { CStr::from_ptr(chars) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { sys::ssh_string_free_char(chars) };
+    Ok(result)
+}
+
 fn initialize_getpass_buffer(buf: &mut [u8], default_value: Option<&str>) -> Option<()> {
     buf.fill(0);
     let Some(default_value) = default_value else {
@@ -657,10 +677,7 @@ impl Session {
                 Err(Error::fatal("failed to get pubkey"))
             }
         } else {
-            let key = unsafe { sys::ssh_string_to_char(sstring) };
-            let key_text = unsafe { CStr::from_ptr(key) }.to_string_lossy().to_string();
-            unsafe { sys::ssh_string_free_char(key) };
-            Ok(key_text)
+            take_ssh_string(sstring, "server public key")
         }
     }
 
@@ -1928,6 +1945,20 @@ mod test {
 
         initialize_getpass_buffer(&mut buf, None).unwrap();
         assert_eq!(buf, [0; 8]);
+    }
+
+    #[test]
+    fn owned_ssh_strings_are_converted_and_released_safely() {
+        let text = CString::new("portmate-public-key").unwrap();
+        let value = unsafe { sys::ssh_string_from_char(text.as_ptr()) };
+        assert_eq!(
+            take_ssh_string(value, "test value").unwrap(),
+            "portmate-public-key"
+        );
+        assert!(matches!(
+            take_ssh_string(std::ptr::null_mut(), "test value"),
+            Err(Error::Fatal(message)) if message.contains("null test value")
+        ));
     }
 
     #[test]
