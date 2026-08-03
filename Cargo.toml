@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/libssh-rs",
+  "crates/libssh-rs-sys",
   "crates/portmate-core",
   "crates/portmate-kdf",
   "crates/portmate-keyring",

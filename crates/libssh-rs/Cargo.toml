@@ -45,9 +45,11 @@ version = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies.libssh-rs-sys]
 version = "0.2.8"
+path = "../libssh-rs-sys"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies.libssh-rs-sys]
 version = "0.2.8"
+path = "../libssh-rs-sys"
 features = ["vendored", "vendored-openssl"]
 
 [dependencies.openssl-sys]
