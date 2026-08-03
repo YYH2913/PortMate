@@ -42,25 +42,36 @@ impl SftpError {
     }
 }
 
-pub struct Sftp {
-    pub(crate) sess: Arc<Mutex<SessionHolder>>,
-    pub(crate) sftp_inner: sys::sftp_session,
+struct SftpInner {
+    sess: Arc<Mutex<SessionHolder>>,
+    sftp_inner: sys::sftp_session,
 }
 
-unsafe impl Send for Sftp {}
+unsafe impl Send for SftpInner {}
+unsafe impl Sync for SftpInner {}
 
-impl Drop for Sftp {
+impl Drop for SftpInner {
     fn drop(&mut self) {
-        let (_sess, sftp) = self.lock_session();
+        let _sess = self.sess.lock().unwrap();
         unsafe {
-            sys::sftp_free(sftp);
+            sys::sftp_free(self.sftp_inner);
         }
     }
 }
 
+pub struct Sftp {
+    inner: Arc<SftpInner>,
+}
+
 impl Sftp {
+    pub(crate) fn new(sess: Arc<Mutex<SessionHolder>>, sftp_inner: sys::sftp_session) -> Self {
+        Self {
+            inner: Arc::new(SftpInner { sess, sftp_inner }),
+        }
+    }
+
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::sftp_session) {
-        (self.sess.lock().unwrap(), self.sftp_inner)
+        (self.inner.sess.lock().unwrap(), self.inner.sftp_inner)
     }
 
     pub(crate) fn init(&self) -> SshResult<()> {
@@ -234,9 +245,8 @@ impl Sftp {
             Err(Error::Sftp(SftpError::from_session(sftp)))
         } else {
             Ok(SftpFile {
-                sess: Arc::clone(&self.sess),
                 file_inner: res,
-                sftp: sftp,
+                sftp: Arc::clone(&self.inner),
             })
         }
     }
@@ -250,9 +260,8 @@ impl Sftp {
             Err(Error::Sftp(SftpError::from_session(sftp)))
         } else {
             Ok(SftpDir {
-                sess: Arc::clone(&self.sess),
                 dir_inner: res,
-                sftp: sftp,
+                sftp: Arc::clone(&self.inner),
             })
         }
     }
@@ -283,9 +292,8 @@ impl Sftp {
 }
 
 pub struct SftpFile {
-    pub(crate) sess: Arc<Mutex<SessionHolder>>,
     pub(crate) file_inner: sys::sftp_file,
-    pub(crate) sftp: sys::sftp_session,
+    sftp: Arc<SftpInner>,
 }
 
 unsafe impl Send for SftpFile {}
@@ -301,7 +309,7 @@ impl Drop for SftpFile {
 
 impl SftpFile {
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::sftp_file) {
-        (self.sess.lock().unwrap(), self.file_inner)
+        (self.sftp.sess.lock().unwrap(), self.file_inner)
     }
 
     pub fn set_blocking(&self, blocking: bool) {
@@ -318,7 +326,7 @@ impl SftpFile {
         let (_sess, file) = self.lock_session();
         let attr = unsafe { sys::sftp_fstat(file) };
         if attr.is_null() {
-            Err(Error::Sftp(SftpError::from_session(self.sftp)))
+            Err(Error::Sftp(SftpError::from_session(self.sftp.sftp_inner)))
         } else {
             Ok(Metadata { attr })
         }
@@ -357,7 +365,7 @@ impl std::io::Read for SftpFile {
         if res >= 0 {
             Ok(res as usize)
         } else {
-            let err = io_err_from_sftp(self.sftp, "read");
+            let err = io_err_from_sftp(self.sftp.sftp_inner, "read");
             if err.kind() == std::io::ErrorKind::UnexpectedEof {
                 Ok(0)
             } else {
@@ -374,7 +382,7 @@ impl std::io::Write for SftpFile {
         if res == 0 {
             Ok(())
         } else {
-            Err(io_err_from_sftp(self.sftp, "fsync"))
+            Err(io_err_from_sftp(self.sftp.sftp_inner, "fsync"))
         }
     }
 
@@ -386,7 +394,7 @@ impl std::io::Write for SftpFile {
         if res >= 0 {
             Ok(res as usize)
         } else {
-            let err = io_err_from_sftp(self.sftp, "write");
+            let err = io_err_from_sftp(self.sftp.sftp_inner, "write");
             if err.kind() == std::io::ErrorKind::UnexpectedEof {
                 Ok(0)
             } else {
@@ -419,7 +427,7 @@ impl std::io::Seek for SftpFile {
                 if res == 0 {
                     Ok(p)
                 } else {
-                    Err(io_err_from_sftp(self.sftp, "seek"))
+                    Err(io_err_from_sftp(self.sftp.sftp_inner, "seek"))
                 }
             }
             std::io::SeekFrom::End(p) => {
@@ -435,7 +443,7 @@ impl std::io::Seek for SftpFile {
                 if res == 0 {
                     Ok(target)
                 } else {
-                    Err(io_err_from_sftp(self.sftp, "seek"))
+                    Err(io_err_from_sftp(self.sftp.sftp_inner, "seek"))
                 }
             }
             std::io::SeekFrom::Current(p) => {
@@ -446,7 +454,7 @@ impl std::io::Seek for SftpFile {
                 if res == 0 {
                     Ok(target)
                 } else {
-                    Err(io_err_from_sftp(self.sftp, "seek"))
+                    Err(io_err_from_sftp(self.sftp.sftp_inner, "seek"))
                 }
             }
         }
@@ -631,9 +639,8 @@ impl Metadata {
 }
 
 pub struct SftpDir {
-    pub(crate) sess: Arc<Mutex<SessionHolder>>,
     pub(crate) dir_inner: sys::sftp_dir,
-    pub(crate) sftp: sys::sftp_session,
+    sftp: Arc<SftpInner>,
 }
 
 unsafe impl Send for SftpDir {}
@@ -649,19 +656,21 @@ impl Drop for SftpDir {
 
 impl SftpDir {
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::sftp_dir) {
-        (self.sess.lock().unwrap(), self.dir_inner)
+        (self.sftp.sess.lock().unwrap(), self.dir_inner)
     }
 
     /// Read the next entry from the directory.
     /// Returns None if there are no more entries.
     pub fn read_dir(&self) -> Option<SshResult<Metadata>> {
         let (_sess, dir) = self.lock_session();
-        let attr = unsafe { sys::sftp_readdir(self.sftp, dir) };
+        let attr = unsafe { sys::sftp_readdir(self.sftp.sftp_inner, dir) };
         if attr.is_null() {
             if unsafe { sys::sftp_dir_eof(dir) } == 1 {
                 None
             } else {
-                Some(Err(Error::Sftp(SftpError::from_session(self.sftp))))
+                Some(Err(Error::Sftp(SftpError::from_session(
+                    self.sftp.sftp_inner,
+                ))))
             }
         } else {
             Some(Ok(Metadata { attr }))
@@ -761,5 +770,21 @@ mod tests {
             checked_seek_target(0, i64::MIN).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn file_handles_keep_the_sftp_session_alive() {
+        let session = crate::Session::new().unwrap();
+        let sftp = Sftp::new(Arc::clone(&session.sess), std::ptr::null_mut());
+        let owner = Arc::downgrade(&sftp.inner);
+        let file = SftpFile {
+            file_inner: std::ptr::null_mut(),
+            sftp: Arc::clone(&sftp.inner),
+        };
+
+        drop(sftp);
+        assert!(owner.upgrade().is_some());
+        drop(file);
+        assert!(owner.upgrade().is_none());
     }
 }

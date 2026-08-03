@@ -1351,10 +1351,7 @@ impl Session {
                 };
             }
 
-            Sftp {
-                sess: Arc::clone(&self.sess),
-                sftp_inner: sftp,
-            }
+            Sftp::new(Arc::clone(&self.sess), sftp)
         };
 
         sftp.init()?;
