@@ -843,6 +843,24 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
                 .unwrap(),
             payload.len() as u64
         );
+        let mut uploaded_file = sftp.open(uploaded.clone()).await.unwrap();
+        let end = tokio::time::timeout(
+            Duration::from_secs(2),
+            uploaded_file.seek(std::io::SeekFrom::End(0)),
+        )
+        .await
+        .expect("libssh SFTP seek from end deadlocked")
+        .unwrap();
+        assert_eq!(end, payload.len() as u64);
+        assert_eq!(
+            uploaded_file
+                .seek(std::io::SeekFrom::End(-((payload.len() as i64) + 1)))
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        uploaded_file.shutdown().await.unwrap();
         assert_eq!(
             sftp_download(&sftp, &uploaded, downloaded.to_str().unwrap(), &progress,)
                 .await

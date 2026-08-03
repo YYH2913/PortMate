@@ -385,11 +385,25 @@ impl std::io::Write for SftpFile {
     }
 }
 
+fn checked_seek_target(base: u64, offset: i64) -> std::io::Result<u64> {
+    let target = if offset < 0 {
+        base.checked_sub(offset.unsigned_abs())
+    } else {
+        base.checked_add(offset as u64)
+    };
+    target.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SFTP seek offset is outside the supported file range",
+        )
+    })
+}
+
 impl std::io::Seek for SftpFile {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        let (_sess, file) = self.lock_session();
         match pos {
             std::io::SeekFrom::Start(p) => {
+                let (_sess, file) = self.lock_session();
                 let res = unsafe { sys::sftp_seek64(file, p) };
                 if res == 0 {
                     Ok(p)
@@ -398,17 +412,14 @@ impl std::io::Seek for SftpFile {
                 }
             }
             std::io::SeekFrom::End(p) => {
-                let end = self.metadata().map_err(|e| e)?.len().ok_or_else(|| {
+                let end = self.metadata()?.len().ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "metadata didn't return the length",
                     )
                 })?;
-                let target = if p < 0 {
-                    end.saturating_sub(p.abs() as u64)
-                } else {
-                    end.saturating_add(p as u64)
-                };
+                let target = checked_seek_target(end, p)?;
+                let (_sess, file) = self.lock_session();
                 let res = unsafe { sys::sftp_seek64(file, target) };
                 if res == 0 {
                     Ok(target)
@@ -417,12 +428,9 @@ impl std::io::Seek for SftpFile {
                 }
             }
             std::io::SeekFrom::Current(p) => {
+                let (_sess, file) = self.lock_session();
                 let current = unsafe { sys::sftp_tell64(file) };
-                let target = if p < 0 {
-                    current.saturating_sub(p.abs() as u64)
-                } else {
-                    current.saturating_add(p as u64)
-                };
+                let target = checked_seek_target(current, p)?;
                 let res = unsafe { sys::sftp_seek64(file, target) };
                 if res == 0 {
                     Ok(target)
@@ -686,7 +694,7 @@ bitflags::bitflags! {
 }
 
 #[cfg(test)]
-mod timestamp_tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -724,5 +732,23 @@ mod timestamp_tests {
             Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1_500))
         );
         assert_eq!(system_time_from_sftp_timestamp(u64::MAX, u32::MAX), None);
+    }
+
+    #[test]
+    fn sftp_seek_offsets_reject_underflow_and_overflow() {
+        assert_eq!(checked_seek_target(10, -10).unwrap(), 0);
+        assert_eq!(checked_seek_target(10, 5).unwrap(), 15);
+        assert_eq!(
+            checked_seek_target(0, -1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            checked_seek_target(u64::MAX, 1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            checked_seek_target(0, i64::MIN).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
     }
 }
