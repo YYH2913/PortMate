@@ -89,7 +89,7 @@ function normalizeShellProgram(value: string): string | null {
   const unquoted = quoted
     ? value.slice(1, -1)
     : value;
-  const program = unquoted.trim();
+  const program = quoted ? unquoted : unquoted.trim();
   if (!program || /[\0-\x1f\x7f]/.test(program) || /[|;&`$<>]/.test(program) || (!quoted && /\s/.test(program))) return null;
   if (KNOWN_WINDOWS_SHELLS.has(program.toLowerCase())) return program;
   if (isAbsolutePosixPath(program) || isAbsoluteWindowsPath(program) || isUncPath(program)) return program;

@@ -73,6 +73,52 @@ fn shell_launch_paths_expand_native_home_and_reject_foreign_roots() {
 }
 
 #[test]
+fn shell_launch_paths_preserve_significant_edge_whitespace() {
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.program = "/opt/ custom-shell ".to_string();
+    shell.cwd = Some("/srv/ worktree ".to_string());
+
+    let normalized = normalize_session_profile(profile);
+    let ConnectionConfig::Shell(mut shell) = normalized.connection else {
+        panic!("expected normalized Shell profile");
+    };
+    assert_eq!(shell.program, "/opt/ custom-shell ");
+    assert_eq!(shell.cwd.as_deref(), Some("/srv/ worktree "));
+    assert_eq!(
+        resolve_shell_launch_paths_with_home(
+            &shell,
+            "/bin/sh",
+            LocalTransferPathPlatform::Unix,
+            None,
+        )
+        .unwrap(),
+        ShellLaunchPaths {
+            program: PathBuf::from("/opt/ custom-shell "),
+            cwd: Some(PathBuf::from("/srv/ worktree ")),
+        }
+    );
+
+    shell.program = " \t ".to_string();
+    shell.cwd = Some(" \n ".to_string());
+    assert_eq!(
+        resolve_shell_launch_paths_with_home(
+            &shell,
+            "/bin/default-shell",
+            LocalTransferPathPlatform::Unix,
+            None,
+        )
+        .unwrap(),
+        ShellLaunchPaths {
+            program: PathBuf::from("/bin/default-shell"),
+            cwd: None,
+        }
+    );
+}
+
+#[test]
 fn shell_open_rejects_a_non_directory_cwd_before_installing_a_runtime() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().join("not-a-directory");

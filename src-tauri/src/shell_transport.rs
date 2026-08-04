@@ -43,9 +43,9 @@ pub(super) fn resolve_shell_launch_paths_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<ShellLaunchPaths, String> {
-    let configured_program = shell.program.trim();
+    let configured_program = shell.program.as_str();
     let program = validate_native_local_path_with_home(
-        if configured_program.is_empty() {
+        if configured_program.trim().is_empty() {
             default_program
         } else {
             configured_program
@@ -57,8 +57,7 @@ pub(super) fn resolve_shell_launch_paths_with_home(
     let cwd = shell
         .cwd
         .as_deref()
-        .map(str::trim)
-        .filter(|cwd| !cwd.is_empty())
+        .filter(|cwd| !cwd.trim().is_empty())
         .map(|cwd| {
             validate_native_local_path_with_home(cwd, platform, home)
                 .map_err(|error| format!("Shell 工作目录无效: {error}"))

@@ -35,6 +35,16 @@ pwsh
     ]);
   });
 
+  it("preserves significant whitespace inside quoted absolute paths", () => {
+    const result = parseShellSessions(`"/opt/ custom shell "`);
+
+    expect(result.error).toBeNull();
+    expect(result.warnings).toEqual([]);
+    expect(result.candidates).toEqual([
+      expect.objectContaining({ program: "/opt/ custom shell " }),
+    ]);
+  });
+
   it("rejects traversal, noninteractive programs, arbitrary commands, and duplicates", () => {
     const result = parseShellSessions(`
 /bin/zsh

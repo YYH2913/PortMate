@@ -229,7 +229,9 @@ pub(super) fn normalize_session_profile(mut profile: SessionProfile) -> SessionP
             serial.normalize_health_settings();
         }
         ConnectionConfig::Shell(shell) => {
-            shell.program = shell.program.trim().to_string();
+            if shell.program.trim().is_empty() {
+                shell.program.clear();
+            }
         }
     }
 
