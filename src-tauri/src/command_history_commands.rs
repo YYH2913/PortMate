@@ -63,6 +63,12 @@ pub(crate) fn migrate_command_history(
     }
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let now = now_millis();
+    if should_skip_empty_migration(&store, &entries) {
+        let entries = SessionStore::normalized_command_history(&[], limit, retention_days, now)?;
+        let result = snapshot(&store, entries);
+        emit_snapshot(&state, &result);
+        return Ok(result);
+    }
     let result = commit_store_mutation(&mut store, &state.store_path, |next_store| {
         let source = if next_store.command_history_migrated {
             next_store.command_history.clone()
@@ -74,6 +80,13 @@ pub(crate) fn migrate_command_history(
     })?;
     emit_snapshot(&state, &result);
     Ok(result)
+}
+
+fn should_skip_empty_migration(
+    store: &SessionStore,
+    entries: &[portmate_core::CommandHistoryEntry],
+) -> bool {
+    !store.command_history_migrated && store.command_history.is_empty() && entries.is_empty()
 }
 
 #[tauri::command]
@@ -148,4 +161,28 @@ pub(crate) fn clear_command_history(
     })?;
     emit_snapshot(&state, &result);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_legacy_history_migration_is_persistence_free() {
+        let store = SessionStore::default();
+        assert!(should_skip_empty_migration(&store, &[]));
+
+        let mut store_with_history = SessionStore::default();
+        store_with_history
+            .command_history
+            .push(portmate_core::CommandHistoryEntry {
+                command: "git status".to_string(),
+                recorded_at: 1,
+            });
+        assert!(!should_skip_empty_migration(&store_with_history, &[]));
+
+        let mut migrated_store = SessionStore::default();
+        migrated_store.command_history_migrated = true;
+        assert!(!should_skip_empty_migration(&migrated_store, &[]));
+    }
 }
