@@ -59,6 +59,8 @@ mod openssh_modem_integration;
 mod openssh_reconnect_tests;
 #[path = "openssh_sftp_integration.rs"]
 mod openssh_sftp_integration;
+#[path = "openssh_transfer_recovery_integration.rs"]
+mod openssh_transfer_recovery_integration;
 #[path = "openssh_transfer_tunnel_tests.rs"]
 mod openssh_transfer_tunnel_tests;
 #[path = "openssh_tunnel_integration.rs"]
