@@ -168,12 +168,28 @@ pub(super) fn remove_runtime_if_owned<Runtime>(
 }
 
 pub(super) fn expand_identity_path(path: &str) -> PathBuf {
-    #[cfg(windows)]
-    let home = environment_path("USERPROFILE").or_else(|| environment_path("HOME"));
-    #[cfg(not(windows))]
-    let home = environment_path("HOME").or_else(|| environment_path("USERPROFILE"));
-
+    let home = native_home_path();
     expand_identity_path_with_home(path, home.as_deref(), cfg!(windows))
+}
+
+pub(super) fn native_home_path() -> Option<PathBuf> {
+    preferred_native_home_path(
+        environment_path("HOME"),
+        environment_path("USERPROFILE"),
+        cfg!(windows),
+    )
+}
+
+pub(super) fn preferred_native_home_path(
+    home: Option<PathBuf>,
+    user_profile: Option<PathBuf>,
+    windows: bool,
+) -> Option<PathBuf> {
+    if windows {
+        user_profile.or(home)
+    } else {
+        home.or(user_profile)
+    }
 }
 
 fn environment_path(name: &str) -> Option<PathBuf> {

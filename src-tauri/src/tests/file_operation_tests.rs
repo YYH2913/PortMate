@@ -347,6 +347,53 @@ fn local_tilde_paths_follow_native_home_and_separator_rules() {
 }
 
 #[test]
+fn local_mutations_protect_the_platform_native_home_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let unix_home = root.path().join("unix-home");
+    let windows_profile = root.path().join("windows-profile");
+    fs::create_dir_all(&unix_home).unwrap();
+    fs::create_dir_all(&windows_profile).unwrap();
+
+    let windows_home =
+        preferred_native_home_path(Some(unix_home.clone()), Some(windows_profile.clone()), true)
+            .unwrap();
+    assert_eq!(windows_home, windows_profile);
+    assert!(validate_local_mutating_path_with_home(
+        windows_profile.to_str().unwrap(),
+        Some(&windows_home),
+    )
+    .unwrap_err()
+    .contains("用户主目录"));
+    assert!(validate_local_mutating_path_with_home(
+        unix_home.to_str().unwrap(),
+        Some(&windows_home),
+    )
+    .is_ok());
+
+    let unix_native_home = preferred_native_home_path(
+        Some(unix_home.clone()),
+        Some(windows_profile.clone()),
+        false,
+    )
+    .unwrap();
+    assert_eq!(unix_native_home, unix_home);
+    assert!(validate_local_mutating_path_with_home(
+        unix_home.to_str().unwrap(),
+        Some(&unix_native_home),
+    )
+    .unwrap_err()
+    .contains("用户主目录"));
+    assert_eq!(
+        preferred_native_home_path(None, Some(windows_profile.clone()), false),
+        Some(windows_profile.clone())
+    );
+    assert_eq!(
+        preferred_native_home_path(Some(unix_home.clone()), None, true),
+        Some(unix_home)
+    );
+}
+
+#[test]
 fn file_manager_remote_mutating_paths_reject_parent_components() {
     for path in [
         "/tmp/..",

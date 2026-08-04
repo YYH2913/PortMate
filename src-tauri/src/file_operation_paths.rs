@@ -59,6 +59,14 @@ pub(super) fn validate_remote_mutating_path(path: &str) -> Result<String, String
 
 /// Guards local mutations against empty/current/home/filesystem-root paths.
 pub(super) fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String> {
+    let home = native_home_path();
+    validate_local_mutating_path_with_home(path, home.as_deref())
+}
+
+pub(super) fn validate_local_mutating_path_with_home(
+    path: &str,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     let trimmed_slashes = trimmed.trim_end_matches(['/', '\\']);
     if trimmed.is_empty()
@@ -87,12 +95,11 @@ pub(super) fn validate_local_mutating_path(path: &str) -> Result<PathBuf, String
     }) {
         return Err("拒绝包含 . 或 .. 路径分量的本地变更路径".to_string());
     }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        let home = PathBuf::from(home);
+    if let Some(home) = home {
         let candidate_check = candidate
             .canonicalize()
             .unwrap_or_else(|_| candidate.clone());
-        let home_check = home.canonicalize().unwrap_or(home);
+        let home_check = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
         if candidate_check == home_check {
             return Err("拒绝操作用户主目录".to_string());
         }
