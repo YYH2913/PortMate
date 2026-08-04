@@ -5431,7 +5431,6 @@ function normalizeConnectionConfig(connection: ConnectionConfig, profileId: stri
   if (connection.kind === "serial") {
     return normalizeSerialConnectionSettings({
       ...connection,
-      port: connection.port.trim(),
     });
   }
   if (connection.kind !== "ssh" && connection.kind !== "tmux") {

@@ -58,6 +58,17 @@ describe("serial connection settings", () => {
     });
   });
 
+  it("preserves exact non-empty device paths while clearing whitespace-only values", () => {
+    expect(normalizeSerialConnectionSettings({
+      ...baseConnection(),
+      port: " /dev/ttyUSB0 ",
+    }).port).toBe(" /dev/ttyUSB0 ");
+    expect(normalizeSerialConnectionSettings({
+      ...baseConnection(),
+      port: " \t ",
+    }).port).toBe("");
+  });
+
   it("clamps and truncates operational settings", () => {
     const normalized = normalizeSerialConnectionSettings({
       ...baseConnection(),

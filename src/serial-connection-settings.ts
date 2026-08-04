@@ -40,6 +40,7 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
 export function normalizeSerialConnectionSettings<T extends SerialConnection>(connection: T): T {
   return {
     ...connection,
+    port: connection.port.trim() ? connection.port : "",
     reconnect: typeof connection.reconnect === "boolean" ? connection.reconnect : true,
     reconnectDelayMs: boundedInteger(
       connection.reconnectDelayMs,

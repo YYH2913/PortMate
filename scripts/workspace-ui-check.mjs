@@ -172,7 +172,7 @@ const sessions = [
   }),
   createSession("bench-uart", "Bench UART", "serial", "Lab", ["hardware"], {
     kind: "serial",
-    port: "/dev/ttyUSB0",
+    port: "/dev/ttyUSB0 ",
     baudRate: 115200,
     dataBits: 8,
     parity: "none",
@@ -2388,6 +2388,28 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-session-settings.png`, fullPage: true });
   await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
+
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
+  await page.waitForFunction(() => (
+    document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART")
+  ));
+  const serialProfileSaveStart = await page.evaluate(() => window.__invokeCalls.length);
+  await page.locator(".menu-trigger", { hasText: "会话" }).click();
+  await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
+  const serialProfileDialog = page.locator(".session-settings-dialog");
+  await serialProfileDialog.waitFor();
+  await serialProfileDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("串口");
+  assert(await serialProfileDialog.locator(".dialog-field", { hasText: "串口:(S)" }).locator("select").inputValue() === "/dev/ttyUSB0 ",
+    "Session Settings did not preserve the exact serial device path");
+  await serialProfileDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await serialProfileDialog.waitFor({ state: "detached" });
+  const savedSerialPath = await page.evaluate((start) => (
+    window.__invokeCalls.slice(start)
+      .find((call) => call.command === "save_session_profile")
+      ?.args.profile.connection.port ?? null
+  ), serialProfileSaveStart);
+  assert(savedSerialPath === "/dev/ttyUSB0 ",
+    `saving a Serial Profile changed its exact device path: ${JSON.stringify(savedSerialPath)}`);
 
   const sessionPreferenceKeys = await page.evaluate(() => (
     Object.keys(localStorage).filter((key) => key.startsWith("portmate.sessionPrefs."))
