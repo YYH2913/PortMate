@@ -12,6 +12,103 @@ fn shell_exit_status_disconnect_reason_preserves_code_and_signal() {
     );
 }
 
+#[test]
+fn shell_launch_paths_expand_native_home_and_reject_foreign_roots() {
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.program = "~/.local/bin/zsh".to_string();
+    shell.cwd = Some("~/worktree".to_string());
+    let home = Path::new("native-home");
+    assert_eq!(
+        resolve_shell_launch_paths_with_home(
+            shell,
+            "sh",
+            LocalTransferPathPlatform::Unix,
+            Some(home),
+        )
+        .unwrap(),
+        ShellLaunchPaths {
+            program: home.join(".local/bin/zsh"),
+            cwd: Some(home.join("worktree")),
+        }
+    );
+
+    shell.program = r"~\bin\pwsh.exe".to_string();
+    shell.cwd = Some(r"~\worktree".to_string());
+    assert_eq!(
+        resolve_shell_launch_paths_with_home(
+            shell,
+            "cmd.exe",
+            LocalTransferPathPlatform::Windows,
+            Some(home),
+        )
+        .unwrap(),
+        ShellLaunchPaths {
+            program: home.join(r"bin\pwsh.exe"),
+            cwd: Some(home.join(r"worktree")),
+        }
+    );
+
+    shell.program = r"C:\Windows\System32\cmd.exe".to_string();
+    let error = resolve_shell_launch_paths_with_home(
+        shell,
+        "sh",
+        LocalTransferPathPlatform::Unix,
+        Some(home),
+    )
+    .unwrap_err();
+    assert!(error.contains("不兼容"), "{error}");
+
+    shell.program = r"~/C:\Windows\System32\cmd.exe".to_string();
+    let error = resolve_shell_launch_paths_with_home(
+        shell,
+        "cmd.exe",
+        LocalTransferPathPlatform::Windows,
+        Some(home),
+    )
+    .unwrap_err();
+    assert!(error.contains("盘符后缀"), "{error}");
+}
+
+#[test]
+fn shell_open_rejects_a_non_directory_cwd_before_installing_a_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("not-a-directory");
+    fs::write(&cwd, b"file").unwrap();
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.cwd = Some(cwd.display().to_string());
+    let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+
+    let error = open_shell_session(&state, profile.clone()).unwrap_err();
+    assert!(error.contains("Shell 工作目录不是目录"), "{error}");
+    assert!(!state.shell.lock().unwrap().contains_key(&profile.id));
+}
+
+#[test]
+fn shell_profile_path_validation_rejects_the_foreign_platform_before_save() {
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.program = if cfg!(windows) {
+        "/bin/sh".to_string()
+    } else {
+        r"C:\Windows\System32\cmd.exe".to_string()
+    };
+    let error = validate_shell_profile_paths(&profile).unwrap_err();
+    assert!(
+        error.contains("不兼容") || error.contains("盘符") || error.contains("完整 UNC"),
+        "{error}"
+    );
+
+    assert!(validate_shell_profile_paths(&test_ssh_profile()).is_ok());
+}
+
 #[cfg(unix)]
 #[test]
 fn shell_fast_exit_cannot_leave_a_stale_connected_runtime() {

@@ -184,7 +184,7 @@ pub(super) fn resolve_transfer_default_local_dir_with_home(
         return Ok(None);
     };
     let windows = platform == LocalTransferPathPlatform::Windows;
-    if local_home_relative_path(default_local_dir, windows).is_some() {
+    if has_local_home_prefix(default_local_dir, windows) {
         return expand_local_home_transfer_path(default_local_dir, home, windows).map(Some);
     }
     if classify_local_transfer_path(default_local_dir, platform) != LocalTransferPathKind::Absolute
@@ -204,7 +204,7 @@ pub(super) fn resolve_default_local_transfer_path_with_home(
         return Ok(value.to_string());
     }
     let windows = platform == LocalTransferPathPlatform::Windows;
-    if local_home_relative_path(value, windows).is_some() {
+    if has_local_home_prefix(value, windows) {
         return expand_local_home_transfer_path(value, home, windows);
     }
     match classify_local_transfer_path(value, platform) {
@@ -234,6 +234,9 @@ fn expand_local_home_transfer_path(
     home: Option<&Path>,
     windows: bool,
 ) -> Result<String, String> {
+    if local_home_relative_path(value, windows).is_none() {
+        return Err("本地 ~ 路径不能包含 Windows 盘符后缀".to_string());
+    }
     let home = home.ok_or_else(|| "无法解析本地 ~ 路径：系统用户主目录不可用".to_string())?;
     expand_identity_path_with_home(value, Some(home), windows)
         .into_os_string()

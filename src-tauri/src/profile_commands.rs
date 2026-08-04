@@ -197,6 +197,7 @@ pub(crate) fn save_session_profile(
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
     validate_transfer_default_local_dir(&profile)?;
+    validate_shell_profile_paths(&profile)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let current_profile = store.profile(&profile.id);
     store.validate_profile_capacity(&profile.id)?;
@@ -211,6 +212,7 @@ pub(crate) fn save_session_profile(
     validate_profile_client_identity_ids(&profile)?;
     validate_logging_retention(&profile)?;
     validate_transfer_default_local_dir(&profile)?;
+    validate_shell_profile_paths(&profile)?;
     validate_triggers(&profile.triggers)?;
     validate_profile_tunnels(&profile)?;
     let runtime_status = store

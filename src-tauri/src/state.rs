@@ -233,6 +233,10 @@ pub(super) fn local_home_relative_path(path: &str, windows: bool) -> Option<&str
     (!has_windows_drive_prefix).then_some(relative)
 }
 
+pub(super) fn has_local_home_prefix(path: &str, windows: bool) -> bool {
+    path == "~" || path.starts_with("~/") || (windows && path.starts_with(r"~\"))
+}
+
 #[derive(Debug, Default)]
 enum ReaderStartState {
     #[default]

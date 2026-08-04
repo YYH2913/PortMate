@@ -11,6 +11,62 @@ pub(super) struct ShellRuntime {
     pub(super) closed: Arc<AtomicBool>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ShellLaunchPaths {
+    pub(super) program: PathBuf,
+    pub(super) cwd: Option<PathBuf>,
+}
+
+pub(super) fn validate_shell_profile_paths(profile: &SessionProfile) -> Result<(), String> {
+    let ConnectionConfig::Shell(shell) = &profile.connection else {
+        return Ok(());
+    };
+    resolve_shell_launch_paths(shell).map(|_| ())
+}
+
+pub(super) fn resolve_shell_launch_paths(
+    shell: &portmate_core::ShellConnection,
+) -> Result<ShellLaunchPaths, String> {
+    let home = native_home_path();
+    let default_program = default_shell_program();
+    resolve_shell_launch_paths_with_home(
+        shell,
+        &default_program,
+        current_local_transfer_path_platform(),
+        home.as_deref(),
+    )
+}
+
+pub(super) fn resolve_shell_launch_paths_with_home(
+    shell: &portmate_core::ShellConnection,
+    default_program: &str,
+    platform: LocalTransferPathPlatform,
+    home: Option<&Path>,
+) -> Result<ShellLaunchPaths, String> {
+    let configured_program = shell.program.trim();
+    let program = validate_native_local_path_with_home(
+        if configured_program.is_empty() {
+            default_program
+        } else {
+            configured_program
+        },
+        platform,
+        home,
+    )
+    .map_err(|error| format!("Shell 程序路径无效: {error}"))?;
+    let cwd = shell
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(|cwd| {
+            validate_native_local_path_with_home(cwd, platform, home)
+                .map_err(|error| format!("Shell 工作目录无效: {error}"))
+        })
+        .transpose()?;
+    Ok(ShellLaunchPaths { program, cwd })
+}
+
 pub(super) fn open_shell_session(
     state: &AppState,
     profile: SessionProfile,
@@ -19,11 +75,15 @@ pub(super) fn open_shell_session(
         ConnectionConfig::Shell(shell) => shell.clone(),
         _ => return Err("profile is not shell-backed".to_string()),
     };
-    let program = if shell.program.trim().is_empty() {
-        default_shell_program()
-    } else {
-        shell.program.trim().to_string()
-    };
+    let launch = resolve_shell_launch_paths(&shell)?;
+    if let Some(cwd) = &launch.cwd {
+        let metadata = fs::metadata(cwd)
+            .map_err(|error| format!("Shell 工作目录不可用 {}: {error}", cwd.display()))?;
+        if !metadata.is_dir() {
+            return Err(format!("Shell 工作目录不是目录: {}", cwd.display()));
+        }
+    }
+    let program = launch.program.to_string_lossy().into_owned();
 
     if let Some(existing) = {
         let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
@@ -45,14 +105,10 @@ pub(super) fn open_shell_session(
         })
         .map_err(|error| format!("Shell PTY 打开失败: {error}"))?;
 
-    let mut command = CommandBuilder::new(&program);
+    let mut command = CommandBuilder::new(&launch.program);
     command.args(shell.args.iter());
     apply_shell_terminal_color_env(&mut command, profile.terminal.term.as_str());
-    if let Some(cwd) = shell
-        .cwd
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(cwd) = &launch.cwd {
         command.cwd(cwd);
     }
 

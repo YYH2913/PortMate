@@ -134,13 +134,33 @@ pub(super) fn reject_local_symlink_components(
 }
 
 pub(super) fn validate_native_local_path(path: &str) -> Result<PathBuf, String> {
+    let home = native_home_path();
+    validate_native_local_path_with_home(
+        path,
+        current_local_transfer_path_platform(),
+        home.as_deref(),
+    )
+}
+
+pub(super) fn validate_native_local_path_with_home(
+    path: &str,
+    platform: LocalTransferPathPlatform,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed.contains('\0') {
         return Err("本地路径不能为空或包含 NUL".to_string());
     }
-    match classify_local_transfer_path(trimmed, current_local_transfer_path_platform()) {
+    let windows = platform == LocalTransferPathPlatform::Windows;
+    if has_local_home_prefix(trimmed, windows) {
+        let relative = local_home_relative_path(trimmed, windows)
+            .ok_or_else(|| "本地 ~ 路径不能包含 Windows 盘符后缀".to_string())?;
+        let home = home.ok_or_else(|| "无法解析本地 ~ 路径：系统用户主目录不可用".to_string())?;
+        return Ok(home.join(relative));
+    }
+    match classify_local_transfer_path(trimmed, platform) {
         LocalTransferPathKind::Relative | LocalTransferPathKind::Absolute => {
-            Ok(expand_identity_path(trimmed))
+            Ok(PathBuf::from(trimmed))
         }
         LocalTransferPathKind::RootedWithoutDrive => {
             Err("Windows 本地路径必须包含盘符或完整 UNC 前缀".to_string())
