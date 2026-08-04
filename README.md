@@ -276,7 +276,9 @@ The `工具 -> 传输任务` dialog supports local file copy, protocol-native SF
 
 SFTP and X/Y/ZModem preserve significant leading/trailing filename whitespace in local destinations,
 remote path splits, Profile default directories, and protocol metadata; only an entirely
-whitespace-only remote marker remains invalid.
+whitespace-only remote marker remains invalid. YModem rejects a filename/size header that cannot fit
+losslessly in its 128-byte metadata block, and treats a not-yet-created local destination ending in a
+path separator as a directory just like SFTP and ZModem.
 
 Automatic remote X/Y/ZModem uploads receive into a sibling `.portmate-part`. Only after the protocol and DONE marker succeed does PortMate commit that part to the requested target with a same-directory atomic rename; XModem first truncates block padding to the exact source size. Disconnects and failed finalization therefore cannot expose a partial transfer under the final name.
 

@@ -22,11 +22,7 @@ pub(super) async fn ymodem_send_file(
     } else {
         remote_name
     };
-    let mut metadata = vec![0_u8; XMODEM_BLOCK_SIZE];
-    let metadata_text = format!("{}\0{} ", name, total);
-    let metadata_bytes = metadata_text.as_bytes();
-    let metadata_len = metadata_bytes.len().min(metadata.len());
-    metadata[..metadata_len].copy_from_slice(&metadata_bytes[..metadata_len]);
+    let metadata = ymodem_metadata_block(&name, total)?;
     modem_send_packet_with_retries(
         state,
         session_id,
@@ -126,12 +122,7 @@ pub(super) async fn ymodem_receive_file(
     }
     write_runtime_bytes(state, session_id, &[MODEM_ACK, MODEM_CRC_REQUEST]).await?;
 
-    let destination = if Path::new(local_destination).is_dir() {
-        let safe_name = portable_file_name(&name).unwrap_or_else(|| "ymodem-file.bin".to_string());
-        Path::new(local_destination).join(safe_name)
-    } else {
-        PathBuf::from(local_destination)
-    };
+    let destination = ymodem_local_target_path(local_destination, &name)?;
     let mut expected = 1_u8;
     let mut output = PendingLocalTransferOutput::create(&destination, "YModem 本地目标文件")?;
     let mut trailing_padding = 0_u64;
@@ -183,4 +174,37 @@ pub(super) async fn ymodem_receive_file(
 
     output.finish()?;
     Ok(bytes_written)
+}
+
+pub(super) fn ymodem_metadata_block(name: &str, total: u64) -> Result<Vec<u8>, String> {
+    if name.contains('\0') {
+        return Err("YModem 文件名不能包含 NUL".to_string());
+    }
+    let metadata_text = format!("{name}\0{total} ");
+    if metadata_text.len() > XMODEM_BLOCK_SIZE {
+        return Err(format!(
+            "YModem 文件名和大小元数据超过 {XMODEM_BLOCK_SIZE} 字节，无法无损编码"
+        ));
+    }
+    let mut metadata = vec![0_u8; XMODEM_BLOCK_SIZE];
+    metadata[..metadata_text.len()].copy_from_slice(metadata_text.as_bytes());
+    Ok(metadata)
+}
+
+pub(super) fn ymodem_local_target_path(
+    local_destination: &str,
+    incoming_name: &str,
+) -> Result<PathBuf, String> {
+    if local_destination.trim().is_empty() {
+        return Err("YModem 本地目标路径不能为空".to_string());
+    }
+    let destination = PathBuf::from(local_destination);
+    let ends_with_separator = local_destination.ends_with('/') || local_destination.ends_with('\\');
+    if destination.is_dir() || ends_with_separator {
+        let safe_name =
+            portable_file_name(incoming_name).unwrap_or_else(|| "ymodem-file.bin".to_string());
+        Ok(destination.join(safe_name))
+    } else {
+        Ok(destination)
+    }
 }

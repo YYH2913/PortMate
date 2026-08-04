@@ -5,6 +5,35 @@ fn ymodem_metadata_preserves_significant_file_name_whitespace() {
     let (name, size) = parse_ymodem_metadata(b" report.bin \x00123 0 0\0padding");
     assert_eq!(name, " report.bin ");
     assert_eq!(size, Some(123));
+
+    let encoded = ymodem_metadata_block(&name, 123).unwrap();
+    assert_eq!(encoded.len(), XMODEM_BLOCK_SIZE);
+    let (round_trip_name, round_trip_size) = parse_ymodem_metadata(&encoded);
+    assert_eq!(round_trip_name, name);
+    assert_eq!(round_trip_size, size);
+
+    let oversized = "x".repeat(XMODEM_BLOCK_SIZE);
+    let error = ymodem_metadata_block(&oversized, 1).unwrap_err();
+    assert!(error.contains("无法无损编码"), "{error}");
+    assert!(ymodem_metadata_block("bad\0name", 1).is_err());
+}
+
+#[test]
+fn ymodem_directory_suffix_selects_an_incoming_file_before_directory_creation() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("new destination ");
+    let directory_syntax = format!("{}/", directory.display());
+    assert!(!directory.exists());
+    assert_eq!(
+        ymodem_local_target_path(&directory_syntax, " report.bin ").unwrap(),
+        directory.join(" report.bin ")
+    );
+
+    let explicit_file = root.path().join("download.bin ");
+    assert_eq!(
+        ymodem_local_target_path(explicit_file.to_str().unwrap(), "ignored.bin").unwrap(),
+        explicit_file
+    );
 }
 
 #[test]
