@@ -103,6 +103,49 @@ fn default_transfer_directory_resolves_only_relative_local_paths() {
 }
 
 #[test]
+fn empty_remote_transfer_markers_are_never_treated_as_local_paths() {
+    let profile = test_ssh_profile();
+
+    for marker in ["remote:", "remote:   ", "ssh:", "ssh:\t"] {
+        assert_eq!(
+            remote_path(marker),
+            Some(&marker[marker.find(':').unwrap() + 1..])
+        );
+        for protocol in [
+            TransferProtocol::Sftp,
+            TransferProtocol::Scp,
+            TransferProtocol::Xmodem,
+            TransferProtocol::Ymodem,
+            TransferProtocol::Zmodem,
+        ] {
+            let error = prepare_transfer_request(
+                &profile,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol,
+                    source: marker.to_string(),
+                    destination: "output.bin".to_string(),
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("远端传输源路径"), "{marker}: {error}");
+        }
+
+        let error = prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Sftp,
+                source: "input.bin".to_string(),
+                destination: marker.to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("远端传输目标路径"), "{marker}: {error}");
+    }
+}
+
+#[test]
 fn sftp_transfer_paths_reject_root_and_dot_components() {
     for path in ["/", "//", "~", "/tmp/../input.bin", "/tmp/./input.bin"] {
         let target_error = validate_remote_transfer_path(path, "SFTP 远端目标路径")

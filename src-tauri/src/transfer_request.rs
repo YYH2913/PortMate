@@ -7,6 +7,12 @@ pub(super) fn prepare_transfer_request(
     let accesses_remote = has_remote_transfer_prefix(&request.source)
         || has_remote_transfer_prefix(&request.destination);
     validate_transfer_protocol(profile, &request.protocol, accesses_remote)?;
+    if let Some(path) = remote_path(&request.source) {
+        validate_remote_transfer_path(path, "远端传输源路径")?;
+    }
+    if let Some(path) = remote_path(&request.destination) {
+        validate_remote_transfer_path(path, "远端传输目标路径")?;
+    }
     let default_local_dir = profile
         .transfer
         .default_local_dir

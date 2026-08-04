@@ -496,6 +496,32 @@ fn ssh_file_transfer_rejects_non_ssh_profiles_before_queueing() {
 }
 
 #[test]
+fn empty_remote_transfer_path_is_rejected_before_queueing() {
+    tauri::async_runtime::block_on(async {
+        let profile = test_ssh_profile();
+        let state = test_app_state(
+            profile.clone(),
+            PathBuf::from("empty-remote-transfer-test.sqlite3"),
+        );
+        let error = start_transfer_inner(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id,
+                protocol: TransferProtocol::Sftp,
+                source: "input.bin".to_string(),
+                destination: "remote:".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("远端传输目标路径"), "{error}");
+        assert!(state.store.lock().unwrap().transfers.is_empty());
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
 fn local_copy_does_not_depend_on_remote_ssh_transfer_flags() {
     let mut profile = test_shell_profile();
     profile.transfer.sftp = false;

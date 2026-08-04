@@ -100,7 +100,6 @@ pub(super) fn remote_path(value: &str) -> Option<&str> {
     value
         .strip_prefix("remote:")
         .or_else(|| value.strip_prefix("ssh:"))
-        .filter(|path| !path.trim().is_empty())
 }
 
 pub(super) fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(), String> {
