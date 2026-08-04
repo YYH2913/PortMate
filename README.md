@@ -383,8 +383,9 @@ temporary XDG data directories:
 npm run test:linux-desktop-smoke
 ```
 
-The gate forces X11 only for deterministic capture and removes any inherited
-`WEBKIT_DISABLE_DMABUF_RENDERER`, so VMware hosts exercise PortMate's automatic DMI fallback. Set
+The gate forces X11 only for deterministic capture and removes inherited
+`WEBKIT_DISABLE_DMABUF_RENDERER` and `WEBKIT_DISABLE_COMPOSITING_MODE` values, so VMware hosts
+exercise PortMate's automatic DMI fallback for both DMABUF and accelerated compositing. Set
 `PORTMATE_NATIVE_SMOKE_XWD=/tmp/portmate-native-smoke.xwd` to retain the verified frame. The host
 must provide `xwininfo`, `xwd`, `wmctrl`, and an EWMH-compatible window manager; CI supplies Xvfb
 and Openbox. A successful check also requires a valid isolated IPC endpoint and Store, closes the

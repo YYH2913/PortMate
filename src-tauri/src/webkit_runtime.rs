@@ -25,14 +25,24 @@ pub(super) fn configure_webkit_runtime() {
             eprintln!("PortMate: repaired stale IBus environment for the active Fcitx5 session");
         }
 
-        if should_disable_dmabuf_renderer(
-            std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref(),
+        let vmware = dmi_identifies_vmware(
             DMI_IDENTITY_PATHS
                 .iter()
                 .filter_map(|path| std::fs::read_to_string(path).ok()),
+        );
+        if should_apply_vmware_webkit_fallback(
+            std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref(),
+            vmware,
         ) {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
             eprintln!("PortMate: disabled WebKit DMABUF rendering for VMware compatibility");
+        }
+        if should_apply_vmware_webkit_fallback(
+            std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").as_deref(),
+            vmware,
+        ) {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            eprintln!("PortMate: disabled WebKit accelerated compositing for VMware compatibility");
         }
     }
 }
@@ -80,14 +90,15 @@ fn should_repair_fcitx5_environment(
 }
 
 #[cfg(target_os = "linux")]
-fn should_disable_dmabuf_renderer(
-    explicit_setting: Option<&OsStr>,
-    dmi_identity: impl IntoIterator<Item = String>,
-) -> bool {
-    explicit_setting.is_none()
-        && dmi_identity
-            .into_iter()
-            .any(|value| value.to_ascii_lowercase().contains("vmware"))
+fn dmi_identifies_vmware(dmi_identity: impl IntoIterator<Item = String>) -> bool {
+    dmi_identity
+        .into_iter()
+        .any(|value| value.to_ascii_lowercase().contains("vmware"))
+}
+
+#[cfg(target_os = "linux")]
+fn should_apply_vmware_webkit_fallback(explicit_setting: Option<&OsStr>, vmware: bool) -> bool {
+    explicit_setting.is_none() && vmware
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -96,25 +107,27 @@ mod tests {
 
     #[test]
     fn detects_vmware_from_dmi_identity() {
-        assert!(should_disable_dmabuf_renderer(
-            None,
-            ["VMware, Inc.".to_owned(), "VMware20,1".to_owned()],
-        ));
+        assert!(dmi_identifies_vmware([
+            "VMware, Inc.".to_owned(),
+            "VMware20,1".to_owned(),
+        ]));
+        assert!(should_apply_vmware_webkit_fallback(None, true));
     }
 
     #[test]
     fn keeps_webkit_defaults_on_non_vmware_linux_hosts() {
-        assert!(!should_disable_dmabuf_renderer(
-            None,
-            ["Dell Inc.".to_owned(), "Precision 5680".to_owned()],
-        ));
+        assert!(!dmi_identifies_vmware([
+            "Dell Inc.".to_owned(),
+            "Precision 5680".to_owned(),
+        ]));
+        assert!(!should_apply_vmware_webkit_fallback(None, false));
     }
 
     #[test]
     fn honors_an_explicit_webkit_renderer_override() {
-        assert!(!should_disable_dmabuf_renderer(
+        assert!(!should_apply_vmware_webkit_fallback(
             Some(OsStr::new("0")),
-            ["VMware, Inc.".to_owned()],
+            true,
         ));
     }
 

@@ -61,6 +61,7 @@ const xdgDirectories = Object.fromEntries([
 for (const path of Object.values(xdgDirectories)) mkdirSync(path, { recursive: true, mode: 0o700 });
 const environment = { ...process.env, ...xdgDirectories, GDK_BACKEND: "x11" };
 delete environment.WEBKIT_DISABLE_DMABUF_RENDERER;
+delete environment.WEBKIT_DISABLE_COMPOSITING_MODE;
 const appDataDirectory = join(xdgDirectories.XDG_DATA_HOME, "dev.portmate.desktop");
 const endpointPath = join(appDataDirectory, "portmate-ipc.json");
 const storePath = join(appDataDirectory, "portmate-store.sqlite3");
@@ -105,6 +106,9 @@ try {
   if (expectsVmwareFallback && !output.includes("disabled WebKit DMABUF rendering for VMware compatibility")) {
     throw new Error("The VMware desktop started without the expected WebKit DMABUF fallback marker");
   }
+  if (expectsVmwareFallback && !output.includes("disabled WebKit accelerated compositing for VMware compatibility")) {
+    throw new Error("The VMware desktop started without the expected WebKit compositing fallback marker");
+  }
 
   const artifactPath = process.env.PORTMATE_NATIVE_SMOKE_XWD?.trim();
   if (artifactPath) writeFileSync(resolve(artifactPath), rendered.capture);
@@ -115,7 +119,7 @@ try {
   console.log(JSON.stringify({
     launch: launchKind,
     window: { id: window.id, width: window.width, height: window.height },
-    renderer: expectsVmwareFallback ? "automatic VMware DMABUF fallback" : "host default",
+    renderer: expectsVmwareFallback ? "automatic VMware software-rendering fallback" : "host default",
     dmiIdentity,
     pixels: rendered.stats,
     lifecycle: {
