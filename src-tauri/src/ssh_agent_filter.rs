@@ -276,8 +276,7 @@ fn agent_identity_blob_matches(key: &[u8], comment: &[u8], identity_refs: &[Iden
         if let Some(path) = identity_ref
             .path
             .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
+            .filter(|path| !path.trim().is_empty())
         {
             return path.as_bytes() == comment;
         }
@@ -359,6 +358,39 @@ mod tests {
         assert_eq!(
             read_ssh_string(&filtered, &mut offset),
             Some(&b"accepted-comment"[..])
+        );
+        assert_eq!(offset, filtered.len());
+    }
+
+    #[test]
+    fn filtered_agent_path_matches_exact_comment_bytes() {
+        let mut response = vec![SSH_AGENT_IDENTITIES_ANSWER];
+        response.extend_from_slice(&2_u32.to_be_bytes());
+        push_ssh_string(&mut response, b"rejected-key").unwrap();
+        push_ssh_string(&mut response, b"accepted-comment").unwrap();
+        push_ssh_string(&mut response, b"accepted-key").unwrap();
+        push_ssh_string(&mut response, b"accepted-comment ").unwrap();
+        let refs = [IdentityRef {
+            id: "accepted".to_string(),
+            label: "agent key".to_string(),
+            source: IdentitySource::Agent,
+            fingerprint_sha256: None,
+            path: Some("accepted-comment ".to_string()),
+            secret_ref: None,
+        }];
+
+        let (filtered, allowed) = filter_identity_response(&response, &refs).unwrap();
+        assert_eq!(allowed, HashSet::from([b"accepted-key".to_vec()]));
+        let mut offset = 1_usize;
+        assert_eq!(filtered[0], SSH_AGENT_IDENTITIES_ANSWER);
+        assert_eq!(read_u32(&filtered, &mut offset), Some(1));
+        assert_eq!(
+            read_ssh_string(&filtered, &mut offset),
+            Some(&b"accepted-key"[..])
+        );
+        assert_eq!(
+            read_ssh_string(&filtered, &mut offset),
+            Some(&b"accepted-comment "[..])
         );
         assert_eq!(offset, filtered.len());
     }

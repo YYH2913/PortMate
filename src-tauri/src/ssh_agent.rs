@@ -194,8 +194,7 @@ fn agent_identity_matches(identity: &AgentIdentity, refs: &[AgentIdentityFilter]
         if let Some(path) = identity_ref
             .path
             .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
+            .filter(|path| !path.trim().is_empty())
         {
             return path == comment;
         }
@@ -247,5 +246,34 @@ async fn connect_ssh_agent(
     #[cfg(not(any(unix, windows)))]
     {
         Err("当前平台不支持 ssh-agent".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_identity_path_matches_exact_comment_bytes() {
+        let key = russh::keys::PublicKey::from_openssh(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAhLsO2cjvuaNmiRlw4TJjIL+yzlPke9KgoXSfTiaqzQ",
+        )
+        .unwrap();
+        let identity = AgentIdentity::PublicKey {
+            key,
+            comment: "accepted-comment ".to_string(),
+        };
+        let exact = AgentIdentityFilter {
+            label: "agent key".to_string(),
+            fingerprint_sha256: None,
+            path: Some("accepted-comment ".to_string()),
+        };
+        let lossy = AgentIdentityFilter {
+            path: Some("accepted-comment".to_string()),
+            ..exact.clone()
+        };
+
+        assert!(agent_identity_matches(&identity, &[exact]));
+        assert!(!agent_identity_matches(&identity, &[lossy]));
     }
 }
