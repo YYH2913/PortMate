@@ -240,6 +240,91 @@ fn active_session_rejects_cross_transport_profile_changes() {
 }
 
 #[test]
+fn concurrent_profile_updates_merge_non_overlapping_fields_and_reject_conflicts() {
+    let mut expected = test_ssh_profile();
+    if let ConnectionConfig::Ssh(ssh) = &mut expected.connection {
+        ssh.password_secret_ref = Some("keychain:old".to_string());
+        ssh.proxy.password_secret_ref = Some("keychain:old-proxy".to_string());
+    }
+    let mut current = expected.clone();
+    if let ConnectionConfig::Ssh(ssh) = &mut current.connection {
+        ssh.password_secret_ref = Some("stronghold:new".to_string());
+        ssh.proxy.password_secret_ref = Some("stronghold:new-proxy".to_string());
+    }
+    current.terminal.cols = 173;
+    let mut incoming = expected.clone();
+    incoming.name = "Operator edit".to_string();
+
+    let merged = merge_expected_profile_update(Some(&current), Some(&expected), incoming.clone());
+    let merged = merged.unwrap();
+    assert_eq!(merged.name, "Operator edit");
+    assert_eq!(merged.terminal.cols, 173);
+    let ConnectionConfig::Ssh(merged_ssh) = merged.connection else {
+        unreachable!("merged profile must remain SSH");
+    };
+    assert_eq!(
+        merged_ssh.password_secret_ref.as_deref(),
+        Some("stronghold:new")
+    );
+    assert_eq!(
+        merged_ssh.proxy.password_secret_ref.as_deref(),
+        Some("stronghold:new-proxy")
+    );
+    assert!(
+        validate_expected_proxy_password(Some(&current), Some(&expected))
+            .unwrap_err()
+            .contains("代理密码")
+    );
+    validate_expected_proxy_password(Some(&current), Some(&current)).unwrap();
+
+    let mut conflicting_current = expected.clone();
+    conflicting_current.group = "current group".to_string();
+    let mut conflicting_incoming = expected.clone();
+    conflicting_incoming.group = "incoming group".to_string();
+    let error = merge_expected_profile_update(
+        Some(&conflicting_current),
+        Some(&expected),
+        conflicting_incoming,
+    )
+    .unwrap_err();
+    assert!(error.contains("Profile 字段"), "{error}");
+    assert!(error.contains("profile.group"), "{error}");
+
+    let mut matching_incoming = expected.clone();
+    matching_incoming.group = "current group".to_string();
+    let matching = merge_expected_profile_update(
+        Some(&conflicting_current),
+        Some(&expected),
+        matching_incoming,
+    )
+    .unwrap();
+    assert_eq!(matching.group, "current group");
+
+    assert!(
+        merge_expected_profile_update(Some(&current), None, incoming.clone())
+            .unwrap_err()
+            .contains("expectedProfile")
+    );
+    assert!(
+        merge_expected_profile_update(None, Some(&expected), incoming.clone())
+            .unwrap_err()
+            .contains("删除")
+    );
+    assert_eq!(
+        merge_expected_profile_update(None, None, incoming.clone()).unwrap(),
+        incoming
+    );
+
+    let mut wrong_expected = expected.clone();
+    wrong_expected.id = "another-profile".to_string();
+    assert!(
+        merge_expected_profile_update(Some(&current), Some(&wrong_expected), expected)
+            .unwrap_err()
+            .contains("不是同一个 Profile")
+    );
+}
+
+#[test]
 fn proxy_secret_usage_counts_all_supported_profile_kinds() {
     fn shared_proxy() -> ProxyConfig {
         ProxyConfig {

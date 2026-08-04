@@ -39,6 +39,8 @@ mod mcp_ipc_tests;
 mod mcp_read_tests;
 #[path = "mcp_tests.rs"]
 mod mcp_tests;
+#[path = "migration_diagnostic_tests.rs"]
+mod migration_diagnostic_tests;
 #[path = "migration_tests.rs"]
 mod migration_tests;
 #[path = "modem_protocol_tests.rs"]
