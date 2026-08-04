@@ -13,5 +13,8 @@ PortMate carries two related Windows ABI fixes:
   socket value instead of masking it to 16 bits. This is required for proxy and
   Jump Host connections that pass a pre-connected socket to libssh.
 
+The vendored build also reports the actual bundled libssh version, 0.11.4,
+instead of the stale 0.8.90 value from the upstream Rust build script.
+
 The Rust wrapper remains MIT licensed. The vendored libssh source is licensed
 under LGPL-2.1; its `COPYING` and `BSD` notices are retained under `vendored/`.

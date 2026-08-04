@@ -136,8 +136,8 @@ fn main() {
     let version = std::fs::read_to_string("vendored/include/libssh/libssh_version.h.cmake")
         .unwrap()
         .replace("@libssh_VERSION_MAJOR@", "0")
-        .replace("@libssh_VERSION_MINOR@", "8")
-        .replace("@libssh_VERSION_PATCH@", "90");
+        .replace("@libssh_VERSION_MINOR@", "11")
+        .replace("@libssh_VERSION_PATCH@", "4");
 
     std::fs::create_dir_all(include.join("libssh")).unwrap();
     std::fs::write(include.join("libssh/libssh_version.h"), version).unwrap();
