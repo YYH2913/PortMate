@@ -1,5 +1,4 @@
 import {
-  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -10,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   smokePackagedApplication,
+  smokePackagedApplicationLifecycle,
   smokePackagedApplicationRestart,
   smokePackagedApplicationRestartAndLegacyMigration,
   validatePackagedSmokeEndpoint,
@@ -111,7 +111,7 @@ describe("native packaged runtime smoke", () => {
     expect(result.first.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
   });
 
-  it("preserves the Store while migrating the legacy application data directory", async () => {
+  it("migrates legacy data and rejects a later two-store conflict without changing either Store", async () => {
     const root = temporaryRoot();
     const fixture = join(root, "migration-fixture.mjs");
     writeFileSync(fixture, `
@@ -121,7 +121,10 @@ describe("native packaged runtime smoke", () => {
       const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
       const legacy = join(dirname(data), "dev.portmate.app");
       if (existsSync(legacy)) {
-        if (!existsSync(data) || readdirSync(data).length !== 0) process.exit(91);
+        if (!existsSync(data) || readdirSync(data).length !== 0) {
+          console.error("both legacy and current PortMate data directories contain PortMate state; refusing to merge");
+          process.exit(91);
+        }
         rmSync(data, { recursive: true });
         renameSync(legacy, data);
       }
@@ -138,7 +141,7 @@ describe("native packaged runtime smoke", () => {
     `);
     const dataDirectory = join(root, "migration-data", "dev.portmate.desktop");
 
-    const result = await smokePackagedApplicationRestartAndLegacyMigration({
+    const result = await smokePackagedApplicationLifecycle({
       executable: process.execPath,
       args: [fixture],
       dataDirectory,
@@ -151,7 +154,12 @@ describe("native packaged runtime smoke", () => {
     expect(result.endpointCredentialRotatedAfterMigration).toBe(true);
     expect(result.migration.store).toEqual(result.second.store);
     expect(result.migration.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
-    expect(existsSync(join(root, "migration-data", "dev.portmate.app"))).toBe(false);
+    expect(result.conflictingAppDataRejected).toBe(true);
+    expect(result.conflict.exitCode).toBe(91);
+    expect(result.conflict.endpointPublished).toBe(false);
+    expect(result.conflict.storesPreserved).toBe(true);
+    expect(result.conflict.currentStore).toEqual(result.migration.store);
+    expect(result.conflict.legacyStore.sha256).not.toBe(result.conflict.currentStore.sha256);
   });
 
   it("rejects an application that ignores the staged legacy data directory", async () => {

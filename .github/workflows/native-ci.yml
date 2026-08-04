@@ -147,7 +147,7 @@ jobs:
       - if: runner.os != 'Windows'
         run: npm run test:mcp-swift-client
       - run: npm run desktop:build
-      - name: Smoke-test packaged Linux AppImage restart and data migration
+      - name: Smoke-test packaged Linux AppImage restart, migration, and conflict rejection
         if: runner.os == 'Linux'
         run: >
           dbus-run-session -- xvfb-run --auto-servernum
@@ -162,10 +162,10 @@ jobs:
       - name: Verify Linux packages and packaged MCP sidecars
         if: runner.os == 'Linux'
         run: npm run test:linux-package
-      - name: Verify and restart/migration-smoke Windows MSI and NSIS packages
+      - name: Verify Windows packages, restart/migration, and conflict rejection
         if: runner.os == 'Windows'
         run: npm run test:windows-package
-      - name: Verify and restart/migration-smoke macOS app and DMG packages
+      - name: Verify macOS packages, restart/migration, and conflict rejection
         if: runner.os == 'macOS'
         run: npm run test:macos-package
 

@@ -15,7 +15,7 @@ import {
   inspectPortableTree,
   verifyWindowsPackageLayout,
 } from "./native-package-layout.mjs";
-import { smokePackagedApplicationRestartAndLegacyMigration } from "./native-packaged-smoke.mjs";
+import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -59,7 +59,7 @@ try {
   });
   runtimeSmokes.push({
     package: "MSI",
-    result: await smokePackagedApplicationRestartAndLegacyMigration({
+    result: await smokePackagedApplicationLifecycle({
       executable: verifiedMsi.main,
       dataDirectory: join(auditRoot, "runtime-msi", "dev.portmate.desktop"),
       label: "MSI packaged application",
@@ -76,7 +76,7 @@ try {
   });
   runtimeSmokes.push({
     package: "NSIS",
-    result: await smokePackagedApplicationRestartAndLegacyMigration({
+    result: await smokePackagedApplicationLifecycle({
       executable: verifiedNsis.main,
       dataDirectory: join(auditRoot, "runtime-nsis", "dev.portmate.desktop"),
       label: "NSIS installed application",
@@ -123,7 +123,7 @@ console.log(JSON.stringify({
     "portable package symlinks",
     "MSI administrative extraction",
     "NSIS silent install and uninstall",
-    "installed main-process IPC, stable restart and legacy-migration Store, credential rotation, clean exit, and endpoint cleanup",
+    "installed main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
   ],
   payloads: {
     msi: verifiedMsi,

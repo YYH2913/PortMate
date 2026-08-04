@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -13,6 +15,7 @@ const pollIntervalMs = 100;
 const maxOutputBytes = 128 * 1024;
 const currentAppDataDirectoryName = "dev.portmate.desktop";
 const legacyAppDataDirectoryName = "dev.portmate.app";
+const appDataConflictDiagnostic = "both legacy and current PortMate data directories contain PortMate state; refusing to merge";
 
 export async function smokePackagedApplication({
   executable,
@@ -184,6 +187,60 @@ export async function smokePackagedApplicationRestartAndLegacyMigration(options)
   };
 }
 
+export async function smokePackagedApplicationLifecycle(options) {
+  const migration = await smokePackagedApplicationRestartAndLegacyMigration(options);
+  const conflict = await smokePackagedApplicationLegacyConflict(options, migration.migration.store);
+  return {
+    ...migration,
+    conflict,
+    conflictingAppDataRejected: true,
+  };
+}
+
+export async function smokePackagedApplicationLegacyConflict(options, expectedCurrentStore) {
+  const label = options?.label;
+  const dataDirectory = resolve(options?.dataDirectory ?? "");
+  if (!isAbsolute(options?.dataDirectory ?? "") || basename(dataDirectory) !== currentAppDataDirectoryName) {
+    throw new Error(`${label} conflict smoke data directory must end with ${currentAppDataDirectoryName}`);
+  }
+  const currentStorePath = join(dataDirectory, "portmate-store.sqlite3");
+  assertStoreMatches(
+    inspectStore(currentStorePath, label),
+    expectedCurrentStore,
+    `${label} pre-conflict current Store`,
+  );
+  const legacyDataDirectory = join(dirname(dataDirectory), legacyAppDataDirectoryName);
+  if (existsSync(legacyDataDirectory)) {
+    throw new Error(`${label} conflict smoke data root contains an unexpected legacy directory`);
+  }
+  mkdirSync(legacyDataDirectory, { recursive: false });
+  const legacyStorePath = join(legacyDataDirectory, "portmate-store.sqlite3");
+  copyFileSync(currentStorePath, legacyStorePath);
+  appendFileSync(legacyStorePath, "\nportmate-legacy-conflict-smoke\n");
+  const legacyStore = inspectStore(legacyStorePath, label);
+
+  const rejection = await expectPackagedApplicationStartupRejection({
+    ...options,
+    label: `${label} conflicting app-data startup`,
+  });
+  assertStoreMatches(
+    inspectStore(currentStorePath, label),
+    expectedCurrentStore,
+    `${label} rejected-conflict current Store`,
+  );
+  assertStoreMatches(
+    inspectStore(legacyStorePath, label),
+    legacyStore,
+    `${label} rejected-conflict legacy Store`,
+  );
+  return {
+    ...rejection,
+    currentStore: expectedCurrentStore,
+    legacyStore,
+    storesPreserved: true,
+  };
+}
+
 export function validatePackagedSmokeEndpoint(endpoint, storePath, label = "packaged app") {
   if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
     throw new Error(`${label} IPC endpoint is not an object`);
@@ -218,6 +275,86 @@ async function waitForEndpoint(endpointPath, storePath, label, deadline, process
     await delay(pollIntervalMs);
   }
   throw new Error(`${label} did not publish a valid IPC endpoint: ${lastFailure}`);
+}
+
+async function expectPackagedApplicationStartupRejection({
+  executable,
+  args = [],
+  dataDirectory,
+  label,
+  environment = process.env,
+  exitAfterMs = 5_000,
+  timeoutMs = 45_000,
+}) {
+  if (!executable || !isAbsolute(executable)) throw new Error(`${label} executable must be absolute`);
+  const endpointPath = join(dataDirectory, "portmate-ipc.json");
+  if (existsSync(endpointPath)) throw new Error(`${label} contains a stale IPC endpoint`);
+
+  let output = "";
+  let processResult = null;
+  let endpointObserved = false;
+  const child = spawn(executable, args, {
+    cwd: dataDirectory,
+    env: {
+      ...environment,
+      PORTMATE_NATIVE_SMOKE_DATA_DIR: dataDirectory,
+      PORTMATE_NATIVE_SMOKE_EXIT_AFTER_MS: String(exitAfterMs),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const exited = new Promise((resolveExit) => {
+    const settle = (result) => {
+      processResult ??= result;
+      resolveExit(processResult);
+    };
+    child.once("error", (error) => settle({ error }));
+    child.once("exit", (code, signal) => settle({ code, signal }));
+  });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.on("data", (chunk) => {
+      output = `${output}${chunk}`.slice(-maxOutputBytes);
+    });
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let failure;
+  try {
+    while (processResult === null && Date.now() < deadline) {
+      endpointObserved ||= existsSync(endpointPath);
+      await delay(25);
+    }
+    endpointObserved ||= existsSync(endpointPath);
+    if (processResult === null) throw new Error(`${label} did not reject conflicting app data before timeout`);
+    if (processResult.error) throw processResult.error;
+    if (!Number.isInteger(processResult.code) || processResult.code === 0 || processResult.signal) {
+      throw new Error(`${label} did not fail cleanly for conflicting app data`);
+    }
+    if (endpointObserved) throw new Error(`${label} published IPC before rejecting conflicting app data`);
+    const diagnostic = stripAnsi(output);
+    if (!diagnostic.includes(appDataConflictDiagnostic)) {
+      throw new Error(`${label} omitted the conflicting app-data diagnostic`);
+    }
+    return {
+      exitCode: processResult.code,
+      endpointPublished: false,
+      diagnosticMatched: true,
+    };
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      await terminateChild(child, exited, () => processResult, label);
+    } catch (error) {
+      failure = failure
+        ? new AggregateError([failure, error], `${label} rejection and process cleanup both failed`)
+        : error;
+    }
+  }
+  const details = stripAnsi(output).trim().slice(-8_000);
+  throw new Error(`${failure instanceof Error ? failure.message : String(failure)}${details ? `\n${details}` : ""}`, {
+    cause: failure,
+  });
 }
 
 async function waitForExit(exited, deadline, label) {

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { smokePackagedApplicationLegacyConflict } from "./native-packaged-smoke.mjs";
 
 if (process.platform !== "linux") throw new Error("The AppImage smoke check requires a Linux host");
 if (!process.env.DISPLAY?.trim()) throw new Error("The AppImage smoke check requires an active X11 display");
@@ -62,17 +63,27 @@ try {
   }
   const endpointPath = join(currentDataDirectory, "portmate-ipc.json");
   if (existsSync(endpointPath)) throw new Error("The packaged application left its IPC endpoint after restart smoke");
+  const conflict = await smokePackagedApplicationLegacyConflict({
+    executable: appRun,
+    dataDirectory: currentDataDirectory,
+    label: "AppImage packaged application",
+    exitAfterMs: 5_000,
+    timeoutMs: 45_000,
+  }, migration.lifecycle.store);
 
   console.log(JSON.stringify({
     appImage,
     launches: 3,
+    rejectedLaunches: 1,
     store: migration.lifecycle.store,
     endpointCredentialRotated: true,
     legacyAppDataMigrated: true,
+    conflictingAppDataRejected: true,
     endpointAddressRotated: first.lifecycle.endpointAddress !== second.lifecycle.endpointAddress,
     first: summarize(first),
     second: summarize(second),
     migration: summarize(migration),
+    conflict,
   }, null, 2));
 } finally {
   rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
