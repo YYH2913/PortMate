@@ -10,7 +10,7 @@ const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
 pub(super) fn run_stdio_server() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut server = PortMateMcp::new();
+    let mut server = PortMateMcp::new()?;
     let mut stdin = stdin.lock();
 
     loop {

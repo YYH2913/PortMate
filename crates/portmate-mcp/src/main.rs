@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use portmate_core::{
     prompt_templates, redact_session_summary, resource_templates, tool_definitions, McpScope,
     SessionStore, SessionSummary,
@@ -72,17 +72,14 @@ struct PortMateMcp {
 }
 
 impl PortMateMcp {
-    fn new() -> Self {
+    fn new() -> Result<Self> {
         let store_path = std::env::var("PORTMATE_STORE_PATH")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .map(PathBuf::from);
-        let store = store_path
-            .as_deref()
-            .and_then(load_store_from_path)
-            .unwrap_or_default();
+        let store = load_initial_store(store_path.as_deref())?;
         let ipc = store_path.as_deref().and_then(load_ipc_endpoint);
-        Self {
+        Ok(Self {
             store,
             store_path,
             ipc,
@@ -92,7 +89,7 @@ impl PortMateMcp {
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "portmate-local".to_string()),
             allow_write: std::env::var("PORTMATE_MCP_TRUSTED").ok().as_deref() == Some("1"),
-        }
+        })
     }
 
     fn refresh_runtime_sources(&mut self) {
@@ -251,6 +248,18 @@ impl PortMateMcp {
             args,
         )
     }
+}
+
+fn load_initial_store(store_path: Option<&std::path::Path>) -> Result<SessionStore> {
+    let Some(store_path) = store_path else {
+        return Ok(SessionStore::default());
+    };
+    load_store_from_path(store_path).with_context(|| {
+        format!(
+            "PORTMATE_STORE_PATH `{}` is not a readable PortMate Store",
+            store_path.display()
+        )
+    })
 }
 
 fn main() -> Result<()> {

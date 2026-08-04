@@ -459,7 +459,13 @@ To let the standalone stdio bridge read the desktop store directly, pass the SQL
 PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 cargo run -p portmate-mcp
 ```
 
-When the desktop app is running, it writes `portmate-ipc.json` next to the store. The live IPC token is stored in the OS keyring and the endpoint file contains a `tokenRef` rather than the token itself when keyring access is available. The MCP bridge uses that endpoint to forward `send_text`, `send_key`, `run_command`, `open_session`, `close_session`, `start_transfer`, `create_tunnel`, `list_tmux_state`, and `attach_tmux` to the live desktop runtime. If the desktop IPC file is unavailable, read tools fall back to the store snapshot. Long-running stdio bridges reload the latest valid snapshot and atomically published endpoint before each JSON-RPC message, so desktop restarts and token/address rotation do not require restarting the bridge; removing the endpoint immediately disables live forwarding.
+An unset, empty, or whitespace-only `PORTMATE_STORE_PATH` starts the bridge in an explicit
+store-free compatibility mode. A non-empty value must identify a readable JSON snapshot or SQLite
+Store containing a valid `session-store` record; both stdio and HTTP fail before serving requests
+when the configured path is missing, unreadable, malformed, or structurally invalid. The standalone
+bridge always opens SQLite read-only and never creates or migrates the configured Store.
+
+When the desktop app is running, it writes `portmate-ipc.json` next to the store. The live IPC token is stored in the OS keyring and the endpoint file contains a `tokenRef` rather than the token itself when keyring access is available. The MCP bridge uses that endpoint to forward `send_text`, `send_key`, `run_command`, `open_session`, `close_session`, `start_transfer`, `create_tunnel`, `list_tmux_state`, and `attach_tmux` to the live desktop runtime. If the desktop IPC file is unavailable, read tools fall back to the store snapshot. Long-running stdio bridges reload the snapshot and atomically published endpoint before each JSON-RPC message, so desktop restarts and token/address rotation do not require restarting the bridge. A missing or invalid snapshot clears the bridge's cached sessions and grants until a valid snapshot returns; removing the endpoint immediately disables live forwarding.
 
 Endpoint publication uses a synced same-directory temporary file and atomic replacement. Unix files
 are forced to mode `0600`, including the plaintext-token fallback used when native keyring storage

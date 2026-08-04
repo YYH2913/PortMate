@@ -85,7 +85,32 @@ fn standalone_store_loading_rejects_oversized_profile_collections() {
     let profile = store.profiles[0].clone();
     store.profiles = vec![profile; portmate_core::MAX_SESSION_PROFILES + 1];
 
-    assert!(prepare_loaded_store(store).is_none());
+    assert!(prepare_loaded_store(store).is_err());
+}
+
+#[test]
+fn initial_store_loading_distinguishes_unconfigured_and_invalid_paths() {
+    assert!(load_initial_store(None).unwrap().profiles.is_empty());
+
+    let root = std::env::temp_dir().join(format!("portmate-mcp-initial-store-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let missing_path = root.join("missing.sqlite3");
+    let missing_error = load_initial_store(Some(&missing_path))
+        .unwrap_err()
+        .to_string();
+    assert!(missing_error.contains("PORTMATE_STORE_PATH"));
+    assert!(missing_error.contains("not a readable PortMate Store"));
+    assert!(!missing_path.exists());
+
+    let corrupt_path = root.join("corrupt.json");
+    fs::write(&corrupt_path, b"{not-json").unwrap();
+    let corrupt_error = load_initial_store(Some(&corrupt_path))
+        .unwrap_err()
+        .to_string();
+    assert!(corrupt_error.contains("PORTMATE_STORE_PATH"));
+    assert!(corrupt_error.contains("not a readable PortMate Store"));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -93,12 +118,12 @@ fn standalone_sqlite_store_loading_never_creates_or_migrates_a_store() {
     let root = std::env::temp_dir().join(format!("portmate-mcp-read-only-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let missing_path = root.join("missing.sqlite3");
-    assert!(load_store_from_path(&missing_path).is_none());
+    assert!(load_store_from_path(&missing_path).is_err());
     assert!(!missing_path.exists());
 
     let empty_path = root.join("empty.sqlite3");
     drop(SqliteConnection::open(&empty_path).unwrap());
-    assert!(load_store_from_path(&empty_path).is_none());
+    assert!(load_store_from_path(&empty_path).is_err());
     let empty_connection = SqliteConnection::open(&empty_path).unwrap();
     let has_kv_table: bool = empty_connection
         .query_row(

@@ -31,6 +31,7 @@ pub(super) struct HttpConfig {
 
 pub(super) fn run_http_server() -> Result<()> {
     let config = http_config()?;
+    PortMateMcp::new()?;
     let listener = TcpListener::bind(config.addr)?;
     let active_connections = Arc::new(AtomicUsize::new(0));
     eprintln!("PortMate MCP HTTP listening on http://{}/mcp", config.addr);
@@ -274,7 +275,7 @@ pub(super) fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> 
 }
 
 pub(super) fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
-    let mut server = PortMateMcp::new();
+    let mut server = PortMateMcp::new()?;
     handle_json_rpc_value(&mut server, value)
 }
 
@@ -314,10 +315,18 @@ fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) ->
             "protocolVersion": protocol_version
         }),
     ));
-    response.push_str(&sse_event(
-        "portmate.state",
-        &mcp_sse_state_payload(protocol_version),
-    ));
+    let state = match mcp_sse_state_payload(protocol_version) {
+        Ok(state) => state,
+        Err(error) => {
+            return http_response(
+                500,
+                "Internal Server Error",
+                &json!({ "error": error.to_string() }).to_string(),
+                origin.as_deref(),
+            );
+        }
+    };
+    response.push_str(&sse_event("portmate.state", &state));
     response
 }
 
@@ -339,13 +348,13 @@ fn write_http_sse_stream(
         thread::sleep(Duration::from_secs(5));
         let event = format!(
             ": keep-alive\n\n{}",
-            sse_event("portmate.state", &mcp_sse_state_payload(&protocol_version))
+            sse_event("portmate.state", &mcp_sse_state_payload(&protocol_version)?)
         );
         stream.write_all(event.as_bytes())?;
         stream.flush()?;
     }
 }
 
-fn mcp_sse_state_payload(protocol_version: &str) -> Value {
-    PortMateMcp::new().sse_state_payload(protocol_version)
+fn mcp_sse_state_payload(protocol_version: &str) -> Result<Value> {
+    Ok(PortMateMcp::new()?.sse_state_payload(protocol_version))
 }

@@ -1,5 +1,4 @@
-#[cfg(test)]
-use anyhow::Result;
+use anyhow::{Context, Result};
 use portmate_core::SessionStore;
 use rusqlite::{params, Connection as SqliteConnection, OpenFlags as SqliteOpenFlags};
 use std::fs;
@@ -7,30 +6,44 @@ use std::path::Path;
 
 pub(crate) const STORE_KEY: &str = "session-store";
 
-pub(crate) fn load_store_from_path(path: &Path) -> Option<SessionStore> {
+pub(crate) fn load_store_from_path(path: &Path) -> Result<SessionStore> {
     let store = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
         let connection =
-            SqliteConnection::open_with_flags(path, SqliteOpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+            SqliteConnection::open_with_flags(path, SqliteOpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| {
+                    format!("failed to open MCP Store `{}` read-only", path.display())
+                })?;
         let raw = connection
             .query_row(
                 "select value from kv where key = ?1",
                 params![STORE_KEY],
                 |row| row.get::<_, String>(0),
             )
-            .ok()?;
-        serde_json::from_str::<SessionStore>(&raw).ok()?
+            .with_context(|| {
+                format!(
+                    "failed to read `{STORE_KEY}` from MCP Store `{}`",
+                    path.display()
+                )
+            })?;
+        serde_json::from_str::<SessionStore>(&raw).with_context(|| {
+            format!(
+                "MCP Store `{}` contains an invalid `{STORE_KEY}` snapshot",
+                path.display()
+            )
+        })?
     } else {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<SessionStore>(&raw).ok())?
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read MCP Store `{}`", path.display()))?;
+        serde_json::from_str::<SessionStore>(&raw)
+            .with_context(|| format!("MCP Store `{}` contains invalid JSON", path.display()))?
     };
     prepare_loaded_store(store)
 }
 
-pub(crate) fn prepare_loaded_store(mut store: SessionStore) -> Option<SessionStore> {
-    store.validate_profile_count().ok()?;
+pub(crate) fn prepare_loaded_store(mut store: SessionStore) -> Result<SessionStore> {
+    store.validate_profile_count().map_err(anyhow::Error::msg)?;
     store.normalize_bounded_histories();
-    Some(store)
+    Ok(store)
 }
 
 #[cfg(test)]
