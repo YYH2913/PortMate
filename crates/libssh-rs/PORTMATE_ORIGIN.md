@@ -17,7 +17,9 @@ PortMate carries five API additions in `src/lib.rs`:
   same host-key observation fields used by PortMate's existing trust store.
 
 PortMate also corrects the argument order in `Channel::poll_timeout()` to match
-libssh's `(channel, timeout, is_stderr)` C API.
+libssh's `(channel, timeout, is_stderr)` C API. Channel reads preserve libssh's
+distinct timeout, temporarily-unavailable, and EOF results, including the zero
+value returned by some nonblocking libssh implementations when no data is ready.
 
 `SftpFile::flush()` checks for `fsync@openssh.com` before sending the optional
 extension request. This matches the russh backend and keeps uploads compatible

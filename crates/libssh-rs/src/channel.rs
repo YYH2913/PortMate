@@ -78,11 +78,24 @@ fn cstr_to_opt_string(cstr: *const ::std::os::raw::c_char) -> Option<String> {
     )
 }
 
-fn classify_nonblocking_read_result(result: c_int) -> Option<SshResult<usize>> {
+fn classify_timeout_read_result(result: c_int) -> Option<SshResult<usize>> {
+    match result {
+        sys::SSH_AGAIN => Some(Err(Error::TryAgain)),
+        bytes if bytes >= 0 => Some(Ok(bytes as usize)),
+        _ => None,
+    }
+}
+
+fn classify_nonblocking_read_result(
+    result: c_int,
+    channel_is_eof: bool,
+) -> Option<SshResult<usize>> {
     match result {
         sys::SSH_AGAIN => Some(Err(Error::TryAgain)),
         sys::SSH_EOF => Some(Ok(0)),
-        bytes if bytes >= 0 => Some(Ok(bytes as usize)),
+        0 if channel_is_eof => Some(Ok(0)),
+        0 => Some(Err(Error::TryAgain)),
+        bytes if bytes > 0 => Some(Ok(bytes as usize)),
         _ => None,
     }
 }
@@ -515,6 +528,9 @@ impl Channel {
                 timeout,
             )
         };
+        if let Some(result) = classify_timeout_read_result(res) {
+            return result;
+        }
         match res {
             sys::SSH_ERROR => {
                 if let Some(err) = sess.last_error() {
@@ -523,19 +539,19 @@ impl Channel {
                     Err(Error::fatal("ssh_channel_read_timeout failed"))
                 }
             }
-            sys::SSH_AGAIN => Err(Error::TryAgain),
-            n if n < 0 => Err(Error::Fatal(format!(
+            n => Err(Error::Fatal(format!(
                 "ssh_channel_read_timeout returned unexpected {} value",
                 n
             ))),
-            0 if !sess.is_blocking() => Err(Error::TryAgain),
-            n => Ok(n as usize),
         }
     }
 
     /// Do a nonblocking read on the channel.
     /// A nonblocking read on the specified channel. it will return <= count bytes of data read atomically.
     pub fn read_nonblocking(&self, buf: &mut [u8], is_stderr: bool) -> SshResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let (sess, chan) = self.lock_session();
 
         let res = unsafe {
@@ -546,7 +562,8 @@ impl Channel {
                 if is_stderr { 1 } else { 0 },
             )
         };
-        if let Some(result) = classify_nonblocking_read_result(res) {
+        let channel_is_eof = res == 0 && unsafe { sys::ssh_channel_is_eof(chan) != 0 };
+        if let Some(result) = classify_nonblocking_read_result(res, channel_is_eof) {
             return result;
         }
         if res == sys::SSH_ERROR {
@@ -739,14 +756,37 @@ mod tests {
     }
 
     #[test]
-    fn nonblocking_read_results_preserve_retry_and_eof_states() {
+    fn timeout_read_results_preserve_retry_and_eof_states() {
         assert!(matches!(
-            classify_nonblocking_read_result(sys::SSH_AGAIN),
+            classify_timeout_read_result(sys::SSH_AGAIN),
             Some(Err(Error::TryAgain))
         ));
-        assert_eq!(classify_nonblocking_read_result(sys::SSH_EOF), Some(Ok(0)));
-        assert_eq!(classify_nonblocking_read_result(17), Some(Ok(17)));
-        assert_eq!(classify_nonblocking_read_result(sys::SSH_ERROR), None);
-        assert_eq!(classify_nonblocking_read_result(-99), None);
+        assert_eq!(classify_timeout_read_result(0), Some(Ok(0)));
+        assert_eq!(classify_timeout_read_result(17), Some(Ok(17)));
+        assert_eq!(classify_timeout_read_result(sys::SSH_ERROR), None);
+        assert_eq!(classify_timeout_read_result(-99), None);
+    }
+
+    #[test]
+    fn nonblocking_read_results_distinguish_unavailable_data_from_eof() {
+        assert!(matches!(
+            classify_nonblocking_read_result(sys::SSH_AGAIN, false),
+            Some(Err(Error::TryAgain))
+        ));
+        assert_eq!(
+            classify_nonblocking_read_result(sys::SSH_EOF, false),
+            Some(Ok(0))
+        );
+        assert!(matches!(
+            classify_nonblocking_read_result(0, false),
+            Some(Err(Error::TryAgain))
+        ));
+        assert_eq!(classify_nonblocking_read_result(0, true), Some(Ok(0)));
+        assert_eq!(classify_nonblocking_read_result(17, false), Some(Ok(17)));
+        assert_eq!(
+            classify_nonblocking_read_result(sys::SSH_ERROR, false),
+            None
+        );
+        assert_eq!(classify_nonblocking_read_result(-99, false), None);
     }
 }
