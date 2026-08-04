@@ -11,7 +11,7 @@ pub(super) async fn sftp_create_dir_all(
     sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<(), String> {
-    let path = path.trim().trim_end_matches('/');
+    let path = path.trim_end_matches('/');
     if path.is_empty() || path == "." || path == "/" {
         return Ok(());
     }
@@ -95,7 +95,7 @@ pub(super) async fn reject_remote_symlink_components(
 }
 
 pub(super) fn remote_parent_path(path: &str) -> Option<String> {
-    let path = path.trim().trim_end_matches('/');
+    let path = path.trim_end_matches('/');
     let index = path.rfind('/')?;
     if index == 0 {
         Some("/".to_string())

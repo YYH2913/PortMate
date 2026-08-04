@@ -103,12 +103,11 @@ pub(super) fn remote_path(value: &str) -> Option<&str> {
 }
 
 pub(super) fn validate_remote_transfer_path(path: &str, label: &str) -> Result<(), String> {
-    let trimmed = path.trim();
-    let normalized = trimmed.trim_end_matches('/');
-    if trimmed.is_empty()
+    let normalized = path.trim_end_matches('/');
+    if path.trim().is_empty()
         || normalized.is_empty()
         || matches!(normalized, "." | ".." | "~" | "/" | "//")
-        || trimmed.contains('\0')
+        || path.contains('\0')
         || remote_path_has_dot_components(normalized)
     {
         return Err(format!(

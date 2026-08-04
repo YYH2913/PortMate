@@ -216,8 +216,8 @@ pub(super) async fn sftp_destination_file_path(
     remote_destination: &str,
     source_name: &str,
 ) -> Result<String, String> {
-    let destination = remote_destination.trim();
-    if destination.is_empty() {
+    let destination = remote_destination;
+    if destination.trim().is_empty() {
         return Err("SFTP 远端目标路径不能为空".to_string());
     }
 
@@ -258,10 +258,10 @@ pub(super) fn local_destination_file_path(
     local_destination: &str,
     remote_source: &str,
 ) -> Result<PathBuf, String> {
-    let destination = expand_identity_path(local_destination.trim());
     if local_destination.trim().is_empty() {
         return Err("本地目标路径不能为空".to_string());
     }
+    let destination = expand_identity_path(local_destination);
     let source_name = remote_file_name(remote_source);
     let ends_with_separator = local_destination.ends_with('/') || local_destination.ends_with('\\');
     if destination.is_dir() || ends_with_separator {

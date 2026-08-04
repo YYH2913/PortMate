@@ -174,8 +174,8 @@ pub(super) fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), S
 }
 
 pub(super) fn normalize_remote_batch_source(path: &str) -> Result<String, String> {
-    let path = path.trim().trim_end_matches('/');
-    if path.is_empty()
+    let path = path.trim_end_matches('/');
+    if path.trim().is_empty()
         || matches!(path, "." | ".." | "~")
         || path.contains('\0')
         || path == "/"

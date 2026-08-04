@@ -13,7 +13,7 @@ pub(super) fn prepare_local_transfer_target_path(path: &Path, label: &str) -> Re
 }
 
 pub(super) fn portable_file_name(path: &str) -> Option<String> {
-    let trimmed = path.trim().trim_end_matches(['/', '\\']);
+    let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return None;
     }
@@ -25,11 +25,7 @@ pub(super) fn portable_file_name(path: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let name = without_drive
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let name = without_drive.rsplit(['/', '\\']).next().unwrap_or_default();
     if name.is_empty()
         || matches!(name, "." | "..")
         || name
@@ -42,9 +38,8 @@ pub(super) fn portable_file_name(path: &str) -> Option<String> {
 }
 
 pub(super) fn validate_remote_mutating_path(path: &str) -> Result<String, String> {
-    let path = path.trim();
     let trimmed = path.trim_end_matches('/');
-    if path.is_empty()
+    if path.trim().is_empty()
         || trimmed.is_empty()
         || matches!(trimmed, "." | ".." | "~" | "/" | "//")
         || path.contains('\0')
@@ -67,23 +62,22 @@ pub(super) fn validate_local_mutating_path_with_home(
     path: &str,
     home: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    let trimmed_slashes = trimmed.trim_end_matches(['/', '\\']);
-    if trimmed.is_empty()
+    let trimmed_slashes = path.trim_end_matches(['/', '\\']);
+    if path.trim().is_empty()
         || trimmed_slashes.is_empty()
         || matches!(trimmed_slashes, "." | ".." | "~")
-        || trimmed.contains('\0')
+        || path.contains('\0')
     {
         return Err("拒绝操作空路径、根目录或当前目录".to_string());
     }
-    if trimmed
+    if path
         .split(['/', '\\'])
         .any(|component| matches!(component, "." | ".."))
     {
         return Err("拒绝包含 . 或 .. 路径分量的本地变更路径".to_string());
     }
 
-    let candidate = validate_native_local_path(trimmed)?;
+    let candidate = validate_native_local_path(path)?;
     if candidate.parent().is_none() || is_local_filesystem_root(&candidate) {
         return Err("拒绝操作文件系统根目录".to_string());
     }
@@ -147,20 +141,19 @@ pub(super) fn validate_native_local_path_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed.contains('\0') {
+    if path.trim().is_empty() || path.contains('\0') {
         return Err("本地路径不能为空或包含 NUL".to_string());
     }
     let windows = platform == LocalTransferPathPlatform::Windows;
-    if has_local_home_prefix(trimmed, windows) {
-        let relative = local_home_relative_path(trimmed, windows)
+    if has_local_home_prefix(path, windows) {
+        let relative = local_home_relative_path(path, windows)
             .ok_or_else(|| "本地 ~ 路径不能包含 Windows 盘符后缀".to_string())?;
         let home = home.ok_or_else(|| "无法解析本地 ~ 路径：系统用户主目录不可用".to_string())?;
         return Ok(home.join(relative));
     }
-    match classify_local_transfer_path(trimmed, platform) {
+    match classify_local_transfer_path(path, platform) {
         LocalTransferPathKind::Relative | LocalTransferPathKind::Absolute => {
-            Ok(PathBuf::from(trimmed))
+            Ok(PathBuf::from(path))
         }
         LocalTransferPathKind::RootedWithoutDrive => {
             Err("Windows 本地路径必须包含盘符或完整 UNC 前缀".to_string())

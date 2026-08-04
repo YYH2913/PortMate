@@ -1,12 +1,11 @@
 use super::*;
 
 pub(super) fn validate_remote_drop_destination(path: &str) -> Result<(), String> {
-    let path = path.trim();
     if path == "/" {
         return Ok(());
     }
     let path = path.trim_end_matches('/');
-    if path.is_empty()
+    if path.trim().is_empty()
         || matches!(path, "." | ".." | "~")
         || path.contains('\0')
         || remote_path_has_dot_components(path)
@@ -20,8 +19,7 @@ pub(super) async fn resolve_remote_drop_destination(
     sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<String, String> {
-    let trimmed = path.trim();
-    let candidate = trimmed.trim_end_matches('/');
+    let candidate = path.trim_end_matches('/');
     if candidate == "." {
         let canonical = sftp
             .canonicalize(".")
@@ -30,7 +28,7 @@ pub(super) async fn resolve_remote_drop_destination(
         validate_remote_drop_destination(&canonical)?;
         return Ok(canonical.trim_end_matches('/').to_string());
     }
-    validate_remote_drop_destination(trimmed)?;
+    validate_remote_drop_destination(path)?;
     Ok(if candidate.is_empty() {
         "/".to_string()
     } else {
@@ -71,11 +69,10 @@ pub(super) fn plan_external_drop(
     let mut candidates = Vec::with_capacity(paths.len());
     let mut skipped = Vec::new();
     for raw_path in paths {
-        let trimmed = raw_path.trim();
-        if trimmed.is_empty() || trimmed.contains('\0') {
+        if raw_path.trim().is_empty() || raw_path.contains('\0') {
             return Err("拖放源路径不能为空或包含 NUL".to_string());
         }
-        let source = expand_identity_path(trimmed);
+        let source = expand_identity_path(raw_path);
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("读取拖放源路径失败 {}: {error}", source.display()))?;
         if metadata.file_type().is_symlink() {

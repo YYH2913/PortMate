@@ -169,7 +169,7 @@ pub(super) async fn start_external_drop_inner(
                 remote_join_path(
                     resolved_remote_destination
                         .as_deref()
-                        .unwrap_or_else(|| request.destination.trim()),
+                        .unwrap_or(&request.destination),
                     &external_relative_remote_path(&file.relative)?,
                 )
             )

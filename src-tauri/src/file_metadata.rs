@@ -10,11 +10,7 @@ pub(super) fn list_local_files_with_limit(
     path: &str,
     max_entries: usize,
 ) -> Result<Vec<FileEntry>, String> {
-    let path = validate_native_local_path(if path.trim().is_empty() {
-        "."
-    } else {
-        path.trim()
-    })?;
+    let path = validate_native_local_path(if path.is_empty() { "." } else { path })?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&path)
         .map_err(|error| format!("读取本地目录失败 {}: {error}", path.display()))?
@@ -100,11 +96,7 @@ pub(super) async fn list_remote_files(
     sftp: &SftpBackendSession,
     path: &str,
 ) -> Result<Vec<FileEntry>, String> {
-    let path = if path.trim().is_empty() {
-        "."
-    } else {
-        path.trim()
-    };
+    let path = if path.is_empty() { "." } else { path };
     list_remote_files_via_sftp(sftp, path).await
 }
 
@@ -230,9 +222,9 @@ pub(super) async fn file_properties_inner(
             .ok_or_else(|| "remote file properties require sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
         let sftp = auxiliary.sftp().await?;
-        let result = remote_file_properties(&sftp, request.path.trim()).await;
+        let result = remote_file_properties(&sftp, &request.path).await;
         result
     } else {
-        local_file_properties(request.path.trim())
+        local_file_properties(&request.path)
     }
 }

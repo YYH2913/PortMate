@@ -66,6 +66,97 @@ fn local_file_listing_does_not_publish_lossy_non_utf8_paths() {
 }
 
 #[test]
+fn local_and_remote_path_helpers_preserve_significant_edge_whitespace() {
+    let unix_path = "/tmp/ report.txt ";
+    assert_eq!(
+        validate_native_local_path_with_home(unix_path, LocalTransferPathPlatform::Unix, None,)
+            .unwrap(),
+        PathBuf::from(unix_path)
+    );
+    let windows_path = r"C:\Temp\ report.txt ";
+    assert_eq!(
+        validate_native_local_path_with_home(
+            windows_path,
+            LocalTransferPathPlatform::Windows,
+            None,
+        )
+        .unwrap(),
+        PathBuf::from(windows_path)
+    );
+
+    let remote_path = "/tmp/ report.txt ";
+    assert_eq!(
+        validate_remote_mutating_path(remote_path).unwrap(),
+        remote_path
+    );
+    assert_eq!(
+        portable_file_name(remote_path).as_deref(),
+        Some(" report.txt ")
+    );
+    assert_eq!(
+        normalize_remote_batch_source(remote_path).unwrap(),
+        remote_path
+    );
+    assert_eq!(remote_parent_path(remote_path).as_deref(), Some("/tmp"));
+    assert!(validate_remote_drop_destination("/tmp/ destination ").is_ok());
+    assert!(validate_remote_transfer_path(remote_path, "remote path").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn local_file_manager_never_trims_an_enumerated_path() {
+    let root = tempfile::tempdir().unwrap();
+    let plain = root.path().join("report.txt");
+    let spaced = root.path().join("report.txt ");
+    let renamed = root.path().join("renamed.txt ");
+    fs::write(&plain, b"plain").unwrap();
+    fs::write(&spaced, b"spaced payload").unwrap();
+    let state = test_app_state(
+        test_ssh_profile(),
+        root.path().join("portmate-store.sqlite3"),
+    );
+
+    let entries = list_local_files(root.path().to_str().unwrap()).unwrap();
+    assert!(entries.iter().any(|entry| entry.name == "report.txt"));
+    assert!(entries.iter().any(|entry| entry.name == "report.txt "));
+    let properties = local_file_properties(spaced.to_str().unwrap()).unwrap();
+    assert_eq!(properties.path, spaced.display().to_string());
+    assert_eq!(properties.size, b"spaced payload".len() as u64);
+
+    let drop_plan = plan_external_drop(&[spaced.display().to_string()], None).unwrap();
+    assert_eq!(drop_plan.files.len(), 1);
+    assert_eq!(drop_plan.files[0].source, spaced);
+    assert_eq!(drop_plan.files[0].relative, PathBuf::from("report.txt "));
+
+    tauri::async_runtime::block_on(rename_path_inner(
+        &state,
+        RenamePathRequest {
+            session_id: None,
+            old_path: spaced.display().to_string(),
+            new_path: renamed.display().to_string(),
+            remote: false,
+        },
+    ))
+    .unwrap();
+    assert!(!spaced.exists());
+    assert_eq!(fs::read(&renamed).unwrap(), b"spaced payload");
+    assert_eq!(fs::read(&plain).unwrap(), b"plain");
+
+    tauri::async_runtime::block_on(file_operation_inner(
+        &state,
+        FileOperationRequest {
+            session_id: None,
+            path: renamed.display().to_string(),
+            remote: false,
+        },
+        FileOperation::Delete,
+    ))
+    .unwrap();
+    assert!(!renamed.exists());
+    assert_eq!(fs::read(&plain).unwrap(), b"plain");
+}
+
+#[test]
 fn default_transfer_directory_resolves_only_relative_local_paths() {
     let mut profile = test_ssh_profile();
     let default_dir = std::env::temp_dir().join("portmate-transfer-default");
