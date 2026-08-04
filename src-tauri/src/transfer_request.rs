@@ -2,7 +2,22 @@ use super::*;
 
 pub(super) fn prepare_transfer_request(
     profile: &SessionProfile,
+    request: StartTransferRequest,
+) -> Result<StartTransferRequest, String> {
+    let home = native_home_path();
+    prepare_transfer_request_with_home(
+        profile,
+        request,
+        current_local_transfer_path_platform(),
+        home.as_deref(),
+    )
+}
+
+pub(super) fn prepare_transfer_request_with_home(
+    profile: &SessionProfile,
     mut request: StartTransferRequest,
+    platform: LocalTransferPathPlatform,
+    home: Option<&Path>,
 ) -> Result<StartTransferRequest, String> {
     let accesses_remote = has_remote_transfer_prefix(&request.source)
         || has_remote_transfer_prefix(&request.destination);
@@ -13,17 +28,24 @@ pub(super) fn prepare_transfer_request(
     if let Some(path) = remote_path(&request.destination) {
         validate_remote_transfer_path(path, "远端传输目标路径")?;
     }
-    let default_local_dir = profile
-        .transfer
-        .default_local_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty());
-    validate_transfer_default_local_dir(profile)?;
+    let default_local_dir = resolve_transfer_default_local_dir_with_home(
+        profile.transfer.default_local_dir.as_deref(),
+        platform,
+        home,
+    )?;
 
-    request.source = resolve_default_local_transfer_path(&request.source, default_local_dir)?;
-    request.destination =
-        resolve_default_local_transfer_path(&request.destination, default_local_dir)?;
+    request.source = resolve_default_local_transfer_path_with_home(
+        &request.source,
+        default_local_dir.as_deref(),
+        platform,
+        home,
+    )?;
+    request.destination = resolve_default_local_transfer_path_with_home(
+        &request.destination,
+        default_local_dir.as_deref(),
+        platform,
+        home,
+    )?;
     Ok(request)
 }
 
@@ -141,31 +163,51 @@ pub(super) fn classify_local_transfer_path(
 }
 
 pub(super) fn validate_transfer_default_local_dir(profile: &SessionProfile) -> Result<(), String> {
-    let Some(default_local_dir) = profile
-        .transfer
-        .default_local_dir
-        .as_deref()
+    let home = native_home_path();
+    resolve_transfer_default_local_dir_with_home(
+        profile.transfer.default_local_dir.as_deref(),
+        current_local_transfer_path_platform(),
+        home.as_deref(),
+    )
+    .map(|_| ())
+}
+
+pub(super) fn resolve_transfer_default_local_dir_with_home(
+    default_local_dir: Option<&str>,
+    platform: LocalTransferPathPlatform,
+    home: Option<&Path>,
+) -> Result<Option<String>, String> {
+    let Some(default_local_dir) = default_local_dir
         .map(str::trim)
         .filter(|path| !path.is_empty())
     else {
-        return Ok(());
+        return Ok(None);
     };
-    if classify_local_transfer_path(default_local_dir, current_local_transfer_path_platform())
-        != LocalTransferPathKind::Absolute
-    {
-        return Err("Profile 默认本地目录必须是当前平台的完整绝对路径".to_string());
+    let windows = platform == LocalTransferPathPlatform::Windows;
+    if local_home_relative_path(default_local_dir, windows).is_some() {
+        return expand_local_home_transfer_path(default_local_dir, home, windows).map(Some);
     }
-    Ok(())
+    if classify_local_transfer_path(default_local_dir, platform) != LocalTransferPathKind::Absolute
+    {
+        return Err("Profile 默认本地目录必须是当前平台的完整绝对路径或以 ~ 开头".to_string());
+    }
+    Ok(Some(default_local_dir.to_string()))
 }
 
-pub(super) fn resolve_default_local_transfer_path(
+pub(super) fn resolve_default_local_transfer_path_with_home(
     value: &str,
     default_local_dir: Option<&str>,
+    platform: LocalTransferPathPlatform,
+    home: Option<&Path>,
 ) -> Result<String, String> {
     if has_remote_transfer_prefix(value) {
         return Ok(value.to_string());
     }
-    match classify_local_transfer_path(value, current_local_transfer_path_platform()) {
+    let windows = platform == LocalTransferPathPlatform::Windows;
+    if local_home_relative_path(value, windows).is_some() {
+        return expand_local_home_transfer_path(value, home, windows);
+    }
+    match classify_local_transfer_path(value, platform) {
         LocalTransferPathKind::Absolute => Ok(value.to_string()),
         LocalTransferPathKind::Relative => Ok(default_local_dir
             .map(|directory| {
@@ -185,6 +227,18 @@ pub(super) fn resolve_default_local_transfer_path(
             Err("本地传输路径与当前操作系统不兼容".to_string())
         }
     }
+}
+
+fn expand_local_home_transfer_path(
+    value: &str,
+    home: Option<&Path>,
+    windows: bool,
+) -> Result<String, String> {
+    let home = home.ok_or_else(|| "无法解析本地 ~ 路径：系统用户主目录不可用".to_string())?;
+    expand_identity_path_with_home(value, Some(home), windows)
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "本地 ~ 路径无法表示为 Unicode".to_string())
 }
 
 pub(super) fn has_remote_transfer_prefix(value: &str) -> bool {

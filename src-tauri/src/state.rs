@@ -203,20 +203,34 @@ pub(super) fn expand_identity_path_with_home(
     home: Option<&Path>,
     windows: bool,
 ) -> PathBuf {
-    let relative = if path == "~" {
-        Some("")
-    } else if let Some(relative) = path.strip_prefix("~/") {
-        Some(relative)
-    } else if windows {
-        path.strip_prefix(r"~\")
-    } else {
-        None
-    };
+    let relative = local_home_relative_path(path, windows);
 
     match (home, relative) {
         (Some(home), Some(relative)) => home.join(relative),
         _ => PathBuf::from(path),
     }
+}
+
+pub(super) fn local_home_relative_path(path: &str, windows: bool) -> Option<&str> {
+    let relative = if path == "~" {
+        ""
+    } else if let Some(relative) = path.strip_prefix("~/") {
+        relative
+    } else if windows {
+        path.strip_prefix(r"~\")?
+    } else {
+        return None;
+    };
+    let relative = if windows {
+        relative.trim_start_matches(['/', '\\'])
+    } else {
+        relative.trim_start_matches('/')
+    };
+    let has_windows_drive_prefix = windows
+        && relative.len() >= 2
+        && relative.as_bytes()[0].is_ascii_alphabetic()
+        && relative.as_bytes()[1] == b':';
+    (!has_windows_drive_prefix).then_some(relative)
 }
 
 #[derive(Debug, Default)]

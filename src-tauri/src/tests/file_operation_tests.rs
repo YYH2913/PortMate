@@ -103,6 +103,79 @@ fn default_transfer_directory_resolves_only_relative_local_paths() {
 }
 
 #[test]
+fn transfer_home_paths_expand_before_the_profile_default_directory() {
+    let mut profile = test_ssh_profile();
+    profile.transfer.default_local_dir = Some("~/Downloads".to_string());
+    let home = Path::new("native-home");
+
+    let request = prepare_transfer_request_with_home(
+        &profile,
+        StartTransferRequest {
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: "~/upload.bin".to_string(),
+            destination: "relative-download.bin".to_string(),
+        },
+        LocalTransferPathPlatform::Unix,
+        Some(home),
+    )
+    .unwrap();
+
+    assert_eq!(Path::new(&request.source), home.join("upload.bin"));
+    assert_eq!(
+        Path::new(&request.destination),
+        home.join("Downloads").join("relative-download.bin")
+    );
+    assert!(!request.source.contains("Downloads/~"));
+}
+
+#[test]
+fn transfer_home_alias_uses_platform_separator_rules_and_requires_a_home() {
+    let home = Path::new("native-home");
+    assert_eq!(
+        resolve_transfer_default_local_dir_with_home(
+            Some(r"~\Downloads"),
+            LocalTransferPathPlatform::Windows,
+            Some(home),
+        )
+        .unwrap(),
+        Some(home.join(r"Downloads").to_str().unwrap().to_string())
+    );
+    assert_eq!(
+        resolve_default_local_transfer_path_with_home(
+            r"~\upload.bin",
+            Some("ignored-default"),
+            LocalTransferPathPlatform::Windows,
+            Some(home),
+        )
+        .unwrap(),
+        home.join(r"upload.bin").to_str().unwrap()
+    );
+    assert_eq!(
+        resolve_default_local_transfer_path_with_home(
+            r"~\literal.bin",
+            Some("unix-default"),
+            LocalTransferPathPlatform::Unix,
+            Some(home),
+        )
+        .unwrap(),
+        Path::new("unix-default")
+            .join(r"~\literal.bin")
+            .to_str()
+            .unwrap()
+    );
+
+    let error = resolve_default_local_transfer_path_with_home(
+        "~/upload.bin",
+        None,
+        LocalTransferPathPlatform::Unix,
+        None,
+    )
+    .unwrap_err();
+    assert!(error.contains("用户主目录不可用"), "{error}");
+}
+
+#[test]
 fn empty_remote_transfer_markers_are_never_treated_as_local_paths() {
     let profile = test_ssh_profile();
 
@@ -376,8 +449,20 @@ fn local_tilde_paths_follow_native_home_and_separator_rules() {
         home.join(".ssh/id_ed25519")
     );
     assert_eq!(
+        expand_identity_path_with_home("~//.ssh/id_ed25519", Some(home), false),
+        home.join(".ssh/id_ed25519")
+    );
+    assert_eq!(
         expand_identity_path_with_home(r"~\.ssh\id_ed25519", Some(home), true),
         home.join(r".ssh\id_ed25519")
+    );
+    assert_eq!(
+        expand_identity_path_with_home(r"~\\.ssh\id_ed25519", Some(home), true),
+        home.join(r".ssh\id_ed25519")
+    );
+    assert_eq!(
+        expand_identity_path_with_home(r"~/C:\Windows", Some(home), true),
+        PathBuf::from(r"~/C:\Windows")
     );
     assert_eq!(
         expand_identity_path_with_home(r"~\.ssh\id_ed25519", Some(home), false),
