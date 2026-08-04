@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -44,17 +45,34 @@ try {
   if (first.lifecycle.endpointCredentialSha256 === second.lifecycle.endpointCredentialSha256) {
     throw new Error("The packaged application reused its IPC credential across restarts");
   }
-  const endpointPath = join(testRoot, "data", "dev.portmate.desktop", "portmate-ipc.json");
+  const dataRoot = join(testRoot, "data");
+  const currentDataDirectory = join(dataRoot, "dev.portmate.desktop");
+  const legacyDataDirectory = join(dataRoot, "dev.portmate.app");
+  renameSync(currentDataDirectory, legacyDataDirectory);
+  const migration = runNativeSmoke(appRun, "legacy migration");
+  if (migration.lifecycle.store.bytes !== second.lifecycle.store.bytes
+    || migration.lifecycle.store.sha256 !== second.lifecycle.store.sha256) {
+    throw new Error("The packaged application changed its Store during legacy app-data migration");
+  }
+  if (migration.lifecycle.endpointCredentialSha256 === second.lifecycle.endpointCredentialSha256) {
+    throw new Error("The packaged application reused its IPC credential after legacy app-data migration");
+  }
+  if (existsSync(legacyDataDirectory)) {
+    throw new Error("The packaged application left its legacy app-data directory after migration");
+  }
+  const endpointPath = join(currentDataDirectory, "portmate-ipc.json");
   if (existsSync(endpointPath)) throw new Error("The packaged application left its IPC endpoint after restart smoke");
 
   console.log(JSON.stringify({
     appImage,
-    launches: 2,
-    store: second.lifecycle.store,
+    launches: 3,
+    store: migration.lifecycle.store,
     endpointCredentialRotated: true,
+    legacyAppDataMigrated: true,
     endpointAddressRotated: first.lifecycle.endpointAddress !== second.lifecycle.endpointAddress,
     first: summarize(first),
     second: summarize(second),
+    migration: summarize(migration),
   }, null, 2));
 } finally {
   rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

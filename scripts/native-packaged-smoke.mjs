@@ -3,13 +3,16 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   statSync,
 } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
 const pollIntervalMs = 100;
 const maxOutputBytes = 128 * 1024;
+const currentAppDataDirectoryName = "dev.portmate.desktop";
+const legacyAppDataDirectoryName = "dev.portmate.app";
 
 export async function smokePackagedApplication({
   executable,
@@ -20,6 +23,7 @@ export async function smokePackagedApplication({
   exitAfterMs = 5_000,
   timeoutMs = 45_000,
   expectedStore = null,
+  requireExpectedStoreBeforeLaunch = true,
 }) {
   if (!executable || !isAbsolute(executable)) throw new Error(`${label} executable must be absolute`);
   if (!dataDirectory || !isAbsolute(dataDirectory)) throw new Error(`${label} data directory must be absolute`);
@@ -29,14 +33,19 @@ export async function smokePackagedApplication({
   if (!Number.isInteger(timeoutMs) || timeoutMs <= exitAfterMs) {
     throw new Error(`${label} timeout must exceed its exit delay`);
   }
+  if (typeof requireExpectedStoreBeforeLaunch !== "boolean") {
+    throw new Error(`${label} pre-launch Store requirement must be boolean`);
+  }
   mkdirSync(dataDirectory, { recursive: true });
   const endpointPath = join(dataDirectory, "portmate-ipc.json");
   const storePath = join(dataDirectory, "portmate-store.sqlite3");
   if (existsSync(endpointPath)) {
     throw new Error(`${label} smoke data directory contains a stale IPC endpoint`);
   }
-  if (expectedStore) {
+  if (expectedStore && requireExpectedStoreBeforeLaunch) {
     assertStoreMatches(inspectStore(storePath, label), expectedStore, `${label} pre-launch Store`);
+  } else if (expectedStore && existsSync(storePath)) {
+    throw new Error(`${label} migration target contains an unexpected Store before launch`);
   } else if (existsSync(storePath)) {
     throw new Error(`${label} smoke data directory contains an unexpected Store`);
   }
@@ -132,6 +141,46 @@ export async function smokePackagedApplicationRestart(options) {
     second,
     storePreserved: true,
     endpointCredentialRotated: true,
+  };
+}
+
+export async function smokePackagedApplicationRestartAndLegacyMigration(options) {
+  const label = options?.label;
+  const dataDirectory = resolve(options?.dataDirectory ?? "");
+  if (!isAbsolute(options?.dataDirectory ?? "") || basename(dataDirectory) !== currentAppDataDirectoryName) {
+    throw new Error(`${label} migration smoke data directory must end with ${currentAppDataDirectoryName}`);
+  }
+  const legacyDataDirectory = join(dirname(dataDirectory), legacyAppDataDirectoryName);
+  if (existsSync(legacyDataDirectory)) {
+    throw new Error(`${label} migration smoke data root contains an unexpected legacy directory`);
+  }
+
+  const restart = await smokePackagedApplicationRestart(options);
+  renameSync(dataDirectory, legacyDataDirectory);
+  assertStoreMatches(
+    inspectStore(join(legacyDataDirectory, "portmate-store.sqlite3"), label),
+    restart.second.store,
+    `${label} staged legacy Store`,
+  );
+
+  const migration = await smokePackagedApplication({
+    ...options,
+    label: `${label} legacy app-data migration`,
+    expectedStore: restart.second.store,
+    requireExpectedStoreBeforeLaunch: false,
+  });
+  if (existsSync(legacyDataDirectory)) {
+    throw new Error(`${label} left the legacy app-data directory after migration`);
+  }
+  if (migration.endpointCredentialSha256 === restart.second.endpointCredentialSha256) {
+    throw new Error(`${label} reused its IPC credential after legacy app-data migration`);
+  }
+
+  return {
+    ...restart,
+    migration,
+    legacyAppDataMigrated: true,
+    endpointCredentialRotatedAfterMigration: true,
   };
 }
 

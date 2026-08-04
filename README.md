@@ -401,10 +401,13 @@ artifacts are written below `target/release/bundle/`. See [RELEASE.md](./RELEASE
 signing, migration, artifact, and rollback gates.
 
 After a Linux bundle build, `npm run test:linux-appimage-smoke` extracts the final AppImage and
-launches its packaged `AppRun` twice against one isolated Store. Both launches must render a native
-frame, publish and retire their IPC endpoint through normal window closure, rotate the IPC
-credential, and preserve the exact Store SHA-256 across the no-op restart. It has the same X11,
-`xwd`, `xwininfo`, `wmctrl`, and window-manager requirements as the development desktop smoke gate.
+launches its packaged `AppRun` three times against one isolated Store. The first two launches prove
+an idle restart is byte-for-byte stable; the third stages that same Store under the legacy
+`dev.portmate.app` directory and requires the packaged application to migrate it atomically into
+`dev.portmate.desktop`. Every launch must render a native frame, publish and retire its IPC endpoint
+through normal window closure, and rotate the IPC credential. The migration launch must preserve the
+exact Store SHA-256 and remove the legacy directory. It has the same X11, `xwd`, `xwininfo`,
+`wmctrl`, and window-manager requirements as the development desktop smoke gate.
 
 The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
 
@@ -867,9 +870,10 @@ and non-Unix Stronghold filesystem fault injection. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
 compatibility job. Its Windows package gate silently installs/extracts and launches both MSI and NSIS
 payloads; its macOS gate launches the direct app and the copy mounted from the verified DMG. Every
-package uses an isolated data directory for two launches and must publish a loopback IPC endpoint
-tied to its non-empty Store, exit through Tauri with code zero, remove the endpoint, preserve the
-Store byte-for-byte across the idle restart, and rotate the IPC credential. A successful workflow run and
-retained artifacts are still required as native platform evidence. Signing and Apple notarization
+package uses an isolated data root for three launches and must publish a loopback IPC endpoint tied
+to its non-empty Store, exit through Tauri with code zero, remove the endpoint, preserve the Store
+byte-for-byte across the idle restart and legacy-directory migration, remove the migrated legacy
+directory, and rotate the IPC credential on every launch. A successful workflow run and retained
+artifacts are still required as native platform evidence. Signing and Apple notarization
 remain release gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile
 credential migration.

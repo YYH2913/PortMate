@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -10,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   smokePackagedApplication,
   smokePackagedApplicationRestart,
+  smokePackagedApplicationRestartAndLegacyMigration,
   validatePackagedSmokeEndpoint,
 } from "./native-packaged-smoke.mjs";
 
@@ -107,6 +109,61 @@ describe("native packaged runtime smoke", () => {
     expect(result.endpointCredentialRotated).toBe(true);
     expect(result.first.store).toEqual(result.second.store);
     expect(result.first.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
+  });
+
+  it("preserves the Store while migrating the legacy application data directory", async () => {
+    const root = temporaryRoot();
+    const fixture = join(root, "migration-fixture.mjs");
+    writeFileSync(fixture, `
+      import { randomBytes } from "node:crypto";
+      import { existsSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+      import { dirname, join } from "node:path";
+      const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
+      const legacy = join(dirname(data), "dev.portmate.app");
+      if (existsSync(legacy)) {
+        if (!existsSync(data) || readdirSync(data).length !== 0) process.exit(91);
+        rmSync(data, { recursive: true });
+        renameSync(legacy, data);
+      }
+      const store = join(data, "portmate-store.sqlite3");
+      const endpoint = join(data, "portmate-ipc.json");
+      if (!existsSync(store)) writeFileSync(store, randomBytes(48));
+      writeFileSync(endpoint, JSON.stringify({
+        addr: "127.0.0.1:43123",
+        storePath: store,
+        token: randomBytes(24).toString("hex"),
+      }));
+      setTimeout(() => rmSync(endpoint), 100);
+      setTimeout(() => process.exit(0), 150);
+    `);
+    const dataDirectory = join(root, "migration-data", "dev.portmate.desktop");
+
+    const result = await smokePackagedApplicationRestartAndLegacyMigration({
+      executable: process.execPath,
+      args: [fixture],
+      dataDirectory,
+      label: "migration fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.legacyAppDataMigrated).toBe(true);
+    expect(result.endpointCredentialRotatedAfterMigration).toBe(true);
+    expect(result.migration.store).toEqual(result.second.store);
+    expect(result.migration.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
+    expect(existsSync(join(root, "migration-data", "dev.portmate.app"))).toBe(false);
+  });
+
+  it("rejects an application that ignores the staged legacy data directory", async () => {
+    const { fixture, dataDirectory } = restartFailureFixture("ignore-legacy-directory");
+    await expect(smokePackagedApplicationRestartAndLegacyMigration({
+      executable: process.execPath,
+      args: [fixture, "normal"],
+      dataDirectory,
+      label: "ignored migration fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/left the legacy app-data directory/);
   });
 
   it("rejects an idle restart that mutates the Store", async () => {
