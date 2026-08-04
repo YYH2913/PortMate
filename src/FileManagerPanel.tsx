@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { formatBytes } from "./display-formatters";
+import { exactNonBlankPathInput } from "./file-path-input";
 import {
   createFileNavigationHistory,
   currentFileNavigationPath,
@@ -260,9 +261,9 @@ export default function FileManagerPanel({
 
   async function createDir(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    const name = window.prompt("目录名");
-    if (!name?.trim()) return;
-    const nextPath = joinFilePath(panel.path, name.trim(), remote);
+    const name = exactNonBlankPathInput(window.prompt("目录名"));
+    if (name === null) return;
+    const nextPath = joinFilePath(panel.path, name, remote);
     try {
       await invokeBackend("create_directory", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
       await loadFiles(remote, panel.path, "preserve");
@@ -273,9 +274,9 @@ export default function FileManagerPanel({
 
   async function createFile(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    const name = window.prompt("文件名");
-    if (!name?.trim()) return;
-    const nextPath = joinFilePath(panel.path, name.trim(), remote);
+    const name = exactNonBlankPathInput(window.prompt("文件名"));
+    if (name === null) return;
+    const nextPath = joinFilePath(panel.path, name, remote);
     try {
       await invokeBackend("create_file", { request: { sessionId: active?.profile.id ?? null, path: nextPath, remote } });
       await loadFiles(remote, panel.path, "preserve");
@@ -306,9 +307,9 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected) return;
-    const nextName = window.prompt("新名称", selected.name);
-    if (!nextName?.trim()) return;
-    const nextPath = joinFilePath(parentPath(selected.path, remote), nextName.trim(), remote);
+    const nextName = exactNonBlankPathInput(window.prompt("新名称", selected.name));
+    if (nextName === null) return;
+    const nextPath = joinFilePath(parentPath(selected.path, remote), nextName, remote);
     try {
       await invokeBackend("rename_path", { request: { sessionId: active?.profile.id ?? null, oldPath: selected.path, newPath: nextPath, remote } });
       await loadFiles(remote, panel.path, "preserve");
@@ -321,17 +322,17 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (!panel.selected.length) return;
     const suggestedDestination = parentPath(panel.path, remote);
-    const destination = window.prompt(
+    const destination = exactNonBlankPathInput(window.prompt(
       "移动到目录",
       suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
-    );
-    if (!destination?.trim()) return;
+    ));
+    if (destination === null) return;
     try {
       await invokeBackend("move_paths", {
         request: {
           sessionId: active?.profile.id ?? null,
           paths: panel.selected.map((entry) => entry.path),
-          destination: destination.trim(),
+          destination,
           remote,
         },
       });
@@ -543,8 +544,8 @@ export default function FileManagerPanel({
     const selected = panel.selected[0];
     if (!selected || selected.isDir) return;
     if (remote) {
-      const destination = window.prompt("下载到本地路径", selected.name);
-      if (!destination) return;
+      const destination = exactNonBlankPathInput(window.prompt("下载到本地路径", selected.name));
+      if (destination === null) return;
       const task = await invokeBackend<TransferTask>("start_transfer", {
         request: { sessionId: active.profile.id, protocol: "sftp", source: `remote:${selected.path}`, destination },
       });
@@ -552,8 +553,8 @@ export default function FileManagerPanel({
       onNotice({ title: "传输任务", message: `${task.protocol} ${task.status}: ${task.message ?? ""}` });
       return;
     }
-    const destination = window.prompt("上传到远端路径", `/tmp/${selected.name}`);
-    if (!destination) return;
+    const destination = exactNonBlankPathInput(window.prompt("上传到远端路径", `/tmp/${selected.name}`));
+    if (destination === null) return;
     const task = await invokeBackend<TransferTask>("start_transfer", {
       request: { sessionId: active.profile.id, protocol: "sftp", source: selected.path, destination: `remote:${destination}` },
     });

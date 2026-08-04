@@ -1829,7 +1829,7 @@ Host staging
   await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
   await page.evaluate(() => {
     window.__originalPrompt = window.prompt;
-    window.prompt = () => "/portmate-target";
+    window.prompt = () => "/portmate-target ";
   });
   await openFileActionOverflow();
   await localFilePane.getByRole("button", { name: "移动到...", exact: true }).click();
@@ -1839,7 +1839,7 @@ Host staging
     window.prompt = window.__originalPrompt;
     delete window.__originalPrompt;
   });
-  assert(moveRequest?.destination === "/portmate-target"
+  assert(moveRequest?.destination === "/portmate-target "
     && JSON.stringify(moveRequest?.paths) === JSON.stringify(["/portmate-fast/FAST-RESULT"])
     && moveRequest?.remote === false
     && moveRequest?.sessionId === "edge-router",
@@ -1848,7 +1848,7 @@ Host staging
   const newFileCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
   await page.evaluate(() => {
     window.__originalPrompt = window.prompt;
-    window.prompt = () => "workspace-note.txt";
+    window.prompt = () => " workspace-note.txt ";
   });
   await localFilePane.getByRole("button", { name: "新建文件", exact: true }).click();
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "create_file").length === count + 1, newFileCallsBefore);
@@ -1857,7 +1857,7 @@ Host staging
     window.prompt = window.__originalPrompt;
     delete window.__originalPrompt;
   });
-  assert(newFileRequest?.path === "/portmate-fast/workspace-note.txt"
+  assert(newFileRequest?.path === "/portmate-fast/ workspace-note.txt "
     && newFileRequest?.remote === false
     && newFileRequest?.sessionId === "edge-router",
   `new file did not target the active local directory: ${JSON.stringify(newFileRequest)}`);
