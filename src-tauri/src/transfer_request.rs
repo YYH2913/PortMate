@@ -177,10 +177,7 @@ pub(super) fn resolve_transfer_default_local_dir_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<Option<String>, String> {
-    let Some(default_local_dir) = default_local_dir
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    else {
+    let Some(default_local_dir) = default_local_dir.filter(|path| !path.trim().is_empty()) else {
         return Ok(None);
     };
     let windows = platform == LocalTransferPathPlatform::Windows;

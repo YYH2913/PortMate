@@ -1018,6 +1018,10 @@ fn modem_file_names_normalize_windows_and_unix_separators() {
         remote_parent_and_file_name("/report.bin"),
         ("/".to_string(), "report.bin".to_string())
     );
+    assert_eq!(
+        remote_parent_and_file_name("/tmp/ report.bin "),
+        ("/tmp".to_string(), " report.bin ".to_string())
+    );
 
     let root = std::env::temp_dir().join(format!("portmate-modem-name-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -1025,7 +1029,32 @@ fn modem_file_names_normalize_windows_and_unix_separators() {
         zmodem_local_target_path(root.to_str().unwrap(), r"C:\Users\operator\report.bin", 0)
             .unwrap();
     assert_eq!(target, root.join("report.bin"));
+    let exact_target = zmodem_local_target_path(
+        root.join("download.bin ").to_str().unwrap(),
+        "ignored.bin",
+        0,
+    )
+    .unwrap();
+    assert_eq!(exact_target, root.join("download.bin "));
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn transfer_default_directory_preserves_significant_edge_whitespace() {
+    let directory = if cfg!(windows) {
+        r"C:\PortMate Downloads "
+    } else {
+        "/tmp/PortMate Downloads "
+    };
+    let platform = if cfg!(windows) {
+        LocalTransferPathPlatform::Windows
+    } else {
+        LocalTransferPathPlatform::Unix
+    };
+    assert_eq!(
+        resolve_transfer_default_local_dir_with_home(Some(directory), platform, None).unwrap(),
+        Some(directory.to_string())
+    );
 }
 
 #[test]

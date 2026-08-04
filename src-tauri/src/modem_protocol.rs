@@ -380,9 +380,7 @@ pub(super) fn parse_ymodem_metadata(data: &[u8]) -> (String, Option<usize>) {
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(data.len());
-    let name = String::from_utf8_lossy(&data[..name_end])
-        .trim()
-        .to_string();
+    let name = String::from_utf8_lossy(&data[..name_end]).to_string();
     let rest = if name_end < data.len() {
         &data[name_end + 1..]
     } else {
@@ -401,7 +399,7 @@ pub(super) fn local_file_name(path: &str) -> String {
 }
 
 pub(super) fn remote_parent_and_file_name(path: &str) -> (String, String) {
-    let normalized = path.trim().trim_end_matches(['/', '\\']);
+    let normalized = path.trim_end_matches(['/', '\\']);
     let Some((index, separator)) = normalized
         .char_indices()
         .rev()

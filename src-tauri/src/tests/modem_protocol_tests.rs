@@ -1,6 +1,13 @@
 use super::*;
 
 #[test]
+fn ymodem_metadata_preserves_significant_file_name_whitespace() {
+    let (name, size) = parse_ymodem_metadata(b" report.bin \x00123 0 0\0padding");
+    assert_eq!(name, " report.bin ");
+    assert_eq!(size, Some(123));
+}
+
+#[test]
 fn remote_modem_command_uses_raw_tty_and_non_echoing_markers() {
     let token = "modem-token-1";
     let command = modem_remote_command(

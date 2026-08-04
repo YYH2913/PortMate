@@ -244,14 +244,13 @@ pub(super) fn zmodem_local_target_path(
     incoming_name: &str,
     received_files: usize,
 ) -> Result<PathBuf, String> {
-    let destination = local_destination.trim();
-    if destination.is_empty() {
+    if local_destination.trim().is_empty() {
         return Err("ZModem 本地目标路径不能为空".to_string());
     }
     let incoming =
         portable_file_name(incoming_name).unwrap_or_else(|| "zmodem-file.bin".to_string());
-    let base = expand_identity_path(destination);
-    let ends_with_separator = destination.ends_with('/') || destination.ends_with('\\');
+    let base = expand_identity_path(local_destination);
+    let ends_with_separator = local_destination.ends_with('/') || local_destination.ends_with('\\');
 
     if base.is_dir() || ends_with_separator {
         return Ok(base.join(incoming));
