@@ -215,6 +215,12 @@ impl Drop for SessionHolder {
     fn drop(&mut self) {
         self.clear_pending_agent_forward_channels();
         unsafe {
+            // ssh_free() closes the session socket unconditionally.  A socket supplied
+            // through SSH_OPTIONS_FD remains Rust-owned, so disconnect first to make
+            // libssh detach it before TcpStream drops the descriptor.
+            if self.owned_socket.is_some() {
+                sys::ssh_disconnect(self.sess);
+            }
             sys::ssh_free(self.sess);
         }
     }
