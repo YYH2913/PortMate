@@ -16,7 +16,7 @@ fn openssh_identity_order_respects_max_auth_tries() {
     let root = std::env::temp_dir().join(format!("portmate-auth-order-test-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let host_key = root.join("ssh_host_ed25519_key");
-    let accepted_key = root.join("accepted_ed25519_key");
+    let accepted_key = root.join("accepted_ed25519_key ");
     let rejected_key_one = root.join("rejected_one_ed25519_key");
     let rejected_key_two = root.join("rejected_two_ed25519_key");
     for key_path in [

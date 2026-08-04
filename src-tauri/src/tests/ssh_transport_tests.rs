@@ -686,7 +686,7 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
     fs::create_dir_all(&root).unwrap();
     let host_key = root.join("ssh_host_ed25519_key");
     let rejected_key = root.join("id_rejected");
-    let accepted_key = root.join("id_accepted");
+    let accepted_key = root.join("id_accepted ");
     generate_ed25519_test_key(&host_key);
     generate_ed25519_test_key(&rejected_key);
     let passphrase = "PortMate libssh encrypted key passphrase";

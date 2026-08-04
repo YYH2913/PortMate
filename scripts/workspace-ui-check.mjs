@@ -3689,6 +3689,7 @@ Host staging
   await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
   await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
   await thirdProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Current identity");
+  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "Path / Agent comment" }).locator("input").fill("/home/operator/.ssh/id_ed25519 ");
   await thirdProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await thirdProfileManager.getByRole("button", { name: "编辑 Current identity", exact: true }).waitFor();
   await profileLifecyclePage.evaluate(() => {
@@ -3705,12 +3706,14 @@ Host staging
       pending: window.__pendingProfileMutations.length,
       updateCalls: updates.length,
       expectedLabels: updates.map((call) => call.args.request.expectedIdentity?.label ?? null),
+      latestPath: updates.at(-1)?.args.request.path ?? null,
     };
   });
   assert(JSON.stringify(profileLifecycleState.backend) === JSON.stringify(["Current identity"])
     && JSON.stringify(profileLifecycleState.visible) === JSON.stringify(["Current identity"])
     && profileLifecycleState.pending === 0
     && profileLifecycleState.updateCalls === 3
+    && profileLifecycleState.latestPath === "/home/operator/.ssh/id_ed25519 "
     && JSON.stringify(profileLifecycleState.expectedLabels) === JSON.stringify([
       "Initial identity", "Closed identity", "Closed identity",
     ]),

@@ -92,6 +92,45 @@ fn client_identity_validation_enforces_immutable_id_and_source_fields() {
     .unwrap_err();
     assert!(path_error.contains("私钥路径"));
 
+    let exact_path = normalize_client_identity(
+        "identity-a",
+        IdentityRef {
+            id: "identity-a".to_string(),
+            label: "Key".to_string(),
+            source: IdentitySource::SystemFile,
+            fingerprint_sha256: None,
+            path: Some(" /home/operator/.ssh/id_ed25519 ".to_string()),
+            secret_ref: None,
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        exact_path.path.as_deref(),
+        Some(" /home/operator/.ssh/id_ed25519 ")
+    );
+
+    let mut invalid_profile = test_ssh_profile();
+    if let ConnectionConfig::Ssh(ssh) = &mut invalid_profile.connection {
+        ssh.identity_refs = vec![IdentityRef {
+            id: "identity-a".to_string(),
+            label: "Key".to_string(),
+            source: IdentitySource::SystemFile,
+            fingerprint_sha256: None,
+            path: Some(" \t ".to_string()),
+            secret_ref: None,
+        }];
+    } else {
+        panic!("expected SSH profile");
+    }
+    assert!(validate_profile_client_identity_ids(&invalid_profile)
+        .unwrap_err()
+        .contains("缺少私钥路径"));
+    if let ConnectionConfig::Ssh(ssh) = &mut invalid_profile.connection {
+        ssh.identity_refs[0].path = exact_path.path.clone();
+    }
+    validate_profile_client_identity_ids(&invalid_profile).unwrap();
+
     let vault_error = normalize_client_identity(
         "identity-a",
         vault_identity("identity-a", "keychain:missing"),

@@ -66,6 +66,17 @@ pub(super) fn validate_profile_client_identity_ids(profile: &SessionProfile) -> 
         if identity.id.trim().is_empty() {
             return Err(format!("Profile {} 包含空 identity id", profile.id));
         }
+        if identity.source == IdentitySource::SystemFile
+            && identity
+                .path
+                .as_deref()
+                .is_none_or(|path| path.trim().is_empty())
+        {
+            return Err(format!(
+                "Profile {} 的 System File identity {} 缺少私钥路径",
+                profile.id, identity.id
+            ));
+        }
         if !ids.insert(identity.id.as_str()) {
             return Err(format!(
                 "Profile {} 中存在重复 identity id: {}",
@@ -97,12 +108,7 @@ where
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    identity.path = identity
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+    identity.path = identity.path.filter(|value| !value.trim().is_empty());
     identity.secret_ref = identity
         .secret_ref
         .as_deref()

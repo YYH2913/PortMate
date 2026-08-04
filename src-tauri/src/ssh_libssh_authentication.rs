@@ -321,8 +321,7 @@ where
             let Some(path) = identity
                 .path
                 .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
+                .filter(|path| !path.trim().is_empty())
             else {
                 return Ok(None);
             };
