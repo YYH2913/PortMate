@@ -77,7 +77,7 @@
     "pretauri": "node scripts/ensure-node-version.mjs",
     "tauri": "tauri",
     "predesktop": "node scripts/ensure-node-version.mjs",
-    "desktop": "tauri dev",
+    "desktop": "node scripts/desktop-dev.mjs",
     "desktop:clean": "node scripts/desktop-clean.mjs",
     "predesktop:build": "node scripts/ensure-node-version.mjs",
     "desktop:build": "node scripts/build-desktop.mjs",
