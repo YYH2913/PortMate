@@ -53,6 +53,8 @@ mod modem_runtime_tests;
 mod openssh_authentication_tests;
 #[path = "openssh_jump_host_tests.rs"]
 mod openssh_jump_host_tests;
+#[path = "openssh_modem_integration.rs"]
+mod openssh_modem_integration;
 #[path = "openssh_reconnect_tests.rs"]
 mod openssh_reconnect_tests;
 #[path = "openssh_transfer_tunnel_tests.rs"]
