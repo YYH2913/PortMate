@@ -325,6 +325,28 @@ fn file_manager_local_paths_reject_foreign_roots_and_filesystem_roots() {
 }
 
 #[test]
+fn local_tilde_paths_follow_native_home_and_separator_rules() {
+    let home = Path::new("/home/operator");
+    assert_eq!(expand_identity_path_with_home("~", Some(home), false), home);
+    assert_eq!(
+        expand_identity_path_with_home("~/.ssh/id_ed25519", Some(home), false),
+        home.join(".ssh/id_ed25519")
+    );
+    assert_eq!(
+        expand_identity_path_with_home(r"~\.ssh\id_ed25519", Some(home), true),
+        home.join(r".ssh\id_ed25519")
+    );
+    assert_eq!(
+        expand_identity_path_with_home(r"~\.ssh\id_ed25519", Some(home), false),
+        PathBuf::from(r"~\.ssh\id_ed25519")
+    );
+    assert_eq!(
+        expand_identity_path_with_home("~/relative", None, true),
+        PathBuf::from("~/relative")
+    );
+}
+
+#[test]
 fn file_manager_remote_mutating_paths_reject_parent_components() {
     for path in [
         "/tmp/..",

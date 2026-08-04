@@ -168,13 +168,39 @@ pub(super) fn remove_runtime_if_owned<Runtime>(
 }
 
 pub(super) fn expand_identity_path(path: &str) -> PathBuf {
-    if path == "~" || path.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            let rest = path.strip_prefix("~/").unwrap_or_default();
-            return PathBuf::from(home).join(rest);
-        }
+    #[cfg(windows)]
+    let home = environment_path("USERPROFILE").or_else(|| environment_path("HOME"));
+    #[cfg(not(windows))]
+    let home = environment_path("HOME").or_else(|| environment_path("USERPROFILE"));
+
+    expand_identity_path_with_home(path, home.as_deref(), cfg!(windows))
+}
+
+fn environment_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+pub(super) fn expand_identity_path_with_home(
+    path: &str,
+    home: Option<&Path>,
+    windows: bool,
+) -> PathBuf {
+    let relative = if path == "~" {
+        Some("")
+    } else if let Some(relative) = path.strip_prefix("~/") {
+        Some(relative)
+    } else if windows {
+        path.strip_prefix(r"~\")
+    } else {
+        None
+    };
+
+    match (home, relative) {
+        (Some(home), Some(relative)) => home.join(relative),
+        _ => PathBuf::from(path),
     }
-    PathBuf::from(path)
 }
 
 #[derive(Debug, Default)]
