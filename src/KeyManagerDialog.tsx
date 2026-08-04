@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
+import { identityStableKey, mergeAgentIdentities } from "./client-identity-state";
 import { formatBytes } from "./display-formatters";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import {
@@ -986,28 +987,11 @@ export default function KeyManagerDialog({
 
   async function copyAgentIdentitiesToProfile(identitiesToCopy: IdentityRef[]) {
     if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
-    let added = 0;
-    let updated = 0;
-    let nextIdentities = [...selectedProfile.connection.identityRefs];
-    for (const identity of identitiesToCopy) {
-      const identityRef: IdentityRef = {
-        ...identity,
-        id: identity.fingerprintSha256 ? `agent:${identity.fingerprintSha256}` : identity.id,
-        source: "agent",
-        path: identity.path ?? null,
-        secretRef: null,
-      };
-      const stableKey = identityStableKey(identityRef);
-      const existingIndex = nextIdentities.findIndex((item) => identityStableKey(item) === stableKey);
-      if (existingIndex >= 0) {
-        if (nextIdentities[existingIndex].source !== "agent") continue;
-        nextIdentities[existingIndex] = { ...nextIdentities[existingIndex], ...identityRef };
-        updated += 1;
-      } else {
-        nextIdentities = [identityRef, ...nextIdentities];
-        added += 1;
-      }
-    }
+    const { identities: nextIdentities, added, updated } = mergeAgentIdentities(
+      selectedProfile.connection.identityRefs,
+      identitiesToCopy,
+      createLocalId,
+    );
     if (!added && !updated) return;
     const saveResult = await saveProfileFromManager({
       ...selectedProfile,
@@ -1754,13 +1738,6 @@ function formatHostKeyDate(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
-}
-
-function identityStableKey(identity: IdentityRef) {
-  if (identity.fingerprintSha256) return `fingerprint:${identity.fingerprintSha256}`;
-  if (identity.secretRef) return `secret:${identity.secretRef}`;
-  if (identity.path) return `path:${identity.source}:${identity.path}`;
-  return `id:${identity.id}`;
 }
 
 function clientIdentitySelectionId(profileId: string, identity: IdentityRef, index: number) {
