@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -8,6 +9,7 @@ RUN apt-get update \
     && useradd --create-home --shell /bin/sh portmate \
     && echo 'portmate:portmate' | chpasswd \
     && ssh-keygen -A \
+    && sed -i '/^[[:space:]]*Subsystem[[:space:]]/d' /etc/ssh/sshd_config \
     && mkdir -p /run/sshd /home/portmate/compat \
     && chown -R portmate:portmate /home/portmate
 

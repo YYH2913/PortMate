@@ -42,10 +42,22 @@
     }
   },
   {
+    "name": "openssh-ubuntu-jammy",
+    "dockerfile": "tests/compat/openssh-ubuntu.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "xmodem",
+    "buildArgs": {
+      "UBUNTU_VERSION": "22.04"
+    }
+  },
+  {
     "name": "openssh-ubuntu-noble",
     "dockerfile": "tests/compat/openssh-ubuntu.Dockerfile",
     "disconnectProtocol": "sftp",
-    "modemDisconnectProtocol": "ymodem"
+    "modemDisconnectProtocol": "ymodem",
+    "buildArgs": {
+      "UBUNTU_VERSION": "24.04"
+    }
   },
   {
     "name": "openssh-fedora-44",
