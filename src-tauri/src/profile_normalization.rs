@@ -225,7 +225,9 @@ pub(super) fn normalize_session_profile(mut profile: SessionProfile) -> SessionP
             tcp.normalize_health_settings();
         }
         ConnectionConfig::Serial(serial) => {
-            serial.port = serial.port.trim().to_string();
+            if serial.port.trim().is_empty() {
+                serial.port.clear();
+            }
             serial.normalize_health_settings();
         }
         ConnectionConfig::Shell(shell) => {

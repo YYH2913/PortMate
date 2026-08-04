@@ -61,7 +61,7 @@ fn reconnect_serial_session(
             Ok(details) => details,
             Err(error) => {
                 let attempted_port = match &profile.connection {
-                    ConnectionConfig::Serial(serial) => serial.port.trim(),
+                    ConnectionConfig::Serial(serial) => serial.port.as_str(),
                     _ => "<non-serial>",
                 };
                 match record_serial_reconnect_failure_if_pending(

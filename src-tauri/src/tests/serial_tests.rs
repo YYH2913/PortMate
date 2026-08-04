@@ -18,7 +18,7 @@ fn serial_connection_details_validate_port_and_reconnect_flag() {
     });
     let (serial, port_name) = serial_connection_details(&profile).unwrap();
     assert_eq!(serial.baud_rate, 115200);
-    assert_eq!(port_name, "/dev/ttyUSB0");
+    assert_eq!(port_name, " /dev/ttyUSB0 ");
     assert_eq!(
         serial.reconnect_delay_ms,
         portmate_core::MIN_SERIAL_RECONNECT_DELAY_MS
@@ -195,7 +195,7 @@ fn serial_reconnect_profile_reloads_latest_port_and_disable_state() {
         .unwrap()
         .unwrap();
     let (serial, port_name) = serial_connection_details(&latest).unwrap();
-    assert_eq!(port_name, "/dev/ttyUSB1");
+    assert_eq!(port_name, " /dev/ttyUSB1 ");
     assert_eq!(serial.baud_rate, 57_600);
     assert_eq!(serial.reconnect_delay_ms, 250);
     assert!(serial.receive_idle_timeout_enabled);
@@ -545,7 +545,7 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
     }
     let root = std::env::temp_dir().join(format!("portmate-serial-test-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
-    let portmate_pty = root.join("portmate.pty");
+    let portmate_pty = root.join("portmate.pty ");
     let peer_pty = root.join("peer.pty");
     let child = Command::new("socat")
         .args(["-d", "-d"])
@@ -669,9 +669,9 @@ fn serial_socat_reconnects_after_pty_replacement() {
     }
     let root = std::env::temp_dir().join(format!("portmate-serial-reconnect-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
-    let first_portmate_pty = root.join("first-portmate.pty");
+    let first_portmate_pty = root.join("first-portmate.pty ");
     let first_peer_pty = root.join("first-peer.pty");
-    let replacement_portmate_pty = root.join("replacement-portmate.pty");
+    let replacement_portmate_pty = root.join("replacement-portmate.pty ");
     let replacement_peer_pty = root.join("replacement-peer.pty");
     let spawn_socat = |portmate_pty: &Path, peer_pty: &Path| {
         let child = Command::new("socat")

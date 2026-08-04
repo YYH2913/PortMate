@@ -20,8 +20,8 @@ pub(super) fn serial_connection_details(
         _ => return Err("profile is not serial-backed".to_string()),
     };
     serial.normalize_health_settings();
-    let port_name = serial.port.trim().to_string();
-    if port_name.is_empty() {
+    let port_name = serial.port.clone();
+    if port_name.trim().is_empty() {
         return Err("串口不能为空".to_string());
     }
     Ok((serial, port_name))
