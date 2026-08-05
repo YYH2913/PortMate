@@ -173,6 +173,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 type SettingsDialog = "terminal" | "session" | null;
 type SessionSettingsMode = "create" | "edit";
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "session-import" | null;
+type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
@@ -814,7 +815,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       for (const sessionId of targets) {
         const session = sessions.find((item) => item.profile.id === sessionId);
         if (session && sessionConnectionAction(session.runtime.status) === "connect") {
-          await connectSession(sessionId);
+          await connectSession(sessionId, undefined, true, "silent");
         }
       }
     })();
@@ -2893,7 +2894,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     applySavedSessionState(saved, activateWorkspace);
   }
 
-  async function connectSession(sessionId = activeId, sessionOverride?: SessionSummary, activateWorkspace = true) {
+  async function connectSession(
+    sessionId = activeId,
+    sessionOverride?: SessionSummary,
+    activateWorkspace = true,
+    interaction: ConnectionInteraction = "interactive",
+  ) {
     const session = sessionOverride ?? sessions.find((item) => item.profile.id === sessionId);
     if (!session || session.runtime.status === "connecting" || session.runtime.status === "reconnecting") return;
     const attemptToken = connectionAttemptGateRef.current.begin(session.profile.id);
@@ -2901,7 +2907,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
     const attemptIsCurrent = () => connectionAttemptGateRef.current.isCurrent(session.profile.id, attemptToken);
     try {
-      const credentials = await requestSessionCredentials(session.profile);
+      const credentials = interaction === "silent"
+        ? emptyConnectionCredentials()
+        : await requestSessionCredentials(session.profile);
       if (!attemptIsCurrent() || credentials === null) return;
       let profileForConnect: SessionProfile;
       let createdConnectionSecretRefs: string[] = [];
@@ -2922,7 +2930,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         const message = cleanupErrors.length
           ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
           : formatError(error);
-        setNotice({ title: "保存凭据失败", message });
+        if (interaction === "interactive") setNotice({ title: "保存凭据失败", message });
         return;
       }
 
@@ -2970,6 +2978,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         replaceSessionLog(failureProfile.id, nextLog);
         sessionSummaryRefreshGateRef.current.invalidate("summaries");
         setSessions((current) => mergeSessionSummaries(current, failed));
+        if (interaction === "silent") {
+          return;
+        }
         if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
           void openHostKeyPrompt(failureProfile, message, credentials);
         } else {
@@ -4750,6 +4761,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           {groupViews.map(({ view, session: item }, index) => {
             const isActiveView = view.id === node.activeViewId;
             const label = view.title || item.profile.name;
+            const health = sessionRuntimeHealthDescription(item.runtime);
             return (
               <div
                 className={`workspace-pane-tab status-${item.runtime.status}${isActiveView ? " active" : ""}${view.color ? " has-color" : ""}`}
@@ -4796,8 +4808,10 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                   type="button"
                   role="tab"
                   aria-selected={isActiveView}
+                  aria-label={label}
+                  aria-description={health}
                   className="workspace-pane-tab-label"
-                  title={label}
+                  title={`${label}\n${health}`}
                   onMouseDown={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
@@ -4814,7 +4828,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                     props.onActivate(node.id, view.id);
                   }}
                 >
-                  <span className="tab-mark" />
+                  <span className="session-status-dot" aria-hidden="true" />
                   <span>{label}</span>
                 </button>
                 <button
@@ -5596,6 +5610,17 @@ function applyConnectionCredentials(profile: SessionProfile, credentials: Connec
       ...profile.connection,
       username: credentials.username,
     },
+  };
+}
+
+function emptyConnectionCredentials(): ConnectionCredentials {
+  return {
+    username: null,
+    password: null,
+    passphrase: null,
+    oneKeyId: null,
+    savePassword: false,
+    savePassphrase: false,
   };
 }
 

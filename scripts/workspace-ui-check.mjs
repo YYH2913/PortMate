@@ -305,9 +305,11 @@ try {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
     const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
+    const recoverSilentSshStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverSilentSshStartup") === "true";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
     sessionStorage.removeItem("portmate.workspaceUiCheck.recoverInactiveStartup");
+    sessionStorage.removeItem("portmate.workspaceUiCheck.recoverSilentSshStartup");
     if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
       localStorage.clear();
       localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
@@ -360,6 +362,23 @@ try {
         oneKeyCompletionEnabled: false,
       }));
     }
+    if (recoverSilentSshStartup) {
+      const session = window.__sessions.find((item) => item.profile.id === "edge-router");
+      session.runtime.status = "error";
+      session.runtime.connectedSince = null;
+      session.runtime.lastDisconnect = new Date().toISOString();
+      session.runtime.lastDisconnectReason = "previous startup failure";
+      localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
+        historyEnabled: true,
+        historyLimit: "100",
+        historyRetentionDays: "30",
+        startupMode: "specific",
+        startupSessions: ["edge-router", "", "", ""],
+        lockOnIdle: false,
+        requireMasterPassword: false,
+        oneKeyCompletionEnabled: false,
+      }));
+    }
     window.__events = structuredClone(initialEvents);
     window.__oneKeys = [];
     window.__hostKeys = [];
@@ -385,6 +404,7 @@ try {
     window.__injectCommandHistoryStartupRace = true;
     window.__clipboardText = "";
     window.__closeSessionError = false;
+    window.__failSessionOpenFor = recoverSilentSshStartup ? "edge-router" : "";
     window.__deferSessionOpens = false;
     window.__pendingSessionOpens = [];
     window.__deferFileLoads = false;
@@ -903,6 +923,9 @@ try {
           };
         }
         if (command === "open_session" || command === "open_session_with_one_key") {
+          if (window.__failSessionOpenFor === args.sessionId) {
+            throw new Error("simulated silent startup failure");
+          }
           const index = window.__sessions.findIndex((item) => item.profile.id === args.sessionId);
           if (index < 0) return null;
           const result = {
@@ -3422,6 +3445,54 @@ Host staging
   assert(inactiveStartupErrors.length === 0,
     `inactive startup recovery browser exceptions: ${JSON.stringify(inactiveStartupErrors)}`);
   await inactiveStartupPage.close();
+
+  const silentSshStartupPage = await context.newPage();
+  const silentSshStartupErrors = [];
+  silentSshStartupPage.on("pageerror", (error) => silentSshStartupErrors.push(error.message));
+  await silentSshStartupPage.goto(appUrl);
+  await silentSshStartupPage.evaluate(() => {
+    sessionStorage.setItem("portmate.workspaceUiCheck.recoverSilentSshStartup", "true");
+  });
+  await silentSshStartupPage.reload();
+  const silentSshTab = silentSshStartupPage.locator('.workspace-pane-tab[data-view-id="view-edge"]');
+  await silentSshStartupPage.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "open_session" && call.args.sessionId === "edge-router"
+  )));
+  await silentSshTab.waitFor();
+  await silentSshStartupPage.waitForFunction(() => {
+    const tab = document.querySelector('.workspace-pane-tab.status-error[data-view-id="view-edge"]');
+    return Boolean(tab?.querySelector(".session-status-dot")
+      && tab.querySelector(".workspace-pane-tab-label")?.getAttribute("title")?.includes("simulated silent startup failure"));
+  });
+  const silentSshStartupState = await silentSshStartupPage.evaluate(() => {
+    const open = window.__invokeCalls.find((call) => (
+      call.command === "open_session" && call.args.sessionId === "edge-router"
+    ));
+    const dot = document.querySelector('.workspace-pane-tab[data-view-id="view-edge"] .session-status-dot');
+    const tab = dot?.closest(".workspace-pane-tab");
+    const label = tab?.querySelector(".workspace-pane-tab-label");
+    return {
+      password: open?.args.password,
+      passphrase: open?.args.passphrase,
+      credentialDialogs: document.querySelectorAll(".credential-dialog").length,
+      hostKeyDialogs: document.querySelectorAll(".hostkey-dialog").length,
+      noticeDialogs: document.querySelectorAll(".notice-dialog").length,
+      dotColor: dot ? getComputedStyle(dot).backgroundColor : "missing",
+      title: label?.getAttribute("title") ?? "",
+    };
+  });
+  assert(silentSshStartupState.password === null
+    && silentSshStartupState.passphrase === null
+    && silentSshStartupState.credentialDialogs === 0
+    && silentSshStartupState.hostKeyDialogs === 0
+    && silentSshStartupState.noticeDialogs === 0
+    && silentSshStartupState.dotColor === "rgb(248, 113, 113)"
+    && silentSshStartupState.title.includes("连接错误")
+    && silentSshStartupState.title.includes("simulated silent startup failure"),
+    `SSH startup recovery was not silent or did not expose its red tab status: ${JSON.stringify(silentSshStartupState)}`);
+  assert(silentSshStartupErrors.length === 0,
+    `silent SSH startup recovery browser exceptions: ${JSON.stringify(silentSshStartupErrors)}`);
+  await silentSshStartupPage.close();
 
   const startupDomainPage = await context.newPage();
   const startupDomainErrors = [];

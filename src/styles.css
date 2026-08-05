@@ -2886,16 +2886,13 @@ button {
   opacity: 0;
 }
 
-.workspace-pane-tab .tab-mark {
-  flex: 0 0 5px;
-  width: 5px;
-  height: 5px;
-  background: var(--muted);
-}
-
-.workspace-pane-tab.has-color .tab-mark,
-.workspace-pane-tab.has-color.active .tab-mark {
-  background: var(--workspace-view-color);
+.workspace-pane-tab .session-status-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.22);
 }
 
 .workspace-pane-tab:hover,
@@ -2904,17 +2901,9 @@ button {
   color: var(--text);
 }
 
-.workspace-pane-tab.active .tab-mark {
-  background: var(--cyan);
-}
-
-.workspace-pane-tab.status-connected .tab-mark {
+.workspace-pane-tab.status-connected .session-status-dot {
   background: var(--green);
-}
-
-.workspace-pane-tab.status-error .tab-mark,
-.workspace-pane-tab.status-blocked .tab-mark {
-  background: var(--red);
+  box-shadow: 0 0 0 1px rgba(55, 214, 122, 0.24);
 }
 
 .workspace-view-context-menu {
