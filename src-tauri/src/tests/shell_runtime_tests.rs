@@ -155,6 +155,49 @@ fn shell_profile_path_validation_rejects_the_foreign_platform_before_save() {
     assert!(validate_shell_profile_paths(&test_ssh_profile()).is_ok());
 }
 
+#[test]
+fn shell_profile_validation_bounds_arguments_without_reparsing_them() {
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.args = vec![
+        "-c".to_string(),
+        " printf '%s\\n' 'hello world' ".to_string(),
+        String::new(),
+    ];
+    let expected = shell.args.clone();
+    assert!(validate_shell_profile_paths(&profile).is_ok());
+    let ConnectionConfig::Shell(shell) = &profile.connection else {
+        panic!("expected Shell profile");
+    };
+    assert_eq!(shell.args, expected);
+
+    let mut oversized_count = profile.clone();
+    let ConnectionConfig::Shell(shell) = &mut oversized_count.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.args = vec![String::new(); portmate_core::MAX_SHELL_ARGUMENTS + 1];
+    let error = validate_shell_profile_paths(&oversized_count).unwrap_err();
+    assert!(error.contains("参数数量"), "{error}");
+
+    let mut oversized_argument = profile.clone();
+    let ConnectionConfig::Shell(shell) = &mut oversized_argument.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.args = vec!["界".repeat(portmate_core::MAX_SHELL_ARGUMENT_CHARACTERS + 1)];
+    let error = validate_shell_profile_paths(&oversized_argument).unwrap_err();
+    assert!(error.contains("超过"), "{error}");
+
+    let mut nul_argument = profile;
+    let ConnectionConfig::Shell(shell) = &mut nul_argument.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.args = vec!["before\0after".to_string()];
+    let error = validate_shell_profile_paths(&nul_argument).unwrap_err();
+    assert!(error.contains("NUL"), "{error}");
+}
+
 #[cfg(unix)]
 #[test]
 fn shell_fast_exit_cannot_leave_a_stale_connected_runtime() {
@@ -163,7 +206,12 @@ fn shell_fast_exit_cannot_leave_a_stale_connected_runtime() {
     let ConnectionConfig::Shell(shell) = &mut profile.connection else {
         panic!("expected Shell profile");
     };
-    shell.args = vec!["-c".to_string(), "exit 7".to_string()];
+    shell.args = vec![
+        "-c".to_string(),
+        "test \"$1\" = 'two words' || exit 19; exit 7".to_string(),
+        "portmate-shell-test".to_string(),
+        "two words".to_string(),
+    ];
     let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
 
     let opened = open_shell_session(&state, profile.clone()).unwrap();

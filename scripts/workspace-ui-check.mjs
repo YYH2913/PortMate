@@ -2304,6 +2304,50 @@ Host staging
   await quickSerialPort.selectOption("/dev/ttyUSB0");
   assert(!await quickConnectButton.isDisabled(), "a valid serial target did not enable quick connect");
 
+  await createSessionDialog.getByRole("tab", { name: "Shell", exact: true }).click();
+  const addShellArgument = createSessionDialog.getByRole("button", { name: "添加参数", exact: true });
+  for (let index = 0; index < 4; index += 1) await addShellArgument.click();
+  const shellArguments = createSessionDialog.getByRole("group", { name: "Shell 参数列表", exact: true }).locator("input");
+  const shellScript = " printf '%s\\n' \"hello world\" ";
+  await createSessionDialog.getByRole("textbox", { name: "Shell 参数 1", exact: true }).fill("-c");
+  await createSessionDialog.getByRole("textbox", { name: "Shell 参数 2", exact: true }).fill(shellScript);
+  await createSessionDialog.getByRole("textbox", { name: "Shell 参数 4", exact: true }).fill("remove-me");
+  assert(JSON.stringify(await shellArguments.evaluateAll((inputs) => inputs.map((input) => input.value)))
+    === JSON.stringify(["-c", shellScript, "", "remove-me"]),
+  "quick Shell arguments did not preserve spaces, quotes, or an empty argv entry");
+  await createSessionDialog.getByRole("button", { name: "上移 Shell 参数 2", exact: true }).click();
+  assert(JSON.stringify(await shellArguments.evaluateAll((inputs) => inputs.map((input) => input.value)))
+    === JSON.stringify([shellScript, "-c", "", "remove-me"]),
+  "quick Shell argument move did not preserve exact entries");
+  await createSessionDialog.getByRole("button", { name: "下移 Shell 参数 1", exact: true }).click();
+  await createSessionDialog.getByRole("button", { name: "删除 Shell 参数 4", exact: true }).click();
+  assert(JSON.stringify(await shellArguments.evaluateAll((inputs) => inputs.map((input) => input.value)))
+    === JSON.stringify(["-c", shellScript, ""]),
+  "quick Shell argument delete changed a retained argv entry");
+  await page.screenshot({ path: `${screenshotPrefix}-session-create-shell.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => (document.querySelector(".session-settings-dialog.quick")?.getBoundingClientRect().height ?? 0) >= 695);
+  const mobileShellCreateBounds = await createSessionDialog.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    const formRect = dialog.querySelector(".session-quick-form")?.getBoundingClientRect();
+    const cwdRect = dialog.querySelector('[aria-label="Shell 工作目录"]')?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      scrollWidth: dialog.scrollWidth,
+      formBottom: formRect?.bottom ?? 0,
+      cwdBottom: cwdRect?.bottom ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  assert(mobileShellCreateBounds.left >= 8 && mobileShellCreateBounds.right <= 382
+    && mobileShellCreateBounds.scrollWidth <= mobileShellCreateBounds.width
+    && mobileShellCreateBounds.cwdBottom <= mobileShellCreateBounds.formBottom,
+  `quick Shell argument editor overflows on mobile: ${JSON.stringify(mobileShellCreateBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-session-create-shell-mobile.png`, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => (document.querySelector(".session-settings-dialog.quick")?.getBoundingClientRect().height ?? Number.POSITIVE_INFINITY) <= 575);
+
   await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
   await createSessionDialog.getByRole("textbox", { name: "SSH 目标", exact: true }).fill("root@router.local");
   assert(!await quickConnectButton.isDisabled(), "a valid SSH target did not enable quick connect");
@@ -2320,6 +2364,12 @@ Host staging
   await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
   assert(await createSessionDialog.getByRole("textbox", { name: "SSH 目标", exact: true }).inputValue() === "root@router.local",
     "switching quick protocols discarded the SSH draft");
+  await createSessionDialog.getByRole("tab", { name: "Shell", exact: true }).click();
+  assert(JSON.stringify(await createSessionDialog.getByRole("group", { name: "Shell 参数列表", exact: true })
+    .locator("input").evaluateAll((inputs) => inputs.map((input) => input.value)))
+    === JSON.stringify(["-c", shellScript, ""]),
+  "switching quick protocols discarded or reparsed the Shell argv draft");
+  await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
 
   await createSessionDialog.getByText("整理信息", { exact: true }).click();
   const profileNameInput = createSessionDialog.getByRole("textbox", { name: "会话名称", exact: true });
@@ -4685,6 +4735,8 @@ Host staging
       `${screenshotPrefix}-workspace-window.png`,
       `${screenshotPrefix}-sender.png`,
       `${screenshotPrefix}-sender-advanced.png`,
+      `${screenshotPrefix}-session-create-shell.png`,
+      `${screenshotPrefix}-session-create-shell-mobile.png`,
       `${screenshotPrefix}-session-create.png`,
       `${screenshotPrefix}-session-settings.png`,
       `${screenshotPrefix}-session-settings-mobile.png`,

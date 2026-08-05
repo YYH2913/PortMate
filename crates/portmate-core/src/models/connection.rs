@@ -233,6 +233,9 @@ pub struct ShellConnection {
     pub cwd: Option<String>,
 }
 
+pub const MAX_SHELL_ARGUMENTS: usize = 128;
+pub const MAX_SHELL_ARGUMENT_CHARACTERS: usize = 4_096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcpConnection {

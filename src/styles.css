@@ -4898,6 +4898,109 @@ fieldset label {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.session-quick-field.shell-arguments-field {
+  grid-template-rows: 16px auto;
+}
+
+.shell-arguments-field {
+  align-items: start;
+}
+
+.shell-arguments-editor {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.shell-argument-list {
+  display: grid;
+  max-height: 156px;
+  gap: 5px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.shell-argument-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) repeat(3, 30px);
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shell-argument-index {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.session-quick-field .shell-argument-row input,
+.dialog-field .shell-argument-row input {
+  height: 34px;
+}
+
+.shell-argument-row .icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.shell-argument-row .icon-button:hover:not(:disabled) {
+  border-color: #3c4d5d;
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.shell-argument-row .icon-button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.shell-argument-toolbar {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shell-argument-toolbar button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.shell-argument-toolbar button:hover:not(:disabled) {
+  border-color: #3c4d5d;
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.shell-argument-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.shell-argument-toolbar > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .session-quick-field {
   display: grid;
   min-width: 0;
@@ -5039,6 +5142,10 @@ fieldset label {
   gap: 0;
   color: #e3edf6;
   font-size: 14px;
+}
+
+.dialog-field.shell-arguments-field > span {
+  line-height: 35px;
 }
 
 .dialog-field input,
@@ -7720,7 +7827,7 @@ fieldset label {
 
   .session-settings-dialog.quick {
     grid-template-rows: 43px 104px minmax(0, 1fr) auto;
-    height: min(640px, calc(100vh - 24px));
+    height: min(700px, calc(100vh - 24px));
   }
 
   .create-session-dialog.advanced {

@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { invokeBackend } from "./api";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
+import ShellArgumentsEditor from "./ShellArgumentsEditor";
 import {
   convertDraftProtocol,
   createDefaultTrigger,
@@ -673,9 +674,10 @@ function QuickShellFields({
       <QuickField label="程序">
         <input ref={setTargetRef} aria-label="Shell 程序" placeholder="系统默认 Shell" value={shell.program} onChange={(event) => update({ program: event.target.value })} />
       </QuickField>
-      <QuickField label="参数">
-        <input aria-label="Shell 参数" value={shell.args.join(" ")} onChange={(event) => update({ args: event.target.value.split(/\s+/).filter(Boolean) })} />
-      </QuickField>
+      <div className="session-quick-field shell-arguments-field">
+        <span className="session-quick-field-label">参数</span>
+        <ShellArgumentsEditor args={shell.args} onChange={(args) => update({ args })} />
+      </div>
       <QuickField label="目录">
         <input aria-label="Shell 工作目录" placeholder="当前用户目录" value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
       </QuickField>
@@ -959,9 +961,13 @@ function ShellProcessFields({
       <DialogField label="程序:(P)">
         <input value={shell.program} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } })} />
       </DialogField>
-      <DialogField label="参数:(A)">
-        <input value={shell.args.join(" ")} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, args: event.target.value.split(" ").filter(Boolean) } })} />
-      </DialogField>
+      <div className="dialog-field shell-arguments-field">
+        <span>参数:(A)</span>
+        <ShellArgumentsEditor
+          args={shell.args}
+          onChange={(args) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, args } })}
+        />
+      </div>
       <DialogField label="目录:(W)">
         <input value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
       </DialogField>

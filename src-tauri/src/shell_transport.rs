@@ -43,6 +43,7 @@ pub(super) fn resolve_shell_launch_paths_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<ShellLaunchPaths, String> {
+    validate_shell_arguments(shell)?;
     let configured_program = shell.program.as_str();
     let program = validate_native_local_path_with_home(
         if configured_program.trim().is_empty() {
@@ -64,6 +65,28 @@ pub(super) fn resolve_shell_launch_paths_with_home(
         })
         .transpose()?;
     Ok(ShellLaunchPaths { program, cwd })
+}
+
+fn validate_shell_arguments(shell: &portmate_core::ShellConnection) -> Result<(), String> {
+    if shell.args.len() > portmate_core::MAX_SHELL_ARGUMENTS {
+        return Err(format!(
+            "Shell 参数数量超过 {}",
+            portmate_core::MAX_SHELL_ARGUMENTS
+        ));
+    }
+    for (index, argument) in shell.args.iter().enumerate() {
+        if argument.contains('\0') {
+            return Err(format!("Shell 参数 {} 不能包含 NUL", index + 1));
+        }
+        if argument.chars().count() > portmate_core::MAX_SHELL_ARGUMENT_CHARACTERS {
+            return Err(format!(
+                "Shell 参数 {} 超过 {} 个字符",
+                index + 1,
+                portmate_core::MAX_SHELL_ARGUMENT_CHARACTERS
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn open_shell_session(
