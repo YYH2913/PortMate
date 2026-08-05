@@ -2346,10 +2346,11 @@ Host staging
   `quick Shell argument editor overflows on mobile: ${JSON.stringify(mobileShellCreateBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-session-create-shell-mobile.png`, fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForFunction(() => (document.querySelector(".session-settings-dialog.quick")?.getBoundingClientRect().height ?? Number.POSITIVE_INFINITY) <= 575);
+  await page.waitForFunction(() => (document.querySelector(".session-settings-dialog.quick")?.getBoundingClientRect().height ?? Number.POSITIVE_INFINITY) <= 645);
 
   await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
-  await createSessionDialog.getByRole("textbox", { name: "SSH 目标", exact: true }).fill("root@router.local");
+  await createSessionDialog.getByRole("textbox", { name: "SSH 主机或 IP", exact: true }).fill("router.local");
+  await createSessionDialog.getByRole("textbox", { name: "SSH 用户名", exact: true }).fill("root");
   assert(!await quickConnectButton.isDisabled(), "a valid SSH target did not enable quick connect");
   await createSessionDialog.getByRole("tab", { name: "TCP", exact: true }).click();
   await createSessionDialog.getByRole("textbox", { name: "TCP 主机", exact: true }).fill("10.0.0.8");
@@ -2362,8 +2363,9 @@ Host staging
   assert(await createSessionDialog.getByRole("combobox", { name: "串口", exact: true }).inputValue() === "/dev/ttyUSB0",
     "switching quick protocols discarded the serial draft");
   await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
-  assert(await createSessionDialog.getByRole("textbox", { name: "SSH 目标", exact: true }).inputValue() === "root@router.local",
-    "switching quick protocols discarded the SSH draft");
+  assert(await createSessionDialog.getByRole("textbox", { name: "SSH 主机或 IP", exact: true }).inputValue() === "router.local"
+    && await createSessionDialog.getByRole("textbox", { name: "SSH 用户名", exact: true }).inputValue() === "root",
+    "switching quick protocols discarded the SSH host or username draft");
   await createSessionDialog.getByRole("tab", { name: "Shell", exact: true }).click();
   assert(JSON.stringify(await createSessionDialog.getByRole("group", { name: "Shell 参数列表", exact: true })
     .locator("input").evaluateAll((inputs) => inputs.map((input) => input.value)))
@@ -2371,10 +2373,14 @@ Host staging
   "switching quick protocols discarded or reparsed the Shell argv draft");
   await createSessionDialog.getByRole("tab", { name: "SSH", exact: true }).click();
 
-  await createSessionDialog.getByText("整理信息", { exact: true }).click();
+  assert(await createSessionDialog.getByRole("heading", { name: "会话信息", exact: true }).count() === 1,
+    "quick session metadata is still collapsed or uses the old label");
   const profileNameInput = createSessionDialog.getByRole("textbox", { name: "会话名称", exact: true });
   const profileGroupInput = createSessionDialog.getByRole("textbox", { name: "会话分组", exact: true });
   const profileTagsInput = createSessionDialog.getByRole("textbox", { name: "会话标签", exact: true });
+  assert(await profileNameInput.getAttribute("placeholder") === null
+    && await profileGroupInput.getAttribute("placeholder") === null,
+    "session name or group still shows redundant placeholder guidance");
   await profileNameInput.fill("😀".repeat(129));
   await profileGroupInput.fill("g".repeat(257));
   await profileTagsInput.fill("alpha");
@@ -2388,7 +2394,7 @@ Host staging
     const rect = dialog.getBoundingClientRect();
     return { width: rect.width, height: rect.height, scrollWidth: dialog.scrollWidth, scrollHeight: dialog.scrollHeight };
   });
-  assert(quickSessionBounds.width <= 720 && quickSessionBounds.height <= 570
+  assert(quickSessionBounds.width <= 720 && quickSessionBounds.height <= 640
     && quickSessionBounds.scrollWidth <= quickSessionBounds.width
     && quickSessionBounds.scrollHeight <= quickSessionBounds.height,
   `quick session dialog is not compact: ${JSON.stringify(quickSessionBounds)}`);
@@ -2399,8 +2405,9 @@ Host staging
   await protocolSelect.waitFor();
   await page.getByRole("button", { name: "快速设置", exact: true }).click();
   const returnedQuickDialog = page.locator(".session-settings-dialog.quick");
-  assert(await returnedQuickDialog.getByRole("textbox", { name: "SSH 目标", exact: true }).inputValue() === "root@router.local",
-    "returning from advanced session settings discarded the quick draft");
+  assert(await returnedQuickDialog.getByRole("textbox", { name: "SSH 主机或 IP", exact: true }).inputValue() === "router.local"
+    && await returnedQuickDialog.getByRole("textbox", { name: "SSH 用户名", exact: true }).inputValue() === "root",
+    "returning from advanced session settings discarded the SSH host or username draft");
   await returnedQuickDialog.getByRole("button", { name: "高级设置", exact: true }).click();
   await protocolSelect.waitFor();
   assert(await page.locator(".session-settings-dialog .protocol-tabs").count() === 0
@@ -2417,6 +2424,10 @@ Host staging
       `${protocol} has no real protocol settings`);
   }
   await protocolSelect.selectOption("SSH");
+  await sectionSelect.selectOption("SSH");
+  assert(await page.getByLabel("主机:(H)", { exact: true }).inputValue() === "router.local"
+    && await page.getByLabel("用户名:(U)", { exact: true }).inputValue() === "root",
+    "advanced SSH settings recombined or discarded the separate host and username fields");
   await sectionSelect.selectOption("公钥");
   const authOrderSelect = page.locator(".session-settings-dialog .dialog-field", { hasText: "顺序:(O)" }).locator("select");
   const authOrderOptions = await authOrderSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
@@ -3355,7 +3366,7 @@ Host staging
   await startupRacePage.getByRole("button", { name: "新建会话", exact: true }).click();
   const startupSessionDialog = startupRacePage.locator(".session-settings-dialog");
   await startupSessionDialog.waitFor();
-  await startupSessionDialog.getByText("整理信息", { exact: true }).click();
+  await startupSessionDialog.getByRole("heading", { name: "会话信息", exact: true }).waitFor();
   await startupSessionDialog.getByRole("textbox", { name: "会话名称", exact: true }).fill("Startup Race Profile");
   await startupSessionDialog.getByRole("button", { name: "仅保存", exact: true }).click();
   await startupSessionDialog.waitFor({ state: "detached" });

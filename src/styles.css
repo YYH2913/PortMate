@@ -4401,7 +4401,7 @@ button {
 .session-settings-dialog.quick {
   grid-template-rows: 43px 64px minmax(0, 1fr) 64px;
   width: min(720px, calc(100vw - 24px));
-  height: min(570px, calc(100vh - 36px));
+  height: min(640px, calc(100vh - 36px));
 }
 
 .session-settings-dialog.compact {
@@ -4885,6 +4885,10 @@ fieldset label {
   grid-template-columns: minmax(0, 1fr) 116px 74px;
 }
 
+.ssh-quick-grid {
+  grid-template-columns: minmax(0, 1fr) 88px minmax(120px, 160px);
+}
+
 .serial-quick-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -5075,40 +5079,12 @@ fieldset label {
 }
 
 .session-quick-metadata {
+  padding-top: 18px;
   border-top: 1px solid var(--line-soft);
 }
 
-.session-quick-metadata summary {
-  display: flex;
-  height: 42px;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  list-style: none;
-  transition: color 120ms ease;
-}
-
-.session-quick-metadata summary::-webkit-details-marker {
-  display: none;
-}
-
-.session-quick-metadata summary:hover {
-  color: var(--text);
-}
-
-.session-metadata-chevron {
-  margin-left: auto;
-  transition: transform 140ms ease;
-}
-
-.session-quick-metadata[open] summary {
-  color: var(--cyan);
-}
-
-.session-quick-metadata[open] .session-metadata-chevron {
-  transform: rotate(180deg);
+.session-metadata-heading {
+  margin-bottom: 14px;
 }
 
 .metadata-quick-grid {
@@ -7892,6 +7868,14 @@ fieldset label {
 
   .target-port-grid {
     grid-template-columns: minmax(0, 1fr) 92px;
+  }
+
+  .ssh-quick-grid {
+    grid-template-columns: minmax(0, 1fr) 92px;
+  }
+
+  .ssh-quick-grid .ssh-username-field {
+    grid-column: 1 / -1;
   }
 
   .target-port-grid .session-quick-toggle {

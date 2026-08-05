@@ -3,7 +3,6 @@ import type { MutableRefObject, ReactNode } from "react";
 import {
   Activity,
   Cable,
-  ChevronDown,
   CircleAlert,
   FolderTree,
   Layers3,
@@ -32,8 +31,6 @@ import {
   createSshConnection,
   createTcpConnection,
   describeHostKeyEvaluation,
-  formatSshTarget,
-  parseSshTarget,
   profileCredentialSecretRefs,
   protocolFromKind,
   serialPortOptions,
@@ -477,19 +474,20 @@ function QuickSshFields({
   const ssh = { ...current, kind };
 
   return (
-    <div className="session-quick-grid target-port-grid">
-      <QuickField label="目标" required error={targetError}>
+    <div className="session-quick-grid ssh-quick-grid">
+      <QuickField label="主机 / IP" required error={targetError}>
         <input
           ref={setTargetRef}
-          aria-label={`${protocolLabel(protocol)} 目标`}
+          aria-label={`${protocolLabel(protocol)} 主机或 IP`}
           aria-invalid={Boolean(targetError)}
           autoComplete="off"
-          placeholder="user@host"
-          value={formatSshTarget(ssh)}
-          onChange={(event) => {
-            const connection = parseSshTarget(event.target.value, ssh);
-            onDraftChange({ ...draft, kind, connection: { ...connection, kind } });
-          }}
+          placeholder="router.local 或 192.168.1.10"
+          value={ssh.endpoint.host}
+          onChange={(event) => onDraftChange({
+            ...draft,
+            kind,
+            connection: { ...ssh, kind, endpoint: { ...ssh.endpoint, host: event.target.value } },
+          })}
         />
       </QuickField>
       <QuickField label="端口" required error={portError}>
@@ -505,6 +503,19 @@ function QuickSshFields({
             ...draft,
             kind,
             connection: { ...ssh, endpoint: { ...ssh.endpoint, port: Number(event.target.value) } },
+          })}
+        />
+      </QuickField>
+      <QuickField label="用户名" className="ssh-username-field">
+        <input
+          aria-label={`${protocolLabel(protocol)} 用户名`}
+          autoComplete="username"
+          placeholder="root"
+          value={ssh.username}
+          onChange={(event) => onDraftChange({
+            ...draft,
+            kind,
+            connection: { ...ssh, kind, username: event.target.value },
           })}
         />
       </QuickField>
@@ -690,17 +701,15 @@ function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile;
   useEffect(() => setTagsText(draft.tags.join(", ")), [draft.id]);
 
   return (
-    <details className="session-quick-metadata">
-      <summary>
+    <section className="session-quick-metadata">
+      <header className="session-quick-section-heading session-metadata-heading">
         <FolderTree size={15} />
-        <span>整理信息</span>
-        <ChevronDown className="session-metadata-chevron" size={14} />
-      </summary>
+        <h2>会话信息</h2>
+      </header>
       <div className="session-quick-grid metadata-quick-grid">
         <QuickField label="名称">
           <input
             aria-label="会话名称"
-            placeholder="自动生成名称"
             value={draft.name}
             onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })}
           />
@@ -708,7 +717,6 @@ function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile;
         <QuickField label="分组">
           <input
             aria-label="会话分组"
-            placeholder="例如 Lab>Routers"
             value={draft.group}
             onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })}
           />
@@ -726,7 +734,7 @@ function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile;
           />
         </QuickField>
       </div>
-    </details>
+    </section>
   );
 }
 
@@ -1187,10 +1195,12 @@ function SshAdvancedFields({
       <>
         <DialogField label="主机:(H)">
           <input
-            value={formatSshTarget(ssh)}
-            placeholder="[用户@]主机地址"
-            onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...parseSshTarget(event.target.value, ssh), kind } })}
+            value={ssh.endpoint.host}
+            onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, host: event.target.value } })}
           />
+        </DialogField>
+        <DialogField label="用户名:(U)">
+          <input value={ssh.username} autoComplete="username" onChange={(event) => updateSsh({ username: event.target.value })} />
         </DialogField>
         <DialogField label="端口:(P)">
           <input type="number" min={1} max={65535} value={ssh.endpoint.port} onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, port: Number(event.target.value) } })} />
