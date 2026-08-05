@@ -3181,6 +3181,28 @@ Host staging
   await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
+  for (const grant of mcpGrants) {
+    const grantRow = mcpDialog.locator(".mcp-grants > button", { hasText: grant.name });
+    await grantRow.click();
+    await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "撤销", exact: true }).click();
+    await grantRow.waitFor({ state: "detached" });
+  }
+  await mcpDialog.locator(".mcp-editor-empty").waitFor();
+  assert(await mcpDialog.locator(".mcp-grant-draft").count() === 0
+    && await mcpDialog.locator(".mcp-editor .dialog-field").count() === 0,
+  "an empty MCP grant store still presented an implicit draft");
+  await mcpDialog.locator(".mcp-editor-empty").getByRole("button", { name: "新建授权", exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
+  await newGrantClientId.fill("empty-store-client");
+  await mcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Empty Store Client");
+  await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
+  await mcpDialog.locator(".mcp-grants > button", { hasText: "Empty Store Client" }).waitFor();
+  const emptyStoreGrantSave = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "save_mcp_grant" && call.args.grant.clientId === "empty-store-client")
+    .at(-1));
+  assert(emptyStoreGrantSave?.args.grant.name === "Empty Store Client",
+    `MCP new grant action did not save from an empty store: ${JSON.stringify(emptyStoreGrantSave)}`);
+
   await page.evaluate(() => { window.__deferMcpHttpConfig = true; });
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
   await mcpDialog.locator(".mcp-http-view").waitFor();

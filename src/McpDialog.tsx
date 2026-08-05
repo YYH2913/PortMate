@@ -36,8 +36,9 @@ export default function McpDialog({
   onAuditChange: (audit: AuditRecord[]) => void;
 }) {
   const [tab, setTab] = useState<McpDialogTab>("grants");
-  const [draft, setDraft] = useState<McpGrant>(() => grants[0] ?? createMcpGrant());
+  const [draft, setDraft] = useState<McpGrant | null>(() => grants[0] ?? null);
   const [editingClientId, setEditingClientId] = useState<string | null>(() => grants[0]?.clientId ?? null);
+  const [creatingGrant, setCreatingGrant] = useState(false);
   const [error, setError] = useState("");
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
   const [httpSettings, setHttpSettings] = useState<McpHttpConfigRequest>(defaultMcpHttpSettings);
@@ -79,6 +80,16 @@ export default function McpDialog({
     if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
     void loadHttpConfig();
   }, [httpConfig, tab]);
+
+  useEffect(() => {
+    if (creatingGrant) return;
+    const selected = editingClientId
+      ? grants.find((grant) => grant.clientId === editingClientId)
+      : undefined;
+    const next = selected ?? grants[0] ?? null;
+    setDraft(next);
+    setEditingClientId(next?.clientId ?? null);
+  }, [creatingGrant, editingClientId, grants]);
 
   useEffect(() => {
     if (tab !== "http") {
@@ -190,19 +201,22 @@ export default function McpDialog({
   }
 
   async function saveGrant() {
+    if (!draft) return;
+    const pendingGrant = draft;
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
     const mutationToken = onGrantMutationStart();
     setError("");
     setGrantBusy(true);
     try {
-      const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: draft });
+      const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: pendingGrant });
       const accepted = onGrantChange(saved, mutationToken);
       if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
-      const selected = saved.find((grant) => grant.clientId === draft.clientId);
+      const selected = saved.find((grant) => grant.clientId === pendingGrant.clientId);
       if (selected) {
         setDraft(selected);
         setEditingClientId(selected.clientId);
+        setCreatingGrant(false);
       }
     } catch (nextError) {
       if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
@@ -222,8 +236,9 @@ export default function McpDialog({
       const saved = await invokeBackend<McpGrant[]>("revoke_mcp_grant", { clientId });
       const accepted = onGrantChange(saved, mutationToken);
       if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
-      setDraft(saved[0] ?? createMcpGrant());
+      setDraft(saved[0] ?? null);
       setEditingClientId(saved[0]?.clientId ?? null);
+      setCreatingGrant(false);
     } catch (nextError) {
       if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
     } finally {
@@ -268,12 +283,14 @@ export default function McpDialog({
   function selectGrant(grant: McpGrant) {
     setDraft(grant);
     setEditingClientId(grant.clientId);
+    setCreatingGrant(false);
     setError("");
   }
 
   function newGrant() {
     setDraft(createMcpGrant());
     setEditingClientId(null);
+    setCreatingGrant(true);
     setError("");
     requestAnimationFrame(() => {
       clientIdInputRef.current?.focus();
@@ -282,17 +299,17 @@ export default function McpDialog({
   }
 
   function toggleScope(scope: McpScope) {
-    setDraft((current) => ({
+    setDraft((current) => current ? ({
       ...current,
       scopes: current.scopes.includes(scope) ? current.scopes.filter((item) => item !== scope) : [...current.scopes, scope],
-    }));
+    }) : current);
   }
 
   function toggleSession(sessionId: string) {
-    setDraft((current) => ({
+    setDraft((current) => current ? ({
       ...current,
       allowedSessions: current.allowedSessions.includes(sessionId) ? current.allowedSessions.filter((item) => item !== sessionId) : [...current.allowedSessions, sessionId],
-    }));
+    }) : current);
   }
 
   return (
@@ -313,7 +330,7 @@ export default function McpDialog({
           <div className="mcp-content" role="tabpanel">
             <aside className="mcp-grants">
               <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
-              {editingClientId === null ? (
+              {draft && editingClientId === null ? (
                 <button type="button" className="active mcp-grant-draft" aria-current="true" disabled={grantBusy} onClick={() => clientIdInputRef.current?.focus()}>
                   <strong>{draft.name.trim() || draft.clientId.trim() || "新授权"}</strong>
                   <span>{draft.clientId.trim() || "尚未保存"}</span>
@@ -325,26 +342,34 @@ export default function McpDialog({
                   <span>{grant.scopes.join(", ") || "read-only"}</span>
                 </button>
               ))}
-              {!grants.length ? <div className="empty-pane top">没有授权规则</div> : null}
+              {!grants.length && !draft ? <div className="empty-pane top">没有授权规则</div> : null}
             </aside>
-            <section className="mcp-editor">
-              <McpField label="Client ID:"><input ref={clientIdInputRef} value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
-              <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
-              <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
-              <fieldset className="mcp-check-grid">
-                <legend>权限范围</legend>
-                {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
-              </fieldset>
-              <fieldset className="mcp-session-list">
-                <legend>允许会话 · {draft.allowedSessions.length ? `${draft.allowedSessions.length} 个` : "全部"}</legend>
-                {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
-              </fieldset>
-              {error ? <div className="utility-error">{error}</div> : null}
-              <div className="mcp-actions">
-                <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
-                <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
-              </div>
-            </section>
+            {draft ? (
+              <section className="mcp-editor">
+                <McpField label="Client ID:"><input ref={clientIdInputRef} value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
+                <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+                <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
+                <fieldset className="mcp-check-grid">
+                  <legend>权限范围</legend>
+                  {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
+                </fieldset>
+                <fieldset className="mcp-session-list">
+                  <legend>允许会话 · {draft.allowedSessions.length ? `${draft.allowedSessions.length} 个` : "全部"}</legend>
+                  {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
+                </fieldset>
+                {error ? <div className="utility-error">{error}</div> : null}
+                <div className="mcp-actions">
+                  <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
+                  <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
+                </div>
+              </section>
+            ) : (
+              <section className="mcp-editor mcp-editor-empty">
+                <KeyRound size={22} aria-hidden="true" />
+                <strong>尚未选择授权</strong>
+                <button type="button" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
+              </section>
+            )}
           </div>
         ) : null}
 
