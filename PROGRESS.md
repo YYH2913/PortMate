@@ -238,6 +238,7 @@ cargo fmt --all -- --check
 cargo test --workspace -- --test-threads=4
 cargo clippy --workspace --all-targets -- -D warnings
 npm test -- --run
+npm run test:dependency-audit
 npm run test:workspace-ui
 npm run test:terminal-compat
 npm run test:mcp-sdk-freshness
@@ -252,6 +253,8 @@ npm run test:linux-package
 npm run test:linux-desktop-smoke
 npm run test:linux-appimage-smoke
 ```
+
+2026-08-05 的 npm 依赖审计发现 6 个已披露问题（4 个高危、2 个中危），来源为 MCP SDK/Vite 工具链中的 Hono、`fast-uri`、`ip-address`、PostCSS 和直接使用的 Undici。锁文件已在现有兼容范围内升级到修复版本，`npm ci` 后 `npm audit --audit-level=moderate` 返回 0 个漏洞；同一门禁已接入 Native CI。升级后前端 82 文件/473 项测试、生产构建、MCP 根 HTTP 检查、TypeScript 四版本、Python 八版本及九语言最新版 freshness 审计全部通过。
 
 本轮缓存镜像复验确认 SSH 矩阵的 20 个正常服务端、10 组 SFTP/SCP 活动断线、10 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；TCP/Telnet 矩阵的 18 个服务端也全部通过。Ubuntu libssh 0.10.6 的 `ssh_userauth_gssapi` 符号和 `libgssapi_krb5` 动态依赖先经构建门禁确认，随后五个 GSSAPI/Kerberos 服务端组合的 55 个场景全部通过；vttest 三版本各 13 套件、四发行版 Vim/less/top/dialog 和 tmux 3.1c/3.3a/3.5a/3.7b 也完成本轮复验。
 
@@ -336,7 +339,7 @@ Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_
 - Profile 总量回归覆盖 10,000 项边界下已有 ID 更新、新 ID 拒绝、10,001 项 Store 拒绝，以及桌面 normalize 和 standalone MCP 快照加载的同一 fail-closed 规则。
 - 日志保留检查 registry 回归覆盖同 Profile 天数覆盖、禁用/显式清理和一小时遗留项回收，确保配置 churn 不会留下乘法增长的缓存 key。
 
-当前 Rust workspace 单元测试总数为 540：`portmate` 412、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 37、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 80 个文件、459 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 单元测试总数为 541：`portmate` 413、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 37、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 82 个文件、473 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 

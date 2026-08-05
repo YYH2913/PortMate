@@ -49,6 +49,8 @@
     "test:mcp-sdk-freshness": "node scripts/mcp-sdk-freshness.mjs",
     "pretest:native-keyring": "node scripts/ensure-node-version.mjs",
     "test:native-keyring": "node scripts/native-keyring-check.mjs",
+    "pretest:dependency-audit": "node scripts/ensure-node-version.mjs",
+    "test:dependency-audit": "npm audit --audit-level=moderate",
     "pretest:native-keyring-dependencies": "node scripts/ensure-node-version.mjs",
     "test:native-keyring-dependencies": "node scripts/native-keyring-dependency-check.mjs",
     "pretest:portable-vault": "node scripts/ensure-node-version.mjs",
@@ -114,7 +116,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "playwright-core": "^1.61.1",
     "typescript": "^6.0.3",
-    "undici": "7.16.0",
+    "undici": "7.29.0",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"
   }

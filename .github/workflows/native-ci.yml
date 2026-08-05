@@ -112,6 +112,7 @@ jobs:
             xvfb
 
       - run: npm ci
+      - run: npm run test:dependency-audit
       - run: npm run test:native-keyring-dependencies
       - run: cargo fmt --all -- --check
       - run: npm test

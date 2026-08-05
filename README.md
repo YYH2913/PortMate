@@ -624,6 +624,7 @@ cargo run -p portmate-mcp -- --http
 
 ```bash
 npm test
+npm run test:dependency-audit
 npm run test:terminal-compat
 npm run test:vttest-compat
 npm run test:tmux-workflow
@@ -650,6 +651,11 @@ npm run test:linux-package
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+`npm run test:dependency-audit` fails on moderate-or-higher npm advisories and runs in Native CI
+immediately after the reproducible `npm ci` install. The checked-in lockfile currently resolves the
+MCP/Vite HTTP toolchain to patched Hono, `fast-uri`, `ip-address`, PostCSS, and Undici releases, and
+reports zero known npm vulnerabilities.
 
 The terminal compatibility, vttest, Tmux workflow, and workspace UI checks use `playwright-core` with the installed `/usr/bin/google-chrome` instead of downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The terminal suite also requires the system `script`, `vim`, `less`, and procps `top` commands: it captures real PTY sessions, verifies alternate-screen isolation for Vim/less and clear-screen/cursor restoration for top, then renders and searches a bounded 6,000-line log under a 15-second regression limit. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, verifies simultaneous left/right/bottom docks, same-dock tab switching with inactive content collapsed, cross-dock drag placement, reload persistence, full-width terminal recovery, and transactional Profile deletion, exercises reverse-order file listing/properties, detached-terminal catch-up and poll-failure retention, serialized serial-analyzer and tunnel refreshes, cross-session Sysmon isolation, and deleted-Profile session/log poll invalidation, checks real filters, compact top-menu capability states, exact contextual view actions, protocol-filtered transfers, Profile-backed startup selectors, and queued one-time MCP approvals, confirms that non-input UI operations produce no terminal writes, and captures focused desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix. Repository Cargo configuration defaults libtest to four threads because the desktop matrix concurrently launches OpenSSH, socat, Stronghold, and SQLite workers; an explicit `RUST_TEST_THREADS` environment value still overrides it.
 
