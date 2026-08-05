@@ -4398,6 +4398,12 @@ button {
   transition: height 140ms ease;
 }
 
+.session-settings-dialog.quick {
+  grid-template-rows: 43px 64px minmax(0, 1fr) 64px;
+  width: min(720px, calc(100vw - 24px));
+  height: min(570px, calc(100vh - 36px));
+}
+
 .session-settings-dialog.compact {
   height: min(460px, calc(100vh - 36px));
 }
@@ -4746,6 +4752,278 @@ fieldset label {
   color: var(--text);
 }
 
+.session-quick-return {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.session-quick-return:hover:not(:disabled) {
+  border-color: #3c4d5d;
+  background: var(--control-hover);
+  color: var(--text);
+}
+
+.session-protocol-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  min-width: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #111820;
+}
+
+.session-protocol-tabs button {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  height: 47px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  border-right: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.session-protocol-tabs button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.session-protocol-tabs button:last-child {
+  border-right: 0;
+  border-radius: 0 4px 4px 0;
+}
+
+.session-protocol-tabs button::after {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 2px;
+  background: var(--cyan);
+  content: "";
+  opacity: 0;
+  transform: scaleX(0.5);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.session-protocol-tabs button:hover:not(:disabled) {
+  background: rgba(94, 234, 212, 0.04);
+  color: var(--text);
+}
+
+.session-protocol-tabs button.active {
+  background: rgba(94, 234, 212, 0.07);
+  color: var(--cyan);
+}
+
+.session-protocol-tabs button.active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.session-quick-form {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 20px;
+  overflow-y: auto;
+  padding: 24px 30px 20px;
+}
+
+.session-quick-target,
+.session-quick-metadata {
+  width: min(100%, 620px);
+  margin-inline: auto;
+}
+
+.session-quick-target {
+  animation: session-quick-enter 140ms ease-out;
+}
+
+.session-quick-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: #cbd8e3;
+}
+
+.session-quick-section-heading svg {
+  color: var(--cyan);
+}
+
+.session-quick-section-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.session-quick-grid {
+  display: grid;
+  min-width: 0;
+  gap: 12px 14px;
+}
+
+.target-port-grid {
+  grid-template-columns: minmax(0, 1fr) 116px 74px;
+}
+
+.serial-quick-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.serial-quick-grid .serial-port-field,
+.serial-quick-grid > :nth-child(2) {
+  grid-column: span 2;
+}
+
+.shell-quick-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-quick-field {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 16px 38px 15px;
+  gap: 5px;
+  color: #d7e1eb;
+  font-size: 12px;
+}
+
+.session-quick-field-label {
+  overflow: hidden;
+  color: var(--muted);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-quick-field-label sup {
+  margin-left: 3px;
+  color: var(--cyan);
+  font-size: 11px;
+}
+
+.session-quick-field input,
+.session-quick-field select {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--text);
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: 0;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.session-quick-field input:focus,
+.session-quick-field select:focus {
+  border-color: var(--cyan);
+  background: #111c25;
+}
+
+.session-quick-field.invalid input,
+.session-quick-field.invalid select {
+  border-color: rgba(248, 113, 113, 0.72);
+}
+
+.session-quick-field-error {
+  min-height: 15px;
+  overflow: hidden;
+  color: var(--red);
+  font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-quick-toggle {
+  display: grid;
+  grid-template-rows: 16px 38px 15px;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.session-quick-toggle > .switch-toggle {
+  align-self: center;
+}
+
+.session-quick-metadata {
+  border-top: 1px solid var(--line-soft);
+}
+
+.session-quick-metadata summary {
+  display: flex;
+  height: 42px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+  transition: color 120ms ease;
+}
+
+.session-quick-metadata summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-quick-metadata summary:hover {
+  color: var(--text);
+}
+
+.session-metadata-chevron {
+  margin-left: auto;
+  transition: transform 140ms ease;
+}
+
+.session-quick-metadata[open] summary {
+  color: var(--cyan);
+}
+
+.session-quick-metadata[open] .session-metadata-chevron {
+  transform: rotate(180deg);
+}
+
+.metadata-quick-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-bottom: 2px;
+  animation: session-metadata-enter 140ms ease-out;
+}
+
+@keyframes session-quick-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes session-metadata-enter {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .session-form {
   display: grid;
   align-content: start;
@@ -5082,7 +5360,84 @@ fieldset label {
   font-size: 14px;
 }
 
+.session-settings-actions {
+  min-width: 0;
+}
+
+.session-settings-actions.create-actions {
+  gap: 8px;
+}
+
+.session-settings-actions.create-actions button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding-inline: 13px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.session-settings-actions .session-advanced-button {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+
+.session-settings-actions .session-advanced-button:hover:not(:disabled) {
+  border-color: #3c4d5d;
+  color: var(--text);
+}
+
+.session-action-status {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-action-status.error,
+.session-settings-dialog.create-session-dialog .session-action-status:not(:empty) {
+  color: var(--red);
+}
+
+.session-settings-actions .session-cancel-button {
+  min-width: 68px;
+}
+
+.session-settings-actions .session-save-button {
+  min-width: 96px;
+  border-color: #3b5063;
+}
+
+.session-settings-actions .session-connect-button {
+  min-width: 94px;
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: #071310;
+  font-weight: 600;
+}
+
+.session-settings-actions .session-connect-button:hover:not(:disabled) {
+  background: #7af2df;
+}
+
 .dialog-actions button:first-child {
+  border-color: var(--blue);
+}
+
+.session-settings-actions.create-actions .session-advanced-button:first-child {
+  border-color: var(--line);
+}
+
+.session-settings-actions.edit-actions > button:first-of-type {
   border-color: var(--blue);
 }
 
@@ -7363,6 +7718,15 @@ fieldset label {
     height: min(640px, calc(100vh - 24px));
   }
 
+  .session-settings-dialog.quick {
+    grid-template-rows: 43px 104px minmax(0, 1fr) auto;
+    height: min(640px, calc(100vh - 24px));
+  }
+
+  .create-session-dialog.advanced {
+    grid-template-rows: 43px 104px minmax(0, 1fr) auto;
+  }
+
   .session-settings-dialog.compact {
     height: min(480px, calc(100vh - 24px));
   }
@@ -7386,6 +7750,60 @@ fieldset label {
     gap: 3px;
   }
 
+  .create-session-dialog .session-settings-nav .session-quick-return {
+    grid-column: 1 / -1;
+    justify-self: start;
+    height: 28px;
+  }
+
+  .session-protocol-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 6px 8px;
+  }
+
+  .session-protocol-tabs button {
+    height: 45px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .session-protocol-tabs button:nth-child(3) {
+    border-right: 0;
+  }
+
+  .session-protocol-tabs button:nth-child(n + 4) {
+    border-bottom: 0;
+  }
+
+  .session-protocol-tabs button:first-child,
+  .session-protocol-tabs button:last-child {
+    border-radius: 0;
+  }
+
+  .session-quick-form {
+    padding: 18px 14px 12px;
+  }
+
+  .target-port-grid {
+    grid-template-columns: minmax(0, 1fr) 92px;
+  }
+
+  .target-port-grid .session-quick-toggle {
+    grid-column: 1 / -1;
+  }
+
+  .serial-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .serial-quick-grid .serial-port-field,
+  .serial-quick-grid > :nth-child(2) {
+    grid-column: 1 / -1;
+  }
+
+  .metadata-quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .session-settings-dialog .session-form {
     grid-column: 1;
     grid-row: 3;
@@ -7403,6 +7821,39 @@ fieldset label {
     flex: 1;
     min-width: 0;
     padding: 0 6px;
+  }
+
+  .session-settings-dialog .session-settings-actions.create-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-height: 92px;
+    align-content: center;
+    padding-top: 8px;
+  }
+
+  .session-settings-actions.create-actions .session-advanced-button {
+    grid-column: 1;
+  }
+
+  .session-settings-dialog.quick .session-action-status {
+    grid-column: 2 / 4;
+  }
+
+  .session-settings-dialog.advanced .session-action-status {
+    grid-column: 1 / -1;
+    min-height: 18px;
+  }
+
+  .session-settings-actions.create-actions .session-cancel-button {
+    grid-column: 1;
+  }
+
+  .session-settings-actions.create-actions .session-save-button {
+    grid-column: 2;
+  }
+
+  .session-settings-actions.create-actions .session-connect-button {
+    grid-column: 3;
   }
 
   .trigger-matcher-row,

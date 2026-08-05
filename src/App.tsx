@@ -171,6 +171,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 };
 
 type SettingsDialog = "terminal" | "session" | null;
+type SessionSettingsMode = "create" | "edit";
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "session-import" | null;
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string } | null;
@@ -315,6 +316,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
+  const [sessionSettingsMode, setSessionSettingsMode] = useState<SessionSettingsMode>("create");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode | null>(initialWorkspace.root);
   const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
@@ -2084,6 +2086,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     draftExpectedProfileRef.current = expectedProfile
       ? cloneSessionProfile(expectedProfile)
       : null;
+    setSessionSettingsMode(expectedProfile ? "edit" : "create");
     setSessionSettingsSection(section);
     setDialog("session");
   }
@@ -3785,6 +3788,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazySessionSettingsDialog
             draft={draft}
+            mode={sessionSettingsMode}
             prepareProfile={prepareSessionProfile}
             serialPorts={serialPorts}
             initialSection={sessionSettingsSection}

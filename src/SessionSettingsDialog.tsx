@@ -1,6 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { Activity, Lock, Plus, Trash2, X } from "lucide-react";
+import type { MutableRefObject, ReactNode } from "react";
+import {
+  Activity,
+  Cable,
+  ChevronDown,
+  CircleAlert,
+  FolderTree,
+  Layers3,
+  Lock,
+  Network,
+  PlugZap,
+  Plus,
+  Save,
+  Server,
+  SlidersHorizontal,
+  SquareTerminal,
+  Trash2,
+  Usb,
+  X,
+} from "lucide-react";
 import { invokeBackend } from "./api";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import {
@@ -28,8 +46,9 @@ import {
   protocolTabs,
   removeJumpSecretDraftIndex,
   sessionSettingTrees,
+  validateQuickConnectProfile,
 } from "./session-settings-state";
-import type { ProtocolTab } from "./session-settings-state";
+import type { ProtocolTab, QuickConnectField, QuickConnectIssue } from "./session-settings-state";
 import { COMMON_SERIAL_BAUD_RATES, serialConnectionBounds } from "./serial-connection-settings";
 import { SSH_AUTH_ORDER_OPTIONS, sshConnectionBounds } from "./ssh-connection-settings";
 import { tcpConnectionBounds } from "./tcp-connection-settings";
@@ -68,6 +87,7 @@ type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-proj
 
 export default function SessionSettingsDialog({
   draft,
+  mode,
   prepareProfile,
   serialPorts,
   initialSection,
@@ -77,6 +97,7 @@ export default function SessionSettingsDialog({
   onClose,
 }: {
   draft: SessionProfile;
+  mode: "create" | "edit";
   prepareProfile: (profile: SessionProfile) => SessionProfile;
   serialPorts: string[];
   initialSection: string;
@@ -87,14 +108,23 @@ export default function SessionSettingsDialog({
 }) {
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
+  const [surface, setSurface] = useState<"quick" | "advanced">(() => (
+    mode === "create" && initialSection === "会话" ? "quick" : "advanced"
+  ));
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
   const [secretWriteCount, setSecretWriteCount] = useState(0);
   const [submitBusy, setSubmitBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
   const stagedSecretRefs = useRef(new Set<string>());
+  const connectionDrafts = useRef(new Map<ProtocolTab, SessionProfile["connection"]>([
+    [protocolFromKind(draft.kind), draft.connection],
+  ]));
+  const quickTargetRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
+  const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft]);
   const busy = submitBusy || secretWriteCount > 0;
+  const quickSurface = mode === "create" && surface === "quick";
 
   useEffect(() => {
     if (!allowedSections.includes(activeSection)) {
@@ -105,14 +135,38 @@ export default function SessionSettingsDialog({
   useEffect(() => {
     setActiveProtocol(protocolFromKind(draft.kind));
     setActiveSection(initialSection);
-  }, [draft.id, draft.kind, initialSection]);
+    setSurface(mode === "create" && initialSection === "会话" ? "quick" : "advanced");
+    connectionDrafts.current.clear();
+    connectionDrafts.current.set(protocolFromKind(draft.kind), draft.connection);
+  }, [draft.id, initialSection, mode]);
+
+  useEffect(() => {
+    connectionDrafts.current.set(activeProtocol, draft.connection);
+  }, [activeProtocol, draft.connection]);
+
+  useEffect(() => {
+    if (!quickSurface) return;
+    const frame = requestAnimationFrame(() => quickTargetRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [activeProtocol, quickSurface]);
 
   function changeProtocol(tab: ProtocolTab) {
     if (busy) return;
+    connectionDrafts.current.set(activeProtocol, draft.connection);
+    const converted = convertDraftProtocol(draft, tab);
+    const cachedConnection = connectionDrafts.current.get(tab);
+    const nextDraft = cachedConnection
+      ? { ...converted, kind: cachedConnection.kind, connection: cachedConnection }
+      : converted;
     setActiveProtocol(tab);
-    setActiveSection("会话");
+    setActiveSection(surface === "advanced" ? protocolSettingsSection(tab) : "会话");
     setProxyPasswordUpdate(null);
-    onDraftChange(convertDraftProtocol(draft, tab));
+    onDraftChange(nextDraft);
+  }
+
+  function openAdvancedSettings() {
+    setActiveSection(protocolSettingsSection(activeProtocol));
+    setSurface("advanced");
   }
 
   async function cleanupStagedSecrets(retained = new Set<string>()) {
@@ -158,48 +212,519 @@ export default function SessionSettingsDialog({
 
   return (
     <DialogFrame
-      title="会话设置"
-      className={`session-settings-dialog ${activeSection === "会话" ? "compact" : activeSection === "传输" ? "medium" : ""}`}
+      title={mode === "create" ? "新建会话" : "会话设置"}
+      className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : activeSection === "会话" ? "compact" : activeSection === "传输" ? "medium" : "advanced"}`}
       onClose={() => void cancel()}
       closeDisabled={busy}
     >
-      <div className="session-settings-nav">
-        <label>
-          <span>会话类型</span>
-          <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
-            {protocolTabs.map((tab) => <option key={tab} value={tab}>{tab}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>配置项</span>
-          <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
-            {allowedSections.map((section) => <option key={section} value={section}>{section}</option>)}
-          </select>
-        </label>
-      </div>
-      <section className="session-form">
-        <SessionSettingsContent
-          activeProtocol={activeProtocol}
-          activeSection={activeSection}
-          draft={draft}
-          prepareProfile={prepareProfile}
-          serialPorts={serialPorts}
-          onDraftChange={onDraftChange}
-          proxyPasswordUpdate={proxyPasswordUpdate}
-          onProxyPasswordUpdateChange={setProxyPasswordUpdate}
-          secretWriteBusy={secretWriteCount > 0}
-          onSecretWriteStart={() => setSecretWriteCount((current) => current + 1)}
-          onSecretCreated={(secretRef) => stagedSecretRefs.current.add(secretRef)}
-          onSecretWriteFinish={() => setSecretWriteCount((current) => Math.max(0, current - 1))}
-        />
-      </section>
-      {secretCleanupError ? <div className="utility-error">{secretCleanupError}</div> : null}
-      <div className="dialog-actions">
-        <button onClick={() => void submit(false)} disabled={busy}>保存</button>
-        <button onClick={() => void submit(true)} disabled={busy}>保存并连接</button>
-        <button onClick={() => void cancel()} disabled={busy}>取消</button>
+      {quickSurface ? (
+        <>
+          <QuickProtocolTabs activeProtocol={activeProtocol} busy={busy} onChange={changeProtocol} />
+          <section className="session-quick-form" id="quick-session-fields" role="tabpanel" aria-label={`${protocolLabel(activeProtocol)} 快速设置`}>
+            <QuickSessionFields
+              activeProtocol={activeProtocol}
+              draft={draft}
+              issues={quickValidation.issues}
+              serialPorts={serialPorts}
+              targetRef={quickTargetRef}
+              onDraftChange={onDraftChange}
+            />
+            <QuickSessionMetadata draft={draft} onDraftChange={onDraftChange} />
+          </section>
+        </>
+      ) : (
+        <>
+          <div className="session-settings-nav">
+            {mode === "create" ? (
+              <button type="button" className="session-quick-return" onClick={() => setSurface("quick")} disabled={busy}>
+                <SquareTerminal size={15} />
+                快速设置
+              </button>
+            ) : null}
+            <label>
+              <span>会话类型</span>
+              <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
+                {protocolTabs.map((tab) => <option key={tab} value={tab}>{protocolLabel(tab)}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>配置项</span>
+              <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
+                {allowedSections.map((section) => <option key={section} value={section}>{section}</option>)}
+              </select>
+            </label>
+          </div>
+          <section className="session-form">
+            <SessionSettingsContent
+              activeProtocol={activeProtocol}
+              activeSection={activeSection}
+              draft={draft}
+              prepareProfile={prepareProfile}
+              serialPorts={serialPorts}
+              onDraftChange={onDraftChange}
+              proxyPasswordUpdate={proxyPasswordUpdate}
+              onProxyPasswordUpdateChange={setProxyPasswordUpdate}
+              secretWriteBusy={secretWriteCount > 0}
+              onSecretWriteStart={() => setSecretWriteCount((current) => current + 1)}
+              onSecretCreated={(secretRef) => stagedSecretRefs.current.add(secretRef)}
+              onSecretWriteFinish={() => setSecretWriteCount((current) => Math.max(0, current - 1))}
+            />
+          </section>
+        </>
+      )}
+      <div className={`dialog-actions session-settings-actions ${mode === "create" ? "create-actions" : "edit-actions"}`}>
+        {mode === "create" && quickSurface ? (
+          <button type="button" className="session-advanced-button" onClick={openAdvancedSettings} disabled={busy}>
+            <SlidersHorizontal size={15} />
+            高级设置
+          </button>
+        ) : null}
+        <span className={`session-action-status ${secretCleanupError ? "error" : ""}`} aria-live="polite">
+          {secretCleanupError || (mode === "create" && !quickValidation.valid ? (
+            <><CircleAlert size={14} />请完善标记的连接信息</>
+          ) : null)}
+        </span>
+        {mode === "create" ? (
+          <>
+            <button type="button" className="session-cancel-button" onClick={() => void cancel()} disabled={busy}>取消</button>
+            <button type="button" className="session-save-button" onClick={() => void submit(false)} disabled={busy}>
+              <Save size={15} />
+              仅保存
+            </button>
+            <button type="button" className="session-connect-button" onClick={() => void submit(true)} disabled={busy || !quickValidation.valid}>
+              <PlugZap size={15} />
+              连接
+            </button>
+          </>
+        ) : (
+          <>
+            <button onClick={() => void submit(false)} disabled={busy}>保存</button>
+            <button onClick={() => void submit(true)} disabled={busy}>保存并连接</button>
+            <button onClick={() => void cancel()} disabled={busy}>取消</button>
+          </>
+        )}
       </div>
     </DialogFrame>
+  );
+}
+
+function QuickProtocolTabs({
+  activeProtocol,
+  busy,
+  onChange,
+}: {
+  activeProtocol: ProtocolTab;
+  busy: boolean;
+  onChange: (protocol: ProtocolTab) => void;
+}) {
+  return (
+    <div className="session-protocol-tabs" role="tablist" aria-label="连接协议">
+      {protocolTabs.map((protocol) => (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeProtocol === protocol}
+          aria-controls="quick-session-fields"
+          className={activeProtocol === protocol ? "active" : ""}
+          disabled={busy}
+          key={protocol}
+          onClick={() => onChange(protocol)}
+        >
+          <ProtocolIcon protocol={protocol} />
+          <span>{protocolLabel(protocol)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ProtocolIcon({ protocol }: { protocol: ProtocolTab }) {
+  const props = { size: 17, "aria-hidden": true } as const;
+  switch (protocol) {
+    case "Shell": return <SquareTerminal {...props} />;
+    case "SSH": return <Server {...props} />;
+    case "Tmux": return <Layers3 {...props} />;
+    case "Telnet": return <Network {...props} />;
+    case "Tcp": return <Cable {...props} />;
+    case "Serial": return <Usb {...props} />;
+  }
+}
+
+function protocolLabel(protocol: ProtocolTab) {
+  return protocol === "Tcp" ? "TCP" : protocol;
+}
+
+function protocolSettingsSection(protocol: ProtocolTab) {
+  return protocol === "Serial" ? "串口" : protocol;
+}
+
+function QuickField({
+  label,
+  required = false,
+  error,
+  className = "",
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  error?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className={`session-quick-field ${error ? "invalid" : ""} ${className}`}>
+      <span className="session-quick-field-label">{label}{required ? <sup aria-hidden="true">*</sup> : null}</span>
+      {children}
+      <span className="session-quick-field-error" aria-hidden={!error}>{error ?? ""}</span>
+    </label>
+  );
+}
+
+function QuickToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <div className="session-quick-toggle">
+      <span>{label}</span>
+      <button type="button" className={checked ? "switch-toggle on" : "switch-toggle"} aria-label={label} aria-pressed={checked} onClick={() => onChange(!checked)}>
+        <span />
+      </button>
+    </div>
+  );
+}
+
+function QuickSessionFields({
+  activeProtocol,
+  draft,
+  issues,
+  serialPorts,
+  targetRef,
+  onDraftChange,
+}: {
+  activeProtocol: ProtocolTab;
+  draft: SessionProfile;
+  issues: QuickConnectIssue[];
+  serialPorts: string[];
+  targetRef: MutableRefObject<HTMLInputElement | HTMLSelectElement | null>;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const errorFor = (field: QuickConnectField) => issues.find((issue) => issue.field === field)?.message;
+  const setTargetRef = (node: HTMLInputElement | HTMLSelectElement | null) => {
+    targetRef.current = node;
+  };
+
+  return (
+    <div className="session-quick-target" key={activeProtocol}>
+      <header className="session-quick-section-heading">
+        <ProtocolIcon protocol={activeProtocol} />
+        <h2>连接目标</h2>
+      </header>
+      {activeProtocol === "SSH" || activeProtocol === "Tmux" ? (
+        <QuickSshFields
+          protocol={activeProtocol}
+          draft={draft}
+          targetError={errorFor("target")}
+          portError={errorFor("port")}
+          setTargetRef={setTargetRef}
+          onDraftChange={onDraftChange}
+        />
+      ) : null}
+      {activeProtocol === "Telnet" || activeProtocol === "Tcp" ? (
+        <QuickTcpFields
+          protocol={activeProtocol}
+          draft={draft}
+          targetError={errorFor("target")}
+          portError={errorFor("port")}
+          setTargetRef={setTargetRef}
+          onDraftChange={onDraftChange}
+        />
+      ) : null}
+      {activeProtocol === "Serial" ? (
+        <QuickSerialFields
+          draft={draft}
+          serialPorts={serialPorts}
+          targetError={errorFor("target")}
+          baudRateError={errorFor("baudRate")}
+          setTargetRef={setTargetRef}
+          onDraftChange={onDraftChange}
+        />
+      ) : null}
+      {activeProtocol === "Shell" ? (
+        <QuickShellFields draft={draft} setTargetRef={setTargetRef} onDraftChange={onDraftChange} />
+      ) : null}
+    </div>
+  );
+}
+
+function QuickSshFields({
+  protocol,
+  draft,
+  targetError,
+  portError,
+  setTargetRef,
+  onDraftChange,
+}: {
+  protocol: "SSH" | "Tmux";
+  draft: SessionProfile;
+  targetError?: string;
+  portError?: string;
+  setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const kind: "ssh" | "tmux" = protocol === "Tmux" ? "tmux" : "ssh";
+  const current = draft.connection.kind === "ssh" || draft.connection.kind === "tmux"
+    ? draft.connection
+    : createSshConnection();
+  const ssh = { ...current, kind };
+
+  return (
+    <div className="session-quick-grid target-port-grid">
+      <QuickField label="目标" required error={targetError}>
+        <input
+          ref={setTargetRef}
+          aria-label={`${protocolLabel(protocol)} 目标`}
+          aria-invalid={Boolean(targetError)}
+          autoComplete="off"
+          placeholder="user@host"
+          value={formatSshTarget(ssh)}
+          onChange={(event) => {
+            const connection = parseSshTarget(event.target.value, ssh);
+            onDraftChange({ ...draft, kind, connection: { ...connection, kind } });
+          }}
+        />
+      </QuickField>
+      <QuickField label="端口" required error={portError}>
+        <input
+          type="number"
+          inputMode="numeric"
+          aria-label={`${protocolLabel(protocol)} 端口`}
+          aria-invalid={Boolean(portError)}
+          min={1}
+          max={65535}
+          value={ssh.endpoint.port || ""}
+          onChange={(event) => onDraftChange({
+            ...draft,
+            kind,
+            connection: { ...ssh, endpoint: { ...ssh.endpoint, port: Number(event.target.value) } },
+          })}
+        />
+      </QuickField>
+    </div>
+  );
+}
+
+function QuickTcpFields({
+  protocol,
+  draft,
+  targetError,
+  portError,
+  setTargetRef,
+  onDraftChange,
+}: {
+  protocol: "Telnet" | "Tcp";
+  draft: SessionProfile;
+  targetError?: string;
+  portError?: string;
+  setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const kind: "telnet" | "tcp" = protocol === "Telnet" ? "telnet" : "tcp";
+  const current = draft.connection.kind === "telnet" || draft.connection.kind === "tcp"
+    ? draft.connection
+    : createTcpConnection(kind);
+  const tcp = { ...current, kind };
+  const update = (patch: Partial<typeof tcp>) => onDraftChange({
+    ...draft,
+    kind,
+    connection: { ...tcp, ...patch, kind },
+  });
+
+  return (
+    <div className="session-quick-grid target-port-grid">
+      <QuickField label="主机" required error={targetError}>
+        <input
+          ref={setTargetRef}
+          aria-label={`${protocolLabel(protocol)} 主机`}
+          aria-invalid={Boolean(targetError)}
+          autoComplete="off"
+          placeholder="192.168.1.10"
+          value={tcp.host}
+          onChange={(event) => update({ host: event.target.value })}
+        />
+      </QuickField>
+      <QuickField label="端口" required error={portError}>
+        <input
+          type="number"
+          inputMode="numeric"
+          aria-label={`${protocolLabel(protocol)} 端口`}
+          aria-invalid={Boolean(portError)}
+          min={1}
+          max={65535}
+          value={tcp.port || ""}
+          onChange={(event) => update({ port: Number(event.target.value) })}
+        />
+      </QuickField>
+      {protocol === "Tcp" ? (
+        <QuickToggle label="TLS" checked={tcp.tlsEnabled} onChange={(tlsEnabled) => update({ tlsEnabled })} />
+      ) : null}
+    </div>
+  );
+}
+
+function QuickSerialFields({
+  draft,
+  serialPorts,
+  targetError,
+  baudRateError,
+  setTargetRef,
+  onDraftChange,
+}: {
+  draft: SessionProfile;
+  serialPorts: string[];
+  targetError?: string;
+  baudRateError?: string;
+  setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
+  const update = (patch: Partial<typeof serial>) => onDraftChange({
+    ...draft,
+    kind: "serial",
+    connection: { ...serial, ...patch },
+  });
+
+  return (
+    <div className="session-quick-grid serial-quick-grid">
+      <QuickField label="串口" required error={targetError} className="serial-port-field">
+        <select
+          ref={setTargetRef}
+          aria-label="串口"
+          aria-invalid={Boolean(targetError)}
+          value={serial.port}
+          onChange={(event) => update({ port: event.target.value })}
+        >
+          <option value="">选择串口</option>
+          {serialPortOptions(serial.port, serialPorts).map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      </QuickField>
+      <QuickField label="波特率" required error={baudRateError}>
+        <input
+          type="number"
+          inputMode="numeric"
+          aria-label="波特率"
+          aria-invalid={Boolean(baudRateError)}
+          min={serialConnectionBounds.baudRate.min}
+          max={serialConnectionBounds.baudRate.max}
+          list="quick-serial-baud-rate-options"
+          value={Number.isFinite(serial.baudRate) ? serial.baudRate : ""}
+          onChange={(event) => update({ baudRate: Number(event.target.value) })}
+        />
+        <datalist id="quick-serial-baud-rate-options">
+          {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
+        </datalist>
+      </QuickField>
+      <QuickField label="数据位">
+        <select aria-label="数据位" value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>
+          {[5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </QuickField>
+      <QuickField label="停止位">
+        <select aria-label="停止位" value={serial.stopBits} onChange={(event) => update({ stopBits: Number(event.target.value) })}>
+          <option value={1}>1</option>
+          <option value={2}>2</option>
+        </select>
+      </QuickField>
+      <QuickField label="校验">
+        <select aria-label="校验" value={serial.parity} onChange={(event) => update({ parity: event.target.value })}>
+          <option value="none">无</option>
+          <option value="odd">奇校验</option>
+          <option value="even">偶校验</option>
+        </select>
+      </QuickField>
+      <QuickField label="流控">
+        <select aria-label="流控" value={serial.flowControl} onChange={(event) => update({ flowControl: event.target.value })}>
+          <option value="none">无</option>
+          <option value="software">软件</option>
+          <option value="hardware">硬件</option>
+        </select>
+      </QuickField>
+    </div>
+  );
+}
+
+function QuickShellFields({
+  draft,
+  setTargetRef,
+  onDraftChange,
+}: {
+  draft: SessionProfile;
+  setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
+  onDraftChange: (draft: SessionProfile) => void;
+}) {
+  const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
+  const update = (patch: Partial<typeof shell>) => onDraftChange({
+    ...draft,
+    kind: "shell",
+    connection: { ...shell, ...patch },
+  });
+
+  return (
+    <div className="session-quick-grid shell-quick-grid">
+      <QuickField label="程序">
+        <input ref={setTargetRef} aria-label="Shell 程序" placeholder="系统默认 Shell" value={shell.program} onChange={(event) => update({ program: event.target.value })} />
+      </QuickField>
+      <QuickField label="参数">
+        <input aria-label="Shell 参数" value={shell.args.join(" ")} onChange={(event) => update({ args: event.target.value.split(/\s+/).filter(Boolean) })} />
+      </QuickField>
+      <QuickField label="目录">
+        <input aria-label="Shell 工作目录" placeholder="当前用户目录" value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
+      </QuickField>
+    </div>
+  );
+}
+
+function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile; onDraftChange: (draft: SessionProfile) => void }) {
+  const [tagsText, setTagsText] = useState(() => draft.tags.join(", "));
+  useEffect(() => setTagsText(draft.tags.join(", ")), [draft.id]);
+
+  return (
+    <details className="session-quick-metadata">
+      <summary>
+        <FolderTree size={15} />
+        <span>整理信息</span>
+        <ChevronDown className="session-metadata-chevron" size={14} />
+      </summary>
+      <div className="session-quick-grid metadata-quick-grid">
+        <QuickField label="名称">
+          <input
+            aria-label="会话名称"
+            placeholder="自动生成名称"
+            value={draft.name}
+            onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })}
+          />
+        </QuickField>
+        <QuickField label="分组">
+          <input
+            aria-label="会话分组"
+            placeholder="例如 Lab>Routers"
+            value={draft.group}
+            onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })}
+          />
+        </QuickField>
+        <QuickField label="标签">
+          <input
+            aria-label="会话标签"
+            placeholder="逗号分隔"
+            value={tagsText}
+            onChange={(event) => {
+              const nextText = normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS);
+              setTagsText(nextText);
+              onDraftChange({ ...draft, tags: nextText.split(",").map((item) => item.trim()).filter(Boolean) });
+            }}
+          />
+        </QuickField>
+      </div>
+    </details>
   );
 }
 
@@ -1360,7 +1885,7 @@ function DialogFrame({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
+          <button type="button" aria-label="关闭" title="关闭" onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
         </header>
         {children}
       </section>
