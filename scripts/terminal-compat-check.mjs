@@ -977,10 +977,11 @@ try {
   await activeCompletion.waitFor();
   const completionPlacement = await activeCompletion.evaluate((completion) => {
     const canvas = completion.closest(".terminal-canvas");
+    const terminalRegion = completion.closest(".terminal-terminal-region");
     const host = canvas?.querySelector(".terminal-host");
     const completionRect = completion.getBoundingClientRect();
     const hostRect = host?.getBoundingClientRect();
-    const canvasRect = canvas?.getBoundingClientRect();
+    const canvasRect = terminalRegion?.getBoundingClientRect();
     return {
       placement: canvas?.getAttribute("data-completion-placement"),
       cursorBottom: Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1"),
@@ -1012,7 +1013,8 @@ try {
   }, completionPlacement.shift);
   const completionAfterRemoteCursorMove = await activeCompletion.evaluate((completion) => {
     const canvas = completion.closest(".terminal-canvas");
-    const canvasRect = canvas?.getBoundingClientRect();
+    const terminalRegion = completion.closest(".terminal-terminal-region");
+    const canvasRect = terminalRegion?.getBoundingClientRect();
     const completionRect = completion.getBoundingClientRect();
     const cursorBottom = Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1");
     return {
@@ -1270,8 +1272,9 @@ try {
   await page.waitForTimeout(120);
   const mobileCompletionPlacement = await activeCompletion.evaluate((completion) => {
     const canvas = completion.closest(".terminal-canvas");
+    const terminalRegion = completion.closest(".terminal-terminal-region");
     const completionRect = completion.getBoundingClientRect();
-    const canvasRect = canvas?.getBoundingClientRect();
+    const canvasRect = terminalRegion?.getBoundingClientRect();
     const cursorBottom = Number(canvas?.getAttribute("data-completion-cursor-bottom") ?? "-1");
     return {
       cursorBottom,
