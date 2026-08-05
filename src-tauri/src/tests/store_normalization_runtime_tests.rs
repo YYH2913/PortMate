@@ -61,10 +61,8 @@ fn normalize_loaded_store_preserves_valid_mcp_http_settings_and_resets_unsafe_on
         trusted: false,
         allow_remote: true,
     };
-    let mut store = SessionStore {
-        mcp_http_settings: remote.clone(),
-        ..SessionStore::default()
-    };
+    let mut store = SessionStore::default();
+    store.mcp_http_settings = remote.clone();
     assert_eq!(normalize_loaded_store(store.clone()).mcp_http_settings, remote);
 
     store.mcp_http_settings.allow_remote = false;

@@ -405,20 +405,26 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
         .unwrap_err()
         .contains("explicit remote access"));
 
-    let mut invalid_origin = McpHttpSettings::default();
-    invalid_origin.allowed_origins = vec!["https://console.example.test/path".to_string()];
+    let invalid_origin = McpHttpSettings {
+        allowed_origins: vec!["https://console.example.test/path".to_string()],
+        ..McpHttpSettings::default()
+    };
     assert!(normalize_mcp_http_settings(invalid_origin)
         .unwrap_err()
         .contains("scheme and authority"));
 
-    let mut invalid_scheme = McpHttpSettings::default();
-    invalid_scheme.allowed_origins = vec!["ftp://console.example.test".to_string()];
+    let invalid_scheme = McpHttpSettings {
+        allowed_origins: vec!["ftp://console.example.test".to_string()],
+        ..McpHttpSettings::default()
+    };
     assert!(normalize_mcp_http_settings(invalid_scheme)
         .unwrap_err()
         .contains("HTTP(S)"));
 
-    let mut loopback = McpHttpSettings::default();
-    loopback.allow_remote = true;
+    let loopback = McpHttpSettings {
+        allow_remote: true,
+        ..McpHttpSettings::default()
+    };
     assert!(
         !normalize_mcp_http_settings(loopback)
             .unwrap()
