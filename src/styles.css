@@ -10888,17 +10888,18 @@ fieldset label {
 
 .mcp-http-field-grid .dialog-field:last-child {
   grid-column: 1 / -1;
+  grid-template-columns: 104px minmax(0, 1fr);
 }
 
 .mcp-http-settings > .dialog-field {
-  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-columns: 132px minmax(0, 1fr);
 }
 
 .mcp-http-options {
   display: flex;
   flex-wrap: wrap;
   gap: 10px 24px;
-  padding-left: 116px;
+  padding-left: 132px;
 }
 
 .mcp-http-options label {
@@ -10917,7 +10918,7 @@ fieldset label {
 }
 
 .mcp-http-exposure {
-  margin-left: 116px;
+  margin-left: 132px;
   padding: 7px 9px;
   border-left: 2px solid #eab308;
   background: rgba(234, 179, 8, 0.08);
@@ -11225,6 +11226,7 @@ fieldset label {
 
   .mcp-http-field-grid .dialog-field:last-child {
     grid-column: auto;
+    grid-template-columns: 100px minmax(0, 1fr);
   }
 
   .mcp-http-settings > .dialog-field,

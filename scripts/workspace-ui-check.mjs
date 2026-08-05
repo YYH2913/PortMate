@@ -3212,7 +3212,16 @@ Host staging
   await mcpListenHost.fill("0.0.0.0");
   assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
     "MCP HTTP remote listener could be saved without explicit remote approval");
-  await mcpDialog.getByRole("checkbox", { name: "允许非本机监听", exact: true }).check();
+  const mcpRemoteAccess = mcpDialog.getByRole("checkbox", { name: "允许非本机监听", exact: true });
+  await mcpRemoteAccess.check();
+  await mcpListenHost.fill("127.0.0.1");
+  assert(await mcpRemoteAccess.isDisabled() && !await mcpRemoteAccess.isChecked(),
+    "MCP HTTP loopback listener retained a stale remote-access approval");
+  await mcpListenHost.fill("0.0.0.0");
+  assert(!await mcpRemoteAccess.isChecked()
+    && await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
+  "MCP HTTP remote listener reused approval after returning from loopback");
+  await mcpRemoteAccess.check();
   await mcpDialog.getByRole("spinbutton", { name: "MCP HTTP 端口", exact: true }).fill("9088");
   await mcpDialog.getByLabel("MCP HTTP Client ID", { exact: true }).fill("remote-automation");
   await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).fill("https://console.example.test");

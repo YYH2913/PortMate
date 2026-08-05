@@ -182,6 +182,7 @@ export default function McpDialog({
   }
 
   function updateHttpSettings(patch: Partial<McpHttpConfigRequest>) {
+    requestGateRef.current.invalidate("http-preview");
     setHttpSettings((current) => ({ ...current, ...patch }));
     setHttpDirty(true);
     setHttpPreviewCurrent(false);
@@ -353,11 +354,11 @@ export default function McpDialog({
               <header><strong>Streamable HTTP</strong><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
               <div className="mcp-http-settings">
                 <div className="mcp-http-field-grid">
-                  <McpField label="监听 IP:"><input aria-label="MCP HTTP 监听 IP" list="mcp-http-listen-hosts" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ listenHost: event.target.value })} /><datalist id="mcp-http-listen-hosts"><option value="127.0.0.1" /><option value="0.0.0.0" /><option value="::1" /><option value="::" /></datalist></McpField>
+                  <McpField label="监听 IP:"><input aria-label="MCP HTTP 监听 IP" list="mcp-http-listen-hosts" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => { const listenHost = event.target.value; updateHttpSettings({ listenHost, ...(!isNonLoopbackMcpHost(listenHost) ? { allowRemote: false } : {}) }); }} /><datalist id="mcp-http-listen-hosts"><option value="127.0.0.1" /><option value="0.0.0.0" /><option value="::1" /><option value="::" /></datalist></McpField>
                   <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
                   <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
                 </div>
-                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" onChange={(event) => { setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
+                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
                 <div className="mcp-http-options">
                   <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={!httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
                   <label><input type="checkbox" checked={httpSettings.trusted} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
