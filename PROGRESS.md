@@ -28,7 +28,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 新稳定版发布后的兼容适配，以及发布签名与 Apple notarization。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义；Windows MSI/NSIS 与 macOS app/DMG 的包内主程序也已接入隔离 Store、IPC 发布、正常退出和 endpoint 清理 smoke。Native keyring 脚本现对 macOS 使用临时 default keychain 验证 locked provider，仍需真实 runner 成功记录作为原生证据。
 
-2026-08-05 本机验收重新通过前端 81 文件/469 项单测、生产构建、workspace Playwright、Rust workspace format/clippy/测试、terminal/vttest/Tmux 四版本矩阵、21 个 SSH 服务端、11 组活动传输断线、15 类健康故障、38 类传输故障、五种 GSSAPI 组合、18 个 TCP/Telnet/TLS 服务端和九语言 MCP SDK stdio/HTTP 矩阵。随后从干净的 bundle 目录重新完成 Tauri release 构建，DEB/RPM/AppImage 三包均通过包内主程序、sidecar、资源、权限、CSP/capability 与全 SDK 矩阵，最终 AppImage 也通过真实窗口、IPC、Store、迁移和冲突拒绝 smoke；前一次 release 链接收到的退出码 143 未复现，确认不是编译错误。
+2026-08-05 本机验收重新通过前端 82 文件/473 项单测、生产构建、workspace Playwright、Rust workspace format/clippy/测试、terminal/vttest/Tmux 四版本矩阵、21 个 SSH 服务端、11 组活动传输断线、15 类健康故障、38 类传输故障、五种 GSSAPI 组合、18 个 TCP/Telnet/TLS 服务端和九语言 MCP SDK stdio/HTTP 矩阵。随后从干净的 bundle 目录重新完成 Tauri release 构建，DEB/RPM/AppImage 三包均通过包内主程序、sidecar、资源、权限、CSP/capability 与全 SDK 矩阵，最终 AppImage 也通过真实窗口、IPC、Store、迁移和冲突拒绝 smoke；前一次 release 链接收到的退出码 143 未复现，确认不是编译错误。
 
 ## 当前实现快照
 
