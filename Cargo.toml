@@ -17,7 +17,7 @@ license = "Apache-2.0"
 authors = ["PortMate Contributors"]
 
 [workspace.dependencies]
-anyhow = "1.0"
+anyhow = "1.0.103"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.12"
