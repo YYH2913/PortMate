@@ -1,7 +1,16 @@
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
+import {
+  terminalCommandCatalog,
+  terminalCommandSchema,
+  terminalCommandSubcommand,
+} from "./terminal-command-catalog";
+import type {
+  TerminalCommandCatalogEntry,
+  TerminalCommandSchema,
+} from "./terminal-command-catalog";
 export type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 
-export type TerminalCompletionSource = "command" | "option" | "argument" | "history" | "quick";
+export type TerminalCompletionSource = "command" | "subcommand" | "option" | "argument" | "history" | "quick";
 
 export type TerminalCompletionSuggestion = {
   id: string;
@@ -17,6 +26,11 @@ export type TerminalCompletionInputState = {
   synchronized: boolean;
 };
 
+export type TerminalCompletionUsageHint = {
+  label: string;
+  detail: string;
+};
+
 export const emptyTerminalCompletionInputState: TerminalCompletionInputState = {
   line: "",
   synchronized: true,
@@ -24,72 +38,7 @@ export const emptyTerminalCompletionInputState: TerminalCompletionInputState = {
 
 const MAX_COMPLETION_LINE_CHARACTERS = 512;
 const MAX_COMPLETION_CANDIDATES = 40;
-
-type CatalogEntry = { value: string; detail: string };
-
-const commandCatalog: CatalogEntry[] = [
-  { value: "bash", detail: "启动 Bash shell" },
-  { value: "cargo", detail: "Rust 构建与包管理" },
-  { value: "cat", detail: "输出文件内容" },
-  { value: "cd", detail: "切换当前目录" },
-  { value: "chmod", detail: "修改文件权限" },
-  { value: "chown", detail: "修改文件所有者" },
-  { value: "clear", detail: "清空终端屏幕" },
-  { value: "cp", detail: "复制文件或目录" },
-  { value: "curl", detail: "传输 URL 数据" },
-  { value: "docker", detail: "管理容器与镜像" },
-  { value: "echo", detail: "输出文本" },
-  { value: "find", detail: "查找文件" },
-  { value: "git", detail: "管理 Git 仓库" },
-  { value: "grep", detail: "搜索文本" },
-  { value: "head", detail: "输出文件开头" },
-  { value: "journalctl", detail: "查询 systemd 日志" },
-  { value: "kill", detail: "向进程发送信号" },
-  { value: "ls", detail: "列出目录内容" },
-  { value: "mkdir", detail: "创建目录" },
-  { value: "mv", detail: "移动或重命名文件" },
-  { value: "npm", detail: "Node.js 包管理" },
-  { value: "pnpm", detail: "高效 Node.js 包管理" },
-  { value: "pwd", detail: "显示当前目录" },
-  { value: "rm", detail: "删除文件或目录" },
-  { value: "rsync", detail: "同步文件和目录" },
-  { value: "scp", detail: "通过 SSH 复制文件" },
-  { value: "ssh", detail: "连接 SSH 主机" },
-  { value: "systemctl", detail: "管理 systemd 单元" },
-  { value: "tail", detail: "输出文件末尾" },
-  { value: "tar", detail: "归档文件" },
-  { value: "top", detail: "查看系统进程" },
-  { value: "uname", detail: "显示系统信息" },
-  { value: "vi", detail: "启动 Vi 编辑器" },
-  { value: "vim", detail: "启动 Vim 编辑器" },
-  { value: "wget", detail: "下载网络资源" },
-  { value: "whoami", detail: "显示当前用户" },
-];
-
-const optionCatalog: Record<string, CatalogEntry[]> = {
-  cargo: options(["--help", "--version", "--locked", "--offline", "-q"], "Cargo 选项"),
-  curl: options(["--fail", "-H", "-I", "-L", "-o", "-X", "-d"], "curl 选项"),
-  docker: options(["--help", "--version"], "Docker 选项"),
-  find: options(["-maxdepth", "-mtime", "-name", "-size", "-type"], "find 条件"),
-  git: options(["--help", "--no-pager", "--version", "-C"], "Git 全局选项"),
-  grep: options(["--color=auto", "-E", "-F", "-i", "-n", "-r"], "grep 选项"),
-  journalctl: options(["--no-pager", "--since", "-f", "-n", "-u"], "journalctl 选项"),
-  ls: options(["--color=auto", "-R", "-a", "-h", "-l"], "ls 选项"),
-  npm: options(["--help", "--silent", "--version"], "npm 选项"),
-  pnpm: options(["--help", "--silent", "--version"], "pnpm 选项"),
-  ssh: options(["-D", "-J", "-L", "-R", "-i", "-p", "-v"], "SSH 选项"),
-  systemctl: options(["--no-pager", "--system", "--user"], "systemctl 选项"),
-  tar: options(["-c", "-f", "-v", "-x", "-z"], "tar 选项"),
-};
-
-const argumentCatalog: Record<string, CatalogEntry[]> = {
-  cargo: argumentsFor(["add", "build", "check", "clean", "clippy", "doc", "fmt", "run", "test", "update"], "Cargo 子命令"),
-  docker: argumentsFor(["build", "compose", "exec", "images", "inspect", "logs", "ps", "pull", "push", "run"], "Docker 子命令"),
-  git: argumentsFor(["add", "branch", "checkout", "commit", "diff", "fetch", "log", "pull", "push", "rebase", "restore", "stash", "status", "switch", "tag"], "Git 子命令"),
-  npm: argumentsFor(["audit", "build", "install", "outdated", "publish", "run", "start", "test"], "npm 子命令"),
-  pnpm: argumentsFor(["add", "audit", "build", "install", "remove", "run", "test", "update"], "pnpm 子命令"),
-  systemctl: argumentsFor(["disable", "enable", "list-units", "reload", "restart", "start", "status", "stop"], "systemctl 操作"),
-};
+const supportedTerminalKinds = new Set(["serial", "shell", "ssh", "tcp", "telnet", "tmux"]);
 
 export function reduceTerminalCompletionInput(
   current: TerminalCompletionInputState,
@@ -169,7 +118,7 @@ export function terminalCompletionSuggestions({
 
   if (tokens.length <= 1 && !beforeToken.trim() && preferences.commandNames) {
     const indentation = line.slice(0, line.length - line.trimStart().length);
-    for (const entry of commandCatalog) {
+    for (const entry of terminalCommandCatalog) {
       const target = `${indentation}${entry.value}`;
       if (!target.startsWith(line)) continue;
       candidates.push(suggestion(`command:${entry.value}`, "command", entry.value, entry.detail, target, line, true));
@@ -177,18 +126,21 @@ export function terminalCompletionSuggestions({
   }
 
   if (command && beforeToken.trim()) {
+    const root = terminalCommandSchema(command);
+    const context = root ? resolveCommandContext(root, completedTokens(beforeToken).slice(1)) : null;
     if (preferences.commandOptions && (!token || token.startsWith("-"))) {
-      for (const entry of optionCatalog[command] ?? []) {
-        const target = `${beforeToken}${entry.value}`;
-        if (!target.startsWith(line)) continue;
-        candidates.push(suggestion(`option:${command}:${entry.value}`, "option", entry.value, entry.detail, target, line, true));
+      for (const entry of context ? commandOptions(root!, context) : []) {
+        pushCatalogSuggestion(candidates, entry, "option", command, beforeToken, line);
       }
     }
-    if (preferences.commandArgs && !token.startsWith("-") && tokens.length <= 2) {
-      for (const entry of argumentCatalog[command] ?? []) {
-        const target = `${beforeToken}${entry.value}`;
-        if (!target.startsWith(line)) continue;
-        candidates.push(suggestion(`argument:${command}:${entry.value}`, "argument", entry.value, entry.detail, target, line, true));
+    if (preferences.commandArgs && !token.startsWith("-") && context) {
+      for (const entry of context.subcommands) {
+        pushCatalogSuggestion(candidates, entry, "subcommand", command, beforeToken, line);
+      }
+    }
+    if (preferences.commandArgs && !token.startsWith("-") && context) {
+      for (const entry of context.arguments) {
+        pushCatalogSuggestion(candidates, entry, "argument", command, beforeToken, line);
       }
     }
   }
@@ -206,8 +158,30 @@ export function terminalCompletionSuggestions({
     .slice(0, MAX_COMPLETION_CANDIDATES);
 }
 
+export function terminalCompletionUsageHint({
+  line,
+  preferences,
+}: {
+  line: string;
+  preferences: TerminalCompletionPreferences;
+}): TerminalCompletionUsageHint | null {
+  if (!preferences.enabled
+    || (!preferences.commandArgs && !preferences.commandOptions)
+    || !completionLineIsSafe(line)) return null;
+  const tokens = line.trimStart().split(/\s+/).filter(Boolean);
+  const root = terminalCommandSchema(tokens[0] ?? "");
+  if (!root) return null;
+  const context = resolveCommandContext(root, tokens.slice(1));
+  return { label: context.usage, detail: context.detail };
+}
+
+export function terminalCompletionSupported(value: unknown): boolean {
+  return typeof value === "string" && supportedTerminalKinds.has(value);
+}
+
 export function terminalCompletionSourceLabel(source: TerminalCompletionSource): string {
   if (source === "command") return "命令";
+  if (source === "subcommand") return "子命令";
   if (source === "option") return "选项";
   if (source === "argument") return "参数";
   if (source === "history") return "历史";
@@ -240,18 +214,61 @@ function suggestion(
   return { id, source, label, detail, target, appendText };
 }
 
-function options(values: string[], detail: string): CatalogEntry[] {
-  return values.map((value) => ({ value, detail }));
-}
-
-function argumentsFor(values: string[], detail: string): CatalogEntry[] {
-  return values.map((value) => ({ value, detail }));
-}
-
 function sourcePriority(source: TerminalCompletionSource): number {
   if (source === "quick") return 0;
   if (source === "history") return 1;
-  if (source === "argument") return 2;
-  if (source === "option") return 3;
-  return 4;
+  if (source === "subcommand") return 2;
+  if (source === "argument") return 3;
+  if (source === "option") return 4;
+  return 5;
+}
+
+function completedTokens(beforeToken: string): string[] {
+  return beforeToken.trim().split(/\s+/).filter(Boolean);
+}
+
+function resolveCommandContext(
+  root: TerminalCommandSchema,
+  tokens: readonly string[],
+): TerminalCommandSchema {
+  let context = root;
+  for (const token of tokens) {
+    if (!token || token.startsWith("-")) continue;
+    const subcommand = terminalCommandSubcommand(context, token);
+    if (subcommand) context = subcommand;
+  }
+  return context;
+}
+
+function commandOptions(
+  root: TerminalCommandSchema,
+  context: TerminalCommandSchema,
+): TerminalCommandCatalogEntry[] {
+  const seen = new Set<string>();
+  return [...context.options, ...(context === root ? [] : root.options)].filter((entry) => {
+    if (seen.has(entry.value)) return false;
+    seen.add(entry.value);
+    return true;
+  });
+}
+
+function pushCatalogSuggestion(
+  candidates: TerminalCompletionSuggestion[],
+  entry: TerminalCommandCatalogEntry,
+  source: "subcommand" | "option" | "argument",
+  command: string,
+  beforeToken: string,
+  line: string,
+) {
+  const target = `${beforeToken}${entry.value}`;
+  if (!target.startsWith(line)) return;
+  candidates.push(suggestion(
+    `${source}:${command}:${entry.value}`,
+    source,
+    entry.value,
+    entry.detail,
+    target,
+    line,
+    true,
+  ));
 }

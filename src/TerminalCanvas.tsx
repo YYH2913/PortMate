@@ -22,6 +22,8 @@ import {
   reduceTerminalCompletionInput,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
+  terminalCompletionSupported,
+  terminalCompletionUsageHint,
 } from "./terminal-completion-state";
 import type {
   TerminalCompletionInputState,
@@ -257,6 +259,7 @@ export default function TerminalCanvas({
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
   const completionInputRef = useRef<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
   const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
+  const completionSurfaceOpenRef = useRef(false);
   const completionSelectionRef = useRef(0);
   const acceptCompletionRef = useRef<(suggestion: TerminalCompletionSuggestion) => void>(() => {});
   const dismissCompletionRef = useRef<() => void>(() => {});
@@ -302,23 +305,22 @@ export default function TerminalCanvas({
   const selectedOneKeyCompletion = oneKeyCompletionCandidates.find((oneKey) => oneKey.id === oneKeyCompletionId)
     ?? oneKeyCompletionCandidates[0]
     ?? null;
-  const completionSupported = active
-    ? ["shell", "ssh", "tcp", "telnet", "tmux"].includes(active.profile.kind)
-    : false;
+  const completionSupported = terminalCompletionSupported(active?.profile.kind);
   const semanticHighlightingSupported = terminalSemanticHighlightingSupported(active?.profile.kind);
   semanticHighlightingEnabledRef.current = terminalSemanticHighlightingEnabled(completionSettings);
   semanticHighlightingSupportedRef.current = semanticHighlightingSupported;
   semanticThemeRef.current = activeTerminalTheme;
+  const completionContextActive = focused
+    && completionSupported
+    && keyMode === "remote"
+    && !searchOpen
+    && !gotoLineOpen
+    && !freeInputSource
+    && !oneKeyPrompt
+    && completionInput.synchronized
+    && completionInput.line !== completionDismissedLine;
   const completionCandidates = useMemo(() => (
-    focused
-      && completionSupported
-      && keyMode === "remote"
-      && !searchOpen
-      && !gotoLineOpen
-      && !freeInputSource
-      && !oneKeyPrompt
-      && completionInput.synchronized
-      && completionInput.line !== completionDismissedLine
+    completionContextActive
       ? terminalCompletionSuggestions({
         line: completionInput.line,
         preferences: completionPreferences,
@@ -332,25 +334,30 @@ export default function TerminalCanvas({
     completionInput,
     completionPreferences,
     completionQuickCommands,
-    completionSupported,
-    focused,
-    freeInputSource,
-    gotoLineOpen,
-    keyMode,
-    oneKeyPrompt,
-    searchOpen,
+    completionContextActive,
   ]);
+  const completionUsageHint = useMemo(() => (
+    completionContextActive
+      ? terminalCompletionUsageHint({
+        line: completionInput.line,
+        preferences: completionPreferences,
+      })
+      : null
+  ), [completionContextActive, completionInput.line, completionPreferences]);
   const activeCompletionIndex = completionCandidates.length
     ? Math.min(completionSelection, completionCandidates.length - 1)
     : 0;
   const selectedCompletion = completionCandidates[activeCompletionIndex] ?? null;
-  const completionPanelHeight = completionCandidates.length
+  const completionSurfaceOpen = Boolean(completionCandidates.length || completionUsageHint);
+  completionSurfaceOpenRef.current = completionSurfaceOpen;
+  const completionPanelHeight = completionSurfaceOpen
     ? completionCandidates.length * 30
-      + (completionPreferences.previewMode === "input" ? 28 : 0)
+      + (completionUsageHint ? 30 : 0)
+      + (completionPreferences.previewMode === "input" && selectedCompletion ? 28 : 0)
       + 16
     : 0;
   refreshCompletionAnchorRef.current = () => {
-    if (!completionSuggestionsRef.current.length) return;
+    if (!completionSurfaceOpenRef.current) return;
     const term = termRef.current;
     const host = hostRef.current;
     const canvas = host?.parentElement;
@@ -717,8 +724,8 @@ export default function TerminalCanvas({
         return false;
       }
       const completions = completionSuggestionsRef.current;
-      if (mode === "remote" && completions.length && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        if (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) {
+      if (mode === "remote" && completionSurfaceOpenRef.current && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (completions.length && (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey))) {
           event.preventDefault();
           const offset = event.key === "ArrowDown" ? 1 : -1;
           const next = (completionSelectionRef.current + offset + completions.length) % completions.length;
@@ -726,7 +733,7 @@ export default function TerminalCanvas({
           setCompletionSelection(next);
           return false;
         }
-        if (event.key === "Tab") {
+        if (completions.length && event.key === "Tab") {
           event.preventDefault();
           acceptCompletionRef.current(completions[completionSelectionRef.current] ?? completions[0]);
           return false;
@@ -1339,7 +1346,7 @@ export default function TerminalCanvas({
     return () => {
       window.cancelAnimationFrame(measureFrame);
     };
-  }, [completionCandidates.length, completionInput.line, completionPanelHeight, completionPreferences.previewMode]);
+  }, [completionCandidates.length, completionInput.line, completionPanelHeight, completionPreferences.previewMode, completionUsageHint?.label]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -1411,10 +1418,10 @@ export default function TerminalCanvas({
 
   return (
     <div
-      className={completionCandidates.length ? "terminal-canvas completion-open" : "terminal-canvas"}
-      data-completion-placement={completionCandidates.length ? "below" : undefined}
-      data-completion-cursor-bottom={completionCandidates.length ? completionAnchor.cursorBottom : undefined}
-      data-completion-shift={completionCandidates.length ? completionAnchor.shift : undefined}
+      className={completionSurfaceOpen ? "terminal-canvas completion-open" : "terminal-canvas"}
+      data-completion-placement={completionSurfaceOpen ? "below" : undefined}
+      data-completion-cursor-bottom={completionSurfaceOpen ? completionAnchor.cursorBottom : undefined}
+      data-completion-shift={completionSurfaceOpen ? completionAnchor.shift : undefined}
       style={{
         "--terminal-background": canvasBackground ?? "#0d1117",
         "--terminal-completion-height": `${completionPanelHeight}px`,
@@ -1526,7 +1533,7 @@ export default function TerminalCanvas({
                 </button>
               </form>
             ) : null}
-          {completionCandidates.length ? (
+          {completionSurfaceOpen ? (
             <section
               className="terminal-completion"
               aria-label="终端命令补全"
@@ -1541,27 +1548,36 @@ export default function TerminalCanvas({
                   <code>{completionInput.line}</code><code>{selectedCompletion.appendText}</code>
                 </div>
               ) : null}
-              <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
-                {completionCandidates.map((suggestion, index) => (
-                  <button
-                    key={suggestion.id}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeCompletionIndex}
-                    className={index === activeCompletionIndex ? "active" : ""}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() => {
-                      completionSelectionRef.current = index;
-                      setCompletionSelection(index);
-                    }}
-                    onClick={() => acceptCompletionRef.current(suggestion)}
-                  >
-                    <span>{terminalCompletionSourceLabel(suggestion.source)}</span>
-                    <code>{suggestion.label}</code>
-                    <small>{suggestion.detail}</small>
-                  </button>
-                ))}
-              </div>
+              {completionUsageHint ? (
+                <div className="terminal-completion-usage" aria-label="命令用法">
+                  <span>用法</span>
+                  <code title={completionUsageHint.label}>{completionUsageHint.label}</code>
+                  <small>{completionUsageHint.detail}</small>
+                </div>
+              ) : null}
+              {completionCandidates.length ? (
+                <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
+                  {completionCandidates.map((suggestion, index) => (
+                    <button
+                      key={suggestion.id}
+                      type="button"
+                      role="option"
+                      aria-selected={index === activeCompletionIndex}
+                      className={index === activeCompletionIndex ? "active" : ""}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onMouseEnter={() => {
+                        completionSelectionRef.current = index;
+                        setCompletionSelection(index);
+                      }}
+                      onClick={() => acceptCompletionRef.current(suggestion)}
+                    >
+                      <span>{terminalCompletionSourceLabel(suggestion.source)}</span>
+                      <code>{suggestion.label}</code>
+                      <small>{suggestion.detail}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </section>
           ) : null}
           {gotoLineContext ? (

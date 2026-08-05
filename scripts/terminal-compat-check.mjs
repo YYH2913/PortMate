@@ -1034,6 +1034,47 @@ try {
   assert(terminalSizeBeforeCompletion === terminalSizeAfterCompletion && completionResizeCalls.length === 0,
     `command completion changed the remote PTY size: ${JSON.stringify({ terminalSizeBeforeCompletion, terminalSizeAfterCompletion, completionResizeCalls })}`);
 
+  await clearCalls();
+  await page.keyboard.type("clear ");
+  await activeCompletion.waitFor();
+  const completionUsageOnly = await activeCompletion.evaluate((completion) => ({
+    usage: completion.querySelector(".terminal-completion-usage")?.textContent ?? "",
+    candidates: completion.querySelectorAll(".terminal-completion-list > button").length,
+  }));
+  assert(completionUsageOnly.usage.includes("clear") && completionUsageOnly.candidates === 0,
+    `usage-only command completion was not rendered accurately: ${JSON.stringify(completionUsageOnly)}`);
+  await page.waitForFunction(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text" && typeof call.args.text === "string")
+    .map((call) => call.args.text)
+    .join("")
+    .endsWith("clear "));
+  await clearCalls();
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "send_text" && call.args.text === "\t"
+  )));
+  assert(await activeCompletion.count() === 0, "usage-only completion swallowed native shell Tab completion");
+  await page.keyboard.press("Enter");
+
+  await page.keyboard.type("clear ");
+  await activeCompletion.waitFor();
+  await clearCalls();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return document.querySelector('[data-pane-id="pane-a"] .terminal-completion') === null
+      && host?.dataset.terminalKeyMode === "command";
+  });
+  const usageEscapeLeaked = await page.evaluate(() => window.__invokeCalls.some((call) => (
+    call.command === "send_text" && call.args.text === "\x1b"
+  )));
+  assert(!usageEscapeLeaked, "closing a usage-only completion leaked Escape to the remote session");
+  await page.keyboard.press("i");
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalKeyMode === "remote"
+  ));
+  await page.keyboard.press("Enter");
+
   await activeTextarea.dispatchEvent("paste", { bubbles: true, cancelable: true });
   await page.keyboard.type("git s");
   await page.waitForTimeout(100);
@@ -1295,6 +1336,7 @@ try {
     },
     completionPlacement,
     completionAfterRemoteCursorMove,
+    completionUsageOnly,
     mobileCompletionPlacement,
     insertNormalMode,
     completionPreferences: {

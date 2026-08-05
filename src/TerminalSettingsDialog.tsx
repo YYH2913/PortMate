@@ -228,7 +228,7 @@ function TerminalSettingsContent({
             <div className="settings-subtitle">自动完成命令使用：</div>
             <SettingCheck label="命令名称(N)" checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
             <SettingCheck label="命令选项(O)" checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
-            <SettingCheck label="命令参数(P)" checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
+            <SettingCheck label="子命令与参数(P)" checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
             <SettingCheck label="历史命令(H)" checked={prefs.completionHistory} onChange={(value) => updatePref("completionHistory", value)} />
             <SettingCheck label="快速命令(Q)" checked={prefs.completionQuickCommands} onChange={(value) => updatePref("completionQuickCommands", value)} />
             <SettingSelect label="输入后开始自动补全:(S)" value={prefs.completionTriggerChars} options={["1 字符", "2 字符", "3 字符"]} onChange={(value) => updatePref("completionTriggerChars", value)} />

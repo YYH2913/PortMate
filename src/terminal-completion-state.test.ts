@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   emptyTerminalCompletionInputState,
   reduceTerminalCompletionInput,
+  terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
+  terminalCompletionSupported,
+  terminalCompletionUsageHint,
 } from "./terminal-completion-state";
 import {
   defaultTerminalCompletionPreferences,
@@ -72,13 +75,72 @@ describe("terminal completion state", () => {
       line: "git st",
       preferences: defaultTerminalCompletionPreferences,
     });
-    expect(argument.find((item) => item.label === "status")?.appendText).toBe("atus ");
+    expect(argument.find((item) => item.label === "status")).toMatchObject({
+      source: "subcommand",
+      appendText: "atus ",
+    });
 
     const option = terminalCompletionSuggestions({
       line: "ssh -p",
       preferences: defaultTerminalCompletionPreferences,
     });
     expect(option.find((item) => item.label === "-p")?.appendText).toBe(" ");
+  });
+
+  it("uses nested schemas for subcommand options and real positional values", () => {
+    const commit = terminalCompletionSuggestions({
+      line: "git commit --a",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(commit.find((item) => item.label === "--amend")).toMatchObject({
+      source: "option",
+      appendText: "mend ",
+    });
+
+    const compose = terminalCompletionSuggestions({
+      line: "docker compose u",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(compose.find((item) => item.label === "up")).toMatchObject({
+      source: "subcommand",
+      appendText: "p ",
+    });
+
+    const mode = terminalCompletionSuggestions({
+      line: "chmod 7",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(mode.some((item) => item.source === "argument" && item.label === "755")).toBe(true);
+  });
+
+  it("provides non-inserting usage hints for every known command context", () => {
+    expect(terminalCompletionUsageHint({
+      line: "ls ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "ls [选项] [路径...]", detail: "列出目录内容" });
+    expect(terminalCompletionUsageHint({
+      line: "git commit -m",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "git commit [选项] [路径...]", detail: "提交暂存变更" });
+    expect(terminalCompletionUsageHint({
+      line: "docker compose up ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "docker compose up [选项] [服务...]", detail: "创建并启动服务" });
+    expect(terminalCompletionUsageHint({
+      line: "unknown-command ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toBeNull();
+    expect(terminalCompletionUsageHint({
+      line: "git status | grep M",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toBeNull();
+  });
+
+  it("supports all interactive transports and names subcommands accurately", () => {
+    expect(["serial", "shell", "ssh", "tcp", "telnet", "tmux"].every(terminalCompletionSupported))
+      .toBe(true);
+    expect(terminalCompletionSupported("sftp")).toBe(false);
+    expect(terminalCompletionSourceLabel("subcommand")).toBe("子命令");
   });
 
   it("ranks exact Quick Commands and explicit history without accepting multiline payloads", () => {

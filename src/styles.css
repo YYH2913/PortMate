@@ -3301,6 +3301,7 @@ button {
   scrollbar-width: thin;
 }
 
+.terminal-completion-usage,
 .terminal-completion-list > button {
   display: grid;
   grid-template-columns: 48px minmax(86px, 0.8fr) minmax(100px, 1.2fr);
@@ -3317,6 +3318,12 @@ button {
   text-align: left;
 }
 
+.terminal-completion-usage {
+  border-bottom: 1px solid rgba(65, 78, 91, 0.52);
+  background: #0c131a;
+  cursor: default;
+}
+
 .terminal-completion-list > button:last-child {
   border-bottom: 0;
 }
@@ -3331,6 +3338,7 @@ button {
   box-shadow: inset 2px 0 0 var(--cyan);
 }
 
+.terminal-completion-usage > span,
 .terminal-completion-list > button > span {
   overflow: hidden;
   color: var(--cyan);
@@ -3339,6 +3347,8 @@ button {
   white-space: nowrap;
 }
 
+.terminal-completion-usage > code,
+.terminal-completion-usage > small,
 .terminal-completion-list > button > code,
 .terminal-completion-list > button > small {
   overflow: hidden;
@@ -3347,11 +3357,13 @@ button {
   white-space: nowrap;
 }
 
+.terminal-completion-usage > code,
 .terminal-completion-list > button > code {
   color: #f1f5f9;
   font-size: 11px;
 }
 
+.terminal-completion-usage > small,
 .terminal-completion-list > button > small {
   color: var(--muted);
   font-size: 10px;
@@ -3363,10 +3375,12 @@ button {
 }
 
 @container (max-width: 320px) {
+  .terminal-completion-usage,
   .terminal-completion-list > button {
     grid-template-columns: 42px minmax(0, 1fr);
   }
 
+  .terminal-completion-usage > small,
   .terminal-completion-list > button > small {
     display: none;
   }
