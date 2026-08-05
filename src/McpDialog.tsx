@@ -43,6 +43,7 @@ export default function McpDialog({
   const [auditScope, setAuditScope] = useState<"" | McpScope>("");
   const [selectedAuditId, setSelectedAuditId] = useState("");
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
+  const clientIdInputRef = useRef<HTMLInputElement>(null);
   const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "audit">());
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
@@ -184,6 +185,7 @@ export default function McpDialog({
     setDraft(createMcpGrant());
     setEditingClientId(null);
     setError("");
+    requestAnimationFrame(() => clientIdInputRef.current?.focus());
   }
 
   function toggleScope(scope: McpScope) {
@@ -218,6 +220,12 @@ export default function McpDialog({
           <div className="mcp-content" role="tabpanel">
             <aside className="mcp-grants">
               <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
+              {editingClientId === null ? (
+                <button type="button" className="active mcp-grant-draft" aria-current="true" disabled={grantBusy} onClick={() => clientIdInputRef.current?.focus()}>
+                  <strong>{draft.name.trim() || draft.clientId.trim() || "新授权"}</strong>
+                  <span>{draft.clientId.trim() || "尚未保存"}</span>
+                </button>
+              ) : null}
               {grants.map((grant) => (
                 <button key={grant.clientId} type="button" disabled={grantBusy} className={grant.clientId === editingClientId ? "active" : ""} onClick={() => selectGrant(grant)}>
                   <strong>{grant.name || grant.clientId}</strong>
@@ -227,8 +235,8 @@ export default function McpDialog({
               {!grants.length ? <div className="empty-pane top">没有授权规则</div> : null}
             </aside>
             <section className="mcp-editor">
-              <McpField label="Client ID:"><input value={draft.clientId} readOnly={editingClientId !== null} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
-              <McpField label="名称:"><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+              <McpField label="Client ID:"><input ref={clientIdInputRef} value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
+              <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
               <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
               <fieldset className="mcp-check-grid">
                 <legend>权限范围</legend>
@@ -240,7 +248,7 @@ export default function McpDialog({
               </fieldset>
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
-                <button type="button" disabled={grantBusy} onClick={() => void saveGrant()}>保存</button>
+                <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
                 <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
               </div>
             </section>
@@ -322,7 +330,7 @@ function McpField({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function createMcpGrant(): McpGrant {
-  return { clientId: "portmate-local", name: "Local MCP Client", scopes: ["read-sessions", "read-logs"], allowedSessions: [], confirmWrites: true, expiresAt: null, revokedAt: null };
+  return { clientId: "", name: "", scopes: ["read-sessions", "read-logs"], allowedSessions: [], confirmWrites: true, expiresAt: null, revokedAt: null };
 }
 
 function formatDateTime(value: string) {

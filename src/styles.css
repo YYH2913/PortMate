@@ -10739,6 +10739,10 @@ fieldset label {
   background: rgba(20, 184, 166, 0.08);
 }
 
+.mcp-grants button.mcp-grant-draft {
+  border-style: dashed;
+}
+
 .mcp-grants span {
   overflow: hidden;
   color: var(--muted);

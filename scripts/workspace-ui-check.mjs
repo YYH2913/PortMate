@@ -3137,6 +3137,14 @@ Host staging
     "MCP grants did not load into the compact grant workspace");
   assert(await mcpDialog.getByRole("checkbox", { name: "写操作每次确认", exact: true }).isChecked(),
     "MCP write confirmation setting did not load for the selected grant");
+  await mcpDialog.locator(".mcp-new").click();
+  const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
+  assert(await newGrantClientId.inputValue() === ""
+    && await newGrantClientId.evaluate((input) => input === document.activeElement)
+    && await mcpDialog.locator(".mcp-grant-draft.active", { hasText: "新授权" }).count() === 1
+    && await mcpDialog.getByRole("button", { name: "保存", exact: true }).isDisabled(),
+  "MCP new grant action did not create and focus an explicit blank draft");
+  await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
   await page.evaluate(() => { window.__deferMcpHttpConfig = true; });
