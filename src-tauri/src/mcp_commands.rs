@@ -161,24 +161,74 @@ pub(crate) fn revoke_mcp_grant(
 }
 
 #[tauri::command]
-pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> McpHttpConfig {
-    build_mcp_http_config(
+pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfig, String> {
+    let settings = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_http_settings
+        .clone();
+    build_mcp_http_config_for_request(
         has_secret_ref(MCP_HTTP_TOKEN_REF),
         &mcp_sidecar_executable_path(),
         &state.store_path,
+        settings,
     )
+}
+
+#[tauri::command]
+pub(crate) fn preview_mcp_http_config(
+    state: State<'_, AppState>,
+    settings: McpHttpSettings,
+) -> Result<McpHttpConfig, String> {
+    build_mcp_http_config_for_request(
+        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+        settings,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn save_mcp_http_settings(
+    state: State<'_, AppState>,
+    settings: McpHttpSettings,
+) -> Result<McpHttpConfig, String> {
+    let (settings, _) = normalize_mcp_http_settings(settings)?;
+    let config = build_mcp_http_config_for_request(
+        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+        settings.clone(),
+    )?;
+    {
+        let mut store = state.store.lock().map_err(|error| error.to_string())?;
+        commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            Ok(set_mcp_http_settings_in_store(next_store, settings))
+        })?;
+    }
+    Ok(config)
 }
 
 #[tauri::command]
 pub(crate) fn rotate_mcp_http_token(
     state: State<'_, AppState>,
 ) -> Result<McpHttpTokenResponse, String> {
+    let settings = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_http_settings
+        .clone();
+    let config = build_mcp_http_config_for_request(
+        true,
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+        settings,
+    )?;
     let token = Uuid::new_v4().to_string();
     write_secret_to_keyring(MCP_HTTP_TOKEN_REF, &token)?;
-    Ok(McpHttpTokenResponse {
-        config: build_mcp_http_config(true, &mcp_sidecar_executable_path(), &state.store_path),
-        token,
-    })
+    Ok(McpHttpTokenResponse { config, token })
 }
 
 #[tauri::command]

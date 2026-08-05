@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Copy, Download, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Copy, Download, KeyRound, Plus, RefreshCw, Save, Search, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
+import {
+  defaultMcpHttpSettings,
+  formatMcpHttpOrigins,
+  isNonLoopbackMcpHost,
+  mcpHttpSettingsFromConfig,
+  parseMcpHttpOrigins,
+} from "./mcp-http-state";
+import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
 const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "write-input", "transfer", "tunnel", "manage-sessions"];
 type McpDialogTab = "grants" | "http" | "audit";
@@ -33,6 +40,10 @@ export default function McpDialog({
   const [editingClientId, setEditingClientId] = useState<string | null>(() => grants[0]?.clientId ?? null);
   const [error, setError] = useState("");
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
+  const [httpSettings, setHttpSettings] = useState<McpHttpConfigRequest>(defaultMcpHttpSettings);
+  const [httpOriginsText, setHttpOriginsText] = useState(() => formatMcpHttpOrigins(defaultMcpHttpSettings().allowedOrigins));
+  const [httpDirty, setHttpDirty] = useState(false);
+  const [httpPreviewCurrent, setHttpPreviewCurrent] = useState(false);
   const [httpToken, setHttpToken] = useState("");
   const [httpBusy, setHttpBusy] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
@@ -44,7 +55,7 @@ export default function McpDialog({
   const [selectedAuditId, setSelectedAuditId] = useState("");
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
   const clientIdInputRef = useRef<HTMLInputElement>(null);
-  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "audit">());
+  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "audit">());
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
     query: auditQuery,
@@ -59,11 +70,31 @@ export default function McpDialog({
     const ids = new Set(audit.flatMap((record) => record.sessionId ? [record.sessionId] : []));
     return [...ids].sort((left, right) => (sessionNames.get(left) ?? left).localeCompare(sessionNames.get(right) ?? right));
   }, [audit, sessionNames]);
+  const httpRemoteListener = isNonLoopbackMcpHost(httpSettings.listenHost);
+  const httpSettingsValid = Boolean(httpSettings.listenHost.trim() && httpSettings.clientId.trim())
+    && Number.isInteger(httpSettings.port) && httpSettings.port >= 1 && httpSettings.port <= 65_535
+    && (!httpRemoteListener || httpSettings.allowRemote);
 
   useEffect(() => {
     if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
     void loadHttpConfig();
   }, [httpConfig, tab]);
+
+  useEffect(() => {
+    if (tab !== "http") {
+      requestGateRef.current.invalidate("http-preview");
+      return;
+    }
+    if (!httpDirty || httpBusy || !isBackendAvailable()) return;
+    if (!httpSettingsValid) {
+      requestGateRef.current.invalidate("http-preview");
+      setHttpPreviewCurrent(false);
+      return;
+    }
+    const settings = currentHttpSettings();
+    const timer = window.setTimeout(() => void previewHttpSettings(settings), 180);
+    return () => window.clearTimeout(timer);
+  }, [httpBusy, httpDirty, httpOriginsText, httpSettings, httpSettingsValid, tab]);
 
   useEffect(() => () => requestGateRef.current.invalidateAll(), []);
 
@@ -73,11 +104,48 @@ export default function McpDialog({
     setHttpBusy(true);
     try {
       const next = await invokeBackend<McpHttpConfig>("mcp_http_config", {});
-      if (requestGateRef.current.isCurrent("http", token)) setHttpConfig(next);
+      if (requestGateRef.current.isCurrent("http", token)) applyHttpConfig(next);
     } catch (nextError) {
       if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
     } finally {
       if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
+    }
+  }
+
+  async function saveHttpSettings() {
+    requestGateRef.current.invalidate("http-preview");
+    const token = requestGateRef.current.begin("http");
+    if (token === null) return;
+    setError("");
+    setHttpBusy(true);
+    try {
+      const next = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
+        settings: currentHttpSettings(),
+      });
+      if (requestGateRef.current.isCurrent("http", token)) applyHttpConfig(next);
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
+    }
+  }
+
+  async function previewHttpSettings(settings: McpHttpConfigRequest) {
+    const token = requestGateRef.current.replace("http-preview");
+    try {
+      const next = await invokeBackend<McpHttpConfig>("preview_mcp_http_config", { settings });
+      if (requestGateRef.current.isCurrent("http-preview", token)) {
+        setHttpConfig(next);
+        setHttpPreviewCurrent(true);
+        setError("");
+      }
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http-preview", token)) {
+        setHttpPreviewCurrent(false);
+        setError(formatError(nextError));
+      }
+    } finally {
+      requestGateRef.current.finish("http-preview", token);
     }
   }
 
@@ -89,7 +157,7 @@ export default function McpDialog({
     try {
       const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
       if (requestGateRef.current.isCurrent("http", token)) {
-        setHttpConfig(response.config);
+        applyHttpConfig(response.config);
         setHttpToken(response.token);
       }
     } catch (nextError) {
@@ -97,6 +165,27 @@ export default function McpDialog({
     } finally {
       if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
     }
+  }
+
+  function applyHttpConfig(config: McpHttpConfig) {
+    const settings = mcpHttpSettingsFromConfig(config);
+    setHttpConfig(config);
+    setHttpSettings(settings);
+    setHttpOriginsText(formatMcpHttpOrigins(settings.allowedOrigins));
+    setHttpDirty(false);
+    setHttpPreviewCurrent(true);
+    setError("");
+  }
+
+  function currentHttpSettings(): McpHttpConfigRequest {
+    return { ...httpSettings, allowedOrigins: parseMcpHttpOrigins(httpOriginsText) };
+  }
+
+  function updateHttpSettings(patch: Partial<McpHttpConfigRequest>) {
+    setHttpSettings((current) => ({ ...current, ...patch }));
+    setHttpDirty(true);
+    setHttpPreviewCurrent(false);
+    setError("");
   }
 
   async function saveGrant() {
@@ -261,18 +350,35 @@ export default function McpDialog({
         {tab === "http" ? (
           <section className="mcp-http-view" role="tabpanel">
             <div className="mcp-http-panel">
-              <header><strong>Streamable HTTP</strong><span>{httpConfig?.tokenAvailable ? "token 已保存" : "未生成 token"}</span></header>
-              <div className="mcp-http-row"><span>Endpoint</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
-              <div className="mcp-http-row"><span>Origin</span><code>{httpConfig?.defaultOrigin ?? "http://127.0.0.1:8787"}</code></div>
+              <header><strong>Streamable HTTP</strong><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
+              <div className="mcp-http-settings">
+                <div className="mcp-http-field-grid">
+                  <McpField label="监听 IP:"><input aria-label="MCP HTTP 监听 IP" list="mcp-http-listen-hosts" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ listenHost: event.target.value })} /><datalist id="mcp-http-listen-hosts"><option value="127.0.0.1" /><option value="0.0.0.0" /><option value="::1" /><option value="::" /></datalist></McpField>
+                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
+                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
+                </div>
+                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" onChange={(event) => { setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
+                <div className="mcp-http-options">
+                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={!httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
+                  <label><input type="checkbox" checked={httpSettings.trusted} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
+                </div>
+                {httpRemoteListener ? (
+                  <div className={`mcp-http-exposure ${httpSettings.allowRemote ? "allowed" : "blocked"}`} role="status">
+                    {httpSettings.allowRemote ? "网络可达主机可访问此端点；Token 与 Origin 校验保持启用，仅用于可信网络或 TLS 代理后方。" : "非回环监听需要显式允许远程访问。"}
+                  </div>
+                ) : null}
+              </div>
+              <div className="mcp-http-row"><span>Listen</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
               <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
               <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
               <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>
               {httpToken ? <div className="mcp-http-token"><span>新 Token</span><code>{httpToken}</code></div> : null}
-              <textarea readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? "portmate-mcp --http"} />
+              <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-http-command stale" : "mcp-http-command"} readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? ""} />
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
-                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || (!httpConfig && !error)}>{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
-                <button type="button" onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig}>复制启动命令</button>
+                <button type="button" onClick={() => void saveHttpSettings()} disabled={httpBusy || !httpSettingsValid || !httpDirty}><Save size={14} />保存配置</button>
+                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpDirty || !httpConfig}><KeyRound size={14} />{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button type="button" onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />复制命令</button>
               </div>
             </div>
           </section>

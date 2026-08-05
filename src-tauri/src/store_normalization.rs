@@ -303,6 +303,9 @@ pub(super) fn normalize_loaded_store_at(
     prune_orphaned_loaded_session_state(&mut store);
     normalize_loaded_mirror_keys(&mut store);
     normalize_loaded_mcp_grants(&mut store);
+    store.mcp_http_settings = normalize_mcp_http_settings(store.mcp_http_settings)
+        .map(|(settings, _)| settings)
+        .unwrap_or_default();
     normalize_loaded_one_keys(&mut store);
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {

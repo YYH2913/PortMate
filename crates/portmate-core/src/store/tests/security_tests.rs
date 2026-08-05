@@ -8,11 +8,13 @@ fn legacy_store_without_one_keys_deserializes_empty() {
     object.remove("commandHistory");
     object.remove("commandHistoryMigrated");
     object.remove("commandHistoryRevision");
+    object.remove("mcpHttpSettings");
     let store: SessionStore = serde_json::from_value(value).unwrap();
     assert!(store.one_keys.is_empty());
     assert!(store.command_history.is_empty());
     assert!(!store.command_history_migrated);
     assert_eq!(store.command_history_revision, 0);
+    assert_eq!(store.mcp_http_settings, McpHttpSettings::default());
 }
 
 #[test]

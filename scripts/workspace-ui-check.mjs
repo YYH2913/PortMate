@@ -258,13 +258,20 @@ const mcpAudit = [
 ];
 
 const mcpHttpConfig = {
+  listenHost: "127.0.0.1",
+  port: 8787,
+  allowedOrigins: ["http://127.0.0.1:8787", "http://localhost:8787"],
+  clientId: "portmate-local",
+  trusted: false,
+  allowRemote: false,
+  remoteAccess: false,
   endpoint: "http://127.0.0.1:8787/mcp",
   tokenRef: "keychain:mcp-http-token",
   tokenAvailable: true,
   defaultOrigin: "http://127.0.0.1:8787",
   executable: "/usr/bin/portmate-mcp",
   storePath: "/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3",
-  startCommand: "PORTMATE_STORE_PATH='/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 /usr/bin/portmate-mcp --http",
+  startCommand: "PORTMATE_STORE_PATH='/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787' PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787,http://localhost:8787' PORTMATE_MCP_CLIENT_ID='portmate-local' PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 PORTMATE_MCP_TRUSTED=0 '/usr/bin/portmate-mcp' --http",
 };
 
 const workspace = {
@@ -399,6 +406,27 @@ try {
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
+    window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
+    window.__buildMcpHttpConfig = (settings) => {
+      const host = settings.listenHost.trim();
+      const endpointHost = host.includes(":") ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
+      const address = `${endpointHost}:${settings.port}`;
+      const origins = settings.allowedOrigins.length
+        ? [...settings.allowedOrigins]
+        : [`http://${endpointHost}:${settings.port}`];
+      const remoteAccess = host !== "127.0.0.1" && host !== "::1";
+      const remote = ` PORTMATE_MCP_HTTP_ALLOW_REMOTE=${remoteAccess ? 1 : 0}`;
+      const trusted = ` PORTMATE_MCP_TRUSTED=${settings.trusted ? 1 : 0}`;
+      return {
+        ...window.__mcpHttpConfig,
+        ...structuredClone(settings),
+        allowedOrigins: origins,
+        remoteAccess,
+        endpoint: `http://${address}/mcp`,
+        defaultOrigin: origins[0],
+        startCommand: `PORTMATE_STORE_PATH='${window.__mcpHttpConfig.storePath}' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='${address}' PORTMATE_MCP_HTTP_ORIGINS='${origins.join(",")}' PORTMATE_MCP_CLIENT_ID='${settings.clientId}'${remote}${trusted} '${window.__mcpHttpConfig.executable}' --http`,
+      };
+    };
     window.__transfers = [];
     window.__commandHistory = { entries: [], migrated: false, revision: 0 };
     window.__injectCommandHistoryStartupRace = true;
@@ -893,8 +921,13 @@ try {
         }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") {
-          if (!window.__deferMcpHttpConfig) return initialMcpHttpConfig;
+          if (!window.__deferMcpHttpConfig) return structuredClone(window.__mcpHttpConfig);
           return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
+        }
+        if (command === "preview_mcp_http_config") return window.__buildMcpHttpConfig(args.settings);
+        if (command === "save_mcp_http_settings") {
+          window.__mcpHttpConfig = window.__buildMcpHttpConfig(args.settings);
+          return structuredClone(window.__mcpHttpConfig);
         }
         if (command === "list_mcp_approvals") return [];
         if (command === "respond_mcp_approval") return null;
@@ -912,7 +945,7 @@ try {
           if (!window.__deferGrantMutations) return result;
           return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
-        if (command === "rotate_mcp_http_token") return { config: initialMcpHttpConfig, token: "portmate-test-token" };
+        if (command === "rotate_mcp_http_token") return { config: structuredClone(window.__mcpHttpConfig), token: "portmate-test-token" };
         if (command === "export_mcp_audit") {
           return {
             path: "/tmp/portmate-mcp-audit.jsonl",
@@ -3175,6 +3208,33 @@ Host staging
     && await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue() === mcpHttpConfig.startCommand
     && !mcpHttpText.includes("cargo run"),
   "MCP HTTP packaged executable/store configuration did not load");
+  const mcpListenHost = mcpDialog.getByLabel("MCP HTTP 监听 IP", { exact: true });
+  await mcpListenHost.fill("0.0.0.0");
+  assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
+    "MCP HTTP remote listener could be saved without explicit remote approval");
+  await mcpDialog.getByRole("checkbox", { name: "允许非本机监听", exact: true }).check();
+  await mcpDialog.getByRole("spinbutton", { name: "MCP HTTP 端口", exact: true }).fill("9088");
+  await mcpDialog.getByLabel("MCP HTTP Client ID", { exact: true }).fill("remote-automation");
+  await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).fill("https://console.example.test");
+  await mcpDialog.getByRole("checkbox", { name: "授权为空时允许写操作", exact: true }).check();
+  await page.waitForFunction(() => document.querySelector(".mcp-http-command")?.value.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"));
+  assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled(),
+    "MCP HTTP valid unsaved settings did not produce a copyable command preview");
+  await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).click();
+  await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
+  const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
+  const savedMcpHttpSettings = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings);
+  assert(remoteCommand.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'")
+    && remoteCommand.includes("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1")
+    && remoteCommand.includes("PORTMATE_MCP_TRUSTED=1")
+    && remoteCommand.includes("PORTMATE_MCP_CLIENT_ID='remote-automation'")
+    && remoteCommand.includes("PORTMATE_MCP_HTTP_ORIGINS='https://console.example.test'")
+    && savedMcpHttpSettings.listenHost === "0.0.0.0"
+    && savedMcpHttpSettings.port === 9088
+    && savedMcpHttpSettings.allowRemote === true,
+  "MCP HTTP remote listener settings were not persisted into the generated command");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-http.png`, fullPage: true });
 
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   const auditView = mcpDialog.locator(".mcp-audit-view");
@@ -3492,6 +3552,15 @@ Host staging
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
   await page.locator(".mcp-dialog").waitFor();
+  await page.getByRole("tab", { name: "HTTP", exact: true }).click();
+  await page.getByLabel("MCP HTTP 监听 IP", { exact: true }).waitFor();
+  const mobileMcpHttpBounds = await page.locator(".mcp-http-view").evaluate((view) => ({
+    scrollWidth: view.scrollWidth,
+    clientWidth: view.clientWidth,
+  }));
+  assert(mobileMcpHttpBounds.scrollWidth <= mobileMcpHttpBounds.clientWidth,
+    `mobile MCP HTTP settings overflow horizontally: ${JSON.stringify(mobileMcpHttpBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-http-mobile.png`, fullPage: true });
   await page.getByRole("tab", { name: "审计", exact: true }).click();
   const mobileMcpBounds = await page.locator(".mcp-dialog").evaluate((dialog) => {
     const rect = dialog.getBoundingClientRect();
@@ -5054,6 +5123,8 @@ Host staging
       `${screenshotPrefix}-detached-health.png`,
       `${screenshotPrefix}-serial-analyzer.png`,
       `${screenshotPrefix}-mcp-grants.png`,
+      `${screenshotPrefix}-mcp-http.png`,
+      `${screenshotPrefix}-mcp-http-mobile.png`,
       `${screenshotPrefix}-mcp-audit.png`,
       `${screenshotPrefix}-mcp-audit-mobile.png`,
       `${screenshotPrefix}-mcp-approval.png`,

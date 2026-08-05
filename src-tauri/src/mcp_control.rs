@@ -1,7 +1,9 @@
 use super::*;
+use url::Url;
 
 pub(super) const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
-const MCP_HTTP_DEFAULT_ADDR: &str = "127.0.0.1:8787";
+const MAX_MCP_HTTP_ORIGINS: usize = 32;
+const MAX_MCP_HTTP_ORIGIN_BYTES: usize = 512;
 pub(super) const MAX_MCP_GRANTS: usize = 512;
 pub(super) const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
 pub(super) const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
@@ -278,8 +280,7 @@ pub(super) fn mcp_sidecar_executable_path() -> PathBuf {
     PathBuf::from(file_name)
 }
 
-fn shell_command_path(path: &Path) -> String {
-    let value = path.to_string_lossy();
+fn shell_command_value(value: &str) -> String {
     if cfg!(windows) {
         format!("'{}'", value.replace('\'', "''"))
     } else {
@@ -287,31 +288,162 @@ fn shell_command_path(path: &Path) -> String {
     }
 }
 
-pub(super) fn build_mcp_http_config(
+pub(super) fn build_mcp_http_config_for_request(
     token_available: bool,
     executable: &Path,
     store_path: &Path,
-) -> McpHttpConfig {
+    request: McpHttpSettings,
+) -> Result<McpHttpConfig, String> {
+    let (request, bind_ip) = normalize_mcp_http_settings(request)?;
+    let address = std::net::SocketAddr::new(bind_ip, request.port);
     let executable_text = executable.to_string_lossy().to_string();
     let store_path_text = store_path.to_string_lossy().to_string();
-    let executable_command = shell_command_path(executable);
-    let store_path_command = shell_command_path(store_path);
+    let executable_command = shell_command_value(&executable_text);
+    let store_path_command = shell_command_value(&store_path_text);
+    let address_command = shell_command_value(&address.to_string());
+    let origins_command = shell_command_value(&request.allowed_origins.join(","));
+    let client_id_command = shell_command_value(&request.client_id);
+    let remote_access = !bind_ip.is_loopback();
     let start_command = if cfg!(windows) {
-        format!(
-            "$env:PORTMATE_STORE_PATH={store_path_command}; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='{MCP_HTTP_DEFAULT_ADDR}'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://{MCP_HTTP_DEFAULT_ADDR}'; & {executable_command} --http"
-        )
+        let assignments = [
+            format!("$env:PORTMATE_STORE_PATH={store_path_command};"),
+            "$env:PORTMATE_MCP_HTTP='1';".to_string(),
+            format!("$env:PORTMATE_MCP_HTTP_ADDR={address_command};"),
+            format!("$env:PORTMATE_MCP_HTTP_ORIGINS={origins_command};"),
+            format!("$env:PORTMATE_MCP_CLIENT_ID={client_id_command};"),
+            format!(
+                "$env:PORTMATE_MCP_HTTP_ALLOW_REMOTE='{}';",
+                u8::from(remote_access)
+            ),
+            format!("$env:PORTMATE_MCP_TRUSTED='{}';", u8::from(request.trusted)),
+        ];
+        format!("{} & {executable_command} --http", assignments.join(" "))
     } else {
-        format!(
-            "PORTMATE_STORE_PATH={store_path_command} PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR={MCP_HTTP_DEFAULT_ADDR} PORTMATE_MCP_HTTP_ORIGINS=http://{MCP_HTTP_DEFAULT_ADDR} {executable_command} --http"
-        )
+        let assignments = [
+            format!("PORTMATE_STORE_PATH={store_path_command}"),
+            "PORTMATE_MCP_HTTP=1".to_string(),
+            format!("PORTMATE_MCP_HTTP_ADDR={address_command}"),
+            format!("PORTMATE_MCP_HTTP_ORIGINS={origins_command}"),
+            format!("PORTMATE_MCP_CLIENT_ID={client_id_command}"),
+            format!("PORTMATE_MCP_HTTP_ALLOW_REMOTE={}", u8::from(remote_access)),
+            format!("PORTMATE_MCP_TRUSTED={}", u8::from(request.trusted)),
+        ];
+        format!("{} {executable_command} --http", assignments.join(" "))
     };
-    McpHttpConfig {
-        endpoint: format!("http://{MCP_HTTP_DEFAULT_ADDR}/mcp"),
+    let default_origin = request.allowed_origins[0].clone();
+    Ok(McpHttpConfig {
+        settings: request,
+        remote_access,
+        endpoint: format!("http://{address}/mcp"),
         token_ref: MCP_HTTP_TOKEN_REF.to_string(),
         token_available,
-        default_origin: format!("http://{MCP_HTTP_DEFAULT_ADDR}"),
+        default_origin,
         executable: executable_text,
         store_path: store_path_text,
         start_command,
+    })
+}
+
+pub(super) fn normalize_mcp_http_settings(
+    mut request: McpHttpSettings,
+) -> Result<(McpHttpSettings, std::net::IpAddr), String> {
+    let listen_host = request.listen_host.trim();
+    let listen_host = listen_host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(listen_host);
+    let bind_ip = listen_host.parse::<std::net::IpAddr>().map_err(|_| {
+        "MCP HTTP listen address must be a numeric IPv4 or IPv6 address".to_string()
+    })?;
+    if request.port == 0 {
+        return Err("MCP HTTP port must be between 1 and 65535".to_string());
     }
+    if !bind_ip.is_loopback() && !request.allow_remote {
+        return Err(
+            "non-loopback MCP HTTP listeners require explicit remote access approval".to_string(),
+        );
+    }
+    request.listen_host = bind_ip.to_string();
+    request.client_id = normalize_mcp_client_id(&request.client_id)?;
+    request.allow_remote = !bind_ip.is_loopback();
+
+    if request.allowed_origins.len() > MAX_MCP_HTTP_ORIGINS {
+        return Err(format!(
+            "MCP HTTP Origin limit exceeded ({MAX_MCP_HTTP_ORIGINS})"
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut allowed_origins = Vec::with_capacity(request.allowed_origins.len());
+    for origin in request.allowed_origins {
+        let origin = normalize_mcp_http_origin(&origin)?;
+        if !seen.insert(origin.clone()) {
+            return Err("MCP HTTP allowed Origins must not contain duplicates".to_string());
+        }
+        allowed_origins.push(origin);
+    }
+    if allowed_origins.is_empty() {
+        allowed_origins = default_mcp_http_origins(bind_ip, request.port);
+    }
+    request.allowed_origins = allowed_origins;
+    Ok((request, bind_ip))
+}
+
+pub(super) fn set_mcp_http_settings_in_store(
+    store: &mut SessionStore,
+    settings: McpHttpSettings,
+) -> McpHttpSettings {
+    store.mcp_http_settings = settings;
+    store.mcp_http_settings.clone()
+}
+
+fn normalize_mcp_http_origin(origin: &str) -> Result<String, String> {
+    let origin = origin.trim();
+    if origin.is_empty()
+        || origin.len() > MAX_MCP_HTTP_ORIGIN_BYTES
+        || origin
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || origin.contains(',')
+    {
+        return Err(format!(
+            "each MCP HTTP Origin must be non-empty, contain no whitespace or commas, and not exceed {MAX_MCP_HTTP_ORIGIN_BYTES} bytes"
+        ));
+    }
+    if origin == "*" {
+        return Ok(origin.to_string());
+    }
+    let parsed = Url::parse(origin)
+        .map_err(|_| "MCP HTTP Origins must use scheme://host[:port] or *".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "MCP HTTP Origins must be HTTP(S) origins containing only a scheme and authority"
+                .to_string(),
+        );
+    }
+    let normalized = parsed.origin().ascii_serialization();
+    if normalized == "null" {
+        return Err("MCP HTTP Origin scheme does not define a network origin".to_string());
+    }
+    Ok(normalized)
+}
+
+fn default_mcp_http_origins(bind_ip: std::net::IpAddr, port: u16) -> Vec<String> {
+    if bind_ip.is_unspecified() {
+        return vec![
+            format!("http://127.0.0.1:{port}"),
+            format!("http://localhost:{port}"),
+        ];
+    }
+    let host = match bind_ip {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    vec![format!("http://{host}:{port}")]
 }

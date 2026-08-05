@@ -343,9 +343,13 @@ fn log_query_limit_matches_mcp_schema_bounds() {
 fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
     let executable = Path::new("/opt/PortMate/bin/portmate-mcp");
     let store_path = Path::new("/home/operator/PortMate Data/portmate-store.sqlite3");
-    let config = build_mcp_http_config(true, executable, store_path);
+    let config =
+        build_mcp_http_config_for_request(true, executable, store_path, McpHttpSettings::default())
+            .unwrap();
     assert_eq!(config.token_ref, MCP_HTTP_TOKEN_REF);
     assert_eq!(config.endpoint, "http://127.0.0.1:8787/mcp");
+    assert_eq!(config.settings, McpHttpSettings::default());
+    assert!(!config.remote_access);
     assert!(config.token_available);
     assert!(config.start_command.contains("PORTMATE_MCP_HTTP=1"));
     assert_eq!(config.executable, executable.to_string_lossy());
@@ -364,11 +368,61 @@ fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
     #[cfg(not(windows))]
     assert_eq!(
         config.start_command,
-        "PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787 '/opt/PortMate/bin/portmate-mcp' --http"
+        "PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787' PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787,http://localhost:8787' PORTMATE_MCP_CLIENT_ID='portmate-local' PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 PORTMATE_MCP_TRUSTED=0 '/opt/PortMate/bin/portmate-mcp' --http"
     );
     #[cfg(windows)]
     assert_eq!(
         config.start_command,
-        "$env:PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3'; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787'; & '/opt/PortMate/bin/portmate-mcp' --http"
+        "$env:PORTMATE_STORE_PATH='/home/operator/PortMate Data/portmate-store.sqlite3'; $env:PORTMATE_MCP_HTTP='1'; $env:PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787'; $env:PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787,http://localhost:8787'; $env:PORTMATE_MCP_CLIENT_ID='portmate-local'; $env:PORTMATE_MCP_HTTP_ALLOW_REMOTE='0'; $env:PORTMATE_MCP_TRUSTED='0'; & '/opt/PortMate/bin/portmate-mcp' --http"
+    );
+}
+
+#[test]
+fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
+    let executable = Path::new("/opt/PortMate/bin/portmate-mcp");
+    let store_path = Path::new("/tmp/portmate-store.sqlite3");
+    let remote = McpHttpSettings {
+        listen_host: "0.0.0.0".to_string(),
+        port: 9888,
+        allowed_origins: vec!["https://console.example.test".to_string()],
+        client_id: "automation-client".to_string(),
+        trusted: true,
+        allow_remote: true,
+    };
+    let config = build_mcp_http_config_for_request(false, executable, store_path, remote).unwrap();
+    assert_eq!(config.endpoint, "http://0.0.0.0:9888/mcp");
+    assert!(config.remote_access);
+    assert!(config
+        .start_command
+        .contains("PORTMATE_MCP_HTTP_ALLOW_REMOTE"));
+    assert!(config.start_command.contains("PORTMATE_MCP_TRUSTED"));
+    assert!(config.start_command.contains("automation-client"));
+    assert!(config.start_command.contains("console.example.test"));
+
+    let mut denied = config.settings.clone();
+    denied.allow_remote = false;
+    assert!(normalize_mcp_http_settings(denied)
+        .unwrap_err()
+        .contains("explicit remote access"));
+
+    let mut invalid_origin = McpHttpSettings::default();
+    invalid_origin.allowed_origins = vec!["https://console.example.test/path".to_string()];
+    assert!(normalize_mcp_http_settings(invalid_origin)
+        .unwrap_err()
+        .contains("scheme and authority"));
+
+    let mut invalid_scheme = McpHttpSettings::default();
+    invalid_scheme.allowed_origins = vec!["ftp://console.example.test".to_string()];
+    assert!(normalize_mcp_http_settings(invalid_scheme)
+        .unwrap_err()
+        .contains("HTTP(S)"));
+
+    let mut loopback = McpHttpSettings::default();
+    loopback.allow_remote = true;
+    assert!(
+        !normalize_mcp_http_settings(loopback)
+            .unwrap()
+            .0
+            .allow_remote
     );
 }

@@ -12,12 +12,12 @@ use portmate_core::{
     redact_transfer_task, resource_templates, tool_definitions, validate_triggers,
     validate_tunnels, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
-    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpScope, OneKeyCredential,
-    OneKeyIdentity, OneKeyKind, ProxyConfig, SessionEvent, SessionKind, SessionProfile,
-    SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk, SysmonNetworkInterface,
-    SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark, TransferProtocol, TransferStatus,
-    TransferTask, TriggerAction, TrustedHostKey, TunnelMode, TunnelSpec,
-    MAX_COMMAND_HISTORY_ENTRIES, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
+    HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpHttpSettings, McpScope,
+    OneKeyCredential, OneKeyIdentity, OneKeyKind, ProxyConfig, SessionEvent, SessionKind,
+    SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk,
+    SysmonNetworkInterface, SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark,
+    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
+    TunnelSpec, MAX_COMMAND_HISTORY_ENTRIES, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
     MAX_TUNNEL_LABEL_CHARACTERS,
 };
 use rusqlite::{params, Connection as SqliteConnection};

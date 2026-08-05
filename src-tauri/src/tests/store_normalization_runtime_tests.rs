@@ -52,6 +52,29 @@ fn normalize_loaded_store_rejects_oversized_profile_collections() {
 }
 
 #[test]
+fn normalize_loaded_store_preserves_valid_mcp_http_settings_and_resets_unsafe_ones() {
+    let remote = McpHttpSettings {
+        listen_host: "0.0.0.0".to_string(),
+        port: 9888,
+        allowed_origins: vec!["https://console.example.test".to_string()],
+        client_id: "automation-client".to_string(),
+        trusted: false,
+        allow_remote: true,
+    };
+    let mut store = SessionStore {
+        mcp_http_settings: remote.clone(),
+        ..SessionStore::default()
+    };
+    assert_eq!(normalize_loaded_store(store.clone()).mcp_http_settings, remote);
+
+    store.mcp_http_settings.allow_remote = false;
+    assert_eq!(
+        normalize_loaded_store(store).mcp_http_settings,
+        McpHttpSettings::default()
+    );
+}
+
+#[test]
 fn normalize_loaded_store_records_interrupted_active_runtime_diagnostics() {
     let loaded_at = Utc::now();
     let previous_disconnect = loaded_at - chrono::Duration::minutes(5);
@@ -271,4 +294,3 @@ fn normalize_loaded_store_remaps_trimmed_profile_references() {
     assert_eq!(normalized.tail_log(expected, 10).len(), 1);
     assert!(normalized.sysmon_for(expected).is_some());
 }
-

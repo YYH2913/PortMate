@@ -179,3 +179,36 @@ fn mcp_grant_mutations_change_memory_only_after_persistence_succeeds() {
     assert_eq!(error, "disk full");
     assert_eq!(store.grants[0].client_id, "ops-client");
 }
+
+#[test]
+fn mcp_http_settings_change_memory_only_after_persistence_succeeds() {
+    let mut store = SessionStore::default();
+    let settings = McpHttpSettings {
+        listen_host: "0.0.0.0".to_string(),
+        port: 9888,
+        allowed_origins: vec!["https://console.example.test".to_string()],
+        client_id: "automation-client".to_string(),
+        trusted: true,
+        allow_remote: true,
+    };
+    let before = store.mcp_http_settings.clone();
+
+    let error = commit_store_mutation_with(
+        &mut store,
+        |next_store| Ok(set_mcp_http_settings_in_store(next_store, settings.clone())),
+        |_| Err("store conflict".to_string()),
+        |_| Ok(false),
+    )
+    .unwrap_err();
+    assert_eq!(error, "store conflict");
+    assert_eq!(store.mcp_http_settings, before);
+
+    commit_store_mutation_with(
+        &mut store,
+        |next_store| Ok(set_mcp_http_settings_in_store(next_store, settings.clone())),
+        |_| Ok(()),
+        |_| panic!("successful persistence must not be reverified"),
+    )
+    .unwrap();
+    assert_eq!(store.mcp_http_settings, settings);
+}

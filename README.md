@@ -588,8 +588,8 @@ accepted request is capped at 1 MiB and must arrive completely within five secon
 use the same timeout. Oversized, incomplete, malformed, and invalid-token requests are rejected
 before command dispatch and do not create audit records.
 
-The same bridge can expose JSON-RPC over local HTTP for clients that cannot spawn stdio servers. It only accepts loopback bind addresses, validates `Origin` when present, and requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring.
-The desktop `工具 -> MCP Bridge` dialog shows the packaged executable, exact desktop store path, default HTTP endpoint, Origin, startup command, and tokenRef, and can generate or rotate the keyring token. The generated command is platform-specific, shell-quotes paths, and never falls back to a source-only `cargo run` command.
+The same bridge can expose JSON-RPC over HTTP for clients that cannot spawn stdio servers. Loopback is the default. A non-loopback bind such as `0.0.0.0` or `::` is rejected unless `PORTMATE_MCP_HTTP_ALLOW_REMOTE=1` is also set. Every listener validates `Origin` when present and always requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`; remote opt-in cannot disable token authentication. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring. Use a trusted network or a TLS reverse proxy for remote HTTP because the bridge does not terminate TLS itself.
+The desktop `工具 -> MCP Bridge` dialog persists the listen IP, port, allowed Origins, MCP client ID, trusted empty-grant bootstrap, and remote-access approval in the PortMate store. Saving uses the same persist-before-swap transaction as grant changes, so a failed store write cannot activate an uncommitted listener configuration. The dialog shows the packaged executable, exact desktop store path, effective endpoint, startup command, and tokenRef, and can generate or rotate the keyring token. The generated command is platform-specific, shell-quotes every configurable value, keeps the token out of the command, and never falls back to a source-only `cargo run` command.
 Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.
 POST requests require `Content-Type: application/json` (parameters such as `charset=utf-8` are
 accepted). An explicit `MCP-Protocol-Version` must match the server's negotiated `2025-06-18`
@@ -615,8 +615,25 @@ the declared or terminal body are rejected before JSON-RPC dispatch. Repeated li
 PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
 PORTMATE_MCP_HTTP=1 \
 PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 \
-PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787 \
+PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787,http://localhost:8787 \
+PORTMATE_MCP_CLIENT_ID=portmate-local \
+PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 \
+PORTMATE_MCP_TRUSTED=0 \
 cargo run -p portmate-mcp -- --http
+```
+
+For an intentionally network-reachable listener, set a restrictive Origin allowlist and keep the
+host firewall scoped to the required clients. `0.0.0.0` is a bind address, so clients connect to an
+actual address of the PortMate host:
+
+```bash
+PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
+PORTMATE_MCP_HTTP=1 \
+PORTMATE_MCP_HTTP_ADDR=0.0.0.0:8787 \
+PORTMATE_MCP_HTTP_ALLOW_REMOTE=1 \
+PORTMATE_MCP_HTTP_ORIGINS=https://mcp-console.example \
+PORTMATE_MCP_CLIENT_ID=portmate-local \
+portmate-mcp --http
 ```
 
 ## Verification

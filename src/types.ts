@@ -526,7 +526,17 @@ export interface McpApprovalRequest {
   expiresAt: string;
 }
 
-export interface McpHttpConfig {
+export interface McpHttpConfigRequest {
+  listenHost: string;
+  port: number;
+  allowedOrigins: string[];
+  clientId: string;
+  trusted: boolean;
+  allowRemote: boolean;
+}
+
+export interface McpHttpConfig extends McpHttpConfigRequest {
+  remoteAccess: boolean;
   endpoint: string;
   tokenRef: string;
   tokenAvailable: boolean;

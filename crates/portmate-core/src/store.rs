@@ -48,6 +48,8 @@ pub struct SessionStore {
     pub one_keys: Vec<OneKeyCredential>,
     pub host_keys: HostKeyStore,
     pub grants: Vec<McpGrant>,
+    #[serde(default)]
+    pub mcp_http_settings: McpHttpSettings,
     pub audit: Vec<AuditRecord>,
     pub timeline: Vec<TimelineMark>,
     pub sysmon: Vec<SysmonSnapshot>,

@@ -145,13 +145,24 @@ fn http_config() -> Result<HttpConfig> {
         .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
         .parse::<SocketAddr>()
         .map_err(|error| anyhow!("PORTMATE_MCP_HTTP_ADDR must be host:port: {error}"))?;
-    if !matches!(addr.ip(), IpAddr::V4(ip) if ip.is_loopback())
-        && !matches!(addr.ip(), IpAddr::V6(ip) if ip.is_loopback())
-    {
-        return Err(anyhow!("MCP HTTP must bind a loopback address; got {addr}"));
-    }
+    let allow_remote = std::env::var("PORTMATE_MCP_HTTP_ALLOW_REMOTE")
+        .ok()
+        .as_deref()
+        == Some("1");
+    validate_http_bind_addr(addr, allow_remote)?;
     let security = HttpSecurityConfig::from_environment(addr)?;
     Ok(HttpConfig { addr, security })
+}
+
+pub(super) fn validate_http_bind_addr(addr: SocketAddr, allow_remote: bool) -> Result<()> {
+    let loopback = matches!(addr.ip(), IpAddr::V4(ip) if ip.is_loopback())
+        || matches!(addr.ip(), IpAddr::V6(ip) if ip.is_loopback());
+    if !loopback && !allow_remote {
+        return Err(anyhow!(
+            "MCP HTTP non-loopback bind {addr} requires PORTMATE_MCP_HTTP_ALLOW_REMOTE=1"
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> String {

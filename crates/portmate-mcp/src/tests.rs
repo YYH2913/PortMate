@@ -58,6 +58,21 @@ fn test_http_config() -> HttpConfig {
     }
 }
 
+#[test]
+fn http_listener_requires_explicit_permission_outside_loopback() {
+    let loopback: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+    let wildcard_v4: SocketAddr = "0.0.0.0:8787".parse().unwrap();
+    let wildcard_v6: SocketAddr = "[::]:8787".parse().unwrap();
+
+    validate_http_bind_addr(loopback, false).unwrap();
+    assert!(validate_http_bind_addr(wildcard_v4, false)
+        .unwrap_err()
+        .to_string()
+        .contains("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1"));
+    validate_http_bind_addr(wildcard_v4, true).unwrap();
+    validate_http_bind_addr(wildcard_v6, true).unwrap();
+}
+
 fn test_snapshot_store(name: &str) -> SessionStore {
     let mut store = SessionStore::default();
     store.upsert_profile(portmate_core::SessionProfile {

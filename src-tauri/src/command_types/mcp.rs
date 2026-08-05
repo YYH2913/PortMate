@@ -1,8 +1,12 @@
+use portmate_core::McpHttpSettings;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpHttpConfig {
+    #[serde(flatten)]
+    pub settings: McpHttpSettings,
+    pub remote_access: bool,
     pub endpoint: String,
     pub token_ref: String,
     pub token_available: bool,

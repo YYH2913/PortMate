@@ -45,7 +45,7 @@ use http_server::run_http_server;
 #[cfg(test)]
 use http_server::{
     handle_http_json_rpc, handle_http_request, spawn_http_connection, try_acquire_http_connection,
-    HttpConfig,
+    validate_http_bind_addr, HttpConfig,
 };
 #[cfg(test)]
 use json_rpc::MAX_JSON_RPC_BATCH_ITEMS;

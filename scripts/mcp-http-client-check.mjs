@@ -67,8 +67,40 @@ function requestParams(entry) {
   }
 }
 
-const port = await reservePort();
-const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
+async function verifyRemoteBindRequiresOptIn(binary) {
+  const port = await reservePort();
+  let output = "";
+  const denied = spawn(binary, ["--http"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORTMATE_MCP_HTTP_ADDR: `0.0.0.0:${port}`,
+      PORTMATE_MCP_HTTP_ALLOW_REMOTE: "0",
+      PORTMATE_MCP_HTTP_TOKEN: token,
+      PORTMATE_STORE_PATH: "",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  denied.stdout.on("data", (chunk) => { output += chunk.toString(); });
+  denied.stderr.on("data", (chunk) => { output += chunk.toString(); });
+  const code = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      denied.kill("SIGKILL");
+      reject(new Error(`MCP HTTP accepted a remote bind without opt-in\n${output}`));
+    }, 2_000);
+    denied.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    denied.once("exit", (exitCode) => {
+      clearTimeout(timeout);
+      resolve(exitCode);
+    });
+  });
+  assert(code !== 0, "MCP HTTP remote bind without opt-in exited successfully");
+  assert(output.includes("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1"), "MCP HTTP remote-bind rejection omitted the opt-in diagnostic");
+}
+
 const binary = process.env.PORTMATE_MCP_BINARY
   ? path.resolve(process.env.PORTMATE_MCP_BINARY)
   : path.resolve(
@@ -76,12 +108,18 @@ const binary = process.env.PORTMATE_MCP_BINARY
     "debug",
     process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
   );
+await verifyRemoteBindRequiresOptIn(binary);
+
+const port = await reservePort();
+const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
 let serverOutput = "";
 const server = spawn(binary, ["--http"], {
   cwd: process.cwd(),
   env: {
     ...process.env,
-    PORTMATE_MCP_HTTP_ADDR: `127.0.0.1:${port}`,
+    PORTMATE_MCP_HTTP_ADDR: `0.0.0.0:${port}`,
+    PORTMATE_MCP_HTTP_ALLOW_REMOTE: "1",
+    PORTMATE_MCP_HTTP_ORIGINS: `http://127.0.0.1:${port}`,
     PORTMATE_MCP_HTTP_TOKEN: token,
     PORTMATE_MCP_CLIENT_ID: "official-sdk-http-check",
     PORTMATE_STORE_PATH: "",
@@ -108,6 +146,22 @@ const trackedFetch = async (input, init = {}) => {
 let client;
 try {
   await waitForServer(endpoint, () => serverOutput);
+  const deniedOrigin = await nativeFetch(endpoint, {
+    method: "OPTIONS",
+    headers: { Origin: "https://denied.example.test" },
+  });
+  assert(deniedOrigin.status === 403, "MCP HTTP remote listener accepted an Origin outside its allowlist");
+  const allowedOrigin = await nativeFetch(endpoint, {
+    method: "OPTIONS",
+    headers: { Origin: `http://127.0.0.1:${port}` },
+  });
+  assert(allowedOrigin.status === 204, "MCP HTTP remote listener rejected its configured Origin");
+  const unauthenticated = await nativeFetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: {} }),
+  });
+  assert(unauthenticated.status === 401, "MCP HTTP remote listener accepted a request without its token");
   globalThis.fetch = trackedFetch;
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },

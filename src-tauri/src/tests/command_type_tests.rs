@@ -33,6 +33,15 @@ fn remaining_command_types_keep_stable_json_contracts() {
     assert!(deleted["oneKeys"].as_array().unwrap().is_empty());
 
     let config = serde_json::to_value(McpHttpConfig {
+        settings: McpHttpSettings {
+            listen_host: "127.0.0.1".to_string(),
+            port: 43123,
+            allowed_origins: vec!["http://127.0.0.1".to_string()],
+            client_id: "test-client".to_string(),
+            trusted: false,
+            allow_remote: false,
+        },
+        remote_access: false,
         endpoint: "http://127.0.0.1:43123/mcp".to_string(),
         token_ref: "keychain:mcp-http".to_string(),
         token_available: true,
@@ -45,5 +54,8 @@ fn remaining_command_types_keep_stable_json_contracts() {
     assert_eq!(config["tokenRef"], "keychain:mcp-http");
     assert_eq!(config["tokenAvailable"], true);
     assert_eq!(config["defaultOrigin"], "http://127.0.0.1");
+    assert_eq!(config["listenHost"], "127.0.0.1");
+    assert_eq!(config["clientId"], "test-client");
+    assert_eq!(config["remoteAccess"], false);
     assert_eq!(config["startCommand"], "portmate-mcp --http");
 }
