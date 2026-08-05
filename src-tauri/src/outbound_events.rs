@@ -262,6 +262,15 @@ pub(super) fn record_outbound_user_event_with_context(
             }
         }
     }
+    publish_terminal_bytes(
+        io.app_handle.as_ref(),
+        session_id,
+        event.direction,
+        event.stream,
+        wire_bytes,
+        Some(&event.id),
+        event.ts.to_owned(),
+    );
     if let Some(app_handle) = &io.app_handle {
         let _ = app_handle.emit("portmate-session-event", event.clone());
     }
@@ -345,6 +354,15 @@ pub(super) fn record_outbound_control_event(
             }
         }
     }
+    publish_terminal_bytes(
+        io.app_handle.as_ref(),
+        session_id,
+        event.direction,
+        event.stream,
+        wire_bytes,
+        Some(&event.id),
+        event.ts.to_owned(),
+    );
     if let Some(app_handle) = &io.app_handle {
         let _ = app_handle.emit("portmate-session-event", event.clone());
     }

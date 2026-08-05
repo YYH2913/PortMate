@@ -42,6 +42,15 @@ pub(super) fn record_channel_bytes(
         errors,
     } = begin_event_log_shards(io, session_id, raw_bytes);
     if text.is_empty() {
+        publish_terminal_bytes(
+            io.app_handle.as_ref(),
+            session_id,
+            EventDirection::Inbound,
+            stream,
+            raw_bytes,
+            None,
+            Utc::now(),
+        );
         return;
     }
     let live_event = if let Ok(mut store) = io.store.lock() {
@@ -70,6 +79,20 @@ pub(super) fn record_channel_bytes(
         );
         None
     };
+    let terminal_event_id = live_event.as_ref().map(|event| event.id.as_str());
+    let terminal_event_timestamp = live_event
+        .as_ref()
+        .map(|event| event.ts.to_owned())
+        .unwrap_or_else(Utc::now);
+    publish_terminal_bytes(
+        io.app_handle.as_ref(),
+        session_id,
+        EventDirection::Inbound,
+        stream,
+        raw_bytes,
+        terminal_event_id,
+        terminal_event_timestamp,
+    );
     if let Some(mut event) = live_event {
         if profile.as_ref().is_some_and(|profile| {
             append_event_text_and_jsonl_log_shards(&io.store_path, profile, &mut event)

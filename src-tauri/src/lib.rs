@@ -189,6 +189,7 @@ mod tcp_reconnect;
 mod tcp_reconnect_runtime;
 mod tcp_transport;
 mod telnet_protocol;
+mod terminal_byte_events;
 mod terminal_export_commands;
 mod tmux_commands;
 mod tmux_protocol;
@@ -353,6 +354,7 @@ use tcp_reconnect::*;
 use tcp_reconnect_runtime::*;
 use tcp_transport::*;
 use telnet_protocol::*;
+use terminal_byte_events::publish_terminal_bytes;
 #[cfg(test)]
 use terminal_export_commands::{export_terminal_text_inner, validate_terminal_text_export_request};
 use tmux_protocol::*;
