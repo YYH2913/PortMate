@@ -54,7 +54,7 @@
 
 ## MCP Surface
 - 内置 `portmate-mcp` stdio bridge，供 Claude Desktop、Cursor、Codex 等 MCP Host 启动；bridge 通过本地认证 IPC 连接正在运行的 PortMate 桌面应用。
-- MCP 使用官方 `2025-06-18` 基线：JSON-RPC lifecycle、tools、resources、prompts；HTTP 模式仅绑定 `127.0.0.1`、校验 Origin、要求本地 token。
+- MCP 使用官方 `2025-06-18` 基线：JSON-RPC lifecycle、tools、resources、prompts；HTTP 模式默认绑定 `127.0.0.1`，显式启用后可绑定非回环地址，所有监听地址都强制校验 Origin 和 Bearer token。
 - Resources：`portmate://sessions`、`portmate://sessions/{id}/state`、`screen`、`log`、`timeline`、`sysmon`、`transfers/{id}`。
 - Tools：`list_sessions`、`read_screen`、`tail_log`、`search_logs`、`send_text`、`send_key`、`run_command`、`open_session`、`close_session`、`start_transfer`、`create_tunnel`、`export_session_bundle`。
 - 权限策略：默认只读；用户把 MCP client 加入信任白名单后，可按 scope 开启写入、传输、隧道、关闭会话等能力；所有 MCP 写操作记录审计日志并在 UI 显示来源 client。
