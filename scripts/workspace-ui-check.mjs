@@ -3139,6 +3139,7 @@ Host staging
     "MCP write confirmation setting did not load for the selected grant");
   await mcpDialog.locator(".mcp-new").click();
   const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
+  await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
   assert(await newGrantClientId.inputValue() === ""
     && await newGrantClientId.evaluate((input) => input === document.activeElement)
     && await mcpDialog.locator(".mcp-grant-draft.active", { hasText: "新授权" }).count() === 1

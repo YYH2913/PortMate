@@ -185,7 +185,10 @@ export default function McpDialog({
     setDraft(createMcpGrant());
     setEditingClientId(null);
     setError("");
-    requestAnimationFrame(() => clientIdInputRef.current?.focus());
+    requestAnimationFrame(() => {
+      clientIdInputRef.current?.focus();
+      clientIdInputRef.current?.select();
+    });
   }
 
   function toggleScope(scope: McpScope) {
