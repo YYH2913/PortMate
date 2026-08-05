@@ -4,16 +4,26 @@ import { Copy, Download, KeyRound, Plus, RefreshCw, Save, Search, X } from "luci
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
+import { createMcpGrant, formatMcpGrantExpiryInput, parseMcpGrantExpiryInput } from "./mcp-grant-state";
 import {
   defaultMcpHttpSettings,
   formatMcpHttpOrigins,
   isNonLoopbackMcpHost,
+  MCP_HTTP_CUSTOM_LISTEN_PRESET,
+  mcpHttpListenPreset,
   mcpHttpSettingsFromConfig,
   parseMcpHttpOrigins,
 } from "./mcp-http-state";
 import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
 const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "write-input", "transfer", "tunnel", "manage-sessions"];
+const mcpHttpListenOptions = [
+  ["127.0.0.1", "本机 IPv4 · 127.0.0.1"],
+  ["0.0.0.0", "所有 IPv4 · 0.0.0.0"],
+  ["::1", "本机 IPv6 · ::1"],
+  ["::", "所有 IPv6 · ::"],
+  [MCP_HTTP_CUSTOM_LISTEN_PRESET, "自定义 IP"],
+] as const;
 type McpDialogTab = "grants" | "http" | "audit";
 
 export default function McpDialog({
@@ -56,6 +66,7 @@ export default function McpDialog({
   const [selectedAuditId, setSelectedAuditId] = useState("");
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
   const clientIdInputRef = useRef<HTMLInputElement>(null);
+  const httpListenInputRef = useRef<HTMLInputElement>(null);
   const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "audit">());
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
@@ -198,6 +209,13 @@ export default function McpDialog({
     setHttpDirty(true);
     setHttpPreviewCurrent(false);
     setError("");
+  }
+
+  function updateHttpListenHost(listenHost: string) {
+    updateHttpSettings({
+      listenHost,
+      ...(!isNonLoopbackMcpHost(listenHost) ? { allowRemote: false } : {}),
+    });
   }
 
   async function saveGrant() {
@@ -348,6 +366,7 @@ export default function McpDialog({
               <section className="mcp-editor">
                 <McpField label="Client ID:"><input ref={clientIdInputRef} value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
                 <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+                <McpField label="到期时间:"><input type="datetime-local" aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} onChange={(event) => setDraft({ ...draft, expiresAt: parseMcpGrantExpiryInput(event.target.value) })} /></McpField>
                 <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
                 <fieldset className="mcp-check-grid">
                   <legend>权限范围</legend>
@@ -379,7 +398,18 @@ export default function McpDialog({
               <header><strong>Streamable HTTP</strong><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
               <div className="mcp-http-settings">
                 <div className="mcp-http-field-grid">
-                  <McpField label="监听 IP:"><input aria-label="MCP HTTP 监听 IP" list="mcp-http-listen-hosts" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => { const listenHost = event.target.value; updateHttpSettings({ listenHost, ...(!isNonLoopbackMcpHost(listenHost) ? { allowRemote: false } : {}) }); }} /><datalist id="mcp-http-listen-hosts"><option value="127.0.0.1" /><option value="0.0.0.0" /><option value="::1" /><option value="::" /></datalist></McpField>
+                  <McpFieldGroup label="监听 IP:">
+                    <div className="mcp-http-listen-editor">
+                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} onChange={(event) => {
+                        const listenHost = event.target.value === MCP_HTTP_CUSTOM_LISTEN_PRESET ? "" : event.target.value;
+                        updateHttpListenHost(listenHost);
+                        if (!listenHost) requestAnimationFrame(() => httpListenInputRef.current?.focus());
+                      }}>
+                        {mcpHttpListenOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </select>
+                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => updateHttpListenHost(event.target.value)} />
+                    </div>
+                  </McpFieldGroup>
                   <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
                   <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
                 </div>
@@ -464,8 +494,8 @@ function McpField({ label, children }: { label: string; children: ReactNode }) {
   return <label className="dialog-field"><span>{label}</span>{children}</label>;
 }
 
-function createMcpGrant(): McpGrant {
-  return { clientId: "", name: "", scopes: ["read-sessions", "read-logs"], allowedSessions: [], confirmWrites: true, expiresAt: null, revokedAt: null };
+function McpFieldGroup({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="dialog-field"><span>{label}</span>{children}</div>;
 }
 
 function formatDateTime(value: string) {

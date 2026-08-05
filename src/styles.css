@@ -10671,7 +10671,7 @@ fieldset label {
 }
 
 .mcp-dialog[data-tab="grants"] {
-  height: min(560px, calc(100vh - 56px));
+  height: min(620px, calc(100vh - 56px));
 }
 
 .mcp-dialog[data-tab="http"] {
@@ -10916,6 +10916,13 @@ fieldset label {
 .mcp-http-field-grid .dialog-field:last-child {
   grid-column: 1 / -1;
   grid-template-columns: 104px minmax(0, 1fr);
+}
+
+.mcp-http-listen-editor {
+  display: grid;
+  grid-template-columns: minmax(176px, 0.92fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
 }
 
 .mcp-http-settings > .dialog-field {
@@ -11254,6 +11261,10 @@ fieldset label {
   .mcp-http-field-grid .dialog-field:last-child {
     grid-column: auto;
     grid-template-columns: 100px minmax(0, 1fr);
+  }
+
+  .mcp-http-listen-editor {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mcp-http-settings > .dialog-field,

@@ -97,13 +97,14 @@ fn mcp_grant_validation_normalizes_and_rejects_ambiguous_inputs() {
         scopes: vec![McpScope::ReadSessions, McpScope::WriteInput],
         allowed_sessions: vec!["  edge  ".to_string(), "lab".to_string()],
         confirm_writes: true,
-        expires_at: None,
+        expires_at: Some("2031-04-05T06:07:00Z".parse().unwrap()),
         revoked_at: None,
     };
     let normalized = normalize_mcp_grant(grant.clone()).unwrap();
     assert_eq!(normalized.client_id, "ops-client");
     assert_eq!(normalized.name, "Operations");
     assert_eq!(normalized.allowed_sessions, ["edge", "lab"]);
+    assert_eq!(normalized.expires_at, grant.expires_at);
 
     let mut invalid = grant.clone();
     invalid.client_id = " \n ".to_string();

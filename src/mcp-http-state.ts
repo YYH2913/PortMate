@@ -1,6 +1,11 @@
 import type { McpHttpConfig, McpHttpConfigRequest } from "./types";
 
 export const MCP_HTTP_DEFAULT_PORT = 8787;
+export const MCP_HTTP_LISTEN_PRESETS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
+export const MCP_HTTP_CUSTOM_LISTEN_PRESET = "custom" as const;
+
+export type McpHttpListenPreset = typeof MCP_HTTP_LISTEN_PRESETS[number]
+  | typeof MCP_HTTP_CUSTOM_LISTEN_PRESET;
 
 export function defaultMcpHttpOrigins(port = MCP_HTTP_DEFAULT_PORT): string[] {
   return [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
@@ -38,6 +43,12 @@ export function isNonLoopbackMcpHost(value: string): boolean {
     return Number(octets[0]) !== 127;
   }
   return true;
+}
+
+export function mcpHttpListenPreset(value: string): McpHttpListenPreset {
+  const host = value.trim().replace(/^\[|\]$/g, "");
+  return MCP_HTTP_LISTEN_PRESETS.find((preset) => preset === host)
+    ?? MCP_HTTP_CUSTOM_LISTEN_PRESET;
 }
 
 export function mcpHttpSettingsFromConfig(config: McpHttpConfig): McpHttpConfigRequest {

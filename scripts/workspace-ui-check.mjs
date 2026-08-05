@@ -3179,6 +3179,19 @@ Host staging
     && await mcpDialog.getByRole("button", { name: "保存", exact: true }).isDisabled(),
   "MCP new grant action did not create and focus an explicit blank draft");
   await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
+  const mcpGrantEditorBounds = await mcpDialog.locator(".mcp-editor").evaluate((editor) => {
+    const editorRect = editor.getBoundingClientRect();
+    const actionsRect = editor.querySelector(".mcp-actions").getBoundingClientRect();
+    return {
+      editorTop: editorRect.top,
+      editorBottom: editorRect.bottom,
+      actionsTop: actionsRect.top,
+      actionsBottom: actionsRect.bottom,
+    };
+  });
+  assert(mcpGrantEditorBounds.actionsTop >= mcpGrantEditorBounds.editorTop
+    && mcpGrantEditorBounds.actionsBottom <= mcpGrantEditorBounds.editorBottom,
+  `MCP grant actions are clipped by the editor viewport: ${JSON.stringify(mcpGrantEditorBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
   for (const grant of mcpGrants) {
@@ -3195,12 +3208,16 @@ Host staging
   await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
   await newGrantClientId.fill("empty-store-client");
   await mcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Empty Store Client");
+  const grantExpiry = mcpDialog.getByLabel("MCP 授权到期时间", { exact: true });
+  await grantExpiry.fill("2031-04-05T06:07");
   await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
   await mcpDialog.locator(".mcp-grants > button", { hasText: "Empty Store Client" }).waitFor();
   const emptyStoreGrantSave = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "save_mcp_grant" && call.args.grant.clientId === "empty-store-client")
     .at(-1));
-  assert(emptyStoreGrantSave?.args.grant.name === "Empty Store Client",
+  assert(emptyStoreGrantSave?.args.grant.name === "Empty Store Client"
+    && Number.isFinite(Date.parse(emptyStoreGrantSave?.args.grant.expiresAt))
+    && await grantExpiry.inputValue() === "2031-04-05T06:07",
     `MCP new grant action did not save from an empty store: ${JSON.stringify(emptyStoreGrantSave)}`);
 
   await page.evaluate(() => { window.__deferMcpHttpConfig = true; });
@@ -3231,13 +3248,17 @@ Host staging
     && !mcpHttpText.includes("cargo run"),
   "MCP HTTP packaged executable/store configuration did not load");
   const mcpListenHost = mcpDialog.getByLabel("MCP HTTP 监听 IP", { exact: true });
-  await mcpListenHost.fill("0.0.0.0");
+  const mcpListenPreset = mcpDialog.getByRole("combobox", { name: "MCP HTTP 监听范围", exact: true });
+  await mcpListenPreset.selectOption("0.0.0.0");
+  assert(await mcpListenHost.inputValue() === "0.0.0.0",
+    "MCP HTTP all-IPv4 listener preset did not update the explicit bind address");
   assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
     "MCP HTTP remote listener could be saved without explicit remote approval");
   const mcpRemoteAccess = mcpDialog.getByRole("checkbox", { name: "允许非本机监听", exact: true });
   await mcpRemoteAccess.check();
   await mcpListenHost.fill("127.0.0.1");
-  assert(await mcpRemoteAccess.isDisabled() && !await mcpRemoteAccess.isChecked(),
+  assert(await mcpRemoteAccess.isDisabled() && !await mcpRemoteAccess.isChecked()
+    && await mcpListenPreset.inputValue() === "127.0.0.1",
     "MCP HTTP loopback listener retained a stale remote-access approval");
   await mcpListenHost.fill("0.0.0.0");
   assert(!await mcpRemoteAccess.isChecked()

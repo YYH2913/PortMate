@@ -4,6 +4,7 @@ import {
   defaultMcpHttpSettings,
   formatMcpHttpOrigins,
   isNonLoopbackMcpHost,
+  mcpHttpListenPreset,
   parseMcpHttpOrigins,
 } from "./mcp-http-state";
 
@@ -28,5 +29,8 @@ describe("MCP HTTP settings", () => {
     expect(isNonLoopbackMcpHost("::1")).toBe(false);
     expect(isNonLoopbackMcpHost("0.0.0.0")).toBe(true);
     expect(isNonLoopbackMcpHost("::")).toBe(true);
+    expect(mcpHttpListenPreset("0.0.0.0")).toBe("0.0.0.0");
+    expect(mcpHttpListenPreset(" [::1] ")).toBe("::1");
+    expect(mcpHttpListenPreset("192.0.2.10")).toBe("custom");
   });
 });
