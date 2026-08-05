@@ -182,7 +182,7 @@ pub(crate) fn preview_mcp_http_config(
     settings: McpHttpSettings,
 ) -> Result<McpHttpConfig, String> {
     build_mcp_http_config_for_request(
-        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        false,
         &mcp_sidecar_executable_path(),
         &state.store_path,
         settings,
