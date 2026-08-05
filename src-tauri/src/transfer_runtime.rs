@@ -1,7 +1,7 @@
 use super::*;
 
 mod state;
-pub(super) use state::*;
+pub(super) use self::state::*;
 
 pub(super) const MAX_ACTIVE_TRANSFER_TASKS: usize = 5_000;
 pub(super) const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
