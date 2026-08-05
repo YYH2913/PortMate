@@ -122,7 +122,10 @@ describe("native packaged runtime smoke", () => {
       const legacy = join(dirname(data), "dev.portmate.app");
       if (existsSync(legacy)) {
         if (!existsSync(data) || readdirSync(data).length !== 0) {
-          console.error("both legacy and current PortMate data directories contain PortMate state; refusing to merge");
+          writeFileSync(
+            process.stderr.fd,
+            "both legacy and current PortMate data directories contain PortMate state; refusing to merge\\n",
+          );
           process.exit(91);
         }
         rmSync(data, { recursive: true });

@@ -309,7 +309,7 @@ async function expectPackagedApplicationStartupRejection({
       resolveExit(processResult);
     };
     child.once("error", (error) => settle({ error }));
-    child.once("exit", (code, signal) => settle({ code, signal }));
+    child.once("close", (code, signal) => settle({ code, signal }));
   });
   for (const stream of [child.stdout, child.stderr]) {
     stream.on("data", (chunk) => {
