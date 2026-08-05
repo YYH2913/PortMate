@@ -307,6 +307,18 @@ export interface SessionEvent {
   annotations: Record<string, string>;
 }
 
+export interface TerminalBytesEvent {
+  id: string;
+  sessionId: string;
+  ts: string;
+  direction: "inbound" | "outbound";
+  stream: "stdout" | "stderr" | "control" | "audit";
+  bytes: number[];
+  originalLength: number;
+  truncated: boolean;
+  eventId?: string | null;
+}
+
 export interface SerialCaptureFrame {
   id: string;
   ts: string;

@@ -1649,6 +1649,200 @@ Host staging
     && terminalInputWrites.map((call) => call.args.text).join("") === terminalInputProbe,
   `terminal keyboard input was lost or routed to another session: ${JSON.stringify(terminalInputWrites)}`);
 
+  const terminalCanvas = page.locator(".terminal-pane.active .terminal-canvas");
+  assert(await terminalCanvas.getAttribute("data-terminal-display-mode") === "text",
+    "terminal byte view did not default to text mode");
+  const backgroundByteCapture = await page.evaluate(async () => {
+    window.__emitTauriEvent("portmate-terminal-bytes", {
+      id: "terminal-byte-background",
+      sessionId: "bench-uart",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      stream: "stdout",
+      bytes: [0xde, 0xad, 0xbe, 0xef],
+      originalLength: 4,
+      truncated: false,
+      eventId: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = await import("/src/terminal-byte-state.ts");
+    return state.terminalByteCacheSnapshot("bench-uart").capturedBytes;
+  });
+  assert(backgroundByteCapture === 4,
+    "window-level byte capture missed data from an inactive terminal tab");
+  await page.evaluate(() => {
+    window.__emitTauriEvent("portmate-terminal-bytes", {
+      id: "terminal-byte-rx-1",
+      sessionId: "edge-router",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      stream: "stdout",
+      bytes: [0x00, 0x41, 0x0d, 0x0a, 0x09, 0x80, 0xff, 0x20, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c],
+      originalLength: 20,
+      truncated: false,
+      eventId: "event-edge-router",
+    });
+    window.__emitTauriEvent("portmate-terminal-bytes", {
+      id: "terminal-byte-tx-1",
+      sessionId: "edge-router",
+      ts: new Date().toISOString(),
+      direction: "outbound",
+      stream: "control",
+      bytes: [0x1b, 0x5b, 0x41],
+      originalLength: 3,
+      truncated: false,
+      eventId: "event-edge-router-tx",
+    });
+  });
+  const hexModeButton = terminalCanvas.getByRole("button", { name: "Hex", exact: true });
+  await hexModeButton.click();
+  await terminalCanvas.locator('.terminal-byte-scroll[aria-rowcount="4"]').waitFor();
+  assert(await terminalCanvas.getAttribute("data-terminal-display-mode") === "hex"
+    && await terminalCanvas.locator(".terminal-byte-inspector").isVisible()
+    && await terminalCanvas.locator(".terminal-host .xterm-screen").count() === 1,
+  "Hex mode did not retain the mounted XTerm behind the byte inspector");
+  const pairedByte = terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:1"]');
+  assert(await pairedByte.count() === 2, "Hex and ASCII did not expose the same byte index");
+  await terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:1"][data-byte-column="hex"]').click();
+  assert(await pairedByte.evaluateAll((cells) => cells.every((cell) => (
+    cell.classList.contains("selected") && cell.getAttribute("aria-pressed") === "true"
+  ))), "selecting Hex did not highlight its corresponding ASCII byte");
+  const hoveredAscii = terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:2"][data-byte-column="ascii"]');
+  await hoveredAscii.hover();
+  assert(await terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:2"]').evaluateAll((cells) => (
+    cells.length === 2 && cells.every((cell) => cell.classList.contains("linked"))
+  )), "hovering ASCII did not highlight its corresponding Hex byte");
+
+  await terminalCanvas.getByRole("button", { name: "对照", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".terminal-pane.active .terminal-canvas")
+    ?.getAttribute("data-terminal-display-mode") === "split");
+  const splitLayout = await terminalCanvas.evaluate((canvas) => {
+    const region = canvas.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
+    const inspector = canvas.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    return region && inspector ? {
+      region: { left: region.left, top: region.top, right: region.right, bottom: region.bottom, width: region.width },
+      inspector: { left: inspector.left, top: inspector.top, right: inspector.right, bottom: inspector.bottom, width: inspector.width },
+    } : null;
+  });
+  assert(splitLayout
+    && splitLayout.region.width > 200
+    && splitLayout.inspector.width > 300
+    && splitLayout.region.right <= splitLayout.inspector.left + 1,
+  `desktop terminal comparison view was not split horizontally: ${JSON.stringify(splitLayout)}`);
+  const splitInputWritesBefore = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text").length);
+  const splitTerminalInput = terminalCanvas.locator(".terminal-host .xterm-helper-textarea");
+  await splitTerminalInput.focus();
+  await page.keyboard.type("split-input-probe");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(({ start, expected }) => window.__invokeCalls
+    .filter((call) => call.command === "send_text")
+    .slice(start)
+    .map((call) => call.args.text)
+    .join("") === expected, { start: splitInputWritesBefore, expected: "split-input-probe\r" });
+  const splitInputWrites = await page.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text")
+    .slice(start), splitInputWritesBefore);
+  assert(splitInputWrites.length > 0
+    && splitInputWrites.every((call) => call.args.sessionId === "edge-router")
+    && splitInputWrites.map((call) => call.args.text).join("") === "split-input-probe\r",
+  `comparison mode duplicated or misrouted terminal input: ${JSON.stringify(splitInputWrites)}`);
+
+  const byteLayoutBeforeUpdate = await terminalCanvas.evaluate((canvas) => {
+    const region = canvas.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
+    const inspector = canvas.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    return { regionWidth: region?.width ?? 0, inspectorWidth: inspector?.width ?? 0 };
+  });
+  await page.evaluate(() => {
+    window.__emitTauriEvent("portmate-terminal-bytes", {
+      id: "terminal-byte-rx-bulk",
+      sessionId: "edge-router",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      stream: "stdout",
+      bytes: Array.from({ length: 4096 }, (_, index) => index % 256),
+      originalLength: 4096,
+      truncated: false,
+      eventId: null,
+    });
+  });
+  await terminalCanvas.locator('.terminal-byte-scroll[aria-rowcount="517"]').waitFor();
+  const byteLayoutAfterUpdate = await terminalCanvas.evaluate((canvas) => {
+    const region = canvas.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
+    const inspector = canvas.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    return {
+      regionWidth: region?.width ?? 0,
+      inspectorWidth: inspector?.width ?? 0,
+      renderedRows: canvas.querySelectorAll(".terminal-byte-row").length,
+    };
+  });
+  assert(Math.abs(byteLayoutBeforeUpdate.regionWidth - byteLayoutAfterUpdate.regionWidth) < 1
+    && Math.abs(byteLayoutBeforeUpdate.inspectorWidth - byteLayoutAfterUpdate.inspectorWidth) < 1
+    && byteLayoutAfterUpdate.renderedRows < 80,
+  `terminal byte updates shifted layout or disabled row virtualization: ${JSON.stringify({ byteLayoutBeforeUpdate, byteLayoutAfterUpdate })}`);
+  const byteScroll = terminalCanvas.locator(".terminal-byte-scroll");
+  await byteScroll.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const followBytesButton = terminalCanvas.getByRole("button", { name: "跟随最新字节", exact: true });
+  await page.waitForFunction(() => document.querySelector('[aria-label="跟随最新字节"]')?.getAttribute("aria-pressed") === "false");
+  await followBytesButton.click();
+  await page.waitForFunction(() => {
+    const element = document.querySelector(".terminal-pane.active .terminal-byte-scroll");
+    return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 2;
+  });
+  await terminalCanvas.screenshot({ path: `${screenshotPrefix}-terminal-byte-desktop.png` });
+
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector(".terminal-pane.active .terminal-canvas");
+    const region = canvas?.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
+    const inspector = canvas?.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    return region && inspector && region.bottom <= inspector.top + 1;
+  });
+  const narrowTerminalLayout = await terminalCanvas.evaluate((canvas) => {
+    const region = canvas.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
+    const inspector = canvas.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    return {
+      regionWidth: region?.width ?? 0,
+      inspectorWidth: inspector?.width ?? 0,
+      regionBottom: region?.bottom ?? 0,
+      inspectorTop: inspector?.top ?? 0,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  assert(Math.abs(narrowTerminalLayout.regionWidth - narrowTerminalLayout.inspectorWidth) < 1
+    && narrowTerminalLayout.regionBottom <= narrowTerminalLayout.inspectorTop + 1
+    && narrowTerminalLayout.documentWidth === narrowTerminalLayout.viewportWidth,
+  `narrow terminal comparison layout overflowed or overlapped: ${JSON.stringify(narrowTerminalLayout)}`);
+  await terminalCanvas.screenshot({ path: `${screenshotPrefix}-terminal-byte-narrow.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const clearBytesButton = terminalCanvas.getByRole("button", { name: "清空实时字节", exact: true });
+  await clearBytesButton.click();
+  await terminalCanvas.locator(".terminal-byte-empty").waitFor();
+  const clearedByteState = await page.evaluate(async () => {
+    const state = await import("/src/terminal-byte-state.ts");
+    const snapshot = state.terminalByteCacheSnapshot("edge-router");
+    return {
+      capturedBytes: snapshot.capturedBytes,
+      frames: snapshot.frames.length,
+      nextOffset: snapshot.nextOffset,
+    };
+  });
+  assert(clearedByteState.capturedBytes === 0
+    && clearedByteState.frames === 0
+    && clearedByteState.nextOffset === 0
+    && await clearBytesButton.isDisabled()
+    && await terminalCanvas.locator(".terminal-byte-summary").innerText() === "RX 0 B\nTX 0 B",
+  `clearing live terminal bytes left stale data or controls: ${JSON.stringify(clearedByteState)}`);
+  await terminalCanvas.getByRole("button", { name: "文本", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".terminal-pane.active .terminal-canvas")
+    ?.getAttribute("data-terminal-display-mode") === "text");
+  assert(JSON.parse(await page.evaluate(() => localStorage.getItem("portmate.terminalDisplayModes.v1")))?.["view-edge"] === "text",
+    "terminal display mode was not persisted per workspace view");
+
   await togglePanel("文件管理器");
   const leftDock = page.locator('.workspace-dock[data-dock="left"]');
   await leftDock.locator('.workspace-dock-content[data-panel="fileManager"]').waitFor();
@@ -4845,6 +5039,8 @@ Host staging
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-terminal-theme-settings.png`,
       `${screenshotPrefix}-terminal-light-theme.png`,
+      `${screenshotPrefix}-terminal-byte-desktop.png`,
+      `${screenshotPrefix}-terminal-byte-narrow.png`,
       `${screenshotPrefix}-detached-theme.png`,
       `${screenshotPrefix}-detached-health.png`,
       `${screenshotPrefix}-serial-analyzer.png`,

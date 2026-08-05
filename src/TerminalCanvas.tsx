@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
-import { CaseSensitive, ChevronDown, ChevronUp, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, WholeWord, X } from "lucide-react";
+import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -13,6 +13,7 @@ import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
+import { formatBytes } from "./display-formatters";
 import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptStateFromEvents, reduceOneKeyPromptDetection } from "./one-key-completion-state";
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
@@ -55,6 +56,15 @@ import {
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
+import {
+  clearTerminalByteCache,
+  readTerminalDisplayMode,
+  subscribeTerminalByteCache,
+  terminalByteBufferStats,
+  terminalByteCacheSnapshot,
+  writeTerminalDisplayMode,
+} from "./terminal-byte-state";
+import type { TerminalByteSelection, TerminalDisplayMode } from "./terminal-byte-state";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
@@ -85,6 +95,7 @@ type TerminalCanvasProps = {
 };
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
+const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
 const EMPTY_COMPLETION_QUICK_COMMANDS: readonly TerminalCompletionQuickCommand[] = [];
@@ -219,6 +230,21 @@ export default function TerminalCanvas({
   const backgroundOpacity = active?.profile.terminal.backgroundOpacity ?? 100;
   const activeTerminalTheme = terminalTheme(themeId, backgroundOpacity);
   const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
+  const sessionId = active?.profile.id ?? "";
+  const displayModeKey = viewId || sessionId;
+  const [displayMode, setDisplayMode] = useState<TerminalDisplayMode>(() => (
+    typeof window === "undefined" ? "text" : readTerminalDisplayMode(window.localStorage, displayModeKey)
+  ));
+  const displayModeRef = useRef(displayMode);
+  const [byteFollow, setByteFollow] = useState(true);
+  const [byteSelection, setByteSelection] = useState<TerminalByteSelection | null>(null);
+  const subscribeByteSnapshot = useCallback(
+    (listener: () => void) => subscribeTerminalByteCache(sessionId, listener),
+    [sessionId],
+  );
+  const getByteSnapshot = useCallback(() => terminalByteCacheSnapshot(sessionId), [sessionId]);
+  const byteSnapshot = useSyncExternalStore(subscribeByteSnapshot, getByteSnapshot, getByteSnapshot);
+  const byteStats = useMemo(() => terminalByteBufferStats(byteSnapshot), [byteSnapshot]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const terminalMountGenerationRef = useRef(0);
@@ -282,6 +308,7 @@ export default function TerminalCanvas({
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
+  displayModeRef.current = displayMode;
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
     ? resolveTerminalGotoLine(
@@ -311,6 +338,7 @@ export default function TerminalCanvas({
   semanticHighlightingSupportedRef.current = semanticHighlightingSupported;
   semanticThemeRef.current = activeTerminalTheme;
   const completionContextActive = focused
+    && displayMode !== "hex"
     && completionSupported
     && keyMode === "remote"
     && !searchOpen
@@ -396,6 +424,7 @@ export default function TerminalCanvas({
   completionSelectionRef.current = activeCompletionIndex;
   const freeInputOpen = freeInputSource !== null;
   openSearchRef.current = () => {
+    if (displayModeRef.current === "hex") return;
     closeTerminalGotoLine(true, false);
     setFreeInputSource(null);
     setFreeInputValue("");
@@ -409,6 +438,7 @@ export default function TerminalCanvas({
     });
   };
   openFreeInputRef.current = () => {
+    if (displayModeRef.current === "hex") return;
     closeTerminalGotoLine(true, false);
     dismissOneKeyPrompt();
     searchRef.current?.clearDecorations();
@@ -420,6 +450,7 @@ export default function TerminalCanvas({
     window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
   };
   openGotoLineRef.current = () => {
+    if (displayModeRef.current === "hex") return;
     const term = termRef.current;
     if (!term) return;
     if (gotoLineContext) {
@@ -656,6 +687,30 @@ export default function TerminalCanvas({
     closeTerminalFreeInput();
   }
 
+  function changeTerminalDisplayMode(next: TerminalDisplayMode) {
+    setDisplayMode(next);
+    displayModeRef.current = next;
+    if (typeof window !== "undefined" && displayModeKey) {
+      writeTerminalDisplayMode(window.localStorage, displayModeKey, next);
+    }
+    window.requestAnimationFrame(() => {
+      fitAndReportRef.current();
+      if (next !== "hex" && focused && !freeInputOpen && !gotoLineOpen && !searchOpen) {
+        termRef.current?.focus();
+      }
+    });
+  }
+
+  useEffect(() => {
+    const next = typeof window === "undefined"
+      ? "text"
+      : readTerminalDisplayMode(window.localStorage, displayModeKey);
+    setDisplayMode(next);
+    displayModeRef.current = next;
+    setByteFollow(true);
+    setByteSelection(null);
+  }, [displayModeKey, sessionId]);
+
   useEffect(() => {
     if (!active || !hostRef.current) return;
 
@@ -857,12 +912,12 @@ export default function TerminalCanvas({
     };
     configureWebglRef.current = configureWebgl;
     configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
-    if (focused) term.focus();
+    if (focused && displayModeRef.current !== "hex") term.focus();
     const fitAndReport = () => {
       fit.fit();
       const size = `${term.cols}x${term.rows}`;
       host.dataset.terminalSize = size;
-      if (!focusedRef.current || lastSizeRef.current === size) return;
+      if (displayModeRef.current === "hex" || !focusedRef.current || lastSizeRef.current === size) return;
       lastSizeRef.current = size;
       if (isBackendAvailable()) {
         void invokeBackend("resize_session", {
@@ -1367,13 +1422,13 @@ export default function TerminalCanvas({
   useEffect(() => {
     const host = hostRef.current;
     if (host) host.dataset.terminalResizeOwner = focused ? "active" : "inactive";
-    if (focused) {
+    if (focused && displayMode !== "hex") {
       // Another view of this session may have resized the shared PTY while this view was inactive.
       lastSizeRef.current = "";
       termRef.current?.focus();
       fitAndReportRef.current();
     }
-  }, [active?.profile.id, focused]);
+  }, [active?.profile.id, displayMode, focused]);
 
   useEffect(() => {
     if (!focused && gotoLineOpen) closeTerminalGotoLine(true, false);
@@ -1394,11 +1449,8 @@ export default function TerminalCanvas({
       ));
     })
       .then((nextUnlisten) => {
-        if (disposed) {
-          nextUnlisten();
-          return;
-        }
-        unlisten = nextUnlisten;
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
       })
       .catch(() => {});
 
@@ -1418,7 +1470,8 @@ export default function TerminalCanvas({
 
   return (
     <div
-      className={completionSurfaceOpen ? "terminal-canvas completion-open" : "terminal-canvas"}
+      className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceOpen ? " completion-open" : ""}`}
+      data-terminal-display-mode={active ? displayMode : undefined}
       data-completion-placement={completionSurfaceOpen ? "below" : undefined}
       data-completion-cursor-bottom={completionSurfaceOpen ? completionAnchor.cursorBottom : undefined}
       data-completion-shift={completionSurfaceOpen ? completionAnchor.shift : undefined}
@@ -1430,7 +1483,22 @@ export default function TerminalCanvas({
     >
       {active ? (
         <>
-          <div ref={hostRef} className="terminal-host" inert={freeInputOpen || gotoLineOpen} />
+          <div className="terminal-view-toolbar" role="toolbar" aria-label="终端显示">
+            <div className="terminal-view-modes" role="group" aria-label="终端显示模式">
+              <button type="button" className={displayMode === "text" ? "active" : ""} aria-label="文本" aria-pressed={displayMode === "text"} title="文本视图" onClick={() => changeTerminalDisplayMode("text")}><AlignLeft size={13} /><span>文本</span></button>
+              <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title="Hex 视图" onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
+              <button type="button" className={displayMode === "split" ? "active" : ""} aria-label="对照" aria-pressed={displayMode === "split"} title="文本与 Hex 对照视图" onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>对照</span></button>
+            </div>
+            <span className="terminal-byte-summary" title={`实时窗口 ${formatBytes(byteSnapshot.capturedBytes)} · ${byteSnapshot.frames.length} 帧${byteSnapshot.droppedFrames ? ` · 已淘汰 ${byteSnapshot.droppedFrames} 帧` : ""}${byteStats.omittedBytes ? ` · 帧内截断 ${formatBytes(byteStats.omittedBytes)}` : ""}`}>
+              <span className="rx">RX {formatBytes(byteStats.rxBytes)}</span>
+              <span className="tx">TX {formatBytes(byteStats.txBytes)}</span>
+            </span>
+            <button type="button" className={byteFollow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label="跟随最新字节" aria-pressed={byteFollow} title="跟随最新字节" disabled={!byteSnapshot.frames.length} onClick={() => setByteFollow((current) => !current)}><ArrowDownToLine size={13} /></button>
+            <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!byteSnapshot.frames.length} onClick={() => { clearTerminalByteCache(active.profile.id); setByteSelection(null); setByteFollow(true); }}><Trash2 size={13} /></button>
+          </div>
+          <div className={`terminal-workspace mode-${displayMode}`}>
+            <div className="terminal-terminal-region" aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
+              <div ref={hostRef} className="terminal-host" inert={displayMode === "hex" || freeInputOpen || gotoLineOpen} />
           {freeInputOpen ? (
             <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
               event.preventDefault();
@@ -1656,6 +1724,20 @@ export default function TerminalCanvas({
               </div>
             </form>
           ) : null}
+            </div>
+            {displayMode !== "text" ? (
+              <Suspense fallback={<section className="terminal-byte-inspector" aria-label="终端字节检查器" aria-busy="true" />}>
+                <LazyTerminalByteInspector
+                  snapshot={byteSnapshot}
+                  bytesPerRow={displayMode === "split" ? 8 : 16}
+                  follow={byteFollow}
+                  selection={byteSelection}
+                  onFollowChange={setByteFollow}
+                  onSelectionChange={setByteSelection}
+                />
+              </Suspense>
+            ) : null}
+          </div>
         </>
       ) : (
         <div className="terminal-empty">未打开会话</div>

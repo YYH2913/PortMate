@@ -17,6 +17,7 @@ import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE
 import type { ScreenLockMarker } from "./screen-lock-state";
 import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
+import { listenTerminalByteEvents } from "./terminal-byte-events";
 import TerminalCanvas from "./TerminalCanvas";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
@@ -42,6 +43,22 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
   }, [request.title, session?.profile.name]);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenTerminalByteEvents()
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     window.history.replaceState(null, "", buildDetachedPanePath({ ...request, keyMode }));

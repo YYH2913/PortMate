@@ -4,6 +4,21 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "xterm-core",
+              test: /node_modules[\\/]@xterm[\\/](?!addon-webgl[\\/])/,
+              priority: 10,
+            },
+          ],
+        },
+      },
+    },
+  },
   server: {
     strictPort: true,
     port: 1420,
