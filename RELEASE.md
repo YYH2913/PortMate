@@ -13,6 +13,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 ## Required Verification
 
 - [ ] `npm ci` succeeds with the Node version in `.nvmrc`.
+- [ ] `npm run test:dependency-audit` and `npm run test:rust-dependency-audit` pass with fresh npm and RustSec advisory data.
 - [ ] `npm run test:native-keyring-dependencies` confirms that desktop and MCP use only the shared platform-specific native provider boundary.
 - [ ] `npm run test:portable-cross` checks the portable Rust crates for Windows GNU, Apple Silicon macOS, and FreeBSD with the locked dependency graph.
 - [ ] `npm test` and `npm run build` pass.
