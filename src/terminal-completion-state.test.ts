@@ -113,6 +113,40 @@ describe("terminal completion state", () => {
     expect(mode.some((item) => item.source === "argument" && item.label === "755")).toBe(true);
   });
 
+  it("covers package, language, cluster, and network command contexts", () => {
+    const apt = terminalCompletionSuggestions({
+      line: "apt in",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(apt.find((item) => item.label === "install")?.source).toBe("subcommand");
+
+    const pip = terminalCompletionSuggestions({
+      line: "pip3 install --up",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(pip.find((item) => item.label === "--upgrade")?.appendText).toBe("grade ");
+
+    const kubectl = terminalCompletionSuggestions({
+      line: "kubectl --context staging ge",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(kubectl.find((item) => item.label === "get")?.appendText).toBe("t ");
+
+    const ip = terminalCompletionSuggestions({
+      line: "ip ro",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(ip.find((item) => item.label === "route")?.appendText).toBe("ute ");
+
+    expect(terminalCompletionUsageHint({
+      line: "python3 -m http.server ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({
+      label: "python3 [选项] [-c 命令 | -m 模块 | 脚本] [参数...]",
+      detail: "运行 Python 解释器",
+    });
+  });
+
   it("provides non-inserting usage hints for every known command context", () => {
     expect(terminalCompletionUsageHint({
       line: "ls ",
