@@ -1,6 +1,7 @@
 export type TerminalCommandCatalogEntry = {
   value: string;
   detail: string;
+  takesValue?: boolean;
 };
 
 export type TerminalCommandSchema = TerminalCommandCatalogEntry & {
@@ -58,11 +59,19 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     options: options(["--connect-timeout", "--fail", "--max-time", "-H", "-I", "-L", "-o", "-X", "-d"], "curl 选项"),
   }),
   schema("docker", "管理容器与镜像", "docker [全局选项] <子命令> [参数...]", {
-    options: options(["--config", "--context", "--help", "--host", "--version"], "Docker 全局选项"),
+    options: options(
+      ["--config", "--context", "--help", "--host", "--version"],
+      "Docker 全局选项",
+      ["--config", "--context", "--host"],
+    ),
     subcommands: [
       schema("build", "构建镜像", "docker build [选项] <上下文>", { options: options(["--build-arg", "--file", "--no-cache", "--pull", "--tag"], "docker build 选项") }),
       schema("compose", "管理 Compose 应用", "docker compose [选项] <子命令> [参数...]", {
-        options: options(["--env-file", "--file", "--profile", "--project-name"], "docker compose 选项"),
+        options: options(
+          ["--env-file", "--file", "--profile", "--project-name"],
+          "docker compose 选项",
+          ["--env-file", "--file", "--profile", "--project-name"],
+        ),
         subcommands: simpleSubcommands([
           ["build", "构建服务", "docker compose build [选项] [服务...]"],
           ["down", "停止并删除资源", "docker compose down [选项]"],
@@ -92,7 +101,11 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     arguments: commonPathArguments,
   }),
   schema("git", "管理 Git 仓库", "git [全局选项] <子命令> [参数...]", {
-    options: options(["--help", "--no-pager", "--version", "-C", "-c"], "Git 全局选项"),
+    options: options(
+      ["--help", "--no-pager", "--version", "-C", "-c"],
+      "Git 全局选项",
+      ["-C", "-c"],
+    ),
     subcommands: [
       schema("add", "暂存文件", "git add [选项] <路径...>", { options: options(["--all", "--intent-to-add", "--patch", "--update", "-A", "-p", "-u"], "git add 选项") }),
       schema("branch", "管理分支", "git branch [选项] [分支名]", { options: options(["--all", "--delete", "--move", "--remotes", "-D", "-a", "-d", "-m", "-r"], "git branch 选项") }),
@@ -128,7 +141,11 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   schema("mkdir", "创建目录", "mkdir [选项] <目录...>", { options: options(["--mode", "--parents", "-m", "-p", "-v"], "mkdir 选项") }),
   schema("mv", "移动或重命名文件", "mv [选项] <源...> <目标>", { options: options(["--backup", "--target-directory", "-f", "-i", "-n", "-t", "-v"], "mv 选项"), arguments: commonPathArguments }),
   schema("npm", "Node.js 包管理", "npm [全局选项] <子命令> [参数...]", {
-    options: options(["--help", "--silent", "--version", "--workspace"], "npm 全局选项"),
+    options: options(
+      ["--help", "--silent", "--version", "--workspace"],
+      "npm 全局选项",
+      ["--workspace"],
+    ),
     subcommands: simpleSubcommands([
       ["audit", "审计依赖", "npm audit [选项]"],
       ["exec", "执行包命令", "npm exec [选项] -- <命令...>"],
@@ -142,7 +159,11 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     ]),
   }),
   schema("pnpm", "高效 Node.js 包管理", "pnpm [全局选项] <子命令> [参数...]", {
-    options: options(["--dir", "--filter", "--help", "--silent", "--version"], "pnpm 全局选项"),
+    options: options(
+      ["--dir", "--filter", "--help", "--silent", "--version"],
+      "pnpm 全局选项",
+      ["--dir", "--filter"],
+    ),
     subcommands: simpleSubcommands([
       ["add", "添加依赖", "pnpm add [选项] <包...>"],
       ["audit", "审计依赖", "pnpm audit [选项]"],
@@ -216,8 +237,13 @@ function entries(values: readonly string[], detail: string): TerminalCommandCata
   return values.map((value) => ({ value, detail }));
 }
 
-function options(values: readonly string[], detail: string): TerminalCommandCatalogEntry[] {
-  return entries(values, detail);
+function options(
+  values: readonly string[],
+  detail: string,
+  takesValue: readonly string[] = [],
+): TerminalCommandCatalogEntry[] {
+  const valuedOptions = new Set(takesValue);
+  return values.map((value) => ({ value, detail, takesValue: valuedOptions.has(value) }));
 }
 
 function simpleSubcommands(

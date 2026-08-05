@@ -31,6 +31,15 @@ export type TerminalCompletionUsageHint = {
   detail: string;
 };
 
+type TerminalCommandContext = {
+  schema: TerminalCommandSchema;
+  unknownSubcommandPath: readonly string[] | null;
+};
+
+type ResolveCommandContextOptions = {
+  trailingTokenComplete?: boolean;
+};
+
 export const emptyTerminalCompletionInputState: TerminalCompletionInputState = {
   line: "",
   synchronized: true,
@@ -126,8 +135,9 @@ export function terminalCompletionSuggestions({
   }
 
   if (command && beforeToken.trim()) {
-    const root = terminalCommandSchema(command);
-    const context = root ? resolveCommandContext(root, completedTokens(beforeToken).slice(1)) : null;
+    const root = terminalCommandSchemaForToken(command);
+    const resolution = root ? resolveCommandContext(root, completedTokens(beforeToken).slice(1)) : null;
+    const context = resolution?.unknownSubcommandPath ? null : resolution?.schema ?? null;
     if (preferences.commandOptions && (!token || token.startsWith("-"))) {
       for (const entry of context ? commandOptions(root!, context) : []) {
         pushCatalogSuggestion(candidates, entry, "option", command, beforeToken, line);
@@ -169,10 +179,26 @@ export function terminalCompletionUsageHint({
     || (!preferences.commandArgs && !preferences.commandOptions)
     || !completionLineIsSafe(line)) return null;
   const tokens = line.trimStart().split(/\s+/).filter(Boolean);
-  const root = terminalCommandSchema(tokens[0] ?? "");
-  if (!root) return null;
-  const context = resolveCommandContext(root, tokens.slice(1));
-  return { label: context.usage, detail: context.detail };
+  const commandToken = tokens[0] ?? "";
+  const root = terminalCommandSchemaForToken(commandToken);
+  if (!root) {
+    return commandHasArgumentBoundary(line)
+      ? { label: `${commandToken} [参数...]`, detail: "当前环境命令" }
+      : null;
+  }
+  const context = resolveCommandContext(root, tokens.slice(1), {
+    trailingTokenComplete: /\s$/.test(line),
+  });
+  if (context.unknownSubcommandPath) {
+    return {
+      label: `${[commandToken, ...context.unknownSubcommandPath].join(" ")} [参数...]`,
+      detail: context.schema.detail,
+    };
+  }
+  return {
+    label: usageForCommandToken(context.schema.usage, root.value, commandToken),
+    detail: context.schema.detail,
+  };
 }
 
 export function terminalCompletionSupported(value: unknown): boolean {
@@ -230,14 +256,56 @@ function completedTokens(beforeToken: string): string[] {
 function resolveCommandContext(
   root: TerminalCommandSchema,
   tokens: readonly string[],
-): TerminalCommandSchema {
+  { trailingTokenComplete = true }: ResolveCommandContextOptions = {},
+): TerminalCommandContext {
   let context = root;
-  for (const token of tokens) {
-    if (!token || token.startsWith("-")) continue;
+  let optionValuePending = false;
+  const commandPath: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token) continue;
+    if (optionValuePending) {
+      optionValuePending = false;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      const optionName = token.split("=", 1)[0];
+      const option = commandOptions(root, context).find((entry) => entry.value === optionName);
+      optionValuePending = Boolean(option?.takesValue && !token.includes("="));
+      continue;
+    }
     const subcommand = terminalCommandSubcommand(context, token);
-    if (subcommand) context = subcommand;
+    if (subcommand) {
+      context = subcommand;
+      commandPath.push(subcommand.value);
+      continue;
+    }
+    if (context.subcommands.length) {
+      if (!trailingTokenComplete && index === tokens.length - 1) break;
+      return {
+        schema: context,
+        unknownSubcommandPath: [...commandPath, token],
+      };
+    }
   }
-  return context;
+  return { schema: context, unknownSubcommandPath: null };
+}
+
+function terminalCommandSchemaForToken(token: string): TerminalCommandSchema | null {
+  const basename = token.slice(token.lastIndexOf("/") + 1);
+  return terminalCommandSchema(basename);
+}
+
+function commandHasArgumentBoundary(line: string): boolean {
+  return /\s/.test(line.trimStart());
+}
+
+function usageForCommandToken(usage: string, catalogCommand: string, commandToken: string): string {
+  if (catalogCommand === commandToken) return usage;
+  if (usage === catalogCommand) return commandToken;
+  return usage.startsWith(`${catalogCommand} `)
+    ? `${commandToken}${usage.slice(catalogCommand.length)}`
+    : usage;
 }
 
 function commandOptions(

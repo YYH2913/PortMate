@@ -1056,6 +1056,28 @@ try {
   assert(await activeCompletion.count() === 0, "usage-only completion swallowed native shell Tab completion");
   await page.keyboard.press("Enter");
 
+  await page.keyboard.type("portmate-unknown ");
+  await activeCompletion.waitFor();
+  const unknownCompletionUsage = await activeCompletion.evaluate((completion) => ({
+    usage: completion.querySelector(".terminal-completion-usage")?.textContent ?? "",
+    candidates: completion.querySelectorAll(".terminal-completion-list > button").length,
+  }));
+  assert(unknownCompletionUsage.usage.includes("portmate-unknown [参数...]")
+    && unknownCompletionUsage.candidates === 0,
+  `unknown command did not receive a non-inserting parameter hint: ${JSON.stringify(unknownCompletionUsage)}`);
+  await page.waitForFunction(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text" && typeof call.args.text === "string")
+    .map((call) => call.args.text)
+    .join("")
+    .endsWith("portmate-unknown "));
+  await clearCalls();
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "send_text" && call.args.text === "\t"
+  )));
+  assert(await activeCompletion.count() === 0, "unknown command hint swallowed native shell Tab completion");
+  await page.keyboard.press("Enter");
+
   await page.keyboard.type("clear ");
   await activeCompletion.waitFor();
   await clearCalls();

@@ -129,11 +129,49 @@ describe("terminal completion state", () => {
     expect(terminalCompletionUsageHint({
       line: "unknown-command ",
       preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "unknown-command [参数...]", detail: "当前环境命令" });
+    expect(terminalCompletionUsageHint({
+      line: "unknown-command",
+      preferences: defaultTerminalCompletionPreferences,
     })).toBeNull();
     expect(terminalCompletionUsageHint({
       line: "git status | grep M",
       preferences: defaultTerminalCompletionPreferences,
     })).toBeNull();
+  });
+
+  it("keeps path commands and option values in the correct schema context", () => {
+    expect(terminalCompletionUsageHint({
+      line: "/usr/bin/git commit ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "/usr/bin/git commit [选项] [路径...]", detail: "提交暂存变更" });
+
+    const git = terminalCompletionSuggestions({
+      line: "git -C repo st",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(git.find((item) => item.label === "status")?.appendText).toBe("atus ");
+
+    const compose = terminalCompletionSuggestions({
+      line: "docker compose --file compose.yml u",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(compose.find((item) => item.label === "up")?.appendText).toBe("p ");
+  });
+
+  it("falls back after unknown nested commands without suggesting root subcommands", () => {
+    expect(terminalCompletionUsageHint({
+      line: "git st",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "git [全局选项] <子命令> [参数...]", detail: "管理 Git 仓库" });
+    expect(terminalCompletionUsageHint({
+      line: "git worktree ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "git worktree [参数...]", detail: "管理 Git 仓库" });
+    expect(terminalCompletionSuggestions({
+      line: "git worktree ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual([]);
   });
 
   it("supports all interactive transports and names subcommands accurately", () => {
