@@ -19,6 +19,16 @@ pub(super) fn generate_ed25519_test_key(path: &Path) {
 }
 
 #[cfg(unix)]
+pub(super) fn generate_rsa_test_key(path: &Path) {
+    let status = Command::new("ssh-keygen")
+        .args(["-q", "-t", "rsa", "-b", "2048", "-N", "", "-f"])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "ssh-keygen failed for {}", path.display());
+}
+
+#[cfg(unix)]
 pub(super) fn openssh_test_username() -> String {
     std::env::var("USER").unwrap_or_else(|_| {
         String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)

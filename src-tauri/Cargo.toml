@@ -22,12 +22,13 @@ base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = "3.0.0"
 flate2 = "1.1.9"
-getrandom = "0.3"
+getrandom = { version = "0.4", features = ["sys_rng"] }
 iota_stronghold = "2.1.0"
 keyring-core = "1.0.0"
 libloading = "0.8.9"
 libssh-rs = { path = "../crates/libssh-rs" }
 libc = "0.2"
+rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
 russh = { version = "0.62.5", features = ["async-trait"] }
 russh-sftp = { path = "../crates/russh-sftp" }
 portable-pty = "0.9"
@@ -35,6 +36,7 @@ regex.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+sha1_11 = { package = "sha1", version = "0.11", features = ["oid"] }
 sha2.workspace = true
 serialport = { version = "4.9", default-features = false }
 socket2 = { version = "0.6.3", features = ["all"] }

@@ -1,5 +1,162 @@
 use super::*;
 
+// RUSTSEC-2023-0071 has no patched rsa release; local RSA authentication must
+// use randomized PKCS#1 v1.5 signing so the private operation is blinded.
+#[derive(Debug)]
+enum BlindedRsaSignerError {
+    Send(russh::SendError),
+    KeyMismatch,
+    Signing(String),
+}
+
+impl std::fmt::Display for BlindedRsaSignerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Send(error) => error.fmt(formatter),
+            Self::KeyMismatch => formatter.write_str("SSH RSA signer received a different key"),
+            Self::Signing(error) => formatter.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for BlindedRsaSignerError {}
+
+impl From<russh::SendError> for BlindedRsaSignerError {
+    fn from(error: russh::SendError) -> Self {
+        Self::Send(error)
+    }
+}
+
+struct BlindedRsaSigner {
+    private_key: ssh_key::PrivateKey,
+}
+
+impl BlindedRsaSigner {
+    fn new(private_key: ssh_key::PrivateKey) -> Result<Self, BlindedRsaSignerError> {
+        if !matches!(
+            private_key.key_data(),
+            ssh_key::private::KeypairData::Rsa(_)
+        ) {
+            return Err(BlindedRsaSignerError::Signing(
+                "SSH RSA signer requires an RSA private key".to_string(),
+            ));
+        }
+        Ok(Self { private_key })
+    }
+
+    fn sign_with_rng<R: rsa::rand_core::TryCryptoRng + ?Sized>(
+        &self,
+        hash_alg: Option<ssh_key::HashAlg>,
+        message: &[u8],
+        rng: &mut R,
+    ) -> Result<Vec<u8>, BlindedRsaSignerError> {
+        let ssh_key::private::KeypairData::Rsa(keypair) = self.private_key.key_data() else {
+            return Err(BlindedRsaSignerError::Signing(
+                "SSH RSA signer lost its RSA private key".to_string(),
+            ));
+        };
+
+        let raw_signature = match hash_alg {
+            Some(ssh_key::HashAlg::Sha512) => {
+                let signer = rsa::pkcs1v15::SigningKey::<rsa::sha2::Sha512>::try_from(keypair)
+                    .map_err(|error| {
+                        BlindedRsaSignerError::Signing(format!(
+                            "SSH RSA-SHA512 signing key preparation failed: {error}"
+                        ))
+                    })?;
+                let signature =
+                    rsa::signature::RandomizedSigner::try_sign_with_rng(&signer, rng, message)
+                        .map_err(|error| {
+                            BlindedRsaSignerError::Signing(format!(
+                                "SSH RSA-SHA512 blinded signing failed: {error}"
+                            ))
+                        })?;
+                rsa::signature::SignatureEncoding::to_vec(&signature)
+            }
+            Some(ssh_key::HashAlg::Sha256) => {
+                let signer = rsa::pkcs1v15::SigningKey::<rsa::sha2::Sha256>::try_from(keypair)
+                    .map_err(|error| {
+                        BlindedRsaSignerError::Signing(format!(
+                            "SSH RSA-SHA256 signing key preparation failed: {error}"
+                        ))
+                    })?;
+                let signature =
+                    rsa::signature::RandomizedSigner::try_sign_with_rng(&signer, rng, message)
+                        .map_err(|error| {
+                            BlindedRsaSignerError::Signing(format!(
+                                "SSH RSA-SHA256 blinded signing failed: {error}"
+                            ))
+                        })?;
+                rsa::signature::SignatureEncoding::to_vec(&signature)
+            }
+            None => {
+                let signer = rsa::pkcs1v15::SigningKey::<sha1_11::Sha1>::try_from(keypair)
+                    .map_err(|error| {
+                        BlindedRsaSignerError::Signing(format!(
+                            "SSH legacy RSA signing key preparation failed: {error}"
+                        ))
+                    })?;
+                let signature =
+                    rsa::signature::RandomizedSigner::try_sign_with_rng(&signer, rng, message)
+                        .map_err(|error| {
+                            BlindedRsaSignerError::Signing(format!(
+                                "SSH legacy RSA blinded signing failed: {error}"
+                            ))
+                        })?;
+                rsa::signature::SignatureEncoding::to_vec(&signature)
+            }
+            Some(unsupported) => {
+                return Err(BlindedRsaSignerError::Signing(format!(
+                    "SSH RSA signer does not support hash algorithm {unsupported:?}"
+                )));
+            }
+        };
+
+        let signature =
+            ssh_key::Signature::new(ssh_key::Algorithm::Rsa { hash: hash_alg }, raw_signature)
+                .map_err(|error| {
+                    BlindedRsaSignerError::Signing(format!(
+                        "SSH RSA signature encoding preparation failed: {error}"
+                    ))
+                })?;
+        let mut encoded = Vec::new();
+        russh::keys::ssh_encoding::Encode::encode(&signature, &mut encoded).map_err(|error| {
+            BlindedRsaSignerError::Signing(format!("SSH RSA signature encoding failed: {error}"))
+        })?;
+        Ok(encoded)
+    }
+}
+
+impl russh::Signer for BlindedRsaSigner {
+    type Error = BlindedRsaSignerError;
+
+    fn auth_sign(
+        &mut self,
+        key: &russh::keys::agent::AgentIdentity,
+        hash_alg: Option<ssh_key::HashAlg>,
+        mut to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        let result = if key.public_key().key_data() != self.private_key.public_key().key_data() {
+            Err(BlindedRsaSignerError::KeyMismatch)
+        } else {
+            self.sign_with_rng(hash_alg, &to_sign, &mut getrandom::SysRng)
+                .and_then(|signature| {
+                    // Russh expects the original request buffer with an SSH
+                    // string containing the signature appended to it.
+                    russh::keys::ssh_encoding::Encode::encode(&signature, &mut to_sign).map_err(
+                        |error| {
+                            BlindedRsaSignerError::Signing(format!(
+                                "SSH RSA authentication signature framing failed: {error}"
+                            ))
+                        },
+                    )?;
+                    Ok(to_sign)
+                })
+        };
+        std::future::ready(result)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum SshAuthenticationError {
     TimedOut {
@@ -177,13 +334,35 @@ pub(super) async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
                                 continue;
                             }
                         };
-                        let result = match session
-                            .authenticate_publickey(
-                                username.clone(),
-                                PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
-                            )
-                            .await
-                        {
+                        let authentication = if key.algorithm().is_rsa() {
+                            let public_key = key.public_key().clone();
+                            let mut signer = match BlindedRsaSigner::new(key) {
+                                Ok(signer) => signer,
+                                Err(error) => {
+                                    key_errors
+                                        .push(format!("{label}: RSA signer 初始化失败: {error}"));
+                                    continue;
+                                }
+                            };
+                            session
+                                .authenticate_publickey_with(
+                                    username.clone(),
+                                    public_key,
+                                    rsa_hash,
+                                    &mut signer,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())
+                        } else {
+                            session
+                                .authenticate_publickey(
+                                    username.clone(),
+                                    PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
+                                )
+                                .await
+                                .map_err(|error| error.to_string())
+                        };
+                        let result = match authentication {
                             Ok(result) => result,
                             Err(error) => {
                                 key_errors.push(format!("{label}: 认证请求失败: {error}"));
@@ -371,5 +550,78 @@ pub(super) fn load_identity_private_key(
                 .map_err(|error| format!("profile-vault {secret_ref}: {error}"))
         }
         IdentitySource::Agent | IdentitySource::PublicKeyOnly => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod blinded_rsa_signer_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct CountingSystemRng {
+        requests: usize,
+        requested_bytes: usize,
+    }
+
+    impl CountingSystemRng {
+        fn record(&mut self, bytes: usize) {
+            self.requests += 1;
+            self.requested_bytes += bytes;
+        }
+    }
+
+    impl rsa::rand_core::TryRng for CountingSystemRng {
+        type Error = getrandom::Error;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            self.record(std::mem::size_of::<u32>());
+            rsa::rand_core::TryRng::try_next_u32(&mut getrandom::SysRng)
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            self.record(std::mem::size_of::<u64>());
+            rsa::rand_core::TryRng::try_next_u64(&mut getrandom::SysRng)
+        }
+
+        fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
+            self.record(destination.len());
+            rsa::rand_core::TryRng::try_fill_bytes(&mut getrandom::SysRng, destination)
+        }
+    }
+
+    impl rsa::rand_core::TryCryptoRng for CountingSystemRng {}
+
+    #[test]
+    fn every_rsa_signature_requests_blinding_randomness() {
+        let mut key_rng = rsa::rand_core::UnwrapErr(getrandom::SysRng);
+        let private_key = rsa::RsaPrivateKey::new(&mut key_rng, 2048).unwrap();
+        let private_key = ssh_key::private::RsaKeypair::try_from(private_key).unwrap();
+        let signer = BlindedRsaSigner::new(private_key.into()).unwrap();
+        let message = b"PortMate RSA authentication blinding regression";
+        let mut rng = CountingSystemRng::default();
+
+        for hash_alg in [
+            Some(ssh_key::HashAlg::Sha512),
+            Some(ssh_key::HashAlg::Sha256),
+            None,
+        ] {
+            let previous_requests = rng.requests;
+            let previous_bytes = rng.requested_bytes;
+            let encoded = signer.sign_with_rng(hash_alg, message, &mut rng).unwrap();
+            assert!(rng.requests > previous_requests);
+            assert!(rng.requested_bytes > previous_bytes);
+
+            let mut reader = encoded.as_slice();
+            let signature =
+                <ssh_key::Signature as russh::keys::ssh_encoding::Decode>::decode(&mut reader)
+                    .unwrap();
+            assert!(reader.is_empty());
+            russh::keys::signature::Verifier::verify(
+                signer.private_key.public_key(),
+                message,
+                &signature,
+            )
+            .unwrap();
+        }
     }
 }

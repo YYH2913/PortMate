@@ -2,6 +2,92 @@ use super::*;
 
 #[cfg(unix)]
 #[test]
+fn openssh_rsa_identity_authentication_uses_blinded_signer() {
+    let _runtime_guard = shared_runtime_test_guard();
+    let Some(sshd_path) = openssh_test_server_path() else {
+        eprintln!("skipping OpenSSH RSA authentication test: sshd is not installed");
+        return;
+    };
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping OpenSSH RSA authentication test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("portmate-rsa-auth-test-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let host_key = root.join("ssh_host_ed25519_key");
+    let client_key = root.join("id_rsa");
+    generate_ed25519_test_key(&host_key);
+    generate_rsa_test_key(&client_key);
+    let authorized_keys = root.join("authorized_keys");
+    fs::copy(client_key.with_extension("pub"), &authorized_keys).unwrap();
+
+    let port = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let config_path = root.join("sshd_config");
+    write_openssh_test_config(
+        &config_path,
+        &host_key,
+        &root.join("sshd.pid"),
+        &authorized_keys,
+        port,
+    );
+    let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
+
+    tauri::async_runtime::block_on(async {
+        wait_for_openssh_test_server(&mut sshd, port, "RSA authentication sshd").await;
+
+        let mut profile = test_ssh_profile();
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.endpoint.host = "127.0.0.1".to_string();
+        ssh.endpoint.port = port;
+        ssh.username = openssh_test_username();
+        ssh.reconnect = false;
+        ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+        ssh.host_key_policy.alias = Some("rsa-blinding-target".to_string());
+        ssh.identity_policy.identities_only = true;
+        ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+        ssh.identity_refs = vec![IdentityRef {
+            id: "rsa-client-key".to_string(),
+            label: "RSA client key".to_string(),
+            source: IdentitySource::SystemFile,
+            fingerprint_sha256: None,
+            path: Some(client_key.display().to_string()),
+            secret_ref: None,
+        }];
+        ssh.agent_policy.enabled = false;
+        ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let connected = open_ssh_session(&state, profile.clone(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(connected.runtime.status, SessionStatus::Connected);
+        assert_eq!(
+            state
+                .ssh
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .auth_method,
+            AuthMethod::PublicKey
+        );
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+    });
+
+    sshd.stop();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
 fn openssh_identity_order_respects_max_auth_tries() {
     let _runtime_guard = shared_runtime_test_guard();
     let Some(sshd_path) = openssh_test_server_path() else {
