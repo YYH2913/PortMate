@@ -131,7 +131,7 @@ display work area falls back to a cascaded default instead of reopening off-scre
 
 4. Open settings from any settings-oriented menu item, for example `会话 -> 会话设置` or `工具 -> 终端设置`.
 
-5. A compact modal settings window opens. `会话 -> 新建会话` and `会话 -> 会话设置` use one session-type selector and one configuration selector instead of stacked protocol tabs and a second navigation tree. `工具 -> 终端设置` uses one horizontal page strip and a full-width settings surface.
+5. `会话 -> 新建会话` opens a compact quick-connect surface with icon tabs for Shell, SSH, Tmux, Telnet, TCP, and Serial. It initially focuses the protocol target, shows only the fields needed to connect, keeps each protocol draft while switching tabs, and disables `连接` until the target and numeric bounds are valid while still allowing `仅保存`. Optional name/group/tag organization stays collapsed; `高级设置` opens the complete protocol-aware editor and can return to the same quick draft. Existing profiles open that advanced editor directly with one session-type selector and one configuration selector. `工具 -> 终端设置` uses one horizontal page strip and a full-width settings surface.
 
    - Session name, group, tags. Names and groups are bounded to 128/256 Unicode characters; a
      Profile keeps at most 32 unique tags of 64 characters each. Control characters are removed on
@@ -536,7 +536,7 @@ clean-compiled before its stream-backed Stdio and Ktor CIO Streamable HTTP lifec
 unsupported negotiation, verifies server identity and all read surfaces, and confirms that
 PortMate HTTP remains stateless.
 
-The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, 1.4.1, and 2.0.0. Each
+The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, 1.4.1, 2.0.0, and 2.1.0. Each
 version has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot
 mask cross-version dependency or API incompatibilities. It requires exactly .NET SDK 10.0.302,
 bootstrapping a platform archive with its official SHA-512 digest when necessary. Every SDK's
@@ -551,9 +551,9 @@ These releases neither expose `StdioTransport` on Windows nor declare the `Event
 imported by their HTTP source there, so the unpatched official packages are not presented as a
 Windows-compatible matrix.
 
-As of 2026-08-02, the newest stable release published by each of these nine official SDK projects is
+As of 2026-08-05, the newest stable release published by each of these nine official SDK projects is
 present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.1.0, Ruby 1.1.0, Java 2.0.0,
-Kotlin 0.15.0, C# 2.0.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
+Kotlin 0.15.0, C# 2.1.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
 API compatibility anchors; later stable releases should be added only after both real transports pass.
 
 Read tools remain available by default while the grant store is empty. After any grant is saved,
@@ -741,7 +741,7 @@ npm run test:ssh-server-compat
 
 The workspace suite also resolves two log previews in reverse order, holds MCP HTTP configuration across repeated tab activation, closes and reopens the OneKey manager while resolving two saves in reverse order, and exercises three-stage Host Key import and Client Identity edit lifecycles. It opens Session Settings, applies a newer Profile through the normal background poll, then verifies that the save request still carries the dialog's edit-time baseline so the backend can preserve the concurrent field. The Client Identity sequence first proves that a response released after close still reaches the parent list, then holds an older edit across another close/reopen cycle while a newer manager commits the final value before that stale response is released. A private-key import lifecycle freezes Secret creation across the same close/reopen boundary, lets the replacement manager commit the current identity, then verifies that releasing the old write performs no Profile save and removes the orphan Secret. Connection-credential checks fail the second of two Secret writes and then fail the Profile commit after one successful write, proving both cleanup paths leave no retained Secret and no false saved-password state. Session Settings checks freeze a staged Vault-key write to prove every close/submit control remains disabled, then separately prove cancellation deletes the ref while a successful Profile commit retains it without an erroneous cleanup call. A separate Vault lifecycle freezes an unlock across close/reopen, verifies that the replacement manager remains disabled without issuing a duplicate mutation, then confirms automatic state convergence before locking the Vault again. Profile-mutation failure checks additionally prove that a complete compensation read accepts both changed Profile fields with unchanged runtime counters and an authoritative empty session list. These checks cover dialog and app-lifetime request gates rather than relying only on unit-level gate behavior.
 
-The workspace suite also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures a focused 1440x900 Tunnel screenshot.
+The workspace suite also checks the new-session quick surface across all six protocols: initial target focus, invalid-target connection gating, serial selection and baud parameters, TCP TLS, per-protocol draft retention, bounded metadata editing, quick/advanced round trips, and compact desktop/mobile layout. It also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures focused session and Tunnel screenshots.
 
 `npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact Apache-2.0 and JetBrains Mono OFL license contents, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package. The Windows MSI/NSIS and macOS app/DMG gates enforce the same third-party license content and fixed resource-directory placement. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
 
