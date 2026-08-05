@@ -10,7 +10,14 @@ import {
   protocolTabs,
   removeJumpSecretDraftIndex,
   sessionSettingTrees,
+  validateQuickConnectProfile,
 } from "./session-settings-state";
+import {
+  createSerialConnection,
+  createShellConnection,
+  createSshConnection,
+  createTcpConnection,
+} from "./session-profile-helpers";
 
 const sharedPages = ["会话", "终端", "日志", "触发器", "传输"];
 
@@ -110,5 +117,35 @@ describe("session settings navigation", () => {
       "0:passwordSecretRef": "second-password",
       "1:passphraseSecretRef": "third-passphrase",
     });
+  });
+
+  it("requires a usable target before a network or serial draft can connect", () => {
+    const ssh = createSshConnection();
+    expect(validateQuickConnectProfile({ connection: ssh })).toEqual({
+      valid: false,
+      issues: [{ field: "target", message: "请输入主机" }],
+    });
+    expect(validateQuickConnectProfile({
+      connection: { ...ssh, endpoint: { host: "router.local", port: 65_536 } },
+    }).issues).toEqual([{ field: "port", message: "端口必须在 1 到 65535 之间" }]);
+
+    const tcp = createTcpConnection("tcp");
+    expect(validateQuickConnectProfile({ connection: tcp }).issues.map((issue) => issue.field))
+      .toEqual(["target", "port"]);
+    expect(validateQuickConnectProfile({
+      connection: { ...tcp, host: "10.0.0.5", port: 443 },
+    }).valid).toBe(true);
+
+    const serial = createSerialConnection();
+    expect(validateQuickConnectProfile({ connection: serial }).issues)
+      .toEqual([{ field: "target", message: "请选择串口" }]);
+    expect(validateQuickConnectProfile({
+      connection: { ...serial, port: "/dev/ttyUSB0", baudRate: Number.NaN },
+    }).issues).toEqual([{ field: "baudRate", message: "波特率必须是有效的正整数" }]);
+  });
+
+  it("allows a local shell draft to connect through the platform default shell", () => {
+    expect(validateQuickConnectProfile({ connection: createShellConnection() }))
+      .toEqual({ valid: true, issues: [] });
   });
 });

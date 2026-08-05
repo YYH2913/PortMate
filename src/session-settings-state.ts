@@ -9,6 +9,8 @@ export const MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS = MAX_SESSION_PROFILE_TAGS
 
 export type ProtocolTab = (typeof protocolTabs)[number];
 export type SessionTreeNode = { label: string; children?: readonly string[] };
+export type QuickConnectField = "target" | "port" | "baudRate";
+export type QuickConnectIssue = { field: QuickConnectField; message: string };
 
 const sharedSessionTree: readonly SessionTreeNode[] = [
   { label: "会话" },
@@ -28,6 +30,38 @@ export const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]
 
 export function flattenSessionTree(tree: readonly SessionTreeNode[]): string[] {
   return tree.flatMap((item) => (item.children ? [item.label, ...item.children] : [item.label]));
+}
+
+export function validateQuickConnectProfile(
+  profile: Pick<SessionProfile, "connection">,
+): { valid: boolean; issues: QuickConnectIssue[] } {
+  const { connection } = profile;
+  const issues: QuickConnectIssue[] = [];
+
+  if (connection.kind === "ssh" || connection.kind === "tmux") {
+    if (!connection.endpoint.host.trim()) {
+      issues.push({ field: "target", message: "请输入主机" });
+    }
+    if (!validNetworkPort(connection.endpoint.port)) {
+      issues.push({ field: "port", message: "端口必须在 1 到 65535 之间" });
+    }
+  } else if (connection.kind === "telnet" || connection.kind === "tcp") {
+    if (!connection.host.trim()) {
+      issues.push({ field: "target", message: "请输入主机" });
+    }
+    if (!validNetworkPort(connection.port)) {
+      issues.push({ field: "port", message: "端口必须在 1 到 65535 之间" });
+    }
+  } else if (connection.kind === "serial") {
+    if (!connection.port.trim()) {
+      issues.push({ field: "target", message: "请选择串口" });
+    }
+    if (!Number.isInteger(connection.baudRate) || connection.baudRate < 1 || connection.baudRate > 4_294_967_295) {
+      issues.push({ field: "baudRate", message: "波特率必须是有效的正整数" });
+    }
+  }
+
+  return { valid: issues.length === 0, issues };
 }
 
 export function normalizeSessionMetadataText(value: unknown, maxCharacters: number): string {
@@ -80,4 +114,8 @@ function boundedTrimmedSessionMetadata(value: unknown, maxCharacters: number): s
     .join("")
     .trim();
   return Array.from(clean).slice(0, maxCharacters).join("").trim();
+}
+
+function validNetworkPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65_535;
 }
