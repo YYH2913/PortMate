@@ -683,7 +683,8 @@ nonempty resumable `.portmate-part` copied from the stopped container.
 The same eleven-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
 lrzsz builds and Debian, Debian trixie, Ubuntu, and GESFTPServer YModem fallback, and verifies
 disconnect failure, partial progress, final-file non-commit, and partial-file cleanup.
-The fault matrix injects fourteen health failures: paused and forcibly closed transports; rejected,
+The fault matrix injects fifteen health failures: paused and forcibly closed transports; a closed
+primary terminal channel while the transport and auxiliary channels remain usable; rejected,
 silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
 canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and `READDIR` operations;
 and runtime replacement. Each report error is checked against
