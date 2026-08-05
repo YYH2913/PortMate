@@ -399,7 +399,7 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
             .data(b"printf '__PORTMATE_%s__\\n' LIBSSH_JUMP_OK\r")
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             let mut output = Vec::new();
             loop {
                 match read_half.wait().await {

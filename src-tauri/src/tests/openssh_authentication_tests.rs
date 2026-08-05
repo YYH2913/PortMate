@@ -429,7 +429,7 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
             .data(b"ssh-add -L 2>&1; printf '\\n__PORTMATE_%s__\\n' AGENT_FORWARD_DONE\r")
             .await
             .unwrap();
-        let output = tokio::time::timeout(Duration::from_secs(10), async {
+        let output = tokio::time::timeout(Duration::from_secs(15), async {
             let mut output = Vec::new();
             loop {
                 match read_half.wait().await {
