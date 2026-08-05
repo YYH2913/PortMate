@@ -233,7 +233,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
         <strong>{request.title || session?.profile.name || "会话不可用"}</strong>
-        <span className={`tab-status ${session?.runtime.status ?? "disconnected"}`} title={runtimeHealth} />
+        <span
+          className={`session-status-dot status-${session?.runtime.status ?? "disconnected"}`}
+          role="status"
+          aria-label={runtimeHealth}
+          title={runtimeHealth}
+        />
         <span className="detached-endpoint">{session ? describeDetachedEndpoint(session) : request.sessionId}</span>
         <button type="button" title="刷新会话" aria-label="刷新会话" onClick={() => window.location.reload()}>
           <RefreshCw size={14} />

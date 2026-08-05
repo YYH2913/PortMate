@@ -2635,6 +2635,19 @@ Host staging
   detachedPage.on("pageerror", (error) => detachedPageErrors.push(error.message));
   await detachedPage.goto(detachedUrl.toString());
   await detachedPage.locator('.detached-pane-terminal .terminal-host[data-terminal-theme="portmate-dark"][data-terminal-ready="true"]').waitFor();
+  const detachedConnectedIndicator = await detachedPage.locator(".detached-pane-toolbar .session-status-dot").evaluate((indicator) => ({
+    color: getComputedStyle(indicator).backgroundColor,
+    width: getComputedStyle(indicator).width,
+    height: getComputedStyle(indicator).height,
+    status: indicator.getAttribute("role"),
+    label: indicator.getAttribute("aria-label"),
+  }));
+  assert(detachedConnectedIndicator.color === "rgb(55, 214, 122)"
+    && detachedConnectedIndicator.width === "7px"
+    && detachedConnectedIndicator.height === "7px"
+    && detachedConnectedIndicator.status === "status"
+    && detachedConnectedIndicator.label?.startsWith("已连接"),
+    `detached terminal did not expose its connected status indicator: ${JSON.stringify(detachedConnectedIndicator)}`);
   await detachedPage.waitForFunction(() => (
     window.__tauriEventListeners.get("portmate-session-profile-updated")?.length ?? 0
   ) > 0);
@@ -2704,22 +2717,30 @@ Host staging
   await detachedPage.getByRole("button", { name: "断开会话", exact: true }).waitFor();
   const detachedRuntimeHealth = await detachedPage.evaluate(() => {
     const status = document.querySelector(".detached-pane-status > span");
-    const indicator = document.querySelector(".detached-pane-toolbar .tab-status");
+    const indicator = document.querySelector(".detached-pane-toolbar .session-status-dot");
     return {
       text: status?.textContent ?? "",
       title: status?.getAttribute("title") ?? "",
       live: status?.getAttribute("aria-live") ?? "",
       indicatorTitle: indicator?.getAttribute("title") ?? "",
+      indicatorLabel: indicator?.getAttribute("aria-label") ?? "",
+      indicatorColor: indicator ? getComputedStyle(indicator).backgroundColor : "missing",
+      indicatorWidth: indicator ? getComputedStyle(indicator).width : "missing",
+      indicatorHeight: indicator ? getComputedStyle(indicator).height : "missing",
       connectButtons: document.querySelectorAll('button[aria-label="连接会话"]').length,
       disconnectButtons: document.querySelectorAll('button[aria-label="断开会话"]').length,
     };
   });
   assert(detachedRuntimeHealth.text === detachedRuntimeHealth.title
     && detachedRuntimeHealth.text === detachedRuntimeHealth.indicatorTitle
+    && detachedRuntimeHealth.text === detachedRuntimeHealth.indicatorLabel
     && detachedRuntimeHealth.text.startsWith("正在重连 · 原因: transport stalled ")
     && !detachedRuntimeHealth.text.includes("Invalid Date")
     && !detachedRuntimeHealth.text.includes("\n")
-    && detachedRuntimeHealth.live === "polite",
+    && detachedRuntimeHealth.live === "polite"
+    && detachedRuntimeHealth.indicatorColor === "rgb(248, 113, 113)"
+    && detachedRuntimeHealth.indicatorWidth === "7px"
+    && detachedRuntimeHealth.indicatorHeight === "7px",
   `detached terminal did not normalize its runtime health: ${JSON.stringify({ detachedHealth, detachedRuntimeHealth })}`);
   assert(Array.from(detachedRuntimeHealth.text.split("原因: ")[1]).length === 256
     && detachedRuntimeHealth.text.endsWith("...")

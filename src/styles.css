@@ -2886,7 +2886,8 @@ button {
   opacity: 0;
 }
 
-.workspace-pane-tab .session-status-dot {
+.session-status-dot {
+  display: inline-block;
   flex: 0 0 7px;
   width: 7px;
   height: 7px;
@@ -2901,6 +2902,7 @@ button {
   color: var(--text);
 }
 
+.session-status-dot.status-connected,
 .workspace-pane-tab.status-connected .session-status-dot {
   background: var(--green);
   box-shadow: 0 0 0 1px rgba(55, 214, 122, 0.24);
