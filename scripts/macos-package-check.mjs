@@ -37,7 +37,7 @@ const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const app = findSingleBundle(join(bundleRoot, "macos"));
 const dmg = findSingleArtifact(join(bundleRoot, "dmg"), ".dmg", "DMG image");
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate-macos-package-check-"));
+const auditRoot = mkdtempSync(join(tmpdir(), "portmate macos package check "));
 const mountPoint = join(auditRoot, "mounted-dmg");
 let mounted = false;
 let verifiedApp;
@@ -135,6 +135,7 @@ console.log(JSON.stringify({
     "bundle identifier, version, executable, and application category",
     "portable bundle symlinks",
     "DMG verification and read-only mount",
+    "DMG mount, execution, runtime data, and sidecar paths containing spaces",
     "packaged main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
     "packaged MCP sidecar HTTP readiness and abnormal-parent cleanup",
   ],

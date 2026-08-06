@@ -41,7 +41,7 @@ const bundleRoot = join(projectRoot, "target", "release", "bundle");
 const deb = join(bundleRoot, "deb", `PortMate_${version}_${architecture}.deb`);
 const rpm = join(bundleRoot, "rpm", `PortMate-${version}-1.${rpmArchitecture}.rpm`);
 const appImage = join(bundleRoot, "appimage", `PortMate_${version}_${architecture}.AppImage`);
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate-package-check-"));
+const auditRoot = mkdtempSync(join(tmpdir(), "portmate package check "));
 const runtimeSmokes = [];
 const sidecarWatchdogSmokes = [];
 
@@ -134,6 +134,7 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
+      "extraction, execution, runtime data, and sidecar paths containing spaces",
       "packaged main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift stdio SDK per package",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift HTTP SDK per package",

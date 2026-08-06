@@ -30,7 +30,7 @@ const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const msi = findSingleArtifact(join(bundleRoot, "msi"), ".msi", "MSI installer");
 const nsis = findSingleArtifact(join(bundleRoot, "nsis"), ".exe", "NSIS installer");
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate-windows-package-check-"));
+const auditRoot = mkdtempSync(join(tmpdir(), "portmate windows package check "));
 const msiRoot = join(auditRoot, "msi");
 const nsisRoot = join(auditRoot, "nsis");
 const expectedUninstaller = join(nsisRoot, "uninstall.exe");
@@ -139,6 +139,7 @@ console.log(JSON.stringify({
     "portable package symlinks",
     "MSI administrative extraction",
     "NSIS silent install and uninstall",
+    "installation, execution, runtime data, and sidecar paths containing spaces",
     "installed main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
     "installed MCP sidecar HTTP readiness and abnormal-parent cleanup",
   ],

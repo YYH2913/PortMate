@@ -50,6 +50,8 @@ end
 def check_stdio(binary)
   transport = MCP::Client::Stdio.new(
     command: binary,
+    # A separate argument keeps Process.spawn in argv mode so paths with spaces stay intact.
+    args: ["--stdio"],
     env: ENV.to_h.merge(
       "PORTMATE_MCP_HTTP" => "0",
       "PORTMATE_MCP_CLIENT_ID" => "official-ruby-sdk-stdio-check",
