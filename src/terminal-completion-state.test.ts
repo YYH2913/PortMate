@@ -147,6 +147,43 @@ describe("terminal completion state", () => {
     });
   });
 
+  it("covers infrastructure, build, tmux, and Windows command contexts", () => {
+    const terraform = terminalCompletionSuggestions({
+      line: "terraform pl",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(terraform.find((item) => item.label === "plan")?.appendText).toBe("an ");
+
+    const dotnet = terminalCompletionSuggestions({
+      line: "dotnet --roll-forward Major bu",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(dotnet.find((item) => item.label === "build")?.appendText).toBe("ild ");
+
+    const tmux = terminalCompletionSuggestions({
+      line: "tmux new-",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(tmux.map((item) => item.label)).toEqual(expect.arrayContaining(["new-session", "new-window"]));
+
+    const cmd = terminalCompletionSuggestions({
+      line: "cmd /",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(cmd.find((item) => item.label === "/c")?.source).toBe("option");
+
+    const winget = terminalCompletionSuggestions({
+      line: "winget --source msstore in",
+      preferences: defaultTerminalCompletionPreferences,
+    });
+    expect(winget.find((item) => item.label === "install")?.appendText).toBe("stall ");
+
+    expect(terminalCompletionUsageHint({
+      line: "winget.exe install ",
+      preferences: defaultTerminalCompletionPreferences,
+    })).toEqual({ label: "winget.exe install [选项] <查询>", detail: "安装软件包" });
+  });
+
   it("provides non-inserting usage hints for every known command context", () => {
     expect(terminalCompletionUsageHint({
       line: "ls ",

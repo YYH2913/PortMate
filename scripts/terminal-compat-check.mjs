@@ -1037,6 +1037,33 @@ try {
     `command completion changed the remote PTY size: ${JSON.stringify({ terminalSizeBeforeCompletion, terminalSizeAfterCompletion, completionResizeCalls })}`);
 
   await clearCalls();
+  await page.keyboard.type("terraform pl");
+  await activeCompletion.waitFor();
+  const terraformCompletion = await activeCompletion.textContent();
+  assert(terraformCompletion?.includes("plan") && terraformCompletion.includes("terraform [全局选项]"),
+    `Terraform command completion did not expose its structured schema: ${terraformCompletion}`);
+  await clearCalls();
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "send_text" && call.args.text === "an "
+  )));
+  await page.keyboard.press("Enter");
+
+  await page.keyboard.type("cmd /");
+  await activeCompletion.waitFor();
+  const cmdCompletion = await activeCompletion.textContent();
+  assert(cmdCompletion?.includes("/c") && cmdCompletion.includes("cmd [选项] [命令]"),
+    `Windows slash-style command options were not rendered: ${cmdCompletion}`);
+  await page.keyboard.press("Enter");
+
+  await page.keyboard.type("winget.exe install ");
+  await activeCompletion.waitFor();
+  const wingetUsage = await activeCompletion.locator(".terminal-completion-usage").textContent();
+  assert(wingetUsage?.includes("winget.exe install [选项] <查询>"),
+    `Windows executable command context was not resolved: ${wingetUsage}`);
+  await page.keyboard.press("Enter");
+
+  await clearCalls();
   await page.keyboard.type("clear ");
   await activeCompletion.waitFor();
   const completionUsageOnly = await activeCompletion.evaluate((completion) => ({

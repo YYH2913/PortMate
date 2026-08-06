@@ -138,7 +138,7 @@ export function terminalCompletionSuggestions({
     const root = terminalCommandSchemaForToken(command);
     const resolution = root ? resolveCommandContext(root, completedTokens(beforeToken).slice(1)) : null;
     const context = resolution?.unknownSubcommandPath ? null : resolution?.schema ?? null;
-    if (preferences.commandOptions && (!token || token.startsWith("-"))) {
+    if (preferences.commandOptions && (!token || token.startsWith("-") || token.startsWith("/"))) {
       for (const entry of context ? commandOptions(root!, context) : []) {
         pushCatalogSuggestion(candidates, entry, "option", command, beforeToken, line);
       }
@@ -268,9 +268,12 @@ function resolveCommandContext(
       optionValuePending = false;
       continue;
     }
-    if (token.startsWith("-")) {
-      const optionName = token.split("=", 1)[0];
-      const option = commandOptions(root, context).find((entry) => entry.value === optionName);
+    const availableOptions = commandOptions(root, context);
+    const optionName = terminalOptionName(token, availableOptions);
+    if (token.startsWith("-") || optionName) {
+      const option = optionName
+        ? availableOptions.find((entry) => entry.value === optionName)
+        : undefined;
       optionValuePending = Boolean(option?.takesValue && !token.includes("="));
       continue;
     }
@@ -293,7 +296,19 @@ function resolveCommandContext(
 
 function terminalCommandSchemaForToken(token: string): TerminalCommandSchema | null {
   const basename = token.slice(token.lastIndexOf("/") + 1);
-  return terminalCommandSchema(basename);
+  const executable = basename.toLowerCase().endsWith(".exe")
+    ? basename.slice(0, -4).toLowerCase()
+    : basename;
+  return terminalCommandSchema(executable);
+}
+
+function terminalOptionName(
+  token: string,
+  availableOptions: readonly TerminalCommandCatalogEntry[],
+): string | null {
+  if (token.startsWith("-")) return token.split("=", 1)[0];
+  if (!token.startsWith("/")) return null;
+  return availableOptions.find((entry) => entry.value === token)?.value ?? null;
 }
 
 function commandHasArgumentBoundary(line: string): boolean {

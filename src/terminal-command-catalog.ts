@@ -20,6 +20,8 @@ type TerminalCommandSchemaInput = {
 const commonPathArguments = entries([".", "..", "~", "/tmp"], "常用路径");
 
 export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
+  ansibleCommand("ansible"),
+  ansibleCommand("ansible-playbook"),
   apkCommand(),
   aptCommand("apt"),
   aptCommand("apt-get"),
@@ -29,6 +31,7 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   schema("bash", "启动 Bash shell", "bash [选项] [脚本 [参数...]]", {
     options: options(["--help", "--version", "-c", "-i", "-l", "-n", "-x"], "Bash 选项"),
   }),
+  bunCommand(),
   schema("cargo", "Rust 构建与包管理", "cargo [全局选项] <子命令> [参数...]", {
     options: options(["--help", "--version", "--locked", "--offline", "-q"], "Cargo 全局选项"),
     subcommands: [
@@ -63,6 +66,9 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
       ["--build", "--install", "--preset", "-B", "-D", "-G", "-S"],
     ),
   }),
+  schema("cmd", "运行 Windows 命令解释器", "cmd [选项] [命令]", {
+    options: options(["/c", "/d", "/e:off", "/e:on", "/k", "/q", "/s", "/u", "/v:off", "/v:on"], "cmd 选项", ["/c", "/k"]),
+  }),
   schema("clear", "清空终端屏幕", "clear"),
   schema("cp", "复制文件或目录", "cp [选项] <源...> <目标>", {
     options: options(["--parents", "-a", "-f", "-i", "-n", "-r", "-v"], "cp 选项"),
@@ -71,6 +77,14 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   schema("curl", "传输 URL 数据", "curl [选项] <URL...>", {
     options: options(["--connect-timeout", "--fail", "--max-time", "-H", "-I", "-L", "-o", "-X", "-d"], "curl 选项"),
   }),
+  schema("cut", "按字段或字符提取文本", "cut <模式> [选项] [文件...]", {
+    options: options(["--characters", "--delimiter", "--fields", "--only-delimited", "-b", "-c", "-d", "-f", "-s"], "cut 选项", ["--characters", "--delimiter", "--fields", "-b", "-c", "-d", "-f"]),
+    arguments: commonPathArguments,
+  }),
+  schema("date", "显示或设置日期时间", "date [选项] [+格式]", {
+    options: options(["--date", "--iso-8601", "--reference", "--rfc-3339", "--set", "--utc", "-d", "-I", "-r", "-R", "-s", "-u"], "date 选项", ["--date", "--iso-8601", "--reference", "--rfc-3339", "--set", "-d", "-I", "-r", "-s"]),
+  }),
+  denoCommand(),
   schema("df", "显示文件系统空间", "df [选项] [文件系统...]", {
     options: options(["--human-readable", "--inodes", "--total", "-h", "-i", "-T"], "df 选项"),
   }),
@@ -119,6 +133,7 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
       schema("run", "创建并运行容器", "docker run [选项] <镜像> [命令...]", { options: options(["--detach", "--env", "--name", "--network", "--publish", "--rm", "--volume"], "docker run 选项") }),
     ],
   }),
+  dotnetCommand(),
   schema("du", "统计文件和目录空间", "du [选项] [路径...]", {
     options: options(["--max-depth", "--summarize", "-a", "-h", "-s", "-x"], "du 选项", ["--max-depth"]),
     arguments: commonPathArguments,
@@ -168,12 +183,16 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     ],
   }),
   goCommand(),
+  schema("gradle", "运行 Gradle 构建", "gradle [选项] [任务...]", {
+    options: options(["--build-cache", "--console", "--continue", "--daemon", "--debug", "--dry-run", "--info", "--no-daemon", "--offline", "--parallel", "--project-dir", "--quiet", "--refresh-dependencies", "--scan", "--stacktrace", "-b", "-p", "-q", "-x"], "Gradle 选项", ["--console", "--project-dir", "-b", "-p", "-x"]),
+  }),
   schema("grep", "搜索文本", "grep [选项] <模式> [文件...]", { options: options(["--color=auto", "-E", "-F", "-i", "-n", "-r", "-v"], "grep 选项") }),
   schema("gzip", "压缩或解压 gzip 文件", "gzip [选项] [文件...]", {
     options: options(["--decompress", "--force", "--keep", "--recursive", "--stdout", "-c", "-d", "-f", "-k", "-r"], "gzip 选项"),
     arguments: commonPathArguments,
   }),
   schema("head", "输出文件开头", "head [选项] [文件...]", { options: options(["--bytes", "--lines", "-c", "-n", "-q", "-v"], "head 选项"), arguments: commonPathArguments }),
+  helmCommand(),
   schema("hostname", "显示或设置主机名", "hostname [选项] [名称]", {
     options: options(["--all-fqdns", "--fqdn", "--ip-address", "--short", "-A", "-I", "-f", "-s"], "hostname 选项"),
   }),
@@ -184,7 +203,21 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     options: options(["--group", "--groups", "--name", "--real", "--user", "-G", "-g", "-n", "-r", "-u"], "id 选项"),
   }),
   ipCommand(),
+  schema("ipconfig", "查看 Windows 网络配置", "ipconfig [选项]", {
+    options: options(["/all", "/displaydns", "/flushdns", "/registerdns", "/release", "/release6", "/renew", "/renew6", "/showclassid", "/showclassid6"], "ipconfig 选项"),
+  }),
+  schema("java", "运行 Java 应用", "java [选项] <类|jar|模块> [参数...]", {
+    options: options(["--class-path", "--enable-preview", "--jar", "--module", "--module-path", "--show-version", "--version", "-cp", "-jar", "-m", "-p"], "Java 选项", ["--class-path", "--module", "--module-path", "-cp", "-jar", "-m", "-p"]),
+  }),
+  schema("javac", "编译 Java 源码", "javac [选项] <源文件...>", {
+    options: options(["--class-path", "--enable-preview", "--module-path", "--release", "--source", "--target", "-classpath", "-cp", "-d", "-encoding", "-g"], "javac 选项", ["--class-path", "--module-path", "--release", "--source", "--target", "-classpath", "-cp", "-d", "-encoding"]),
+    arguments: commonPathArguments,
+  }),
   schema("journalctl", "查询 systemd 日志", "journalctl [选项] [匹配条件...]", { options: options(["--boot", "--follow", "--no-pager", "--since", "--until", "-b", "-f", "-n", "-u"], "journalctl 选项") }),
+  schema("jq", "查询和转换 JSON", "jq [选项] <过滤器> [文件...]", {
+    options: options(["--arg", "--argjson", "--compact-output", "--exit-status", "--join-output", "--null-input", "--raw-output", "--slurp", "-c", "-e", "-j", "-n", "-r", "-s"], "jq 选项", ["--arg", "--argjson"]),
+    arguments: commonPathArguments,
+  }),
   kubectlCommand(),
   schema("kill", "向进程发送信号", "kill [选项] <PID...>", { options: options(["--list", "-HUP", "-INT", "-KILL", "-TERM", "-l", "-s"], "kill 信号或选项") }),
   schema("less", "分页查看文本", "less [选项] [文件...]", {
@@ -205,8 +238,16 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   schema("man", "查看命令手册", "man [选项] [章节] <名称...>", {
     options: options(["--apropos", "--html", "--where", "-a", "-f", "-k", "-w"], "man 选项"),
   }),
+  checksumCommand("md5sum", "MD5"),
   schema("mkdir", "创建目录", "mkdir [选项] <目录...>", { options: options(["--mode", "--parents", "-m", "-p", "-v"], "mkdir 选项") }),
+  schema("mount", "挂载文件系统", "mount [选项] [设备] [目录]", {
+    options: options(["--all", "--bind", "--options", "--read-only", "--types", "-B", "-L", "-U", "-a", "-o", "-r", "-t", "-v"], "mount 选项", ["--options", "--types", "-B", "-L", "-U", "-o", "-t"]),
+    arguments: commonPathArguments,
+  }),
   schema("mv", "移动或重命名文件", "mv [选项] <源...> <目标>", { options: options(["--backup", "--target-directory", "-f", "-i", "-n", "-t", "-v"], "mv 选项"), arguments: commonPathArguments }),
+  schema("mvn", "运行 Maven 构建", "mvn [选项] [阶段|目标...]", {
+    options: options(["--activate-profiles", "--also-make", "--batch-mode", "--define", "--file", "--offline", "--projects", "--quiet", "--settings", "--threads", "-B", "-D", "-P", "-T", "-f", "-o", "-pl", "-q", "-s"], "Maven 选项", ["--activate-profiles", "--define", "--file", "--projects", "--settings", "--threads", "-D", "-P", "-T", "-f", "-pl", "-s"]),
+  }),
   schema("nano", "使用 Nano 编辑文件", "nano [选项] [文件...]", {
     options: options(["--linenumbers", "--mouse", "--nowrap", "--restricted", "-B", "-l", "-m", "-v"], "Nano 选项"),
     arguments: commonPathArguments,
@@ -279,10 +320,12 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   pipCommand("pip"),
   pipCommand("pip3"),
   podmanCommand(),
+  powershellCommand("powershell"),
   schema("ps", "显示进程状态", "ps [选项]", {
     options: options(["--forest", "--pid", "--sort", "-A", "-a", "-e", "-f", "-o", "-u", "-x"], "ps 选项", ["--pid", "--sort", "-o", "-u"]),
   }),
   schema("pwd", "显示当前目录", "pwd [选项]", { options: options(["-L", "-P"], "pwd 选项") }),
+  powershellCommand("pwsh"),
   pythonCommand("python"),
   pythonCommand("python3"),
   schema("rg", "使用 ripgrep 搜索文本", "rg [选项] <模式> [路径...]", {
@@ -296,6 +339,9 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     arguments: commonPathArguments,
   }),
   schema("scp", "通过 SSH 复制文件", "scp [选项] <源...> <目标>", { options: options(["-3", "-C", "-J", "-P", "-i", "-p", "-r", "-v"], "SCP 选项") }),
+  schema("screen", "管理 GNU Screen 会话", "screen [选项] [命令 [参数...]]", {
+    options: options(["-D", "-L", "-R", "-S", "-d", "-ls", "-r", "-x", "-X"], "Screen 选项", ["-S", "-r", "-x", "-X"]),
+  }),
   schema("sed", "流式编辑文本", "sed [选项] <脚本> [文件...]", {
     options: options(["--expression", "--file", "--in-place", "--regexp-extended", "-E", "-e", "-f", "-i", "-n"], "sed 选项", ["--expression", "--file", "--in-place", "-e", "-f", "-i"]),
   }),
@@ -308,6 +354,7 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   schema("sh", "启动 POSIX shell", "sh [选项] [脚本 [参数...]]", {
     options: options(["-c", "-e", "-n", "-s", "-u", "-x"], "Shell 选项", ["-c"]),
   }),
+  checksumCommand("sha256sum", "SHA-256"),
   schema("sort", "排序文本行", "sort [选项] [文件...]", {
     options: options(["--field-separator", "--key", "--numeric-sort", "--reverse", "--unique", "-k", "-n", "-r", "-t", "-u"], "sort 选项", ["--field-separator", "--key", "-k", "-t"]),
     arguments: commonPathArguments,
@@ -316,6 +363,13 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     options: options(["--all", "--listening", "--numeric", "--processes", "--tcp", "--udp", "-a", "-l", "-n", "-p", "-t", "-u"], "ss 选项"),
   }),
   schema("ssh", "连接 SSH 主机", "ssh [选项] [用户@]主机 [命令...]", { options: options(["-4", "-6", "-A", "-D", "-J", "-L", "-R", "-i", "-o", "-p", "-t", "-v"], "SSH 选项") }),
+  schema("ssh-add", "管理 ssh-agent 身份", "ssh-add [选项] [私钥文件...]", {
+    options: options(["-D", "-K", "-L", "-T", "-c", "-d", "-l", "-t", "-x"], "ssh-add 选项", ["-T", "-t"]),
+    arguments: commonPathArguments,
+  }),
+  schema("ssh-keygen", "生成和管理 SSH 密钥", "ssh-keygen [选项]", {
+    options: options(["-C", "-E", "-F", "-N", "-R", "-b", "-f", "-l", "-p", "-q", "-t", "-y"], "ssh-keygen 选项", ["-C", "-E", "-F", "-N", "-R", "-b", "-f", "-t"]),
+  }),
   schema("stat", "显示文件或文件系统状态", "stat [选项] <路径...>", {
     options: options(["--dereference", "--file-system", "--format", "--printf", "-L", "-c", "-f"], "stat 选项", ["--format", "--printf", "-c"]),
     arguments: commonPathArguments,
@@ -338,11 +392,23 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
       ["stop", "停止单元", "systemctl stop [选项] <单元...>"],
     ]),
   }),
+  schema("taskkill", "终止 Windows 进程", "taskkill [选项]", {
+    options: options(["/f", "/fi", "/im", "/pid", "/t"], "taskkill 选项", ["/fi", "/im", "/pid"]),
+  }),
+  schema("tasklist", "列出 Windows 进程", "tasklist [选项]", {
+    options: options(["/fi", "/fo", "/m", "/nh", "/svc", "/v"], "tasklist 选项", ["/fi", "/fo", "/m"]),
+  }),
   schema("tail", "输出文件末尾", "tail [选项] [文件...]", { options: options(["--follow", "--lines", "--pid", "--retry", "-F", "-f", "-n"], "tail 选项"), arguments: commonPathArguments }),
   schema("tar", "归档文件", "tar <操作> [选项] [文件...]", { options: options(["--directory", "--exclude", "-C", "-c", "-f", "-j", "-t", "-v", "-x", "-z"], "tar 操作或选项") }),
   schema("telnet", "连接 Telnet 服务", "telnet [选项] <主机> [端口]", {
     options: options(["-4", "-6", "-E", "-K", "-a", "-e", "-l", "-n"], "Telnet 选项", ["-e", "-l", "-n"]),
   }),
+  schema("tee", "复制标准输入到文件", "tee [选项] [文件...]", {
+    options: options(["--append", "--ignore-interrupts", "--output-error", "-a", "-i", "-p"], "tee 选项", ["--output-error"]),
+    arguments: commonPathArguments,
+  }),
+  terraformCommand(),
+  tmuxCommand(),
   schema("touch", "创建文件或更新时间戳", "touch [选项] <文件...>", {
     options: options(["--date", "--reference", "-a", "-c", "-d", "-m", "-r", "-t"], "touch 选项", ["--date", "--reference", "-d", "-r", "-t"]),
     arguments: commonPathArguments,
@@ -355,6 +421,10 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
     options: options(["--dirsfirst", "--filelimit", "--prune", "-a", "-d", "-L", "-p", "-s"], "tree 选项", ["--filelimit", "-L"]),
     arguments: commonPathArguments,
   }),
+  schema("umount", "卸载文件系统", "umount [选项] <设备|目录...>", {
+    options: options(["--all", "--force", "--lazy", "--recursive", "--types", "-R", "-a", "-f", "-l", "-t", "-v"], "umount 选项", ["--types", "-t"]),
+    arguments: commonPathArguments,
+  }),
   schema("uname", "显示系统信息", "uname [选项]", { options: options(["--all", "--kernel-release", "--machine", "--operating-system", "-a", "-m", "-r", "-s"], "uname 选项") }),
   schema("unzip", "解压 ZIP 归档", "unzip [选项] <归档> [文件...]", {
     options: options(["-d", "-j", "-l", "-n", "-o", "-q", "-t"], "unzip 选项", ["-d"]),
@@ -362,15 +432,22 @@ export const terminalCommandCatalog: readonly TerminalCommandSchema[] = [
   }),
   schema("vi", "启动 Vi 编辑器", "vi [选项] [文件...]", { options: options(["-R", "-c", "-d", "-n", "-u"], "Vi 选项"), arguments: commonPathArguments }),
   schema("vim", "启动 Vim 编辑器", "vim [选项] [文件...]", { options: options(["--clean", "-R", "-c", "-d", "-n", "-u"], "Vim 选项"), arguments: commonPathArguments }),
+  schema("watch", "周期执行并显示命令", "watch [选项] <命令...>", {
+    options: options(["--beep", "--color", "--differences", "--errexit", "--interval", "--no-title", "--precise", "-b", "-c", "-d", "-e", "-n", "-p", "-t"], "watch 选项", ["--differences", "--interval", "-d", "-n"]),
+  }),
   schema("wc", "统计行、词和字节", "wc [选项] [文件...]", {
     options: options(["--bytes", "--chars", "--lines", "--words", "-c", "-l", "-m", "-w"], "wc 选项"),
     arguments: commonPathArguments,
   }),
   schema("wget", "下载网络资源", "wget [选项] <URL...>", { options: options(["--continue", "--directory-prefix", "--output-document", "--quiet", "-O", "-P", "-c", "-q"], "wget 选项") }),
+  schema("where", "定位 Windows 可执行文件", "where [选项] <模式...>", {
+    options: options(["/f", "/q", "/r", "/t"], "where 选项", ["/r"]),
+  }),
   schema("which", "定位可执行命令", "which [选项] <命令...>", {
     options: options(["--all", "--read-alias", "-a", "-i"], "which 选项"),
   }),
   schema("whoami", "显示当前用户", "whoami [选项]", { options: options(["--help", "--version"], "whoami 选项") }),
+  wingetCommand(),
   schema("xargs", "从标准输入构造命令", "xargs [选项] [命令 [初始参数...]]", {
     options: options(["--max-args", "--max-procs", "--null", "--replace", "-0", "-I", "-n", "-P", "-r"], "xargs 选项", ["--max-args", "--max-procs", "--replace", "-I", "-n", "-P"]),
   }),
@@ -433,6 +510,103 @@ function simpleSubcommands(
 
 function cargoBuildOptions(): TerminalCommandCatalogEntry[] {
   return options(["--all-targets", "--features", "--package", "--release", "--target", "--workspace"], "Cargo 构建选项");
+}
+
+function ansibleCommand(command: "ansible" | "ansible-playbook"): TerminalCommandSchema {
+  const common = options(
+    ["--ask-become-pass", "--ask-pass", "--become", "--become-user", "--check", "--diff", "--extra-vars", "--forks", "--inventory", "--limit", "--private-key", "--tags", "--vault-id", "--version", "-C", "-D", "-K", "-b", "-e", "-f", "-i", "-k", "-l", "-t", "-u"],
+    `${command} 选项`,
+    ["--become-user", "--extra-vars", "--forks", "--inventory", "--limit", "--private-key", "--tags", "--vault-id", "-e", "-f", "-i", "-l", "-t", "-u"],
+  );
+  return command === "ansible"
+    ? schema(command, "批量执行 Ansible 任务", "ansible <主机模式> [选项]", {
+      options: [...common, ...options(["--args", "--background", "--module-name", "--one-line", "--poll", "-B", "-P", "-a", "-m", "-o"], "ansible ad-hoc 选项", ["--args", "--background", "--module-name", "--poll", "-B", "-P", "-a", "-m"])],
+    })
+    : schema(command, "执行 Ansible Playbook", "ansible-playbook [选项] <playbook...>", {
+      options: [...common, ...options(["--flush-cache", "--force-handlers", "--list-hosts", "--list-tags", "--list-tasks", "--start-at-task", "--step", "--syntax-check"], "ansible-playbook 选项", ["--start-at-task"])],
+      arguments: commonPathArguments,
+    });
+}
+
+function bunCommand(): TerminalCommandSchema {
+  return schema("bun", "运行 JavaScript 与管理软件包", "bun [全局选项] <子命令|文件> [参数...]", {
+    options: options(["--bun", "--cwd", "--filter", "--silent", "--version"], "Bun 全局选项", ["--cwd", "--filter"]),
+    subcommands: [
+      schema("add", "添加依赖", "bun add [选项] <包...>", { options: options(["--dev", "--exact", "--global", "--optional", "--peer", "-d", "-E", "-g", "-o", "-p"], "bun add 选项") }),
+      schema("build", "打包源码", "bun build [选项] <入口...>", { options: options(["--compile", "--format", "--minify", "--outdir", "--outfile", "--sourcemap", "--target"], "bun build 选项", ["--format", "--outdir", "--outfile", "--sourcemap", "--target"]) }),
+      schema("create", "从模板创建项目", "bun create [选项] <模板> [目录]"),
+      schema("install", "安装依赖", "bun install [选项]", { options: options(["--frozen-lockfile", "--ignore-scripts", "--no-save", "--production"], "bun install 选项") }),
+      schema("remove", "移除依赖", "bun remove [选项] <包...>"),
+      schema("run", "运行脚本或文件", "bun run [选项] <脚本|文件> [参数...]"),
+      schema("test", "运行测试", "bun test [选项] [过滤器...]", { options: options(["--bail", "--coverage", "--only", "--preload", "--rerun-each", "--timeout", "--watch"], "bun test 选项", ["--bail", "--preload", "--rerun-each", "--timeout"]) }),
+      schema("update", "更新依赖", "bun update [选项] [包...]", { options: options(["--latest"], "bun update 选项") }),
+      schema("x", "执行软件包二进制", "bun x [选项] <包> [参数...]"),
+    ],
+  });
+}
+
+function checksumCommand(command: "md5sum" | "sha256sum", algorithm: string): TerminalCommandSchema {
+  return schema(command, `计算或校验 ${algorithm}`, `${command} [选项] [文件...]`, {
+    options: options(["--binary", "--check", "--ignore-missing", "--quiet", "--status", "--strict", "--tag", "--text", "--warn", "-b", "-c", "-t", "-w"], `${command} 选项`),
+    arguments: commonPathArguments,
+  });
+}
+
+function denoCommand(): TerminalCommandSchema {
+  return schema("deno", "运行 JavaScript 与 TypeScript", "deno [全局选项] <子命令> [参数...]", {
+    options: options(["--config", "--no-config", "--quiet", "--version", "-c", "-q"], "Deno 全局选项", ["--config", "-c"]),
+    subcommands: [
+      schema("cache", "缓存依赖", "deno cache [选项] <文件...>"),
+      schema("check", "类型检查", "deno check [选项] <文件...>"),
+      schema("compile", "编译独立可执行文件", "deno compile [选项] <脚本> [参数...]", { options: options(["--allow-all", "--output", "--target", "-A", "-o"], "deno compile 选项", ["--output", "--target", "-o"]) }),
+      schema("fmt", "格式化源码", "deno fmt [选项] [文件...]", { options: options(["--check", "--ignore", "--line-width"], "deno fmt 选项", ["--ignore", "--line-width"]) }),
+      schema("info", "显示依赖与缓存信息", "deno info [选项] [文件]"),
+      schema("install", "安装脚本命令", "deno install [选项] <脚本> [参数...]", { options: options(["--allow-all", "--global", "--name", "--root", "-A", "-g", "-n"], "deno install 选项", ["--name", "--root", "-n"]) }),
+      schema("lint", "检查源码", "deno lint [选项] [文件...]", { options: options(["--compact", "--ignore", "--json", "--rules"], "deno lint 选项", ["--ignore", "--rules"]) }),
+      schema("repl", "启动交互解释器", "deno repl [选项]"),
+      schema("run", "运行脚本", "deno run [选项] <脚本> [参数...]", { options: options(["--allow-all", "--allow-env", "--allow-net", "--allow-read", "--allow-run", "--allow-write", "--watch", "-A"], "deno run 权限选项") }),
+      schema("task", "运行配置任务", "deno task [选项] [任务] [参数...]"),
+      schema("test", "运行测试", "deno test [选项] [文件...]", { options: options(["--allow-all", "--coverage", "--fail-fast", "--filter", "--parallel", "--watch", "-A"], "deno test 选项", ["--coverage", "--fail-fast", "--filter"]) }),
+    ],
+  });
+}
+
+function dotnetCommand(): TerminalCommandSchema {
+  return schema("dotnet", "构建和运行 .NET 项目", "dotnet [全局选项] <命令> [参数...]", {
+    options: options(["--diagnostics", "--info", "--list-runtimes", "--list-sdks", "--roll-forward", "--version"], ".NET 全局选项", ["--roll-forward"]),
+    subcommands: [
+      schema("add", "添加项目引用或包", "dotnet add <项目> <package|reference> [参数...]", { subcommands: simpleSubcommands([
+        ["package", "添加 NuGet 包", "dotnet add package <包> [选项]"],
+        ["reference", "添加项目引用", "dotnet add reference <项目...> [选项]"],
+      ]) }),
+      schema("build", "构建项目", "dotnet build [项目] [选项]", { options: dotnetBuildOptions("dotnet build 选项") }),
+      schema("clean", "清理构建输出", "dotnet clean [项目] [选项]", { options: dotnetBuildOptions("dotnet clean 选项") }),
+      schema("new", "创建项目或文件", "dotnet new <模板> [选项]", { options: options(["--dry-run", "--force", "--language", "--name", "--output", "--type", "-lang", "-n", "-o"], "dotnet new 选项", ["--language", "--name", "--output", "--type", "-lang", "-n", "-o"]) }),
+      schema("pack", "创建 NuGet 包", "dotnet pack [项目] [选项]", { options: dotnetBuildOptions("dotnet pack 选项") }),
+      schema("publish", "发布应用", "dotnet publish [项目] [选项]", { options: dotnetBuildOptions("dotnet publish 选项") }),
+      schema("restore", "还原依赖", "dotnet restore [项目] [选项]", { options: options(["--force", "--locked-mode", "--no-cache", "--packages", "--runtime", "--source", "-r", "-s"], "dotnet restore 选项", ["--packages", "--runtime", "--source", "-r", "-s"]) }),
+      schema("run", "运行项目", "dotnet run [选项] [-- <参数...>]", { options: options(["--configuration", "--framework", "--launch-profile", "--no-build", "--project", "-c", "-f", "-p"], "dotnet run 选项", ["--configuration", "--framework", "--launch-profile", "--project", "-c", "-f", "-p"]) }),
+      schema("test", "运行测试", "dotnet test [项目] [选项]", { options: [...dotnetBuildOptions("dotnet test 选项"), ...options(["--filter", "--logger", "--settings"], "dotnet test 选项", ["--filter", "--logger", "--settings"])] }),
+      schema("tool", "管理 .NET 工具", "dotnet tool <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["install", "安装工具", "dotnet tool install <包> [选项]"],
+        ["list", "列出工具", "dotnet tool list [选项]"],
+        ["restore", "还原本地工具", "dotnet tool restore [选项]"],
+        ["uninstall", "卸载工具", "dotnet tool uninstall <包> [选项]"],
+        ["update", "更新工具", "dotnet tool update <包> [选项]"],
+      ]) }),
+      schema("workload", "管理可选工作负载", "dotnet workload <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["install", "安装工作负载", "dotnet workload install <工作负载...> [选项]"],
+        ["list", "列出工作负载", "dotnet workload list [选项]"],
+        ["repair", "修复工作负载", "dotnet workload repair [选项]"],
+        ["uninstall", "卸载工作负载", "dotnet workload uninstall <工作负载...> [选项]"],
+        ["update", "更新工作负载", "dotnet workload update [选项]"],
+      ]) }),
+    ],
+  });
+}
+
+function dotnetBuildOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return options(["--configuration", "--framework", "--no-restore", "--output", "--runtime", "--self-contained", "--verbosity", "-c", "-f", "-o", "-r", "-v"], detail, ["--configuration", "--framework", "--output", "--runtime", "--verbosity", "-c", "-f", "-o", "-r", "-v"]);
 }
 
 function apkCommand(): TerminalCommandSchema {
@@ -516,6 +690,48 @@ function goCommand(): TerminalCommandSchema {
   });
 }
 
+function helmCommand(): TerminalCommandSchema {
+  const kubeOptions = ["--kube-context", "--kubeconfig", "--namespace", "-n"];
+  return schema("helm", "管理 Kubernetes Helm Chart", "helm [全局选项] <命令> [参数...]", {
+    options: options(kubeOptions, "Helm 全局选项", kubeOptions),
+    subcommands: [
+      schema("dependency", "管理 Chart 依赖", "helm dependency <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["build", "重建 Chart 依赖", "helm dependency build [Chart] [选项]"],
+        ["list", "列出 Chart 依赖", "helm dependency list [Chart] [选项]"],
+        ["update", "更新 Chart 依赖", "helm dependency update [Chart] [选项]"],
+      ]) }),
+      schema("get", "读取 Release 信息", "helm get <命令> <Release> [选项]", { subcommands: simpleSubcommands([
+        ["all", "读取全部 Release 信息", "helm get all <Release> [选项]"],
+        ["hooks", "读取 Release Hook", "helm get hooks <Release> [选项]"],
+        ["manifest", "读取 Release Manifest", "helm get manifest <Release> [选项]"],
+        ["notes", "读取 Release Notes", "helm get notes <Release> [选项]"],
+        ["values", "读取 Release Values", "helm get values <Release> [选项]"],
+      ]) }),
+      schema("history", "查看 Release 历史", "helm history <Release> [选项]"),
+      schema("install", "安装 Chart", "helm install <Release> <Chart> [选项]", { options: helmReleaseOptions("helm install 选项") }),
+      schema("list", "列出 Release", "helm list [选项]", { options: options(["--all", "--all-namespaces", "--date", "--filter", "--output", "--pending", "-A", "-a", "-f", "-o"], "helm list 选项", ["--filter", "--output", "-f", "-o"]) }),
+      schema("repo", "管理 Chart 仓库", "helm repo <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["add", "添加 Chart 仓库", "helm repo add <名称> <URL> [选项]"],
+        ["index", "生成仓库索引", "helm repo index <目录> [选项]"],
+        ["list", "列出 Chart 仓库", "helm repo list [选项]"],
+        ["remove", "删除 Chart 仓库", "helm repo remove <名称...>"],
+        ["update", "更新 Chart 仓库", "helm repo update [名称...] [选项]"],
+      ]) }),
+      schema("rollback", "回滚 Release", "helm rollback <Release> [版本] [选项]", { options: options(["--cleanup-on-fail", "--dry-run", "--force", "--recreate-pods", "--timeout", "--wait"], "helm rollback 选项", ["--timeout"]) }),
+      schema("search", "搜索 Chart", "helm search <hub|repo> <关键词> [选项]", { arguments: entries(["hub", "repo"], "Helm 搜索来源") }),
+      schema("status", "查看 Release 状态", "helm status <Release> [选项]"),
+      schema("template", "本地渲染 Chart", "helm template [Release] <Chart> [选项]", { options: helmReleaseOptions("helm template 选项") }),
+      schema("test", "运行 Release 测试", "helm test <Release> [选项]"),
+      schema("uninstall", "卸载 Release", "helm uninstall <Release...> [选项]", { options: options(["--dry-run", "--keep-history", "--no-hooks", "--timeout", "--wait"], "helm uninstall 选项", ["--timeout"]) }),
+      schema("upgrade", "升级 Release", "helm upgrade <Release> <Chart> [选项]", { options: helmReleaseOptions("helm upgrade 选项") }),
+    ],
+  });
+}
+
+function helmReleaseOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return options(["--atomic", "--create-namespace", "--dependency-update", "--dry-run", "--set", "--set-file", "--set-string", "--timeout", "--values", "--version", "--wait", "-f"], detail, ["--set", "--set-file", "--set-string", "--timeout", "--values", "--version", "-f"]);
+}
+
 function ipCommand(): TerminalCommandSchema {
   return schema("ip", "查看和配置 Linux 网络", "ip [全局选项] <对象> <命令> [参数...]", {
     options: options(["-4", "-6", "-brief", "-details", "-json", "-oneline", "-stats"], "ip 全局选项"),
@@ -595,6 +811,17 @@ function pipIndexOptions(detail: string): TerminalCommandCatalogEntry[] {
   return options(["--extra-index-url", "--find-links", "--index-url", "--no-index", "-f", "-i"], detail, ["--extra-index-url", "--find-links", "--index-url", "-f", "-i"]);
 }
 
+function powershellCommand(command: "powershell" | "pwsh"): TerminalCommandSchema {
+  return schema(command, "运行 PowerShell", `${command} [选项] [-Command 命令 | -File 脚本] [参数...]`, {
+    options: options(
+      ["-Command", "-CommandWithArgs", "-ConfigurationName", "-EncodedCommand", "-ExecutionPolicy", "-File", "-InputFormat", "-Interactive", "-Login", "-NoExit", "-NoLogo", "-NonInteractive", "-NoProfile", "-OutputFormat", "-SettingsFile", "-Version", "-WindowStyle", "-WorkingDirectory"],
+      "PowerShell 选项",
+      ["-Command", "-CommandWithArgs", "-ConfigurationName", "-EncodedCommand", "-ExecutionPolicy", "-File", "-InputFormat", "-OutputFormat", "-SettingsFile", "-Version", "-WindowStyle", "-WorkingDirectory"],
+    ),
+    arguments: commonPathArguments,
+  });
+}
+
 function podmanCommand(): TerminalCommandSchema {
   return schema("podman", "管理 OCI 容器和镜像", "podman [全局选项] <子命令> [参数...]", {
     options: options(["--connection", "--log-level", "--remote", "--root", "--runtime"], "Podman 全局选项", ["--connection", "--log-level", "--root", "--runtime"]),
@@ -617,6 +844,129 @@ function pythonCommand(command: "python" | "python3"): TerminalCommandSchema {
     options: options(["--help", "--version", "-B", "-c", "-E", "-I", "-m", "-O", "-q", "-u", "-V", "-W", "-X"], "Python 选项", ["-c", "-m", "-W", "-X"]),
     arguments: commonPathArguments,
   });
+}
+
+function terraformCommand(): TerminalCommandSchema {
+  return schema("terraform", "管理基础设施配置", "terraform [全局选项] <命令> [参数...]", {
+    options: options(["-chdir", "-help", "-version"], "Terraform 全局选项", ["-chdir"]),
+    subcommands: [
+      schema("apply", "应用执行计划", "terraform apply [选项] [计划文件]", { options: terraformPlanOptions("terraform apply 选项") }),
+      schema("destroy", "销毁受管基础设施", "terraform destroy [选项]", { options: terraformPlanOptions("terraform destroy 选项") }),
+      schema("fmt", "格式化配置", "terraform fmt [选项] [目标...]", { options: options(["-check", "-diff", "-list", "-recursive", "-write"], "terraform fmt 选项") }),
+      schema("force-unlock", "解除状态锁", "terraform force-unlock [选项] <锁 ID>"),
+      schema("get", "安装或更新模块", "terraform get [选项]", { options: options(["-update"], "terraform get 选项") }),
+      schema("graph", "生成依赖关系图", "terraform graph [选项]", { options: options(["-draw-cycles", "-plan", "-type"], "terraform graph 选项", ["-type"]) }),
+      schema("import", "导入现有资源", "terraform import [选项] <地址> <ID>", { options: terraformVariableOptions("terraform import 选项") }),
+      schema("init", "初始化工作目录", "terraform init [选项]", { options: options(["-backend", "-backend-config", "-force-copy", "-from-module", "-get", "-lockfile", "-migrate-state", "-plugin-dir", "-reconfigure", "-upgrade"], "terraform init 选项", ["-backend-config", "-from-module", "-lockfile", "-plugin-dir"]) }),
+      schema("output", "读取输出值", "terraform output [选项] [名称]", { options: options(["-json", "-raw", "-state"], "terraform output 选项", ["-state"]) }),
+      schema("plan", "创建执行计划", "terraform plan [选项]", { options: terraformPlanOptions("terraform plan 选项") }),
+      schema("providers", "显示 Provider 需求", "terraform providers [选项]"),
+      schema("refresh", "刷新状态", "terraform refresh [选项]", { options: terraformVariableOptions("terraform refresh 选项") }),
+      schema("show", "显示状态或计划", "terraform show [选项] [文件]", { options: options(["-json", "-no-color"], "terraform show 选项") }),
+      schema("state", "管理 Terraform 状态", "terraform state <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["list", "列出状态资源", "terraform state list [选项] [地址...]"],
+        ["mv", "移动状态地址", "terraform state mv [选项] <源> <目标>"],
+        ["pull", "下载远端状态", "terraform state pull"],
+        ["push", "上传本地状态", "terraform state push [选项] <文件>"],
+        ["replace-provider", "替换 Provider 地址", "terraform state replace-provider [选项] <源> <目标>"],
+        ["rm", "从状态移除资源", "terraform state rm [选项] <地址...>"],
+        ["show", "显示状态资源", "terraform state show [选项] <地址>"],
+      ]) }),
+      schema("test", "执行 Terraform 测试", "terraform test [选项]", { options: options(["-filter", "-json", "-test-directory", "-verbose"], "terraform test 选项", ["-filter", "-test-directory"]) }),
+      schema("validate", "校验配置", "terraform validate [选项]", { options: options(["-json", "-no-color"], "terraform validate 选项") }),
+      schema("version", "显示 Terraform 版本", "terraform version [选项]", { options: options(["-json"], "terraform version 选项") }),
+      schema("workspace", "管理工作区", "terraform workspace <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["delete", "删除工作区", "terraform workspace delete [选项] <名称>"],
+        ["list", "列出工作区", "terraform workspace list"],
+        ["new", "创建工作区", "terraform workspace new [选项] <名称>"],
+        ["select", "选择工作区", "terraform workspace select [选项] <名称>"],
+        ["show", "显示当前工作区", "terraform workspace show"],
+      ]) }),
+    ],
+  });
+}
+
+function terraformPlanOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return [
+    ...terraformVariableOptions(detail),
+    ...options(["-auto-approve", "-compact-warnings", "-destroy", "-input", "-lock", "-lock-timeout", "-no-color", "-out", "-parallelism", "-refresh", "-refresh-only", "-replace", "-target"], detail, ["-input", "-lock", "-lock-timeout", "-out", "-parallelism", "-refresh", "-replace", "-target"]),
+  ];
+}
+
+function terraformVariableOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return options(["-var", "-var-file"], detail, ["-var", "-var-file"]);
+}
+
+function tmuxCommand(): TerminalCommandSchema {
+  return schema("tmux", "管理 Tmux 终端会话", "tmux [全局选项] <命令> [参数...]", {
+    options: options(["-2", "-C", "-D", "-L", "-S", "-f", "-l", "-u", "-v"], "Tmux 全局选项", ["-L", "-S", "-f", "-l"]),
+    subcommands: [
+      schema("attach-session", "连接会话", "tmux attach-session [选项]", { options: tmuxTargetOptions("tmux attach-session 选项") }),
+      schema("has-session", "检查会话是否存在", "tmux has-session [选项]", { options: tmuxTargetOptions("tmux has-session 选项") }),
+      schema("kill-pane", "关闭 pane", "tmux kill-pane [选项]", { options: tmuxTargetOptions("tmux kill-pane 选项") }),
+      schema("kill-server", "关闭 Tmux 服务端", "tmux kill-server"),
+      schema("kill-session", "关闭会话", "tmux kill-session [选项]", { options: tmuxTargetOptions("tmux kill-session 选项") }),
+      schema("kill-window", "关闭窗口", "tmux kill-window [选项]", { options: tmuxTargetOptions("tmux kill-window 选项") }),
+      schema("list-clients", "列出客户端", "tmux list-clients [选项]"),
+      schema("list-keys", "列出按键绑定", "tmux list-keys [选项]"),
+      schema("list-panes", "列出 pane", "tmux list-panes [选项]", { options: options(["-F", "-a", "-f", "-s", "-t"], "tmux list-panes 选项", ["-F", "-f", "-t"]) }),
+      schema("list-sessions", "列出会话", "tmux list-sessions [选项]", { options: options(["-F", "-f"], "tmux list-sessions 选项", ["-F", "-f"]) }),
+      schema("list-windows", "列出窗口", "tmux list-windows [选项]", { options: options(["-F", "-a", "-f", "-t"], "tmux list-windows 选项", ["-F", "-f", "-t"]) }),
+      schema("new-session", "创建会话", "tmux new-session [选项] [命令]", { options: options(["-A", "-D", "-P", "-c", "-d", "-e", "-F", "-n", "-s", "-x", "-y"], "tmux new-session 选项", ["-c", "-e", "-F", "-n", "-s", "-x", "-y"]) }),
+      schema("new-window", "创建窗口", "tmux new-window [选项] [命令]", { options: options(["-P", "-a", "-c", "-d", "-e", "-F", "-n", "-t"], "tmux new-window 选项", ["-c", "-e", "-F", "-n", "-t"]) }),
+      schema("rename-session", "重命名会话", "tmux rename-session [选项] <名称>", { options: tmuxTargetOptions("tmux rename-session 选项") }),
+      schema("rename-window", "重命名窗口", "tmux rename-window [选项] <名称>", { options: tmuxTargetOptions("tmux rename-window 选项") }),
+      schema("select-pane", "选择 pane", "tmux select-pane [选项]", { options: tmuxTargetOptions("tmux select-pane 选项") }),
+      schema("select-window", "选择窗口", "tmux select-window [选项]", { options: tmuxTargetOptions("tmux select-window 选项") }),
+      schema("send-keys", "向 pane 发送按键", "tmux send-keys [选项] <按键...>", { options: tmuxTargetOptions("tmux send-keys 选项") }),
+      schema("split-window", "拆分窗口", "tmux split-window [选项] [命令]", { options: options(["-P", "-b", "-c", "-d", "-e", "-F", "-h", "-l", "-p", "-t", "-v"], "tmux split-window 选项", ["-c", "-e", "-F", "-l", "-p", "-t"]) }),
+      schema("switch-client", "切换客户端会话", "tmux switch-client [选项]", { options: tmuxTargetOptions("tmux switch-client 选项") }),
+    ],
+  });
+}
+
+function tmuxTargetOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return options(["-a", "-d", "-t"], detail, ["-t"]);
+}
+
+function wingetCommand(): TerminalCommandSchema {
+  const globalOptions = ["--accept-source-agreements", "--authentication-account", "--disable-interactivity", "--logs", "--nowarn", "--open-logs", "--proxy", "--source", "--verbose", "--wait"];
+  return schema("winget", "管理 Windows 软件包", "winget [全局选项] <命令> [参数...]", {
+    options: options(globalOptions, "winget 全局选项", ["--authentication-account", "--proxy", "--source"]),
+    subcommands: [
+      schema("configure", "应用系统配置", "winget configure [选项] <文件>", { options: options(["--accept-configuration-agreements", "--enable", "--file", "--module-path"], "winget configure 选项", ["--enable", "--file", "--module-path"]) }),
+      schema("download", "下载安装包", "winget download [选项] <查询>", { options: wingetPackageOptions("winget download 选项") }),
+      schema("export", "导出已安装软件包", "winget export [选项] -o <文件>", { options: options(["--include-versions", "--output", "-o"], "winget export 选项", ["--output", "-o"]) }),
+      schema("hash", "计算安装包哈希", "winget hash [选项] <文件>", { options: options(["--file", "--msix", "-f", "-m"], "winget hash 选项", ["--file", "-f"]) }),
+      schema("import", "导入软件包列表", "winget import [选项] -i <文件>", { options: options(["--accept-package-agreements", "--accept-source-agreements", "--ignore-unavailable", "--import-file", "--no-upgrade", "-i"], "winget import 选项", ["--import-file", "-i"]) }),
+      schema("install", "安装软件包", "winget install [选项] <查询>", { options: wingetPackageOptions("winget install 选项") }),
+      schema("list", "列出已安装软件包", "winget list [选项] [查询]", { options: wingetPackageOptions("winget list 选项") }),
+      schema("pin", "管理软件包固定", "winget pin <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["add", "添加固定规则", "winget pin add [选项] <查询>"],
+        ["list", "列出固定规则", "winget pin list [选项]"],
+        ["remove", "删除固定规则", "winget pin remove [选项] <查询>"],
+        ["reset", "重置固定规则", "winget pin reset [选项]"],
+      ]) }),
+      schema("search", "搜索软件包", "winget search [选项] <查询>", { options: wingetPackageOptions("winget search 选项") }),
+      schema("settings", "打开 winget 设置", "winget settings [选项]"),
+      schema("show", "显示软件包详情", "winget show [选项] <查询>", { options: wingetPackageOptions("winget show 选项") }),
+      schema("source", "管理软件源", "winget source <命令> [参数...]", { subcommands: simpleSubcommands([
+        ["add", "添加软件源", "winget source add [选项]"],
+        ["export", "导出软件源", "winget source export [选项]"],
+        ["list", "列出软件源", "winget source list [选项]"],
+        ["remove", "删除软件源", "winget source remove [选项]"],
+        ["reset", "重置软件源", "winget source reset [选项]"],
+        ["update", "更新软件源", "winget source update [选项]"],
+      ]) }),
+      schema("uninstall", "卸载软件包", "winget uninstall [选项] <查询>", { options: wingetPackageOptions("winget uninstall 选项") }),
+      schema("upgrade", "升级软件包", "winget upgrade [选项] [查询]", { options: wingetPackageOptions("winget upgrade 选项") }),
+      schema("validate", "校验软件包清单", "winget validate [选项] <清单>", { options: options(["--manifest", "-m"], "winget validate 选项", ["--manifest", "-m"]) }),
+    ],
+  });
+}
+
+function wingetPackageOptions(detail: string): TerminalCommandCatalogEntry[] {
+  return options(["--accept-package-agreements", "--architecture", "--custom", "--exact", "--force", "--id", "--interactive", "--location", "--manifest", "--moniker", "--name", "--override", "--scope", "--silent", "--source", "--tag", "--version", "-e", "-h", "-i", "-m", "-s", "-v"], detail, ["--architecture", "--custom", "--id", "--location", "--manifest", "--moniker", "--name", "--override", "--scope", "--source", "--tag", "--version", "-m", "-s", "-v"]);
 }
 
 function yarnCommand(): TerminalCommandSchema {
