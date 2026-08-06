@@ -17,7 +17,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("normalizeAppImageRootLinks", () => {
+describe.skipIf(process.platform !== "linux")("normalizeAppImageRootLinks", () => {
   it("replaces every generated root link with the portable canonical target", () => {
     const root = fixture();
     for (const name of Object.keys(APPIMAGE_ROOT_LINKS)) {
