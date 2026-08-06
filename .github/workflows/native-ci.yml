@@ -180,9 +180,18 @@ jobs:
           for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
           wmctrl -m;
           npm run test:linux-appimage-smoke'
-      - name: Verify Linux packages and packaged MCP sidecars
+      - name: Verify Linux packages, application lifecycle, and packaged MCP sidecars
         if: runner.os == 'Linux'
-        run: npm run test:linux-package
+        run: >
+          dbus-run-session -- xvfb-run --auto-servernum
+          --server-args="-screen 0 1440x900x24 -nolisten tcp"
+          sh -eu -c '
+          openbox >/tmp/portmate-openbox-package.log 2>&1 &
+          wm_pid=$!;
+          trap "kill $wm_pid 2>/dev/null || true" EXIT;
+          for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
+          wmctrl -m;
+          npm run test:linux-package'
       - name: Verify Windows packages, restart/migration, and conflict rejection
         if: runner.os == 'Windows'
         run: npm run test:windows-package

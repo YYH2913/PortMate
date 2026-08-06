@@ -14,10 +14,14 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
+}
+if (!process.env.DISPLAY?.trim()) {
+  throw new Error("The Linux package check requires an active X11 display in DISPLAY");
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,6 +42,7 @@ const deb = join(bundleRoot, "deb", `PortMate_${version}_${architecture}.deb`);
 const rpm = join(bundleRoot, "rpm", `PortMate-${version}-1.${rpmArchitecture}.rpm`);
 const appImage = join(bundleRoot, "appimage", `PortMate_${version}_${architecture}.AppImage`);
 const auditRoot = mkdtempSync(join(tmpdir(), "portmate-package-check-"));
+const runtimeSmokes = [];
 const sidecarWatchdogSmokes = [];
 
 try {
@@ -45,6 +50,7 @@ try {
   run("dpkg-deb", ["-x", deb, debRoot]);
   const debMain = join(debRoot, "usr", "bin", "portmate");
   assertPackagedMain("DEB", debMain, tauriConfig.identifier, productionCsp);
+  runtimeSmokes.push(await checkPackagedApplication("DEB", debMain, "runtime-deb"));
   const debBridge = join(debRoot, "usr", "bin", "portmate-mcp");
   assertExecutable(debBridge);
   assertDesktopEntry(join(debRoot, "usr", "share", "applications", "PortMate.desktop"));
@@ -62,6 +68,7 @@ try {
   extractRpm(rpm, rpmRoot);
   const rpmMain = join(rpmRoot, "usr", "bin", "portmate");
   assertPackagedMain("RPM", rpmMain, tauriConfig.identifier, productionCsp);
+  runtimeSmokes.push(await checkPackagedApplication("RPM", rpmMain, "runtime-rpm"));
   const rpmBridge = join(rpmRoot, "usr", "bin", "portmate-mcp");
   assertExecutable(rpmBridge);
   assertDesktopEntry(join(rpmRoot, "usr", "share", "applications", "PortMate.desktop"));
@@ -80,6 +87,13 @@ try {
   const extracted = join(appImageRoot, "squashfs-root");
   const appImageMain = join(extracted, "usr", "bin", "portmate");
   assertPackagedMain("AppImage", appImageMain, tauriConfig.identifier, productionCsp);
+  const appImageLauncher = join(extracted, "AppRun");
+  assertExecutable(appImageLauncher);
+  runtimeSmokes.push(await checkPackagedApplication(
+    "AppImage",
+    appImageLauncher,
+    "runtime-appimage",
+  ));
   const appImageBridge = join(extracted, "usr", "bin", "portmate-mcp");
   assertExecutable(appImageBridge);
   assertFile(join(extracted, "PortMate.png"), 0o644);
@@ -120,14 +134,29 @@ try {
       "production CSP",
       "main/detached capabilities",
       "portable symlinks and permissions",
+      "packaged main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift stdio SDK per package",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift HTTP SDK per package",
       "packaged MCP sidecar HTTP readiness and abnormal-parent cleanup",
     ],
+    runtimeSmokes,
     sidecarWatchdogSmokes,
   }, null, 2));
 } finally {
   rmSync(auditRoot, { recursive: true, force: true });
+}
+
+async function checkPackagedApplication(kind, executable, dataRootName) {
+  return {
+    package: kind,
+    result: await smokePackagedApplicationLifecycle({
+      executable,
+      dataDirectory: join(auditRoot, dataRootName, "dev.portmate.desktop"),
+      label: `${kind} packaged application`,
+      exitAfterMs: 5_000,
+      timeoutMs: 45_000,
+    }),
+  };
 }
 
 function assertFile(path, expectedMode) {
