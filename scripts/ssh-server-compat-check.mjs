@@ -66,6 +66,7 @@ for (const entry of matrix) {
       : "external_ssh_server_sftp_scp_compatibility";
     run("cargo", [
       "test",
+      "--locked",
       "-p",
       "portmate",
       compatibilityTest,
@@ -87,6 +88,7 @@ for (const entry of matrix) {
     if (entry.runActiveTransferDisconnect !== false) {
       run("cargo", [
         "test",
+        "--locked",
         "-p",
         "portmate",
         "external_ssh_server_active_transfer_disconnect",
@@ -163,6 +165,7 @@ for (const entry of healthFaultMatrix) {
     await waitForTcp(port, container, entry.name);
     run("cargo", [
       "test",
+      "--locked",
       "-p",
       "portmate",
       "external_ssh_health_fault_matrix_case",
@@ -214,6 +217,7 @@ for (const entry of transferFaultMatrix) {
     await waitForTcp(port, container, entry.name);
     run("cargo", [
       "test",
+      "--locked",
       "-p",
       "portmate",
       "external_ssh_transfer_fault_matrix_case",

@@ -138,8 +138,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run test:portable-vault
-      - run: cargo test --workspace -- --test-threads=4 --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace -- --test-threads=4 --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: npm run test:native-keyring
       - name: Smoke-test the native Linux WebKit window
         if: runner.os == 'Linux'

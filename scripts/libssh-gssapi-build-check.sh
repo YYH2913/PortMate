@@ -24,7 +24,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
 binary="$({
-  cargo test -p libssh-rs --no-run --message-format=json-render-diagnostics
+  cargo test --locked -p libssh-rs --no-run --message-format=json-render-diagnostics
 } | jq -r '
   select(
     .reason == "compiler-artifact"

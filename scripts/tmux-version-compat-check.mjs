@@ -23,7 +23,7 @@ allEntries.forEach(validateEntry);
 const matrix = filterCompatibilityEntries(allEntries);
 
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
-run("cargo", ["build", "-p", "portmate", "--bin", "tmux-compat-probe"]);
+run("cargo", ["build", "--locked", "-p", "portmate", "--bin", "tmux-compat-probe"]);
 const probe = resolve(projectRoot, "target/debug", process.platform === "win32" ? "tmux-compat-probe.exe" : "tmux-compat-probe");
 const results = [];
 

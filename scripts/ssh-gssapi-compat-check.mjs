@@ -294,6 +294,7 @@ function corruptTicket(kerberos) {
 function runCase(name, server, kerberos, cases) {
   run("cargo", [
     "test",
+    "--locked",
     "-p",
     "portmate",
     "external_ssh_gssapi_runtime_matrix_case",

@@ -9,6 +9,8 @@ run("npm", ["run", "sidecar:dev"]);
 run(process.execPath, [
   join(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js"),
   "dev",
+  "--",
+  "--locked",
 ]);
 
 function run(command, args) {

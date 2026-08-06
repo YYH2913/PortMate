@@ -36,6 +36,8 @@ try {
     "build",
     "--config",
     "src-tauri/tauri.bundle.conf.json",
+    "--",
+    "--locked",
   ], appImageRuntime.env);
   run(
     process.execPath,

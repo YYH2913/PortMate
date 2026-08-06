@@ -23,7 +23,7 @@ const destination = resolve(
   `portmate-mcp-${target}${extension}`,
 );
 
-const args = ["build", "-p", "portmate-mcp"];
+const args = ["build", "--locked", "-p", "portmate-mcp"];
 if (crossTarget) args.push("--target", target);
 if (release) args.push("--release");
 run("cargo", args);

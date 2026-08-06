@@ -53,6 +53,7 @@ for (const entry of matrix) {
     await waitForListeningSocket(container, entry.name);
     run("cargo", [
       "test",
+      "--locked",
       "-p",
       "portmate",
       "external_tcp_telnet_server_compatibility",
