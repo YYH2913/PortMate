@@ -30,6 +30,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 2026-08-05 本机验收重新通过前端 82 文件/473 项单测、生产构建、workspace Playwright、Rust workspace format/clippy/测试、terminal/vttest/Tmux 四版本矩阵、21 个 SSH 服务端、11 组活动传输断线、15 类健康故障、38 类传输故障、五种 GSSAPI 组合、18 个 TCP/Telnet/TLS 服务端和九语言 MCP SDK stdio/HTTP 矩阵。随后从干净的 bundle 目录重新完成 Tauri release 构建，DEB/RPM/AppImage 三包均通过包内主程序、sidecar、资源、权限、CSP/capability 与全 SDK 矩阵，最终 AppImage 也通过真实窗口、IPC、Store、迁移和冲突拒绝 smoke；前一次 release 链接收到的退出码 143 未复现，确认不是编译错误。
 
+2026-08-06 增量验收把 Linux/Windows/macOS 原生包审计根统一改为含空格路径，并据此发现和修复 Ruby MCP SDK 的 command-only `Process.spawn` 路径拆分；stdio 现在通过 SDK `args` 显式传入 `--stdio`。sidecar 同时加入互斥的 `--stdio`/`--http` 解析，未知、重复和冲突参数会立即失败。重新构建 release 包时又捕获 AppImage 根图标链接随打包工具选择 128/256 路径的非确定性，最终化阶段现固定 `.DirIcon`、desktop entry 和小写图标三条链接，并逐字节核对两个 256x256 图标。前端 88 文件/497 项测试、MCP 40 项单测、Clippy、三目标 portable check、九 SDK freshness、npm/Rust 依赖审计、keyring 依赖边界、完整 DEB/RPM/AppImage 包门禁均通过；最终 AppImage 的三次 1440x920 VMware 首帧各采样到 669 种颜色，Store/IPC/迁移与冲突拒绝也再次通过。Windows/macOS 的新含空格安装/挂载路径仍等待各自 Native CI runner 的真实执行记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
