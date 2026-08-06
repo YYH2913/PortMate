@@ -784,7 +784,7 @@ The workspace suite also resolves two log previews in reverse order, holds MCP H
 
 The workspace suite also checks the new-session quick surface across all six protocols: initial target focus, invalid-target connection gating, serial selection and baud parameters, TCP TLS, per-protocol draft retention, bounded metadata editing, quick/advanced round trips, and compact desktop/mobile layout. It also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures focused session and Tunnel screenshots.
 
-`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact Apache-2.0 and JetBrains Mono OFL license contents, file permissions, and every symlink boundary; checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary; then runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package. It also verifies each packaged sidecar's real HTTP readiness and parent-watchdog cleanup with bounded, token-redacted diagnostics. The Windows MSI/NSIS and macOS app/DMG gates apply the same runtime sidecar check to both native package formats while enforcing the same third-party license content and fixed resource-directory placement. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
+`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact Apache-2.0 and JetBrains Mono OFL license contents, file permissions, and every symlink boundary; and checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary. On an X11/Xvfb display it launches the main process from each extracted package three times, requiring stable restart and legacy-migration Store contents, rotated IPC credentials, clean exit and endpoint removal, then requires a fourth conflicting-Store launch to fail closed without changing either Store. It also runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package and verifies each packaged sidecar's real HTTP readiness and parent-watchdog cleanup with bounded, token-redacted diagnostics. The Windows MSI/NSIS and macOS app/DMG gates apply the same main-process and sidecar lifecycle checks to both native package formats while enforcing the same third-party license content and fixed resource-directory placement. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
 
 On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
 
@@ -926,8 +926,9 @@ broader transfer/serial and physical-device matrices, cross-platform file-path c
 validated transfer, file-manager, SSH identity, and local Shell surfaces, Windows/macOS locked or denied native keyring providers,
 and non-Unix Stronghold filesystem fault injection. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
-compatibility job. Its Windows package gate silently installs/extracts and launches both MSI and NSIS
-payloads; its macOS gate launches the direct app and the copy mounted from the verified DMG. Every
+compatibility job. Its Linux package gate extracts and launches the DEB, RPM, and AppImage under
+Xvfb; its Windows gate silently installs/extracts and launches both MSI and NSIS payloads; and its
+macOS gate launches the direct app and the copy mounted from the verified DMG. Every
 package uses an isolated data root for three successful launches plus one rejected conflict start.
 It must publish a loopback IPC endpoint tied to its non-empty Store, exit through Tauri with code
 zero, remove the endpoint, preserve the Store byte-for-byte across the idle restart and
