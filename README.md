@@ -498,7 +498,9 @@ locked npm environments. Each version spawns the real bridge and completes initi
 tools, resources, templates, prompts, and a resource read over both stdio and stateless Streamable
 HTTP. It covers the older 1.10.0 `2024-11-05` lifecycle without the later HTTP protocol header,
 normal `2025-06-18` negotiation, and the latest SDKs' `2025-11-25` request falling back to the server's
-supported `2025-06-18`; stdio client shutdown must also terminate the bridge process.
+supported `2025-06-18`; each HTTP run also starts authenticated IPv6 loopback (`::1`) and explicitly
+approved all-interface (`::`) listeners, while confirming that `::` is rejected without remote opt-in.
+Stdio client shutdown must also terminate the bridge process.
 
 The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.12.4, 1.15.0,
 1.21.2, 1.23.3, 1.28.1, 1.29.0, and 2.0.0 virtual environments over both stdio and stateless
@@ -604,7 +606,8 @@ The bridge intentionally runs in the stateless Streamable HTTP mode allowed by t
 it does not issue `Mcp-Session-Id`, so clients do not need session termination or replay state. The
 repository's official TypeScript SDK matrix exercises initialize/initialized, the optional GET SSE
 stream, ping, tools, resources, templates, prompts, and resource reads while verifying the actual
-authentication, Accept, and version-header behavior of all three versions.
+authentication, Accept, and version-header behavior of all four versions. Every version also verifies
+real `::1` and `::` listener lifecycles plus the fail-closed remote-listener gate.
 
 The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
 complete request must arrive within five seconds, each response/SSE write has a five-second socket
