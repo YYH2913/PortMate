@@ -23,17 +23,40 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function reservePort() {
+function socketAddress(host, port) {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+function httpEndpoint(host, port) {
+  return new URL(`http://${socketAddress(host, port)}/mcp`);
+}
+
+async function reservePort(host = "127.0.0.1") {
   const server = createServer();
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(0, host, resolve);
   });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   if (!port) throw new Error("failed to reserve an MCP HTTP test port");
   return port;
+}
+
+async function stopServer(server) {
+  server.kill("SIGTERM");
+  await new Promise((resolve) => {
+    if (server.exitCode !== null) {
+      resolve();
+      return;
+    }
+    server.once("exit", resolve);
+    setTimeout(() => {
+      server.kill("SIGKILL");
+      resolve();
+    }, 2_000).unref();
+  });
 }
 
 async function waitForServer(url, output) {
@@ -67,14 +90,14 @@ function requestParams(entry) {
   }
 }
 
-async function verifyRemoteBindRequiresOptIn(binary) {
-  const port = await reservePort();
+async function verifyRemoteBindRequiresOptIn(binary, bindHost, portHost = "127.0.0.1") {
+  const port = await reservePort(portHost);
   let output = "";
   const denied = spawn(binary, ["--http"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
-      PORTMATE_MCP_HTTP_ADDR: `0.0.0.0:${port}`,
+      PORTMATE_MCP_HTTP_ADDR: socketAddress(bindHost, port),
       PORTMATE_MCP_HTTP_ALLOW_REMOTE: "0",
       PORTMATE_MCP_HTTP_TOKEN: token,
       PORTMATE_STORE_PATH: "",
@@ -101,6 +124,66 @@ async function verifyRemoteBindRequiresOptIn(binary) {
   assert(output.includes("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1"), "MCP HTTP remote-bind rejection omitted the opt-in diagnostic");
 }
 
+async function verifyIpv6Listeners(binary) {
+  let loopbackPort;
+  try {
+    loopbackPort = await reservePort("::1");
+  } catch (error) {
+    if (["EAFNOSUPPORT", "EADDRNOTAVAIL", "EPROTONOSUPPORT"].includes(error?.code)) {
+      console.log(`MCP IPv6 HTTP checks skipped: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  await verifyIpv6Listener(binary, "::1", "::1", loopbackPort, false);
+  await verifyRemoteBindRequiresOptIn(binary, "::", "::1");
+  const wildcardPort = await reservePort("::1");
+  await verifyIpv6Listener(binary, "::", "::1", wildcardPort, true);
+  console.log("MCP IPv6 HTTP listener checks passed (::1 and ::)");
+}
+
+async function verifyIpv6Listener(binary, bindHost, connectHost, port, allowRemote) {
+  const endpoint = httpEndpoint(connectHost, port);
+  const origin = `http://${socketAddress(connectHost, port)}`;
+  let output = "";
+  const server = spawn(binary, ["--http"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORTMATE_MCP_HTTP_ADDR: socketAddress(bindHost, port),
+      PORTMATE_MCP_HTTP_ALLOW_REMOTE: allowRemote ? "1" : "0",
+      PORTMATE_MCP_HTTP_ORIGINS: origin,
+      PORTMATE_MCP_HTTP_TOKEN: token,
+      PORTMATE_MCP_CLIENT_ID: "official-sdk-ipv6-check",
+      PORTMATE_STORE_PATH: "",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  server.stdout.on("data", (chunk) => { output += chunk.toString(); });
+  server.stderr.on("data", (chunk) => { output += chunk.toString(); });
+
+  try {
+    await waitForServer(endpoint, () => output);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Origin: origin,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: {} }),
+    });
+    assert(response.status === 200, `MCP IPv6 listener ${bindHost} returned HTTP ${response.status}`);
+    const body = await response.json();
+    assert(body.jsonrpc === "2.0" && body.id === 1 && body.result,
+      `MCP IPv6 listener ${bindHost} returned an invalid ping response`);
+  } finally {
+    await stopServer(server);
+  }
+}
+
 const binary = process.env.PORTMATE_MCP_BINARY
   ? path.resolve(process.env.PORTMATE_MCP_BINARY)
   : path.resolve(
@@ -108,10 +191,11 @@ const binary = process.env.PORTMATE_MCP_BINARY
     "debug",
     process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
   );
-await verifyRemoteBindRequiresOptIn(binary);
+await verifyRemoteBindRequiresOptIn(binary, "0.0.0.0");
+await verifyIpv6Listeners(binary);
 
 const port = await reservePort();
-const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
+const endpoint = httpEndpoint("127.0.0.1", port);
 let serverOutput = "";
 const server = spawn(binary, ["--http"], {
   cwd: process.cwd(),
@@ -222,16 +306,5 @@ try {
 } finally {
   globalThis.fetch = nativeFetch;
   await client?.close().catch(() => {});
-  server.kill("SIGTERM");
-  await new Promise((resolve) => {
-    if (server.exitCode !== null) {
-      resolve();
-      return;
-    }
-    server.once("exit", resolve);
-    setTimeout(() => {
-      server.kill("SIGKILL");
-      resolve();
-    }, 2_000).unref();
-  });
+  await stopServer(server);
 }

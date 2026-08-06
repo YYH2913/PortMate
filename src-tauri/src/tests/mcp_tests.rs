@@ -431,4 +431,43 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
             .0
             .allow_remote
     );
+
+    let ipv6_loopback = McpHttpSettings {
+        listen_host: "[::1]".to_string(),
+        port: 9889,
+        allowed_origins: Vec::new(),
+        ..McpHttpSettings::default()
+    };
+    let ipv6_config =
+        build_mcp_http_config_for_request(false, executable, store_path, ipv6_loopback).unwrap();
+    assert_eq!(ipv6_config.settings.listen_host, "::1");
+    assert_eq!(
+        ipv6_config.settings.allowed_origins,
+        vec!["http://[::1]:9889"]
+    );
+    assert_eq!(ipv6_config.endpoint, "http://[::1]:9889/mcp");
+    assert!(!ipv6_config.remote_access);
+    assert!(ipv6_config
+        .start_command
+        .contains("PORTMATE_MCP_HTTP_ADDR='[::1]:9889'"));
+
+    let ipv6_wildcard = McpHttpSettings {
+        listen_host: "::".to_string(),
+        port: 9890,
+        allowed_origins: Vec::new(),
+        allow_remote: true,
+        ..McpHttpSettings::default()
+    };
+    let ipv6_wildcard_config =
+        build_mcp_http_config_for_request(false, executable, store_path, ipv6_wildcard).unwrap();
+    assert_eq!(ipv6_wildcard_config.settings.listen_host, "::");
+    assert_eq!(
+        ipv6_wildcard_config.settings.allowed_origins,
+        vec!["http://127.0.0.1:9890", "http://localhost:9890"]
+    );
+    assert_eq!(ipv6_wildcard_config.endpoint, "http://[::]:9890/mcp");
+    assert!(ipv6_wildcard_config.remote_access);
+    assert!(ipv6_wildcard_config
+        .start_command
+        .contains("PORTMATE_MCP_HTTP_ADDR='[::]:9890'"));
 }
