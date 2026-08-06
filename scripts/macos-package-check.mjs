@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File, verifyMacAppBundle } from "./native-package-layout.mjs";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
+import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -44,6 +45,7 @@ let verifiedDmg;
 let failure;
 let directBinaryVerification;
 const runtimeSmokes = [];
+const sidecarWatchdogSmokes = [];
 
 try {
   const appMain = join(app, "Contents", "MacOS", "portmate");
@@ -57,6 +59,13 @@ try {
     directBinaryVerification = "strict Apple code-signature verification";
   }
   verifiedApp = verifyApp(app, { compareBinaries: exactReleaseBinaries });
+  sidecarWatchdogSmokes.push({
+    package: "macOS app",
+    result: await smokePackagedSidecarParentWatchdog({
+      executable: verifiedApp.sidecar,
+      label: "macOS application MCP sidecar",
+    }),
+  });
   runtimeSmokes.push({
     package: "macOS app",
     result: await smokePackagedApplicationLifecycle({
@@ -80,6 +89,13 @@ try {
   verifiedDmg = verifyApp(dmgApp, {
     sourceMain: verifiedApp.main,
     sourceSidecar: verifiedApp.sidecar,
+  });
+  sidecarWatchdogSmokes.push({
+    package: "DMG",
+    result: await smokePackagedSidecarParentWatchdog({
+      executable: verifiedDmg.sidecar,
+      label: "DMG packaged MCP sidecar",
+    }),
   });
   runtimeSmokes.push({
     package: "DMG",
@@ -120,6 +136,7 @@ console.log(JSON.stringify({
     "portable bundle symlinks",
     "DMG verification and read-only mount",
     "packaged main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
+    "packaged MCP sidecar HTTP readiness and abnormal-parent cleanup",
   ],
   payloads: {
     app: verifiedApp,
@@ -127,6 +144,7 @@ console.log(JSON.stringify({
   },
   directBinaryVerification,
   runtimeSmokes,
+  sidecarWatchdogSmokes,
 }, null, 2));
 
 function verifyApp(path, options = {}) {

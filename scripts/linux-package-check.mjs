@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
@@ -37,6 +38,7 @@ const deb = join(bundleRoot, "deb", `PortMate_${version}_${architecture}.deb`);
 const rpm = join(bundleRoot, "rpm", `PortMate-${version}-1.${rpmArchitecture}.rpm`);
 const appImage = join(bundleRoot, "appimage", `PortMate_${version}_${architecture}.AppImage`);
 const auditRoot = mkdtempSync(join(tmpdir(), "portmate-package-check-"));
+const sidecarWatchdogSmokes = [];
 
 try {
   const debRoot = join(auditRoot, "deb");
@@ -95,6 +97,13 @@ try {
 
   for (const [kind, bridge] of [["DEB", debBridge], ["RPM", rpmBridge], ["AppImage", appImageBridge]]) {
     checkPackagedBridge(kind, bridge);
+    sidecarWatchdogSmokes.push({
+      package: kind,
+      result: await smokePackagedSidecarParentWatchdog({
+        executable: bridge,
+        label: `${kind} packaged MCP sidecar`,
+      }),
+    });
   }
 
   console.log(JSON.stringify({
@@ -113,7 +122,9 @@ try {
       "portable symlinks and permissions",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift stdio SDK per package",
       "TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift HTTP SDK per package",
+      "packaged MCP sidecar HTTP readiness and abnormal-parent cleanup",
     ],
+    sidecarWatchdogSmokes,
   }, null, 2));
 } finally {
   rmSync(auditRoot, { recursive: true, force: true });

@@ -16,6 +16,7 @@ import {
   verifyWindowsPackageLayout,
 } from "./native-package-layout.mjs";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
+import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -36,6 +37,7 @@ const expectedUninstaller = join(nsisRoot, "uninstall.exe");
 let verifiedMsi;
 let verifiedNsis;
 const runtimeSmokes = [];
+const sidecarWatchdogSmokes = [];
 let failure;
 
 try {
@@ -57,6 +59,13 @@ try {
     sourceLicense,
     sourceThirdPartyLicense,
   });
+  sidecarWatchdogSmokes.push({
+    package: "MSI",
+    result: await smokePackagedSidecarParentWatchdog({
+      executable: verifiedMsi.sidecar,
+      label: "MSI packaged MCP sidecar",
+    }),
+  });
   runtimeSmokes.push({
     package: "MSI",
     result: await smokePackagedApplicationLifecycle({
@@ -73,6 +82,13 @@ try {
     sourceSidecar,
     sourceLicense,
     sourceThirdPartyLicense,
+  });
+  sidecarWatchdogSmokes.push({
+    package: "NSIS",
+    result: await smokePackagedSidecarParentWatchdog({
+      executable: verifiedNsis.sidecar,
+      label: "NSIS installed MCP sidecar",
+    }),
   });
   runtimeSmokes.push({
     package: "NSIS",
@@ -124,12 +140,14 @@ console.log(JSON.stringify({
     "MSI administrative extraction",
     "NSIS silent install and uninstall",
     "installed main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
+    "installed MCP sidecar HTTP readiness and abnormal-parent cleanup",
   ],
   payloads: {
     msi: verifiedMsi,
     nsis: verifiedNsis,
   },
   runtimeSmokes,
+  sidecarWatchdogSmokes,
 }, null, 2));
 
 function findSingleArtifact(directory, extension, label) {
