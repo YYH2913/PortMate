@@ -9,6 +9,7 @@ export const PORTABLE_CROSS_CRATES = Object.freeze([
   "portmate-kdf",
   "russh-sftp",
   "portmate-keyring",
+  "portmate-process-watchdog",
 ]);
 
 export const PORTABLE_CROSS_TARGETS = Object.freeze([

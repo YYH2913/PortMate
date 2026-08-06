@@ -12,6 +12,7 @@ const expectedCrates = [
   "portmate-kdf",
   "russh-sftp",
   "portmate-keyring",
+  "portmate-process-watchdog",
 ];
 const expectedTargets = [
   "x86_64-pc-windows-gnu",

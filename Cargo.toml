@@ -6,6 +6,7 @@ members = [
   "crates/portmate-kdf",
   "crates/portmate-keyring",
   "crates/portmate-mcp",
+  "crates/portmate-process-watchdog",
   "crates/russh-sftp",
   "src-tauri",
 ]

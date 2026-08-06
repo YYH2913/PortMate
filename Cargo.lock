@@ -4657,10 +4657,18 @@ dependencies = [
  "percent-encoding",
  "portmate-core",
  "portmate-keyring",
+ "portmate-process-watchdog",
  "rusqlite",
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "portmate-process-watchdog"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "windows-sys 0.61.2",
 ]
 
