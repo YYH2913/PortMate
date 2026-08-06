@@ -341,7 +341,7 @@ Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_
 - Profile 总量回归覆盖 10,000 项边界下已有 ID 更新、新 ID 拒绝、10,001 项 Store 拒绝，以及桌面 normalize 和 standalone MCP 快照加载的同一 fail-closed 规则。
 - 日志保留检查 registry 回归覆盖同 Profile 天数覆盖、禁用/显式清理和一小时遗留项回收，确保配置 churn 不会留下乘法增长的缓存 key。
 
-当前 Rust workspace 单元测试总数为 553：`portmate` 424、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 38、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 86 个文件、490 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 测试总数为 554：`portmate` 424、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 39、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 86 个文件、490 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
