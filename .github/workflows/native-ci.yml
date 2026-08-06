@@ -143,16 +143,19 @@ jobs:
       - run: npm run test:native-keyring
       - name: Smoke-test the native Linux WebKit window
         if: runner.os == 'Linux'
+        env:
+          PORTMATE_NATIVE_SMOKE_XWD: ${{ github.workspace }}/target/native-ci/linux-desktop.xwd
         run: >
           dbus-run-session -- xvfb-run --auto-servernum
           --server-args="-screen 0 1440x900x24 -nolisten tcp"
           sh -eu -c '
-          openbox >/tmp/portmate-openbox.log 2>&1 &
+          mkdir -p target/native-ci;
+          openbox >target/native-ci/openbox-desktop.log 2>&1 &
           wm_pid=$!;
           trap "kill $wm_pid 2>/dev/null || true" EXIT;
           for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
           wmctrl -m;
-          npm run test:linux-desktop-smoke'
+          node scripts/ci-command-log.mjs target/native-ci/linux-desktop-smoke.log npm run test:linux-desktop-smoke'
       - if: runner.os == 'Linux'
         run: npm run test:libssh-gssapi-build
       - if: runner.os == 'Linux'
@@ -167,43 +170,59 @@ jobs:
       - run: npm run test:mcp-csharp-client
       - if: runner.os != 'Windows'
         run: npm run test:mcp-swift-client
-      - run: npm run desktop:build
+      - name: Build native package bundles
+        run: node scripts/ci-command-log.mjs target/native-ci/desktop-build.log npm run desktop:build
       - name: Smoke-test packaged Linux AppImage restart, migration, and conflict rejection
         if: runner.os == 'Linux'
+        env:
+          PORTMATE_NATIVE_SMOKE_XWD: ${{ github.workspace }}/target/native-ci/linux-appimage.xwd
         run: >
           dbus-run-session -- xvfb-run --auto-servernum
           --server-args="-screen 0 1440x900x24 -nolisten tcp"
           sh -eu -c '
-          openbox >/tmp/portmate-openbox-appimage.log 2>&1 &
+          mkdir -p target/native-ci;
+          openbox >target/native-ci/openbox-appimage.log 2>&1 &
           wm_pid=$!;
           trap "kill $wm_pid 2>/dev/null || true" EXIT;
           for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
           wmctrl -m;
-          npm run test:linux-appimage-smoke'
+          node scripts/ci-command-log.mjs target/native-ci/linux-appimage-smoke.log npm run test:linux-appimage-smoke'
       - name: Verify Linux packages, application lifecycle, and packaged MCP sidecars
         if: runner.os == 'Linux'
         run: >
           dbus-run-session -- xvfb-run --auto-servernum
           --server-args="-screen 0 1440x900x24 -nolisten tcp"
           sh -eu -c '
-          openbox >/tmp/portmate-openbox-package.log 2>&1 &
+          mkdir -p target/native-ci;
+          openbox >target/native-ci/openbox-package.log 2>&1 &
           wm_pid=$!;
           trap "kill $wm_pid 2>/dev/null || true" EXIT;
           for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
           wmctrl -m;
-          npm run test:linux-package'
+          node scripts/ci-command-log.mjs target/native-ci/linux-package.log npm run test:linux-package'
       - name: Verify Windows packages, restart/migration, and conflict rejection
         if: runner.os == 'Windows'
-        run: npm run test:windows-package
+        run: node scripts/ci-command-log.mjs target/native-ci/windows-package.log npm run test:windows-package
       - name: Verify macOS packages, restart/migration, and conflict rejection
         if: runner.os == 'macOS'
-        run: npm run test:macos-package
+        run: node scripts/ci-command-log.mjs target/native-ci/macos-package.log npm run test:macos-package
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload native package bundles
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: portmate-${{ matrix.os }}-bundle
           path: target/release/bundle/**
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload native build and package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portmate-${{ matrix.os }}-diagnostics
+          path: target/native-ci/**
+          if-no-files-found: warn
           retention-days: 14
 
   linux-compatibility:
@@ -213,6 +232,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       PORTMATE_CHROME: /usr/bin/google-chrome
+      PORTMATE_TERMINAL_SCREENSHOT_PREFIX: ${{ github.workspace }}/target/native-ci/terminal
+      PORTMATE_TMUX_SCREENSHOT_PREFIX: ${{ github.workspace }}/target/native-ci/tmux
+      PORTMATE_VTTEST_SCREENSHOT_PREFIX: ${{ github.workspace }}/target/native-ci/vttest
+      PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX: ${{ github.workspace }}/target/native-ci/workspace
 
     steps:
       - uses: actions/checkout@v4
@@ -268,6 +291,7 @@ jobs:
           docker info
 
       - run: npm ci
+      - run: mkdir -p target/native-ci
       - run: npm run test:mcp-typescript-client
       - run: npm run test:mcp-python-client
       - run: npm run test:mcp-go-client
@@ -277,10 +301,19 @@ jobs:
       - run: npm run test:mcp-kotlin-client
       - run: npm run test:mcp-csharp-client
       - run: npm run test:mcp-swift-client
-      - run: npm run test:ssh-server-compat
-      - run: npm run test:tcp-telnet-server-compat
-      - run: npm run test:tmux-version-compat
-      - run: npm run test:vttest-compat
-      - run: npm run test:terminal-compat
-      - run: npm run test:tmux-workflow
-      - run: npm run test:workspace-ui
+      - run: node scripts/ci-command-log.mjs target/native-ci/ssh-server-compat.log npm run test:ssh-server-compat
+      - run: node scripts/ci-command-log.mjs target/native-ci/tcp-telnet-server-compat.log npm run test:tcp-telnet-server-compat
+      - run: node scripts/ci-command-log.mjs target/native-ci/tmux-version-compat.log npm run test:tmux-version-compat
+      - run: node scripts/ci-command-log.mjs target/native-ci/vttest-compat.log npm run test:vttest-compat
+      - run: node scripts/ci-command-log.mjs target/native-ci/terminal-compat.log npm run test:terminal-compat
+      - run: node scripts/ci-command-log.mjs target/native-ci/tmux-workflow.log npm run test:tmux-workflow
+      - run: node scripts/ci-command-log.mjs target/native-ci/workspace-ui.log npm run test:workspace-ui
+
+      - name: Upload compatibility logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portmate-linux-compatibility-diagnostics
+          path: target/native-ci/**
+          if-no-files-found: warn
+          retention-days: 14

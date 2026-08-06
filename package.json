@@ -116,6 +116,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/slip": "^1.0.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "cross-spawn": "^7.0.6",
     "playwright-core": "^1.61.1",
     "typescript": "^6.0.3",
     "undici": "7.29.0",
