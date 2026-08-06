@@ -43,4 +43,17 @@ describe("CI command logging", () => {
     expect(log).toContain("audit-error");
     expect(log.match(/x/g)).toHaveLength(262144);
   });
+
+  it("retains both native credential fault gates as CI diagnostics", () => {
+    const workflow = readFileSync(
+      resolve(import.meta.dirname, "..", ".github", "workflows", "native-ci.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain(
+      "target/native-ci/portable-vault.log npm run test:portable-vault",
+    );
+    expect(workflow).toContain(
+      "target/native-ci/native-keyring.log npm run test:native-keyring",
+    );
+  });
 });
