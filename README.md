@@ -700,6 +700,15 @@ The gate also inventories current Tauri/GTK3, build-only, Stronghold, and Russh 
 fails when any reviewed advisory, package, or version is added, removed, or changed. See
 [`SECURITY.md`](SECURITY.md) for the mitigation and residual-warning review.
 
+`npm run test:native-keyring` exercises the platform provider with a 1,200-byte secret across
+separate probe processes. Linux verifies a missing Secret Service, normal CRUD, and a locked
+collection. macOS uses an isolated temporary default keychain for CRUD and a non-interactive locked
+read. Windows performs normal CRUD, writes a second real credential, impersonates an anonymous
+thread token, requires that read to fail with no storage access, and cleans the credential on both
+success and failure. `npm run test:portable-vault` additionally rejects Unix symlink/hard-link
+paths and Windows multiply-linked files and parent junctions. Native CI invokes both gates on their
+corresponding runners; a successful retained workflow run is still required as native evidence.
+
 The terminal compatibility, vttest, Tmux workflow, and workspace UI checks use `playwright-core` with the installed `/usr/bin/google-chrome` instead of downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The terminal suite also requires the system `script`, `vim`, `less`, and procps `top` commands: it captures real PTY sessions, verifies alternate-screen isolation for Vim/less and clear-screen/cursor restoration for top, then renders and searches a bounded 6,000-line log under a 15-second regression limit. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, verifies simultaneous left/right/bottom docks, same-dock tab switching with inactive content collapsed, cross-dock drag placement, reload persistence, full-width terminal recovery, and transactional Profile deletion, exercises reverse-order file listing/properties, detached-terminal catch-up and poll-failure retention, serialized serial-analyzer and tunnel refreshes, cross-session Sysmon isolation, and deleted-Profile session/log poll invalidation, checks real filters, compact top-menu capability states, exact contextual view actions, protocol-filtered transfers, Profile-backed startup selectors, and queued one-time MCP approvals, confirms that non-input UI operations produce no terminal writes, and captures focused desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix. Repository Cargo configuration defaults libtest to four threads because the desktop matrix concurrently launches OpenSSH, socat, Stronghold, and SQLite workers; an explicit `RUST_TEST_THREADS` environment value still overrides it.
 
 Native CI streams desktop builds, package audits, and Linux compatibility matrices to both the job
@@ -940,8 +949,9 @@ Still pending: Microsoft Active Directory Kerberos/GSSAPI evidence, real FreeBSD
 integration matrix, a
 Windows OpenSSH host for remote Sysmon,
 broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
-validated transfer, file-manager, SSH identity, and local Shell surfaces, Windows/macOS locked or denied native keyring providers,
-and non-Unix Stronghold filesystem fault injection. The
+validated transfer, file-manager, SSH identity, and local Shell surfaces, and successful native-runner
+evidence for the implemented Windows anonymous Credential Manager denial, macOS locked isolated
+keychain, and Windows Stronghold hard-link/junction probes. The
 `Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
 compatibility job. Its Linux package gate extracts and launches the DEB, RPM, and AppImage under
 Xvfb; its Windows gate silently installs/extracts and launches both MSI and NSIS payloads; and its
