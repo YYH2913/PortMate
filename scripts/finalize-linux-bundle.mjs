@@ -6,17 +6,15 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   renameSync,
   rmSync,
-  symlinkSync,
-  unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { cachedAppImagePluginPath, copyAppImageRuntime } from "./appimage-runtime.mjs";
+import { normalizeAppImageRootLinks } from "./appimage-tree.mjs";
 
 if (process.platform === "linux") finalizeLinuxAppImage();
 
@@ -41,7 +39,7 @@ function finalizeLinuxAppImage() {
     run(appImage, ["--appimage-extract"], workRoot, true);
     const appDir = join(workRoot, "squashfs-root");
     normalizeTreePermissions(appDir);
-    replaceSymlink(join(appDir, ".DirIcon"), "PortMate.png");
+    normalizeAppImageRootLinks(appDir);
     const runtime = join(workRoot, "runtime");
     copyAppImageRuntime(appImage, runtime);
     const pluginRoot = join(workRoot, "plugin");
@@ -68,16 +66,6 @@ function normalizeTreePermissions(path) {
     return;
   }
   if (metadata.isFile()) chmodSync(path, metadata.mode & 0o111 ? 0o755 : 0o644);
-}
-
-function replaceSymlink(path, target) {
-  const metadata = lstatSync(path);
-  if (!metadata.isSymbolicLink()) {
-    throw new Error(`Expected ${path} to be a symbolic link`);
-  }
-  if (readlinkSync(path) === target) return;
-  unlinkSync(path);
-  symlinkSync(target, path);
 }
 
 function run(command, args, cwd, quiet) {

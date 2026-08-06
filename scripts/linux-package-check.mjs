@@ -96,11 +96,20 @@ try {
   ));
   const appImageBridge = join(extracted, "usr", "bin", "portmate-mcp");
   assertExecutable(appImageBridge);
-  assertFile(join(extracted, "PortMate.png"), 0o644);
+  assertSameFile(
+    join(projectRoot, "src-tauri", "icons", "128x128@2x.png"),
+    join(extracted, "PortMate.png"),
+    0o644,
+  );
   assertDesktopEntry(join(extracted, "usr", "share", "applications", "PortMate.desktop"));
   assertSymlink(join(extracted, ".DirIcon"), "PortMate.png");
   assertSymlink(join(extracted, "PortMate.desktop"), "usr/share/applications/PortMate.desktop");
   assertSymlink(join(extracted, "portmate.png"), "usr/share/icons/hicolor/256x256@2/apps/portmate.png");
+  assertSameFile(
+    join(projectRoot, "src-tauri", "icons", "128x128@2x.png"),
+    join(extracted, "usr", "share", "icons", "hicolor", "256x256@2", "apps", "portmate.png"),
+    0o644,
+  );
   assertSameFile(join(projectRoot, "LICENSE"), join(extracted, "usr", "lib", "PortMate", "LICENSE"), 0o644);
   assertSameFile(
     jetBrainsMonoLicense,
