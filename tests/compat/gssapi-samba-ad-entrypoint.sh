@@ -45,11 +45,10 @@ samba-tool domain provision \
   --adminpass='Portmate-Admin-42' \
   --quiet
 samba-tool user create portmate 'Portmate-User-42'
+/usr/local/bin/portmate-configure-samba-ad
 samba-tool domain exportkeytab /etc/krb5.keytab \
   --principal=host/localhost@PORTMATE.TEST
-samba-tool domain exportkeytab /portmate-client.keytab \
-  --principal=portmate@PORTMATE.TEST
-chmod 0600 /etc/krb5.keytab /portmate-client.keytab
+chmod 0600 /etc/krb5.keytab
 
 export PORTMATE_GSSAPI_SFTP_OPTION="$sftp_subsystem"
 exec setpriv --bounding-set=-sys_admin /bin/sh -c '

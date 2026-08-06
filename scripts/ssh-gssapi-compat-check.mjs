@@ -88,6 +88,9 @@ try {
       const kerberos = configureKerberos(server);
       acquireTicket(server, kerberos);
       runCase("success", server, kerberos, cases);
+      const adTicketEvidence = server.kerberosImplementation === "samba-ad-compatible"
+        ? verifySambaAdTicket(server, kerberos)
+        : null;
       runCase("gssapi-preferred", server, kerberos, cases);
       runCase("host-key-reject", server, kerberos, cases);
       corruptTicket(kerberos);
@@ -99,6 +102,8 @@ try {
       return {
         ssh: server.version,
         kerberos: server.kerberosVersion,
+        adPolicy: server.adPolicy,
+        adTicketEvidence,
       };
     });
 
@@ -126,6 +131,8 @@ try {
       kerberosImplementation: entry.kerberosImplementation ?? "mit",
       version: versions.ssh,
       ...(versions.kerberos ? { kerberosVersion: versions.kerberos } : {}),
+      ...(versions.adPolicy ? { adPolicy: versions.adPolicy } : {}),
+      ...(versions.adTicketEvidence ? { adTicketEvidence: versions.adTicketEvidence } : {}),
       ...(entry.capAdd?.length ? {
         provisionCapabilities: entry.capAdd,
         droppedRuntimeCapabilities: entry.capAdd,
@@ -172,9 +179,15 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
     verifyDroppedRuntimeCapabilities(entry, container);
     const version = inspectServerVersion(entry, container);
     const kerberosVersion = inspectKerberosVersion(entry, container);
+    const kerberosImplementation = entry.kerberosImplementation ?? "mit";
+    const adPolicy = kerberosImplementation === "samba-ad-compatible"
+      ? inspectSambaAdPolicy(container)
+      : null;
     try {
       return await callback({
+        adPolicy,
         container,
+        kerberosImplementation,
         kerberosVersion,
         version,
         verifyPtyResize: entry.verifyPtyResize !== false,
@@ -242,6 +255,10 @@ function configureKerberos(server) {
     dns_lookup_realm = false
     rdns = false
     udp_preference_limit = 1
+${server.kerberosImplementation === "samba-ad-compatible" ? `    default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    default_tgs_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+    permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+` : ""}
 
 [realms]
     PORTMATE.TEST = {
@@ -265,22 +282,117 @@ function configureKerberos(server) {
 }
 
 function acquireTicket(server, kerberos) {
-  run("docker", [
-    "exec",
-    server.container,
-    "env",
-    `KRB5CCNAME=FILE:${kerberos.remoteCache}`,
-    "kinit",
-    "-k",
-    "-t",
-    "/portmate-client.keytab",
-    "portmate@PORTMATE.TEST",
-  ], { quiet: true, timeout: controlTimeoutMs });
+  if (server.kerberosImplementation === "samba-ad-compatible") {
+    run("docker", [
+      "exec",
+      "--interactive",
+      server.container,
+      "env",
+      `KRB5CCNAME=FILE:${kerberos.remoteCache}`,
+      "kinit",
+      "-E",
+      "-C",
+      "--request-pac",
+      "portmate@portmate.test",
+    ], {
+      input: "Portmate-User-42\n",
+      quiet: true,
+      timeout: controlTimeoutMs,
+    });
+  } else {
+    run("docker", [
+      "exec",
+      server.container,
+      "env",
+      `KRB5CCNAME=FILE:${kerberos.remoteCache}`,
+      "kinit",
+      "-k",
+      "-t",
+      "/portmate-client.keytab",
+      "portmate@PORTMATE.TEST",
+    ], { quiet: true, timeout: controlTimeoutMs });
+  }
   run("docker", ["cp", `${server.container}:${kerberos.remoteCache}`, kerberos.cache], {
     quiet: true,
     timeout: controlTimeoutMs,
   });
   chmodSync(kerberos.cache, 0o600);
+}
+
+function inspectSambaAdPolicy(container) {
+  const user = run("docker", ["exec", container, "samba-tool", "user", "show", "portmate"], {
+    capture: true,
+    timeout: controlTimeoutMs,
+  }).stdout;
+  const computer = run("docker", [
+    "exec",
+    container,
+    "samba-tool",
+    "computer",
+    "show",
+    "LOCALHOST$",
+  ], {
+    capture: true,
+    timeout: controlTimeoutMs,
+  }).stdout;
+  const expectedEncryptionTypes = 24;
+  for (const [label, output] of [["user", user], ["host", computer]]) {
+    const match = /^msDS-SupportedEncryptionTypes: ([0-9]+)$/m.exec(output);
+    if (!match || Number(match[1]) !== expectedEncryptionTypes) {
+      throw new Error(`${label} account does not enforce AES-only AD encryption types in ${container}`);
+    }
+  }
+  const upn = /^userPrincipalName: (.+)$/m.exec(user)?.[1];
+  if (upn !== "portmate@portmate.test") {
+    throw new Error(`unexpected Samba AD UPN in ${container}: ${JSON.stringify(upn)}`);
+  }
+  return {
+    userPrincipalName: upn,
+    userSupportedEncryptionTypes: expectedEncryptionTypes,
+    hostSupportedEncryptionTypes: expectedEncryptionTypes,
+  };
+}
+
+function verifySambaAdTicket(server, kerberos) {
+  const verifiedCache = `${kerberos.remoteCache}.verified`;
+  run("docker", ["cp", kerberos.cache, `${server.container}:${verifiedCache}`], {
+    quiet: true,
+    timeout: controlTimeoutMs,
+  });
+  const result = run("docker", [
+    "exec",
+    server.container,
+    "/usr/local/bin/portmate-verify-samba-ad-ticket",
+    "--cache",
+    verifiedCache,
+    "--service-keytab",
+    "/etc/krb5.keytab",
+    "--service-principal",
+    "host/localhost@PORTMATE.TEST",
+    "--expected-canonical-client",
+    "portmate@PORTMATE.TEST",
+    "--expected-upn",
+    "portmate@portmate.test",
+    "--expected-dns-domain",
+    "PORTMATE.TEST",
+    "--expected-sam-name",
+    "portmate",
+  ], {
+    capture: true,
+    timeout: controlTimeoutMs,
+  });
+  let evidence;
+  try {
+    evidence = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(
+      `invalid Samba AD ticket evidence from ${server.container}: ${error.message}\n${result.stdout}`,
+    );
+  }
+  return {
+    enterprisePrincipalInput: "portmate@portmate.test",
+    ...evidence,
+  };
 }
 
 function destroyTicket(kerberos) {
@@ -496,7 +608,10 @@ function run(command, args, options = {}) {
     cwd: projectRoot,
     env: options.env ?? process.env,
     encoding: "utf8",
-    stdio: options.capture || options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
+    input: options.input,
+    stdio: options.capture || options.quiet
+      ? [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"]
+      : "inherit",
     maxBuffer: 16 * 1024 * 1024,
     timeout: options.timeout ?? 300_000,
   });

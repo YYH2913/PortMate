@@ -7,6 +7,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         krb5-user \
         openssh-server \
+        python3-impacket \
         samba \
         samba-ad-provision \
         samba-dsdb-modules \
@@ -20,9 +21,14 @@ RUN apt-get update \
     && chown -R portmate:portmate /home/portmate
 
 COPY tests/compat/gssapi-krb5.conf /etc/krb5.conf
+COPY tests/compat/gssapi-samba-ad-configure.py /usr/local/bin/portmate-configure-samba-ad
 COPY tests/compat/gssapi-samba-ad-entrypoint.sh /usr/local/bin/portmate-gssapi-samba-ad-entrypoint
+COPY tests/compat/gssapi-samba-ad-ticket-check.py /usr/local/bin/portmate-verify-samba-ad-ticket
 
-RUN chmod 0755 /usr/local/bin/portmate-gssapi-samba-ad-entrypoint
+RUN chmod 0755 \
+        /usr/local/bin/portmate-configure-samba-ad \
+        /usr/local/bin/portmate-gssapi-samba-ad-entrypoint \
+        /usr/local/bin/portmate-verify-samba-ad-ticket
 
 EXPOSE 22 88/tcp
 
