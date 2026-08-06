@@ -783,6 +783,13 @@ provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each p
 rejection, safe rejection of a corrupt FILE credential cache, password fallback after that rejection,
 a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and password
 fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
+The Samba entry obtains its initial ticket through the lower-case enterprise UPN
+`portmate@portmate.test` and requires canonicalization to `portmate@PORTMATE.TEST`. It marks both the
+user and host AD accounts with the AES128/AES256-only `msDS-SupportedEncryptionTypes` value, limits
+the client request to those encryption types, and verifies that the resulting TGT and SSH service
+ticket plus both session keys use AES. After PortMate completes the real connection, the matrix copies
+back the credential cache, decrypts the exact `host/localhost` service ticket with the server keytab,
+and requires a PAC containing logon information plus matching UPN, DNS-domain, SAM-name, and SID data.
 The OpenSSH success cases also cover TOFU persistence, PTY shell I/O and resize, keepalive/exec/SFTP
 health, recorded authentication method, and bounded runtime cleanup. Apache MINA covers the same
 authentication and health behavior plus interactive process-shell I/O; its shell accepts resize
@@ -895,7 +902,11 @@ AD-compatible KDC, covering successful
 authentication, GSSAPI precedence, strict host-key rejection,
 a corrupt FILE credential cache and password fallback after its safe rejection, a missing ticket,
 password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback, SFTP subsystem
-rejection, and SFTP directory-operation rejection. Linux validates explicit FILE caches before
+rejection, and SFTP directory-operation rejection. The Samba entry additionally exercises an
+enterprise UPN login and canonical principal result, enforces AES-only client ticket negotiation and
+AD account encryption metadata, then decrypts the service ticket created during PortMate's connection
+to verify its AES ticket/session keys and PAC logon, UPN, DNS-domain, SAM-name, and SID evidence.
+Linux validates explicit FILE caches before
 calling libssh so malformed cache data cannot enter the crashing libssh/Kerberos path; non-FILE
 backends such as KEYRING, KCM, and DIR remain owned by the system Kerberos implementation.
 Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
