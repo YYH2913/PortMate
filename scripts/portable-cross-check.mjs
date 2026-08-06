@@ -31,7 +31,7 @@ export function buildPortableCrossCheckPlan() {
     label,
     target: triple,
     command: "cargo",
-    args: ["check", "--locked", ...packageArgs, "--target", triple],
+    args: ["check", "--locked", "--all-targets", ...packageArgs, "--target", triple],
   }));
 }
 

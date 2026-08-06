@@ -35,6 +35,7 @@ describe("portable Rust cross-check", () => {
       expect(entry.args).toEqual([
         "check",
         "--locked",
+        "--all-targets",
         ...expectedCrates.flatMap((crate) => ["-p", crate]),
         "--target",
         expectedTargets[index],
