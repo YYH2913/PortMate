@@ -17,6 +17,40 @@ use std::time::Instant;
 use uuid::Uuid;
 
 #[test]
+fn transport_mode_accepts_explicit_modes_and_preserves_the_environment_default() {
+    assert_eq!(
+        select_transport_mode(Vec::<&str>::new(), None).unwrap(),
+        McpTransportMode::Stdio
+    );
+    assert_eq!(
+        select_transport_mode(Vec::<&str>::new(), Some(std::ffi::OsStr::new("1"))).unwrap(),
+        McpTransportMode::Http
+    );
+    assert_eq!(
+        select_transport_mode(["--http"], Some(std::ffi::OsStr::new("0"))).unwrap(),
+        McpTransportMode::Http
+    );
+    assert_eq!(
+        select_transport_mode(["--stdio"], Some(std::ffi::OsStr::new("1"))).unwrap(),
+        McpTransportMode::Stdio
+    );
+}
+
+#[test]
+fn transport_mode_rejects_unknown_repeated_and_conflicting_arguments() {
+    assert!(select_transport_mode(["--htpp"], None)
+        .unwrap_err()
+        .to_string()
+        .contains("unknown MCP argument `--htpp`"));
+    for arguments in [["--http", "--http"], ["--stdio", "--http"]] {
+        assert!(select_transport_mode(arguments, None)
+            .unwrap_err()
+            .to_string()
+            .contains("selected only once"));
+    }
+}
+
+#[test]
 fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
     let initialized = Mutex::new(false);
     let attempts = std::cell::Cell::new(0_u32);

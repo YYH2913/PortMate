@@ -4,6 +4,7 @@ use portmate_core::{
     SessionStore, SessionSummary,
 };
 use serde_json::{json, Value};
+use std::ffi::OsStr;
 #[cfg(test)]
 use std::io::{self, Read, Write};
 #[cfg(test)]
@@ -262,15 +263,56 @@ fn load_initial_store(store_path: Option<&std::path::Path>) -> Result<SessionSto
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum McpTransportMode {
+    Stdio,
+    Http,
+}
+
+fn select_transport_mode<I, S>(
+    args: I,
+    http_environment: Option<&OsStr>,
+) -> Result<McpTransportMode>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut selected = None;
+    for argument in args {
+        let argument = argument.as_ref();
+        let mode = if argument == OsStr::new("--stdio") {
+            McpTransportMode::Stdio
+        } else if argument == OsStr::new("--http") {
+            McpTransportMode::Http
+        } else {
+            return Err(anyhow!(
+                "unknown MCP argument `{}`; expected `--stdio` or `--http`",
+                argument.to_string_lossy()
+            ));
+        };
+        if selected.replace(mode).is_some() {
+            return Err(anyhow!("MCP transport mode may be selected only once"));
+        }
+    }
+    Ok(selected.unwrap_or_else(|| {
+        if http_environment == Some(OsStr::new("1")) {
+            McpTransportMode::Http
+        } else {
+            McpTransportMode::Stdio
+        }
+    }))
+}
+
 fn main() -> Result<()> {
+    let mode = select_transport_mode(
+        std::env::args_os().skip(1),
+        std::env::var_os("PORTMATE_MCP_HTTP").as_deref(),
+    )?;
     portmate_process_watchdog::install_parent_watchdog_from_environment("PORTMATE_MCP_PARENT_PID")
         .map_err(anyhow::Error::msg)?;
-    if std::env::args().any(|arg| arg == "--http")
-        || std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1")
-    {
-        run_http_server()
-    } else {
-        run_stdio_server()
+    match mode {
+        McpTransportMode::Stdio => run_stdio_server(),
+        McpTransportMode::Http => run_http_server(),
     }
 }
 
