@@ -16,25 +16,27 @@ const secretEnvironment = "PORTMATE_NATIVE_KEYRING_PROBE_SECRET";
 const rotatedSecretEnvironment = "PORTMATE_NATIVE_KEYRING_PROBE_ROTATED_SECRET";
 const probeSecretBytes = 1_200;
 
-try {
-  if (process.platform === "linux" && process.argv[2] !== "--linux-session") {
-    runIsolatedLinuxSecretService();
-  } else {
-    if (process.platform === "linux") {
-      verifyUnavailableLinuxSecretService();
-      startLinuxSecretService();
-    }
-    if (process.platform === "darwin") {
-      verifyIsolatedMacOSKeychain();
+function main() {
+  try {
+    if (process.platform === "linux" && process.argv[2] !== "--linux-session") {
+      runIsolatedLinuxSecretService();
     } else {
-      runProbe(process.env);
-      if (process.platform === "linux") verifyLockedLinuxSecretService();
-      if (process.platform === "win32") verifyDeniedWindowsCredentialManager();
+      if (process.platform === "linux") {
+        verifyUnavailableLinuxSecretService();
+        startLinuxSecretService();
+      }
+      if (process.platform === "darwin") {
+        verifyIsolatedMacOSKeychain();
+      } else {
+        runProbe(process.env);
+        if (process.platform === "linux") verifyLockedLinuxSecretService();
+        if (process.platform === "win32") verifyDeniedWindowsCredentialManager();
+      }
     }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
 }
 
 function runIsolatedLinuxSecretService() {
@@ -137,8 +139,34 @@ function verifyDeniedWindowsCredentialManager() {
     [secretEnvironment]: probeSecret("windows-denied"),
     [rotatedSecretEnvironment]: probeSecret("windows-denied-rotated"),
   };
-  runProbePhase("verify-denied", environment);
+  runDeniedWindowsCredentialManagerProbe(environment, runProbePhase);
   console.log("PortMate native keyring fault probe passed on windows (anonymous token denied provider)");
+}
+
+export function runDeniedWindowsCredentialManagerProbe(environment, runPhase) {
+  let probeFailure;
+  try {
+    runPhase("write", environment);
+    runPhase("verify-denied", environment);
+  } catch (error) {
+    probeFailure = error;
+  }
+
+  let cleanupFailure;
+  try {
+    runPhase("cleanup", environment);
+  } catch (error) {
+    cleanupFailure = error;
+  }
+
+  if (probeFailure && cleanupFailure) {
+    throw new Error(
+      `${failureMessage(probeFailure)}\nWindows credential cleanup also failed: ${failureMessage(cleanupFailure)}`,
+      { cause: new AggregateError([probeFailure, cleanupFailure]) },
+    );
+  }
+  if (probeFailure) throw probeFailure;
+  if (cleanupFailure) throw cleanupFailure;
 }
 
 function verifyIsolatedMacOSKeychain() {
@@ -264,3 +292,9 @@ function commandError(command, result) {
     { cause: result.error },
   );
 }
+
+function failureMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === scriptPath) main();
