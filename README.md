@@ -561,7 +561,7 @@ These releases neither expose `StdioTransport` on Windows nor declare the `Event
 imported by their HTTP source there, so the unpatched official packages are not presented as a
 Windows-compatible matrix.
 
-As of 2026-08-06, the newest stable release published by each of these nine official SDK projects is
+As of 2026-08-07, the newest stable release published by each of these nine official SDK projects is
 present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.1.1, Ruby 1.1.0, Java 2.0.0,
 Kotlin 0.15.0, C# 2.1.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
 API compatibility anchors; later stable releases should be added only after both real transports pass.

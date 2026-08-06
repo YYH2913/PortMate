@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-08-06
+审查日期：2026-08-07
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -26,11 +26,13 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - SSH host key 已实现 profile 级隔离，不写系统 `known_hosts`，能覆盖“同 IP/端口不同设备/私钥”的核心场景。
 - 私钥、可选密码/私钥口令、MCP live IPC token 已接入 OS keyring，SQLite/文件只保存 `secretRef` 或 `tokenRef`。
 
-但它还不是完整 WindTerm/Bitvise 替代品。当前主要差距集中在：Microsoft Active Directory GSSAPI 实证、portable-vault/keyring 的系统化原生跨平台故障矩阵、真实 macOS/Windows/FreeBSD SSH 主机与物理串口证据、MCP SDK 新稳定版发布后的兼容适配，以及发布签名与 Apple notarization。仓库已经补齐可在 Linux Docker/Chrome 自动完成的 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义；Windows MSI/NSIS 与 macOS app/DMG 的包内主程序也已接入隔离 Store、IPC 发布、正常退出和 endpoint 清理 smoke。Native keyring 脚本现对 macOS 使用临时 default keychain 验证 locked provider，仍需真实 runner 成功记录作为原生证据。
+但它还不是完整 WindTerm/Bitvise 替代品。仓库内能够在当前 Linux/VMware、Docker 和 Chrome 环境复现的功能与故障矩阵已经通过；剩余差距集中在不能由本机模拟结果替代的外部证据：Microsoft Active Directory GSSAPI、真实 macOS/FreeBSD SSH remote-forward 与传输主机、Windows OpenSSH 远端 Sysmon、物理串口/Modem、Windows/macOS 原生凭据和安装包 runner，以及发布签名与 Apple notarization。仓库已经补齐 vttest、全屏程序、Tmux 多版本、SSH/SFTP/SCP、Telnet/TCP、SSH 健康故障、三个 OpenSSH 发行版加 Apache MINA 的 MIT Kerberos GSSAPI、Ubuntu OpenSSH + Samba AD-compatible KDC，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift MCP SDK 矩阵，并新增三平台 native CI 定义；Windows MSI/NSIS 与 macOS app/DMG 的包内主程序也已接入隔离 Store、IPC 发布、正常退出和 endpoint 清理 smoke。Samba 结果只证明 AD-compatible 协议覆盖，不作为 Microsoft AD 实证。
 
 2026-08-05 本机验收重新通过前端 82 文件/473 项单测、生产构建、workspace Playwright、Rust workspace format/clippy/测试、terminal/vttest/Tmux 四版本矩阵、21 个 SSH 服务端、11 组活动传输断线、15 类健康故障、38 类传输故障、五种 GSSAPI 组合、18 个 TCP/Telnet/TLS 服务端和九语言 MCP SDK stdio/HTTP 矩阵。随后从干净的 bundle 目录重新完成 Tauri release 构建，DEB/RPM/AppImage 三包均通过包内主程序、sidecar、资源、权限、CSP/capability 与全 SDK 矩阵，最终 AppImage 也通过真实窗口、IPC、Store、迁移和冲突拒绝 smoke；前一次 release 链接收到的退出码 143 未复现，确认不是编译错误。
 
 2026-08-06 增量验收把 Linux/Windows/macOS 原生包审计根统一改为含空格路径，并据此发现和修复 Ruby MCP SDK 的 command-only `Process.spawn` 路径拆分；stdio 现在通过 SDK `args` 显式传入 `--stdio`。sidecar 同时加入互斥的 `--stdio`/`--http` 解析，未知、重复和冲突参数会立即失败。重新构建 release 包时又捕获 AppImage 根图标链接随打包工具选择 128/256 路径的非确定性，最终化阶段现固定 `.DirIcon`、desktop entry 和小写图标三条链接，并逐字节核对两个 256x256 图标。前端 88 文件/497 项测试、MCP 40 项单测、Clippy、三目标 portable check、九 SDK freshness、npm/Rust 依赖审计、keyring 依赖边界、完整 DEB/RPM/AppImage 包门禁均通过；最终 AppImage 的三次 1440x920 VMware 首帧各采样到 669 种颜色，Store/IPC/迁移与冲突拒绝也再次通过。Windows/macOS 的新含空格安装/挂载路径仍等待各自 Native CI runner 的真实执行记录。
+
+2026-08-07 本机最终回归通过前端 91 文件/505 项单测与生产构建，locked Rust workspace 全部测试（主应用 424 项通过、1 项按设计忽略）以及 all-targets Clippy `-D warnings`。九种官方 MCP SDK 的 freshness 仍覆盖各项目最新稳定版，其中 Python 1.9.4 至 2.0.0 的 stdio/HTTP 全部通过；Tmux 3.1c/3.3a/3.5a/3.7b、三个 vttest 构建共 39 套、四个系统共 16 个 Vim/less/top/dialog 场景和 18 个 TCP/Telnet 服务端均通过。SSH/SFTP/SCP 矩阵完成 21 个服务端实现的 85 项真实用例、15 个健康故障、38 个传输故障及活动 SFTP/SCP/X/Y/ZModem 断线。Samba AD-compatible GSSAPI 的干净/缓存镜像两轮均验证 enterprise UPN canonicalization、AES-only TGT/服务票据/会话密钥，以及解密后的 PAC logon、UPN、DNS domain、SAM name 和 SID；该结果仍不宣称 Microsoft AD 已验证。Workspace Playwright 生成 39 张截图；Linux Tauri 原生 smoke 在 VMware 上验证 1440x920、669 种颜色的非空窗口、IPC credential 生命周期、Store 持久化和正常退出。
 
 ## 当前实现快照
 
@@ -404,7 +406,7 @@ Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_
 
 1. append-only raw/text/jsonl 分片的安全枚举、受限预览、筛选、Text/JSONL 历史全文查询、批量清理 UI、通用归档、profile 自动保留期、双向精确 transport 字节/v2 引用、出站顺序、逐行毫秒元数据、显式命令 UUID 关联和 system Text/JSONL sink 已完成。
 2. `export_session_bundle` 的桌面 `.tar.gz` 交付包、逐文件/整包校验、平台/store 诊断、默认脱敏、显式 raw、Ed25519 detached signature 和日志管理器已选分片附件策略已完成。
-3. MCP 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0/1.30.0、Python SDK 1.9.4/1.12.4/1.15.0/1.21.2/1.23.3/1.28.1/1.29.0/2.0.0、Go SDK 1.4.0/1.5.0/1.6.1/1.7.0、Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0/3.0.1/3.1.0/3.1.1、Ruby SDK 0.25.0/1.0.0/1.1.0、Java SDK 1.0.0/1.1.3/2.0.0、Kotlin SDK 0.12.0/0.13.0/0.14.0/0.15.0、C# SDK 1.0.0/1.2.0/1.4.1/2.0.0/2.1.0 与 Swift SDK 0.11.0/0.12.1 的 stdio/HTTP 矩阵已纳入回归；截至 2026-08-06 已覆盖九种官方 SDK 的当前稳定版。注册表 freshness 检查已接入每周和手动 CI，未来稳定版遗漏会自动失败并指出应扩展的矩阵。
+3. MCP 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0/1.30.0、Python SDK 1.9.4/1.12.4/1.15.0/1.21.2/1.23.3/1.28.1/1.29.0/2.0.0、Go SDK 1.4.0/1.5.0/1.6.1/1.7.0、Rust SDK `rmcp` 1.0.0/1.1.0/1.8.0/2.2.0/3.0.1/3.1.0/3.1.1、Ruby SDK 0.25.0/1.0.0/1.1.0、Java SDK 1.0.0/1.1.3/2.0.0、Kotlin SDK 0.12.0/0.13.0/0.14.0/0.15.0、C# SDK 1.0.0/1.2.0/1.4.1/2.0.0/2.1.0 与 Swift SDK 0.11.0/0.12.1 的 stdio/HTTP 矩阵已纳入回归；截至 2026-08-07 已覆盖九种官方 SDK 的当前稳定版。注册表 freshness 检查已接入每周和手动 CI，未来稳定版遗漏会自动失败并指出应扩展的矩阵。
 4. Sysmon 的跨平台采样、四标签窗口、常驻当前会话侧栏、历史趋势、10 秒刷新和结构化持久化已完成；继续补真实 macOS/FreeBSD/Windows SSH 主机与其他 BSD。
 5. 终端/vttest/Tmux/workspace 浏览器回归已全部迁入 Playwright，vttest 三版本×13 套件、四发行版全屏程序和 tmux 四版本矩阵已完成；Docker PTY 首字节启动、程序执行和容器/CLI 收尾使用独立边界，慢控制面不会占用全屏程序 deadline。下一步由 macOS/Windows runner 与安装 smoke test 补原生证据。
 
@@ -469,11 +471,15 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 4. Linux DEB/RPM/AppImage 打包与逐包检查已完成；`Native CI` 的 Ubuntu job 会在 `desktop:build` 后运行 `npm run test:linux-package`，从新生成的 DEB/RPM/AppImage 提取 sidecar 并运行全语言 MCP 生命周期矩阵。Windows job 已接入 MSI administrative extraction、NSIS 静默安装/卸载以及主程序/sidecar/Apache-2.0/JetBrains Mono OFL 唯一性和 SHA-256 检查；macOS job 已接入直接 app、DMG verify/只读挂载、Info.plist 和相同 payload 检查，未签名二进制必须匹配 release SHA-256，签名副本则必须通过严格 codesign 且与 DMG 副本一致。共享布局逻辑在当前 Linux 主机通过 12 项夹具回归，但两个原生检查仍需对应平台的实际 CI 成功证据；签名和 Apple notarization 也仍是发布前置项。
 5. `RELEASE.md` 已建立版本、测试、签名、权限、迁移、产物校验、发布和回滚 gate；正式发布前仍需在三平台逐项执行并记录证据。
 
-## 建议的近期执行顺序
+## 剩余外部验证门槛
 
-1. 集成测试环境加入真实 FreeBSD/macOS SSH tunnel 主机；跨平台探测命令与解析单元矩阵已完成。
-2. keyring/Stronghold 的 Windows/macOS/Linux 故障注入矩阵；Linux Secret Service 跨进程 CRUD、provider unavailable 和 locked/prompt-denied，以及 Linux Stronghold 跨进程 CRUD/CAS、错误密码、损坏/缺失文件、commit rollback 和 Unix 私有文件边界均已实测；macOS Native CI probe 现在会创建临时 default keychain，锁定后用进程级 RAII guard 禁止认证 UI，并验证上游按系统错误返回的 `NoStorageAccess`/`PlatformFailure` 不可访问语义，该 guard 与 `security-framework 3.7` 已通过 `aarch64-apple-darwin` 离线条件编译。Windows probe 会在独立进程内临时 impersonate anonymous token，以随机未写入条目验证 Credential Manager 把无登录会话映射为 `NoStorageAccess`，并在返回前恢复原身份；该分支已通过 `x86_64-pc-windows-gnu` 最小 target 类型检查。Windows/macOS CRUD 与上述 fault probe 均已接入 CI，durable migration journal、异常提交核对、重载 UX、双向迁移和 conflict 诊断导出已完成；仍需 Windows/macOS runner 成功和对应文件系统故障证据。
-3. SSH 三层健康与服务端故障矩阵已完成；继续扩展跨平台传输、Serial 物理设备与远端 OS 故障矩阵。
-4. vttest、真实 tmux、四发行版全屏程序和全部浏览器 Playwright 回归已完成；继续收集三平台 native CI/安装 smoke test 证据。
+以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
 
-这个顺序优先补“真实终端工具的可靠性”和“会话控制的安全边界”，比继续堆 UI 设置项更能降低后续返工。
+1. 一套真实 Microsoft Active Directory 域与已加入该域的 OpenSSH 服务端，用于记录 PortMate `gssapi-with-mic`、票据/PAC、fallback、Host Key 和健康故障证据。
+2. 可由测试账号创建并取消 SSH remote-forward 的真实 FreeBSD 和 macOS 主机，用于执行 BSD 命令、SFTP/SCP、隧道健康和全屏程序矩阵；另需启用 OpenSSH 与 PowerShell/CIM 的 Windows 远端主机完成常驻 Sysmon 采样和故障恢复。
+3. 真实 Windows 2022 与 macOS 14 runner，用于完成 native keyring CRUD/locked/denied、Stronghold 文件系统故障、MSI/NSIS 安装卸载、app/DMG 挂载及包内主程序/sidecar 生命周期；成功日志和产物必须按 `RELEASE.md` 保留。
+4. 可断电、拔插和改变线路状态的物理串口/USB 串口与 Modem 设备，用于验证 DTR/RTS/Break、二进制收发、自动重连及 X/Y/ZModem 故障恢复。
+5. Windows Authenticode 证书、Apple Developer ID、notarization 凭据和发布 secret store，用于签名、notarize 及独立校验最终安装包。
+6. 发布版本确定后，在三平台干净机器上按 `RELEASE.md` 重新执行完整 gate、升级/回滚和已上传产物安装检查；开发期通过记录不能直接替代该次发布证据。
+
+在这些资源到位前，项目可标记为“本地实现与可复现矩阵完成，外部发布证据待补”，不能标记为正式发布完成。
