@@ -194,6 +194,7 @@ pub(crate) fn save_mcp_http_settings(
     state: State<'_, AppState>,
     settings: McpHttpSettings,
 ) -> Result<McpHttpConfig, String> {
+    let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "保存配置")?;
     let (settings, _) = normalize_mcp_http_settings(settings)?;
     let config = build_mcp_http_config_for_request(
         has_secret_ref(MCP_HTTP_TOKEN_REF),
@@ -214,6 +215,7 @@ pub(crate) fn save_mcp_http_settings(
 pub(crate) fn rotate_mcp_http_token(
     state: State<'_, AppState>,
 ) -> Result<McpHttpTokenResponse, String> {
+    let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "轮换 Token")?;
     let settings = state
         .store
         .lock()
@@ -229,6 +231,27 @@ pub(crate) fn rotate_mcp_http_token(
     let token = Uuid::new_v4().to_string();
     write_secret_to_keyring(MCP_HTTP_TOKEN_REF, &token)?;
     Ok(McpHttpTokenResponse { config, token })
+}
+
+#[tauri::command]
+pub(crate) fn mcp_http_runtime_status(
+    state: State<'_, AppState>,
+) -> Result<McpHttpRuntimeStatus, String> {
+    mcp_http_runtime_status_inner(state.inner())
+}
+
+#[tauri::command]
+pub(crate) async fn start_mcp_http(
+    state: State<'_, AppState>,
+) -> Result<McpHttpRuntimeStatus, String> {
+    start_mcp_http_runtime_inner(state.inner()).await
+}
+
+#[tauri::command]
+pub(crate) fn stop_mcp_http(
+    state: State<'_, AppState>,
+) -> Result<McpHttpRuntimeStatus, String> {
+    stop_mcp_http_runtime_inner(state.inner())
 }
 
 #[tauri::command]

@@ -10967,6 +10967,66 @@ fieldset label {
   color: #fecaca;
 }
 
+.mcp-http-runtime {
+  display: grid;
+  grid-template-columns: 10px auto auto minmax(0, 1fr);
+  min-height: 34px;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 0;
+  border-block: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mcp-http-runtime-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.mcp-http-runtime strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.mcp-http-runtime code {
+  color: var(--cyan);
+  font-family: var(--mono);
+}
+
+.mcp-http-runtime time {
+  min-width: 0;
+  justify-self: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-http-runtime small {
+  grid-column: 2 / -1;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+
+.mcp-http-runtime.starting .mcp-http-runtime-indicator {
+  background: #eab308;
+}
+
+.mcp-http-runtime.running .mcp-http-runtime-indicator {
+  background: #22c55e;
+}
+
+.mcp-http-runtime.failed,
+.mcp-http-runtime.failed strong {
+  color: #fca5a5;
+}
+
+.mcp-http-runtime.failed .mcp-http-runtime-indicator {
+  background: #ef4444;
+}
+
 .mcp-http-row code,
 .mcp-http-token code {
   overflow-wrap: anywhere;
@@ -11280,6 +11340,15 @@ fieldset label {
 
   .mcp-http-exposure {
     padding: 7px 9px;
+  }
+
+  .mcp-http-runtime {
+    grid-template-columns: 10px auto minmax(0, 1fr);
+  }
+
+  .mcp-http-runtime time {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 
   .mcp-check-grid {

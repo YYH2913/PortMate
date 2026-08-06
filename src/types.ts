@@ -551,6 +551,16 @@ export interface McpHttpTokenResponse {
   token: string;
 }
 
+export type McpHttpRuntimePhase = "stopped" | "starting" | "running" | "failed";
+
+export interface McpHttpRuntimeStatus {
+  phase: McpHttpRuntimePhase;
+  endpoint?: string | null;
+  pid?: number | null;
+  startedAt?: string | null;
+  message?: string | null;
+}
+
 export interface HostKeyStore {
   keys: TrustedHostKey[];
 }

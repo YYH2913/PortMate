@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Copy, Download, KeyRound, Plus, RefreshCw, Save, Search, X } from "lucide-react";
+import { Copy, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
@@ -14,7 +14,7 @@ import {
   mcpHttpSettingsFromConfig,
   parseMcpHttpOrigins,
 } from "./mcp-http-state";
-import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
+import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
 const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "write-input", "transfer", "tunnel", "manage-sessions"];
 const mcpHttpListenOptions = [
@@ -51,12 +51,14 @@ export default function McpDialog({
   const [creatingGrant, setCreatingGrant] = useState(false);
   const [error, setError] = useState("");
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
+  const [httpRuntime, setHttpRuntime] = useState<McpHttpRuntimeStatus | null>(null);
   const [httpSettings, setHttpSettings] = useState<McpHttpConfigRequest>(defaultMcpHttpSettings);
   const [httpOriginsText, setHttpOriginsText] = useState(() => formatMcpHttpOrigins(defaultMcpHttpSettings().allowedOrigins));
   const [httpDirty, setHttpDirty] = useState(false);
   const [httpPreviewCurrent, setHttpPreviewCurrent] = useState(false);
   const [httpToken, setHttpToken] = useState("");
   const [httpBusy, setHttpBusy] = useState(false);
+  const [httpRuntimeBusy, setHttpRuntimeBusy] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditQuery, setAuditQuery] = useState("");
@@ -67,7 +69,10 @@ export default function McpDialog({
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
   const clientIdInputRef = useRef<HTMLInputElement>(null);
   const httpListenInputRef = useRef<HTMLInputElement>(null);
-  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "audit">());
+  const activeTabRef = useRef(tab);
+  const httpRuntimeActionRef = useRef(false);
+  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "http-runtime-status" | "http-runtime-action" | "audit">());
+  activeTabRef.current = tab;
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
     query: auditQuery,
@@ -83,6 +88,8 @@ export default function McpDialog({
     return [...ids].sort((left, right) => (sessionNames.get(left) ?? left).localeCompare(sessionNames.get(right) ?? right));
   }, [audit, sessionNames]);
   const httpRemoteListener = isNonLoopbackMcpHost(httpSettings.listenHost);
+  const httpRuntimeActive = httpRuntime?.phase === "starting" || httpRuntime?.phase === "running";
+  const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
   const httpSettingsValid = Boolean(httpSettings.listenHost.trim() && httpSettings.clientId.trim())
     && Number.isInteger(httpSettings.port) && httpSettings.port >= 1 && httpSettings.port <= 65_535
     && (!httpRemoteListener || httpSettings.allowRemote);
@@ -91,6 +98,20 @@ export default function McpDialog({
     if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
     void loadHttpConfig();
   }, [httpConfig, tab]);
+
+  useEffect(() => {
+    if (tab !== "http") {
+      requestGateRef.current.invalidate("http-runtime-status");
+      return;
+    }
+    if (isBackendAvailable()) void loadHttpRuntime();
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "http" || !httpRuntimeActive || !isBackendAvailable()) return;
+    const timer = window.setInterval(() => void loadHttpRuntime(), 1_000);
+    return () => window.clearInterval(timer);
+  }, [httpRuntimeActive, tab]);
 
   useEffect(() => {
     if (creatingGrant) return;
@@ -149,6 +170,64 @@ export default function McpDialog({
       if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
     } finally {
       if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
+    }
+  }
+
+  async function loadHttpRuntime() {
+    if (httpRuntimeActionRef.current) return;
+    const token = requestGateRef.current.begin("http-runtime-status");
+    if (token === null) return;
+    try {
+      const next = await invokeBackend<McpHttpRuntimeStatus>("mcp_http_runtime_status", {});
+      if (requestGateRef.current.isCurrent("http-runtime-status", token)) setHttpRuntime(next);
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http-runtime-status", token)) setError(formatError(nextError));
+    } finally {
+      requestGateRef.current.finish("http-runtime-status", token);
+    }
+  }
+
+  async function startHttpRuntime() {
+    const token = requestGateRef.current.begin("http-runtime-action");
+    if (token === null) return;
+    httpRuntimeActionRef.current = true;
+    requestGateRef.current.invalidate("http-runtime-status");
+    setError("");
+    setHttpRuntimeBusy(true);
+    try {
+      const next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", {});
+      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setHttpRuntime(next);
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("http-runtime-action", token)) {
+        httpRuntimeActionRef.current = false;
+        requestGateRef.current.invalidate("http-runtime-status");
+        setHttpRuntimeBusy(false);
+        if (activeTabRef.current === "http" && isBackendAvailable()) void loadHttpRuntime();
+      }
+    }
+  }
+
+  async function stopHttpRuntime() {
+    const token = requestGateRef.current.begin("http-runtime-action");
+    if (token === null) return;
+    httpRuntimeActionRef.current = true;
+    requestGateRef.current.invalidate("http-runtime-status");
+    setError("");
+    setHttpRuntimeBusy(true);
+    try {
+      const next = await invokeBackend<McpHttpRuntimeStatus>("stop_mcp_http", {});
+      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setHttpRuntime(next);
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("http-runtime-action", token)) {
+        httpRuntimeActionRef.current = false;
+        requestGateRef.current.invalidate("http-runtime-status");
+        setHttpRuntimeBusy(false);
+        if (activeTabRef.current === "http" && isBackendAvailable()) void loadHttpRuntime();
+      }
     }
   }
 
@@ -400,23 +479,23 @@ export default function McpDialog({
                 <div className="mcp-http-field-grid">
                   <McpFieldGroup label="监听 IP:">
                     <div className="mcp-http-listen-editor">
-                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} onChange={(event) => {
+                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} disabled={httpRuntimeLocked} onChange={(event) => {
                         const listenHost = event.target.value === MCP_HTTP_CUSTOM_LISTEN_PRESET ? "" : event.target.value;
                         updateHttpListenHost(listenHost);
                         if (!listenHost) requestAnimationFrame(() => httpListenInputRef.current?.focus());
                       }}>
                         {mcpHttpListenOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
-                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} onChange={(event) => updateHttpListenHost(event.target.value)} />
+                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} disabled={httpRuntimeLocked} onChange={(event) => updateHttpListenHost(event.target.value)} />
                     </div>
                   </McpFieldGroup>
-                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
-                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
+                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
+                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
                 </div>
-                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
+                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpRuntimeLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
                 <div className="mcp-http-options">
-                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={!httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
-                  <label><input type="checkbox" checked={httpSettings.trusted} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
+                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={httpRuntimeLocked || !httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
+                  <label><input type="checkbox" checked={httpSettings.trusted} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
                 </div>
                 {httpRemoteListener ? (
                   <div className={`mcp-http-exposure ${httpSettings.allowRemote ? "allowed" : "blocked"}`} role="status">
@@ -428,12 +507,21 @@ export default function McpDialog({
               <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
               <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
               <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>
+              <div className={`mcp-http-runtime ${httpRuntime?.phase ?? "stopped"}`} role="status" aria-live="polite">
+                <span className="mcp-http-runtime-indicator" />
+                <strong>{mcpHttpRuntimeLabel(httpRuntime)}</strong>
+                {httpRuntime?.pid ? <code>PID {httpRuntime.pid}</code> : null}
+                {httpRuntime?.startedAt ? <time>{formatDateTime(httpRuntime.startedAt)}</time> : null}
+                {httpRuntime?.message ? <small>{httpRuntime.message}</small> : null}
+              </div>
               {httpToken ? <div className="mcp-http-token"><span>新 Token</span><code>{httpToken}</code></div> : null}
               <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-http-command stale" : "mcp-http-command"} readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? ""} />
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
-                <button type="button" onClick={() => void saveHttpSettings()} disabled={httpBusy || !httpSettingsValid || !httpDirty}><Save size={14} />保存配置</button>
-                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpDirty || !httpConfig}><KeyRound size={14} />{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button type="button" onClick={() => void saveHttpSettings()} disabled={httpBusy || httpRuntimeLocked || !httpSettingsValid || !httpDirty}><Save size={14} />保存配置</button>
+                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpRuntimeLocked || httpDirty || !httpConfig}><KeyRound size={14} />{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button type="button" onClick={() => void startHttpRuntime()} disabled={httpBusy || httpRuntimeBusy || !httpRuntime || httpRuntimeActive || httpDirty || !httpConfig?.tokenAvailable}><Play size={14} />启动服务</button>
+                <button type="button" onClick={() => void stopHttpRuntime()} disabled={httpRuntimeBusy || !httpRuntime || httpRuntime.phase === "stopped"}><Square size={13} />停止服务</button>
                 <button type="button" onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />复制命令</button>
               </div>
             </div>
@@ -496,6 +584,16 @@ function McpField({ label, children }: { label: string; children: ReactNode }) {
 
 function McpFieldGroup({ label, children }: { label: string; children: ReactNode }) {
   return <div className="dialog-field"><span>{label}</span>{children}</div>;
+}
+
+function mcpHttpRuntimeLabel(status: McpHttpRuntimeStatus | null) {
+  switch (status?.phase) {
+    case "starting": return "正在启动";
+    case "running": return "运行中";
+    case "failed": return "启动失败";
+    case "stopped": return "未运行";
+    default: return "读取状态";
+  }
 }
 
 function formatDateTime(value: string) {

@@ -471,3 +471,212 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
         .start_command
         .contains("PORTMATE_MCP_HTTP_ADDR='[::]:9890'"));
 }
+
+#[test]
+fn managed_mcp_http_command_uses_saved_settings_without_exposing_the_token() {
+    let executable = Path::new("/opt/PortMate/bin/portmate-mcp");
+    let store_path = Path::new("/tmp/PortMate Data/portmate-store.sqlite3");
+    let config = build_mcp_http_config_for_request(
+        true,
+        executable,
+        store_path,
+        McpHttpSettings {
+            listen_host: "0.0.0.0".to_string(),
+            port: 9911,
+            allowed_origins: vec!["https://console.example.test".to_string()],
+            client_id: "managed-client".to_string(),
+            trusted: true,
+            allow_remote: true,
+        },
+    )
+    .unwrap();
+    let command = mcp_http_process_command(executable, store_path, &config);
+    let args = command
+        .get_args()
+        .map(|value| value.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let env = command
+        .get_envs()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().to_string(),
+                value.map(|value| value.to_string_lossy().to_string()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    assert_eq!(command.get_program(), executable);
+    assert_eq!(args, vec!["--http"]);
+    assert_eq!(
+        env["PORTMATE_STORE_PATH"].as_deref(),
+        Some("/tmp/PortMate Data/portmate-store.sqlite3")
+    );
+    assert_eq!(
+        env["PORTMATE_MCP_HTTP_ADDR"].as_deref(),
+        Some("0.0.0.0:9911")
+    );
+    assert_eq!(
+        env["PORTMATE_MCP_HTTP_ORIGINS"].as_deref(),
+        Some("https://console.example.test")
+    );
+    assert_eq!(
+        env["PORTMATE_MCP_CLIENT_ID"].as_deref(),
+        Some("managed-client")
+    );
+    assert_eq!(env["PORTMATE_MCP_HTTP_ALLOW_REMOTE"].as_deref(), Some("1"));
+    assert_eq!(env["PORTMATE_MCP_TRUSTED"].as_deref(), Some("1"));
+    assert_eq!(
+        env["PORTMATE_MCP_PARENT_PID"].as_deref(),
+        Some(std::process::id().to_string().as_str())
+    );
+    assert_eq!(env.get("PORTMATE_MCP_HTTP_TOKEN"), Some(&None));
+}
+
+#[test]
+fn managed_mcp_http_ready_probe_rejects_an_unrelated_listener() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 512];
+        let _ = stream.read(&mut request).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+
+    assert!(!probe_mcp_http_ready(address));
+    server.join().unwrap();
+}
+
+#[test]
+fn managed_mcp_http_runtime_reports_ready_stops_and_retains_bounded_failures() {
+    let _guard = shared_runtime_test_guard();
+    let root = std::env::temp_dir().join(format!("portmate-mcp-runtime-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+
+    let mut fixture = managed_mcp_http_fixture_command(address, false);
+    install_test_mcp_http_process(
+        &state,
+        &mut fixture,
+        format!("http://{address}/mcp"),
+        address,
+    )
+    .unwrap();
+    let running = wait_for_managed_mcp_http_phase(&state, McpHttpRuntimePhase::Running);
+    assert_eq!(
+        running.endpoint.as_deref(),
+        Some(format!("http://{address}/mcp").as_str())
+    );
+    assert!(running.pid.is_some());
+    assert!(running.started_at.is_some());
+    let gate_error = lock_stopped_mcp_http_runtime(&state, "保存配置")
+        .err()
+        .unwrap();
+    assert!(gate_error.contains("请先停止"));
+    assert_eq!(
+        stop_mcp_http_runtime_inner(&state).unwrap().phase,
+        McpHttpRuntimePhase::Stopped
+    );
+    assert_eq!(
+        mcp_http_runtime_status_inner(&state).unwrap().phase,
+        McpHttpRuntimePhase::Stopped
+    );
+
+    let failed_address = std::net::SocketAddr::from(([127, 0, 0, 1], address.port()));
+    let mut failed_fixture = managed_mcp_http_fixture_command(failed_address, true);
+    install_test_mcp_http_process(
+        &state,
+        &mut failed_fixture,
+        format!("http://{failed_address}/mcp"),
+        failed_address,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let failure = loop {
+        let status = mcp_http_runtime_status_inner(&state).unwrap();
+        if status.phase == McpHttpRuntimePhase::Failed
+            && status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("fixture startup rejected"))
+        {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "managed MCP HTTP failure was not reported: {status:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(failure.pid, None);
+    assert!(failure.message.unwrap().chars().count() <= 1_024);
+    stop_mcp_http_runtime_inner(&state).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+fn managed_mcp_http_fixture_command(address: std::net::SocketAddr, fail: bool) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "tests::mcp_tests::managed_mcp_http_fixture",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("PORTMATE_TEST_MCP_HTTP_ADDRESS", address.to_string())
+        .env("PORTMATE_TEST_MCP_HTTP_FAIL", if fail { "1" } else { "0" });
+    command
+}
+
+fn wait_for_managed_mcp_http_phase(
+    state: &AppState,
+    phase: McpHttpRuntimePhase,
+) -> McpHttpRuntimeStatus {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = mcp_http_runtime_status_inner(state).unwrap();
+        if status.phase == phase {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "managed MCP HTTP phase did not become {phase:?}: {status:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+#[ignore]
+fn managed_mcp_http_fixture() {
+    let Some(address) = std::env::var("PORTMATE_TEST_MCP_HTTP_ADDRESS")
+        .ok()
+        .and_then(|value| value.parse::<std::net::SocketAddr>().ok())
+    else {
+        return;
+    };
+    if std::env::var("PORTMATE_TEST_MCP_HTTP_FAIL").as_deref() == Ok("1") {
+        eprintln!("fixture startup rejected");
+        return;
+    }
+    let listener = std::net::TcpListener::bind(address).unwrap();
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                let mut request = [0_u8; 512];
+                if stream.read(&mut request).is_ok() {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nMCP-Protocol-Version: 2025-06-18\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}

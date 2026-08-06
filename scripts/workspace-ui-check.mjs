@@ -407,6 +407,11 @@ try {
     window.__pendingVaultMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
+    window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
+    window.__deferMcpHttpRuntimeStatus = false;
+    window.__pendingMcpHttpRuntimeStatuses = [];
+    window.__deferMcpHttpRuntimeAction = false;
+    window.__pendingMcpHttpRuntimeActions = [];
     window.__buildMcpHttpConfig = (settings) => {
       const host = settings.listenHost.trim();
       const endpointHost = host.includes(":") ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
@@ -928,6 +933,27 @@ try {
         if (command === "save_mcp_http_settings") {
           window.__mcpHttpConfig = window.__buildMcpHttpConfig(args.settings);
           return structuredClone(window.__mcpHttpConfig);
+        }
+        if (command === "mcp_http_runtime_status") {
+          const result = structuredClone(window.__mcpHttpRuntime);
+          if (!window.__deferMcpHttpRuntimeStatus) return result;
+          return new Promise((resolve) => window.__pendingMcpHttpRuntimeStatuses.push({ result, resolve }));
+        }
+        if (command === "start_mcp_http") {
+          window.__mcpHttpRuntime = {
+            phase: "running",
+            endpoint: window.__mcpHttpConfig.endpoint,
+            pid: 4242,
+            startedAt: new Date().toISOString(),
+            message: null,
+          };
+          const result = structuredClone(window.__mcpHttpRuntime);
+          if (!window.__deferMcpHttpRuntimeAction) return result;
+          return new Promise((resolve) => window.__pendingMcpHttpRuntimeActions.push({ result, resolve }));
+        }
+        if (command === "stop_mcp_http") {
+          window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
+          return structuredClone(window.__mcpHttpRuntime);
         }
         if (command === "list_mcp_approvals") return [];
         if (command === "respond_mcp_approval") return null;
@@ -3220,18 +3246,22 @@ Host staging
     && await grantExpiry.inputValue() === "2031-04-05T06:07",
     `MCP new grant action did not save from an empty store: ${JSON.stringify(emptyStoreGrantSave)}`);
 
-  await page.evaluate(() => { window.__deferMcpHttpConfig = true; });
+  await page.evaluate(() => {
+    window.__deferMcpHttpConfig = true;
+    window.__deferMcpHttpRuntimeStatus = true;
+  });
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
   await mcpDialog.locator(".mcp-http-view").waitFor();
   assert(await mcpDialog.locator(".mcp-content").count() === 0
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP HTTP page renders inactive task content");
-  await page.waitForFunction(() => window.__pendingMcpHttpConfig.length === 1);
+  await page.waitForFunction(() => window.__pendingMcpHttpConfig.length === 1
+    && window.__pendingMcpHttpRuntimeStatuses.length === 1);
   assert(await mcpDialog.getByRole("button", { name: "生成 Token", exact: true }).isDisabled(),
     "MCP token generation stayed enabled while HTTP configuration was loading");
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
-  await page.waitForTimeout(100);
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 2);
   assert(await page.evaluate(() => window.__pendingMcpHttpConfig.length) === 1,
     "switching back to MCP HTTP started an overlapping configuration request");
   await page.evaluate((config) => {
@@ -3239,7 +3269,16 @@ Host staging
     window.__pendingMcpHttpConfig = [];
     window.__deferMcpHttpConfig = false;
   }, mcpHttpConfig);
+  assert(await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).isDisabled(),
+    "MCP HTTP start was enabled before the managed runtime status loaded");
+  await page.evaluate(() => {
+    for (const pending of window.__pendingMcpHttpRuntimeStatuses) pending.resolve(pending.result);
+    window.__pendingMcpHttpRuntimeStatuses = [];
+    window.__deferMcpHttpRuntimeStatus = false;
+  });
   await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).waitFor();
+  await page.waitForFunction(() => ![...document.querySelectorAll(".mcp-actions button")]
+    .find((button) => button.textContent?.includes("启动服务"))?.disabled);
   const mcpHttpText = await mcpDialog.locator(".mcp-http-panel").textContent();
   assert(mcpHttpText.includes(mcpHttpConfig.endpoint)
     && mcpHttpText.includes(mcpHttpConfig.executable)
@@ -3286,7 +3325,58 @@ Host staging
     && savedMcpHttpSettings.port === 9088
     && savedMcpHttpSettings.allowRemote === true,
   "MCP HTTP remote listener settings were not persisted into the generated command");
+  await page.evaluate(() => { window.__deferMcpHttpRuntimeAction = true; });
+  await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeActions.length === 1);
+  await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
+  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
+  assert(await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).isDisabled(),
+    "MCP HTTP runtime action lost its busy state after switching tasks");
+  assert(await mcpListenHost.isDisabled()
+    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isDisabled(),
+  "MCP HTTP configuration stayed editable while the managed service was starting");
+  await page.evaluate(() => {
+    for (const pending of window.__pendingMcpHttpRuntimeActions) pending.resolve(pending.result);
+    window.__pendingMcpHttpRuntimeActions = [];
+    window.__deferMcpHttpRuntimeAction = false;
+  });
+  const mcpRuntime = mcpDialog.locator(".mcp-http-runtime");
+  await mcpRuntime.filter({ hasText: "运行中" }).waitFor();
+  await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).waitFor({ state: "visible" });
+  assert(await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).isEnabled(),
+    "MCP HTTP runtime action stayed busy after its deferred response completed");
+  const mcpRuntimeText = await mcpRuntime.textContent();
+  assert(mcpRuntimeText?.includes("PID 4242")
+    && await mcpListenHost.isDisabled()
+    && await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled()
+    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isDisabled(),
+  "managed MCP HTTP runtime did not lock its live configuration or expose the process state");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-http.png`, fullPage: true });
+  await page.evaluate(() => { window.__deferMcpHttpRuntimeStatus = true; });
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 1);
+  await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).click();
+  await mcpRuntime.filter({ hasText: "未运行" }).waitFor();
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 2);
+  await page.evaluate(() => {
+    const stale = window.__pendingMcpHttpRuntimeStatuses.shift();
+    stale.resolve(stale.result);
+  });
+  await page.waitForTimeout(100);
+  assert((await mcpRuntime.textContent()).includes("未运行"),
+    "a stale MCP HTTP status poll overwrote the completed stop action");
+  await page.evaluate(() => {
+    for (const pending of window.__pendingMcpHttpRuntimeStatuses) pending.resolve(pending.result);
+    window.__pendingMcpHttpRuntimeStatuses = [];
+    window.__deferMcpHttpRuntimeStatus = false;
+  });
+  const managedMcpHttpCalls = await page.evaluate(() => ({
+    started: window.__invokeCalls.some((call) => call.command === "start_mcp_http"),
+    stopped: window.__invokeCalls.some((call) => call.command === "stop_mcp_http"),
+  }));
+  assert(!await mcpListenHost.isDisabled()
+    && managedMcpHttpCalls.started
+    && managedMcpHttpCalls.stopped,
+  "managed MCP HTTP runtime did not stop and release its configuration controls");
 
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   const auditView = mcpDialog.locator(".mcp-audit-view");
@@ -3325,8 +3415,28 @@ Host staging
   assert((await auditView.locator(".mcp-audit-export").textContent()).includes("已导出 1 条"),
     "MCP audit export result is not visible");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-audit.png`, fullPage: true });
+  await page.evaluate(() => {
+    window.__mcpHttpRuntime = {
+      phase: "running",
+      endpoint: window.__mcpHttpConfig.endpoint,
+      pid: 4343,
+      startedAt: new Date().toISOString(),
+      message: null,
+    };
+  });
   await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
   await mcpDialog.waitFor({ state: "detached" });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
+  const reopenedMcpRuntimeDialog = page.locator(".mcp-dialog");
+  await reopenedMcpRuntimeDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
+  await reopenedMcpRuntimeDialog.locator(".mcp-http-runtime", { hasText: "运行中" }).waitFor();
+  assert((await reopenedMcpRuntimeDialog.locator(".mcp-http-runtime").textContent()).includes("PID 4343"),
+    "reopening MCP Bridge did not reload the managed runtime process state");
+  await reopenedMcpRuntimeDialog.getByRole("button", { name: "停止服务", exact: true }).click();
+  await reopenedMcpRuntimeDialog.locator(".mcp-http-runtime", { hasText: "未运行" }).waitFor();
+  await reopenedMcpRuntimeDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await reopenedMcpRuntimeDialog.waitFor({ state: "detached" });
 
   await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-mcp-approval") || []).length > 0);
   const approvalIds = await page.evaluate(() => {

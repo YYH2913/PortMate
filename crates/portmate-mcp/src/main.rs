@@ -263,6 +263,7 @@ fn load_initial_store(store_path: Option<&std::path::Path>) -> Result<SessionSto
 }
 
 fn main() -> Result<()> {
+    install_parent_watchdog_from_environment()?;
     if std::env::args().any(|arg| arg == "--http")
         || std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1")
     {
@@ -270,6 +271,72 @@ fn main() -> Result<()> {
     } else {
         run_stdio_server()
     }
+}
+
+fn install_parent_watchdog_from_environment() -> Result<()> {
+    let Some(raw_parent_pid) = std::env::var_os("PORTMATE_MCP_PARENT_PID") else {
+        return Ok(());
+    };
+    let parent_pid = raw_parent_pid
+        .to_string_lossy()
+        .parse::<u32>()
+        .context("PORTMATE_MCP_PARENT_PID must be a positive process ID")?;
+    if parent_pid == 0 {
+        return Err(anyhow!(
+            "PORTMATE_MCP_PARENT_PID must be a positive process ID"
+        ));
+    }
+
+    #[cfg(unix)]
+    install_unix_parent_watchdog(parent_pid)?;
+    #[cfg(windows)]
+    install_windows_parent_watchdog(parent_pid)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn install_unix_parent_watchdog(parent_pid: u32) -> Result<()> {
+    let parent_pid = libc::pid_t::try_from(parent_pid)
+        .map_err(|_| anyhow!("PORTMATE_MCP_PARENT_PID exceeds the platform process ID range"))?;
+    // The managed sidecar is spawned directly by the desktop process. A changed PPID means
+    // the desktop exited without getting a chance to run its normal child cleanup.
+    if unsafe { libc::getppid() } != parent_pid {
+        return Err(anyhow!("managed MCP parent process is no longer available"));
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if unsafe { libc::getppid() } != parent_pid {
+            std::process::exit(0);
+        }
+    });
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_windows_parent_watchdog(parent_pid: u32) -> Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    };
+
+    let parent = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
+    if parent.is_null() {
+        return Err(anyhow!(
+            "managed MCP parent process {parent_pid} is no longer available"
+        ));
+    }
+    let parent_handle = parent as usize;
+    std::thread::spawn(move || {
+        let parent = parent_handle as windows_sys::Win32::Foundation::HANDLE;
+        let wait_result = unsafe { WaitForSingleObject(parent, INFINITE) };
+        unsafe {
+            CloseHandle(parent);
+        }
+        if wait_result == WAIT_OBJECT_0 {
+            std::process::exit(0);
+        }
+    });
+    Ok(())
 }
 
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {

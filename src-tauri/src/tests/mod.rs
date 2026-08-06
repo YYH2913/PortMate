@@ -480,6 +480,7 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
             MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
         )),
         pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
+        mcp_http_process: Arc::new(Mutex::new(McpHttpProcessRegistry::default())),
         one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
         ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
         ssh_reconnect_install_error: Arc::new(Mutex::new(None)),

@@ -69,6 +69,7 @@ pub struct AppState {
     pub(super) trigger_command_slots: Arc<tokio::sync::Semaphore>,
     pub(super) trigger_send_batch_slots: Arc<tokio::sync::Semaphore>,
     pub(super) pending_mcp_approvals: PendingMcpApprovalMap,
+    pub(super) mcp_http_process: Arc<Mutex<McpHttpProcessRegistry>>,
     pub(super) one_time_host_keys: Arc<Mutex<HashMap<String, Vec<portmate_core::TrustedHostKey>>>>,
     pub(super) ipc_publication: Arc<Mutex<IpcPublicationState>>,
     #[cfg(test)]

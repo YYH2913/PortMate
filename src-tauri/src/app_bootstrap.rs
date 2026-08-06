@@ -87,6 +87,7 @@ pub fn run() {
                     MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
                 )),
                 pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
+                mcp_http_process: Arc::new(Mutex::new(McpHttpProcessRegistry::default())),
                 one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
                 ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
                 #[cfg(test)]
@@ -160,6 +161,9 @@ pub fn run() {
             mcp_commands::preview_mcp_http_config,
             mcp_commands::save_mcp_http_settings,
             mcp_commands::rotate_mcp_http_token,
+            mcp_commands::mcp_http_runtime_status,
+            mcp_commands::start_mcp_http,
+            mcp_commands::stop_mcp_http,
             ssh_host_key_commands::list_host_keys,
             ssh_identity_commands::list_ssh_agent_identities,
             one_key_commands::list_one_keys,
@@ -220,6 +224,7 @@ pub fn run() {
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
+                    shutdown_mcp_http_runtime(state.inner());
                     shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());
                     shutdown_system_event_sink(state.inner());

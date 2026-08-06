@@ -58,4 +58,17 @@ fn remaining_command_types_keep_stable_json_contracts() {
     assert_eq!(config["clientId"], "test-client");
     assert_eq!(config["remoteAccess"], false);
     assert_eq!(config["startCommand"], "portmate-mcp --http");
+
+    let runtime = serde_json::to_value(McpHttpRuntimeStatus {
+        phase: McpHttpRuntimePhase::Running,
+        endpoint: Some("http://127.0.0.1:43123/mcp".to_string()),
+        pid: Some(4242),
+        started_at: Some(Utc::now()),
+        message: None,
+    })
+    .unwrap();
+    assert_eq!(runtime["phase"], "running");
+    assert_eq!(runtime["pid"], 4242);
+    assert_eq!(runtime["endpoint"], "http://127.0.0.1:43123/mcp");
+    assert!(runtime["startedAt"].is_string());
 }

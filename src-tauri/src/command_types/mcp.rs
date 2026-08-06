@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use portmate_core::McpHttpSettings;
 use serde::{Deserialize, Serialize};
 
@@ -21,4 +22,23 @@ pub struct McpHttpConfig {
 pub struct McpHttpTokenResponse {
     pub config: McpHttpConfig,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpHttpRuntimePhase {
+    Stopped,
+    Starting,
+    Running,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpHttpRuntimeStatus {
+    pub phase: McpHttpRuntimePhase,
+    pub endpoint: Option<String>,
+    pub pid: Option<u32>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub message: Option<String>,
 }
