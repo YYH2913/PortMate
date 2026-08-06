@@ -217,7 +217,7 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 - MCP sidecar 的 HTTP/stdio transport 已从大型 `main.rs` 拆到独立 `http_server.rs`/`stdio_server.rs`。HTTP 边界统一拥有监听地址验证、非回环显式许可、64 连接容量、socket deadline、Origin/token 门控、JSON/SSE response negotiation 和长连接 keepalive；stdio 边界统一拥有 1 MiB 消息上限、超长行有界丢弃与下一消息恢复、parse error 和有界响应写出。tools/resources/prompts、Store/IPC 刷新与共享 JSON-RPC dispatch 继续留在协议业务层。38 个 MCP 单测、根 TypeScript HTTP/stdio smoke、TypeScript 1.10.0/1.20.0/1.29.0/1.30.0 和 Python 1.9.4/1.12.4/1.15.0/1.21.2/1.23.3/1.28.1/1.29.0/2.0.0 SDK 生命周期均在拆分后通过。
 - HTTP 明确采用 MCP 允许的无状态 Streamable HTTP 模式，不签发 `Mcp-Session-Id`，因此没有伪造的 session/DELETE/replay 生命周期；官方 TypeScript SDK 四版本矩阵会启动真实 bridge，每版覆盖 initialize/initialized、GET SSE、ping、tools/resources/templates/prompts/resource read 共 9 个请求，并核对认证、双 Accept、1.10.0 无后期版本头的旧行为和 1.20.0/1.29.0/1.30.0 协商版本头。每版还会真实启动 `::1` loopback 与显式许可的 `::` all-interface listener，完成 Origin + Bearer token ping，并确认未许可的 `::` 监听会在启动时 fail-closed。
 - HTTP bridge 最多同时保留 64 个连接（含长连接 SSE）；完整请求有不可被 trickle byte 延长的 5 秒总 deadline，每次普通/SSE 写入有 5 秒 socket timeout，超额连接立即返回 `503`，普通 HTTP/1.1 响应显式关闭连接，避免未认证本地进程无限占用线程。请求头通过 `httparse` 严格解析并限制为 64 KiB/128 项；body 可使用 `Content-Length` 或唯一的 `Transfer-Encoding: chunked`，解码后仍限制为 1 MiB，chunk framing/trailer 另限制为 64 KiB/128 项并共享同一总 deadline。重复/冲突 framing、其他 transfer coding、畸形 chunk/trailer 和终止 body 后额外字节均在 JSON-RPC 分发前拒绝。重复 `Accept` 会按列表合并，Bearer scheme 不区分大小写，`q=0` 媒体类型不会被误选。
-- MCP Bridge 弹窗已提供可发现的 IPv4/IPv6 loopback/all-interface 监听预设、自定义 IP、端口、Origin、client ID、远程许可和 trusted bootstrap 配置，展示 HTTP endpoint、启动命令与 tokenRef，并提供 keyring token 生成/轮换入口。应用可直接启动和停止随包 sidecar，展示协议级就绪状态、PID、启动时间和有界故障诊断；运行期间锁定配置保存与 Token 轮换，正常退出会回收子进程，异常退出则由 sidecar 的 Unix/Windows 父进程 watchdog 收敛。授权编辑器在空 Store 中只通过显式“新建授权”创建草稿，并支持 client ID、名称、到期时间、逐次写确认、scope 和允许会话配置。
+- MCP Bridge 弹窗已提供可发现的 IPv4/IPv6 loopback/all-interface 监听预设、自定义 IP、端口、Origin、client ID、远程许可和 trusted bootstrap 配置，展示 HTTP endpoint、启动命令与 tokenRef，并提供 keyring token 生成/轮换入口。应用可直接启动和停止随包 sidecar，展示协议级就绪状态、PID、启动时间和有界故障诊断；运行期间锁定配置保存与 Token 轮换，正常退出会回收子进程，异常退出则由 sidecar 的 Unix/Windows 父进程 watchdog 收敛。watchdog 已迁入独立 `portmate-process-watchdog` crate，严格拒绝空值、非 UTF-8、非十进制、零和平台范围外 PID，使用命名线程并在 Windows 的启动失败/等待完成路径回收 HANDLE；真实 Unix 孤儿退出测试已通过，生产实现也随五个 portable crate 在 Windows GNU、Apple ARM64 和 FreeBSD x86_64 三目标门禁中通过条件编译。授权编辑器在空 Store 中只通过显式“新建授权”创建草稿，并支持 client ID、名称、到期时间、逐次写确认、scope 和允许会话配置。
 - MCP 授权变更、HTTP 配置/Token、托管进程状态/动作、审计刷新/导出按任务使用独立请求门控；重复切换标签不会重叠慢配置或状态读取，启动/停止会淘汰旧轮询，操作期间对应控件禁用，关闭弹窗会失效迟到响应。
 - 密钥管理器的 Agent 枚举、Portable Vault 状态和凭据迁移恢复检查分别串行化；瞬时读取失败保留最后确认状态，解锁/锁定/轮换会先失效旧 Vault 读取，变更后的恢复检查显式替换旧检查。
 
@@ -341,7 +341,7 @@ Docker 兼容脚本现支持最多 256 个逗号分隔精确名称的 `PORTMATE_
 - Profile 总量回归覆盖 10,000 项边界下已有 ID 更新、新 ID 拒绝、10,001 项 Store 拒绝，以及桌面 normalize 和 standalone MCP 快照加载的同一 fail-closed 规则。
 - 日志保留检查 registry 回归覆盖同 Profile 天数覆盖、禁用/显式清理和一小时遗留项回收，确保配置 churn 不会留下乘法增长的缓存 key。
 
-当前 Rust workspace 测试总数为 554：`portmate` 424、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 39、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 86 个文件、490 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
+当前 Rust workspace 测试总数为 560：`portmate` 424、`portmate-kdf` 1、`portmate-core` 55、`portmate-mcp` 39、`portmate-process-watchdog` 6、`libssh-rs` 22、`libssh-rs-sys` 1、`russh-sftp` 12，另有 2 项 `libssh-rs` 文档测试；`npm test` 另有 86 个文件、490 个前端与脚本单元测试。OpenSSH/socat/Stronghold/SQLite 集成测试在仓库内默认使用四个 libtest 线程，避免高核心数开发机过度并行造成虚假 wall-clock 超时，显式 `RUST_TEST_THREADS` 仍可覆盖。
 
 主要缺口：
 
