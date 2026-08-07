@@ -34,6 +34,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 2026-08-07 本机最终回归通过前端 93 文件/511 项单测与生产构建，locked Rust workspace 全部测试（主应用 424 项通过、1 项按设计忽略）以及 all-targets Clippy `-D warnings`。九种官方 MCP SDK 的 freshness 仍覆盖各项目最新稳定版，其中 Python 1.9.4 至 2.0.0 的 stdio/HTTP 全部通过；Tmux 3.1c/3.3a/3.5a/3.7b、三个 vttest 构建共 39 套、四个系统共 16 个 Vim/less/top/dialog 场景和 18 个 TCP/Telnet 服务端均通过。SSH/SFTP/SCP 矩阵完成 21 个服务端实现的 85 项真实用例、15 个健康故障、38 个传输故障及活动 SFTP/SCP/X/Y/ZModem 断线。Samba AD-compatible GSSAPI 的干净/缓存镜像两轮均验证 enterprise UPN canonicalization、AES-only TGT/服务票据/会话密钥，以及解密后的 PAC logon、UPN、DNS domain、SAM name 和 SID；该结果仍不宣称 Microsoft AD 已验证。Workspace Playwright 生成 39 张截图；Linux Tauri 原生 smoke 在 VMware 上验证 1440x920、669 种颜色的非空窗口、IPC credential 生命周期、Store 持久化和正常退出。
 
+续验同日再次通过 `npm test`（93 文件/511 项）、`npm run build`、`cargo fmt --all -- --check`、locked Rust workspace 测试（424 passed、1 ignored）和 all-targets Clippy；`npm run test:terminal-compat`、`npm run test:workspace-ui`、MCP SDK freshness 也均通过。实际执行 `npm run desktop:clean` 已确认 sidecar 编译、Vite 启动和 Tauri 启动顺序收敛，停止后未留下 PortMate/Vite 进程；该记录不替代 Windows/macOS、Microsoft AD、物理串口或签名发布门禁。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
