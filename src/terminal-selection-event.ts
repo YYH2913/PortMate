@@ -1,4 +1,6 @@
 import type { TerminalKeyMode } from "./terminal-key-mode";
+import { openIsolatedWebLink } from "./terminal-web-link";
+import type { TerminalWebLinkOpener } from "./terminal-web-link";
 
 export const TERMINAL_SELECTION_REQUEST_EVENT = "portmate-terminal-selection";
 export const TERMINAL_SELECTION_REQUEST_TIMEOUT_MS = 1_500;
@@ -38,7 +40,7 @@ type MouseSelectionLike = Pick<MouseEvent,
 >;
 
 type ClipboardWriter = Pick<Clipboard, "writeText">;
-type OnlineSearchWindow = (url: string, target: string, features: string) => unknown;
+type OnlineSearchWindow = TerminalWebLinkOpener;
 
 export type TerminalOnlineSearchRequest = {
   sessionId: string;
@@ -153,6 +155,6 @@ export async function executeTerminalOnlineSearch(
   const query = resolveTerminalOnlineSearchQuery(payload.selection, request.fallback);
   if (!query) throw new Error("当前终端没有可搜索的文本。");
   const url = terminalOnlineSearchUrl(query);
-  openWindow(url, "_blank", "noopener,noreferrer");
+  if (!openIsolatedWebLink(url, openWindow)) throw new Error("无法打开在线搜索窗口。");
   return { query, url };
 }

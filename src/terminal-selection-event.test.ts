@@ -134,7 +134,8 @@ describe("terminal selection events", () => {
   });
 
   it("opens online search from an exact read response without touching the clipboard", async () => {
-    const openWindow = vi.fn();
+    const popup = { opener: {} };
+    const openWindow = vi.fn((_url: string, _target: string, _features: string) => popup);
     const target = {
       dispatchEvent(event: Event) {
         const detail = (event as CustomEvent<TerminalSelectionRequestDetail>).detail;
@@ -158,5 +159,6 @@ describe("terminal selection events", () => {
     expect(openWindow).toHaveBeenCalledOnce();
     expect(new URL(openWindow.mock.calls[0][0]).searchParams.get("q")).toBe("exact selection");
     expect(openWindow.mock.calls[0].slice(1)).toEqual(["_blank", "noopener,noreferrer"]);
+    expect(popup.opener).toBeNull();
   });
 });
