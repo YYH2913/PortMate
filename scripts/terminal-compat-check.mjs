@@ -21,6 +21,16 @@ async function inspectOnlineSearchPopup(popup) {
   }));
 }
 
+async function inspectTerminalLinkPopup(popup) {
+  await popup.waitForURL((url) => url.hostname === "terminal.example.test");
+  await popup.waitForLoadState("load");
+  return popup.evaluate(() => ({
+    url: window.location.href,
+    hasOpener: window.opener !== null,
+    referrer: document.referrer,
+  }));
+}
+
 function captureAlternateScreenPty(label, command, input, marker) {
   const result = spawnSync("script", [
     "-qfec",
@@ -312,6 +322,10 @@ try {
   await context.route("https://www.google.com/**", (route) => route.fulfill({
     contentType: "text/html",
     body: "<!doctype html><title>PortMate online search test</title>",
+  }));
+  await context.route("https://terminal.example.test/**", (route) => route.fulfill({
+    contentType: "text/html",
+    body: "<!doctype html><title>PortMate terminal link test</title><script>document.body.dataset.hasOpener = String(Boolean(window.opener)); document.body.dataset.referrer = document.referrer;</script>",
   }));
   await context.addInitScript(({ initialWorkspace, initialSessions, initialEvents }) => {
     if (localStorage.getItem("portmate.compat.initialized") !== "1") {
@@ -913,6 +927,67 @@ try {
     .map((call) => call.args.text)
     .filter((text) => text.startsWith("\x1b[<")));
 
+  const terminalWebLinkUrl = "https://terminal.example.test/path?q=portmate";
+  await clearCalls();
+  await emitSessionEvent(createEvent(
+    "a-terminal-web-link",
+    "session-a",
+    `\x1b[2J\x1b[H${terminalWebLinkUrl}`,
+  ));
+  await openAndAssertSearch(terminalWebLinkUrl);
+  const terminalLinkGeometry = await page.locator('[data-pane-id="pane-a"] .terminal-host').evaluate((host) => {
+    const screen = host.querySelector(".xterm-screen")?.getBoundingClientRect();
+    const [cols, rows] = (host.dataset.terminalSize ?? "").split("x").map(Number);
+    return screen && cols > 0 && rows > 0
+      ? {
+          left: screen.left,
+          top: screen.top,
+          cellWidth: screen.width / cols,
+          cellHeight: screen.height / rows,
+        }
+      : null;
+  });
+  assert(terminalLinkGeometry
+    && terminalLinkGeometry.cellWidth > 0
+    && terminalLinkGeometry.cellHeight > 0,
+  `terminal web link geometry is unavailable: ${JSON.stringify(terminalLinkGeometry)}`);
+  const terminalLinkX = terminalLinkGeometry.left + terminalLinkGeometry.cellWidth * 10.5;
+  const terminalLinkY = terminalLinkGeometry.top + terminalLinkGeometry.cellHeight * 0.5;
+  await page.mouse.move(terminalLinkX, terminalLinkY);
+  await page.waitForTimeout(100);
+  const terminalLinkHover = await page.evaluate(({ x, y }) => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    const xterm = host?.querySelector(".xterm");
+    return {
+      pointer: host?.querySelector(".xterm-cursor-pointer") !== null,
+      renderer: host?.getAttribute("data-terminal-renderer"),
+      size: host?.getAttribute("data-terminal-size"),
+      targetClasses: document.elementsFromPoint(x, y).map((element) => element.className),
+      xtermRect: xterm?.getBoundingClientRect().toJSON(),
+      xtermPadding: xterm ? {
+        left: getComputedStyle(xterm).paddingLeft,
+        top: getComputedStyle(xterm).paddingTop,
+      } : null,
+    };
+  }, { x: terminalLinkX, y: terminalLinkY });
+  assert(terminalLinkHover.pointer,
+    `terminal web link did not activate on hover: ${JSON.stringify({ terminalLinkGeometry, terminalLinkHover })}`);
+  const terminalLinkPopupPromise = page.waitForEvent("popup");
+  await page.mouse.click(terminalLinkX, terminalLinkY);
+  const terminalLinkPopup = await terminalLinkPopupPromise;
+  const terminalWebLink = await inspectTerminalLinkPopup(terminalLinkPopup);
+  assert(new URL(terminalWebLink.url).href === terminalWebLinkUrl
+    && !terminalWebLink.hasOpener
+    && !terminalWebLink.referrer,
+  `terminal web link was not isolated: ${JSON.stringify(terminalWebLink)}`);
+  await terminalLinkPopup.close();
+  await page.bringToFront();
+  const terminalLinkWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
+  )));
+  assert(terminalLinkWrites.length === 0,
+    `terminal web link click wrote terminal input: ${JSON.stringify(terminalLinkWrites)}`);
+
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
   const desktopLayout = await page.evaluate(() => ({
     innerWidth,
@@ -1044,9 +1119,10 @@ try {
     `Terraform command completion did not expose its structured schema: ${terraformCompletion}`);
   await clearCalls();
   await page.keyboard.press("Tab");
-  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
-    call.command === "send_text" && call.args.text === "an "
-  )));
+  await page.waitForTimeout(150);
+  const terraformTabCalls = await page.evaluate(() => window.__invokeCalls);
+  assert(terraformTabCalls.some((call) => call.command === "send_text" && call.args.text === "an "),
+    `Terraform Tab completion did not send the expected suffix: ${JSON.stringify({ terraformCompletion, terraformTabCalls })}`);
   await page.keyboard.press("Enter");
 
   await page.keyboard.type("cmd /");
@@ -1379,6 +1455,7 @@ try {
     selections: { selectedWithPreference, selectedWithoutPreference },
     copiedWithPreference,
     onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
+    terminalWebLink,
     mouseTexts,
     leakedMouseTexts,
     completionPasteBoundary: {

@@ -68,6 +68,7 @@ import type { TerminalByteSelection, TerminalDisplayMode } from "./terminal-byte
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
+import { openTerminalWebLink } from "./terminal-web-link";
 import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 
 type TerminalCanvasProps = {
@@ -752,7 +753,9 @@ export default function TerminalCanvas({
     term.loadAddon(serialize);
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      openTerminalWebLink(event, uri);
+    }));
     term.loadAddon(new ClipboardAddon(undefined, createWriteOnlyClipboardProvider(navigator.clipboard)));
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -1022,7 +1025,8 @@ export default function TerminalCanvas({
     flushInputRef.current = flushInput;
     const inputDisposable = term.onData((text) => {
       if (keyModeRef.current !== "remote") return;
-      if (!mouseReportingRef.current && isTerminalMouseReport(text)) return;
+      if (isTerminalMouseReport(text)
+        && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
       updateCompletionInput(text);
       dismissOneKeyPrompt();
       pendingInputRef.current += text;
