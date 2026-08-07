@@ -21,8 +21,8 @@ async function inspectOnlineSearchPopup(popup) {
   }));
 }
 
-async function inspectTerminalLinkPopup(popup) {
-  await popup.waitForURL((url) => url.hostname === "terminal.example.test");
+async function inspectIsolatedPopup(popup, hostname) {
+  await popup.waitForURL((url) => url.hostname === hostname);
   await popup.waitForLoadState("load");
   return popup.evaluate(() => ({
     url: window.location.href,
@@ -326,6 +326,10 @@ try {
   await context.route("https://terminal.example.test/**", (route) => route.fulfill({
     contentType: "text/html",
     body: "<!doctype html><title>PortMate terminal link test</title><script>document.body.dataset.hasOpener = String(Boolean(window.opener)); document.body.dataset.referrer = document.referrer;</script>",
+  }));
+  await context.route("https://trigger.example.test/**", (route) => route.fulfill({
+    contentType: "text/html",
+    body: "<!doctype html><title>PortMate trigger link test</title>",
   }));
   await context.addInitScript(({ initialWorkspace, initialSessions, initialEvents }) => {
     if (localStorage.getItem("portmate.compat.initialized") !== "1") {
@@ -975,7 +979,7 @@ try {
   const terminalLinkPopupPromise = page.waitForEvent("popup");
   await page.mouse.click(terminalLinkX, terminalLinkY);
   const terminalLinkPopup = await terminalLinkPopupPromise;
-  const terminalWebLink = await inspectTerminalLinkPopup(terminalLinkPopup);
+  const terminalWebLink = await inspectIsolatedPopup(terminalLinkPopup, "terminal.example.test");
   assert(new URL(terminalWebLink.url).href === terminalWebLinkUrl
     && !terminalWebLink.hasOpener
     && !terminalWebLink.referrer,
@@ -987,6 +991,52 @@ try {
   )));
   assert(terminalLinkWrites.length === 0,
     `terminal web link click wrote terminal input: ${JSON.stringify(terminalLinkWrites)}`);
+
+  const triggerWebLinkUrl = "https://trigger.example.test/search?q=portmate";
+  const pagesBeforeTrigger = context.pages().length;
+  await clearCalls();
+  await page.evaluate((value) => window.__emitTauriEvent("portmate-trigger-effect", {
+    sessionId: "session-a",
+    triggerId: "trigger-link",
+    triggerLabel: "Lookup",
+    kind: "custom-link",
+    value,
+  }), triggerWebLinkUrl);
+  const triggerLinkNotice = page.locator(".notice-dialog", { hasText: triggerWebLinkUrl });
+  await triggerLinkNotice.waitFor();
+  await page.waitForTimeout(100);
+  assert(context.pages().length === pagesBeforeTrigger,
+    "custom-link trigger opened a popup without explicit user confirmation");
+  await page.screenshot({ path: `${screenshotPrefix}-trigger-link.png`, fullPage: true });
+  const triggerLinkPopupPromise = page.waitForEvent("popup");
+  await triggerLinkNotice.getByRole("button", { name: "打开链接" }).click();
+  const triggerLinkPopup = await triggerLinkPopupPromise;
+  const triggerWebLink = await inspectIsolatedPopup(triggerLinkPopup, "trigger.example.test");
+  assert(new URL(triggerWebLink.url).href === triggerWebLinkUrl
+    && !triggerWebLink.hasOpener
+    && !triggerWebLink.referrer,
+  `trigger web link was not isolated: ${JSON.stringify(triggerWebLink)}`);
+  await triggerLinkPopup.close();
+  await page.bringToFront();
+  await triggerLinkNotice.waitFor({ state: "detached" });
+  const triggerLinkWrites = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "send_text" || call.command === "send_bytes" || call.command === "run_command"
+  )));
+  assert(triggerLinkWrites.length === 0,
+    `trigger web link wrote terminal input: ${JSON.stringify(triggerLinkWrites)}`);
+
+  await page.evaluate(() => window.__emitTauriEvent("portmate-trigger-effect", {
+    sessionId: "session-a",
+    triggerId: "trigger-unsafe-link",
+    triggerLabel: "Unsafe",
+    kind: "custom-link",
+    value: "javascript:alert(1)",
+  }));
+  const unsafeTriggerNotice = page.locator(".notice-dialog", { hasText: "javascript:alert(1)" });
+  await unsafeTriggerNotice.waitFor();
+  assert(await unsafeTriggerNotice.getByRole("button", { name: "打开链接" }).count() === 0,
+    "unsafe custom-link trigger exposed an open action");
+  await unsafeTriggerNotice.getByRole("button", { name: "确定" }).click();
 
   await page.screenshot({ path: `${screenshotPrefix}-desktop.png`, fullPage: true });
   const desktopLayout = await page.evaluate(() => ({
@@ -1114,6 +1164,10 @@ try {
   await clearCalls();
   await page.keyboard.type("terraform pl");
   await activeCompletion.waitFor();
+  await page.waitForFunction(() => window.__invokeCalls
+    .filter((call) => call.command === "send_text")
+    .map((call) => call.args.text)
+    .join("") === "terraform pl");
   const terraformCompletion = await activeCompletion.textContent();
   assert(terraformCompletion?.includes("plan") && terraformCompletion.includes("terraform [全局选项]"),
     `Terraform command completion did not expose its structured schema: ${terraformCompletion}`);
@@ -1456,6 +1510,7 @@ try {
     copiedWithPreference,
     onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
     terminalWebLink,
+    triggerWebLink,
     mouseTexts,
     leakedMouseTexts,
     completionPasteBoundary: {
@@ -1481,6 +1536,7 @@ try {
     screenshots: [
       `${screenshotPrefix}-completion-below.png`,
       `${screenshotPrefix}-normal-cursor.png`,
+      `${screenshotPrefix}-trigger-link.png`,
       `${screenshotPrefix}-desktop.png`,
       `${screenshotPrefix}-mobile.png`,
       `${screenshotPrefix}-mobile-completion.png`,

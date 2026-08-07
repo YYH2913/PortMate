@@ -15,15 +15,12 @@ export function normalizeTerminalWebLink(value: string): string | null {
   }
 }
 
-export function openTerminalWebLink(
-  event: Pick<MouseEvent, "preventDefault" | "stopImmediatePropagation">,
+export function openIsolatedWebLink(
   value: string,
   openWindow: TerminalWebLinkOpener = (url, target, features) => window.open(url, target, features),
 ): boolean {
   const url = normalizeTerminalWebLink(value);
   if (!url) return false;
-  event.preventDefault();
-  event.stopImmediatePropagation();
   try {
     const popup = openWindow(url, "_blank", "noopener,noreferrer");
     if (popup) popup.opener = null;
@@ -31,4 +28,15 @@ export function openTerminalWebLink(
   } catch {
     return false;
   }
+}
+
+export function openTerminalWebLink(
+  event: Pick<MouseEvent, "preventDefault">,
+  value: string,
+  openWindow: TerminalWebLinkOpener = (url, target, features) => window.open(url, target, features),
+): boolean {
+  const url = normalizeTerminalWebLink(value);
+  if (!url) return false;
+  event.preventDefault();
+  return openIsolatedWebLink(url, openWindow);
 }

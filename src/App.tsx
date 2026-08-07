@@ -176,7 +176,7 @@ type SessionSettingsMode = "create" | "edit";
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "session-import" | null;
 type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
-type NoticeState = { title: string; message: string } | null;
+type NoticeState = { title: string; message: string; link?: string } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
@@ -1245,6 +1245,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setNotice({
         title: effect.kind === "custom-link" ? `触发链接 · ${effect.triggerLabel}` : effect.triggerLabel,
         message: effect.value,
+        link: effect.kind === "custom-link" ? effect.value : undefined,
       });
     })
       .then((nextUnlisten) => {
@@ -3968,7 +3969,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {notice && (
         <Suspense fallback={null}>
-          <LazyNoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />
+          <LazyNoticeDialog title={notice.title} message={notice.message} link={notice.link} onClose={() => setNotice(null)} />
         </Suspense>
       )}
       {!screenLock && activeMcpApproval && (

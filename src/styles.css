@@ -8683,12 +8683,17 @@ fieldset label {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 18px 16px;
 }
 
 .notice-actions button {
+  display: inline-flex;
   min-width: 92px;
   height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid rgba(94, 234, 212, 0.55);
   border-radius: 4px;
   background: rgba(94, 234, 212, 0.12);
