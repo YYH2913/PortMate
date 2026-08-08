@@ -1,672 +1,220 @@
-# PortMate
+<p align="center">
+  <img src="src-tauri/icons/128x128.png" width="96" height="96" alt="PortMate logo">
+</p>
 
-PortMate is a Rust-first terminal workbench for serial, SSH, shell, Telnet, raw TCP, file-transfer, and MCP-controlled co-debugging workflows.
+<h1 align="center">PortMate</h1>
 
-This repository currently contains the active desktop implementation slice:
+<p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
-- Tauri v2 + React/TypeScript desktop shell
-- WindTerm-style workbench UI with persistent, independently toggleable resource/file/session/history/send/status panes and modal settings dialogs
-- Per-view Remote/Local/Normal/Command keyboard modes with Vim-style scrollback navigation and a local command editor
-- WindTerm-style local command completion for commands, options, subcommands, explicit history, and Quick Commands
-- WindTerm-style Quick Command manager and persistent Quick Bar for bounded insert or execute snippets
-- WindTerm-style OneKeys manager for encrypted Account/SSH credentials, bound public-key identities, session binding, terminal-prompt completion, and explicit injection
-- Shared Rust domain model for sessions, logs, transfers, triggers, Sysmon snapshots, MCP grants, SSH identity policy, and profile-scoped host keys
-- Profile-level SSH host key isolation with `hostKeyAlias`, independent from system `~/.ssh/known_hosts`
-- Host Key Manager filtering, grouped inspection, field-safe concurrent editing, batch delete/copy, persisted `lastSeen`, and Profile/Store mirror synchronization
-- Real SSH, local Shell PTY, raw TCP, Telnet, serial, SFTP, SCP, and Tmux session/window/pane management, layout, and synchronization paths in the Tauri backend
-- Standalone serial analyzer window with live/persistent Raw-log sources, capture/delimiter/fixed-length/idle-gap framing, RFC 1055 SLIP, COBS, and Modbus RTU decoding, bookmarks, filtering, paging, and exact source-frame export
-- SSH password/public-key/keyboard-interactive/ssh-agent authentication, with profile-first identity ordering
-- Profile-level HTTP CONNECT and SOCKS5 proxies for SSH, Tmux, TCP, and Telnet, with optional Basic or username/password authentication
-- Profile-configurable TLS for raw TCP and Telnet, with system-CA verification, an optional server-name override, and an explicit insecure certificate override
-- Local, remote reverse, and dynamic SOCKS5 SSH tunnel runtime, local/remote Sysmon snapshots, SFTP-backed file manager, trigger actions, and transfer task tracking
-- A persistent current-session Sysmon sidebar with process, disk, network, and trend drill-down
-- SSH health reports covering the primary terminal channel, transport keepalive, exec-channel round trips, optional SFTP initialization, backend, and authentication method
-- SSH `profile-vault` private keys, optional saved passwords/passphrases, and the live MCP IPC token stored in a persistent OS keyring with only `secretRef` metadata persisted in files/SQLite
-- SQLite-backed local session/profile/host-key persistence in the desktop app data directory, with a private atomic JSON compatibility export
-- Standalone `portmate-mcp` stdio bridge exposing MCP resources, tools, prompts, and local IPC control over JSON-RPC
+<p align="center">
+  <a href="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml"><img alt="Native CI" src="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml/badge.svg"></a>
+  <a href="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml"><img alt="MCP SDK Freshness" src="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href=".nvmrc"><img alt="Node.js 22.20.0" src="https://img.shields.io/badge/Node.js-22.20.0-339933?logo=node.js&amp;logoColor=white"></a>
+</p>
 
-## Workspace
+> [!IMPORTANT]
+> PortMate 当前处于 **alpha** 阶段。仓库内可在 Linux、Docker 和浏览器环境复现的实现与兼容矩阵已经建立，但 Windows/macOS 原生安装包、真实 Microsoft AD、物理串口设备和发布签名仍需要外部环境完成最终验证。请勿将当前构建直接用于无人值守的生产关键链路。
 
-```text
-crates/portmate-core   Shared domain model, SSH trust policy, tests
-crates/portmate-mcp    MCP stdio bridge for external AI/MCP hosts
-src                    React workbench UI
-src-tauri              Tauri desktop shell and backend commands
-```
+## PortMate 是什么
 
-The Tauri backend keeps only shared imports, five boundary registry includes, public re-exports,
-and the test harness in `src-tauri/src/lib.rs`. The `backend_application.rs`,
-`backend_automation.rs`, `backend_security.rs`, `backend_storage.rs`, and
-`backend_transport.rs` registries keep the existing crate-root module paths stable while separating
-module ownership by responsibility; `app_bootstrap.rs` owns application startup, command registration, and
-shutdown, while `tests/mod.rs` owns the shared test harness and test-module registration.
-`serial_capture.rs` owns bounded Serial
-capture frames, history snapshots, and the per-session registry. `ssh_security.rs` owns ssh-agent signing,
-authentication filtering, one-shot trust, TOFU persistence, and Host Key observation updates;
-`ssh_health.rs` owns the three-stage health command and its stable report contract.
-`one_key_prompt.rs` owns terminal escape cleanup, credential-prompt recognition, and event-freshness
-validation. `profile_normalization.rs` owns terminal/Profile metadata cleanup, legacy connection
-defaults, and trust/authentication normalization. `state_snapshot.rs` owns Store and Portable Stronghold file locks, SHA-256 snapshot
-versions, cross-process stale-write checks, and Stronghold commit/rekey guards. `sqlite_schema.rs`
-owns the SQLite tables, indexes, schema version, and backward-compatible column migrations;
-`sqlite_mirror.rs` owns typed profile/runtime mirrors and incremental event, audit, timeline, and
-Sysmon reconciliation; `sqlite_store.rs` owns SQLite loading, FULL-sync transactions, migration
-checkpoints, revision updates, and post-commit read-back verification; `migration_journal_store.rs`
-owns credential-migration journal transitions, atomic metadata writes, and read-back verification;
-`migration_recovery.rs` owns before/after disposition, conflict freezing, target rollback, and
-source cleanup. `secret_provider.rs` owns persistent native-keyring initialization, Native/Portable
-routing, shared secret CRUD, and credential-migration provider batches; `portable_vault.rs` owns
-Stronghold context, salt/KDF/open/rekey, single and batch CRUD, and failed-commit rollback. Proxy,
-Telnet, Tmux protocol parsing, and app-data migration already have their own modules as well.
-`store_normalization.rs` owns legacy JSON loading, Profile/session ID remapping, orphan cleanup,
-MCP/OneKey normalization, duplicate SQLite mirror-key repair, interrupted runtime/transfer
-convergence, and loaded-history bounds. `store_persistence.rs` owns Store initialization, CAS
-version caching, journal metadata transactions, SQLite/JSON write orchestration, post-commit
-fingerprint verification, and runtime Store persistence.
+PortMate 是一个以终端为核心的 Tauri v2 桌面应用。它把 SSH、Shell PTY、串口、Telnet、Raw TCP、Tmux、文件传输、隧道、日志和系统监控放在同一个可分屏工作区中。
 
-## Development
+项目的一个重点是会话级身份与信任隔离：SSH Host Key、客户端身份、认证顺序和 Jump Host 策略都属于具体 Profile，不依赖系统全局 `~/.ssh/known_hosts`。同一 IP 和端口对应不同设备、重装系统或实验室板卡时，可以分别保存和审查信任关系。
+
+PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允许外部 MCP Host 在用户授权范围内读取会话状态、查询日志或执行控制动作。
+
+## 主要功能
+
+| 领域 | 能力 |
+| --- | --- |
+| 会话与协议 | SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux；TCP/Telnet 支持 TLS，SSH/Tmux/TCP/Telnet 支持 HTTP CONNECT 与 SOCKS5 代理 |
+| 终端工作区 | 多标签、递归分屏、跨分组拖放、独立窗口、布局恢复、Insert/Normal 模式、对应光标、搜索、行跳转、文本/Hex/二分视图 |
+| 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、OneKeys、自由输入、同步输入 |
+| SSH 安全 | Profile 级 Host Key、TOFU 与变更阻断、Host/Client Key Manager、多级 Jump Host、ssh-agent、密码/公钥/keyboard-interactive，以及 Linux libssh GSSAPI 认证 |
+| 文件与传输 | SFTP/SCP 文件管理、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
+| 运维与诊断 | SSH 健康检测、local/remote/dynamic tunnel、Sysmon 侧栏与历史趋势、结构化日志、触发器、会话诊断包 |
+| 串口工具 | 常用波特率、DTR/RTS/Break、文本与 Hex 收发、精确字节捕获、独立分析器、SLIP/COBS/Modbus RTU 解码 |
+| MCP | stdio 与 Streamable HTTP、细粒度授权、会话范围、写操作确认、审计、Token 轮换和托管 sidecar 生命周期 |
+
+## 当前状态
+
+- 桌面目标平台：Linux、Windows、macOS。
+- 当前主要实机开发与验收环境：Linux + VMware。
+- 终端基于 `@xterm/xterm` 6，包含 Search、Serialize、Unicode 11、Clipboard、Web Links、Fit 和按需 WebGL 支持。
+- SSH/SFTP/SCP、Telnet/TCP、vttest、全屏程序和多个 Tmux 版本均有自动化兼容矩阵。
+- MCP 回归覆盖 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 官方 SDK。
+- Linux DEB、RPM 和 AppImage 已有本地打包与包内生命周期门禁；Windows 和 macOS 仍需原生 runner 的成功证据。
+
+详细实现进度和未完成边界见 [PROGRESS.md](PROGRESS.md)，正式发布要求见 [RELEASE.md](RELEASE.md)。
+
+## 快速开始
+
+### 前置环境
+
+- Git
+- Node.js `>= 22.12.0`，仓库 `.nvmrc` 固定已验证版本 `22.20.0`
+- Rust stable toolchain
+- 当前平台所需的 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+Linux 构建桌面应用时通常还需要 WebKitGTK、GTK3、libssh、Kerberos、udev 和系统托盘相关开发包。GitHub Actions 中的完整 Ubuntu 依赖列表可参考 [.github/workflows/native-ci.yml](.github/workflows/native-ci.yml)。
+
+### 启动桌面应用
 
 ```bash
+git clone https://github.com/YYH2913/PortMate.git
+cd PortMate
+
 nvm use
-npm install
-npm run dev
+npm ci
+npm run desktop:clean
 ```
 
-PortMate requires Node `>=22.12.0`; `.nvmrc` pins the verified `22.20.0` toolchain. The browser
-preview runs at `http://127.0.0.1:1420`. It uses empty local state outside Tauri and the Tauri
-command backend inside the desktop app.
-
-The desktop and terminal ship the complete JetBrains Mono 2.304 Regular, SemiBold, and Bold webfonts
-from the upstream project under SIL OFL 1.1. The bundled files include terminal box-drawing,
-Powerline, arrow, and mathematical glyphs instead of relying on a reduced web subset or a font
-installed on the host. Existing profiles which still contain either former PortMate default font
-stack are migrated to the bundled font; explicitly configured custom stacks remain unchanged.
-
-The main window never hydrates authoritative sessions from browser storage. It writes a versioned
-session-summary cache only so detached terminals and the serial analyzer can paint a useful first
-frame while their backend refresh starts. Those windows accept the current v1 envelope and the
-legacy array format only after validating the complete Profile, Runtime, and all six connection
-shapes. Unknown versions, duplicate IDs, incomplete nested data, Profile/Runtime mismatches, invalid
-JSON, or unavailable storage are treated as an empty cache instead of crashing a window; the backend
-Store remains authoritative.
-
-Workspace layout, keymap, Quick Commands, synchronized-input preferences, and terminal preferences
-also treat browser storage as best-effort. A denied or exhausted localStorage keeps the current
-in-memory choices usable and no longer throws from a React effect or explicit settings save. Terminal
-keyboard mode remains view-local while the app is running, but a restored workspace always starts in
-Insert mode so stale Normal state cannot capture the first command after launch.
-In the desktop app, detached terminal and serial-analyzer windows likewise retain a bounded,
-validated physical position and content size. A saved geometry that no longer intersects an available
-display work area falls back to a cascaded default instead of reopening off-screen.
-
-## How To Use The Current Build
-
-1. Start the desktop app:
-
-   ```bash
-   npm run desktop:clean
-   ```
-
-   This launcher removes known snap-injected GTK/WebKit paths while preserving unrelated Rust,
-   compiler, SDK, signing, and PortMate environment variables on every platform. Unix keeps an
-   explicitly configured non-snap `XDG_DATA_DIRS`, restores the pre-snap value when available, or
-   falls back to user and system share directories. On Linux, macOS, and Windows it releases a stale
-   Vite listener only when OS process metadata proves that its command belongs to this PortMate
-   checkout. A listener that exits during cleanup is treated as already stopped; a different process
-   on port `1420` is reported by PID and left untouched. Use `npm run desktop` when cleanup is not
-   needed.
-
-2. The app starts empty. No sample sessions, logs, transfers, host keys, or MCP audit rows are injected.
-
-3. Use the four top-menu groups:
-
-   - `会话`: create, import literal OpenSSH config entries, PuTTY exports, or local Shell lists, edit, connect, disconnect, and duplicate a session; the resource context menu also deletes a Profile with explicit retention boundaries
-   - `终端`: search, go to line, selection/key modes, synchronized/free input, and text export
-   - `工作区`: toggle resource/file/history/sender dock views, Quick Bar, status bar, and layout restore
-   - `工具`: transfers, terminal settings, OneKeys, quick commands, forwarding, Tmux, Sysmon, serial analysis, triggers, logs, keys, and MCP
-
-   Resource, file, history, and sender open in left, right, and bottom docks that can remain visible
-   together. Panels in the same dock remain visible as independent stacked views; drag a view title
-   to reorder it or move it to another edge target. Drag a dock boundary to resize it, use the separator arrow keys for precise
-   adjustment, or double-click it to restore the content-aware default. Visibility, tab order, active
-   tabs, dock placement, and custom sizes persist across restarts, while closing every optional panel
-   returns the full canvas to the terminal.
-
-4. Open settings from any settings-oriented menu item, for example `会话 -> 会话设置` or `工具 -> 终端设置`.
-
-5. `会话 -> 新建会话` opens a compact quick-connect surface with icon tabs for Shell, SSH, Tmux, Telnet, TCP, and Serial. It initially focuses the protocol target, shows only the fields needed to connect, keeps each protocol draft while switching tabs, and disables `连接` until the target and numeric bounds are valid while still allowing `仅保存`. SSH and Tmux expose host/IP, port, and username as separate fields instead of requiring a combined `user@host` target. Shell arguments are edited as ordered `argv` entries instead of a reparsed command-line string, preserving whitespace, quotes, and empty arguments; a profile accepts at most 128 arguments of 4,096 Unicode characters each. Name, group, and tag organization remains visible in the `会话信息` section; `高级设置` opens the complete protocol-aware editor and can return to the same quick draft. Existing profiles open that advanced editor directly with one session-type selector and one configuration selector. `工具 -> 终端设置` uses one horizontal page strip and a full-width settings surface.
-
-   - Session name, group, tags. Names and groups are bounded to 128/256 Unicode characters; a
-     Profile keeps at most 32 unique tags of 64 characters each. Control characters are removed on
-     input and Store load, and the comma-separated tag editor preserves an in-progress delimiter so
-     multiple tags can be entered normally.
-   - SSH host, port, username, `HostKeyAlias`, host key policy, trust scope, identity file, auth order, agent and forwarding behavior
-   - SSH profile-vault private key import plus optional saved password/passphrase into the system keyring; saved profiles keep only generated `secretRef` values
-   - SSH/Tmux/TCP/Telnet profile proxy settings for HTTP CONNECT or SOCKS5, with optional HTTP Basic or SOCKS5 username/password authentication. Proxy passwords are transactionally written to the native keyring or unlocked Stronghold fallback and only `secretRef` metadata is persisted. The SOCKS5 client rejects non-zero RFC 1928 reserved fields and empty domain-form bound addresses instead of accepting a malformed success response. SSH host-key scans use the same route as the real connection; with Jump Hosts, the proxy carries only the first physical hop and later hops continue through SSH `direct-tcpip` channels. Every later-hop and final-target channel open is bounded to 12 seconds during a host-key scan and to the live connection's setup timeout, currently 20 seconds in production. A timed-out russh channel confirmation requests a disconnect on its owning Jump Host session before the remaining chain is closed, preventing the cancelled confirmation receiver from leaving an orphan channel.
-   - Serial port, baud rate, parity, flow control, DTR/RTS, reconnect delay, and optional receive-idle timeout
-   - Shell/TCP/Telnet/Tmux fields when those session types are selected
-   - Telnet BINARY and NAWS negotiation switches. Both default on for legacy and new profiles; accepted BINARY directions independently control inbound NVT CR decoding and outbound newline conversion, while NAWS sends the latest terminal dimensions after negotiation and every later resize. TERMINAL-TYPE replies use the profile's configured terminal type.
-   - SSH/TCP/Telnet/Serial reconnect keeps a disconnected runtime in `Reconnecting` and retries in the background until the user closes or manually reconnects the session. SSH/Tmux, TCP/Telnet, and Serial reload and normalize the latest saved profile before every retry; SSH endpoint/authentication/health edits, TCP/Telnet host/port or protocol edits, and Serial port/line/health edits are not frozen at disconnect time. A connection-setting change during an in-flight attempt invalidates that result, while disabling reconnect or changing the transport stops the pending worker. All three transports read the latest reconnect flag and 100-60,000 ms delay while waiting, so disabling reconnect or changing the delay affects the pending worker without waiting for an old deadline. SSH/Tmux profiles also persist a protocol KeepAlive toggle, 1-3,600 second interval, and 0-20 unanswered-message limit; `0` keeps sending keepalives without disconnecting for missed replies. They can independently leave OS TCP KeepAlive at the system default, enable it, or disable it on the direct or first Jump Host socket, with default 1,000 ms reconnect delay and 30/3 protocol KeepAlive thresholds. TCP/Telnet profiles persist an OS keepalive toggle, idle time, probe interval, and retry count, defaulting to a 1,000 ms reconnect delay and 30/10/3 keepalive values. Serial profiles persist an optional 1-86,400 second receive-idle timeout, defaulting to a 1,000 ms reconnect delay and disabled/60 seconds. Serial idle monitoring observes incoming bytes without writing protocol-agnostic heartbeat data to the device. Legacy profiles receive all defaults automatically.
-   - Trigger matching and actions for timeline marks, notifications, highlights, local commands, send-text automation, custom links, and sound
-   - Terminal type, font, rows, cols, scrollback, and four validated Profile themes. Font, size,
-     scrollback, and theme changes apply to every mounted view of the saved Profile without
-     recreating XTerm or discarding its buffer. A successful desktop save broadcasts the committed
-     session summary to detached Tauri windows; browser preview windows consume the shared session
-     cache storage event, with periodic refresh retained as a runtime-state fallback. Rows are
-     bounded to 1-512, columns to 1-1,024, scrollback to 0-10,000,000, and font size to 6-72;
-     terminal and font-family names are bounded and reject control characters before XTerm or a PTY
-     consumes them.
-   - Synchronized-input protocol filters, newline mode, inter-target delay, and explicit batch-send prefix/suffix
-   - Logging formats, redaction, path template
-   - Transfer protocols
-   - Workbench/global preferences modeled after WindTerm settings
-
-   The session dialog exposes each persisted Profile capability once: common identity, terminal, logging, triggers, transfer, and the selected protocol's connection fields. It does not maintain a parallel frontend-only session preference store, and closing or cancelling the dialog does not write hidden `portmate.sessionPrefs.*` values. Jump Host credentials and Profile Vault private keys created inside the dialog remain tracked as staged records: all close/save controls are disabled while a Secret write is unresolved, cancellation deletes every staged ref, and a successful Profile save retains only refs present in the committed normalized Profile while reclaiming dropped ones. Cleanup failures keep the dialog open for an explicit retry instead of forgetting the orphan. On narrow screens, protocol selection remains a two-row tab control while the page list becomes a compact horizontal strip.
-
-6. Click `保存` or `保存并连接`. SSH credentials are requested in a separate connection dialog, so the same saved profile can be reused with a different username/password/passphrase or a bound SSH OneKey on the next connection. SSH private-key paths are configured under `SSH/Tmux -> 公钥`; passphrases are requested only at connect time. When password/passphrase persistence is selected, every newly created Secret remains provisional until the Profile commit succeeds: a later Secret-write failure or Profile-save failure reclaims all unreferenced provisional records, while a committed Profile keeps them even if transport connection then fails. A failed Profile save also restores the last authoritative Profile in the current UI instead of retaining deleted provisional refs.
-
-SSH/Tmux authentication follows the Profile's configured `authOrder`. When `recordSuccess` is enabled,
-the successful method is persisted with the connected state and is tried first next time only while
-that method remains in `authOrder`. Removing a method or disabling success recording clears the stale
-hint during frontend and Store normalization, so historical data cannot re-enable an authentication
-method that the current Profile excludes. Automatic reconnect applies the same rule. The complete
-ordered authentication sequence shares one 12-second budget during a Jump Host host-key scan and
-one 20-second setup budget for each live Jump Host or target; timeout disconnects the current SSH
-handle and closes the already established Jump Host chain. After authentication, opening the
-terminal channel, requesting its PTY/environment/agent forwarding/shell, and sending the initial
-Tmux attach command share a separate 20-second budget with the same pre-runtime cleanup. On an
-already connected runtime, SFTP initialization and the channel/exec setup used by SCP, remote copy,
-Tmux control mode, tunnel health, and Sysmon have a 10-second total setup budget; shorter helper
-command deadlines include setup time. Setup timeout disconnects the owning session so the normal
-disconnect/reconnect path can reconcile it. The compact
-settings menu exposes all 15 ordered non-empty subsets of public-key, keyboard-interactive, and
-password authentication; an existing Profile containing an external or legacy method keeps a visible
-`当前配置` entry instead of rendering an empty selector or silently rewriting it. The adjacent
-`记住成功方式` toggle controls `recordSuccess` directly and clears the draft hint when disabled.
-
-Saved sessions, runtime state, host-key trust decisions, audit rows, and recent logs are written to the desktop app data directory as `portmate-store.sqlite3`. The SQLite store keeps the original JSON snapshot for compatibility and mirrors sessions, runtimes, events, transfers, host keys, MCP grants, audit records, timeline marks, and Sysmon snapshots into normalized query tables. Event, audit, timeline, and Sysmon mirrors are synchronized incrementally by primary key inside the same transaction as the authoritative snapshot, including deletion of trimmed rows; small mutable tables are atomically rebuilt. A `portmate-store.json` compatibility export is also maintained for inspection and older tooling. Terminal/global preferences are stored locally by the frontend. PortMate 0.1 changes the bundle identifier from the macOS-conflicting `dev.portmate.app` to `dev.portmate.desktop`; startup atomically renames the legacy app-data directory when the new directory is absent or empty, and refuses to merge two non-empty stores.
-
-Live terminal resize requests reach SSH, Shell PTY, or negotiated Telnet NAWS first. Their persisted Profile `cols`/`rows` metadata then uses a copy-on-write Store commit, so a failed snapshot write reports the failure without replacing live memory with dimensions that were never persisted.
-
-Copy-on-write Store mutations distinguish a definite failed write from a post-commit verification error. After a reported save failure, PortMate compares the complete intended Store with the authoritative disk snapshot; an exact match accepts the commit and repairs the cached snapshot version, a mismatch keeps the previous live state, and unreadable evidence freezes further writes until restart instead of guessing which state won. Profile save/delete, OneKey save/delete, and Client Identity edit/rotate/delete all use this verified transaction boundary, so newly written credential Secrets are reclaimed only after a definite failed commit and are never deleted from beneath a disk snapshot that already references them.
-
-Automatic SSH target and Jump Host verification commits each observed TOFU trust record together with its matching system event while holding the Store lock. A definite persistence failure removes only that transaction's queued event and restores the prior trust state before the event worker can publish it; an already committed snapshot is accepted only after exact disk verification. Host-key observations, rejection diagnostics, scans, and remote-forward routing also fail closed with an SSH protocol error when their shared handler state is poisoned instead of panicking the desktop process or accepting a key without authoritative state.
-
-Session open persists both the initial `Connecting` state and the final `Connected` state with their system events through the same tracked transaction boundary. If final persistence cannot be confirmed after SSH, Shell, TCP/Telnet, or Serial has installed a runtime, PortMate closes and removes only that exact runtime ID, rolls back the uncommitted lifecycle events, and reports the connection failure instead of leaving an invisible live transport. Failed SSH finalization also restores consumed one-time host-key records without duplicating a concurrently re-added key.
-
-Desktop and MCP open, close, and Profile-delete operations share one asynchronous lifecycle lane per `(Store, Profile)` while different Profiles remain independent. Every open registers its cancellation token before waiting for that lane; close and delete signal all active or queued tokens before they wait. SSH and TCP/Telnet handshakes select on the signal, and a cancelled partially installed transport is cleaned inside the lane before close writes the final `Disconnected` state. Shell and Serial opens recheck the same token immediately after installation. This preserves the connecting-state cancel action without allowing an older close to overwrite a later successful open. Manual SSH close and runtime replacement additionally wait up to five seconds for the registered channel reader to flush its final event batch and leave the old runtime before returning. After transport shutdown, a reported save error is read back against the complete intended `Disconnected` Store; an exact match accepts the committed snapshot. A definite or unverifiable persistence failure reports that exact partial failure, retains the local disconnect truth in memory, and makes the frontend reload the authoritative summary.
-
-A newly opened Serial reader waits behind a condition-variable gate until the `Connected` snapshot commits, so receive-idle timing cannot expire while SQLite is still busy finalizing the connection. Commit failure cancels the gate without publishing a disconnect, while reconnect readers start immediately after their runtime ownership check succeeds.
-
-Automatic SSH/Tmux, TCP/Telnet, and Serial reconnect transitions happen after the live transport has closed, connected, failed, or been superseded. Every corresponding `Reconnecting`, `Connected`, `Disconnected`, or `Error` snapshot therefore uses the applied-state read-back boundary: a reported save error is accepted only when the complete intended Store is already authoritative on disk, while a definite or unverifiable failure retains the actual runtime truth in memory and records a persistence diagnostic instead of inventing the opposite transport state.
-
-Outbound user/control bytes, inbound stream batches, trigger effects and results, process exit/read diagnostics, and connection-failure events use that same applied-state boundary because their wire, process, or UI effect cannot be rolled back. The normal path still performs one Store save without an extra read. Only a reported save error loads the authoritative snapshot; an exact match repairs the cached version, while a real or unverifiable failure keeps the event in memory with its logging diagnostic and never turns a completed transport write into a retryable command failure.
-
-Transfer queue and `Running` transitions commit the task state and matching system event through the same tracked Store transaction before the worker is allowed to advance. A failed queue commit removes only that task's cancellation handle, while a failed `Running` commit restores the queued snapshot and discards its uncommitted start event. Progress, cancellation, and completion updates happen after file or runtime effects and therefore retain their external truth in memory when persistence fails. A reported save error is read back before it can abort progress; an exact committed snapshot repairs the cached version and lets the transfer continue, while a definite failure preserves the applied byte count for the terminal diagnostic. Cancellation remains accepted after its runtime flag is raised even when the following snapshot write fails, and a racing finish callback cannot overwrite `Cancelled` with `Completed`. On startup, persisted `Queued` or `Running` tasks from a previous shutdown are converted to terminal failures with an interruption reason and finish timestamp instead of remaining permanently active.
-
-Transfer submission now permits at most 5,000 queued/running tasks per session and per app, matching the existing maximum recursive file batch. A separate 5,000-permit runner semaphore remains held until each async worker actually exits, so rapidly cancelling tasks cannot bypass the Store count and accumulate detached futures. Cancellation uses a notification while a queued worker waits for its per-session lane; it can finish and release its permit without waiting behind a long transfer. Recursive upload/download and external-drop batches preflight both Store and runner capacity before creating destination directories, while every individual queue transaction rechecks the authoritative active count.
-
-Loaded MCP grants are normalized before the Store is exposed or mirrored. Identical legacy
-duplicates collapse to one rule; invalid or conflicting entries create a revoked, scope-free review
-record instead of breaking every later SQLite save or silently reopening default read access.
-
-The frontend persists a v4 recursive workspace tree whose pane leaves are bounded view groups. Every view has an independent ID, optional alias, optional color, and session binding, so one group can hold multiple views of the same live session without conflating close, move, split, restore, or detach lifecycle. Each group retains up to 32 ordered views, nested splits preserve their ratios, and restored trees discard stale sessions, collapse empty branches, repair duplicate IDs, clamp ratios to 15..85%, and enforce a 16-pane/eight-level boundary. Pane tabs are the single view-management surface: double-click renames, drag-and-drop reorders or moves, and dropping a tab onto a pane center joins that group while dropping on its left, right, top, or bottom edge creates an adjacent split. Each tab places a dedicated connection-status dot before its label: green is connected and red is not currently connected, while the tooltip exposes the exact connecting, reconnecting, blocked, disconnected, or error diagnosis. The contextual menu handles duplicate, color, split, move to an existing or directional new group, detach, close/reopen, and session settings. Those low-frequency commands no longer occupy the pane header; it keeps only connection and protocol-specific controls. Remote mode exposes WindTerm's `Alt+[`/`Alt+]` tab bindings, while Local and Normal use `Ctrl+PageUp`/`Ctrl+PageDown`. WindTerm-compatible workspace keys handle geometric focus, four-way splits, pane close, zoom, and neighbor swapping only while an XTerm workspace owns keyboard focus. `工具 -> 终端设置 -> 快捷键` can record one- or two-stroke bindings, explicitly disable commands, restore defaults, and reject duplicate or prefix-ambiguous bindings. Detaching creates a restricted Tauri `WebviewWindow` only after native creation succeeds and preserves the exact view ID, alias, color, and backend session; browser preview uses a same-origin popup with validated messages. The detached toolbar uses the same green/red status dot with the full runtime diagnosis exposed through its tooltip and accessible label. Detached terminals consume live session events and also poll the newest 600 log events every two seconds without overlapping requests, so listener registration races or transient event delivery gaps catch up without replaying already rendered output. Session, log, and OneKey polling failures retain the last confirmed detached-window state instead of replacing them with empty fallback data; successful log and OneKey responses apply independently. Main-window session and log fallback polls are also serialized and invalidated by authoritative save/connect/disconnect/delete updates; a response that started before Profile deletion cannot restore the removed Profile or its in-memory logs. Startup session hydration uses the same latest-response ordering: saving or deleting a Profile invalidates older startup lists, then schedules one complete replacement list so both the mutation and every pre-existing Profile converge without stale rollback or partial state. Transfers, MCP audit/grants, host keys, OneKeys, and serial ports hydrate in parallel through independent domain gates; an authoritative event or mutation invalidates only its domain and causes one complete replacement read instead of allowing an old startup response to overwrite newer state. Startup mode can connect no sessions, the last restored views, or up to four real saved Profile IDs. Automatic startup attempts use only the saved Profile, keyring, agent, or GSSAPI state and never open credential, Host Key, or failure dialogs; a failed attempt remains visible through the red tab status and session log, while an explicit user connection remains interactive. `工作区 -> 还原布局` reloads and reconciles the saved snapshot against the current profile set.
-
-Startup recovery uses the same connection-action semantics as the visible controls: configured
-`Disconnected`, `Blocked`, and `Error` sessions are retried silently, while `Connecting`, `Connected`,
-and `Reconnecting` sessions are left to their existing runtime. This prevents a prior failure from
-disabling startup recovery or stealing focus with a modal without issuing duplicate opens for active sessions.
-
-WindTerm's directional `Split View To Group` workflow is available from one compact pane-tab submenu with left, right, above, and below choices. It atomically removes the exact selected view from a multi-view group and creates a sibling group on the requested side; the operation remains disabled when the source has no spare view or the pane/depth boundary is reached.
-
-Pane-tab context actions and workspace shortcuts implement WindTerm-style view lifecycle commands: close the selected view, close the other views in its group, close views to its right, and reopen the most recently closed view. WindTerm's `Ctrl+Shift+W` closes the focused view in Remote or Local mode, while `Ctrl+Shift+T` reopens the latest eligible view in every terminal mode; key repeats are consumed without walking the close history. Normal and Command retain their local `Ctrl+Shift+W` behavior. Closing a view never disconnects its backend session, empty groups collapse, and the final workspace view is protected. Up to 32 closed views are retained for the current app process; reopening prefers the original group and index, then falls back to the active non-full group when the original group no longer exists. The session context menu uses explicit disconnect wording because those actions change transport state rather than workspace membership.
-
-The pane-tab context menu follows WindTerm's view popup while keeping the permanent tab row sparse. In addition to color, duplicate, rename, and close, it can copy the bound session name or PortMate URL, reconnect or save that Profile, split right or below, move the exact view to an existing or directional new group, merge or swap groups, toggle pane zoom, detach it, close a pane, reopen the latest eligible view, and open the bound session settings. Every action is routed by pane ID, view ID, and session ID and reflects the current capacity, depth, and neighbor constraints in its disabled state.
-
-The default workbench is terminal-first: one 256-pixel resource dock, one pane-local view-tab row, the terminal, and a compact status bar. The redundant global session tabs, connection summary, duplicate right-side session list, and permanent pane action strip have been removed. File manager, history, and sender are opt-in through `工作区`; old all-visible snapshots migrate to this compact layout and drop the retired session-list field. The status bar no longer displays placeholder geometry, clock, or issue text. Session actions remain available by right-clicking the exact resource-tree entry, while low-frequency view actions belong to the exact pane tab. Pane connection controls treat connected, connecting, and reconnecting transports as cancellable; a rejected backend close keeps the authoritative runtime state visible and reports the diagnostic instead of fabricating a local disconnected result.
-
-`会话 -> 新建工作区窗口` opens an independent full workbench window with its own transient pane and dock layout. It is placed as a native, movable and resizable window without overwriting the main workbench snapshot. Detached terminal panes retain their originating workbench as the command and reattach target, including windows created from another workbench.
-
-`会话 -> 导入会话` keeps OpenSSH, PuTTY, and local Shell imports behind one compact mode selector. It accepts pasted or selected source text and previews every candidate before saving normal PortMate Profiles.
-
-OpenSSH mode maps each literal `Host` entry's `HostName`, `User`, `Port`, `HostKeyAlias`, `IdentityFile`, `ServerAliveInterval`, positive `ServerAliveCountMax`, `TCPKeepAlive`, `IdentitiesOnly`, `ForwardAgent`, literal `ProxyJump` hops, and TCP-form `LocalForward`, `RemoteForward`, and `DynamicForward` rules. Imported forwarding rules are enabled Profile tunnels and start when their SSH session connects. A standalone `Host *` block safely supplies missing defaults in OpenSSH configuration order; `IdentityFile` and forwarding rules remain additive. `ServerAliveCountMax 0` is skipped with an explicit warning because OpenSSH disconnects before the first missed probe whereas PortMate uses `0` for no keepalive timeout. Other wildcard patterns, Unix-socket or tokenized forwarding forms, `Match`, `Include`, command-style directives, dynamic tokens, and values outside PortMate's bounds are skipped with an explicit preview warning; no external config is read or directive executed.
-
-PuTTY mode accepts Unix session files and Windows `.reg` exports. It previews supported SSH, Telnet, raw TCP, and serial sessions before saving normal PortMate Profiles, mapping host/port/user, `TerminalType`, terminal rows/columns/scrollback, agent forwarding, `TCPKeepalives`, bounded `PingInterval` SSH keepalive, supported TCP local/remote/dynamic forwarding rules, HTTP CONNECT or SOCKS5 proxy metadata, and representable serial settings. A nonzero `PingInterval` keeps PuTTY's no-timeout behavior by setting PortMate's missed-reply limit to `0`. Imported TCP forwarding rules become enabled Profile tunnels and start when their SSH session connects. It never scans the registry, imports proxy passwords, or imports `PublicKeyFile`/PuTTY `.ppk` paths; unsupported proxy modes, forwarding forms, terminal or serial settings, and out-of-range keepalive values remain visible as warnings.
-
-Shell mode accepts an `/etc/shells`-style list or a newline-separated list of absolute shell paths. It saves one local PTY Profile per safe executable path without starting it. Lines containing command arguments, shell operators, traversal segments, noninteractive programs, directory-shaped paths, or duplicates are skipped; Windows `cmd`, `powershell`, and `pwsh` names are accepted explicitly and shown as PATH-based launchers.
-
-Saved local Shell program and working-directory paths are validated against the running platform before the Profile commit and again before PTY startup. Bare program names remain PATH-based; native absolute, relative, and `~` paths are accepted, with Windows resolving both slash forms through `USERPROFILE` and Unix resolving `~/...` through `HOME`. Foreign roots, drive-relative or drive-less Windows roots, NUL, malformed home aliases, and an unavailable or non-directory working directory fail before a runtime is installed. The saved Profile retains its portable `~` spelling rather than replacing it with one machine's home directory.
-
-`会话 -> 导出终端文本` / `导出选中文本` and the matching pane-tab actions implement WindTerm-style terminal text export against the exact focused view. Full-buffer export reads XTerm's active buffer, removes terminal control sequences through the parsed cell model, joins physical rows marked as wrapped, preserves intermediate blank logical lines, and drops trailing empty rows; selection export preserves the exact selected spaces and line breaks. Both paths count UTF-8 bytes and reject empty data or content above 16 MiB before invoking the backend. The desktop backend requires a saved session, validates bounded session/view identifiers again, and writes a private file under the app data `exports/` directory through an atomic `.part` rename plus a SHA-256 sidecar (`0600` on Unix). Browser preview uses a `.txt` Blob download. Exported terminal content is never inserted into session events, logs, SQLite, or terminal input.
-
-Right-clicking the terminal opens a view-specific WindTerm-style action menu for copy, paste, find, online search, selection, export, triggers, and three distinct local buffer operations. XTerm's deferred internal scroll bookkeeping does not immediately dismiss a newly opened menu, while an actual user wheel event closes it before the terminal viewport moves. Online search reads the exact target XTerm selection by session and view ID, falls back only to that session's latest line, rejects input above 2,048 Unicode characters, and opens a structured Google query with `noopener,noreferrer`; it no longer reads unrelated page-level DOM selection. Clear scrollback emits `CSI 3 J`, clear screen emits `CSI 2 J` followed by cursor home, and clear all combines both; `Ctrl+L` and `Ctrl+Shift+L` provide the WindTerm Remote/Local shortcuts. Screen and all clearing are disabled while XTerm is using the alternate buffer. These actions write only to the targeted local XTerm instance, are routed by session and view ID, and never call the backend terminal-input commands.
-
-The `工作区` menu exposes checkable actions for the resource explorer, file manager, command history, sender, Quick Bar, and status bar. Resource, file, history, and sender panels can occupy left, right, and bottom docks simultaneously. Within one dock, tools remain mounted as tabs and only the active tool's content is expanded; its tab can focus, close, reorder, or drag the view to an edge target in another dock without unmounting its neighbors. Each visible dock exposes an unobtrusive pointer/touch and keyboard-accessible separator: side widths and bottom height update live, remain bounded so the terminal cannot be displaced by corrupt state, and return to their content-aware default on double-click. The duplicate session-list dock has been removed, so Profile navigation and filtering have one owner in the resource tree. Resource filtering covers identity, group, tags, protocol, status, and protocol-specific endpoints; command-history filtering is case-insensitive, collapses displayed whitespace, and still inserts the exact stored command. The top search icon remains reachable on desktop and mobile and opens one shared session/log search. Loaded log results additionally match their session context, are globally ordered by event time, and are bounded to 80 rows with 2,048-character previews; ArrowUp/ArrowDown select, Enter opens the exact workspace view, and Escape closes. The sender keeps only real send, mode, count, interval, and target controls. A bounded v6 panel snapshot restores visibility, dock order, focused view, placement, and custom sizes, while migrating v1-v5 state and the untouched former all-visible v1 default to the terminal-first layout. Closing every optional dock returns the exact space to the terminal; mobile suppresses docks without corrupting saved desktop choices.
-
-The top-right focus command and WindTerm's `Alt+Enter` shortcut temporarily suppress every dock, the sender, Quick Bar, and status bar without overwriting those saved choices. Exiting restores the exact prior layout; focus mode itself does not survive reload. The shortcut is consumed only while an XTerm workspace owns focus, so dialogs and local editors keep their normal Enter behavior. When synchronized input is active, the status bar intentionally remains visible in focus mode so the broadcast state and target count cannot disappear.
-
-`终端 -> 自由输入` opens a WindTerm FreeType-style editor only inside the focused terminal pane. Drafts are local and bounded to 32,768 Unicode characters: `Enter` submits the edited text as one atomic terminal input, `Shift+Enter` keeps a line break, `Escape` cancels, and `Ctrl/Meta+Shift+X` cuts the editable selection. Submission normalizes edited line breaks to terminal carriage returns and adds one final carriage return; switching sessions discards the unsubmitted draft. Terminal search and free input replace each other instead of overlapping, workspace hotkeys ignore the editor, and atomic submission reuses synchronized input's target, protocol-newline, delay, prefix, and suffix rules when broadcasting is enabled.
-
-`工具 -> 快速命令` opens the WindTerm-style Quick Command manager, while `工作区 -> 快捷栏` toggles its compact workspace bar. Up to 64 ordered snippets are stored locally; labels are bounded to 64 Unicode characters and command bodies to 8,192. A snippet can either insert its exact text or execute it with the target protocol's command terminator. Both paths use the same atomic synchronized-input queue as paste and free input, including target filtering, newline policy, delay, prefix, and suffix; executed snippets also enter the bounded command history and use the explicit `run_command` backend path. The manager saves only on explicit confirmation, repairs malformed or duplicate IDs when loading, and migrates legacy `{name,text}` arrays. Quick Commands use frontend localStorage rather than the encrypted credential providers, so passwords, tokens, private keys, and other secrets must not be stored in them.
-
-Command history now uses a versioned timestamped snapshot instead of an unbounded string array. The `终端设置 -> 命令历史` persistence toggle, `1..10,000` entry limit, `0..3,650` day retention period, and clear action all drive the live history used by the side panel and command completion. Legacy arrays migrate in place, duplicate commands move to the front, individual commands are bounded to 8,192 Unicode characters, and persisted UTF-8 data is capped at 2 MiB. Disabling disk persistence removes the snapshot while retaining current-process history; clearing removes both. Main and detached terminals read the same validated v2 format.
-
-WindTerm-style command completion is available in focused Remote-mode Shell, SSH, Tmux, Telnet, and raw TCP terminals, including detached windows. Its local catalog covers 128 common Linux, macOS, and Windows command names, options, and nested subcommands, including slash-style Windows options and `.exe` command names, then merges matching explicit command history and Quick Commands without probing the remote host or sending input to an external service. The `自动补全` settings independently control those sources, the 1/2/3-character trigger, 5/7/10-row list, and preview mode. Arrow keys select a candidate, while `Tab` sends only its not-yet-typed suffix through the existing interactive/synchronized-input lane. `Escape` dismisses an open list and enters Normal mode in the same keystroke, changing the Insert bar cursor to a block without sending an escape byte to the remote session; completion never submits a command. The tracker handles append-only text, Backspace, `Ctrl+U`, and `Ctrl+W`, but deliberately suspends after paste, cursor/control sequences, quotes, redirects, or shell operators until the next line boundary because PortMate cannot safely infer arbitrary remote line-editor state. Native browser/system paste events are captured before XTerm emits plain text, so the same suspension applies when the remote shell has not enabled bracketed paste. OneKey credential prompts also suppress command completion before any candidate is built.
-
-`工具 -> OneKeys` or WindTerm's `Ctrl+T Ctrl+K` chord (`Meta+T Meta+K` on macOS) opens the encrypted credential manager. Account and SSH entries keep the visible label, username, type, and bound session IDs in the store, while passwords and private-key passphrases are written to the automatic/native keyring or an unlocked Portable Stronghold and persist only as generated Secret references. An SSH OneKey can also select one authenticating Profile Vault, system-file, or ssh-agent identity from a bound SSH/Tmux Profile; public-key-only entries are excluded. The frontend submits only the source Profile ID and identity ID, after which the backend revalidates and clones the normalized identity. OneKey summaries expose its label, source, and optional fingerprint but never its path or Secret reference. The manager can explicitly preserve, replace, or clear each saved credential and manually send the username, password, or passphrase to the active connected bound session. Sensitive sends use the per-session outbound lane and create a control event without readable text; explicitly enabled Raw logging still records exact wire bytes under the existing unredacted logging policy. The SSH connection dialog lists only SSH OneKeys bound to that Profile. Selecting one locks its visible username and sends only the OneKey ID to a dedicated backend command; the backend revalidates type and binding, decrypts the password/private-key passphrase, and clears the runtime clone's saved Profile credential references so the two credential sources cannot be silently mixed. A selected OneKey identity replaces the runtime clone's Profile identity list, enables identities-only mode, and ensures public-key authentication is attempted. Without one, the OneKey passphrase can still unlock the Profile's configured identities. OneKey passwords participate in password and keyboard-interactive authentication, and identity Secret references participate in shared usage counting so Profile edits cannot remove a credential still used by OneKey. Save and delete responses use app-lifetime mutation ordering: a request that completes after its manager closes still updates parent state, while an older manager cannot replace a newer mutation's complete list. An open manager follows accepted parent lists without overwriting an unsaved new entry or the selected in-progress draft, and late send feedback is ignored after close. OneKeys remain separate from Quick Commands.
-
-WindTerm-compatible OneKey completion is enabled by default and can be disabled under `工具 -> 终端设置 -> 自动补全`. The main and detached terminals reconstruct a bounded current line across fragmented input, ANSI control sequences, and erasure characters, then recognize `username:`/`login:` and `password:`/`password for <user>:` prompts. Password-change prompts such as `new`, `retype`, or `confirm password:` are excluded. Only OneKeys bound to that session are offered, password prompts require a saved password, and prompts carrying a username require an exact OneKey username match. Completion never sends automatically: the focused pane shows one compact confirmation bar, and typing, pasting, ignoring, changing the prompt, or disabling the setting removes it. The frontend submits only the OneKey ID, session ID, field, and prompt event ID. Before reading or writing a Secret, the backend independently reconstructs the prompt and revalidates its field, freshness, binding, username, and OneKey version both before and after waiting for the outbound lane. Successful sends create a text-free `one-key-completion` control event linked to the prompt event ID.
-
-The status-bar lock button and WindTerm's `Ctrl+Alt+L` (`Meta+Alt+L` on macOS) shortcut from either the main or a detached terminal open one opaque, focus-trapped screen lock without disconnecting sessions or stopping output. `工具 -> 终端设置 -> 安全` can enable startup locking and a bounded 1..1,440 minute idle timeout, defaulting to WindTerm's 30 minutes. A versioned local marker containing only the reason and timestamp keeps the main and detached windows covered across refresh, restart, and window boundaries until explicit unlock; a present but malformed marker fails closed and is repaired by the main window. Detached terminals become inert and direct the user back to the main window. When an IOTA Stronghold Portable Vault exists, locking closes its in-memory provider and unlocking verifies that vault's master password, then restores whether the vault was locked before the screen lock; a session-scoped restore hint preserves that state across a locked-page refresh. Invalid passwords and vault-status failures remain behind the opaque layer and do not expose backend paths. Without a configured Portable Vault, including browser preview, the feature is explicitly a privacy cover with confirmation rather than an authenticated security boundary.
-
-Synchronized input broadcasts each queued input batch from its source pane to the other connected pane sessions exactly once. `工具 -> 终端设置 -> 同步输入` filters additional targets by protocol and configures protocol-aware/preserved/LF/CRLF newlines, a bounded delay between targets, and bounded prefix/suffix text for explicit batch sends. Interactive XTerm input, including its native bracketed keyboard paste, remains an unframed stream; menu, context-menu, and middle-click paste each receive the prefix and suffix exactly once. The source is never filtered out, batches retain FIFO order, and disabling synchronization immediately cancels remaining extra targets without dropping or delaying subsequent source input. Settings persist locally, but the synchronization switch itself always starts disabled so reopening PortMate cannot unexpectedly broadcast keystrokes.
-
-The session automation editor manages multiple contains/regex triggers and multiple ordered actions per trigger. Timeline marks, notifications, highlights, send-text, local commands, custom-link templates, and bell/chime/alert sounds share typed frontend/Rust models. A Profile keeps at most 64 triggers with 16 actions each; IDs, labels, matcher text, regex compiler size, action payloads, highlight colors, and sound names are validated by the backend, while the compact editor applies the same count and input limits in place. Invalid, duplicate, or oversized definitions are rejected on save, and legacy Store load plus runtime evaluation fail closed instead of executing a truncated command or scanning an unbounded rule set. Runtime visual effects are emitted to the desktop immediately; command and send-text actions remain on the existing backend dispatch paths, and all matches retain system-event/timeline diagnostics. Custom-link `{text}` expansion is streamed into an 8,192-Unicode-character result cap rather than first constructing an amplified URL, and truncation remains visible in the session diagnostic. Send-text automation preserves order within a bounded 32-item input batch and permits at most eight concurrent batches per app; saturation and discarded overflow are diagnosed instead of creating an unbounded task queue. Every batch is tied to the transport `runtime_id` that produced the matching input, so late output from a closed or superseded reader remains log evidence but cannot send text, run a local command, or emit another trigger side effect into the replacement connection. Each input event dispatches at most eight local commands, while the app uses at most four concurrent command slots, a 30-second total deadline, and separate 64 KiB stdout/stderr limits instead of creating an unbounded OS thread and output buffer for every match. Overflow and saturated commands are skipped with one aggregated session diagnostic per batch rather than queued without a bound or persisted one at a time; timed-out commands are explicitly terminated and reaped, with Unix shells isolated into a process group so pipe-holding child processes are cleaned up as well.
-
-Terminal streams can also be appended to profile-configured `raw`, `txt`, and `jsonl` shards below the desktop data directory's `logs/` root. Raw logging stores exact pre-decoding SSH channel, PTY, TCP/Telnet socket, or serial bytes on input and exact post-encoding wire bytes for successful user text/byte sends, Telnet negotiation replies, and modem frames on output. Telnet IAC/subnegotiation/NVT bytes are retained once before filtering, while CRLF and IAC escaping are reflected in outbound references. A per-session lane keeps outbound transport writes and event offsets in the same order; each `bytesRef` is exact, while a shared shard does not claim cross-direction causal ordering during concurrent input and output. Every Text logical line is prefixed with a fixed three-digit UTC millisecond timestamp, direction/stream, escaped session and pane IDs, and its command ID or `-`; Raw remains byte-exact and receives the same metadata through its JSONL event and `bytesRef`. Explicit `run_command` requests receive a UUID `commandId`; the outbound event is marked `commandState=started`, and later inbound events inherit that ID until another explicit command, ordinary/sensitive/transfer input, disconnect, or reconnect supersedes it. This deterministic boundary does not guess prompts or command completion, and the same annotations survive SQLite, JSONL, MCP results, and session bundles; loaded-log search accepts the full ID and displays its short form. System/control diagnostics from lifecycle, trigger, reconnect, transfer, and tunnel paths use a non-blocking single-wakeup sink with a bounded 4,096-event outbox. It writes each queued event once to redacted Text/JSONL, emits it live without ever appending Raw, and drains and joins on normal shutdown; backlog overflow or worker disconnection is retained as `loggingError` instead of growing memory without a limit or silently losing later diagnostics. SQLite/Raw/Text/JSONL degradation after a successful write is reported through `loggingError` without changing the send into a failure that callers might retry, and structured binary events retain only payload length rather than reversible Hex. New profiles start with logging and Raw disabled because Raw bytes are intentionally not redacted. Raw appends are serialized per final shard path, and new `bytesRef` values include a SHA-256 digest so a deleted/recreated or modified shard cannot silently resolve an old reference to different bytes; legacy path/offset/length references remain readable. `工具 -> 日志管理` enumerates only regular shard files under that root, supports path/format filtering, reads a bounded tail preview (`raw` and invalid UTF-8 as Hex), and batch-deletes fully validated selections while pruning empty directories. Symlinks, traversal paths, unsupported extensions, oversized scans, previews, and delete batches are rejected or skipped.
-
-Log-manager list, preview, and content-search requests are generation-gated. A slower earlier selection cannot replace the newest shard preview, and refresh, deletion, query changes, or dialog close invalidate responses that no longer match the visible state.
-
-Content search in the log manager scans persisted Text/JSONL shards, including history no longer present in the bounded event store. Searches can target all eligible shards or the selected subset and return path, line, byte offset, and bounded context. Query length, selected paths, matches, per-file bytes, and total scanned bytes are bounded; raw shards remain Hex-preview only and are never silently interpreted as text.
-
-Selected raw, Text, and JSONL shards can be archived without deleting the source files. The log manager streams up to 1,000 validated paths and 512 MiB of source data into an atomic `.tar.gz`, writes a per-file SHA-256 manifest inside the archive, and finalizes a matching `.sha256` sidecar. Archive entries stay below `logs/`, and path traversal, symlinks, unsupported extensions, and truncated files are rejected.
-
-Each profile can also set `retentionDays` from 0 (disabled) through 3,650 days. PortMate checks matching profile shards in the background at startup and at most hourly while logging, deletes only regular files whose modification time is older than the configured cutoff, and prunes empty directories. The in-memory check registry keeps one `(retentionDays, checkedAt)` entry per Store/Profile rather than one entry per historical setting; a changed setting replaces it, stale entries expire after an hour, and disabling, saving, or deleting the Profile clears it. Retention-enabled custom paths must contain `{session}` or `{profile}` so one profile cannot claim an unscoped shared log path; legacy profiles default to disabled retention.
-
-The same dialog exports a session handoff as an atomic `.tar.gz` plus `.sha256` and `.sig.json` sidecars. Each archive contains redacted bundle metadata, event JSONL, platform/store diagnostics, and a manifest with per-file SHA-256 by default. Default redaction removes credential and proxy Secret references, identity paths, configured runtime/logging/transfer/Shell working paths, Shell arguments, automation send/command/link payloads, transfer-task paths, Sysmon process/filesystem/mount/interface labels, the diagnostics log-shard inventory, and every event `bytesRef`/`logShards` entry in addition to redacting event, annotation, timeline, audit, transfer-message, disconnect-reason, and `summary.lastLine` text. Sysmon numeric measurements, protocol, status, endpoint, and public-key fingerprint diagnostics remain available. The detached signature is real Ed25519 rather than a renamed checksum: its JSON document carries the final archive name, byte size, SHA-256, creation time, public key, key ID, exact Base64 payload, and signature. The signed payload is the UTF-8 sequence `portmate-session-bundle-signature-v1`, archive name, lowercase SHA-256, decimal size, and RFC 3339 creation time joined by NUL bytes. A persistent 32-byte signing seed is created once in the OS keyring, with an unlocked Portable Stronghold fallback, and never enters SQLite, the archive, logs, or either public sidecar. Recipients must pin or compare the public key/key ID through a trusted channel; a sidecar bundled with its own previously unknown public key proves internal integrity but not sender identity. The log manager can explicitly include its currently selected regular raw/Text/JSONL shards as `attachments/` entries only after redaction is disabled; duplicate names receive stable numeric prefixes, while path traversal, symlinks, replacement during bounded double-read verification, more than 32 files, any file over 16 MiB, or more than 32 MiB total are rejected. Raw `bytesRef` segments likewise require both disabling redaction and explicitly enabling raw inclusion; segment and total uncompressed-size limits prevent unbounded exports. The existing MCP `export_session_bundle` JSON response remains compatible and uses the same default redaction policy; explicit unredacted exports preserve the original metadata and references.
-
-The `工具 -> 传输任务` dialog supports local file copy, protocol-native SFTP upload/download/remote copy, SCP upload/download, remote-to-remote SCP copy through SSH command channels, and X/Y/ZModem in-band transfers over connected runtimes. The low-frequency dialog is loaded on demand while the shared task list remains available in the dock workspace. Its protocol selector is derived from the active Profile: SFTP/SCP appear only for SSH/Tmux, while each five protocol enable flag is honored independently. The backend repeats the same authorization before queueing and immediately before a queued worker starts, so desktop, MCP, retries, and delayed tasks cannot bypass a disabled protocol. Use `remote:/path/file` or `ssh:/path/file` on either side to mark the remote path; a marker with an empty or whitespace-only suffix is rejected before queueing and can never fall back to a local file named `remote:` or `ssh:`. Relative local paths are resolved below the Profile's default local directory, while absolute and remote paths are unchanged. Local `~` paths are expanded once at the shared request boundary before SFTP, SCP, local-copy, or Modem routing; Windows accepts both slash forms and uses native `USERPROFILE`, while Unix accepts `~/...` and uses `HOME`. A configured default local directory may use that portable home alias or must be a complete absolute path for the running platform. Local source/destination parsing explicitly distinguishes Unix roots, Windows drive/UNC roots, drive-relative paths, and paths rooted without a drive; foreign or ambiguous local roots are rejected before queueing instead of being joined below the process working directory, while a Windows-looking path after `remote:` or `ssh:` remains a remote path. Queue rows retain partial progress, show localized terminal states and failure details, and provide a copyable diagnostic for failed tasks; bounded failure summaries are also written to the session event stream. Profile rate-limit waits yield to the async runtime and poll cancellation every 100 ms. Each SFTP request has a 20-second response timeout; after subsystem initialization, upload/download/remote-copy operations keep one pinned transfer future while checking cancellation every 100 ms, then drop that future and close only the SFTP session so the owning SSH connection remains reusable. SCP download header/body/ack reads and flow-controlled upload/download writes keep each in-flight russh future intact while checking cancellation every 100 ms; 60 seconds without data or write completion fails the transfer, and cancellation, idle timeout, and normal download completion all use bounded channel cleanup. Remote-to-remote command copies apply the same 100 ms cancellation observation without restarting the in-flight channel wait, fail after 60 seconds without a new valid size/resume/progress/done marker or 300 seconds total, validate marker monotonicity and size consistency, bound stdout/stderr to 4 MiB/64 KiB, and close the channel within one second on every exit. ZModem uses the `zmodem2` state machine. Automatic remote modem transfers use lrzsz `rx`/`sx`, `rb`/`sb`, or `rz`/`sz`, gate protocol input behind per-transfer READY markers, and switch SSH PTYs to raw mode for binary integrity. The READY stage allows 30 seconds for rich interactive shells or slower hosts to consume the injected command; X/YModem block acknowledgements retain their independent 12-second deadline and bounded retries. Cancelling a running modem transfer sends three CAN bytes immediately, silent marker/byte waits poll cancellation every 100 ms, and waits fail as soon as the owning session leaves `Connected` so an old worker cannot leak across runtime reconnection.
-
-SFTP and X/Y/ZModem preserve significant leading/trailing filename whitespace in local destinations,
-remote path splits, Profile default directories, and protocol metadata; only an entirely
-whitespace-only remote marker remains invalid. YModem rejects a filename/size header that cannot fit
-losslessly in its 128-byte metadata block, and treats a not-yet-created local destination ending in a
-path separator as a directory just like SFTP and ZModem.
-
-Automatic remote X/Y/ZModem uploads receive into a sibling `.portmate-part`. Only after the protocol and DONE marker succeed does PortMate commit that part to the requested target with a same-directory atomic rename; XModem first truncates block padding to the exact source size. Disconnects and failed finalization therefore cannot expose a partial transfer under the final name.
-
-SCP upload and download close their SSH channels on every post-open return path. After EOF they allow one second for a late `exit-status`; download promotes `.portmate-part` only after both the protocol acknowledgement and a successful remote status. SCP upload treats an existing part as a candidate only: the remote command reports its length, the client returns the SHA-256 of the same local prefix, and the remote side accepts the offset only when the hashes match; otherwise it truncates and retransmits from zero. Before EOF, the client also verifies that its local source has neither shortened nor grown relative to the declared size, preserving the part instead of publishing a truncated result. Remote upload/copy scripts obtain byte sizes through POSIX `wc -c`, and their SHA-256 check accepts GNU `sha256sum`, BSD/macOS `shasum -a 256`, or FreeBSD `sha256 -q`, rather than requiring Linux `stat -c`. Their path handling no longer depends on GNU `--`: leading-dash relative names are normalized to `./…`, so the same scripts work with BSD/macOS `head`, `tail`, `mv`, and `truncate`; XModem's exact-length finalizer also falls back to `dd` if `truncate` is unavailable or fails. Standard `scp -f` has no offset negotiation, so every download rewrites the part from byte zero instead of combining an unverified old prefix with a new remote suffix; a failed remote status still leaves the temporary file without creating the final target. Download parsing accepts protocol and file bytes only from stdout, captures stderr separately up to 64 KiB, and requires header/error lines to end within 64 KiB so login warnings cannot corrupt file content and abnormal peers cannot grow an unbounded protocol line.
-
-Local copy and SFTP upload/download/remote-copy require the copied byte count to match the source size observed at startup before promoting a part file. Before resuming, they compare the existing part and current source prefix in 64 KiB blocks, then append only on an exact match; a mismatch restarts from byte zero rather than combining stale and new content. Prefix comparison observes cancellation; a short prefix is a safe mismatch, while another local or remote read failure is returned instead of being hidden as a retry. A source that grows or shrinks during transfer fails without producing a final target or reporting progress beyond the declared total. Empty local copies and SFTP uploads create and finalize a real zero-byte temporary file instead of mistaking a nonexistent part for a completed transfer.
-
-Remote-command copies apply the same no-stale-prefix rule on the remote host: before honoring a `.portmate-part` offset, the generated command compares its complete prefix with the current source using `head` and `cmp`. An oversized or mismatched part is truncated and copied again from byte zero, so equal lengths alone can never produce a mixed final file.
-
-The `文件管理器` dock panel is loaded on demand and starts its local pane from the portable `~` home alias, so the first listing and home-level mutations work on Windows as well as Unix. Windows resolves that alias and the protected home-directory boundary from native `USERPROFILE` before a possibly Git-Bash-injected `HOME`; Unix keeps `HOME` first. It can browse local directories and, when the active SSH/Tmux session is connected, remote directories through the SFTP subsystem. Its dual panes run side by side in the bottom dock and stack vertically in the narrower left/right docks. It supports Ctrl/Command toggle selection, Shift range selection, select-all, copying one or more selected paths to the clipboard, recursive new-directory creation, guarded batch delete, same-pane selected-item `Move To...`, single-item rename/chmod/properties, multi-file or directory upload/download, and pane-to-pane drag-and-drop. File and directory batches preserve empty directories, skip symbolic links, use the resumable per-session transfer queue, and apply one shared `fail`/`overwrite`/`skip`/`rename` conflict policy before modifying the target. Native desktop drops use the same policy and safety limits. Enumerated, dropped, and transfer paths preserve significant leading and trailing whitespace instead of normalizing them into an adjacent local or SFTP entry. Local and remote create/delete/rename/move/chmod paths reject filesystem roots, the platform-native home directory, current/parent aliases, explicit `.` or `..` components, and symbolic-link parent components before opening a remote SFTP channel or mutating the local filesystem; remote batch sources and drop destinations apply the same component boundary. Batch delete now sends one request that preflights every selected source and rejects duplicate paths or a selected directory with its child before deleting anything; execution errors report completed items and require a refresh. Rename and move reject an occupied target, while move batches preflight every source and destination, reject duplicate targets plus a selected directory with its child or its own destination, and report completed items if a remote server changes state after preflight. Create and chmod also reject a final symbolic link, while delete, rename, and move may operate on the final link itself without following it. Remote directory downloads are recursively planned through SFTP and reject root paths, unsafe relative paths, target type conflicts, and oversized batches. Directory reads are generation-tracked per pane; a slow older response cannot replace a newer path, clear its loading state, or expose the previous SSH session's remote listing after the active Profile changes. File-property reads use the same one-current-request rule, so closing and reopening the inspector or switching sessions invalidates the previous file's response.
-
-Each File Manager pane keeps an independent bounded back/forward path history after a directory listing succeeds. Refreshes, mutations, failed loads, and stale responses do not create navigation entries.
-
-The bottom sender supports text and real byte-array Hex sending. Hex mode uses a dedicated `send_bytes` backend command, so serial/TCP payloads such as `FF 00 80` are not rewritten as UTF-8 text. Telnet Hex/raw byte sends always escape `0xFF` as doubled IAC. Text uses NVT CRLF/`CR NUL` encoding until the server accepts client-side BINARY; inbound NVT CR decoding is independently disabled after PortMate accepts server-side BINARY. Incoming Telnet negotiation and decoding retain state across fragmented socket reads, including profile-driven terminal-type subnegotiation, NAWS with escaped `0xFF` dimension bytes, and EOF flushing of a pending NVT CR.
-
-Serial sessions keep a bounded in-memory capture of the latest 512 RX/TX frames and at most 1 MiB of exact wire bytes. The history pane can filter by direction, Hex, or ASCII without reconstructing binary data from lossy terminal text. The capture survives automatic reconnect and remains available after disconnect, but is not persisted unless the user explicitly exports the visible frames. Export writes an atomic, unredacted JSONL file plus a SHA-256 sidecar under the app data `exports/` directory; oversized individual frames are visibly marked with captured and original lengths. Clearing the capture invalidates in-flight polling responses so removed frames cannot reappear.
-
-Live DTR/RTS changes serialize the owning runtime, port handle, and Profile update in one order, so concurrent toolbar requests cannot apply to the device and persist in the opposite order. Empty line requests are rejected. If a later line write fails, PortMate restores that line and every earlier line in reverse order; rollback failures remain in the returned diagnostic. Once the device state is applied, a reported Store error is read back against the complete intended snapshot; an exact match accepts the commit, while a definite or unverifiable failure retains that external truth in memory, reports that only persistence failed, and makes the frontend reload the authoritative summary. Break pulses use the same runtime ownership boundary and retry a transient clear failure immediately so a one-off driver error does not leave Break asserted; their completed event uses the same read-back rule, and a real event persistence failure still reports that the pulse itself already completed.
-
-The standalone serial analyzer can frame that capture by source read, Hex delimiter, fixed length, idle gap, RFC 1055 SLIP, COBS, or Modbus RTU. SLIP decoding uses the browser-compatible `slip` library; COBS decoding uses the zero-dependency, browser-clean `@serialpilot/cobs` library and its structured invalid/truncated-frame errors. Modbus RTU uses `@serialpilot/modbus-rtu` for address/function/PDU decoding, CRC-16 validation, exception metadata, and the baud-derived 3.5-character silence recommendation. Historical Modbus grouping uses same-direction capture-read timestamps because the capture format does not claim per-byte timing; multiple RTU frames coalesced into one OS read remain visible as CRC-error wire evidence instead of being guessed apart. All protocol modes keep state across capture reads and never join RX with TX. Each derived packet retains its exact source-frame IDs and both decoded payload and original wire bytes; the inspector can switch between them and filtering searches both. Malformed SLIP escapes remain visible without discarding the decoded packet, while malformed COBS/Modbus frames retain their complete wire evidence instead of inventing a partial payload. Unclosed tails, empty COBS payloads, truncated source reads, bookmarks, paging, and exact source-frame export use the same evidence model in every parser mode.
-
-The analyzer starts on the bounded live memory source and polls it without touching disk. Its periodic and manual session-status refreshes share one request gate, so a slow `list_sessions` call cannot overlap later timer ticks or race the refresh button. When the profile has explicitly enabled Raw logging, the `日志` source can reconstruct the newest 4,096 persisted stream events up to 8 MiB from their exact `bytesRef` segments. It revalidates every relative path, byte range, and SHA-256 digest, reports window-excluded and unavailable references separately, and truncates an individual displayed frame at 64 KiB while retaining its original length. Historical reads are manual rather than polled every 750 ms, realtime clear never deletes logs, and historical export resolves the same current window again before writing an atomic JSONL file and checksum sidecar. Disabling Raw logging makes this source unavailable; PortMate does not begin persistent capture merely because the analyzer is open.
-
-Changing a saved profile from one protocol to another is rejected while the session is connecting, connected, or reconnecting. Disconnect the session first; this prevents new protocol encoding and status metadata from being applied to an older live transport. Settings within the current protocol remain editable while connected.
-
-Every existing Profile save carries the caller's `expectedProfile` snapshot. Session Settings freezes that snapshot when the dialog opens, and connection-credential, resource-context, and key-manager operations freeze it when their action starts; later session polling cannot replace the baseline with a newer Profile while an older draft is still open. The backend performs a three-way merge against the current Store: fields left unchanged by the caller retain newer values such as terminal resize metadata or migrated Secret references, while independent user edits are applied together. If both sides changed the same leaf or atomic list to different values, the save is rejected as a Profile conflict with only the conflicting field path and no field contents. An explicit proxy-password set or clear additionally verifies its expected Secret reference before creating a replacement Secret. A create request cannot overwrite an existing normalized Profile ID because an existing target requires an expected snapshot.
-
-The persistent Store accepts at most 10,000 session Profiles. At the limit an existing ID can still be updated, but a new ID is rejected before proxy Secret creation and rechecked inside the Store transaction. Every desktop Store writer validates the total again, while desktop SQLite/legacy JSON loading and standalone MCP snapshot loading reject an oversized collection instead of normalizing, exposing, or silently discarding part of it.
-
-Client Identity field edits apply the same rule at identity scope. The Inspector freezes an `expectedIdentity` when editing starts; its backend performs a field-level three-way merge, preserves a concurrently rotated Secret reference when the editor did not change it, and rejects different edits to the same field as a Client Identity conflict with a content-free field path. The browser lifecycle matrix verifies the exact Inspector-open baseline on every delayed edit request.
-
-Host Key field edits freeze the Inspector-open `expectedKey` as well. The backend merges it against the current Store and the submitted editable fields, so independent changes are preserved while different edits to the same field are rejected as a Host Key conflict with only the field path. Only `profileId`, `alias`, `host`, `port`, `scope`, and `label` are copied back to the global trust record and matching Profile copies; algorithm, fingerprint, public-key material, and observation timestamps cannot be replaced by a stale editor. The browser lifecycle matrix verifies that each update carries the original Inspector baseline.
-
-Long-running stores bound non-terminal history as well as session events. When a legacy Profile ID
-needs surrounding whitespace removed during load, PortMate remaps its runtime, event/pane,
-transfer, audit, timeline, Sysmon, Host Key, MCP grant, and OneKey references to the same normalized
-ID instead of silently orphaning related data. Profile IDs are bounded to 256 Unicode characters
-and stripped of control characters. If two distinct loaded IDs normalize to the same value, both
-Profiles remain separate: later collisions receive a stable bounded `:loaded:N` suffix, exact
-original references follow their Profile, and a non-exact normalized reference is used only when
-it identifies one Profile unambiguously. Loaded runtime, event, transfer, timeline, Sysmon,
-and Profile-scoped Host Key records whose Profile no longer exists are removed before the Store is
-exposed, while audit records remain available for accountability and project/user Host Keys only
-lose a stale source-Profile reference. This prevents a later Profile from inheriting old state or
-trust merely by reusing the same ID. PortMate retains 5,000
-session events per session, 5,000 audit records per session/global scope, 2,000 timeline marks,
-1,024 Sysmon snapshots, and 1,000 terminal transfer tasks, with a small batched-trim allowance for
-frequently appended histories. Queued and running transfers are never evicted. Desktop and
-standalone MCP loading trim every oversized event/history scope to its exact limit and rebuild the
-event-count cache before exposing an older snapshot.
-
-The terminal canvas supports select-to-copy plus right-click/middle-click paste when the desktop webview has clipboard permission. `终端 -> 查找`, `Ctrl/Cmd+F`, and WindTerm's terminal-scoped `Ctrl+Shift+F` open an incremental search bar only in the focused pane, with previous/next navigation, match counts, case-sensitive, whole-word, and regex modes. `终端 -> 跳转到行` navigates that focused XTerm buffer: a plain positive number is absolute, while `+N`/`-N` is relative to the current viewport center (or the Local/Command caret). Input previews the centered target without sending terminal data, Escape or close restores the original viewport, Enter commits, targets outside the current `1..buffer.length` range are rejected, and a suspended Free Input/Normal draft is restored unchanged afterward. The count uses XTerm buffer rows, including wrapped rows. Unicode 11 width data is active for consistent CJK and emoji layout. OSC 52 may write to the system clipboard, but remote applications always receive an empty response when they request clipboard contents. Each Profile's terminal settings include a persisted 20-100% background opacity; transparent themes use an alpha background over the workspace while retaining the same XTerm instance and buffer. WebGL rendering loads in a separate lazy chunk after the terminal opens, is disabled while opacity is below 100% so cell backgrounds remain transparent, and returns when the terminal is opaque; initialization failure or graphics context loss falls back to the DOM renderer. When a mounted view changes, up to 2,000 scrollback rows are serialized into a process-only 32-session LRU cache capped at 2 MiB per session; terminal contents are never written to local storage or disk by this cache. Consumed event IDs use ordered eviction at 4,000 entries while protecting writes that XTerm has not finished parsing, so the newest 600-event polling window remains deduplicated instead of being replayed after a whole-set rollover.
-
-The terminal toolbar can switch each workspace view independently between `文本`, full-width `Hex`, and an interactive `对照` layout. The comparison layout keeps the live XTerm on the left and an eight-byte Hex/ASCII inspector on the right, switching to a vertical split in narrow panes; full Hex mode uses sixteen-byte rows while retaining the mounted XTerm and its scrollback. Both inspectors show RX/TX direction, stream time, continuous wire offset, truncation, and paired Hex/ASCII cells with shared hover, selection, and keyboard navigation. Live capture follows the newest row by default, can be paused by scrolling, and can be cleared without deleting logs. Capture uses the exact inbound and outbound transport bytes, including non-UTF-8 and NUL data, but never adds those raw frames to the Store, local storage, session-event history, or log shards. Only the per-view display preference is stored locally. Each session's process-only window is bounded to 512 frames and 1 MiB, each backend event to 64 KiB, and inactive session windows are evicted from a 32-session LRU; the inspector exposes frame truncation and older-frame eviction instead of silently presenting the retained window as complete.
-
-Terminal context-menu and keyboard selection actions operate on the exact focused XTerm instead of the browser document. Copy reads only XTerm's current selection and reports an empty-selection error, Select All covers the active terminal buffer, and Clear Selection removes the XTerm selection without changing the persistent block-selection toggle. WindTerm's `Ctrl+Shift+C` and `Ctrl+Shift+A` defaults perform Copy and Select All in Remote and Local modes; Normal and Command retain their local-editor semantics. Enabling `终端 -> 块选择` converts primary-button drags into XTerm's native Alt column selection. If a remote application has enabled terminal mouse reporting, PortMate also applies XTerm's force-selection modifier to the synthetic local drag, so rectangular selection remains local and no mouse sequence is sent to the session. Commands are routed by session ID, view ID, and focused pane, preserving duplicate-session view identity.
-
-The `工具 -> 端口转发` dialog supports local forwarding, remote reverse forwarding, and dynamic SOCKS5 forwarding. A dynamic client must complete method negotiation and its CONNECT request within one five-second deadline; malformed UTF-8, empty, control-character, or whitespace domain targets are rejected before opening an SSH channel. Local and dynamic `direct-tcpip` setup, including waiting for the shared SSH handle, and remote-forward local target connection each have a ten-second deadline. If a russh channel-open confirmation times out, PortMate requests an SSH disconnect before returning the client error so a cancelled confirmation receiver cannot leave an orphan channel; the normal disconnect/reconnect path then reconciles the session and its tunnels. A failed remote-forward local target connection closes its incoming SSH channel within a one-second cleanup budget instead of letting a stalled session queue retain the client task. All tunnel modes share an app-wide 256-active-client limit: saturated local sockets are dropped before spawning, while saturated, unrouted, or out-of-range remote-forward channels use the bounded SSH close path. Remote-forward connected and originator ports must fit `u16` instead of wrapping a server-supplied `u32` onto another route. Its two-second status refresh allows only one request per dialog generation; closing, changing sessions, creating, or stopping a tunnel invalidates older responses before they can replace the current running list. Remote-forward health probes use Linux `/proc/net/tcp` or `ss`, FreeBSD `sockstat`, macOS `lsof`, and a successful `netstat -ltn` fallback. A present but incompatible probe tool is treated as unsupported instead of an empty listener table, preventing repeated rebind attempts on BSD-style systems.
-
-Each SSH/Tmux Profile retains at most 64 tunnel definitions, and the app-wide runtime registry separately retains at most 256 active tunnels in addition to the 256 active-client slots. Tunnel IDs and labels are limited to 128 Unicode characters, hosts to 255 characters without whitespace, and ports and mode-specific target shapes are validated before use. Profile saves validate the submitted list before normalization and the merged list again before commit; legacy Store data, standalone-window cache data, and reconnect restoration discard invalid or duplicate entries fail-closed. When a full Profile contains disabled history, a new tunnel reclaims the oldest disabled entry but never overwrites an enabled definition. The compact editor exposes the same host and numeric port bounds and disables invalid or over-limit submissions. A Profile deleted or changed away from SSH/Tmux while a runtime is starting now makes the Store transaction fail, so the existing compensation path closes the uncommitted runtime instead of leaving an orphan.
-
-Tunnel creation commits the enabled Profile spec and matching system event through one tracked Store transaction after the listener or remote forward is installed. If that commit cannot be confirmed, PortMate removes only the tunnel owned by the exact SSH runtime, closes its local listener, and best-effort cancels any server-side remote forward instead of returning an error with an invisible live tunnel. A remote-forward request that succeeds just before the SSH runtime changes receives the same compensation. Stopping removes the exact owned runtime before awaiting remote cancellation, so it cannot later delete a replacement with the same tunnel ID. A reported save error for the disabled Profile state is read back against the complete intended Store and accepted when it already committed; a definite or unverifiable failure reports that the tunnel is already stopped locally while retaining that external truth in memory. Local listener/client failures and remote-forward health or restoration events use the same read-back rule, so an already committed background update repairs the cached Store version instead of poisoning the next write.
-
-The `工具 -> Tmux` dialog reads remote `tmux list-sessions`, `tmux list-windows`, and `tmux list-panes` output through the connected SSH/Tmux runtime. It can attach or create a named tmux session in the active terminal; create, rename, confirm, and close sessions/windows; activate, split, swap, resize, confirm, and close panes; break a pane into a new window or move it horizontally/vertically into another remote window; apply the five built-in tmux window layouts; and toggle per-window synchronized panes. Mutations accept only fixed backend actions with bounded, shell-quoted source/destination targets and names, validate both the remote command and audit scope before dispatch, refresh from the remote snapshot before updating the UI, and durably record successful changes as session system events. If event persistence fails after the remote action succeeds, the success remains in memory with a logging diagnostic and is not reported as a retryable remote mutation failure. All state-bearing refreshes and mutations share a latest-response gate, so a delayed control refresh cannot roll back a confirmed mutation. Pane resizing is additionally bounded to 1-100 cells per request. Each session row can independently start a generation-tracked `tmux -C` control client, so several remote tmux sessions on the same SSH runtime can be watched concurrently. The backend registry and stop API are keyed by `(sessionId,target)`; a stale event or stopping one target cannot clear another, while the legacy target-less stop still cancels every watcher owned by a disconnecting SSH session. Control clients parse only structural notifications, never emit or retain `%output` terminal contents, bound partial lines and stderr to 64 KiB, and coalesce bursts before silently refreshing the confirmed snapshot without closing unrelated inline editors. On exit, each watcher gives its SSH channel at most one second to accept Close before removing its exact registry entry and emitting the stopped event. Attach responses are also bound to the dialog instance and session, so completing a request after the dialog closes cannot close or update a replacement dialog. Closing the dialog/session or exiting PortMate cancels every owned watcher. Shared SSH helper-command capture rejects stdout above 4 MiB and stderr above 64 KiB before appending the overflowing channel chunk, so abnormal Tmux, tunnel-probe, or Sysmon output cannot grow desktop memory without bound or be silently parsed as a truncated result. Success, timeout, output-overflow, and nonzero-exit paths all close the exec channel within the bounded cleanup budget before releasing operation capacity. A nonzero status is rejected even when the command emitted partial stdout, and an `exit-status` arriving after EOF is consumed before completion; the Linux remote-forward probe handles an optional missing `/proc/net/tcp6` table explicitly instead of weakening that shared rule.
-
-Tmux control-mode retains at most 64 distinct watcher targets per SSH session and uses 256 app-wide lifecycle permits. A permit is acquired before SSH runtime lookup and channel setup and remains held through bounded channel cleanup, exact registry removal, and the stopped event. Saturation is rejected without opening a channel, installation rechecks registry capacity after setup, and simultaneous starts for the same `(sessionId,target)` retain the first active runtime while closing the redundant channel. Stop marks the registered runtime cancelled without releasing its registry capacity early; only the matching watcher exit removes that entry, while a same-key restart can safely supersede a cancelled generation and the old generation still retains its lifecycle permit until it exits.
-
-Remote file browsing and mutation, SFTP/SCP/remote-copy, Tmux state and mutation requests, control watchers, remote Sysmon collection, and remote-forward health checks additionally share 256 app-wide SSH auxiliary-operation permits. Acquisition is fail-fast before SSH runtime lookup and channel setup, and one permit covers the complete high-level operation through SFTP or bounded channel cleanup. Saturation therefore cannot open a channel, alter Tmux watcher or remote-forward routing registries, or commit Sysmon and system-event state. A Tmux mutation or pane-sync request reuses the same permit for its command and three follow-up snapshot reads, avoiding a false limit error after the remote mutation has already succeeded.
-
-The `工具 -> Sysmon` workspace samples the local Linux, macOS, or Windows machine for non-SSH profiles and detects the operating system behind an active SSH/Tmux connection. Local Linux sampling runs the existing `/proc` collector on a blocking worker and merges native `getifaddrs` results with bounded `/proc/net/if_inet6`, `/proc/net/fib_trie`, and `/proc/net/route` address tables, then bounded `hostname -I/-i` candidates, before using `ip`/`ifconfig` only when no usable address remains; local macOS and Windows reuse the structured platform collectors through asynchronous child processes with a 12-second deadline and bounded 4 MiB stdout/64 KiB stderr capture. Remote sampling uses bounded Linux `/proc`, macOS `top`/`vm_stat`, FreeBSD `sysctl`, or Windows PowerShell/CIM collectors; a failed Unix `uname` probe falls back to an encoded, fixed Windows probe without interpolating profile or user input. Remote Linux retains bounded output from `ip`, `ifconfig`, and BusyBox candidates, then uses `/proc/net/if_inet6`, `/proc/net/fib_trie`, `/proc/net/route`, and bounded `hostname -I/-i` candidates. Generic kernel or hostname addresses are assigned to the default-route interface when that interface is missing an address, before querying an OpenWrt `ubus` interface mapping only when no usable address remains. Every interface deduplicates and bounds addresses after prioritizing usable IPv4, then global IPv6, ahead of link-local and loopback values, so noisy IPv6 entries cannot hide a reachable address. macOS and FreeBSD network rates use duplicate-safe `netstat -ibn` counters. Windows consumes structured marker-delimited JSON and validates it again in Rust; adapter-configuration addresses with no matching performance-counter name remain as zero-rate interface rows rather than being discarded. Its compact summary shows CPU, memory, load average, aggregate RX/TX rate, and uptime; tabular views show up to eight CPU-ranked processes (name only, never command arguments), 16 mounted filesystems, and 32 deduplicated network interfaces with per-interface rates and totals. A fourth trend view plots CPU/memory utilization or aggregate RX/TX rates from the persisted session history. It loads the newest 120 samples by default through a bounded `1..=240` query, deduplicates them by session and timestamp, and merges a successful manual refresh into the visible series immediately. History and live-snapshot requests are generation-bound to the selected session, preventing a slower previous host from replacing the current host's metrics. A checkable activity applet beside the current session status samples immediately and then every 10 seconds, exposes CPU/memory pressure without covering the terminal, opens the full workspace on demand, skips overlapping requests, and stops when its remote session disconnects or the active session changes. Refresh failures keep the last valid applet and workspace snapshot visible. Unsupported local or remote operating systems return an explicit error instead of a zero-filled snapshot. The structured details are retained in the session store, SQLite v4 `details_json` mirror, session bundle, and MCP Sysmon resource; legacy summary-only snapshots deserialize with empty detail lists.
-
-For remote Linux address collection, the bounded primary command retains `ip`, `ifconfig`, and their BusyBox variants instead of stopping at the first nonempty tool output. If a default-route interface still lacks a usable address, PortMate combines bounded `/proc/net/if_inet6`, `/proc/net/fib_trie`, `/proc/net/route`, and `hostname -I/-i` candidates and assigns generic kernel/hostname addresses to that interface. Only when those local sources still yield no usable address does it make a separate three-second OpenWrt `ubus call network.interface dump` request and map `l3_device`, `device`, or logical `interface` names. Parsed addresses remain visible even when `/proc/net/dev` has no matching counter row.
-
-All local and remote Sysmon refreshes share four app-wide permits held through collection and Store commit. Saturation is rejected before reading a Profile or spawning a worker. On Linux, the 120 ms `/proc` sample still runs on a blocking worker, but `ps` and `df` now use the same asynchronous 12-second command deadline and bounded 4 MiB stdout/64 KiB stderr capture as the other local collectors; both child processes are fully reaped before the refresh permit is released.
-
-After collection, Sysmon revalidates that the requested Profile still exists and commits the snapshot together with its refresh system event through one tracked Store transaction. A deleted Profile, definite persistence failure, or unverifiable commit leaves no orphan snapshot, false success event, or queued outbox entry in live memory.
-
-The shared search dialog opened by the top-bar search button searches the current desktop session set and recent loaded logs. `工具 -> 密钥管理器` manages PortMate host keys with scope/profile filters, batch delete, batch copy-to-profile, host-key alias/host/port/scope/profile/label editing, and OpenSSH `known_hosts` import/export. Persistent host-key trust, scan trust, import, delete, and edit commands mutate a copy of the current Store, commit it first, and replace live memory only after persistence succeeds, so a disk or multi-instance conflict cannot leave an uncommitted trust decision active. Its Client Keys workspace searches and groups profile identities by profile or source, copies selected identities to another profile, reorders or removes references across profiles while protecting Jump Host references, imports private keys into profile-vault, and adds visible ssh-agent identities individually or in batches. A compact identity inspector edits label/source/path/fingerprint metadata, shows immutable ID and Jump Host/shared-secret impact, rotates profile-vault private keys, and can remove either only the reference or an unshared backing secret. Identity mutations persist the profile before orphan cleanup and never overwrite a shared secret in place. The same workspace can create, unlock, lock, and rotate the master password of an Argon2id-protected IOTA Stronghold portable vault; `stronghold:` references route Profile secrets to its encrypted snapshot, while automatic storage still prefers the native OS keyring and falls back only when Stronghold is already unlocked. Linux native storage specifically requires the persistent Secret Service backend: PortMate never silently accepts reboot-volatile kernel keyutils as durable credential storage, and a transient initialization failure is retried by the next operation. Rotation requires the unlocked vault, verifies the current password, requires a different replacement of at least eight characters, and commits the encrypted snapshot with the replacement key before changing the in-memory provider, preserving existing secrets and references if the commit fails. Snapshot open/save/rekey operations also use a cross-process OS file lock and compare the last loaded SHA-256 version before writing, so a stale second PortMate instance cannot overwrite a rotated vault and must reopen it instead. An inline preflight can migrate all or one SSH/Tmux/TCP/Telnet profile's proxy password plus SSH target passwords, passphrases, Profile Vault private keys, and per-Jump-Host credentials in either direction between native keyring and Stronghold. One source reference is copied once even when shared by several selected fields; Stronghold destinations use one batch snapshot commit, native destinations are read back exactly, all profile references switch in one copy-on-write store commit, and source records are cleaned only after their global usage reaches zero. Reserved MCP HTTP/IPC token references are always excluded. Before any provider write, PortMate durably commits and reads back a `synchronous=FULL` SQLite migration journal containing credential-slot projections and generated references but no secret body or body hash. The Profile KV snapshot, mirror tables, store revision, and `profiles-committed` checkpoint form one transaction and the only commit point. After restart, an all-old projection can only roll back unreferenced target copies; an all-new projection verifies every target and exact source/target contents before continuing source cleanup. Mixed, missing, changed, corrupt, or unavailable evidence preserves both providers and freezes automatic changes. Key Manager exposes the pending state and an explicit `核对并恢复` action after the portable vault is unlocked; an active or corrupt journal blocks another migration and related Profile/secret/identity mutations. The same recovery panel exports an atomic JSON diagnostic plus SHA-256 sidecar with before/current/after credential slots, provider presence, reference counts, and a boolean content comparison. It never includes secret bodies, body hashes, or an unverified raw journal payload, including when the journal itself is corrupt. `工具 -> MCP Bridge` keeps grant editing, Streamable HTTP configuration, and audit review in three mutually exclusive task pages. Grant input is normalized and bounded again in Rust. Saving and revoking grants use the same persist-before-swap Store transaction, so a failed snapshot write cannot activate an unsaved grant or revoke only the live copy while the disk snapshot still authorizes that client. A grant's optional `confirmWrites` flag requires a one-time desktop decision for every `write-input`, `manage-sessions`, `transfer`, or `tunnel` action. At most 32 approvals may wait; each expires fail-closed after 60 seconds, response IDs are one-shot, and a reconnecting UI can recover the pending list. The approval event contains only its ID, client ID, action, session ID, scope, and timestamps, never command text, paths, credentials, Secrets, or raw arguments. Audit transitions record `pending-approval`, persist approved authorization before the side effect, and finish as succeeded, failed, denied, timed out, or unavailable. Both the pre-action authorization barrier and the final decision use verified Store commits, so a post-commit verification error cannot split the disk and live audit state or execute an unaudited write. Once the side effect has run, a definite finalization failure retains the true `succeeded`/`failed` decision in memory with `finalizationPersistence=degraded` and never changes the command result into a retryable failure. Audit review combines free-text, decision, session/global, and scope filters with a record inspector; the current filtered IDs can be exported atomically as bounded JSONL plus a SHA-256 sidecar with Unix `0600` permissions.
-
-An empty MCP grant store remains an explicit empty state until `新建授权` is clicked. The resulting focused draft exposes client ID, name, expiration, write confirmation, scopes, and allowed sessions.
-
-MCP HTTP configuration/token operations, managed-process status/actions, and audit refresh/export use separate dialog-scoped request gates. Repeated tab activation cannot overlap a slow load, start/stop invalidates stale status polls, corresponding controls remain disabled in flight, and closing the dialog invalidates late read/UI responses. Grant mutations additionally carry a parent-owned token across dialog instances: a backend mutation that succeeds after its dialog closes still updates the authoritative desktop grant list, while an older completion cannot overwrite a mutation started from a replacement dialog.
-
-Key-manager Agent enumeration, Portable Vault status, and credential-migration recovery checks are independently serialized and invalidated when the manager closes. Transient read failures preserve the last confirmed state, while vault unlock, lock, and rotation invalidate older status reads before applying their authoritative result. Vault unlock/lock/password rotation, committed credential migration, and migration recovery additionally share one app-owned operation lease. Closing and reopening the manager cannot bypass an in-flight operation; after it settles, the current manager forcibly reloads both Vault and recovery state, while late dialog-local feedback is discarded. Host-key import, edit, and single/batch delete responses use a separate app-owned mutation token: a completed mutation can update the desktop after its manager closes, but an older complete store cannot replace a mutation started from a reopened manager. Client-identity edit/rotation/deletion, Profile saves, batch reorder/removal, and credential migration use the same app-lifetime ordering independently for each Profile ID. Private-key import claims that token before creating its Secret: if a newer manager takes ownership while the Secret write is pending, the old import reclaims the new orphan and never submits its stale Profile snapshot. A completed backend mutation can still update the parent session list after its manager closes; a newer manager or another authoritative Profile save rejects the older result, while a current failed or partially completed mutation schedules one complete session-list read to reconcile the backend state. That replacement compares the complete serialized summaries rather than only runtime counters, and treats a successful empty list as authoritative, so an external Profile field change or deletion of the final Profile cannot be hidden by the recovery cache.
-
-Every standalone MCP read surface applies the shared typed redaction policy after grant filtering, including session summaries and SSE state, prompt screens, event text/annotations/raw-shard references, timeline marks, Sysmon labels, transfer paths, and live desktop IPC responses. Credential references and local paths are removed while protocol state, timestamps, counters, fingerprints, process IDs, transfer progress, and other diagnostic measurements remain available. Redaction operates on cloned response values and never changes the desktop Store or terminal view.
-
-Run the desktop application:
+`desktop:clean` 只清理当前仓库遗留的 Vite 监听和已知的 Snap GTK/WebKit 环境污染，不会删除 Profile、日志或 PortMate 数据。正常情况下也可以直接运行：
 
 ```bash
 npm run desktop
 ```
 
-If you launch from snap-packaged VS Code and GTK/WebKit loads `/snap/core20` libraries, use the sanitized launcher:
+启动顺序是：构建开发版 MCP sidecar、启动 Vite、启动 Tauri/Rust 后端。首次 Rust 编译可能需要一些时间。
+
+### 浏览器预览
 
 ```bash
-npm run desktop:clean
+npm run dev
 ```
 
-On a Linux desktop with X11/Xwayland, the native smoke gate starts that same sanitized launcher,
-waits for a newly created PortMate window, captures its client pixels with `xwd`, rejects white,
-black, or otherwise unrendered frames, and then cleans up the Tauri/Vite process group and isolated
-temporary XDG data directories:
+访问 <http://127.0.0.1:1420/>。浏览器模式适合检查布局和前端交互；真实 SSH、串口、文件传输、密钥库和本地 IPC 需要 Tauri 桌面后端。
+
+## 基本使用
+
+1. 打开 `会话 -> 新建会话`。
+2. 选择 Shell、SSH、Tmux、Telnet、TCP 或 Serial。
+3. 分别填写主机/IP、端口和用户名；无需使用 `username@host` 组合格式。
+4. SSH 首次连接时核对服务端 Host Key 指纹，并选择一次性信任或保存到 Profile/项目信任域。
+5. 在 `工具` 菜单中打开传输、隧道、Tmux、Sysmon、串口分析器、密钥管理器、日志或 MCP Bridge。
+
+连接状态会显示在会话标签前：绿色表示已连接，其余不可用状态显示为红色，并通过 tooltip 保留具体诊断。启动恢复会静默尝试已保存且可用的凭据，不会在每次打开应用时自动弹出重连窗口。
+
+SSH、Tmux、TCP、Telnet 和 Serial 的自动重连会在下一次尝试前重新读取最新 Profile。连接参数、认证策略、重连延迟或开关的修改不需要等待旧配置完成全部重试。
+
+## SSH 信任与凭据
+
+PortMate 将两类密钥分开管理：
+
+- **Host Key**：证明远端服务器身份。默认保存在 PortMate 自有信任库，不自动写入系统 `known_hosts`。
+- **Client Identity**：用于登录远端的私钥或 agent 身份。可以限制尝试顺序，避免无关密钥耗尽服务端 `MaxAuthTries`。
+
+密码、私钥口令、Profile Vault 私钥和 MCP Token 不写入 SQLite 正文。默认使用系统原生 keyring；原生 provider 不可用时，可以显式使用 IOTA Stronghold Portable Vault。Store 中只保存 `secretRef`/`tokenRef` 和必要元数据。
+
+Host Key 变化默认阻断连接。请在确认设备替换、系统重装或密钥轮换后，再使用一次性信任、追加或替换操作。不要为了消除提示而关闭验证。
+
+## MCP Bridge
+
+### 推荐配置方式
+
+1. 保持 PortMate 桌面应用运行。
+2. 打开 `工具 -> MCP Bridge -> 授权`，创建独立 Client ID，并选择权限和允许访问的会话。
+3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
+4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
+5. HTTP 客户端在 `HTTP` 页设置监听 IP、端口、Origin、Client ID，生成 Token 后启动托管服务。
+
+### stdio 示例
+
+先构建开发 sidecar：
 
 ```bash
-npm run test:linux-desktop-smoke
+cargo build --locked -p portmate-mcp
 ```
 
-The gate forces X11 only for deterministic capture and removes inherited
-`WEBKIT_DISABLE_DMABUF_RENDERER` and `WEBKIT_DISABLE_COMPOSITING_MODE` values, so VMware hosts
-exercise PortMate's automatic DMI fallback for both DMABUF and accelerated compositing. Set
-`PORTMATE_NATIVE_SMOKE_XWD=/tmp/portmate-native-smoke.xwd` to retain the verified frame. The host
-must provide `xwininfo`, `xwd`, `wmctrl`, and an EWMH-compatible window manager; CI supplies Xvfb
-and Openbox. A successful check also requires a valid isolated IPC endpoint and Store, closes the
-window through `WM_DELETE_WINDOW`, and verifies that normal shutdown removes the endpoint.
+多数 MCP Host 使用类似以下配置。请将路径替换为 MCP Bridge 页面显示的真实值：
 
-Build desktop bundles:
+```json
+{
+  "mcpServers": {
+    "portmate": {
+      "command": "/absolute/path/to/portmate-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "PORTMATE_STORE_PATH": "/absolute/path/to/portmate-store.sqlite3",
+        "PORTMATE_MCP_CLIENT_ID": "my-mcp-client"
+      }
+    }
+  }
+}
+```
+
+bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoint，因此桌面重启或 IPC Token 轮换通常不要求重启长驻 stdio 客户端。
+
+### HTTP 模式
+
+- 默认监听 `127.0.0.1:8787`，端点为 `/mcp`。
+- 支持 `127.0.0.1`、`0.0.0.0`、`::1`、`::` 和自定义数字 IP。
+- 非回环监听必须显式启用远程访问。
+- 每个请求都需要 Bearer Token 或 `X-PortMate-MCP-Token`，存在 Origin 时还会校验 allowlist。
+- bridge 本身不终止 TLS。远程监听应只用于可信网络，或放在配置正确的 TLS 反向代理后方。
+
+不要把 HTTP Token 写入 README、启动命令、issue、日志或 MCP 客户端的公开配置示例中。
+
+### 权限范围
+
+| Scope | 含义 |
+| --- | --- |
+| `read-sessions` | 读取已授权会话及运行状态 |
+| `read-logs` | 读取和搜索已授权会话日志 |
+| `write-input` | 向终端发送文本、按键或命令 |
+| `transfer` | 创建文件传输任务 |
+| `tunnel` | 创建 SSH tunnel |
+| `manage-sessions` | 打开或关闭会话 |
+
+授权可以设置到期时间、撤销状态、允许会话列表和写操作逐次确认。所有 MCP 写操作都会进入审计记录。
+
+## 构建
+
+前端生产构建：
+
+```bash
+npm run build
+```
+
+桌面安装包构建：
 
 ```bash
 npm run desktop:build
 ```
 
-The build starts from a clean bundle directory, prepares a target-specific `portmate-mcp` sidecar,
-and packages it with the desktop binary, standard PNG/ICNS/ICO icons, the Apache-2.0 application
-license, and the JetBrains Mono SIL OFL 1.1 license.
-Unix package inputs use release-safe `0755`/`0644` modes. Linux builds also normalize the AppImage
-tree and replace LinuxDeploy's generated `.DirIcon`, desktop-entry, and lowercase icon links with
-fixed portable relative targets before repacking with the original AppImage runtime. The package
-gate requires both root and icon-theme 256x256 images to match the checked-in source byte-for-byte.
-When Tauri's AppImage plugin is already cached, the
-build reads its type-2 ELF/SquashFS boundary and supplies that runtime to LinuxDeploy, avoiding a
-packaging-time GitHub download. A valid caller-provided `LDAI_RUNTIME_FILE` takes precedence; when
-neither source exists, LinuxDeploy retains its normal download behavior. DEB, RPM, and AppImage
-artifacts are written below `target/release/bundle/`. See [RELEASE.md](./RELEASE.md) for the release,
-signing, migration, artifact, and rollback gates.
+产物位于 `target/release/bundle/`。正式发布前必须在目标平台执行 [RELEASE.md](RELEASE.md) 中的安装、升级、回滚、签名和产物校验，不应把一次本地源码构建直接视为可发布安装包。
 
-After a Linux bundle build, `npm run test:linux-appimage-smoke` extracts the final AppImage and
-launches its packaged `AppRun` successfully three times against one isolated Store. The first two
-launches prove an idle restart is byte-for-byte stable; the third stages that same Store under the
-legacy `dev.portmate.app` directory and requires the packaged application to migrate it atomically into
-`dev.portmate.desktop`. Every launch must render a native frame, publish and retire its IPC endpoint
-through normal window closure, and rotate the IPC credential. The migration launch must preserve the
-exact Store SHA-256 and remove the legacy directory. A fourth process invocation then stages distinct
-non-empty Stores in both directories and must fail with the explicit merge-conflict diagnostic before
-publishing IPC, while preserving both Store SHA-256 values. It has the same X11, `xwd`, `xwininfo`,
-`wmctrl`, and window-manager requirements as the development desktop smoke gate.
+## 验证
 
-The terminal renderer is pinned to `@xterm/xterm@6.0.0`; the Unicode 11, Serialize, Clipboard, and WebGL compatibility addons are pinned to versions tested with that release.
-
-The application shell, XTerm dependencies, terminal orchestration, byte inspector, and WebGL renderer
-are separate chunks, so non-terminal surfaces do not load XTerm and unsupported systems do not pay
-WebGL's startup or failure cost. The current production build emits approximately 384.7 kB of main
-JS, 426.7 kB of shared XTerm core/addons, 89.6 kB of terminal canvas JS, 120.4 kB of WebGL JS,
-5.4 kB for the byte inspector, 169.0 kB of main CSS, and 3.9 kB of XTerm CSS. Major lazy workspaces
-include 56.3 kB for session settings, 48.9 kB for the key manager, 36.4 kB for the serial analyzer,
-29.6 kB for session import, 21.8 kB for the file manager, 18.1 kB for Tmux, 13.3 kB for MCP,
-12.0 kB for OneKeys, 11.8 kB for terminal settings, 11.5 kB for Sysmon, and 11.2 kB for logs. The
-command-history, terminal-buffer, terminal-selection/online-search, and browser-download modules also
-load only when used. Every JavaScript chunk remains below the default warning threshold without
-raising that threshold or folding the lazy WebGL addon into the XTerm core chunk.
-
-Installed desktop packages include the `portmate-mcp` bridge beside the main executable. For a
-source-tree development run:
-
-```bash
-cargo run -p portmate-mcp
-```
-
-The stdio transport accepts newline-delimited JSON messages up to 1 MiB, excluding the line
-delimiter. Oversized input is discarded through its terminating newline, returns a JSON-RPC parse
-error, and does not desynchronize the following request.
-
-Concrete MCP session and transfer resource URIs percent-encode opaque UTF-8 IDs as individual path
-segments, so IDs containing spaces, `%`, `/`, or Unicode remain readable without changing identity.
-Resource reads reject malformed escapes, extra path segments, queries, and fragments.
-
-Both stdio and HTTP preserve an explicit JSON-RPC `null` ID, reject non-string/number/null IDs and
-non-structured `params`, and cap a batch at 128 items before dispatch. This prevents a small request
-from amplifying into an unbounded sequence of tool calls or responses.
-
-JSON-RPC responses and SSE JSON data are serialized through a 64 MiB bounded writer shared with the
-desktop IPC response contract. An oversized single response becomes a `-32603` error with the same
-request ID; an oversized batch or SSE state update is replaced without emitting the original data.
-
-To let the standalone stdio bridge read the desktop store directly, pass the SQLite store path:
-
-```bash
-PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 cargo run -p portmate-mcp
-```
-
-An unset, empty, or whitespace-only `PORTMATE_STORE_PATH` starts the bridge in an explicit
-store-free compatibility mode. A non-empty value must identify a readable JSON snapshot or SQLite
-Store containing a valid `session-store` record; both stdio and HTTP fail before serving requests
-when the configured path is missing, unreadable, malformed, or structurally invalid. The standalone
-bridge always opens SQLite read-only and never creates or migrates the configured Store.
-
-When the desktop app is running, it writes `portmate-ipc.json` next to the store. The live IPC token is stored in the OS keyring and the endpoint file contains a `tokenRef` rather than the token itself when keyring access is available. The MCP bridge uses that endpoint to forward `send_text`, `send_key`, `run_command`, `open_session`, `close_session`, `start_transfer`, `create_tunnel`, `list_tmux_state`, and `attach_tmux` to the live desktop runtime. If the desktop IPC file is unavailable, read tools fall back to the store snapshot. Long-running stdio bridges reload the snapshot and atomically published endpoint before each JSON-RPC message, so desktop restarts and token/address rotation do not require restarting the bridge. A missing or invalid snapshot clears the bridge's cached sessions and grants until a valid snapshot returns; removing the endpoint immediately disables live forwarding.
-
-Endpoint publication uses a synced same-directory temporary file and atomic replacement. Unix files
-are forced to mode `0600`, including the plaintext-token fallback used when native keyring storage
-fails; replacement does not follow a pre-existing symlink, and a failed publish keeps the previous
-endpoint intact. Publication and shutdown share a cross-process lock. A successful replacement
-retires the previous private endpoint's matching `keychain:ipc-<uuid>` credential, while normal
-desktop exit removes only the endpoint still owned by that process and always retires its tracked
-credential. This prevents restart leaks without allowing an older instance to remove a newer one.
-
-The bridge only loads a regular endpoint file up to 64 KiB (private owner-only mode on Unix), and
-requires its `storePath` to match `PORTMATE_STORE_PATH`, its address to be loopback, and its keyring
-reference to use the generated `keychain:ipc-<uuid>` form. Desktop IPC requests and responses are
-bounded to 1 MiB and 64 MiB, with 3-second connect, 5-second write, and 180-second total response
-deadlines. The total budget includes an optional 60-second write approval without consuming the
-action's previous runtime budget.
-
-The official TypeScript SDK matrix runs versions 1.10.0, 1.20.0, 1.29.0, and 1.30.0 from isolated
-locked npm environments. Each version spawns the real bridge and completes initialize/initialized, ping,
-tools, resources, templates, prompts, and a resource read over both stdio and stateless Streamable
-HTTP. It covers the older 1.10.0 `2024-11-05` lifecycle without the later HTTP protocol header,
-normal `2025-06-18` negotiation, and the latest SDKs' `2025-11-25` request falling back to the server's
-supported `2025-06-18`; each HTTP run also starts authenticated IPv6 loopback (`::1`) and explicitly
-approved all-interface (`::`) listeners, while confirming that `::` is rejected without remote opt-in.
-Stdio client shutdown must also terminate the bridge process.
-
-The Python SDK matrix runs the same real bridge through pinned `mcp` 1.9.4, 1.12.4, 1.15.0,
-1.21.2, 1.23.3, 1.28.1, 1.29.0, and 2.0.0 virtual environments over both stdio and stateless
-Streamable HTTP. Each version completes
-the same 8-message/request lifecycle over both transports, covering the `2025-03-26` negotiation
-used by 1.9.4 and the current `2025-06-18` negotiation used by the later versions without sharing
-site packages. The client check handles the official 2.0 transition from `httpx` to `httpx2`,
-snake-case result fields, numeric read timeouts, and two-stream HTTP transports without weakening
-the assertions used for 1.x.
-
-The official Go SDK matrix uses `github.com/modelcontextprotocol/go-sdk` 1.4.0, 1.5.0, 1.6.1, and 1.7.0
-from isolated generated modules and runs the same 8-message/request lifecycle over stdio and
-stateless Streamable HTTP. The server's `2025-06-18` fallback is verified explicitly; each Go
-module has its own dependency checksums and never mutates PortMate's production workspace.
-
-The official Rust SDK matrix uses `rmcp` 1.0.0, 1.1.0, 1.8.0, 2.2.0, 3.0.1, 3.1.0, and 3.1.1 from standalone
-locked Cargo modules and runs the same lifecycle through each SDK's child-process and reqwest
-Streamable HTTP transports. Both paths verify `2025-06-18` negotiation, server identity, ping,
-tools, resources, templates, prompts, and resource reads without adding compatibility clients to
-PortMate's production workspace. The shared probe reads serialized initialization metadata so it
-accepts 3.x's optional `server_info` shape without weakening the identity assertion for 1.x/2.x.
-
-The official Ruby SDK matrix uses `mcp` 0.25.0, 1.0.0, and 1.1.0 with pinned Faraday 2.14.3 and
-`event_stream_parser` 1.0.0 in version-isolated gem homes. Their bundled Stdio and HTTP transports
-run the same 8-message/request lifecycle, explicitly negotiate `2025-06-18`, verify the server
-identity and all read surfaces, and confirm that stateless HTTP does not invent a session ID. The
-Stdio probe supplies an explicit argv entry through the SDK's `args` field so Ruby does not reparse
-a packaged sidecar path containing spaces as a shell command line.
-
-The official Java SDK matrix uses `io.modelcontextprotocol.sdk:mcp` 1.0.0, 1.1.3, and 2.0.0 on JDK
-17 or newer. A SHA-512-pinned Apache Maven 3.9.9 distribution is bootstrapped below `target/`, so the
-check does not depend on a system Maven installation. Each version is clean-compiled before its
-Stdio and JDK Streamable HTTP 8-message/request lifecycle, preventing stale cross-version classes;
-the matrix verifies `2024-11-05` negotiation for 1.x, `2025-06-18` for 2.0.0, server identity, and
-every read surface.
-
-The official Kotlin SDK matrix uses `kotlin-sdk-client-jvm` 0.12.0, 0.13.0, 0.14.0, and 0.15.0 with Kotlin
-2.3.21 on the same pinned JDK/Maven bootstrap. Version 0.12.0 uses its published Ktor 3.3.3 and
-coroutines 1.10.2 runtime; later versions use Ktor 3.4.3 and coroutines 1.11.0. Each version is
-clean-compiled before its stream-backed Stdio and Ktor CIO Streamable HTTP lifecycle, rejects
-unsupported negotiation, verifies server identity and all read surfaces, and confirms that
-PortMate HTTP remains stateless.
-
-The official C# SDK matrix uses `ModelContextProtocol.Core` 1.0.0, 1.2.0, 1.4.1, 2.0.0, and 2.1.0. Each
-version has an isolated NuGet lock file and build output below `target/`, so a cached restore cannot
-mask cross-version dependency or API incompatibilities. It requires exactly .NET SDK 10.0.302,
-bootstrapping a platform archive with its official SHA-512 digest when necessary. Every SDK's
-Stdio and Streamable HTTP transports run the same lifecycle, verify `2025-06-18` negotiation,
-server identity and every read surface, and confirm that PortMate HTTP remains stateless.
-
-The official Swift SDK matrix uses `swift-sdk` 0.11.0 and 0.12.1 with separate committed SwiftPM
-locks and release outputs on Swift 6.3.3. Linux x64 can bootstrap the pinned official Ubuntu 24.04
-toolchain below `target/` after a SHA-512 check; CI installs the same version on Linux and macOS.
-Every SDK's Stdio and non-streaming HTTP transports run the same lifecycle on those platforms.
-These releases neither expose `StdioTransport` on Windows nor declare the `EventSource` dependency
-imported by their HTTP source there, so the unpatched official packages are not presented as a
-Windows-compatible matrix.
-
-As of 2026-08-07, the newest stable release published by each of these nine official SDK projects is
-present in the matrix: TypeScript 1.30.0, Python 2.0.0, Go 1.7.0, Rust 3.1.1, Ruby 1.1.0, Java 2.0.0,
-Kotlin 0.15.0, C# 2.1.0, and Swift 0.12.1. The older pinned releases remain intentional protocol and
-API compatibility anchors; later stable releases should be added only after both real transports pass.
-
-Read tools remain available by default while the grant store is empty. After any grant is saved,
-the client selected by `PORTMATE_MCP_CLIENT_ID` must have an active `read-sessions` or `read-logs`
-scope for the requested operation. An empty allowed-session list means all sessions; otherwise
-session lists, resources, global log search, prompts, transfer resources, and HTTP SSE state are
-filtered to the configured IDs. The live desktop IPC rechecks the same policy before returning
-data. During Store load, missing Profile IDs are removed from session-scoped grants; a grant that
-loses its final allowed session is explicitly revoked instead of being widened into a global grant.
-Stored revoked or expired grants do not authorize access, including if the old session ID is later
-reused. Removing every grant intentionally returns the bridge to its documented empty-store
-default-read mode.
-
-Write tools are denied by default. For a trusted local development run with an empty grant store:
-
-```bash
-PORTMATE_MCP_TRUSTED=1 PORTMATE_MCP_CLIENT_ID=portmate-local cargo run -p portmate-mcp
-```
-
-When live desktop IPC is available, the desktop store is the authoritative grant source. Every
-authenticated write attempt is audited with the MCP client ID, exact tool, session, scope, and
-`invalid`/`denied`/`authorized`/`succeeded`/`failed` outcome. Tool arguments, command text,
-passwords, passphrases, and file-path bodies are not copied into audit details. An explicit grant
-enables its configured scopes. New desktop grants default `confirmWrites` to true, while existing
-grants remain backward-compatible and default it to false. Confirmation covers all MCP write scopes,
-queues at most 32 requests, expires after 60 seconds, fails closed when the UI is unavailable, and
-accepts each approval ID only once. `PORTMATE_MCP_TRUSTED=1` additionally enables the documented
-local bootstrap only while the grant store is empty.
-
-The desktop IPC server permits at most 64 active clients. Saturated connections receive a bounded
-error and are closed within a 100-millisecond rejection budget without creating another task. Each
-accepted request is capped at 1 MiB and must arrive completely within five seconds; response writes
-use the same timeout. Oversized, incomplete, malformed, and invalid-token requests are rejected
-before command dispatch and do not create audit records.
-
-Stdio is the default sidecar transport. The executable accepts at most one explicit transport flag:
-`--stdio` or `--http`. An explicit flag overrides `PORTMATE_MCP_HTTP`; without a flag, the existing
-`PORTMATE_MCP_HTTP=1` HTTP opt-in remains supported. Unknown, repeated, and conflicting arguments
-exit immediately instead of silently starting the wrong transport.
-
-The same bridge can expose JSON-RPC over HTTP for clients that cannot spawn stdio servers. Loopback is the default. A non-loopback bind such as `0.0.0.0` or `::` is rejected unless `PORTMATE_MCP_HTTP_ALLOW_REMOTE=1` is also set. Every listener validates `Origin` when present and always requires either `Authorization: Bearer <token>` or `X-PortMate-MCP-Token: <token>`; remote opt-in cannot disable token authentication. If `PORTMATE_MCP_HTTP_TOKEN` is not set, the bridge creates or reuses `keychain:mcp-http-token` in the OS keyring. Use a trusted network or a TLS reverse proxy for remote HTTP because the bridge does not terminate TLS itself.
-The desktop `工具 -> MCP Bridge` dialog persists the listen IP, port, allowed Origins, MCP client ID, trusted empty-grant bootstrap, and remote-access approval in the PortMate store. Its listener menu exposes loopback and all-interface IPv4/IPv6 presets (`127.0.0.1`, `0.0.0.0`, `::1`, and `::`) next to an editable custom numeric IP. Saving uses the same persist-before-swap transaction as grant changes, so a failed store write cannot activate an uncommitted listener configuration. The dialog shows the packaged executable, exact desktop store path, effective endpoint, startup command, and tokenRef, and can generate or rotate the keyring token. It can also launch and stop the packaged sidecar directly, verifies an actual MCP `OPTIONS /mcp` response before reporting readiness, and displays the PID, start time, and bounded stderr failure detail. Live settings and token rotation stay locked while the managed process is starting or running. Normal desktop exit kills and waits for the child; an inherited parent-PID watchdog also stops an orphaned Unix or Windows sidecar after an abnormal desktop exit. The watchdog is isolated in the portable `portmate-process-watchdog` crate and rejects malformed or out-of-range parent PIDs. In addition to the real Unix sidecar test, a shell-free controller/parent/child integration test runs in the normal Linux, macOS, and Windows workspace suites; it has passed locally on Unix and its test source is part of the regular `--all-targets` cross-check for Windows GNU, Apple ARM64, and FreeBSD x86_64. Each native package gate also launches the sidecar from the extracted or installed package, requires a valid `OPTIONS /mcp` readiness response, exits its direct parent, and rejects any sidecar that remains alive after the bounded watchdog deadline. The generated command is platform-specific, shell-quotes every configurable value, keeps the token out of the command, and never falls back to a source-only `cargo run` command.
-Streamable HTTP clients that send `Accept: application/json, text/event-stream` receive JSON-RPC responses with `MCP-Protocol-Version`. Clients that prefer SSE can open `GET /mcp` with `Accept: text/event-stream` for an authenticated event stream containing endpoint and PortMate state events; `POST /mcp` with only `Accept: text/event-stream` returns the JSON-RPC result as a `message` event.
-POST requests require `Content-Type: application/json` (parameters such as `charset=utf-8` are
-accepted). An explicit `MCP-Protocol-Version` must match the server's negotiated `2025-06-18`
-version; the header remains optional for initialization and older clients, and is allowed by CORS
-preflight responses.
-The bridge intentionally runs in the stateless Streamable HTTP mode allowed by the MCP transport:
-it does not issue `Mcp-Session-Id`, so clients do not need session termination or replay state. The
-repository's official TypeScript SDK matrix exercises initialize/initialized, the optional GET SSE
-stream, ping, tools, resources, templates, prompts, and resource reads while verifying the actual
-authentication, Accept, and version-header behavior of all four versions. Every version also verifies
-real `::1` and `::` listener lifecycles plus the fail-closed remote-listener gate.
-
-The HTTP bridge allows at most 64 concurrent connections, including long-lived SSE streams. A
-complete request must arrive within five seconds, each response/SSE write has a five-second socket
-timeout, and excess connections receive `503 Service Unavailable`. Non-SSE responses explicitly
-close the HTTP/1.1 connection. Request headers are parsed strictly with a 64 KiB/128-field limit.
-Bodies may use `Content-Length` or a sole `Transfer-Encoding: chunked`; decoded bodies remain limited
-to 1 MiB and chunk framing/trailers to 64 KiB/128 fields under the same five-second request budget.
-Conflicting or duplicate framing, other transfer codings, malformed chunks/trailers, and bytes after
-the declared or terminal body are rejected before JSON-RPC dispatch. Repeated list headers such as
-`Accept` remain supported, including standard quality values.
-
-```bash
-PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
-PORTMATE_MCP_HTTP=1 \
-PORTMATE_MCP_HTTP_ADDR=127.0.0.1:8787 \
-PORTMATE_MCP_HTTP_ORIGINS=http://127.0.0.1:8787,http://localhost:8787 \
-PORTMATE_MCP_CLIENT_ID=portmate-local \
-PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 \
-PORTMATE_MCP_TRUSTED=0 \
-cargo run -p portmate-mcp -- --http
-```
-
-For an intentionally network-reachable listener, set a restrictive Origin allowlist and keep the
-host firewall scoped to the required clients. `0.0.0.0` is a bind address, so clients connect to an
-actual address of the PortMate host:
-
-```bash
-PORTMATE_STORE_PATH=/path/to/portmate-store.sqlite3 \
-PORTMATE_MCP_HTTP=1 \
-PORTMATE_MCP_HTTP_ADDR=0.0.0.0:8787 \
-PORTMATE_MCP_HTTP_ALLOW_REMOTE=1 \
-PORTMATE_MCP_HTTP_ORIGINS=https://mcp-console.example \
-PORTMATE_MCP_CLIENT_ID=portmate-local \
-portmate-mcp --http
-```
-
-## Verification
+常规开发门禁：
 
 ```bash
 npm test
-npm run test:dependency-audit
-npm run test:rust-dependency-audit
-npm run test:portable-cross
+npm run build
+cargo fmt --all -- --check
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+```
+
+重点兼容门禁：
+
+```bash
 npm run test:terminal-compat
 npm run test:vttest-compat
 npm run test:tmux-workflow
 npm run test:tmux-version-compat
 npm run test:workspace-ui
-npm run test:mcp-http-client
+npm run test:ssh-server-compat
+npm run test:ssh-gssapi-compat
+npm run test:tcp-telnet-server-compat
+```
+
+MCP 客户端矩阵：
+
+```bash
 npm run test:mcp-stdio-client
+npm run test:mcp-http-client
 npm run test:mcp-typescript-client
 npm run test:mcp-python-client
 npm run test:mcp-go-client
@@ -676,305 +224,78 @@ npm run test:mcp-java-client
 npm run test:mcp-kotlin-client
 npm run test:mcp-csharp-client
 npm run test:mcp-swift-client
-npm run test:libssh-gssapi-build
-npm run test:ssh-gssapi-compat
-npm run test:ssh-server-compat
-npm run test:tcp-telnet-server-compat
-npm run build
-npm run desktop:build
-npm run test:linux-package
-cargo test --locked --workspace
-cargo clippy --locked --workspace --all-targets -- -D warnings
+npm run test:mcp-sdk-freshness
 ```
 
-`npm run test:dependency-audit` fails on moderate-or-higher npm advisories and runs in Native CI
-immediately after the reproducible `npm ci` install. The checked-in lockfile currently resolves the
-MCP/Vite HTTP toolchain to patched Hono, `fast-uri`, `ip-address`, PostCSS, and Undici releases, and
-reports zero known npm vulnerabilities.
+Docker 兼容矩阵、Chrome/Playwright、系统 keyring 和桌面打包测试需要额外工具或对应操作系统。完整发布命令以 [RELEASE.md](RELEASE.md) 为准。
 
-`npm run test:rust-dependency-audit` uses `cargo-audit 0.22.2` in Native CI and validates the JSON
-report against exact reviewed fingerprints. Its sole vulnerability exception is
-`RUSTSEC-2023-0071` for `rsa 0.10.0-rc.18`, which has no patched release; local RSA SSH
-authentication uses a system-randomized PKCS#1 v1.5 signer so every private operation is blinded.
-The gate also inventories current Tauri/GTK3, build-only, Stronghold, and Russh warning paths, and
-fails when any reviewed advisory, package, or version is added, removed, or changed. See
-[`SECURITY.md`](SECURITY.md) for the mitigation and residual-warning review.
+## 项目结构
 
-`npm run test:native-keyring` exercises the platform provider with a 1,200-byte secret across
-separate probe processes. Linux verifies a missing Secret Service, normal CRUD, and a locked
-collection. macOS uses an isolated temporary default keychain for CRUD and a non-interactive locked
-read. Windows performs normal CRUD, writes a second real credential, impersonates an anonymous
-thread token, requires that read to fail with no storage access, and cleans the credential on both
-success and failure. `npm run test:portable-vault` additionally rejects Unix symlink/hard-link
-paths and Windows multiply-linked files and parent junctions. Native CI invokes both gates on their
-corresponding runners; a successful retained workflow run is still required as native evidence.
-
-The terminal compatibility, vttest, Tmux workflow, and workspace UI checks use `playwright-core` with the installed `/usr/bin/google-chrome` instead of downloading a browser. Set `PORTMATE_CHROME` when Chrome is installed elsewhere. The terminal suite also requires the system `script`, `vim`, `less`, and procps `top` commands: it captures real PTY sessions, verifies alternate-screen isolation for Vim/less and clear-screen/cursor restoration for top, then renders and searches a bounded 6,000-line log under a 15-second regression limit. The workspace suite starts an isolated Vite server, migrates the former all-visible pane snapshot, verifies simultaneous left/right/bottom docks, same-dock tab switching with inactive content collapsed, cross-dock drag placement, reload persistence, full-width terminal recovery, and transactional Profile deletion, exercises reverse-order file listing/properties, detached-terminal catch-up and poll-failure retention, serialized serial-analyzer and tunnel refreshes, cross-session Sysmon isolation, and deleted-Profile session/log poll invalidation, checks real filters, compact top-menu capability states, exact contextual view actions, protocol-filtered transfers, Profile-backed startup selectors, and queued one-time MCP approvals, confirms that non-input UI operations produce no terminal writes, and captures focused desktop/mobile screenshots. Set `PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX` to change their output prefix. Repository Cargo configuration defaults libtest to four threads because the desktop matrix concurrently launches OpenSSH, socat, Stronghold, and SQLite workers; an explicit `RUST_TEST_THREADS` environment value still overrides it.
-
-Native CI streams credential fault matrices, desktop builds, package audits, and Linux compatibility
-matrices to both the job console and files below `target/native-ci/`. Linux runners also retain
-native-window XWD captures,
-Openbox logs, and the terminal, vttest, Tmux, and workspace PNG evidence. Diagnostic and bundle
-uploads run even after an earlier step fails and are retained for 14 days; missing partial outputs
-produce a warning instead of hiding the original failure. A bundle from a failed job is diagnostic
-only and is not release evidence. Temporary package extraction roots, isolated Stores, IPC endpoint
-files, and keyring state are outside the uploaded paths.
-
-`npm run test:vttest-compat` drives 13 automated vttest suites through real bidirectional PTYs on
-Debian bookworm (`20221229`), Ubuntu 24.04 (`20230201`), and Debian trixie (`20241208`). The same
-browser terminal renders Vim, less, top, and dialog from Debian, Ubuntu, and Alpine containers and
-checks alternate-screen or cursor/SGR restoration according to each program's real behavior. SRM is
-not automated because vttest requires unpredictable human key input, and DECREQTPARM is not claimed
-because xterm.js does not answer it.
-
-`npm run test:tmux-version-compat` runs the shared parser and command boundary against tmux 3.1c,
-3.3a, 3.5a, and 3.7b, including session/window/pane state, synchronization, layout mutations, and
-control-mode notifications. `npm run test:ssh-server-compat` validates PTY, SFTP, SCP, and the full
-health path against thirteen full SSH server/distribution combinations: OpenSSH on Alpine 3.19/3.20/3.21,
-Debian bookworm/trixie, Ubuntu 22.04/24.04, and Fedora 44; OpenSSH with an independent GESFTPServer subsystem on
-Ubuntu 24.04; Dropbear on Alpine 3.20/3.21; and AsyncSSH 2.24.0 and Paramiko 5.0.0 on Debian
-bookworm. It also validates SFTP upload, download, and remote copy against ProFTPD `mod_sftp`,
-SFTPGo 2.6.6/2.7.5, rclone 1.74.4, Erlang/OTP 25.2.3/27.3.4.1 `ssh_sftpd`, Go
-`github.com/pkg/sftp` 1.13.6 on Debian trixie, and Apache MINA SSHD 2.19.0. The Apache MINA case
-checks that duplicate `MKDIR` and non-empty `RMDIR` return their SFTP v4+ status promptly even after
-version 3 negotiation; the local `russh-sftp` compatibility patch also retains unknown status packets
-instead of dropping them until timeout, fails pending requests immediately on malformed packet types,
-zero-length frames, field-truncated payloads, or unknown response IDs, enforces the configured inbound
-packet-length limit before allocating the declared payload, and routes valid out-of-order responses by
-request ID. SFTP v3 `SSH_FILEXFER_ATTR_EXTENDED` file attributes are retained as ordered type/data
-pairs, preserve non-UTF-8 binary data, and consume their complete count-delimited wire payload before
-the next directory entry is decoded. The matrix kills each of the
-eleven OpenSSH/Dropbear servers
-during a rate-limited SFTP or SCP upload and verifies bounded failure, runtime cleanup, no committed final file, and a
-nonempty resumable `.portmate-part` copied from the stopped container.
-The same eleven-server matrix runs X/Y/ZModem activity on independent SSH runtimes, including Alpine
-lrzsz builds and Debian, Debian trixie, Ubuntu, and GESFTPServer YModem fallback, and verifies
-disconnect failure, partial progress, final-file non-commit, and partial-file cleanup.
-The fault matrix injects fifteen health failures: paused and forcibly closed transports; a closed
-primary terminal channel while the transport and auxiliary channels remain usable; rejected,
-silent, and wrong-marker exec channels; missing, rejected, and silent SFTP startup; failed SFTP
-canonicalization; denied directory reads; silent SFTP `REALPATH`, `OPENDIR`, and `READDIR` operations;
-and runtime replacement. Each report error is checked against
-the expected failure stage, and every health case has a hard test deadline. Thirty-eight transfer fault
-cases separately cover missing/rejected SFTP, missing source files, denied writes, rejected SCP commands,
-and all 26 server-returnable error statuses defined by SFTP v3-v6 (`4`, `5`, and `8..31`) plus unknown
-status `99`, a malformed response packet type, a zero-length frame, a status response with missing fields,
-a truncated response, an oversized declared packet, and an unknown response request ID. Every injected
-status or invalid response must fail within five
-seconds with its protocol diagnosis intact;
-client-only pseudo-statuses `6` and `7` are intentionally not forged as server responses.
-The 18-case TCP/Telnet matrix covers BusyBox telnetd on Alpine 3.19/3.21, inetutils
-telnetd on Debian bookworm and Ubuntu 24.04, telnetlib3 4.0.5 with a real PTY shell on Debian
-bookworm, Twisted Conch 24.11.0 on Debian bookworm and 26.4.0 on Debian trixie with a real `/bin/sh`
-PTY bridge, and netkit `telnetd-ssl` in plain and TLS modes on Ubuntu 24.04. Raw TCP coverage uses Ncat
-plain echo on Alpine and Ubuntu, Ncat TLS echo on Ubuntu 24.04, GnuTLS 3.7.9 TLS line echo on
-Debian bookworm, Socat burst-close on Alpine and Ubuntu, and Socat close on Alpine. The matrix also
-connects to ser2net 4.3.11 on Debian bookworm and 4.6.4 on Debian trixie through their
-RFC2217-capable gensio Telnet accepter and a real
-pseudo-serial PTY; PortMate explicitly declines COM-PORT-OPTION 44 and keeps the standard Telnet
-shell data path usable. Every Telnet shell case verifies negotiation, application I/O, resize calls,
-shell exit, and bounded disconnect convergence. BusyBox, inetutils, Twisted, and netkit additionally
-require the negotiated NAWS resize to appear as `43 132` inside the server-side PTY; telnetlib3 and
-ser2net remain data-path checks because those adapters do not propagate NAWS to their child PTY.
-`npm run test:ssh-gssapi-compat` provisions MIT Kerberos realms with Ubuntu 24.04 OpenSSH 9.6,
-Debian bookworm OpenSSH 9.2, Debian trixie OpenSSH 10.0, and Apache MINA SSHD 2.19.0. It also
-provisions Samba 4.19.5 as an AD-compatible KDC for Ubuntu 24.04 OpenSSH. Each pairing verifies successful
-`gssapi-with-mic`, GSSAPI precedence over a deliberately wrong fallback password, strict host-key
-rejection, safe rejection of a corrupt FILE credential cache, password fallback after that rejection,
-a missing client ticket, password fallback without a ticket, server-disabled GSSAPI, and password
-fallback when GSSAPI is disabled, plus SFTP subsystem rejection and SFTP operation denial.
-The Samba entry obtains its initial ticket through the lower-case enterprise UPN
-`portmate@portmate.test` and requires canonicalization to `portmate@PORTMATE.TEST`. It marks both the
-user and host AD accounts with the AES128/AES256-only `msDS-SupportedEncryptionTypes` value, limits
-the client request to those encryption types, and verifies that the resulting TGT and SSH service
-ticket plus both session keys use AES. After PortMate completes the real connection, the matrix copies
-back the credential cache, decrypts the exact `host/localhost` service ticket with the server keytab,
-and requires a PAC containing logon information plus matching UPN, DNS-domain, SAM-name, and SID data.
-The OpenSSH success cases also cover TOFU persistence, PTY shell I/O and resize, keepalive/exec/SFTP
-health, recorded authentication method, and bounded runtime cleanup. Apache MINA covers the same
-authentication and health behavior plus interactive process-shell I/O; its shell accepts resize
-requests, but the matrix does not assert `stty` dimensions because it does not expose a real local PTY.
-Samba provisioning receives only the additional `SYS_ADMIN` container capability required for its
-SYSVOL ACL/xattr setup; the entrypoint removes that capability from the runtime bounding set before
-starting Samba and OpenSSH. This is Samba AD-compatible coverage, not evidence from Microsoft AD.
-All Docker-backed SSH, TCP/Telnet, Tmux, and vttest/full-screen matrix image builds are retried three
-times. After one successful build, set `PORTMATE_COMPAT_USE_CACHED_IMAGES=1` to run any of these
-matrices without registry access; each command fails closed if a required image is absent.
-Set `PORTMATE_COMPAT_FILTER` to a comma-separated list of exact matrix names to run a bounded subset;
-empty, duplicate, malformed, and unknown names are rejected before Docker starts. Tmux, TCP/Telnet,
-and vttest use the names from their JSON matrices directly. The combined SSH matrix uses qualified
-names such as `server.openssh-alpine-3.19`, `health.exec-rejected`, and
-`transfer.sftp-status-31` so identically named health and transfer faults remain unambiguous. Every
-script validates its complete checked-in matrix before applying the filter, so a focused run cannot
-hide an invalid unselected entry. For example:
-
-```bash
-PORTMATE_COMPAT_USE_CACHED_IMAGES=1 \
-PORTMATE_COMPAT_FILTER=server.openssh-alpine-3.19,health.exec-rejected \
-npm run test:ssh-server-compat
+```text
+PortMate/
+├── src/                    React/TypeScript 桌面工作区
+├── src-tauri/              Tauri 应用、命令适配与平台集成
+│   └── src/
+│       ├── backend_application.rs
+│       ├── backend_automation.rs
+│       ├── backend_security.rs
+│       ├── backend_storage.rs
+│       └── backend_transport.rs
+├── crates/
+│   ├── portmate-core/      共享模型、Store、Host Key 与授权策略
+│   ├── portmate-mcp/       MCP stdio/HTTP bridge
+│   ├── portmate-kdf/       Portable Vault KDF 边界
+│   ├── portmate-keyring/   跨平台原生 keyring 边界
+│   └── russh-sftp/         项目使用的 SFTP 兼容实现
+├── scripts/                构建、打包与兼容矩阵脚本
+├── tests/                  外部服务端与协议夹具
+└── .github/workflows/      Native CI 与 SDK freshness 工作流
 ```
 
-The workspace suite also resolves two log previews in reverse order, holds MCP HTTP configuration across repeated tab activation, closes and reopens the OneKey manager while resolving two saves in reverse order, and exercises three-stage Host Key import and Client Identity edit lifecycles. It opens Session Settings, applies a newer Profile through the normal background poll, then verifies that the save request still carries the dialog's edit-time baseline so the backend can preserve the concurrent field. The Client Identity sequence first proves that a response released after close still reaches the parent list, then holds an older edit across another close/reopen cycle while a newer manager commits the final value before that stale response is released. A private-key import lifecycle freezes Secret creation across the same close/reopen boundary, lets the replacement manager commit the current identity, then verifies that releasing the old write performs no Profile save and removes the orphan Secret. Connection-credential checks fail the second of two Secret writes and then fail the Profile commit after one successful write, proving both cleanup paths leave no retained Secret and no false saved-password state. Session Settings checks freeze a staged Vault-key write to prove every close/submit control remains disabled, then separately prove cancellation deletes the ref while a successful Profile commit retains it without an erroneous cleanup call. A separate Vault lifecycle freezes an unlock across close/reopen, verifies that the replacement manager remains disabled without issuing a duplicate mutation, then confirms automatic state convergence before locking the Vault again. Profile-mutation failure checks additionally prove that a complete compensation read accepts both changed Profile fields with unchanged runtime counters and an authoritative empty session list. These checks cover dialog and app-lifetime request gates rather than relying only on unit-level gate behavior.
+Tauri 根 `lib.rs` 只保留模块注册与公开重导出。transport、security、storage、automation 和 application 的实现按各自 owner 维护，避免新的跨领域逻辑重新堆回根模块。
 
-The workspace suite also checks the new-session quick surface across all six protocols: initial target focus, invalid-target connection gating, serial selection and baud parameters, TCP TLS, per-protocol draft retention, bounded metadata editing, quick/advanced round trips, and compact desktop/mobile layout. It also checks the Tunnel editor's host-length and numeric-port attributes, verifies that out-of-range ports and whitespace hosts disable creation, and captures focused session and Tunnel screenshots.
+## 数据与隐私
 
-`npm run test:linux-package` extracts the freshly built DEB, RPM, and AppImage; verifies each main executable, sidecar, desktop entry, standard icon, exact Apache-2.0 and JetBrains Mono OFL license contents, file permissions, and every symlink boundary; and checks the exact production CSP and main/detached capability source policy against metadata embedded in each packaged main binary. On an X11/Xvfb display it launches the main process from each extracted package three times, requiring stable restart and legacy-migration Store contents, rotated IPC credentials, clean exit and endpoint removal, then requires a fourth conflicting-Store launch to fail closed without changing either Store. It also runs the TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift MCP SDK protocol checks against the bridge extracted from every package and verifies each packaged sidecar's real HTTP readiness and parent-watchdog cleanup with bounded, token-redacted diagnostics. The Linux gate deliberately uses a space-containing extraction and runtime root. The Windows MSI/NSIS and macOS app/DMG gates apply the same main-process and sidecar lifecycle checks to both native package formats while enforcing the same third-party license content and fixed resource-directory placement; their audit roots also contain spaces, covering MSI/NSIS installation paths and the DMG mount point. RPM extraction prefers `rpm2cpio` and falls back to `7z` plus `cpio`.
+- Profile、运行状态、授权和索引数据保存在应用数据目录中的 `portmate-store.sqlite3`。
+- JSON compatibility snapshot、日志、导出和 IPC endpoint 均使用有界、原子或私有权限写入策略。
+- 原始终端日志可能包含敏感业务数据；只在确有需要时启用 Raw 日志，并在分享诊断包前检查脱敏范围。
+- MCP 读取结果会移除凭据引用和本地敏感路径；写操作仍需权限，并记录来源 Client ID、动作、会话和最终结果。
+- 漏洞请通过 GitHub Security Advisory 私下报告，不要在公开 issue 中提交凭据、私钥、生产主机名或未脱敏 Store。
 
-On Linux, Tauri desktop compilation also requires WebKitGTK/GTK development packages. Debian/Ubuntu package names are typically:
+更多说明见 [SECURITY.md](SECURITY.md)。
 
-```bash
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libcairo2-dev libgdk-pixbuf-2.0-dev
-```
+## 已知限制
 
-Without those packages, `cargo check -p portmate` stops at pkg-config errors for libraries such as `cairo` or `gdk-pixbuf-2.0`.
+- 当前不是完整的 WindTerm 或 Bitvise 替代品，也没有正式稳定版本承诺。
+- 真实 Microsoft Active Directory GSSAPI/PAC 尚待实证；当前 Samba 结果只代表 AD-compatible 协议覆盖。
+- Windows OpenSSH 远端 Sysmon、真实 macOS/FreeBSD SSH/SFTP/SCP/remote-forward 仍需外部主机证据。
+- 物理串口/USB 串口和 Modem 的断电、拔插及线路状态矩阵不能由虚拟 PTY 完全替代。
+- Windows Authenticode、Apple Developer ID 与 notarization 凭据尚未用于最终发布产物。
+- MCP HTTP 不提供内置 TLS。
 
-The Linux libssh/GSSAPI build and server matrices additionally require Docker plus the system
-libssh and Kerberos development metadata. On Debian/Ubuntu, install the local build-check tools with:
+这些限制不会用模拟结果替代。当前边界和所需资源持续记录在 [PROGRESS.md](PROGRESS.md#剩余外部验证门槛)。
 
-```bash
-sudo apt install libssh-dev libkrb5-dev pkg-config jq binutils
-```
+## 相关文档
 
-`libssh-dev` supplies `libssh.pc`, while `binutils` supplies the `nm` and `readelf` checks used to
-prove that the test binary references `ssh_userauth_gssapi` and that the resolved libssh runtime is
-linked to GSSAPI. Docker is used only by `npm run test:ssh-gssapi-compat`; the standalone
-`npm run test:libssh-gssapi-build` check does not start containers.
+- [PLAN.md](PLAN.md)：产品目标与关键设计
+- [PROGRESS.md](PROGRESS.md)：实际实现、兼容矩阵与剩余门槛
+- [RELEASE.md](RELEASE.md)：发布检查清单
+- [SECURITY.md](SECURITY.md)：安全策略、依赖例外与漏洞报告
 
-## SSH Trust Model
+## 参与贡献
 
-PortMate intentionally does not use the system `known_hosts` file as the source of truth. Each SSH profile owns:
+提交改动前请：
 
-- `hostKeyPolicy.alias`, equivalent in purpose to OpenSSH `HostKeyAlias`
-- profile/project/user scoped trusted host keys
-- multiple trusted host key algorithms for the same profile
-- `identityPolicy.identitiesOnly`, so the selected profile key is tried before broad agent enumeration
-- `agentPolicy`, including agent forwarding and offer order
+1. 先确认行为属于现有模块边界，避免无关重构。
+2. 为用户可见行为或协议边界添加对应测试。
+3. 运行与改动范围相称的前端、Rust 和兼容门禁。
+4. 不提交真实凭据、私钥、Token、生产 Store、未脱敏日志或签名材料。
+5. 对较大的协议、存储格式或安全策略变更先创建 issue 说明兼容性和迁移方案。
 
-This prevents common embedded lab failures where several devices reuse `192.168.1.10:22` but have different host keys.
+## 致谢
 
-For an active SSH/Tmux runtime, Session Settings can request a health report without opening another
-transport. A keepalive failure is `unresponsive`; a successful keepalive followed by exec-marker or
-optional SFTP failure is `degraded`; all requested stages succeeding is `healthy`. Every report is
-also bound to the primary interactive terminal channel: reader completion immediately marks that
-channel closed, so a still-responsive transport cannot be reported healthy while terminal input is
-unavailable. Reports identify the russh/libssh backend and actual successful authentication method,
-and remain bound to the runtime generation captured at the start, so reconnect or replacement during
-the probe returns an explicit retry error instead of publishing stale latency data. The optional SFTP stage gives
-initialization, canonicalization, and directory reading one shared five-second budget, so a server that
-accepts the subsystem request without completing the protocol cannot hang the health command.
+PortMate 的工作区和交互设计参考了 WindTerm，SSH 信任与密钥管理思路参考了 Bitvise 和 OpenSSH。终端使用 xterm.js，桌面框架使用 Tauri，默认等宽字体为 JetBrains Mono。
 
-## Current Implementation Boundary
+## 许可证
 
-The current slice is usable but not yet a full terminal replacement. Implemented runtime paths include SSH PTY shell with password/public-key/keyboard-interactive/ssh-agent authentication, profile-level SSH reconnect delay and protocol KeepAlive thresholds, profile-level HTTP CONNECT/SOCKS5 routing with optional authentication for SSH/Tmux/TCP/Telnet, multi-hop SSH Jump Host backend connection chains with per-hop host-key verification, per-hop independent password/passphrase `secretRef`, per-hop identity selection, per-hop inherited or custom host-key mode/alias/trust scope/rotation/IP-check policy, target host-key scan over multi-hop chains, Jump Host host-key confirmation for the first untrusted or changed hop in the chain, session-settings editing, and initial SSH reconnect loops, local Shell PTY with resize, raw TCP, Telnet socket mode with directional BINARY, NAWS, profile TERMINAL-TYPE and NVT negotiation, profile-configurable reconnect delay and bounded OS TCP keepalive, Telnet CRLF/raw byte IAC handling plus Raw TCP byte preservation with loopback mock regressions, TCP/Telnet and Serial automatic reconnect with latest-profile reload and stale-attempt rejection, runtime `lastDisconnect` and `lastDisconnectReason` diagnostics surfaced in summaries, SQLite, and bounded resource-tree/pane-control tooltips and accessible descriptions, serial open/read/write with runtime port enumeration, configurable reconnect delay and receive-idle detection, DTR/RTS, Break, real Hex byte sending, exact bounded Serial RX/TX capture with direction/Hex/ASCII filtering and atomic JSONL export, Tmux list/pane inspection and attach, local/remote/dynamic SSH tunnels with running-list, stop controls, connection counters, byte counters, last-error status, enabled-tunnel reconstruction after SSH reconnect, and passive remote-listener health checks that restore revoked forwards while preserving IDs, labels, and ports, bounded local Linux/macOS/Windows and remote Linux/macOS/FreeBSD/Windows Sysmon summaries with process/disk/interface detail views and CPU/memory/RX/TX history trends, SFTP-backed local/remote dual-pane file browsing, trigger timeline/notification/highlight/local-command/send-text actions, local/SFTP/SCP/X/Y/ZModem transfer queue tasks with retry/speed metadata, profile-level B/s rate limits, per-session background queued scheduling, `.portmate-part` offset resume for local copy, SFTP upload/download/remote copy, SCP upload, and remote-command SCP copy, plus from-zero temporary-file retries for SCP download, full session queue view, batch cancel/retry controls, and live progress/cancel for local/SFTP/SCP copy loops, remote-command SCP copy with target-size polling, and X/Y/ZModem block loops, append-only raw/text/jsonl log shards, profile-vault private key/password/passphrase/proxy-password storage through the OS keyring or Stronghold, MCP IPC token storage through the OS keyring, MCP grant management, profile persistence, profile-scoped host-key trust with connection-failure confirmation dialog and one-shot trust, host/client key manager workflows for known_hosts import/export, host-key scope/profile filtering, host-key field editing, batch host-key delete/copy-to-profile, grouped and filtered client identities, cross-profile client-key copy/reorder/reference removal, protected Jump Host references, profile-vault private-key import, and individual or batch ssh-agent identity addition, modal settings, MCP manifests/tools/resources, stdio/loopback HTTP MCP bridge, and live desktop IPC for trusted MCP control. Automated integration coverage includes isolated OpenSSH TOFU, same-endpoint host-key mismatch blocking, public-key/PTY/native-SFTP write and transfer/SCP workflows, live SSH reconnect-delay changes with tunnel restoration, authenticated and unauthenticated HTTP CONNECT/SOCKS5 transport forwarding and rejection handling, a real two-hop Jump Host direct-tcpip chain with per-endpoint TOFU and second-hop key-mismatch blocking, all three SSH tunnel modes, SOCKS5 protocol negotiation, `socat` virtual serial PTY exact binary capture/I/O, no-probe receive-idle detection, and reconnect migration to a different PTY path with live delay changes, plus Telnet/raw TCP loopback, configurable keepalive, and reconnect-delay behavior.
-
-GSSAPI has a deliberately constrained real-client path. When a profile's authentication order contains
-`gssapi-with-mic` and otherwise only explicit Profile Vault/System File public keys, filtered or
-unfiltered local ssh-agent fallback, password, keyboard-interactive, or none, Linux uses the system libssh backend for
-ordered authentication, PortMate host-key verification, PTY/shell setup, interactive I/O and resize,
-exec-based Tmux/Sysmon work, and keepalive/exec/SFTP health probes. HTTP CONNECT/SOCKS5 can hand a
-bounded preconnected socket to libssh; multi-hop Jump Host reuses the independently authenticated
-russh chain through a loopback bridge; agent forwarding uses a bounded Unix-socket/channel bridge.
-SFTP file operations and transfers, SCP upload/download/remote copy, and local/dynamic/remote-reverse
-tunnels all use the same backend boundary. Public keys, unfiltered agent offers, password, and
-keyboard-interactive can follow a denied or unadvertised GSSAPI attempt, while a valid ticket wins
-before a later fallback credential; the successful method is recorded through the existing profile
-policy. Exact Agent identity/fingerprint selection uses a private, read-only Unix-socket proxy that
-exposes only matching fingerprint/label/path identities to libssh, forwards signatures only for those
-key blobs, rejects agent mutations, bounds frames and connections, and stops immediately after
-authentication. Russh-server-to-libssh-client regressions cover both password-based
-fallback methods plus normalized stdout, stderr, exit status, and EOF handling. Isolated OpenSSH
-runtime regressions additionally cover ordered public-key and agent fallback, Proxy and Jump Host
-transport, agent forwarding, SFTP/SCP, all three tunnel modes, cleanup, and successful-method
-persistence. An isolated Profile Vault loader regression covers secretRef routing, encrypted-key
-parsing, missing secrets, and error redaction without initializing process-global credential
-providers. The current russh 0.62.4 path still has no client GSSAPI exchange.
-
-OpenSSH native multiplexing was not selected as the alternate backend because its control protocol
-has no post-open window-change request, so it cannot preserve dynamic terminal resize. The workspace
-carries a source-pinned `libssh-rs` 0.3.8 fork with the required safe wrappers and a fix for the
-upstream `ssh_channel_poll_timeout` argument order. `npm run test:libssh-gssapi-build` requires Linux
-system libssh development metadata, retains a real `ssh_userauth_gssapi` reference, resolves the
-linked shared library, and verifies its GSSAPI runtime dependency. Other targets use the upstream
-vendored build to remain self-contained, but that build has no GSSAPI support. These build and
-channel tests are complemented by real Ubuntu 24.04, Debian bookworm, and Debian trixie OpenSSH/MIT
-Kerberos matrices, Apache MINA SSHD 2.19.0 with MIT Kerberos, and Ubuntu OpenSSH with a Samba 4.19.5
-AD-compatible KDC, covering successful
-authentication, GSSAPI precedence, strict host-key rejection,
-a corrupt FILE credential cache and password fallback after its safe rejection, a missing ticket,
-password fallback, server-disabled GSSAPI, disabled-GSSAPI password fallback, SFTP subsystem
-rejection, and SFTP directory-operation rejection. The Samba entry additionally exercises an
-enterprise UPN login and canonical principal result, enforces AES-only client ticket negotiation and
-AD account encryption metadata, then decrypts the service ticket created during PortMate's connection
-to verify its AES ticket/session keys and PAC logon, UPN, DNS-domain, SAM-name, and SID evidence.
-Linux validates explicit FILE caches before
-calling libssh so malformed cache data cannot enter the crashing libssh/Kerberos path; non-FILE
-backends such as KEYRING, KCM, and DIR remain owned by the system Kerberos implementation.
-Successful GSSAPI and explicit-public-key fallback cases additionally initialize the libssh SFTP v3
-subsystem, canonicalize the working directory, and read its entries through the health probe.
-The Apache MINA path verifies interactive shell I/O but does not claim real process-PTY resize.
-Microsoft Active Directory realms remain unverified.
-
-Runtime health timestamps identify the start of an outage rather than the latest retry. Repeated SSH,
-TCP/Telnet, or Serial reconnect failures may update `lastDisconnectReason`, but they preserve the first
-`lastDisconnect` value through `Reconnecting`, reconnect disablement, and an idempotent manual close.
-A successful `Connected` transition ends that outage, so the next transport loss records a new time.
-Browser preview uses the same transition rules as the native Store: entering `Connecting` is not a
-disconnect, the first successful connection does not invent a prior outage, and fallback failures
-retain their concrete error reason instead of replacing it with a generic session error. Browser
-fallback also normalizes and bounds that reason before updating cacheable runtime state, rather than
-waiting until the health tooltip renders. Valid legacy SessionSummary caches pass through the same
-normalizer before detached windows consume them, so one oversized historical reason does not require
-discarding the rest of the cache.
-The native Store collapses whitespace and limits every persisted disconnect reason to 256 Unicode
-characters before it reaches snapshots or SQLite. Existing oversized legacy values are normalized
-when the Store loads, using a bounded streaming formatter rather than allocating a second copy of an
-untrusted field at its original size.
-Loading a snapshot also converts orphaned active runtimes into explicit disconnect diagnostics.
-Saved `Connected` and `Connecting` states start a new outage at the load time, while a saved
-`Reconnecting` state preserves its original outage timestamp and records that the retry was
-interrupted by the previous PortMate shutdown. Already inactive states retain their existing
-diagnostics, and normalizing the same snapshot again does not move the recorded outage time.
-The standalone serial analyzer uses the same validated diagnostics: its compact title bar shows a
-stable Chinese status label and exposes the full health description accessibly, while the status
-strip omits empty history and bounds malformed or multiline disconnect reasons without rendering an
-invalid timestamp.
-Detached terminal windows use that health description in their single-line footer instead of
-exposing internal status values. Their connection control follows the main window action model, so
-an in-progress initial connection or automatic reconnect can be cancelled from the detached window
-rather than incorrectly offering another connect action.
-Desktop connection attempts are single-flight per session. The backend also permits at most 64
-initial opens app-wide; each cancellation handle owns its permit until the attempt succeeds, fails,
-or finishes cancellation. A duplicate session is rejected before waiting on its lifecycle lane, and
-saturation is rejected before Profile, Secret, Store, or transport work. OneKey login reserves the
-same slot before resolving credentials. Disconnecting invalidates the current frontend generation,
-closes a matching credential prompt, and ignores late save/open/log responses; double activation
-cannot queue another open. A context-menu reconnect closes the current transport first and proceeds
-only after that close succeeds. The backend independently rejects opening any session whose Store
-status is active or whose transport registry still owns a runtime, preventing a stale or non-UI
-caller from replacing a live runtime.
-The authoritative close response becomes the next reconnect attempt's runtime baseline, so its
-disconnect timestamp and reason remain visible throughout the new handshake.
-
-The OpenSSH integration matrix also exercises host-key mismatch blocking followed by explicit TOFU `allowRotation` history retention, `MaxAuthTries` identity ordering and per-key diagnostics, three independent identities across a two-hop Jump Host chain with hop/endpoint diagnostics for first-hop refusal, second-hop direct-tcpip refusal, stalled handshakes at both hops and the final target, per-hop identity rejection, and target identity exhaustion, a real isolated ssh-agent across disabled/unfiltered/`IdentitiesOnly`/fingerprint-filtered policies including protection against same-comment fingerprint bypass, local/dynamic/remote tunnel target rejection followed by recovery on the original tunnel, server-side remote-forward removal followed by passive detection and restoration, best-effort local cleanup after a repeated cancel is rejected, automatic tunnel reconstruction after SSH reconnect with preserved identity/port and per-tunnel bind-failure isolation, SFTP upload/download/remote-copy and SCP upload resume from pre-existing `.portmate-part` prefixes; SCP download safely replaces stale prefixes from byte zero. The matrix also covers cancellation of rate-limited SFTP and SCP uploads followed by resumable retries, rejected server-side writes reaching a failed terminal state, interrupted SFTP/SCP uploads failing cleanly and resuming after SSH reconnect, plus lrzsz X/Y/ZModem uploads and downloads over a raw PTY with per-transfer READY/DONE gating and exact XModem upload truncation. A mixed-server matrix adds user-space russh password and keyboard-interactive first hops followed by independent OpenSSH public-key hops and targets; delayed russh direct-tcpip and session-channel confirmations verify the terminal, auxiliary exec, SFTP, and tunnel setup deadlines plus owning-session disconnect paths. A delayed russh-sftp `LSTAT` verifies that an in-flight request is issued only once, cancellation returns promptly, and the following exec channel reuses the same SSH connection. A silent russh `scp -f` peer verifies prompt download cancellation and the SCP idle deadline; a separate silent remote-copy exec peer verifies cancellation, idle timeout, bounded cleanup, and reuse of the same SSH connection for the following channel.
-
-Still pending: Microsoft Active Directory Kerberos/GSSAPI evidence, real FreeBSD/macOS SSH hosts in the remote-forward
-integration matrix, a
-Windows OpenSSH host for remote Sysmon,
-broader transfer/serial and physical-device matrices, cross-platform file-path coverage outside the
-validated transfer, file-manager, SSH identity, and local Shell surfaces, and successful native-runner
-evidence for the implemented Windows anonymous Credential Manager denial, macOS locked isolated
-keychain, and Windows Stronghold hard-link/junction probes. The
-`Native CI` workflow now defines Linux, Windows, and macOS source/package runners plus a Linux
-compatibility job. Its Linux package gate extracts and launches the DEB, RPM, and AppImage under
-Xvfb; its Windows gate silently installs/extracts and launches both MSI and NSIS payloads; and its
-macOS gate launches the direct app and the copy mounted from the verified DMG. Every
-package uses an isolated data root for three successful launches plus one rejected conflict start.
-It must publish a loopback IPC endpoint tied to its non-empty Store, exit through Tauri with code
-zero, remove the endpoint, preserve the Store byte-for-byte across the idle restart and
-legacy-directory migration, remove the migrated legacy directory, and rotate the IPC credential on
-every successful launch. With distinct non-empty current and legacy Stores, it must instead exit
-nonzero with the explicit conflict diagnostic, publish no IPC, and leave both Stores byte-for-byte
-unchanged. A successful workflow run and retained artifacts are still required as native platform
-evidence; the always-uploaded diagnostics from a failed run do not satisfy that gate. Signing and
-Apple notarization remain release gates. MCP IPC/HTTP tokens remain native-keyring records and are outside profile
-credential migration.
+PortMate 使用 [Apache License 2.0](LICENSE)。随应用分发的 JetBrains Mono 使用 SIL Open Font License 1.1，许可证位于 [THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt](THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt)。
