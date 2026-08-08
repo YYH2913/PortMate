@@ -1,65 +1,70 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128.png" width="96" height="96" alt="PortMate logo">
+  <img src="./src-tauri/icons/128x128.png" width="96" height="96" alt="PortMate logo">
 </p>
 
 <h1 align="center">PortMate</h1>
 
-<p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
+<p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
 <p align="center">
-  <a href="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml"><img alt="Native CI" src="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml/badge.svg"></a>
-  <a href="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml"><img alt="MCP SDK Freshness" src="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="Apache-2.0 License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href=".nvmrc"><img alt="Node.js 22.20.0" src="https://img.shields.io/badge/Node.js-22.20.0-339933?logo=node.js&amp;logoColor=white"></a>
+  <strong>English</strong> |
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml">Native CI</a> ·
+  <a href="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml">MCP SDK Freshness</a> ·
+  <a href="./LICENSE">Apache-2.0</a> ·
+  <a href="./.nvmrc">Node.js 22.20.0</a>
 </p>
 
 > [!IMPORTANT]
-> PortMate 当前处于 **alpha** 阶段。仓库内可在 Linux、Docker 和浏览器环境复现的实现与兼容矩阵已经建立，但 Windows/macOS 原生安装包、真实 Microsoft AD、物理串口设备和发布签名仍需要外部环境完成最终验证。请勿将当前构建直接用于无人值守的生产关键链路。
+> PortMate is currently **alpha** software. The implementation and compatibility tests reproducible on Linux, Docker, and browser environments are in place, but native Windows/macOS packages, real Microsoft AD, physical serial hardware, and release signing still require external validation. Do not use the current build unattended in a production-critical path.
 
-## PortMate 是什么
+## What is PortMate?
 
-PortMate 是一个以终端为核心的 Tauri v2 桌面应用。它把 SSH、Shell PTY、串口、Telnet、Raw TCP、Tmux、文件传输、隧道、日志和系统监控放在同一个可分屏工作区中。
+PortMate is a terminal-first Tauri v2 desktop application. It brings SSH, local Shell PTY, serial, Telnet, raw TCP, Tmux, file transfer, tunnels, logging, and system monitoring into one split-pane workspace.
 
-项目的一个重点是会话级身份与信任隔离：SSH Host Key、客户端身份、认证顺序和 Jump Host 策略都属于具体 Profile，不依赖系统全局 `~/.ssh/known_hosts`。同一 IP 和端口对应不同设备、重装系统或实验室板卡时，可以分别保存和审查信任关系。
+One of its primary design goals is session-level identity and trust isolation. SSH host keys, client identities, authentication order, and Jump Host policies belong to a PortMate Profile instead of the global `~/.ssh/known_hosts`. Devices that share an IP and port, rebuilt systems, and lab boards can therefore keep separate, reviewable trust records.
 
-PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允许外部 MCP Host 在用户授权范围内读取会话状态、查询日志或执行控制动作。
+PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets external MCP hosts inspect sessions, query logs, or perform control actions within grants approved by the user.
 
-## 主要功能
+## Features
 
-| 领域 | 能力 |
+| Area | Capabilities |
 | --- | --- |
-| 会话与协议 | SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux；TCP/Telnet 支持 TLS，SSH/Tmux/TCP/Telnet 支持 HTTP CONNECT 与 SOCKS5 代理 |
-| 终端工作区 | 多标签、递归分屏、跨分组拖放、独立窗口、布局恢复、Insert/Normal 模式、对应光标、搜索、行跳转、文本/Hex/二分视图 |
-| 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、OneKeys、自由输入、同步输入 |
-| SSH 安全 | Profile 级 Host Key、TOFU 与变更阻断、Host/Client Key Manager、多级 Jump Host、ssh-agent、密码/公钥/keyboard-interactive，以及 Linux libssh GSSAPI 认证 |
-| 文件与传输 | SFTP/SCP 文件管理、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
-| 运维与诊断 | SSH 健康检测、local/remote/dynamic tunnel、Sysmon 侧栏与历史趋势、结构化日志、触发器、会话诊断包 |
-| 串口工具 | 常用波特率、DTR/RTS/Break、文本与 Hex 收发、精确字节捕获、独立分析器、SLIP/COBS/Modbus RTU 解码 |
-| MCP | stdio 与 Streamable HTTP、细粒度授权、会话范围、写操作确认、审计、Token 轮换和托管 sidecar 生命周期 |
+| Sessions and protocols | SSH, local Shell PTY, Serial, Telnet, raw TCP, and Tmux; TLS for TCP/Telnet; HTTP CONNECT and SOCKS5 proxies for SSH/Tmux/TCP/Telnet |
+| Terminal workspace | Tabs, recursive splits, cross-group drag and drop, detached windows, layout restore, Insert/Normal modes with matching cursors, search, line navigation, and text/hex/split views |
+| Interactive workflow | WindTerm-style command completion and parameter hints, semantic command coloring, Quick Commands, OneKeys, free input, and synchronized input |
+| SSH security | Profile-scoped host keys, TOFU and key-change blocking, Host/Client Key Managers, multi-hop Jump Hosts, ssh-agent, password/public-key/keyboard-interactive, and Linux libssh GSSAPI authentication |
+| Files and transfer | SFTP/SCP file management, drag and drop, queues, throttling, cancellation, retry, resumable transfers, and X/Y/ZModem |
+| Operations and diagnostics | SSH health checks, local/remote/dynamic tunnels, persistent Sysmon sidebar and trends, structured logs, triggers, and diagnostic session bundles |
+| Serial tooling | Common baud rates, DTR/RTS/Break, text and hex I/O, exact byte capture, a detached analyzer, and SLIP/COBS/Modbus RTU decoding |
+| MCP | stdio and Streamable HTTP, fine-grained grants, session scopes, write confirmation, audit history, token rotation, and managed sidecar lifecycle |
 
-## 当前状态
+## Project Status
 
-- 桌面目标平台：Linux、Windows、macOS。
-- 当前主要实机开发与验收环境：Linux + VMware。
-- 终端基于 `@xterm/xterm` 6，包含 Search、Serialize、Unicode 11、Clipboard、Web Links、Fit 和按需 WebGL 支持。
-- SSH/SFTP/SCP、Telnet/TCP、vttest、全屏程序和多个 Tmux 版本均有自动化兼容矩阵。
-- MCP 回归覆盖 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 官方 SDK。
-- Linux DEB、RPM 和 AppImage 已有本地打包与包内生命周期门禁；Windows 和 macOS 仍需原生 runner 的成功证据。
+- Target desktop platforms: Linux, Windows, and macOS.
+- Primary current development and native verification environment: Linux on VMware.
+- The terminal uses `@xterm/xterm` 6 with Search, Serialize, Unicode 11, Clipboard, Web Links, Fit, and optional WebGL support.
+- Automated compatibility matrices cover SSH/SFTP/SCP, Telnet/TCP, vttest, full-screen applications, and multiple Tmux versions.
+- MCP compatibility covers the official TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift SDKs.
+- Linux DEB, RPM, and AppImage packages have local package and lifecycle gates. Windows and macOS still require successful native-runner evidence.
 
-详细实现进度和未完成边界见 [PROGRESS.md](PROGRESS.md)，正式发布要求见 [RELEASE.md](RELEASE.md)。
+See [PROGRESS.md](./PROGRESS.md) for the detailed implementation record and remaining boundaries. See [RELEASE.md](./RELEASE.md) for release requirements.
 
-## 快速开始
+## Quick Start
 
-### 前置环境
+### Prerequisites
 
 - Git
-- Node.js `>= 22.12.0`，仓库 `.nvmrc` 固定已验证版本 `22.20.0`
-- Rust stable toolchain
-- 当前平台所需的 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+- Node.js `>= 22.12.0`; `.nvmrc` pins the verified `22.20.0` release
+- A stable Rust toolchain
+- The [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform
 
-Linux 构建桌面应用时通常还需要 WebKitGTK、GTK3、libssh、Kerberos、udev 和系统托盘相关开发包。GitHub Actions 中的完整 Ubuntu 依赖列表可参考 [.github/workflows/native-ci.yml](.github/workflows/native-ci.yml)。
+Building the Linux desktop application generally also requires WebKitGTK, GTK3, libssh, Kerberos, udev, and system-tray development packages. The complete Ubuntu dependency list is available in [.github/workflows/native-ci.yml](./.github/workflows/native-ci.yml).
 
-### 启动桌面应用
+### Run the Desktop App
 
 ```bash
 git clone https://github.com/YYH2913/PortMate.git
@@ -70,64 +75,64 @@ npm ci
 npm run desktop:clean
 ```
 
-`desktop:clean` 只清理当前仓库遗留的 Vite 监听和已知的 Snap GTK/WebKit 环境污染，不会删除 Profile、日志或 PortMate 数据。正常情况下也可以直接运行：
+`desktop:clean` only clears a stale Vite listener owned by this checkout and known Snap-injected GTK/WebKit environment values. It does not remove Profiles, logs, or PortMate application data. When cleanup is unnecessary, run:
 
 ```bash
 npm run desktop
 ```
 
-启动顺序是：构建开发版 MCP sidecar、启动 Vite、启动 Tauri/Rust 后端。首次 Rust 编译可能需要一些时间。
+The launcher builds the development MCP sidecar, starts Vite, and then starts the Tauri/Rust backend. The first Rust build can take a while.
 
-### 浏览器预览
+### Browser Preview
 
 ```bash
 npm run dev
 ```
 
-访问 <http://127.0.0.1:1420/>。浏览器模式适合检查布局和前端交互；真实 SSH、串口、文件传输、密钥库和本地 IPC 需要 Tauri 桌面后端。
+Open <http://127.0.0.1:1420/>. Browser mode is useful for layout and frontend interaction checks. Real SSH, serial, transfer, keyring, and local IPC operations require the Tauri desktop backend.
 
-## 基本使用
+## Basic Usage
 
-1. 打开 `会话 -> 新建会话`。
-2. 选择 Shell、SSH、Tmux、Telnet、TCP 或 Serial。
-3. 分别填写主机/IP、端口和用户名；无需使用 `username@host` 组合格式。
-4. SSH 首次连接时核对服务端 Host Key 指纹，并选择一次性信任或保存到 Profile/项目信任域。
-5. 在 `工具` 菜单中打开传输、隧道、Tmux、Sysmon、串口分析器、密钥管理器、日志或 MCP Bridge。
+1. Open `会话 (Session) -> 新建会话 (New Session)`.
+2. Select Shell, SSH, Tmux, Telnet, TCP, or Serial.
+3. Enter host/IP, port, and username in separate fields; a combined `username@host` value is not required.
+4. On the first SSH connection, verify the server host-key fingerprint and choose one-time or persistent Profile/project trust.
+5. Open transfers, tunnels, Tmux, Sysmon, the serial analyzer, key management, logs, or MCP Bridge from `工具 (Tools)`.
 
-连接状态会显示在会话标签前：绿色表示已连接，其余不可用状态显示为红色，并通过 tooltip 保留具体诊断。启动恢复会静默尝试已保存且可用的凭据，不会在每次打开应用时自动弹出重连窗口。
+Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
-SSH、Tmux、TCP、Telnet 和 Serial 的自动重连会在下一次尝试前重新读取最新 Profile。连接参数、认证策略、重连延迟或开关的修改不需要等待旧配置完成全部重试。
+SSH, Tmux, TCP, Telnet, and Serial reconnect workers reload the latest Profile before the next attempt. Changes to connection settings, authentication policy, reconnect delay, or the reconnect switch do not need to wait for an obsolete retry cycle to finish.
 
-## SSH 信任与凭据
+## SSH Trust and Credentials
 
-PortMate 将两类密钥分开管理：
+PortMate manages two distinct types of keys:
 
-- **Host Key**：证明远端服务器身份。默认保存在 PortMate 自有信任库，不自动写入系统 `known_hosts`。
-- **Client Identity**：用于登录远端的私钥或 agent 身份。可以限制尝试顺序，避免无关密钥耗尽服务端 `MaxAuthTries`。
+- **Host keys** identify remote servers. They are stored in PortMate's trust store by default and are not automatically written to the system `known_hosts`.
+- **Client identities** authenticate the user to a server. Their offer order can be constrained so unrelated keys do not exhaust the server's `MaxAuthTries` limit.
 
-密码、私钥口令、Profile Vault 私钥和 MCP Token 不写入 SQLite 正文。默认使用系统原生 keyring；原生 provider 不可用时，可以显式使用 IOTA Stronghold Portable Vault。Store 中只保存 `secretRef`/`tokenRef` 和必要元数据。
+Passwords, private-key passphrases, Profile Vault private keys, and MCP tokens are not stored as plaintext in SQLite. PortMate uses the native OS keyring by default and can explicitly use an IOTA Stronghold Portable Vault when the native provider is unavailable. The Store keeps only `secretRef`/`tokenRef` values and required metadata.
 
-Host Key 变化默认阻断连接。请在确认设备替换、系统重装或密钥轮换后，再使用一次性信任、追加或替换操作。不要为了消除提示而关闭验证。
+A changed host key blocks the connection by default. Use one-time trust, append, or replacement only after confirming a device replacement, OS rebuild, or legitimate key rotation. Do not disable verification merely to remove a warning.
 
 ## MCP Bridge
 
-### 推荐配置方式
+### Recommended Setup
 
-1. 保持 PortMate 桌面应用运行。
-2. 打开 `工具 -> MCP Bridge -> 授权`，创建独立 Client ID，并选择权限和允许访问的会话。
-3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
-4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
-5. HTTP 客户端在 `HTTP` 页设置监听 IP、端口、Origin、Client ID，生成 Token 后启动托管服务。
+1. Keep the PortMate desktop application running.
+2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.
+3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.
+4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
+5. For HTTP clients, configure the listen IP, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service.
 
-### stdio 示例
+### stdio Example
 
-先构建开发 sidecar：
+Build the development sidecar first:
 
 ```bash
 cargo build --locked -p portmate-mcp
 ```
 
-多数 MCP Host 使用类似以下配置。请将路径替换为 MCP Bridge 页面显示的真实值：
+Most MCP hosts use a configuration similar to the following. Replace both paths with the exact values shown in the MCP Bridge UI:
 
 ```json
 {
@@ -144,50 +149,50 @@ cargo build --locked -p portmate-mcp
 }
 ```
 
-bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoint，因此桌面重启或 IPC Token 轮换通常不要求重启长驻 stdio 客户端。
+The bridge reloads the Store and desktop IPC endpoint before each JSON-RPC envelope. A desktop restart or IPC token rotation therefore normally does not require restarting a long-lived stdio client.
 
-### HTTP 模式
+### HTTP Mode
 
-- 默认监听 `127.0.0.1:8787`，端点为 `/mcp`。
-- 支持 `127.0.0.1`、`0.0.0.0`、`::1`、`::` 和自定义数字 IP。
-- 非回环监听必须显式启用远程访问。
-- 每个请求都需要 Bearer Token 或 `X-PortMate-MCP-Token`，存在 Origin 时还会校验 allowlist。
-- bridge 本身不终止 TLS。远程监听应只用于可信网络，或放在配置正确的 TLS 反向代理后方。
+- The default listener is `127.0.0.1:8787`, with MCP available at `/mcp`.
+- Listener presets include `127.0.0.1`, `0.0.0.0`, `::1`, and `::`, plus a custom numeric IP.
+- A non-loopback listener requires explicit remote-access approval.
+- Every request requires a Bearer token or `X-PortMate-MCP-Token`; requests with an Origin also pass the configured allowlist.
+- The bridge does not terminate TLS. Expose it remotely only on a trusted network or behind a correctly configured TLS reverse proxy.
 
-不要把 HTTP Token 写入 README、启动命令、issue、日志或 MCP 客户端的公开配置示例中。
+Never place the HTTP token in a README, startup command, issue, log, or public MCP client example.
 
-### 权限范围
+### Grant Scopes
 
-| Scope | 含义 |
+| Scope | Access |
 | --- | --- |
-| `read-sessions` | 读取已授权会话及运行状态 |
-| `read-logs` | 读取和搜索已授权会话日志 |
-| `write-input` | 向终端发送文本、按键或命令 |
-| `transfer` | 创建文件传输任务 |
-| `tunnel` | 创建 SSH tunnel |
-| `manage-sessions` | 打开或关闭会话 |
+| `read-sessions` | Read authorized sessions and runtime state |
+| `read-logs` | Read and search logs for authorized sessions |
+| `write-input` | Send text, keys, or commands to a terminal |
+| `transfer` | Create file-transfer tasks |
+| `tunnel` | Create SSH tunnels |
+| `manage-sessions` | Open or close sessions |
 
-授权可以设置到期时间、撤销状态、允许会话列表和写操作逐次确认。所有 MCP 写操作都会进入审计记录。
+Grants support expiration, revocation, allowed-session lists, and per-write confirmation. Every MCP write operation is audited.
 
-## 构建
+## Build
 
-前端生产构建：
+Build the production frontend:
 
 ```bash
 npm run build
 ```
 
-桌面安装包构建：
+Build native desktop packages:
 
 ```bash
 npm run desktop:build
 ```
 
-产物位于 `target/release/bundle/`。正式发布前必须在目标平台执行 [RELEASE.md](RELEASE.md) 中的安装、升级、回滚、签名和产物校验，不应把一次本地源码构建直接视为可发布安装包。
+Bundles are written below `target/release/bundle/`. Before publishing, run the installation, upgrade, rollback, signing, and artifact gates in [RELEASE.md](./RELEASE.md) on each target platform. A successful local source build is not, by itself, a releasable package.
 
-## 验证
+## Verification
 
-常规开发门禁：
+Normal development gates:
 
 ```bash
 npm test
@@ -197,7 +202,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-重点兼容门禁：
+Focused compatibility gates:
 
 ```bash
 npm run test:terminal-compat
@@ -210,7 +215,7 @@ npm run test:ssh-gssapi-compat
 npm run test:tcp-telnet-server-compat
 ```
 
-MCP 客户端矩阵：
+MCP client matrices:
 
 ```bash
 npm run test:mcp-stdio-client
@@ -227,14 +232,14 @@ npm run test:mcp-swift-client
 npm run test:mcp-sdk-freshness
 ```
 
-Docker 兼容矩阵、Chrome/Playwright、系统 keyring 和桌面打包测试需要额外工具或对应操作系统。完整发布命令以 [RELEASE.md](RELEASE.md) 为准。
+Docker compatibility matrices, Chrome/Playwright checks, native keyring probes, and desktop packaging require additional tools or the corresponding operating system. [RELEASE.md](./RELEASE.md) is the source of truth for the complete release gate.
 
-## 项目结构
+## Repository Layout
 
 ```text
 PortMate/
-├── src/                    React/TypeScript 桌面工作区
-├── src-tauri/              Tauri 应用、命令适配与平台集成
+├── src/                    React/TypeScript desktop workspace
+├── src-tauri/              Tauri application, command adapters, platform integration
 │   └── src/
 │       ├── backend_application.rs
 │       ├── backend_automation.rs
@@ -242,60 +247,61 @@ PortMate/
 │       ├── backend_storage.rs
 │       └── backend_transport.rs
 ├── crates/
-│   ├── portmate-core/      共享模型、Store、Host Key 与授权策略
+│   ├── portmate-core/      Shared models, Store, host keys, grant policy
 │   ├── portmate-mcp/       MCP stdio/HTTP bridge
-│   ├── portmate-kdf/       Portable Vault KDF 边界
-│   ├── portmate-keyring/   跨平台原生 keyring 边界
-│   └── russh-sftp/         项目使用的 SFTP 兼容实现
-├── scripts/                构建、打包与兼容矩阵脚本
-├── tests/                  外部服务端与协议夹具
-└── .github/workflows/      Native CI 与 SDK freshness 工作流
+│   ├── portmate-kdf/       Portable Vault KDF boundary
+│   ├── portmate-keyring/   Cross-platform native keyring boundary
+│   └── russh-sftp/         SFTP compatibility implementation used by PortMate
+├── scripts/                Build, packaging, and compatibility scripts
+├── tests/                  External server and protocol fixtures
+└── .github/workflows/      Native CI and SDK freshness workflows
 ```
 
-Tauri 根 `lib.rs` 只保留模块注册与公开重导出。transport、security、storage、automation 和 application 的实现按各自 owner 维护，避免新的跨领域逻辑重新堆回根模块。
+The Tauri root `lib.rs` contains only module registration and public re-exports. Transport, security, storage, automation, and application logic remain with their owning boundaries instead of accumulating in the crate root.
 
-## 数据与隐私
+## Data and Privacy
 
-- Profile、运行状态、授权和索引数据保存在应用数据目录中的 `portmate-store.sqlite3`。
-- JSON compatibility snapshot、日志、导出和 IPC endpoint 均使用有界、原子或私有权限写入策略。
-- 原始终端日志可能包含敏感业务数据；只在确有需要时启用 Raw 日志，并在分享诊断包前检查脱敏范围。
-- MCP 读取结果会移除凭据引用和本地敏感路径；写操作仍需权限，并记录来源 Client ID、动作、会话和最终结果。
-- 漏洞请通过 GitHub Security Advisory 私下报告，不要在公开 issue 中提交凭据、私钥、生产主机名或未脱敏 Store。
+- Profiles, runtime state, grants, and index data are stored in `portmate-store.sqlite3` under the platform application-data directory.
+- The JSON compatibility snapshot, logs, exports, and IPC endpoint use bounded, atomic, or private-permission write paths as appropriate.
+- Raw terminal logs can contain sensitive operational data. Enable them only when needed and review redaction before sharing a diagnostic bundle.
+- MCP read responses remove credential references and sensitive local paths. Writes still require a grant and record the source Client ID, action, session, and final result.
+- Report vulnerabilities privately through GitHub Security Advisories. Do not place credentials, private keys, production hostnames, or unredacted Stores in a public issue.
 
-更多说明见 [SECURITY.md](SECURITY.md)。
+See [SECURITY.md](./SECURITY.md) for the security policy and reviewed dependency exceptions.
 
-## 已知限制
+## Known Limitations
 
-- 当前不是完整的 WindTerm 或 Bitvise 替代品，也没有正式稳定版本承诺。
-- 真实 Microsoft Active Directory GSSAPI/PAC 尚待实证；当前 Samba 结果只代表 AD-compatible 协议覆盖。
-- Windows OpenSSH 远端 Sysmon、真实 macOS/FreeBSD SSH/SFTP/SCP/remote-forward 仍需外部主机证据。
-- 物理串口/USB 串口和 Modem 的断电、拔插及线路状态矩阵不能由虚拟 PTY 完全替代。
-- Windows Authenticode、Apple Developer ID 与 notarization 凭据尚未用于最终发布产物。
-- MCP HTTP 不提供内置 TLS。
+- PortMate is not yet a complete WindTerm or Bitvise replacement and does not currently promise a stable release channel.
+- Real Microsoft Active Directory GSSAPI/PAC evidence is still pending. The current Samba matrix proves AD-compatible protocol coverage only.
+- Remote Windows OpenSSH Sysmon and real macOS/FreeBSD SSH/SFTP/SCP/remote-forward evidence require external hosts.
+- Virtual PTYs cannot replace physical serial/USB serial and modem power-loss, unplug, and line-state testing.
+- Final artifacts have not yet been signed with Windows Authenticode or Apple Developer ID and notarized.
+- MCP HTTP has no built-in TLS termination.
 
-这些限制不会用模拟结果替代。当前边界和所需资源持续记录在 [PROGRESS.md](PROGRESS.md#剩余外部验证门槛)。
+PortMate does not substitute simulated results for these gates. Required environments and current boundaries are tracked in [PROGRESS.md](./PROGRESS.md#剩余外部验证门槛).
 
-## 相关文档
+## Documentation
 
-- [PLAN.md](PLAN.md)：产品目标与关键设计
-- [PROGRESS.md](PROGRESS.md)：实际实现、兼容矩阵与剩余门槛
-- [RELEASE.md](RELEASE.md)：发布检查清单
-- [SECURITY.md](SECURITY.md)：安全策略、依赖例外与漏洞报告
+- [PLAN.md](./PLAN.md): product goals and key design decisions
+- [PROGRESS.md](./PROGRESS.md): implementation record, compatibility matrices, and remaining gates
+- [RELEASE.md](./RELEASE.md): release checklist
+- [SECURITY.md](./SECURITY.md): security policy, dependency exceptions, and vulnerability reporting
+- [README.zh-CN.md](./README.zh-CN.md): Simplified Chinese README
 
-## 参与贡献
+## Contributing
 
-提交改动前请：
+Before submitting a change:
 
-1. 先确认行为属于现有模块边界，避免无关重构。
-2. 为用户可见行为或协议边界添加对应测试。
-3. 运行与改动范围相称的前端、Rust 和兼容门禁。
-4. 不提交真实凭据、私钥、Token、生产 Store、未脱敏日志或签名材料。
-5. 对较大的协议、存储格式或安全策略变更先创建 issue 说明兼容性和迁移方案。
+1. Keep behavior within the existing ownership boundaries and avoid unrelated refactors.
+2. Add tests for user-visible behavior and protocol or security boundaries.
+3. Run frontend, Rust, and compatibility checks proportional to the change.
+4. Never commit real credentials, private keys, tokens, production Stores, unredacted logs, or signing material.
+5. Open an issue before a large protocol, storage-format, or security-policy change and describe its compatibility and migration impact.
 
-## 致谢
+## Acknowledgements
 
-PortMate 的工作区和交互设计参考了 WindTerm，SSH 信任与密钥管理思路参考了 Bitvise 和 OpenSSH。终端使用 xterm.js，桌面框架使用 Tauri，默认等宽字体为 JetBrains Mono。
+PortMate's workspace and interaction model is inspired by WindTerm. Its SSH trust and key-management model draws from Bitvise and OpenSSH. The terminal uses xterm.js, the desktop runtime uses Tauri, and the bundled default monospace font is JetBrains Mono.
 
-## 许可证
+## License
 
-PortMate 使用 [Apache License 2.0](LICENSE)。随应用分发的 JetBrains Mono 使用 SIL Open Font License 1.1，许可证位于 [THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt](THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt)。
+PortMate is licensed under the [Apache License 2.0](./LICENSE). The bundled JetBrains Mono font is distributed under the SIL Open Font License 1.1; see [THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt](./THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt).
