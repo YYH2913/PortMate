@@ -110,7 +110,7 @@ PortMate manages two distinct types of keys:
 - **Host keys** identify remote servers. They are stored in PortMate's trust store by default and are not automatically written to the system `known_hosts`.
 - **Client identities** authenticate the user to a server. Their offer order can be constrained so unrelated keys do not exhaust the server's `MaxAuthTries` limit.
 
-Passwords, private-key passphrases, Profile Vault private keys, and MCP tokens are not stored as plaintext in SQLite. PortMate uses the native OS keyring by default and can explicitly use an IOTA Stronghold Portable Vault when the native provider is unavailable. The Store keeps only `secretRef`/`tokenRef` values and required metadata.
+Passwords, private-key passphrases, Profile Vault private keys, and persistent MCP HTTP tokens are not stored as plaintext in SQLite. PortMate uses the native OS keyring by default and can explicitly use an IOTA Stronghold Portable Vault when the native provider is unavailable. The short-lived desktop IPC token rotates on every launch and is written only to the atomic, owner-only `portmate-ipc.json` endpoint; it is never stored in SQLite.
 
 A changed host key blocks the connection by default. Use one-time trust, append, or replacement only after confirming a device replacement, OS rebuild, or legitimate key rotation. Do not disable verification merely to remove a warning.
 

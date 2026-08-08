@@ -74,21 +74,7 @@ pub(super) fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: S
                 return;
             }
         }
-        let token_ref = format!("keychain:ipc-{}", Uuid::new_v4());
-        let token_written = write_secret_to_keyring(&token_ref, &token);
-        let (endpoint_token, endpoint_token_ref) = match token_written {
-            Ok(()) => (None, Some(token_ref)),
-            Err(error) => {
-                eprintln!("PortMate: failed to store MCP IPC token in keyring: {error}");
-                (Some(token.clone()), None)
-            }
-        };
-        let endpoint = IpcEndpointFile {
-            addr: addr.clone(),
-            token: endpoint_token,
-            token_ref: endpoint_token_ref,
-            store_path: state.store_path.display().to_string(),
-        };
+        let endpoint = inline_ipc_endpoint(&addr, &token, &state.store_path);
         match publish_ipc_endpoint(&state, &endpoint_path, &endpoint) {
             Ok(previous_token_ref) => {
                 if let Some(previous_token_ref) = previous_token_ref {
@@ -131,6 +117,15 @@ pub(super) fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: S
             }
         }
     });
+}
+
+pub(super) fn inline_ipc_endpoint(addr: &str, token: &str, store_path: &Path) -> IpcEndpointFile {
+    IpcEndpointFile {
+        addr: addr.to_string(),
+        token: Some(token.to_string()),
+        token_ref: None,
+        store_path: store_path.display().to_string(),
+    }
 }
 
 pub(super) async fn spawn_ipc_client(

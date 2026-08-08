@@ -18,6 +18,17 @@ async fn exchange_test_ipc(state: AppState, token: &str, raw: Vec<u8>) -> IpcRes
 }
 
 #[test]
+fn desktop_ipc_uses_a_rotating_owner_only_endpoint_credential() {
+    let store_path = std::env::temp_dir().join("portmate-store.sqlite3");
+    let endpoint = inline_ipc_endpoint("127.0.0.1:43123", "rotating-token", &store_path);
+
+    assert_eq!(endpoint.addr, "127.0.0.1:43123");
+    assert_eq!(endpoint.token.as_deref(), Some("rotating-token"));
+    assert_eq!(endpoint.token_ref, None);
+    assert_eq!(endpoint.store_path, store_path.display().to_string());
+}
+
+#[test]
 fn ipc_payload_reader_times_out_incomplete_clients() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
