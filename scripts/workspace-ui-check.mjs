@@ -2272,6 +2272,32 @@ Host staging
     "history selection changed the stored command before insertion");
 
   const sender = bottomDock;
+  const senderTimestamp = sender.locator("time.send-input-timestamp");
+  const senderTimestampValue = await senderTimestamp.textContent();
+  const senderTimestampDateTime = await senderTimestamp.getAttribute("datetime");
+  assert(await senderTimestamp.count() === 1
+    && /^\d{2}:\d{2}:\d{2}$/.test(senderTimestampValue?.trim() ?? "")
+    && Boolean(senderTimestampDateTime)
+    && !Number.isNaN(Date.parse(senderTimestampDateTime)),
+  `sender input timestamp is missing or invalid: ${JSON.stringify({ value: senderTimestampValue, dateTime: senderTimestampDateTime })}`);
+  const senderInputGeometry = await sender.locator(".send-input-row").evaluate((row) => {
+    const timestamp = row.querySelector(".send-input-timestamp")?.getBoundingClientRect();
+    const textarea = row.querySelector(".send-textarea")?.getBoundingClientRect();
+    const container = row.getBoundingClientRect();
+    return timestamp && textarea ? {
+      containerLeft: container.left,
+      timestampLeft: timestamp.left,
+      timestampRight: timestamp.right,
+      timestampWidth: timestamp.width,
+      textareaLeft: textarea.left,
+    } : null;
+  });
+  assert(senderInputGeometry
+    && Math.abs(senderInputGeometry.timestampLeft - senderInputGeometry.containerLeft) <= 1
+    && senderInputGeometry.timestampWidth >= 71
+    && senderInputGeometry.timestampWidth <= 73
+    && Math.abs(senderInputGeometry.timestampRight - senderInputGeometry.textareaLeft) <= 1,
+  `sender timestamp is not the fixed left input column: ${JSON.stringify(senderInputGeometry)}`);
   assert(!(await sender.textContent()).includes("Shell"), "unused Shell sender tab is visible");
   const advancedSendButton = sender.getByRole("button", { name: "高级发送选项", exact: true });
   assert(await sender.locator(".send-toolbar-primary > button").count() === 2
@@ -2299,7 +2325,14 @@ Host staging
     "sender advanced-settings indicator did not clear after restoring defaults");
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
   await sender.getByRole("button", { name: "发送", exact: true }).click();
+  const senderTimestampBeforeTyping = await senderTimestamp.getAttribute("datetime");
   await sender.getByRole("textbox", { name: "send text", exact: true }).fill("uname -a");
+  const senderTimestampAfterTyping = await senderTimestamp.getAttribute("datetime");
+  assert(Boolean(senderTimestampBeforeTyping)
+    && Boolean(senderTimestampAfterTyping)
+    && senderTimestampAfterTyping !== senderTimestampBeforeTyping
+    && Date.parse(senderTimestampAfterTyping) >= Date.parse(senderTimestampBeforeTyping),
+  `sender timestamp did not update with input: ${JSON.stringify({ before: senderTimestampBeforeTyping, after: senderTimestampAfterTyping })}`);
   await sender.getByRole("button", { name: "发送", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");

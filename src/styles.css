@@ -4330,6 +4330,38 @@ button {
   font-weight: 600;
 }
 
+.send-input-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: #0d1117;
+}
+
+.send-input-row:focus-within {
+  box-shadow: inset 0 1px rgba(94, 234, 212, 0.45);
+}
+
+.send-input-timestamp {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 13px 8px 0;
+  border-right: 1px solid var(--line-soft);
+  color: #718397;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.send-input-row:focus-within .send-input-timestamp {
+  color: var(--cyan);
+}
+
 .send-textarea {
   width: 100%;
   height: 100%;
@@ -4339,6 +4371,17 @@ button {
   padding: 12px;
   background: #0d1117;
   color: var(--pink);
+}
+
+@media (max-width: 480px) {
+  .send-input-row {
+    grid-template-columns: 62px minmax(0, 1fr);
+  }
+
+  .send-input-timestamp {
+    padding-inline: 6px;
+    font-size: 9px;
+  }
 }
 
 .workspace-dock-bottom .send-toolbar {
