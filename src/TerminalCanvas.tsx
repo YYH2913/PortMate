@@ -9,11 +9,11 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
-import type { ITheme } from "@xterm/xterm";
+import type { IMarker, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
-import { formatBytes } from "./display-formatters";
+import { formatBytes, formatEventClock } from "./display-formatters";
 import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptStateFromEvents, reduceOneKeyPromptDetection } from "./one-key-completion-state";
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
@@ -56,6 +56,12 @@ import {
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
+import {
+  MAX_TERMINAL_TIMESTAMPS,
+  normalizeTerminalTimestamps,
+  visibleTerminalTimestamps,
+} from "./terminal-timestamp-state";
+import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
 import {
   clearTerminalByteCache,
   readTerminalDisplayMode,
@@ -114,6 +120,16 @@ type TerminalGotoLineContext = {
   resumeFreeInputSource: "manual" | "normal" | null;
   resumeFreeInputValue: string;
 };
+type TerminalTimestampMarker = {
+  marker: IMarker;
+  ts: string;
+};
+type TerminalTimestampViewport = {
+  bufferType: "normal" | "alternate";
+  screenTop: number;
+  cellHeight: number;
+  entries: VisibleTerminalTimestamp[];
+};
 type TerminalSemanticCell = {
   row: number;
   column: number;
@@ -132,6 +148,12 @@ const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   activeMatchBackground: "#f4b860",
   activeMatchBorder: "#ffffff",
   activeMatchColorOverviewRuler: "#f4b860",
+};
+const emptyTerminalTimestampViewport: TerminalTimestampViewport = {
+  bufferType: "normal",
+  screenTop: 0,
+  cellHeight: 0,
+  entries: [],
 };
 
 function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): TerminalSemanticLogicalLine {
@@ -251,6 +273,7 @@ export default function TerminalCanvas({
   const terminalMountGenerationRef = useRef(0);
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
+  const refreshTimestampGutterRef = useRef<() => void>(() => {});
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -309,6 +332,7 @@ export default function TerminalCanvas({
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
+  const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
   displayModeRef.current = displayMode;
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
@@ -849,25 +873,127 @@ export default function TerminalCanvas({
       mouseEncoding = reduceTerminalMouseEncoding(mouseEncoding, params, false);
       return false;
     });
+    let terminalDisposed = false;
+    let timestampFrame: number | null = null;
+    let timestampMarkers: TerminalTimestampMarker[] = [];
+    let pendingRestoredTimestamps = normalizeTerminalTimestamps(cachedState?.timestamps);
+    let drainEventWrites = () => {};
+    let scheduleSemanticHighlighting = () => {};
+
+    const compactTimestampMarkers = () => {
+      timestampMarkers = timestampMarkers.filter((entry) => !entry.marker.isDisposed && entry.marker.line >= 0);
+      while (timestampMarkers.length > MAX_TERMINAL_TIMESTAMPS) {
+        timestampMarkers.shift()?.marker.dispose();
+      }
+    };
+    const registerTimestampLine = (line: number, ts: string) => {
+      if (term.buffer.active.type !== "normal") return;
+      const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
+      if (!normalized) return;
+      compactTimestampMarkers();
+      if (timestampMarkers.some((entry) => entry.marker.line === normalized.line)) return;
+      const normal = term.buffer.normal;
+      const cursorLine = normal.baseY + normal.cursorY;
+      const marker = term.registerMarker(normalized.line - cursorLine);
+      if (!marker || marker.line < 0) return;
+      timestampMarkers.push({ marker, ts: normalized.ts });
+      compactTimestampMarkers();
+    };
+    const restoreTimestampMarkers = () => {
+      if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
+      const restored = pendingRestoredTimestamps;
+      pendingRestoredTimestamps = [];
+      for (const entry of restored) registerTimestampLine(entry.line, entry.ts);
+    };
+    const timestampSnapshot = (firstSerializedLine: number): TerminalTimestampEntry[] => {
+      compactTimestampMarkers();
+      return normalizeTerminalTimestamps([
+        ...pendingRestoredTimestamps,
+        ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
+      ].filter((entry) => entry.line >= firstSerializedLine).map((entry) => ({
+        line: entry.line - firstSerializedLine,
+        ts: entry.ts,
+      })));
+    };
+    const renderTimestampGutter = () => {
+      timestampFrame = null;
+      if (terminalDisposed) return;
+      compactTimestampMarkers();
+      const buffer = term.buffer.active;
+      const bufferType = buffer.type === "alternate" ? "alternate" : "normal";
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      const region = host.parentElement;
+      const hostRect = host.getBoundingClientRect();
+      const screenRect = screen?.getBoundingClientRect();
+      const screenTop = screenRect ? host.offsetTop + screenRect.top - hostRect.top : 0;
+      const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
+      const entries = bufferType === "normal"
+        ? visibleTerminalTimestamps(
+          timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
+          buffer.viewportY,
+          term.rows,
+        )
+        : [];
+      host.dataset.terminalTimestampBuffer = bufferType;
+      host.dataset.terminalTimestampCount = String(entries.length);
+      if (!region || !screen || cellHeight <= 0) return;
+      const next: TerminalTimestampViewport = { bufferType, screenTop, cellHeight, entries };
+      setTimestampViewport((current) => sameTerminalTimestampViewport(current, next) ? current : next);
+    };
+    const scheduleTimestampGutter = () => {
+      if (terminalDisposed || timestampFrame !== null) return;
+      timestampFrame = window.requestAnimationFrame(renderTimestampGutter);
+    };
+    refreshTimestampGutterRef.current = scheduleTimestampGutter;
+
     let restorePending = Boolean(cachedState);
     if (cachedState) {
-      term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => { restorePending = false; });
+      term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => {
+        restorePending = false;
+        restoreTimestampMarkers();
+        scheduleTimestampGutter();
+        drainEventWrites();
+      });
     }
     term.open(host);
     host.dataset.terminalBuffer = terminalBufferType(term);
     host.dataset.terminalHasSelection = "false";
-    let scheduleSemanticHighlighting = () => {};
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+      restoreTimestampMarkers();
       scheduleSemanticHighlighting();
+      scheduleTimestampGutter();
     });
-    let terminalDisposed = false;
     const pendingEventIds = new Set<string>();
+    const pendingEventWrites: SessionEvent[] = [];
+    let eventWriteActive = false;
+    drainEventWrites = () => {
+      if (terminalDisposed || restorePending || eventWriteActive) return;
+      while (pendingEventWrites.length) {
+        const event = pendingEventWrites.shift();
+        if (!event) break;
+        eventWriteActive = true;
+        if (event.text && event.direction !== "outbound" && term.buffer.active.type === "normal") {
+          const buffer = term.buffer.normal;
+          registerTimestampLine(buffer.baseY + buffer.cursorY, event.ts);
+        }
+        let callbackCompleted = false;
+        let writeReturned = false;
+        writeTerminalEvent(term, event, () => {
+          settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
+          eventWriteActive = false;
+          callbackCompleted = true;
+          scheduleTimestampGutter();
+          if (writeReturned) drainEventWrites();
+        });
+        writeReturned = true;
+        if (!callbackCompleted) return;
+      }
+    };
     const writeEvent = (event: SessionEvent) => {
       if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, event.id)) return false;
-      writeTerminalEvent(term, event, () => {
-        settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
-      });
+      pendingEventWrites.push(event);
+      drainEventWrites();
       return true;
     };
     writeEventRef.current = writeEvent;
@@ -918,6 +1044,7 @@ export default function TerminalCanvas({
     if (focused && displayModeRef.current !== "hex") term.focus();
     const fitAndReport = () => {
       fit.fit();
+      scheduleTimestampGutter();
       const size = `${term.cols}x${term.rows}`;
       host.dataset.terminalSize = size;
       if (displayModeRef.current === "hex" || !focusedRef.current || lastSizeRef.current === size) return;
@@ -1006,14 +1133,20 @@ export default function TerminalCanvas({
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
       scheduleSemanticHighlighting();
+      scheduleTimestampGutter();
       refreshCompletionAnchorRef.current();
     });
-    const semanticScrollDisposable = term.onScroll(scheduleSemanticHighlighting);
+    const semanticScrollDisposable = term.onScroll(() => {
+      scheduleSemanticHighlighting();
+      scheduleTimestampGutter();
+    });
     const semanticResizeDisposable = term.onResize(() => {
       scheduleSemanticHighlighting();
+      scheduleTimestampGutter();
       refreshCompletionAnchorRef.current();
     });
     scheduleSemanticHighlighting();
+    scheduleTimestampGutter();
     const flushInput = () => {
       inputFlushTimerRef.current = null;
       const text = pendingInputRef.current;
@@ -1110,15 +1243,20 @@ export default function TerminalCanvas({
         inputFlushTimerRef.current = null;
       }
       pendingInputRef.current = "";
+      pendingEventWrites.length = 0;
       if (flushInputRef.current === flushInput) flushInputRef.current = () => {};
       resizeObserver.disconnect();
       semanticWriteDisposable.dispose();
       semanticScrollDisposable.dispose();
       semanticResizeDisposable.dispose();
       if (semanticFrame !== null) window.cancelAnimationFrame(semanticFrame);
+      if (timestampFrame !== null) window.cancelAnimationFrame(timestampFrame);
       clearSemanticHighlighting();
       if (refreshSemanticHighlightingRef.current === scheduleSemanticHighlighting) {
         refreshSemanticHighlightingRef.current = () => {};
+      }
+      if (refreshTimestampGutterRef.current === scheduleTimestampGutter) {
+        refreshTimestampGutterRef.current = () => {};
       }
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
@@ -1129,14 +1267,25 @@ export default function TerminalCanvas({
         for (const eventId of pendingEventIds) seenEventsRef.current.delete(eventId);
       } else {
         try {
+          const serializedScrollback = Math.min(
+            MAX_SERIALIZED_SCROLLBACK,
+            active.profile.terminal.scrollback,
+          );
+          const normalBuffer = term.buffer.normal;
+          const serializedLineCount = Math.min(
+            normalBuffer.length,
+            serializedScrollback + term.rows,
+          );
+          const firstSerializedLine = Math.max(0, normalBuffer.length - serializedLineCount);
           terminalStateCache.save(active.profile.id, {
             serialized: serialize.serialize({
-              scrollback: Math.min(MAX_SERIALIZED_SCROLLBACK, active.profile.terminal.scrollback),
+              scrollback: serializedScrollback,
             }),
             cols: term.cols,
             rows: term.rows,
             seenEventIds: [...seenEventsRef.current],
             mouseEncoding,
+            timestamps: timestampSnapshot(firstSerializedLine),
           });
         } catch {
           // Serialization must not prevent terminal disposal.
@@ -1150,6 +1299,10 @@ export default function TerminalCanvas({
       webglAddon?.dispose();
       termRef.current = null;
     };
+  }, [active?.profile.id]);
+
+  useEffect(() => {
+    setTimestampViewport(emptyTerminalTimestampViewport);
   }, [active?.profile.id]);
 
   useEffect(() => {
@@ -1502,6 +1655,30 @@ export default function TerminalCanvas({
           </div>
           <div className={`terminal-workspace mode-${displayMode}`}>
             <div className="terminal-terminal-region" aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
+              <div
+                className="terminal-timestamp-gutter"
+                role="list"
+                aria-label="终端行时间戳"
+                data-buffer-type={timestampViewport.bufferType}
+                data-timestamp-count={timestampViewport.entries.length}
+                style={{
+                  "--terminal-timestamp-cell-height": `${timestampViewport.cellHeight}px`,
+                } as CSSProperties}
+              >
+                {timestampViewport.entries.map((entry) => (
+                  <time
+                    key={`${entry.line}:${entry.ts}`}
+                    role="listitem"
+                    dateTime={entry.ts}
+                    title={formatTerminalTimestampTitle(entry.ts)}
+                    style={{
+                      "--terminal-timestamp-offset": `${timestampViewport.screenTop + entry.row * timestampViewport.cellHeight}px`,
+                    } as CSSProperties}
+                  >
+                    {formatEventClock(entry.ts)}
+                  </time>
+                ))}
+              </div>
               <div ref={hostRef} className="terminal-host" inert={displayMode === "hex" || freeInputOpen || gotoLineOpen} />
           {freeInputOpen ? (
             <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
@@ -1907,6 +2084,25 @@ function writeTerminalEvent(term: XTerm, event: SessionEvent, onParsed: () => vo
     return;
   }
   term.write(event.text, onParsed);
+}
+
+function sameTerminalTimestampViewport(
+  left: TerminalTimestampViewport,
+  right: TerminalTimestampViewport,
+): boolean {
+  if (left.bufferType !== right.bufferType
+    || Math.abs(left.screenTop - right.screenTop) >= 0.25
+    || Math.abs(left.cellHeight - right.cellHeight) >= 0.25
+    || left.entries.length !== right.entries.length) return false;
+  return left.entries.every((entry, index) => {
+    const other = right.entries[index];
+    return entry.line === other?.line && entry.row === other.row && entry.ts === other.ts;
+  });
+}
+
+function formatTerminalTimestampTitle(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function formatTerminalCanvasError(error: unknown): string {

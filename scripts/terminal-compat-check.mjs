@@ -284,13 +284,14 @@ const workspace = {
   activeId: "session-a",
   tabColors: {},
 };
+const readmePtyMarker = '<h1 align="center">PortMate</h1>';
 const vimPty = captureAlternateScreenPty(
   "Vim",
   "vim -Nu NONE -n README.md",
   ":q!\r",
-  "# PortMate",
+  readmePtyMarker,
 );
-const lessPty = captureAlternateScreenPty("less", "less -R README.md", "q", "# PortMate");
+const lessPty = captureAlternateScreenPty("less", "less -R README.md", "q", readmePtyMarker);
 const topPty = await captureTopPty();
 const longLogLineCount = 6_000;
 const longLogTailMarker = "PORTMATE-LONG-LOG-TAIL-006000";
@@ -651,13 +652,21 @@ try {
   };
   await page.waitForFunction(() => (
     document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticHighlighting === "alternate"
+      && document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter')?.getAttribute("data-buffer-type") === "alternate"
+      && document.querySelectorAll('[data-pane-id="pane-a"] .terminal-timestamp-gutter time').length === 0
   ));
   const initialSemanticState = await activeHost.evaluate((host) => ({
     state: host.dataset.terminalSemanticHighlighting,
     decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
   }));
+  const initialTimestampAlternate = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    bufferType: gutter.getAttribute("data-buffer-type"),
+    count: gutter.querySelectorAll("time").length,
+  }));
   assert(initialSemanticState.decorations === 0,
     `semantic highlighting leaked into the initial alternate screen: ${JSON.stringify(initialSemanticState)}`);
+  assert(initialTimestampAlternate.bufferType === "alternate" && initialTimestampAlternate.count === 0,
+    `timestamps leaked into the initial alternate screen: ${JSON.stringify(initialTimestampAlternate)}`);
 
   await clearCalls();
   await page.setViewportSize({ width: 1320, height: 820 });
@@ -719,6 +728,15 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]')?.getAttribute("aria-selected") === "true");
   await page.locator('[data-pane-id="pane-a"] [data-view-id="view-a"] [role="tab"]').click();
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalRestored === "true");
+  await page.waitForFunction(() => {
+    const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
+    return gutter?.getAttribute("data-buffer-type") === "alternate"
+      && gutter.querySelectorAll("time").length === 0;
+  });
+  const restoredTimestampAlternate = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    bufferType: gutter.getAttribute("data-buffer-type"),
+    count: gutter.querySelectorAll("time").length,
+  }));
   const restoredSearch = await openAndAssertSearch("PORTMATE VTT BASELINE");
 
   await page.waitForFunction(() => (
@@ -749,6 +767,18 @@ try {
   const replayProbeSearch = await openAndAssertMissing(replayProbeMarker);
 
   await emitSessionEvent(createEvent("a-baseline-alt-exit", "session-a", "\x1b[?1049l"));
+  await page.waitForFunction(() => {
+    const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
+    return gutter?.getAttribute("data-buffer-type") === "normal"
+      && [...gutter.querySelectorAll("time")].some((time) => (
+        time.getAttribute("datetime") === "2026-07-15T00:00:00.000Z"
+      ));
+  });
+  const restoredTimestampNormal = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    bufferType: gutter.getAttribute("data-buffer-type"),
+    count: gutter.querySelectorAll("time").length,
+    timestamps: [...gutter.querySelectorAll("time")].map((time) => time.getAttribute("datetime")),
+  }));
   const semanticCommand = 'root@OpenWrt:~# grep -n "wireless" /etc/config/wireless 192.168.1.1 42';
   await emitSessionEvent(createEvent("a-semantic-command", "session-a", `\r\n${semanticCommand}`));
   await page.waitForFunction(() => {
@@ -778,28 +808,40 @@ try {
   await emitSessionEvent(createEvent("a-semantic-alt-enter", "session-a", "\x1b[?1049h"));
   await page.waitForFunction(() => {
     const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
     return host?.dataset.terminalSemanticHighlighting === "alternate"
-      && host.dataset.terminalSemanticDecorationCount === "0";
+      && host.dataset.terminalSemanticDecorationCount === "0"
+      && gutter?.getAttribute("data-buffer-type") === "alternate"
+      && gutter.querySelectorAll("time").length === 0;
   });
   const semanticAlternate = await activeHost.evaluate((host) => ({
     state: host.dataset.terminalSemanticHighlighting,
     decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
   }));
   await emitSessionEvent(createEvent("a-semantic-alt-exit", "session-a", "\x1b[?1049l"));
+  await page.waitForFunction(() => {
+    const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
+    return gutter?.getAttribute("data-buffer-type") === "normal"
+      && gutter.querySelectorAll("time").length > 0;
+  });
+  const semanticTimestampRestored = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    bufferType: gutter.getAttribute("data-buffer-type"),
+    count: gutter.querySelectorAll("time").length,
+  }));
   const normalBeforeVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
   await emitSessionEvent(createEvent("a-real-vim-frame", "session-a", vimPty.alternateFrame));
-  const vimSearch = await openAndAssertSearch("# PortMate");
+  const vimSearch = await openAndAssertSearch(readmePtyMarker);
   const hiddenNormalSearch = await openAndAssertMissing("NORMAL-PROMPT");
   await emitSessionEvent(createEvent("a-real-vim-exit", "session-a", vimPty.exitFrame));
   const normalAfterVimSearch = await openAndAssertSearch("NORMAL-PROMPT");
-  const hiddenVimSearch = await openAndAssertMissing("# PortMate");
+  const hiddenVimSearch = await openAndAssertMissing(readmePtyMarker);
 
   await emitSessionEvent(createEvent("a-real-less-frame", "session-a", lessPty.alternateFrame));
-  const lessSearch = await openAndAssertSearch("# PortMate");
+  const lessSearch = await openAndAssertSearch(readmePtyMarker);
   const hiddenNormalDuringLessSearch = await openAndAssertMissing("NORMAL-PROMPT");
   await emitSessionEvent(createEvent("a-real-less-exit", "session-a", lessPty.exitFrame));
   const normalAfterLessSearch = await openAndAssertSearch("NORMAL-PROMPT");
-  const hiddenLessSearch = await openAndAssertMissing("# PortMate");
+  const hiddenLessSearch = await openAndAssertMissing(readmePtyMarker);
 
   await emitSessionEvent(createEvent("a-real-top-frame", "session-a", topPty.frame));
   const topSearch = await openAndAssertSearch("Tasks:");
@@ -1501,6 +1543,12 @@ try {
       resumed: semanticResumed,
       disabled: semanticDisabled,
       outboundTextUnchanged: semanticOutboundText === semanticOutboundCommand,
+    },
+    timestamps: {
+      initialAlternate: initialTimestampAlternate,
+      restoredAlternate: restoredTimestampAlternate,
+      restoredNormal: restoredTimestampNormal,
+      semanticRestored: semanticTimestampRestored,
     },
     vimPty: { bytes: vimPty.bytes, alternateScreen: true, restoredNormalScreen: true },
     lessPty: { bytes: lessPty.bytes, alternateScreen: true, restoredNormalScreen: true },

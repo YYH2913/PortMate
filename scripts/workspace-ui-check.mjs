@@ -1666,6 +1666,61 @@ Host staging
     "resource context menu targeted a different session");
 
   const activeTerminalHost = page.locator(".terminal-pane.active .terminal-host");
+  await page.waitForFunction((expectedTimestamp) => {
+    const gutter = document.querySelector(".terminal-pane.active .terminal-timestamp-gutter");
+    return gutter?.getAttribute("data-buffer-type") === "normal"
+      && [...gutter.querySelectorAll("time")].some((time) => time.getAttribute("datetime") === expectedTimestamp);
+  }, isoNow);
+  const terminalTimestampLayout = await page.locator(".terminal-pane.active .terminal-terminal-region").evaluate((region) => {
+    const gutter = region.querySelector(".terminal-timestamp-gutter");
+    const host = region.querySelector(".terminal-host");
+    const screen = host?.querySelector(".xterm-screen");
+    const firstTimestamp = gutter?.querySelector("time");
+    const regionRect = region.getBoundingClientRect();
+    const gutterRect = gutter?.getBoundingClientRect();
+    const hostRect = host?.getBoundingClientRect();
+    const screenRect = screen?.getBoundingClientRect();
+    const timestampRect = firstTimestamp?.getBoundingClientRect();
+    return {
+      bufferType: gutter?.getAttribute("data-buffer-type"),
+      count: gutter?.querySelectorAll("time").length ?? 0,
+      clock: firstTimestamp?.textContent ?? "",
+      regionLeft: regionRect.left,
+      gutterLeft: gutterRect?.left ?? 0,
+      gutterRight: gutterRect?.right ?? 0,
+      gutterWidth: gutterRect?.width ?? 0,
+      hostLeft: hostRect?.left ?? 0,
+      screenTop: screenRect?.top ?? 0,
+      timestampTop: timestampRect?.top ?? 0,
+    };
+  });
+  assert(terminalTimestampLayout.bufferType === "normal"
+    && terminalTimestampLayout.count >= 1
+    && /^\d{2}:\d{2}:\d{2}$/.test(terminalTimestampLayout.clock)
+    && Math.abs(terminalTimestampLayout.gutterLeft - terminalTimestampLayout.regionLeft) <= 1
+    && Math.abs(terminalTimestampLayout.gutterWidth - 72) <= 1
+    && Math.abs(terminalTimestampLayout.gutterRight - terminalTimestampLayout.hostLeft) <= 1
+    && Math.abs(terminalTimestampLayout.timestampTop - terminalTimestampLayout.screenTop) <= 1,
+  `terminal timestamps were not aligned to the left of XTerm rows: ${JSON.stringify(terminalTimestampLayout)}`);
+  const terminalTimestampProbe = new Date(recordedAt + 5_000).toISOString();
+  await page.evaluate((timestamp) => {
+    window.__emitTauriEvent("portmate-session-event", {
+      id: "terminal-timestamp-probe",
+      sessionId: "edge-router",
+      paneId: "edge-router:main",
+      ts: timestamp,
+      direction: "inbound",
+      stream: "stdout",
+      bytesRef: null,
+      text: "PORTMATE TIMESTAMP PROBE\r\n",
+      annotations: {},
+    });
+  }, terminalTimestampProbe);
+  await page.waitForFunction((expectedTimestamp) => [...document.querySelectorAll(
+    ".terminal-pane.active .terminal-timestamp-gutter time",
+  )].some((time) => time.getAttribute("datetime") === expectedTimestamp), terminalTimestampProbe);
+  await page.locator(".terminal-pane.active .terminal-terminal-region")
+    .screenshot({ path: `${screenshotPrefix}-terminal-timestamps.png` });
   await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
   const terminalContextMenu = page.locator(".terminal-context-menu");
   await terminalContextMenu.waitFor();
@@ -1863,17 +1918,27 @@ Host staging
   const narrowTerminalLayout = await terminalCanvas.evaluate((canvas) => {
     const region = canvas.querySelector(".terminal-terminal-region")?.getBoundingClientRect();
     const inspector = canvas.querySelector(".terminal-byte-inspector")?.getBoundingClientRect();
+    const gutter = canvas.querySelector(".terminal-timestamp-gutter")?.getBoundingClientRect();
+    const host = canvas.querySelector(".terminal-host")?.getBoundingClientRect();
     return {
       regionWidth: region?.width ?? 0,
       inspectorWidth: inspector?.width ?? 0,
       regionBottom: region?.bottom ?? 0,
       inspectorTop: inspector?.top ?? 0,
+      gutterWidth: gutter?.width ?? 0,
+      gutterRight: gutter?.right ?? 0,
+      hostLeft: host?.left ?? 0,
+      hostRight: host?.right ?? 0,
+      regionRight: region?.right ?? 0,
       documentWidth: document.documentElement.scrollWidth,
       viewportWidth: window.innerWidth,
     };
   });
   assert(Math.abs(narrowTerminalLayout.regionWidth - narrowTerminalLayout.inspectorWidth) < 1
     && narrowTerminalLayout.regionBottom <= narrowTerminalLayout.inspectorTop + 1
+    && Math.abs(narrowTerminalLayout.gutterWidth - 62) <= 1
+    && Math.abs(narrowTerminalLayout.gutterRight - narrowTerminalLayout.hostLeft) <= 1
+    && narrowTerminalLayout.hostRight <= narrowTerminalLayout.regionRight + 1
     && narrowTerminalLayout.documentWidth === narrowTerminalLayout.viewportWidth,
   `narrow terminal comparison layout overflowed or overlapped: ${JSON.stringify(narrowTerminalLayout)}`);
   await terminalCanvas.screenshot({ path: `${screenshotPrefix}-terminal-byte-narrow.png` });
@@ -2272,32 +2337,6 @@ Host staging
     "history selection changed the stored command before insertion");
 
   const sender = bottomDock;
-  const senderTimestamp = sender.locator("time.send-input-timestamp");
-  const senderTimestampValue = await senderTimestamp.textContent();
-  const senderTimestampDateTime = await senderTimestamp.getAttribute("datetime");
-  assert(await senderTimestamp.count() === 1
-    && /^\d{2}:\d{2}:\d{2}$/.test(senderTimestampValue?.trim() ?? "")
-    && Boolean(senderTimestampDateTime)
-    && !Number.isNaN(Date.parse(senderTimestampDateTime)),
-  `sender input timestamp is missing or invalid: ${JSON.stringify({ value: senderTimestampValue, dateTime: senderTimestampDateTime })}`);
-  const senderInputGeometry = await sender.locator(".send-input-row").evaluate((row) => {
-    const timestamp = row.querySelector(".send-input-timestamp")?.getBoundingClientRect();
-    const textarea = row.querySelector(".send-textarea")?.getBoundingClientRect();
-    const container = row.getBoundingClientRect();
-    return timestamp && textarea ? {
-      containerLeft: container.left,
-      timestampLeft: timestamp.left,
-      timestampRight: timestamp.right,
-      timestampWidth: timestamp.width,
-      textareaLeft: textarea.left,
-    } : null;
-  });
-  assert(senderInputGeometry
-    && Math.abs(senderInputGeometry.timestampLeft - senderInputGeometry.containerLeft) <= 1
-    && senderInputGeometry.timestampWidth >= 71
-    && senderInputGeometry.timestampWidth <= 73
-    && Math.abs(senderInputGeometry.timestampRight - senderInputGeometry.textareaLeft) <= 1,
-  `sender timestamp is not the fixed left input column: ${JSON.stringify(senderInputGeometry)}`);
   assert(!(await sender.textContent()).includes("Shell"), "unused Shell sender tab is visible");
   const advancedSendButton = sender.getByRole("button", { name: "高级发送选项", exact: true });
   assert(await sender.locator(".send-toolbar-primary > button").count() === 2
@@ -2325,14 +2364,7 @@ Host staging
     "sender advanced-settings indicator did not clear after restoring defaults");
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
   await sender.getByRole("button", { name: "发送", exact: true }).click();
-  const senderTimestampBeforeTyping = await senderTimestamp.getAttribute("datetime");
   await sender.getByRole("textbox", { name: "send text", exact: true }).fill("uname -a");
-  const senderTimestampAfterTyping = await senderTimestamp.getAttribute("datetime");
-  assert(Boolean(senderTimestampBeforeTyping)
-    && Boolean(senderTimestampAfterTyping)
-    && senderTimestampAfterTyping !== senderTimestampBeforeTyping
-    && Date.parse(senderTimestampAfterTyping) >= Date.parse(senderTimestampBeforeTyping),
-  `sender timestamp did not update with input: ${JSON.stringify({ before: senderTimestampBeforeTyping, after: senderTimestampAfterTyping })}`);
   await sender.getByRole("button", { name: "发送", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");
@@ -5312,6 +5344,7 @@ Host staging
       `${screenshotPrefix}-session-settings-mobile.png`,
       `${screenshotPrefix}-terminal-theme-settings.png`,
       `${screenshotPrefix}-terminal-light-theme.png`,
+      `${screenshotPrefix}-terminal-timestamps.png`,
       `${screenshotPrefix}-terminal-byte-desktop.png`,
       `${screenshotPrefix}-terminal-byte-narrow.png`,
       `${screenshotPrefix}-detached-theme.png`,

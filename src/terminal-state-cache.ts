@@ -1,4 +1,6 @@
 import type { TerminalMouseEncoding } from "./terminal-mouse";
+import { normalizeTerminalTimestamps } from "./terminal-timestamp-state";
+import type { TerminalTimestampEntry } from "./terminal-timestamp-state";
 
 export type SerializedTerminalState = {
   serialized: string;
@@ -6,6 +8,7 @@ export type SerializedTerminalState = {
   rows: number;
   seenEventIds: string[];
   mouseEncoding?: TerminalMouseEncoding;
+  timestamps?: TerminalTimestampEntry[];
 };
 
 export const MAX_SERIALIZED_TERMINALS = 32;
@@ -72,6 +75,7 @@ export class TerminalStateCache {
       rows: normalizeDimension(state.rows),
       seenEventIds: state.seenEventIds.slice(-MAX_SERIALIZED_TERMINAL_EVENTS),
       mouseEncoding: normalizeMouseEncoding(state.mouseEncoding),
+      timestamps: normalizeTerminalTimestamps(state.timestamps),
     };
     this.states.delete(sessionId);
     this.states.set(sessionId, normalized);
@@ -91,7 +95,11 @@ export class TerminalStateCache {
 export const terminalStateCache = new TerminalStateCache();
 
 function cloneSerializedTerminalState(state: SerializedTerminalState): SerializedTerminalState {
-  return { ...state, seenEventIds: [...state.seenEventIds] };
+  return {
+    ...state,
+    seenEventIds: [...state.seenEventIds],
+    timestamps: state.timestamps?.map((entry) => ({ ...entry })),
+  };
 }
 
 function normalizeDimension(value: number): number {

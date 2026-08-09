@@ -262,7 +262,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [draft, setDraft] = useState<SessionProfile>(() => createSessionDraft());
   const draftExpectedProfileRef = useRef<SessionProfile | null>(null);
   const [sendText, setSendText] = useState("");
-  const [sendInputTimestamp, setSendInputTimestamp] = useState(() => new Date().toISOString());
   const [sendMode, setSendMode] = useState<SendMode>("text");
   const [sendCount, setSendCount] = useState(1);
   const [sendIntervalMs, setSendIntervalMs] = useState(1000);
@@ -3223,7 +3222,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const textPayload = sendMode === "text" ? sendText : "";
     const bytePayload = sendMode === "hex" ? parseHexBytes(sendText) : [];
     if (sendMode === "text" ? !textPayload : !bytePayload.length) return;
-    setSendInputTimestamp(new Date().toISOString());
     const targets = resolveSendTargets(sendTarget, activeId, sessions, paneSessions);
     if (!targets.length) {
       setNotice({ title: "发送", message: "没有可发送的目标会话。" });
@@ -3449,10 +3447,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           <LazyCommandHistoryList
             history={commandHistory}
             icons={workspaceUtilityIcons}
-            onPick={(value) => {
-              setSendText(value);
-              setSendInputTimestamp(new Date().toISOString());
-            }}
+            onPick={setSendText}
             beforeList={activeSerial && active ? (
               <SerialMonitorPanel
                 key={active.profile.id}
@@ -3526,31 +3521,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             </div>
           ) : null}
         </div>
-        <div className="send-input-row">
-          <time
-            className="send-input-timestamp"
-            dateTime={sendInputTimestamp}
-            title={`输入时间 ${formatDateTime(sendInputTimestamp)}`}
-            aria-label={`输入时间 ${formatDateTime(sendInputTimestamp)}`}
-          >
-            {formatEventClock(sendInputTimestamp)}
-          </time>
-          <textarea
-            className="send-textarea"
-            aria-label="send text"
-            value={sendText}
-            onChange={(event) => {
-              setSendText(event.target.value);
-              setSendInputTimestamp(new Date().toISOString());
-            }}
-            onKeyDown={(event) => {
-              if (event.ctrlKey && event.key === "Enter" && active) {
-                event.preventDefault();
-                void runSendPanel();
-              }
-            }}
-          />
-        </div>
+        <textarea
+          className="send-textarea"
+          aria-label="send text"
+          value={sendText}
+          onChange={(event) => setSendText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.ctrlKey && event.key === "Enter" && active) {
+              event.preventDefault();
+              void runSendPanel();
+            }
+          }}
+        />
       </>
     );
   }

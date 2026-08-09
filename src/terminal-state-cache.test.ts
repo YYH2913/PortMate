@@ -33,9 +33,21 @@ describe("terminal state cache", () => {
   it("normalizes dimensions and bounds copied event ids", () => {
     const cache = new TerminalStateCache();
     const eventIds = Array.from({ length: MAX_SERIALIZED_TERMINAL_EVENTS + 2 }, (_, index) => `event-${index}`);
-    expect(cache.save("a", { serialized: "screen", cols: 0, rows: Number.NaN, seenEventIds: eventIds, mouseEncoding: "sgr" })).toBe(true);
+    expect(cache.save("a", {
+      serialized: "screen",
+      cols: 0,
+      rows: Number.NaN,
+      seenEventIds: eventIds,
+      mouseEncoding: "sgr",
+      timestamps: [
+        { line: 7, ts: "2026-08-09T01:02:03Z" },
+        { line: 7, ts: "2026-08-09T01:02:04Z" },
+        { line: -1, ts: "invalid" },
+      ],
+    })).toBe(true);
     const restored = cache.get("a")!;
     restored.seenEventIds.push("mutated");
+    restored.timestamps?.push({ line: 8, ts: "2026-08-09T01:02:05.000Z" });
 
     expect(restored.cols).toBe(1);
     expect(restored.rows).toBe(1);
@@ -43,6 +55,9 @@ describe("terminal state cache", () => {
     expect(restored.seenEventIds).toHaveLength(MAX_SERIALIZED_TERMINAL_EVENTS + 1);
     expect(cache.get("a")?.seenEventIds).toHaveLength(MAX_SERIALIZED_TERMINAL_EVENTS);
     expect(cache.get("a")?.seenEventIds[0]).toBe("event-2");
+    expect(cache.get("a")?.timestamps).toEqual([
+      { line: 7, ts: "2026-08-09T01:02:03.000Z" },
+    ]);
   });
 
   it("retains an empty serialized screen with its dimensions", () => {
