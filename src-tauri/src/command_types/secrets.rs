@@ -31,3 +31,18 @@ pub enum SecretStorage {
 pub struct SecretWriteResponse {
     pub secret_ref: String,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StageSessionCredentialsRequest {
+    pub session_id: String,
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCredentialHandleResponse {
+    pub credential_handle: String,
+    pub expires_in_ms: u64,
+}

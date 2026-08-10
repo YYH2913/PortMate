@@ -90,6 +90,7 @@ import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnaps
 import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
+import { stageConnectionCredentials } from "./session-credential-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import { deleteSessionProfileFromClientState } from "./session-profile-delete-state";
 import type { SessionContextAction, TerminalContextAction } from "./ContextMenus";
@@ -2964,10 +2965,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         createdConnectionSecretRefs = [];
         if (!attemptIsCurrent()) return;
         applySavedSession({ ...connecting, profile: persisted.profile }, activateWorkspace);
+        const credentialHandle = credentials.oneKeyId || !isBackendAvailable()
+          ? null
+          : await stageConnectionCredentials(invokeBackend, persisted.profile.id, credentials);
+        if (!attemptIsCurrent()) return;
         const saved = isBackendAvailable()
           ? credentials.oneKeyId
             ? await invokeBackend<SessionSummary>("open_session_with_one_key", { sessionId: persisted.profile.id, oneKeyId: credentials.oneKeyId })
-            : await invokeBackend<SessionSummary>("open_session", { sessionId: persisted.profile.id, password: credentials.password, passphrase: credentials.passphrase })
+            : await invokeBackend<SessionSummary>("open_session", {
+              request: { sessionId: persisted.profile.id, credentialHandle },
+            })
           : setSessionStatus(persisted, "connected");
         if (!attemptIsCurrent()) return;
         const fallbackLog = [...(logs[persisted.profile.id] ?? []), createLocalSystemEvent(saved.profile, `PortMate: connected to ${describeProfileEndpoint(saved.profile)}`)];
@@ -3024,10 +3031,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
     setHostKeyPrompt({ profile, message, scan: null, scanError: null, busy: true });
     try {
+      const credentialHandle = credentials
+        ? await stageConnectionCredentials(invokeBackend, profile.id, credentials)
+        : null;
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
-        profile: prepareSessionProfile(profile),
-        password: credentials?.password ?? null,
-        passphrase: credentials?.passphrase ?? null,
+        request: { profile: prepareSessionProfile(profile), credentialHandle },
       });
       setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
     } catch (error) {

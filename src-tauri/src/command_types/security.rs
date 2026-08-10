@@ -63,6 +63,13 @@ pub struct HostKeyScanResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostKeyScanRequest {
+    pub profile: SessionProfile,
+    pub credential_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnownHostsImportRequest {
     pub profile_id: String,

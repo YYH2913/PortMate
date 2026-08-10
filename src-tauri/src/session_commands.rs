@@ -92,19 +92,32 @@ pub(super) fn describe_endpoint(profile: &SessionProfile) -> String {
 #[tauri::command]
 pub(crate) async fn open_session(
     state: State<'_, AppState>,
-    session_id: String,
-    password: Option<String>,
-    passphrase: Option<String>,
+    window: WebviewWindow,
+    request: OpenSessionRequest,
 ) -> Result<SessionSummary, String> {
     let state = state.inner().clone();
+    let credentials = match request.credential_handle.as_deref() {
+        Some(credential_handle) => {
+            let credentials = consume_session_credentials_for_owner(
+                &state.session_credentials,
+                window.label(),
+                &request.session_id,
+                credential_handle,
+                Instant::now(),
+            )?;
+            SessionOpenCredentials {
+                password: credentials.password,
+                passphrase: credentials.passphrase,
+                credential_binding: Some(credentials.binding),
+                ..Default::default()
+            }
+        }
+        None => SessionOpenCredentials::default(),
+    };
     open_session_inner(
         state,
-        session_id,
-        SessionOpenCredentials {
-            password,
-            passphrase,
-            ..Default::default()
-        },
+        request.session_id,
+        credentials,
     )
     .await
 }
@@ -127,6 +140,7 @@ pub(crate) async fn open_session_with_one_key(
             passphrase: credentials.passphrase,
             identity: credentials.identity,
             isolate_saved_ssh_credentials: true,
+            credential_binding: None,
         },
         cancellation,
     )

@@ -1359,7 +1359,9 @@ function SshAdvancedFields({
       setHostKeyStatus("");
       setHostKeyScan(null);
       try {
-        const result = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", { profile: prepareProfile(draft), password: null, passphrase: null });
+        const result = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
+          request: { profile: prepareProfile(draft), credentialHandle: null },
+        });
         setHostKeyScan(result);
       } catch (error) {
         setHostKeyStatus(formatError(error));

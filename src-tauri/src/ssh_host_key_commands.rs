@@ -42,15 +42,35 @@ pub(crate) fn apply_host_key_decision(
 #[tauri::command]
 pub(crate) async fn scan_ssh_host_key(
     state: State<'_, AppState>,
-    profile: SessionProfile,
-    password: Option<String>,
-    passphrase: Option<String>,
+    window: WebviewWindow,
+    request: HostKeyScanRequest,
 ) -> Result<HostKeyScanResult, String> {
+    let profile = normalize_session_profile(request.profile);
+    let credentials = request
+        .credential_handle
+        .as_deref()
+        .map(|credential_handle| {
+            consume_session_credentials_for_owner(
+                &state.session_credentials,
+                window.label(),
+                &profile.id,
+                credential_handle,
+                Instant::now(),
+            )
+        })
+        .transpose()?;
+    if let Some(credentials) = credentials.as_ref() {
+        validate_session_credential_binding(&profile, &credentials.binding)?;
+    }
     scan_ssh_host_key_inner(
         state.inner(),
-        normalize_session_profile(profile),
-        password.as_deref(),
-        passphrase.as_deref(),
+        profile,
+        credentials
+            .as_ref()
+            .and_then(|credentials| credentials.password.as_deref()),
+        credentials
+            .as_ref()
+            .and_then(|credentials| credentials.passphrase.as_deref()),
     )
     .await
 }

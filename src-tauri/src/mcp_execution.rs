@@ -104,24 +104,19 @@ pub(super) async fn execute_ipc_request(
         }
         "open_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            let password = request
-                .args
-                .get("password")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            let passphrase = request
-                .args
-                .get("passphrase")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
+            if ["password", "passphrase", "credentialHandle"]
+                .iter()
+                .any(|field| request.args.get(*field).is_some())
+            {
+                return Err(
+                    "MCP open_session 不接受内联凭据或桌面凭据句柄；请使用已保存的 Profile 凭据"
+                        .to_string(),
+                );
+            }
             let summary = open_session_inner(
                 state.clone(),
                 session_id,
-                SessionOpenCredentials {
-                    password,
-                    passphrase,
-                    ..Default::default()
-                },
+                SessionOpenCredentials::default(),
             )
             .await?;
             serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())

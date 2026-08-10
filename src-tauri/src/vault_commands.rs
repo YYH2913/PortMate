@@ -39,6 +39,7 @@ pub(crate) fn lock_portable_vault(
     state: State<'_, AppState>,
 ) -> Result<PortableVaultStatus, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
+    clear_all_session_credentials(state.inner());
     let context = portable_vault_context()?;
     context
         .stronghold

@@ -75,6 +75,8 @@ mod runtime_capacity_tests;
 mod scp_protocol_tests;
 #[path = "serial_tests.rs"]
 mod serial_tests;
+#[path = "session_credential_tests.rs"]
+mod session_credential_tests;
 #[path = "session_lifecycle_tests.rs"]
 mod session_lifecycle_tests;
 #[path = "session_logging_tests.rs"]
@@ -454,6 +456,7 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
         store: Arc::new(Mutex::new(store)),
         credential_ops: Arc::new(Mutex::new(())),
         credential_lock_path: store_path.with_file_name("test-credentials.lock"),
+        session_credentials: Arc::new(Mutex::new(SessionCredentialRegistry::default())),
         system_event_sink: Arc::new(Mutex::new(None)),
         session_open_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SESSION_OPENS)),
         ssh: Arc::new(Mutex::new(HashMap::new())),

@@ -681,9 +681,10 @@ export default function KeyManagerDialog({
     setHostKeyScanError("");
     try {
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
-        profile: prepareProfile(selectedProfile),
-        password: null,
-        passphrase: null,
+        request: {
+          profile: prepareProfile(selectedProfile),
+          credentialHandle: null,
+        },
       });
       if (!refreshGate.current.isCurrent("host-scan", token)) return;
       setHostKeyScan(scan);

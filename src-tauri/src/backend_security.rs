@@ -5,6 +5,7 @@ mod portable_vault;
 mod profile_security;
 mod secret_commands;
 mod secret_provider;
+mod session_credentials;
 mod ssh_agent;
 mod ssh_agent_filter;
 mod ssh_authentication;
@@ -20,6 +21,7 @@ use bundle_signing::*;
 use portable_vault::*;
 use profile_security::*;
 use secret_provider::*;
+use session_credentials::*;
 use ssh_agent::*;
 use ssh_authentication::*;
 #[cfg(test)]

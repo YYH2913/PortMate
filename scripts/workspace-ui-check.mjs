@@ -397,6 +397,7 @@ try {
     window.__pendingProfileMutations = [];
     window.__profileMutationFailureMode = null;
     window.__secretSequence = 0;
+    window.__sessionCredentialSequence = 0;
     window.__secrets = {};
     window.__deferSecretWrites = false;
     window.__pendingSecretWrites = [];
@@ -633,6 +634,12 @@ try {
           delete window.__secrets[args.secretRef];
           return null;
         }
+        if (command === "stage_session_credentials") {
+          return {
+            credentialHandle: `session-credential:test-${++window.__sessionCredentialSequence}`,
+            expiresInMs: 30_000,
+          };
+        }
         if (command === "update_client_identity") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.request.profileId);
           if (window.__profileMutationFailureMode === "rename") {
@@ -789,7 +796,7 @@ try {
         }
         if (command === "list_host_keys") return { keys: structuredClone(window.__hostKeys) };
         if (command === "scan_ssh_host_key") {
-          const profile = args.profile;
+          const profile = args.request.profile;
           const mismatch = window.__hostKeyScanMode === "mismatch";
           const observation = {
             host: profile.connection.endpoint.host,
@@ -982,10 +989,11 @@ try {
           };
         }
         if (command === "open_session" || command === "open_session_with_one_key") {
-          if (window.__failSessionOpenFor === args.sessionId) {
+          const sessionId = command === "open_session" ? args.request.sessionId : args.sessionId;
+          if (window.__failSessionOpenFor === sessionId) {
             throw new Error("simulated silent startup failure");
           }
-          const index = window.__sessions.findIndex((item) => item.profile.id === args.sessionId);
+          const index = window.__sessions.findIndex((item) => item.profile.id === sessionId);
           if (index < 0) return null;
           const result = {
             ...window.__sessions[index],
@@ -3949,13 +3957,13 @@ Host staging
   });
   await inactiveStartupPage.reload();
   await inactiveStartupPage.waitForFunction(() => window.__invokeCalls.some((call) => (
-    call.command === "open_session" && call.args.sessionId === "local-shell"
+    call.command === "open_session" && call.args.request?.sessionId === "local-shell"
   )));
   const inactiveStartupState = await inactiveStartupPage.evaluate(() => ({
     status: window.__sessions.find((session) => session.profile.id === "local-shell")?.runtime.status ?? "missing",
-    opens: window.__invokeCalls.filter((call) => call.command === "open_session" && call.args.sessionId === "local-shell").length,
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session" && call.args.request?.sessionId === "local-shell").length,
     connectedOpens: window.__invokeCalls.filter((call) => (
-      call.command === "open_session" && call.args.sessionId !== "local-shell"
+      call.command === "open_session" && call.args.request?.sessionId !== "local-shell"
     )).length,
   }));
   assert(inactiveStartupState.status === "connected"
@@ -3976,7 +3984,7 @@ Host staging
   await silentSshStartupPage.reload();
   const silentSshTab = silentSshStartupPage.locator('.workspace-pane-tab[data-view-id="view-edge"]');
   await silentSshStartupPage.waitForFunction(() => window.__invokeCalls.some((call) => (
-    call.command === "open_session" && call.args.sessionId === "edge-router"
+    call.command === "open_session" && call.args.request?.sessionId === "edge-router"
   )));
   await silentSshTab.waitFor();
   await silentSshStartupPage.waitForFunction(() => {
@@ -3986,14 +3994,16 @@ Host staging
   });
   const silentSshStartupState = await silentSshStartupPage.evaluate(() => {
     const open = window.__invokeCalls.find((call) => (
-      call.command === "open_session" && call.args.sessionId === "edge-router"
+      call.command === "open_session" && call.args.request?.sessionId === "edge-router"
     ));
     const dot = document.querySelector('.workspace-pane-tab[data-view-id="view-edge"] .session-status-dot');
     const tab = dot?.closest(".workspace-pane-tab");
     const label = tab?.querySelector(".workspace-pane-tab-label");
     return {
-      password: open?.args.password,
-      passphrase: open?.args.passphrase,
+      credentialHandle: open?.args.request?.credentialHandle,
+      inlinePassword: open?.args.password,
+      inlinePassphrase: open?.args.passphrase,
+      stagedCredentials: window.__invokeCalls.filter((call) => call.command === "stage_session_credentials").length,
       credentialDialogs: document.querySelectorAll(".credential-dialog").length,
       hostKeyDialogs: document.querySelectorAll(".hostkey-dialog").length,
       noticeDialogs: document.querySelectorAll(".notice-dialog").length,
@@ -4001,8 +4011,10 @@ Host staging
       title: label?.getAttribute("title") ?? "",
     };
   });
-  assert(silentSshStartupState.password === null
-    && silentSshStartupState.passphrase === null
+  assert(silentSshStartupState.credentialHandle === null
+    && silentSshStartupState.inlinePassword === undefined
+    && silentSshStartupState.inlinePassphrase === undefined
+    && silentSshStartupState.stagedCredentials === 0
     && silentSshStartupState.credentialDialogs === 0
     && silentSshStartupState.hostKeyDialogs === 0
     && silentSshStartupState.noticeDialogs === 0
@@ -4695,7 +4707,7 @@ Host staging
       .filter((call) => ["close_session", "save_session_profile", "open_session"].includes(call.command))
       .map((call) => ({
         command: call.command,
-        sessionId: call.args.sessionId ?? call.args.profile?.id ?? "",
+        sessionId: call.args.request?.sessionId ?? call.args.sessionId ?? call.args.profile?.id ?? "",
       })),
     status: window.__sessions.find((session) => session.profile.id === "local-shell")?.runtime.status ?? "missing",
   }), reconnectLifecycleStart);

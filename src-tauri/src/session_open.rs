@@ -84,6 +84,7 @@ pub(super) struct SessionOpenCredentials {
     pub(super) passphrase: Option<String>,
     pub(super) identity: Option<IdentityRef>,
     pub(super) isolate_saved_ssh_credentials: bool,
+    pub(super) credential_binding: Option<SessionCredentialBinding>,
 }
 
 pub(super) fn apply_session_open_profile_credentials(
@@ -156,6 +157,7 @@ pub(super) async fn open_session_under_lifecycle_lock(
         passphrase,
         identity,
         isolate_saved_ssh_credentials,
+        credential_binding,
     } = credentials;
     let profile = {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
@@ -164,6 +166,9 @@ pub(super) async fn open_session_under_lifecycle_lock(
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         let endpoint = describe_endpoint(&saved_profile);
         let mut profile = normalize_session_profile(saved_profile);
+        if let Some(binding) = credential_binding.as_ref() {
+            validate_session_credential_binding(&profile, binding)?;
+        }
         apply_session_open_profile_credentials(
             &mut profile,
             username.as_deref(),

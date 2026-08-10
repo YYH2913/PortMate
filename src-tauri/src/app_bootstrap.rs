@@ -53,6 +53,7 @@ pub fn run() {
                 store: Arc::new(Mutex::new(store)),
                 credential_ops: Arc::new(Mutex::new(())),
                 credential_lock_path: data_dir.join("credentials.lock"),
+                session_credentials: Arc::new(Mutex::new(SessionCredentialRegistry::default())),
                 system_event_sink: Arc::new(Mutex::new(None)),
                 session_open_slots: Arc::new(tokio::sync::Semaphore::new(
                     MAX_CONCURRENT_SESSION_OPENS,
@@ -173,6 +174,7 @@ pub fn run() {
             secret_commands::save_secret,
             secret_commands::delete_secret,
             secret_commands::has_secret,
+            session_credentials::stage_session_credentials,
             vault_commands::portable_vault_status,
             vault_commands::unlock_portable_vault,
             vault_commands::rotate_portable_vault_password,

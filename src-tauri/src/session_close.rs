@@ -73,6 +73,7 @@ pub(super) fn cleanup_deleted_session_runtime_state(
     session_id: &str,
     transfer_ids: &[String],
 ) {
+    clear_session_credentials(state, session_id);
     clear_active_command(&state.session_io(), session_id);
     clear_log_retention_check(&state.store_path, session_id);
     state
@@ -119,6 +120,7 @@ pub(super) async fn close_session_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    clear_session_credentials(state, &session_id);
     cancel_pending_session_opens(state, &session_id)?;
     let lifecycle_lane = session_lifecycle_lane(state, &session_id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;

@@ -49,6 +49,7 @@ pub struct AppState {
     pub(super) store: Arc<Mutex<SessionStore>>,
     pub(super) credential_ops: Arc<Mutex<()>>,
     pub(super) credential_lock_path: PathBuf,
+    pub(super) session_credentials: Arc<Mutex<SessionCredentialRegistry>>,
     pub(super) system_event_sink: Arc<Mutex<Option<SystemEventSinkGuard>>>,
     pub(super) session_open_slots: Arc<tokio::sync::Semaphore>,
     pub(super) ssh: Arc<Mutex<HashMap<String, SshRuntime>>>,
