@@ -6,6 +6,30 @@ Report suspected vulnerabilities privately through the repository's GitHub secur
 channel. Do not include credentials, private keys, production hostnames, or unredacted PortMate
 Store data in a public issue.
 
+## Credential Boundary
+
+PortMate separates user login credentials from internal process credentials:
+
+- SSH and proxy passwords, private-key passphrases, OneKey secrets, and Profile Vault private keys
+  are written only to the master-password-protected IOTA Stronghold vault. SQLite stores opaque
+  `stronghold:` references, not plaintext.
+- The native OS keyring is reserved for internal material such as the persistent MCP HTTP token and
+  bundle-signing identity. Legacy user `keychain:` references remain readable and deletable so an
+  existing installation can connect and migrate them one way to Stronghold. General credential APIs
+  cannot create or overwrite those entries.
+- Unsaved credentials submitted by the trusted desktop prompt are exchanged for a 30-second,
+  one-use handle bound to the requesting window, session ID, and current SSH configuration digest.
+  Locking the vault, closing a session, or deleting a Profile clears applicable handles. MCP calls
+  reject passwords, passphrases, and credential handles.
+- Secret reads occur only inside the Rust desktop backend. The Tauri frontend has no command that
+  returns stored plaintext credentials.
+
+This boundary protects credentials at rest from ordinary filesystem readers and keeps saved
+plaintext out of SQLite, logs, MCP, and long-lived frontend state. It does not protect against an
+attacker who controls the current OS account, injects or debugs the PortMate process, replaces a
+trusted PortMate binary, or controls the kernel. Use OS account isolation, full-disk encryption, and
+trusted release artifacts for those threats.
+
 ## Dependency Gates
 
 `npm run test:dependency-audit` rejects moderate-or-higher npm advisories.

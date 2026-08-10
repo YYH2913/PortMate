@@ -110,7 +110,9 @@ PortMate 将两类密钥分开管理：
 - **Host Key**：证明远端服务器身份。默认保存在 PortMate 自有信任库，不自动写入系统 `known_hosts`。
 - **Client Identity**：用于登录远端的私钥或 agent 身份。可以限制尝试顺序，避免无关密钥耗尽服务端 `MaxAuthTries`。
 
-密码、私钥口令、Profile Vault 私钥和持久 MCP HTTP Token 不写入 SQLite 正文。默认使用系统原生 keyring；原生 provider 不可用时，可以显式使用 IOTA Stronghold Portable Vault。短期桌面 IPC Token 会在每次启动时轮换，只写入原子更新且仅属主可读的 `portmate-ipc.json`，不会进入 SQLite。
+SSH 密码、私钥口令、代理密码、OneKey Secret 和 Profile Vault 私钥统一保存在由用户主密码保护的 IOTA Stronghold 中；SQLite 只保存 `stronghold:` 引用，保存或使用前必须先解锁 Vault。系统原生 keyring 仅保留持久 MCP HTTP Token、bundle 签名身份等程序内部材料。已有用户 `keychain:` 引用仍可读取、删除并单向迁移到 Stronghold，但 PortMate 不再向系统 keyring 新建或覆盖用户凭据。短期桌面 IPC Token 会在每次启动时轮换，只写入原子更新且仅属主可读的 `portmate-ipc.json`，不会进入 SQLite。
+
+SSH 建连期间，可信凭据弹窗提交后的明文只留在桌面后端；前端后续只持有绑定调用窗口、会话和当前 SSH 配置的短期一次性句柄。MCP 请求不能提交密码、私钥口令或凭据句柄。完整信任边界与限制见 [SECURITY.md](./SECURITY.md)。
 
 Host Key 变化默认阻断连接。请在确认设备替换、系统重装或密钥轮换后，再使用一次性信任、追加或替换操作。不要为了消除提示而关闭验证。
 
