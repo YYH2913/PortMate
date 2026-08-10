@@ -581,6 +581,9 @@ try {
           return snapshot;
         }
         if (command === "save_session_profile") {
+          if (args.proxyPasswordUpdate?.action === "set" && args.proxyPasswordUpdate.storage !== "portable") {
+            throw new Error("new proxy passwords must explicitly target Stronghold");
+          }
           if (window.__failNextProfileSave) {
             window.__failNextProfileSave = false;
             throw new Error("simulated Profile save failure");
@@ -613,7 +616,10 @@ try {
           return saved;
         }
         if (command === "save_secret") {
-          const result = { secretRef: `keychain:test-secret-${++window.__secretSequence}` };
+          if (args.request?.storage !== "portable") {
+            throw new Error("new user secrets must explicitly target Stronghold");
+          }
+          const result = { secretRef: `stronghold:test-secret-${++window.__secretSequence}` };
           if (window.__failSecretWriteAt === window.__secretSequence) {
             window.__failSecretWriteAt = 0;
             throw new Error("simulated secret write failure");
@@ -763,6 +769,11 @@ try {
         }
         if (command === "save_one_key") {
           const request = args.request;
+          for (const update of [request.passwordUpdate, request.passphraseUpdate]) {
+            if (update.action === "set" && update.storage !== "portable") {
+              throw new Error("new OneKey secrets must explicitly target Stronghold");
+            }
+          }
           const existing = window.__oneKeys.find((item) => item.id === request.id);
           const id = request.id || `one-key-${++window.__oneKeySequence}`;
           const now = new Date().toISOString();
@@ -4468,6 +4479,9 @@ Host staging
   await privateKeyImportLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
   await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const importingKeyManager = privateKeyImportLifecyclePage.locator(".key-dialog");
+  await importingKeyManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("private key import vault");
+  await importingKeyManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await importingKeyManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
   const importPanel = importingKeyManager.locator(".key-import-panel");
   await importPanel.locator("summary").click();
   await importPanel.getByPlaceholder("Key label", { exact: true }).fill("Deferred imported key");
@@ -4532,9 +4546,9 @@ Host staging
   const partialCredentialDialog = partialCredentialPage.locator(".credential-dialog");
   await partialCredentialDialog.waitFor();
   await partialCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
-  await partialCredentialDialog.getByLabel("保存登录密码到系统密钥库", { exact: true }).check();
+  await partialCredentialDialog.getByLabel("保存登录密码到 Stronghold（需先解锁）", { exact: true }).check();
   await partialCredentialDialog.getByLabel("私钥口令", { exact: true }).fill("saved passphrase");
-  await partialCredentialDialog.getByLabel("保存私钥口令到系统密钥库", { exact: true }).check();
+  await partialCredentialDialog.getByLabel("保存私钥口令到 Stronghold（需先解锁）", { exact: true }).check();
   await partialCredentialPage.evaluate(() => { window.__failSecretWriteAt = 2; });
   await partialCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
   const partialCredentialNotice = partialCredentialPage.locator(".notice-dialog", { hasText: "保存凭据失败" });
@@ -4565,7 +4579,7 @@ Host staging
   const failedProfileCredentialDialog = failedProfileCredentialPage.locator(".credential-dialog");
   await failedProfileCredentialDialog.waitFor();
   await failedProfileCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
-  await failedProfileCredentialDialog.getByLabel("保存登录密码到系统密钥库", { exact: true }).check();
+  await failedProfileCredentialDialog.getByLabel("保存登录密码到 Stronghold（需先解锁）", { exact: true }).check();
   await failedProfileCredentialPage.evaluate(() => { window.__failNextProfileSave = true; });
   await failedProfileCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
   const failedProfileCredentialNotice = failedProfileCredentialPage.locator(".notice-dialog", { hasText: "连接失败" });
@@ -4743,7 +4757,7 @@ Host staging
   await cancelledDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
   const cancelledDraftSecretText = cancelledDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
   await cancelledDraftSecretText.fill("staged private key");
-  const cancelledDraftSecretSave = cancelledDraftSecretDialog.locator("button", { hasText: "保存到系统密钥库" });
+  const cancelledDraftSecretSave = cancelledDraftSecretDialog.locator("button", { hasText: "保存到 Stronghold" });
   const cancelledDraftSecretControls = {
     value: await cancelledDraftSecretText.inputValue(),
     disabled: await cancelledDraftSecretSave.isDisabled(),
@@ -4794,7 +4808,7 @@ Host staging
   await committedDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
   const committedDraftSecretText = committedDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
   await committedDraftSecretText.fill("committed private key");
-  const committedDraftSecretSave = committedDraftSecretDialog.locator("button", { hasText: "保存到系统密钥库" });
+  const committedDraftSecretSave = committedDraftSecretDialog.locator("button", { hasText: "保存到 Stronghold" });
   assert(!await committedDraftSecretSave.isDisabled(), "committed staged Secret control remained disabled after input");
   await committedDraftSecretSave.click();
   await committedDraftSecretPage.waitForFunction(() => Object.keys(window.__secrets).length === 1);

@@ -21,8 +21,6 @@ import type {
 
 const MAX_ONE_KEYS = 64;
 
-type SecretStorageChoice = "auto" | "native" | "portable";
-
 type OneKeyDraft = {
   id: string | null;
   label: string;
@@ -36,7 +34,6 @@ type OneKeyDraft = {
   hasPassphrase: boolean;
   currentIdentity: OneKeyIdentitySummary | null;
   identitySelection: OneKeyIdentitySelection | null;
-  storage: SecretStorageChoice;
   sessionIds: string[];
 };
 
@@ -54,7 +51,6 @@ function emptyDraft(): OneKeyDraft {
     hasPassphrase: false,
     currentIdentity: null,
     identitySelection: null,
-    storage: "auto",
     sessionIds: [],
   };
 }
@@ -73,7 +69,6 @@ function draftFromItem(item: OneKeySummary): OneKeyDraft {
     hasPassphrase: item.hasPassphrase,
     currentIdentity: item.identity ?? null,
     identitySelection: selectionFromOneKeyIdentity(item.identity),
-    storage: "auto",
     sessionIds: [...item.sessionIds],
   };
 }
@@ -85,13 +80,12 @@ function cloneItems(items: readonly OneKeySummary[]) {
 function secretUpdate(
   value: string,
   clear: boolean,
-  storage: SecretStorageChoice,
 ): OneKeySecretUpdate {
   if (value) {
     return {
       action: "set",
       secret: value,
-      storage: storage === "auto" ? null : storage,
+      storage: "portable",
     };
   }
   return clear ? { action: "clear" } : { action: "preserve" };
@@ -210,9 +204,9 @@ export default function OneKeyDialog({
       label: draft.label,
       kind: draft.kind,
       username: draft.username,
-      passwordUpdate: secretUpdate(draft.password, draft.clearPassword, draft.storage),
+      passwordUpdate: secretUpdate(draft.password, draft.clearPassword),
       passphraseUpdate: draft.kind === "ssh"
-        ? secretUpdate(draft.passphrase, draft.clearPassphrase, draft.storage)
+        ? secretUpdate(draft.passphrase, draft.clearPassphrase)
         : { action: "clear" },
       identityUpdate: oneKeyIdentityUpdate(draft.kind, draft.currentIdentity, draft.identitySelection),
       sessionIds: draft.sessionIds,
@@ -352,7 +346,7 @@ export default function OneKeyDialog({
                   return <option key={oneKeyIdentitySelectionKey(selection)} value={oneKeyIdentitySelectionKey(selection)}>{item.identity.label} · {item.sourceProfileName}</option>;
                 })}
               </select></label> : null}
-              <label><span>新 Secret 存储</span><select value={draft.storage} onChange={(event) => setDraft((current) => ({ ...current, storage: event.target.value as SecretStorageChoice }))}><option value="auto">自动</option><option value="native">系统密钥库</option><option value="portable">Portable Stronghold</option></select></label>
+              <label><span>新 Secret 存储</span><input value="Stronghold（需先解锁）" readOnly /></label>
             </div>
             <section className="one-key-sessions">
               <header><strong>绑定会话</strong><span>{draft.sessionIds.length}</span></header>

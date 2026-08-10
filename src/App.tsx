@@ -5662,14 +5662,14 @@ async function persistConnectionSecrets(
   try {
     if (credentials.savePassword && credentials.password) {
       const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-        request: { secretRef: null, secret: credentials.password },
+        request: { secretRef: null, secret: credentials.password, storage: "portable" },
       });
       createdSecretRefs.push(response.secretRef);
       connection = { ...connection, passwordSecretRef: response.secretRef };
     }
     if (credentials.savePassphrase && credentials.passphrase) {
       const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-        request: { secretRef: null, secret: credentials.passphrase },
+        request: { secretRef: null, secret: credentials.passphrase, storage: "portable" },
       });
       createdSecretRefs.push(response.secretRef);
       connection = { ...connection, passphraseSecretRef: response.secretRef };

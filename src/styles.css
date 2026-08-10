@@ -9809,13 +9809,24 @@ fieldset label {
 .portable-vault-migration-direction {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
   padding: 1px;
   background: var(--line);
 }
 
-.portable-vault-migration-direction button,
+.portable-vault-migration-direction > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  background: var(--panel-3);
+  color: var(--cyan);
+  font-size: 11px;
+}
+
 .portable-vault-migration-preview-button,
 .portable-vault-migration-preview > button {
   display: inline-flex;
@@ -9829,11 +9840,6 @@ fieldset label {
   color: var(--muted);
   cursor: pointer;
   font-size: 11px;
-}
-
-.portable-vault-migration-direction button[aria-pressed="true"] {
-  background: var(--panel-3);
-  color: var(--cyan);
 }
 
 .portable-vault-migration-config > label:not(.portable-vault-migration-cleanup) {

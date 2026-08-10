@@ -209,7 +209,7 @@ export interface OneKeySummary {
 export type OneKeySecretUpdate =
   | { action: "preserve" }
   | { action: "clear" }
-  | { action: "set"; secret: string; storage?: "native" | "portable" | null };
+  | { action: "set"; secret: string; storage: "portable" };
 
 export type OneKeyIdentityUpdate =
   | { action: "preserve" }

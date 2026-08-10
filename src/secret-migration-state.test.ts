@@ -57,25 +57,25 @@ describe("profile secret migration state", () => {
   });
 
   it("builds explicit all-profile and single-profile requests", () => {
-    expect(buildProfileSecretMigrationRequest("portable", "all", [" a ", "b", "a"], true)).toEqual({
+    expect(buildProfileSecretMigrationRequest("all", [" a ", "b", "a"], true)).toEqual({
       targetStorage: "portable",
       profileIds: ["a", "b"],
       cleanupSource: true,
     });
-    expect(buildProfileSecretMigrationRequest("native", " b ", ["a", "b"], false)).toEqual({
-      targetStorage: "native",
+    expect(buildProfileSecretMigrationRequest(" b ", ["a", "b"], false)).toEqual({
+      targetStorage: "portable",
       profileIds: ["b"],
       cleanupSource: false,
     });
   });
 
   it("rejects an empty migration scope", () => {
-    expect(() => buildProfileSecretMigrationRequest("portable", "all", [], true)).toThrow("至少一个");
-    expect(() => buildProfileSecretMigrationRequest("portable", " ", ["a"], true)).toThrow("至少一个");
+    expect(() => buildProfileSecretMigrationRequest("all", [], true)).toThrow("至少一个");
+    expect(() => buildProfileSecretMigrationRequest(" ", ["a"], true)).toThrow("至少一个");
   });
 
-  it("invalidates a preview when direction, scope, or cleanup changes", () => {
-    const request = buildProfileSecretMigrationRequest("portable", "all", ["a", "b"], true);
+  it("invalidates a preview when target, scope, or cleanup changes", () => {
+    const request = buildProfileSecretMigrationRequest("all", ["a", "b"], true);
     expect(sameProfileSecretMigrationRequest(request, { ...request })).toBe(true);
     expect(sameProfileSecretMigrationRequest(request, { ...request, targetStorage: "native" })).toBe(false);
     expect(sameProfileSecretMigrationRequest(request, { ...request, profileIds: ["a"] })).toBe(false);

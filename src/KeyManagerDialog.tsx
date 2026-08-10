@@ -40,7 +40,6 @@ import type {
   ProfileSecretMigrationRecoverySummary,
   ProfileSecretMigrationRequest,
   ProfileSecretMigrationResponse,
-  SecretStorage,
 } from "./secret-migration-state";
 import type {
   ConnectionConfig,
@@ -111,8 +110,6 @@ type PortableVaultStatus = {
   path: string;
 };
 
-type SecretStorageChoice = "auto" | "native" | "portable";
-
 export default function KeyManagerDialog({
   hostKeys,
   sessions,
@@ -167,12 +164,10 @@ export default function KeyManagerDialog({
   const clientKeyEditExpectedIdentityRef = useRef<IdentityRef | null>(null);
   const [clientKeyPrivateKey, setClientKeyPrivateKey] = useState("");
   const [clientKeyPassphrase, setClientKeyPassphrase] = useState("");
-  const [clientKeyStorage, setClientKeyStorage] = useState<SecretStorageChoice>("auto");
   const [clientKeyMutationBusy, setClientKeyMutationBusy] = useState(false);
   const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
-  const [privateKeyStorage, setPrivateKeyStorage] = useState<SecretStorageChoice>("auto");
   const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
   const [portableVaultPassword, setPortableVaultPassword] = useState("");
   const [portableVaultCurrentPassword, setPortableVaultCurrentPassword] = useState("");
@@ -180,7 +175,6 @@ export default function KeyManagerDialog({
   const [portableVaultConfirmPassword, setPortableVaultConfirmPassword] = useState("");
   const [portableVaultFeedback, setPortableVaultFeedback] = useState<{ kind: "error" | "status"; message: string } | null>(null);
   const [portableVaultBusy, setPortableVaultBusy] = useState(false);
-  const [migrationTarget, setMigrationTarget] = useState<SecretStorage>("portable");
   const [migrationScopeProfileId, setMigrationScopeProfileId] = useState<"all" | string>("all");
   const [migrationCleanupSource, setMigrationCleanupSource] = useState(true);
   const [migrationBusy, setMigrationBusy] = useState<"preview" | "migrate" | null>(null);
@@ -328,7 +322,6 @@ export default function KeyManagerDialog({
 
   function currentMigrationRequest(): ProfileSecretMigrationRequest {
     return buildProfileSecretMigrationRequest(
-      migrationTarget,
       migrationScopeProfileId,
       credentialSessions.map((session) => session.profile.id),
       migrationCleanupSource,
@@ -868,6 +861,10 @@ export default function KeyManagerDialog({
 
   async function importPrivateKeyToProfile() {
     if (!selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    if (!portableVault?.unlocked) {
+      setError("请先解锁 Stronghold，再导入私钥");
+      return;
+    }
     const profile = selectedProfile;
     const privateKey = privateKeyText.trim();
     if (!privateKey) return;
@@ -884,7 +881,7 @@ export default function KeyManagerDialog({
     try {
       const label = privateKeyLabel.trim() || "profile key";
       const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-        request: { secretRef: null, secret: privateKeyText, storage: privateKeyStorage === "auto" ? null : privateKeyStorage },
+        request: { secretRef: null, secret: privateKeyText, storage: "portable" },
       });
       newSecretRef = response.secretRef;
       if (!onProfileMutationCurrent(profile.id, mutationToken)) {
@@ -1189,7 +1186,6 @@ export default function KeyManagerDialog({
     });
     setClientKeyPrivateKey("");
     setClientKeyPassphrase("");
-    setClientKeyStorage(item.identity.secretRef?.startsWith("stronghold:") ? "portable" : "auto");
     setError("");
     setStatus("");
   }
@@ -1260,6 +1256,10 @@ export default function KeyManagerDialog({
 
   async function rotateClientIdentity() {
     if (!clientKeyEditDraft || !clientKeyPrivateKey.trim()) return;
+    if (!portableVault?.unlocked) {
+      setError("请先解锁 Stronghold，再轮换 Vault 私钥");
+      return;
+    }
     const mutationProfileId = clientKeyEditDraft.profileId;
     const mutationToken = onProfileMutationStart(mutationProfileId);
     let backendSucceeded = false;
@@ -1273,7 +1273,7 @@ export default function KeyManagerDialog({
           identityId: clientKeyEditDraft.identityId,
           privateKey: clientKeyPrivateKey,
           passphrase: clientKeyPassphrase || null,
-          storage: clientKeyStorage === "auto" ? null : clientKeyStorage,
+          storage: "portable",
         },
       });
       backendSucceeded = true;
@@ -1535,8 +1535,7 @@ export default function KeyManagerDialog({
                   <>
                     <div className="portable-vault-migration-config">
                       <div className="portable-vault-migration-direction" role="group" aria-label="凭据迁移方向">
-                        <button type="button" aria-pressed={migrationTarget === "portable"} onClick={() => { setMigrationTarget("portable"); invalidateMigrationState(); }} disabled={migrationControlsDisabled}>Native → Stronghold</button>
-                        <button type="button" aria-pressed={migrationTarget === "native"} onClick={() => { setMigrationTarget("native"); invalidateMigrationState(); }} disabled={migrationControlsDisabled}>Stronghold → Native</button>
+                        <span>系统密钥库 → Stronghold</span>
                       </div>
                       <label><span>Profile 范围</span><select value={migrationScopeProfileId} onChange={(event) => { setMigrationScopeProfileId(event.target.value); invalidateMigrationState(); }} disabled={migrationControlsDisabled}><option value="all">全部凭据 Profile</option>{credentialSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}</select></label>
                       <label className="portable-vault-migration-cleanup"><input type="checkbox" checked={migrationCleanupSource} onChange={(event) => { setMigrationCleanupSource(event.target.checked); invalidateMigrationState(); }} disabled={migrationControlsDisabled} /><span>清理未共享的源 Secret</span></label>
@@ -1638,7 +1637,7 @@ export default function KeyManagerDialog({
                   <label><span>Path / Agent comment</span><input value={clientKeyEditDraft.path} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, path: event.target.value })} disabled={clientKeyEditDraft.source === "profile-vault"} /></label>
                   <label><span>Identity ID</span><input value={clientKeyEditDraft.identityId} readOnly /></label>
                   <label><span>Profile</span><input value={editingClientIdentityItem.profileName} readOnly /></label>
-                  {clientKeyEditDraft.source === "profile-vault" ? <label><span>Rotation storage</span><select value={clientKeyStorage} onChange={(event) => setClientKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">Auto / native first</option><option value="native">Native keyring</option><option value="portable" disabled={!portableVault?.unlocked}>Portable Stronghold</option></select></label> : null}
+                  {clientKeyEditDraft.source === "profile-vault" ? <label><span>Rotation storage</span><input value="Stronghold" readOnly /></label> : null}
                   {clientKeyEditDraft.source === "profile-vault" ? <label className="client-key-secret-ref"><span>Secret ref</span><input value={clientKeyEditDraft.secretRef} readOnly /></label> : null}
                 </div>
                 <div className="client-key-impact">
@@ -1654,7 +1653,7 @@ export default function KeyManagerDialog({
                   <div className="client-key-rotation">
                     <textarea value={clientKeyPrivateKey} onChange={(event) => setClientKeyPrivateKey(event.target.value)} placeholder="新的 OpenSSH private key" />
                     <input type="password" value={clientKeyPassphrase} onChange={(event) => setClientKeyPassphrase(event.target.value)} placeholder="新私钥口令（可选）" />
-                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
+                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !portableVault?.unlocked || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
                   </div>
                 ) : null}
               </section>
@@ -1663,9 +1662,9 @@ export default function KeyManagerDialog({
               <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
               <input value={privateKeyLabel} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
               <input type="file" accept=".pem,.key,.txt" onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
-              <select value={privateKeyStorage} onChange={(event) => setPrivateKeyStorage(event.target.value as SecretStorageChoice)}><option value="auto">存储：自动（优先系统）</option><option value="native">存储：系统密钥库</option><option value="portable" disabled={!portableVault?.unlocked}>存储：Portable Stronghold</option></select>
+              <input value="存储：Stronghold（需先解锁）" aria-label="私钥存储" readOnly />
               <textarea value={privateKeyText} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
-              <button onClick={() => void importPrivateKeyToProfile()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={clientKeyMutationBusy || credentialMutationControlsDisabled || !portableVault?.unlocked || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
             </details>
             <div className="key-agent-header agent-section-header">
               <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>

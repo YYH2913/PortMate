@@ -125,7 +125,7 @@ export default function CredentialDialog({
           {request.needsPassword && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password} />
-              <span>保存登录密码到系统密钥库</span>
+              <span>保存登录密码到 Stronghold（需先解锁）</span>
             </label>
           ) : null}
           {request.hasIdentityFiles ? (
@@ -137,7 +137,7 @@ export default function CredentialDialog({
           {request.hasIdentityFiles && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase} />
-              <span>保存私钥口令到系统密钥库</span>
+              <span>保存私钥口令到 Stronghold（需先解锁）</span>
             </label>
           ) : null}
           <div className="credential-meta">

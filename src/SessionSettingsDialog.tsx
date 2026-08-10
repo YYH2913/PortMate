@@ -1169,7 +1169,7 @@ function SshAdvancedFields({
       setJumpStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-          request: { secretRef: null, secret },
+          request: { secretRef: null, secret, storage: "portable" },
         });
         onSecretCreated(response.secretRef);
         const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
@@ -1513,12 +1513,12 @@ function SshAdvancedFields({
       setVaultStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
-          request: { secretRef: null, secret: vaultPrivateKey },
+          request: { secretRef: null, secret: vaultPrivateKey, storage: "portable" },
         });
         onSecretCreated(response.secretRef);
         updateIdentity({ source: "profile-vault", secretRef: response.secretRef, path: null });
         setVaultPrivateKey("");
-        setVaultStatus("已保存到系统密钥库");
+        setVaultStatus("已保存到 Stronghold");
       } catch (error) {
         setVaultStatus(formatError(error));
       } finally {
@@ -1593,7 +1593,7 @@ function SshAdvancedFields({
         {firstIdentity.source === "profile-vault" ? (
           <DialogField label="密钥库:">
             <div className="inline-actions">
-              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || secretWriteBusy || !vaultPrivateKey.trim()}>保存到系统密钥库</button>
+              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || secretWriteBusy || !vaultPrivateKey.trim()}>保存到 Stronghold</button>
               <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !firstIdentity.secretRef}>删除</button>
               <span>{vaultStatus}</span>
             </div>
@@ -1652,7 +1652,7 @@ function ProxyAdvancedFields({
                 autoComplete="new-password"
                 value={password}
                 placeholder={passwordPendingClear ? "保存后移除" : proxy.passwordSecretRef ? "已安全保存" : "未保存"}
-                onChange={(event) => onPasswordUpdateChange(event.target.value ? { action: "set", password: event.target.value } : null)}
+                onChange={(event) => onPasswordUpdateChange(event.target.value ? { action: "set", password: event.target.value, storage: "portable" } : null)}
               />
               <button
                 type="button"

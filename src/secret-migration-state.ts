@@ -121,7 +121,6 @@ export function profileSecretMigrationErrorMessage(message: string): string {
 }
 
 export function buildProfileSecretMigrationRequest(
-  targetStorage: SecretStorage,
   scopeProfileId: "all" | string,
   availableProfileIds: string[],
   cleanupSource: boolean,
@@ -132,7 +131,7 @@ export function buildProfileSecretMigrationRequest(
   if (!profileIds.length) {
     throw new Error("凭据迁移必须选择至少一个支持凭据的 Profile");
   }
-  return { targetStorage, profileIds, cleanupSource };
+  return { targetStorage: "portable", profileIds, cleanupSource };
 }
 
 export function sameProfileSecretMigrationRequest(

@@ -1,7 +1,7 @@
 import type { ProxyConfig } from "./types";
 
 export type ProxyPasswordUpdate =
-  | { action: "set"; password: string }
+  | { action: "set"; password: string; storage: "portable" }
   | { action: "clear" }
   | null;
 
