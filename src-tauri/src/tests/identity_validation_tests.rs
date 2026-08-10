@@ -59,6 +59,24 @@ fn keyring_initialization_is_persistent_only_and_retries_transient_failures() {
 }
 
 #[test]
+fn new_user_secrets_default_to_stronghold_and_reject_native_storage() {
+    for storage in [None, Some(SecretStorage::Portable)] {
+        let secret_ref = new_user_secret_ref(storage).unwrap();
+        assert!(secret_ref.starts_with("stronghold:"));
+        assert!(ensure_user_secret_ref_is_writable(&secret_ref).is_ok());
+    }
+
+    let native_error = new_user_secret_ref(Some(SecretStorage::Native)).unwrap_err();
+    assert!(native_error.contains("必须保存到 Stronghold"));
+    let overwrite_error =
+        ensure_user_secret_ref_is_writable("keychain:legacy-password").unwrap_err();
+    assert!(overwrite_error.contains("只支持读取、删除和迁移"));
+    assert!(ensure_user_secret_ref_is_writable("legacy-password")
+        .unwrap_err()
+        .contains("stronghold: 前缀"));
+}
+
+#[test]
 fn client_identity_validation_enforces_immutable_id_and_source_fields() {
     let immutable_error = normalize_client_identity(
         "identity-a",

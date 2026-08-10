@@ -41,10 +41,31 @@ where
 }
 
 pub(super) fn write_secret_to_store(secret_ref: &str, secret: &str) -> Result<(), String> {
-    if secret_ref.trim().starts_with("stronghold:") {
-        write_secret_to_portable_vault(secret_ref, secret)
-    } else {
-        write_secret_to_keyring(secret_ref, secret)
+    ensure_user_secret_ref_is_writable(secret_ref)?;
+    write_secret_to_portable_vault(secret_ref, secret)
+}
+
+pub(super) fn ensure_user_secret_ref_is_writable(secret_ref: &str) -> Result<(), String> {
+    let secret_ref = secret_ref.trim();
+    if secret_ref.starts_with("stronghold:") {
+        return Ok(());
+    }
+    if secret_ref.starts_with("keychain:") {
+        return Err(
+            "系统密钥库中的旧用户凭据只支持读取、删除和迁移，不能通过通用凭据接口写入"
+                .to_string(),
+        );
+    }
+    Err("用户 secretRef 必须使用 stronghold: 前缀".to_string())
+}
+
+pub(super) fn new_user_secret_ref(storage: Option<SecretStorage>) -> Result<String, String> {
+    match storage {
+        None | Some(SecretStorage::Portable) => Ok(format!("stronghold:{}", Uuid::new_v4())),
+        Some(SecretStorage::Native) => Err(
+            "新的用户凭据必须保存到 Stronghold；系统密钥库仅用于内部进程令牌和旧凭据迁移"
+                .to_string(),
+        ),
     }
 }
 
@@ -52,24 +73,9 @@ pub(super) fn write_new_secret(
     storage: Option<SecretStorage>,
     secret: &str,
 ) -> Result<String, String> {
-    let preferred = storage.unwrap_or(SecretStorage::Native);
-    let secret_ref = match preferred {
-        SecretStorage::Native => format!("keychain:{}", Uuid::new_v4()),
-        SecretStorage::Portable => format!("stronghold:{}", Uuid::new_v4()),
-    };
-    match write_secret_to_store(&secret_ref, secret) {
-        Ok(()) => Ok(secret_ref),
-        Err(native_error) if storage.is_none() && matches!(preferred, SecretStorage::Native) => {
-            let fallback_ref = format!("stronghold:{}", Uuid::new_v4());
-            write_secret_to_portable_vault(&fallback_ref, secret).map_err(|portable_error| {
-                format!(
-                    "系统密钥库写入失败: {native_error}; portable vault fallback 失败: {portable_error}"
-                )
-            })?;
-            Ok(fallback_ref)
-        }
-        Err(error) => Err(error),
-    }
+    let secret_ref = new_user_secret_ref(storage)?;
+    write_secret_to_portable_vault(&secret_ref, secret)?;
+    Ok(secret_ref)
 }
 
 pub(super) fn read_secret_from_store(secret_ref: &str) -> Result<String, String> {

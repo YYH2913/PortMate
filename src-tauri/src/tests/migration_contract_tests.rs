@@ -28,6 +28,24 @@ fn vault_command_types_keep_stable_json_contracts() {
 }
 
 #[test]
+fn new_profile_secret_migrations_only_target_stronghold() {
+    let portable = ProfileSecretMigrationRequest {
+        target_storage: SecretStorage::Portable,
+        profile_ids: vec!["ssh-1".to_string()],
+        cleanup_source: true,
+    };
+    crate::vault_commands::ensure_supported_profile_secret_migration_request(&portable).unwrap();
+
+    let native = ProfileSecretMigrationRequest {
+        target_storage: SecretStorage::Native,
+        ..portable
+    };
+    assert!(crate::vault_commands::ensure_supported_profile_secret_migration_request(&native)
+        .unwrap_err()
+        .contains("仅支持从系统密钥库迁移到 Stronghold"));
+}
+
+#[test]
 fn tcp_proxy_credentials_participate_in_migration_and_legacy_journals() {
     let mut profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
         proxy: ProxyConfig {

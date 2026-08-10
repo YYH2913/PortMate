@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) fn ensure_supported_profile_secret_migration_request(
+    request: &ProfileSecretMigrationRequest,
+) -> Result<(), String> {
+    if request.target_storage != SecretStorage::Portable {
+        return Err(
+            "新的凭据迁移仅支持从系统密钥库迁移到 Stronghold；旧迁移记录仍可恢复"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn portable_vault_status(
     state: State<'_, AppState>,
@@ -54,6 +66,7 @@ pub(crate) fn preview_profile_secret_migration(
     state: State<'_, AppState>,
     request: ProfileSecretMigrationRequest,
 ) -> Result<ProfileSecretMigrationPreview, String> {
+    ensure_supported_profile_secret_migration_request(&request)?;
     let _credential_guard = lock_credential_operations(state.inner())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     verify_store_snapshot_is_current(&state.store_path)?;
@@ -73,6 +86,7 @@ pub(crate) fn migrate_profile_secrets(
     request: ProfileSecretMigrationRequest,
     expected_plan_token: String,
 ) -> Result<ProfileSecretMigrationResponse, String> {
+    ensure_supported_profile_secret_migration_request(&request)?;
     let _credential_guard = lock_credential_operations(state.inner())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     verify_store_snapshot_is_current(&state.store_path)?;
