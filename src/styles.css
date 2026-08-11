@@ -3356,7 +3356,7 @@ button {
 }
 
 .terminal-terminal-region {
-  --terminal-timestamp-gutter-width: 72px;
+  --terminal-timestamp-gutter-width: 96px;
   position: relative;
   display: grid;
   grid-template-columns: var(--terminal-timestamp-gutter-width) minmax(0, 1fr);
@@ -4178,11 +4178,7 @@ button {
 
 @container (max-width: 600px) {
   .terminal-terminal-region {
-    --terminal-timestamp-gutter-width: 62px;
-  }
-
-  .terminal-timestamp-gutter {
-    font-size: 8px;
+    --terminal-timestamp-gutter-width: 96px;
   }
 }
 

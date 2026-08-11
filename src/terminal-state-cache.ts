@@ -9,6 +9,7 @@ export type SerializedTerminalState = {
   seenEventIds: string[];
   mouseEncoding?: TerminalMouseEncoding;
   timestamps?: TerminalTimestampEntry[];
+  alternateTimestamp?: string;
 };
 
 export const MAX_SERIALIZED_TERMINALS = 32;
@@ -76,6 +77,9 @@ export class TerminalStateCache {
       seenEventIds: state.seenEventIds.slice(-MAX_SERIALIZED_TERMINAL_EVENTS),
       mouseEncoding: normalizeMouseEncoding(state.mouseEncoding),
       timestamps: normalizeTerminalTimestamps(state.timestamps),
+      alternateTimestamp: normalizeTerminalTimestamps([
+        { line: 0, ts: state.alternateTimestamp },
+      ], 1)[0]?.ts,
     };
     this.states.delete(sessionId);
     this.states.set(sessionId, normalized);

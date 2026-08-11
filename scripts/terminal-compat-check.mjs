@@ -159,7 +159,7 @@ async function waitForServer(url, processOutput) {
 }
 
 function createSession(id, name) {
-  const now = "2026-07-15T00:00:00.000Z";
+  const now = "2026-07-15T00:00:00.000000Z";
   return {
     profile: {
       id,
@@ -232,7 +232,7 @@ function createEvent(id, sessionId, text) {
     id,
     sessionId,
     paneId: `${sessionId}:main`,
-    ts: "2026-07-15T00:00:00.000Z",
+    ts: "2026-07-15T00:00:00.000000Z",
     direction: "inbound",
     stream: "stdout",
     bytesRef: null,
@@ -296,7 +296,7 @@ const topPty = await captureTopPty();
 const longLogLineCount = 6_000;
 const longLogTailMarker = "PORTMATE-LONG-LOG-TAIL-006000";
 const longLogText = `${Array.from({ length: longLogLineCount }, (_, index) => (
-  `2026-07-15T00:00:00.000Z INFO compatibility line ${String(index + 1).padStart(6, "0")} ${"x".repeat(48)}`
+  `2026-07-15T00:00:00.000000Z INFO compatibility line ${String(index + 1).padStart(6, "0")} ${"x".repeat(48)}`
 )).join("\r\n")}\r\n${longLogTailMarker}\r\n`;
 
 const port = await reservePort();
@@ -653,7 +653,7 @@ try {
   await page.waitForFunction(() => (
     document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticHighlighting === "alternate"
       && document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter')?.getAttribute("data-buffer-type") === "alternate"
-      && document.querySelectorAll('[data-pane-id="pane-a"] .terminal-timestamp-gutter time').length === 0
+      && document.querySelectorAll('[data-pane-id="pane-a"] .terminal-timestamp-gutter time').length > 0
   ));
   const initialSemanticState = await activeHost.evaluate((host) => ({
     state: host.dataset.terminalSemanticHighlighting,
@@ -665,8 +665,8 @@ try {
   }));
   assert(initialSemanticState.decorations === 0,
     `semantic highlighting leaked into the initial alternate screen: ${JSON.stringify(initialSemanticState)}`);
-  assert(initialTimestampAlternate.bufferType === "alternate" && initialTimestampAlternate.count === 0,
-    `timestamps leaked into the initial alternate screen: ${JSON.stringify(initialTimestampAlternate)}`);
+  assert(initialTimestampAlternate.bufferType === "alternate" && initialTimestampAlternate.count > 0,
+    `the initial alternate screen is missing row timestamps: ${JSON.stringify(initialTimestampAlternate)}`);
 
   await clearCalls();
   await page.setViewportSize({ width: 1320, height: 820 });
@@ -731,7 +731,7 @@ try {
   await page.waitForFunction(() => {
     const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
     return gutter?.getAttribute("data-buffer-type") === "alternate"
-      && gutter.querySelectorAll("time").length === 0;
+      && gutter.querySelectorAll("time").length > 0;
   });
   const restoredTimestampAlternate = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
     bufferType: gutter.getAttribute("data-buffer-type"),
@@ -751,7 +751,7 @@ try {
       id: `a-rollover-${index}`,
       sessionId,
       paneId: `${sessionId}:main`,
-      ts: "2026-07-15T00:00:00.000Z",
+      ts: "2026-07-15T00:00:00.000000Z",
       direction: "inbound",
       stream: "stdout",
       bytesRef: null,
@@ -771,7 +771,7 @@ try {
     const gutter = document.querySelector('[data-pane-id="pane-a"] .terminal-timestamp-gutter');
     return gutter?.getAttribute("data-buffer-type") === "normal"
       && [...gutter.querySelectorAll("time")].some((time) => (
-        time.getAttribute("datetime") === "2026-07-15T00:00:00.000Z"
+        time.getAttribute("datetime") === "2026-07-15T00:00:00.000000Z"
       ));
   });
   const restoredTimestampNormal = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
@@ -812,7 +812,7 @@ try {
     return host?.dataset.terminalSemanticHighlighting === "alternate"
       && host.dataset.terminalSemanticDecorationCount === "0"
       && gutter?.getAttribute("data-buffer-type") === "alternate"
-      && gutter.querySelectorAll("time").length === 0;
+      && gutter.querySelectorAll("time").length > 0;
   });
   const semanticAlternate = await activeHost.evaluate((host) => ({
     state: host.dataset.terminalSemanticHighlighting,

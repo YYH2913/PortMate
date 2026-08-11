@@ -13,7 +13,7 @@ import type { IMarker, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { invokeBackend, isBackendAvailable } from "./api";
-import { formatBytes, formatEventClock } from "./display-formatters";
+import { formatBytes } from "./display-formatters";
 import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptStateFromEvents, reduceOneKeyPromptDetection } from "./one-key-completion-state";
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
@@ -58,6 +58,7 @@ import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
 import {
   MAX_TERMINAL_TIMESTAMPS,
+  formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
@@ -876,6 +877,7 @@ export default function TerminalCanvas({
     let terminalDisposed = false;
     let timestampFrame: number | null = null;
     let timestampMarkers: TerminalTimestampMarker[] = [];
+    let alternateTimestamp: string | null = cachedState?.alternateTimestamp ?? null;
     let pendingRestoredTimestamps = normalizeTerminalTimestamps(cachedState?.timestamps);
     let drainEventWrites = () => {};
     let scheduleSemanticHighlighting = () => {};
@@ -891,13 +893,22 @@ export default function TerminalCanvas({
       const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
       if (!normalized) return;
       compactTimestampMarkers();
-      if (timestampMarkers.some((entry) => entry.marker.line === normalized.line)) return;
+      const existing = timestampMarkers.find((entry) => entry.marker.line === normalized.line);
+      if (existing) {
+        existing.ts = normalized.ts;
+        return;
+      }
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
       const marker = term.registerMarker(normalized.line - cursorLine);
       if (!marker || marker.line < 0) return;
       timestampMarkers.push({ marker, ts: normalized.ts });
       compactTimestampMarkers();
+    };
+    const registerTimestampRange = (startLine: number, endLine: number, ts: string) => {
+      const lastLine = Math.max(0, Math.max(startLine, endLine));
+      const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - MAX_TERMINAL_TIMESTAMPS + 1);
+      for (let line = firstLine; line <= lastLine; line += 1) registerTimestampLine(line, ts);
     };
     const restoreTimestampMarkers = () => {
       if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
@@ -933,9 +944,12 @@ export default function TerminalCanvas({
           buffer.viewportY,
           term.rows,
         )
-        : [];
+        : alternateTimestamp
+          ? visibleTerminalTimestamps([{ line: 0, ts: alternateTimestamp }], 0, term.rows)
+          : [];
       host.dataset.terminalTimestampBuffer = bufferType;
       host.dataset.terminalTimestampCount = String(entries.length);
+      host.dataset.terminalTimestampRows = String(term.rows);
       if (!region || !screen || cellHeight <= 0) return;
       const next: TerminalTimestampViewport = { bufferType, screenTop, cellHeight, entries };
       setTimestampViewport((current) => sameTerminalTimestampViewport(current, next) ? current : next);
@@ -960,6 +974,7 @@ export default function TerminalCanvas({
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+      if (buffer.type === "alternate" && !restorePending) alternateTimestamp = null;
       restoreTimestampMarkers();
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
@@ -973,13 +988,23 @@ export default function TerminalCanvas({
         const event = pendingEventWrites.shift();
         if (!event) break;
         eventWriteActive = true;
-        if (event.text && event.direction !== "outbound" && term.buffer.active.type === "normal") {
-          const buffer = term.buffer.normal;
-          registerTimestampLine(buffer.baseY + buffer.cursorY, event.ts);
-        }
+        const beforeBuffer = term.buffer.active;
+        const beforeBufferType = beforeBuffer.type === "alternate" ? "alternate" : "normal";
+        const beforeLine = beforeBufferType === "normal"
+          ? term.buffer.normal.baseY + term.buffer.normal.cursorY
+          : beforeBuffer.cursorY;
         let callbackCompleted = false;
         let writeReturned = false;
         writeTerminalEvent(term, event, () => {
+          if (event.text && event.direction !== "outbound") {
+            const afterBuffer = term.buffer.active;
+            if (afterBuffer.type === "normal") {
+              const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
+              registerTimestampRange(beforeBufferType === "normal" ? beforeLine : afterLine, afterLine, event.ts);
+            } else {
+              alternateTimestamp = normalizeTerminalTimestamps([{ line: 0, ts: event.ts }], 1)[0]?.ts ?? null;
+            }
+          }
           settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
           eventWriteActive = false;
           callbackCompleted = true;
@@ -1286,6 +1311,9 @@ export default function TerminalCanvas({
             seenEventIds: [...seenEventsRef.current],
             mouseEncoding,
             timestamps: timestampSnapshot(firstSerializedLine),
+            alternateTimestamp: term.buffer.active.type === "alternate"
+              ? alternateTimestamp ?? undefined
+              : undefined,
           });
         } catch {
           // Serialization must not prevent terminal disposal.
@@ -1675,7 +1703,7 @@ export default function TerminalCanvas({
                       "--terminal-timestamp-offset": `${timestampViewport.screenTop + entry.row * timestampViewport.cellHeight}px`,
                     } as CSSProperties}
                   >
-                    {formatEventClock(entry.ts)}
+                    {formatTerminalTimestampClock(entry.ts)}
                   </time>
                 ))}
               </div>
@@ -2102,7 +2130,7 @@ function sameTerminalTimestampViewport(
 
 function formatTerminalTimestampTitle(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : `${date.toLocaleString()} · ${value}`;
 }
 
 function formatTerminalCanvasError(error: unknown): string {

@@ -59,7 +59,7 @@ async function waitForServer(url, output) {
 }
 
 const recordedAt = Date.now();
-const isoNow = new Date(recordedAt).toISOString();
+const isoNow = new Date(recordedAt).toISOString().replace("Z", "000Z");
 
 function createSession(id, name, kind, group, tags, connection) {
   return {
@@ -1703,6 +1703,7 @@ Host staging
     return {
       bufferType: gutter?.getAttribute("data-buffer-type"),
       count: gutter?.querySelectorAll("time").length ?? 0,
+      rowCount: host?.getAttribute("data-terminal-timestamp-rows") ?? "0",
       clock: firstTimestamp?.textContent ?? "",
       regionLeft: regionRect.left,
       gutterLeft: gutterRect?.left ?? 0,
@@ -1714,14 +1715,16 @@ Host staging
     };
   });
   assert(terminalTimestampLayout.bufferType === "normal"
-    && terminalTimestampLayout.count >= 1
-    && /^\d{2}:\d{2}:\d{2}$/.test(terminalTimestampLayout.clock)
+    && terminalTimestampLayout.count > 1
+    && terminalTimestampLayout.count === Number(terminalTimestampLayout.rowCount)
+    && /^\d{2}:\d{2}:\d{2}\.\d{6}$/.test(terminalTimestampLayout.clock)
     && Math.abs(terminalTimestampLayout.gutterLeft - terminalTimestampLayout.regionLeft) <= 1
-    && Math.abs(terminalTimestampLayout.gutterWidth - 72) <= 1
+    && Math.abs(terminalTimestampLayout.gutterWidth - 96) <= 1
     && Math.abs(terminalTimestampLayout.gutterRight - terminalTimestampLayout.hostLeft) <= 1
     && Math.abs(terminalTimestampLayout.timestampTop - terminalTimestampLayout.screenTop) <= 1,
   `terminal timestamps were not aligned to the left of XTerm rows: ${JSON.stringify(terminalTimestampLayout)}`);
-  const terminalTimestampProbe = new Date(recordedAt + 5_000).toISOString();
+  const terminalTimestampProbe = new Date(recordedAt + 5_000).toISOString()
+    .replace("Z", "000Z");
   await page.evaluate((timestamp) => {
     window.__emitTauriEvent("portmate-session-event", {
       id: "terminal-timestamp-probe",
@@ -1955,7 +1958,7 @@ Host staging
   });
   assert(Math.abs(narrowTerminalLayout.regionWidth - narrowTerminalLayout.inspectorWidth) < 1
     && narrowTerminalLayout.regionBottom <= narrowTerminalLayout.inspectorTop + 1
-    && Math.abs(narrowTerminalLayout.gutterWidth - 62) <= 1
+    && Math.abs(narrowTerminalLayout.gutterWidth - 96) <= 1
     && Math.abs(narrowTerminalLayout.gutterRight - narrowTerminalLayout.hostLeft) <= 1
     && narrowTerminalLayout.hostRight <= narrowTerminalLayout.regionRight + 1
     && narrowTerminalLayout.documentWidth === narrowTerminalLayout.viewportWidth,

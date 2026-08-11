@@ -8,6 +8,7 @@ export interface VisibleTerminalTimestamp extends TerminalTimestampEntry {
 }
 
 export const MAX_TERMINAL_TIMESTAMPS = 4_000;
+const RFC3339_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i;
 
 export function normalizeTerminalTimestamps(
   value: unknown,
@@ -34,17 +35,30 @@ export function visibleTerminalTimestamps(
 ): VisibleTerminalTimestamp[] {
   const firstLine = Math.max(0, Math.trunc(viewportY) || 0);
   const rowCount = Math.max(0, Math.trunc(rows) || 0);
-  const lastLine = firstLine + rowCount;
+  if (!rowCount) return [];
+  const normalized = normalizeTerminalTimestamps(entries, Math.max(1, entries.length));
+  if (!normalized.length) return [];
+
+  let timestampIndex = 0;
+  while (timestampIndex + 1 < normalized.length
+    && normalized[timestampIndex + 1].line <= firstLine) timestampIndex += 1;
+
   const visible: VisibleTerminalTimestamp[] = [];
-  const seenLines = new Set<number>();
-  for (const entry of entries) {
-    const line = normalizeTerminalTimestampLine(entry.line);
-    const ts = normalizeTerminalTimestampValue(entry.ts);
-    if (line === null || !ts || line < firstLine || line >= lastLine || seenLines.has(line)) continue;
-    seenLines.add(line);
-    visible.push({ line, row: line - firstLine, ts });
+  for (let row = 0; row < rowCount; row += 1) {
+    const line = firstLine + row;
+    while (timestampIndex + 1 < normalized.length
+      && normalized[timestampIndex + 1].line <= line) timestampIndex += 1;
+    visible.push({ line, row, ts: normalized[timestampIndex].ts });
   }
-  return visible.sort((left, right) => left.line - right.line);
+  return visible;
+}
+
+export function formatTerminalTimestampClock(value: string): string {
+  const normalized = normalizeTerminalTimestampValue(value);
+  if (!normalized) return "--:--:--.------";
+  const date = new Date(normalized);
+  const fraction = normalized.match(/\.(\d+)Z$/)?.[1].slice(0, 6).padEnd(6, "0") ?? "000000";
+  return `${padClock(date.getHours())}:${padClock(date.getMinutes())}:${padClock(date.getSeconds())}.${fraction}`;
 }
 
 function normalizeTerminalTimestampLine(value: unknown): number | null {
@@ -55,5 +69,15 @@ function normalizeTerminalTimestampLine(value: unknown): number | null {
 function normalizeTerminalTimestampValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  if (!Number.isFinite(parsed)) return null;
+  const match = value.match(RFC3339_TIMESTAMP);
+  const fraction = match?.[2]
+    ? match[2].padEnd(6, "0")
+    : new Date(parsed).toISOString().match(/\.(\d{3})Z$/)?.[1].padEnd(6, "0") ?? "000000";
+  const utcSecond = new Date(Math.floor(parsed / 1_000) * 1_000).toISOString().slice(0, 19);
+  return `${utcSecond}.${fraction}Z`;
+}
+
+function padClock(value: number): string {
+  return String(value).padStart(2, "0");
 }
