@@ -1561,9 +1561,20 @@ Host staging
   assert(sysmonNetworkAddress === "192.168.33.121/24 · 2001:db8::42/64 +2",
     `Sysmon table did not prioritize usable addresses: ${JSON.stringify(sysmonNetworkAddress)}`);
   assert(sysmonNetworkTitle === "192.168.33.121/24 / 2001:db8::42/64 / fe80::25/64 / 127.0.0.1/8",
-    `Sysmon address tooltip order is wrong: ${JSON.stringify(sysmonNetworkTitle)}`);
+  `Sysmon address tooltip order is wrong: ${JSON.stringify(sysmonNetworkTitle)}`);
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" })
     .evaluate((button) => button.click());
+  await page.waitForTimeout(50);
+  assert(!await page.evaluate(() => window.__pendingSysmon.some(
+    (request) => request.args.sessionId === "edge-router",
+  )), "a scripted click behind Sysmon scheduled a hidden refresh");
+  assert((await sysmonDialog.textContent()).includes("Bench UART"),
+    "a scripted click crossed the Sysmon modal boundary");
+  await sysmonDialog.getByRole("button", { name: "关闭 Sysmon", exact: true }).click();
+  await sysmonDialog.waitFor({ state: "detached" });
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
+  await sysmonSidebar.getByRole("button", { name: "打开 Sysmon 详情", exact: true }).click();
+  await sysmonDialog.waitFor();
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "edge-router"));
   await page.evaluate(({ edge }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
@@ -1574,7 +1585,7 @@ Host staging
   await page.waitForFunction(() => document.querySelector(".sysmon-dialog")?.textContent?.includes("33.3%"));
   const sysmonText = await sysmonDialog.textContent();
   assert(sysmonText.includes("Edge Router") && sysmonText.includes("33.3%") && !sysmonText.includes("22.2%"),
-    `Sysmon details did not follow the active session: ${sysmonText}`);
+    `Sysmon details did not use the newly active session: ${sysmonText}`);
   await sysmonDialog.getByRole("button", { name: "关闭 Sysmon", exact: true }).click();
   await sysmonDialog.waitFor({ state: "detached" });
 
@@ -2447,6 +2458,57 @@ Host staging
   await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART"));
   assert(await page.locator(".pane-serial-tools").count() === 1,
     "serial line controls were lost while consolidating the workspace toolbar");
+
+  const terminalInputBeforeModal = page.locator(".terminal-pane.active .xterm-helper-textarea");
+  await terminalInputBeforeModal.focus();
+  const modalBoundaryBaseline = await page.evaluate(() => ({
+    activePaneId: document.querySelector(".terminal-pane.active")?.getAttribute("data-pane-id"),
+    focusMode: document.querySelector('[aria-label="进入专注模式"], [aria-label="退出专注模式"]')?.getAttribute("aria-pressed"),
+    sendTextCalls: window.__invokeCalls.filter((call) => call.command === "send_text").length,
+  }));
+  await page.evaluate(() => document.querySelector('[aria-label="搜索会话"]')?.click());
+  await page.locator(".search-dialog").waitFor();
+  await page.waitForFunction(() => Boolean(document.activeElement?.closest(".search-dialog")));
+  const modalBoundaryResult = await page.evaluate(() => {
+    const terminalInput = document.querySelector(".terminal-pane.active .xterm-helper-textarea");
+    const inactiveHeader = document.querySelector(".terminal-pane:not(.active) header");
+    terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      code: "Enter",
+      key: "Enter",
+      altKey: true,
+    }));
+    terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      code: "KeyA",
+      key: "a",
+      ctrlKey: true,
+      shiftKey: true,
+    }));
+    inactiveHeader?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    inactiveHeader?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    const selectionEvent = new Event("selectstart", { bubbles: true, cancelable: true });
+    terminalInput?.dispatchEvent(selectionEvent);
+    (terminalInput instanceof HTMLElement ? terminalInput : null)?.focus();
+    return {
+      activePaneId: document.querySelector(".terminal-pane.active")?.getAttribute("data-pane-id"),
+      focusMode: document.querySelector('[aria-label="进入专注模式"], [aria-label="退出专注模式"]')?.getAttribute("aria-pressed"),
+      focusInsideModal: Boolean(document.activeElement?.closest(".search-dialog")),
+      selectionBlocked: selectionEvent.defaultPrevented,
+      sendTextCalls: window.__invokeCalls.filter((call) => call.command === "send_text").length,
+    };
+  });
+  assert(modalBoundaryResult.activePaneId === modalBoundaryBaseline.activePaneId
+    && modalBoundaryResult.focusMode === modalBoundaryBaseline.focusMode
+    && modalBoundaryResult.focusInsideModal
+    && modalBoundaryResult.selectionBlocked
+    && modalBoundaryResult.sendTextCalls === modalBoundaryBaseline.sendTextCalls,
+  `modal interaction leaked into the terminal workspace: ${JSON.stringify({ modalBoundaryBaseline, modalBoundaryResult })}`);
+  await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).press("Escape");
+  await page.locator(".search-dialog").waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
 
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   await page.locator(".search-dialog").waitFor();

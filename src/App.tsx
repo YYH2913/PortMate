@@ -41,6 +41,7 @@ import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
+import { hasActiveModalLayer, useModalInteractionBoundary } from "./modal-interaction-boundary";
 import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage, SESSION_PROFILE_DELETED_EVENT, SESSION_PROFILE_UPDATED_EVENT } from "./detached-pane-state";
 import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
 import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
@@ -236,6 +237,7 @@ const tabColorChoices = [
 ];
 
 export default function App({ workspaceWindowId }: { workspaceWindowId?: string }) {
+  useModalInteractionBoundary();
   const workspaceStorageKey = workspaceWindowId ? null : WORKSPACE_STORAGE_KEY;
   const workspacePanelStorageKey = workspaceWindowId ? null : WORKSPACE_PANEL_STORAGE_KEY;
   const ownerWindowId = workspaceWindowId ?? "main";
@@ -5061,6 +5063,7 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 }
 
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
+  if (hasActiveModalLayer()) return false;
   const element = target instanceof Element ? target : document.activeElement;
   if (element?.closest(".terminal-search-bar, .terminal-goto-line, .terminal-free-input, .terminal-one-key-completion")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
