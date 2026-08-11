@@ -1,9 +1,10 @@
 use super::*;
-use url::Url;
+use url::{Host, Url};
 
 pub(super) const MCP_HTTP_TOKEN_REF: &str = "keychain:mcp-http-token";
 const MAX_MCP_HTTP_ORIGINS: usize = 32;
 const MAX_MCP_HTTP_ORIGIN_BYTES: usize = 512;
+const MAX_MCP_HTTP_CLIENT_HOST_BYTES: usize = 253;
 pub(super) const MAX_MCP_GRANTS: usize = 512;
 pub(super) const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
 pub(super) const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
@@ -304,6 +305,11 @@ pub(super) fn build_mcp_http_config_for_request(
     let origins_command = shell_command_value(&request.allowed_origins.join(","));
     let client_id_command = shell_command_value(&request.client_id);
     let remote_access = !bind_ip.is_loopback();
+    let client_endpoint = format!(
+        "http://{}:{}/mcp",
+        mcp_http_url_host(&request.client_host),
+        request.port
+    );
     let start_command = if cfg!(windows) {
         let assignments = [
             format!("$env:PORTMATE_STORE_PATH={store_path_command};"),
@@ -335,6 +341,7 @@ pub(super) fn build_mcp_http_config_for_request(
         settings: request,
         remote_access,
         endpoint: format!("http://{address}/mcp"),
+        client_endpoint,
         token_ref: MCP_HTTP_TOKEN_REF.to_string(),
         token_available,
         default_origin,
@@ -364,6 +371,7 @@ pub(super) fn normalize_mcp_http_settings(
         );
     }
     request.listen_host = bind_ip.to_string();
+    request.client_host = normalize_mcp_http_client_host(&request.client_host)?;
     request.client_id = normalize_mcp_client_id(&request.client_id)?;
     request.allow_remote = !bind_ip.is_loopback();
 
@@ -386,6 +394,40 @@ pub(super) fn normalize_mcp_http_settings(
     }
     request.allowed_origins = allowed_origins;
     Ok((request, bind_ip))
+}
+
+fn normalize_mcp_http_client_host(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('[')
+        .and_then(|candidate| candidate.strip_suffix(']'))
+        .unwrap_or(value);
+    if value.is_empty()
+        || value.len() > MAX_MCP_HTTP_CLIENT_HOST_BYTES
+        || value.chars().any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(format!(
+            "MCP HTTP client address must be non-empty, contain no whitespace, and not exceed {MAX_MCP_HTTP_CLIENT_HOST_BYTES} bytes"
+        ));
+    }
+    match Host::parse(value).map_err(|_| {
+        "MCP HTTP client address must be an IPv4, IPv6, or DNS host".to_string()
+    })? {
+        Host::Domain(domain) => Ok(domain),
+        Host::Ipv4(ip) if !ip.is_unspecified() => Ok(ip.to_string()),
+        Host::Ipv6(ip) if !ip.is_unspecified() => Ok(ip.to_string()),
+        Host::Ipv4(_) | Host::Ipv6(_) => {
+            Err("MCP HTTP client address cannot be an unspecified listener address".to_string())
+        }
+    }
+}
+
+fn mcp_http_url_host(value: &str) -> String {
+    match Host::parse(value).expect("normalized MCP HTTP client host") {
+        Host::Domain(domain) => domain,
+        Host::Ipv4(ip) => ip.to_string(),
+        Host::Ipv6(ip) => format!("[{ip}]"),
+    }
 }
 
 pub(super) fn set_mcp_http_settings_in_store(

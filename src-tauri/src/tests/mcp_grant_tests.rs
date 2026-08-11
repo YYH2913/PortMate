@@ -186,6 +186,7 @@ fn mcp_http_settings_change_memory_only_after_persistence_succeeds() {
     let mut store = SessionStore::default();
     let settings = McpHttpSettings {
         listen_host: "0.0.0.0".to_string(),
+        client_host: "192.168.33.222".to_string(),
         port: 9888,
         allowed_origins: vec!["https://console.example.test".to_string()],
         client_id: "automation-client".to_string(),

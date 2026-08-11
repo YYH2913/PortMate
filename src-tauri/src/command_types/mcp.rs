@@ -9,6 +9,7 @@ pub struct McpHttpConfig {
     pub settings: McpHttpSettings,
     pub remote_access: bool,
     pub endpoint: String,
+    pub client_endpoint: String,
     pub token_ref: String,
     pub token_available: bool,
     pub default_origin: String,

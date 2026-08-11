@@ -528,6 +528,7 @@ export interface McpApprovalRequest {
 
 export interface McpHttpConfigRequest {
   listenHost: string;
+  clientHost: string;
   port: number;
   allowedOrigins: string[];
   clientId: string;
@@ -538,6 +539,7 @@ export interface McpHttpConfigRequest {
 export interface McpHttpConfig extends McpHttpConfigRequest {
   remoteAccess: boolean;
   endpoint: string;
+  clientEndpoint: string;
   tokenRef: string;
   tokenAvailable: boolean;
   defaultOrigin: string;

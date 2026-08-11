@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const DEFAULT_MCP_HTTP_LISTEN_HOST: &str = "127.0.0.1";
+pub const DEFAULT_MCP_HTTP_CLIENT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_MCP_HTTP_PORT: u16 = 8787;
 pub const DEFAULT_MCP_HTTP_CLIENT_ID: &str = "portmate-local";
 
@@ -51,6 +52,7 @@ impl McpGrant {
 #[serde(rename_all = "camelCase", default)]
 pub struct McpHttpSettings {
     pub listen_host: String,
+    pub client_host: String,
     pub port: u16,
     pub allowed_origins: Vec<String>,
     pub client_id: String,
@@ -62,6 +64,7 @@ impl Default for McpHttpSettings {
     fn default() -> Self {
         Self {
             listen_host: DEFAULT_MCP_HTTP_LISTEN_HOST.to_string(),
+            client_host: DEFAULT_MCP_HTTP_CLIENT_HOST.to_string(),
             port: DEFAULT_MCP_HTTP_PORT,
             allowed_origins: vec![
                 format!("http://{DEFAULT_MCP_HTTP_LISTEN_HOST}:{DEFAULT_MCP_HTTP_PORT}"),

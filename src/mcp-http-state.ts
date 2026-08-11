@@ -1,6 +1,9 @@
 import type { McpHttpConfig, McpHttpConfigRequest } from "./types";
 
 export const MCP_HTTP_DEFAULT_PORT = 8787;
+export const CC_SWITCH_DEFAULT_SERVER_ID = "portmate";
+export const CC_SWITCH_DEFAULT_TOKEN_ENV_VAR = "PORTMATE_MCP_TOKEN";
+export const CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS = 180;
 export const MCP_HTTP_LISTEN_PRESETS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
 export const MCP_HTTP_CUSTOM_LISTEN_PRESET = "custom" as const;
 
@@ -14,6 +17,7 @@ export function defaultMcpHttpOrigins(port = MCP_HTTP_DEFAULT_PORT): string[] {
 export function defaultMcpHttpSettings(): McpHttpConfigRequest {
   return {
     listenHost: "127.0.0.1",
+    clientHost: "127.0.0.1",
     port: MCP_HTTP_DEFAULT_PORT,
     allowedOrigins: defaultMcpHttpOrigins(),
     clientId: "portmate-local",
@@ -54,10 +58,58 @@ export function mcpHttpListenPreset(value: string): McpHttpListenPreset {
 export function mcpHttpSettingsFromConfig(config: McpHttpConfig): McpHttpConfigRequest {
   return {
     listenHost: config.listenHost,
+    clientHost: config.clientHost,
     port: config.port,
     allowedOrigins: [...config.allowedOrigins],
     clientId: config.clientId,
     trusted: config.trusted,
     allowRemote: config.allowRemote,
   };
+}
+
+export function mcpHttpClientEndpoint(settings: Pick<McpHttpConfigRequest, "clientHost" | "port">): string | null {
+  const host = normalizeMcpHttpClientHost(settings.clientHost);
+  if (!host || !Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65_535) return null;
+  const urlHost = host.includes(":") ? `[${host}]` : host;
+  return `http://${urlHost}:${settings.port}/mcp`;
+}
+
+export function formatCcSwitchMcpJson(
+  settings: Pick<McpHttpConfigRequest, "clientHost" | "port">,
+  options: {
+    serverId?: string;
+    tokenEnvVar?: string;
+    toolTimeoutSeconds?: number;
+  } = {},
+): string {
+  const serverId = (options.serverId ?? CC_SWITCH_DEFAULT_SERVER_ID).trim();
+  const tokenEnvVar = (options.tokenEnvVar ?? CC_SWITCH_DEFAULT_TOKEN_ENV_VAR).trim();
+  const toolTimeoutSeconds = options.toolTimeoutSeconds ?? CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS;
+  const url = mcpHttpClientEndpoint(settings);
+  if (!url
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(serverId)
+    || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnvVar)
+    || !Number.isInteger(toolTimeoutSeconds)
+    || toolTimeoutSeconds < 1
+    || toolTimeoutSeconds > 3_600) return "";
+  return JSON.stringify({
+    [serverId]: {
+      type: "http",
+      url,
+      bearer_token_env_var: tokenEnvVar,
+      tool_timeout_sec: toolTimeoutSeconds,
+    },
+  }, null, 2);
+}
+
+function normalizeMcpHttpClientHost(value: string): string | null {
+  const host = value.trim().replace(/^\[|\]$/g, "");
+  if (!host || /[\s/?#@]/.test(host)) return null;
+  try {
+    const parsed = new URL(`http://${host.includes(":") ? `[${host}]` : host}`);
+    const normalized = parsed.hostname.replace(/^\[|\]$/g, "");
+    return normalized === "0.0.0.0" || normalized === "::" ? null : normalized;
+  } catch {
+    return null;
+  }
 }

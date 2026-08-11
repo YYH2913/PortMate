@@ -124,7 +124,8 @@ A changed host key blocks the connection by default. Use one-time trust, append,
 2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.
 3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.
 4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
-5. For HTTP clients, configure the listen IP, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service.
+5. For HTTP clients, configure the listen IP, client address, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service.
+6. For CC Switch, copy the generated JSON from the HTTP page and define its referenced token environment variable on the client machine.
 
 ### stdio Example
 
@@ -157,11 +158,29 @@ The bridge reloads the Store and desktop IPC endpoint before each JSON-RPC envel
 
 - The default listener is `127.0.0.1:8787`, with MCP available at `/mcp`.
 - Listener presets include `127.0.0.1`, `0.0.0.0`, `::1`, and `::`, plus a custom numeric IP.
+- The client address is persisted separately from the bind address, so a wildcard listener never generates an unusable `0.0.0.0` or `::` client URL.
 - A non-loopback listener requires explicit remote-access approval.
 - Every request requires a Bearer token or `X-PortMate-MCP-Token`; requests with an Origin also pass the configured allowlist.
 - The bridge does not terminate TLS. Expose it remotely only on a trusted network or behind a correctly configured TLS reverse proxy.
 
 Never place the HTTP token in a README, startup command, issue, log, or public MCP client example.
+
+### CC Switch
+
+The HTTP page generates the flat single-server JSON accepted by the CC Switch editor. It intentionally omits the outer `mcpServers` object and references an environment variable instead of embedding the Bearer token:
+
+```json
+{
+  "portmate": {
+    "type": "http",
+    "url": "http://192.168.33.222:8787/mcp",
+    "bearer_token_env_var": "PORTMATE_MCP_TOKEN",
+    "tool_timeout_sec": 180
+  }
+}
+```
+
+Set `PORTMATE_MCP_TOKEN` only in the environment of the machine running CC Switch. The generated JSON remains safe to store because it contains no token value.
 
 ### Grant Scopes
 

@@ -55,6 +55,7 @@ fn normalize_loaded_store_rejects_oversized_profile_collections() {
 fn normalize_loaded_store_preserves_valid_mcp_http_settings_and_resets_unsafe_ones() {
     let remote = McpHttpSettings {
         listen_host: "0.0.0.0".to_string(),
+        client_host: "192.168.33.222".to_string(),
         port: 9888,
         allowed_origins: vec!["https://console.example.test".to_string()],
         client_id: "automation-client".to_string(),

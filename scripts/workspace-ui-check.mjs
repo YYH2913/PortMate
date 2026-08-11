@@ -259,6 +259,7 @@ const mcpAudit = [
 
 const mcpHttpConfig = {
   listenHost: "127.0.0.1",
+  clientHost: "127.0.0.1",
   port: 8787,
   allowedOrigins: ["http://127.0.0.1:8787", "http://localhost:8787"],
   clientId: "portmate-local",
@@ -266,6 +267,7 @@ const mcpHttpConfig = {
   allowRemote: false,
   remoteAccess: false,
   endpoint: "http://127.0.0.1:8787/mcp",
+  clientEndpoint: "http://127.0.0.1:8787/mcp",
   tokenRef: "keychain:mcp-http-token",
   tokenAvailable: true,
   defaultOrigin: "http://127.0.0.1:8787",
@@ -417,6 +419,8 @@ try {
       const host = settings.listenHost.trim();
       const endpointHost = host.includes(":") ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
       const address = `${endpointHost}:${settings.port}`;
+      const clientHost = settings.clientHost.trim().replace(/^\[|\]$/g, "");
+      const clientEndpointHost = clientHost.includes(":") ? `[${clientHost}]` : clientHost;
       const origins = settings.allowedOrigins.length
         ? [...settings.allowedOrigins]
         : [`http://${endpointHost}:${settings.port}`];
@@ -429,6 +433,7 @@ try {
         allowedOrigins: origins,
         remoteAccess,
         endpoint: `http://${address}/mcp`,
+        clientEndpoint: `http://${clientEndpointHost}:${settings.port}/mcp`,
         defaultOrigin: origins[0],
         startCommand: `PORTMATE_STORE_PATH='${window.__mcpHttpConfig.storePath}' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='${address}' PORTMATE_MCP_HTTP_ORIGINS='${origins.join(",")}' PORTMATE_MCP_CLIENT_ID='${settings.clientId}'${remote}${trusted} '${window.__mcpHttpConfig.executable}' --http`,
       };
@@ -3453,6 +3458,12 @@ Host staging
     && await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
   "MCP HTTP remote listener reused approval after returning from loopback");
   await mcpRemoteAccess.check();
+  const mcpClientHost = mcpDialog.getByLabel("MCP HTTP 客户端地址", { exact: true });
+  await mcpClientHost.fill("0.0.0.0");
+  assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled()
+    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled(),
+  "MCP HTTP wildcard client address produced a connectable client configuration");
+  await mcpClientHost.fill("192.168.33.222");
   await mcpDialog.getByRole("spinbutton", { name: "MCP HTTP 端口", exact: true }).fill("9088");
   await mcpDialog.getByLabel("MCP HTTP Client ID", { exact: true }).fill("remote-automation");
   await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).fill("https://console.example.test");
@@ -3462,7 +3473,12 @@ Host staging
     "MCP HTTP valid unsaved settings did not produce a copyable command preview");
   await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).click();
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
+  await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
   const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
+  const ccSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
+  const parsedCcSwitchJson = JSON.parse(ccSwitchJson);
+  await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
+  const copiedCcSwitchJson = await page.evaluate(() => window.__clipboardText);
   const savedMcpHttpSettings = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings);
   assert(remoteCommand.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'")
@@ -3471,9 +3487,22 @@ Host staging
     && remoteCommand.includes("PORTMATE_MCP_CLIENT_ID='remote-automation'")
     && remoteCommand.includes("PORTMATE_MCP_HTTP_ORIGINS='https://console.example.test'")
     && savedMcpHttpSettings.listenHost === "0.0.0.0"
+    && savedMcpHttpSettings.clientHost === "192.168.33.222"
     && savedMcpHttpSettings.port === 9088
     && savedMcpHttpSettings.allowRemote === true,
   "MCP HTTP remote listener settings were not persisted into the generated command");
+  assert(JSON.stringify(parsedCcSwitchJson) === JSON.stringify({
+    portmate: {
+      type: "http",
+      url: "http://192.168.33.222:9088/mcp",
+      bearer_token_env_var: "PORTMATE_MCP_TOKEN",
+      tool_timeout_sec: 180,
+    },
+  })
+    && copiedCcSwitchJson === ccSwitchJson
+    && !ccSwitchJson.includes("mcpServers")
+    && !ccSwitchJson.includes("portmate-test-token"),
+  `CC Switch MCP JSON is not directly importable or exposed a token: ${ccSwitchJson}`);
   await page.evaluate(() => { window.__deferMcpHttpRuntimeAction = true; });
   await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).click();
   await page.waitForFunction(() => window.__pendingMcpHttpRuntimeActions.length === 1);

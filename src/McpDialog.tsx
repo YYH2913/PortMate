@@ -6,10 +6,15 @@ import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
 import { createMcpGrant, formatMcpGrantExpiryInput, parseMcpGrantExpiryInput } from "./mcp-grant-state";
 import {
+  CC_SWITCH_DEFAULT_SERVER_ID,
+  CC_SWITCH_DEFAULT_TOKEN_ENV_VAR,
+  CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
   defaultMcpHttpSettings,
+  formatCcSwitchMcpJson,
   formatMcpHttpOrigins,
   isNonLoopbackMcpHost,
   MCP_HTTP_CUSTOM_LISTEN_PRESET,
+  mcpHttpClientEndpoint,
   mcpHttpListenPreset,
   mcpHttpSettingsFromConfig,
   parseMcpHttpOrigins,
@@ -59,6 +64,10 @@ export default function McpDialog({
   const [httpToken, setHttpToken] = useState("");
   const [httpBusy, setHttpBusy] = useState(false);
   const [httpRuntimeBusy, setHttpRuntimeBusy] = useState(false);
+  const [ccSwitchServerId, setCcSwitchServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
+  const [ccSwitchTokenEnvVar, setCcSwitchTokenEnvVar] = useState(CC_SWITCH_DEFAULT_TOKEN_ENV_VAR);
+  const [ccSwitchToolTimeout, setCcSwitchToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
+  const [ccSwitchCopied, setCcSwitchCopied] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditQuery, setAuditQuery] = useState("");
@@ -92,7 +101,13 @@ export default function McpDialog({
   const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
   const httpSettingsValid = Boolean(httpSettings.listenHost.trim() && httpSettings.clientId.trim())
     && Number.isInteger(httpSettings.port) && httpSettings.port >= 1 && httpSettings.port <= 65_535
+    && Boolean(mcpHttpClientEndpoint(httpSettings))
     && (!httpRemoteListener || httpSettings.allowRemote);
+  const ccSwitchJson = useMemo(() => formatCcSwitchMcpJson(httpSettings, {
+    serverId: ccSwitchServerId,
+    tokenEnvVar: ccSwitchTokenEnvVar,
+    toolTimeoutSeconds: ccSwitchToolTimeout,
+  }), [ccSwitchServerId, ccSwitchTokenEnvVar, ccSwitchToolTimeout, httpSettings]);
 
   useEffect(() => {
     if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
@@ -140,6 +155,8 @@ export default function McpDialog({
   }, [httpBusy, httpDirty, httpOriginsText, httpSettings, httpSettingsValid, tab]);
 
   useEffect(() => () => requestGateRef.current.invalidateAll(), []);
+
+  useEffect(() => setCcSwitchCopied(false), [ccSwitchJson]);
 
   async function loadHttpConfig() {
     const token = requestGateRef.current.begin("http");
@@ -295,6 +312,17 @@ export default function McpDialog({
       listenHost,
       ...(!isNonLoopbackMcpHost(listenHost) ? { allowRemote: false } : {}),
     });
+  }
+
+  async function copyCcSwitchJson() {
+    if (!ccSwitchJson) return;
+    try {
+      await navigator.clipboard.writeText(ccSwitchJson);
+      setCcSwitchCopied(true);
+      setError("");
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
   }
 
   async function saveGrant() {
@@ -491,6 +519,7 @@ export default function McpDialog({
                   </McpFieldGroup>
                   <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
                   <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
+                  <McpField label="客户端地址:"><input aria-label="MCP HTTP 客户端地址" value={httpSettings.clientHost} maxLength={253} spellCheck={false} disabled={httpRuntimeLocked} placeholder="192.168.33.222" onChange={(event) => updateHttpSettings({ clientHost: event.target.value })} /></McpField>
                 </div>
                 <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpRuntimeLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
                 <div className="mcp-http-options">
@@ -503,7 +532,20 @@ export default function McpDialog({
                   </div>
                 ) : null}
               </div>
+              <section className="mcp-cc-switch" aria-labelledby="mcp-cc-switch-title">
+                <header>
+                  <strong id="mcp-cc-switch-title">CC Switch JSON</strong>
+                  <button type="button" title="复制 CC Switch JSON" aria-label="复制 CC Switch JSON" disabled={!ccSwitchJson || !httpPreviewCurrent} onClick={() => void copyCcSwitchJson()}><Copy size={14} /><span>{ccSwitchCopied ? "已复制" : "复制 JSON"}</span></button>
+                </header>
+                <div className="mcp-cc-switch-options">
+                  <label><span>Server ID</span><input aria-label="CC Switch Server ID" value={ccSwitchServerId} maxLength={64} spellCheck={false} onChange={(event) => setCcSwitchServerId(event.target.value)} /></label>
+                  <label><span>Token 环境变量</span><input aria-label="CC Switch Token 环境变量" value={ccSwitchTokenEnvVar} maxLength={128} spellCheck={false} onChange={(event) => setCcSwitchTokenEnvVar(event.target.value)} /></label>
+                  <label><span>工具超时</span><input aria-label="CC Switch 工具超时秒数" type="number" min={1} max={3_600} value={ccSwitchToolTimeout || ""} onChange={(event) => setCcSwitchToolTimeout(Number(event.target.value))} /></label>
+                </div>
+                <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-cc-switch-json stale" : "mcp-cc-switch-json"} readOnly aria-label="CC Switch MCP JSON" value={ccSwitchJson} />
+              </section>
               <div className="mcp-http-row"><span>Listen</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
+              <div className="mcp-http-row"><span>Client</span><code>{httpConfig?.clientEndpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-"}</code></div>
               <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
               <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
               <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>

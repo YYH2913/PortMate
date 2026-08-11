@@ -10976,11 +10976,6 @@ fieldset label {
   grid-template-columns: 92px minmax(0, 1fr);
 }
 
-.mcp-http-field-grid .dialog-field:last-child {
-  grid-column: 1 / -1;
-  grid-template-columns: 104px minmax(0, 1fr);
-}
-
 .mcp-http-listen-editor {
   display: grid;
   grid-template-columns: minmax(176px, 0.92fr) minmax(0, 1fr);
@@ -11116,6 +11111,74 @@ fieldset label {
 }
 
 .mcp-http-command.stale {
+  opacity: 0.52;
+}
+
+.mcp-cc-switch {
+  display: grid;
+  gap: 10px;
+  padding-block: 12px;
+  border-block: 1px solid var(--line);
+}
+
+.mcp-cc-switch header button {
+  display: inline-flex;
+  min-width: 108px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.mcp-cc-switch header button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.mcp-cc-switch header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mcp-cc-switch-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mcp-cc-switch-options label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-cc-switch-options input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--text);
+  padding: 0 8px;
+  outline: 0;
+}
+
+.mcp-cc-switch-options input:focus {
+  border-color: var(--cyan);
+}
+
+.mcp-http-panel textarea.mcp-cc-switch-json {
+  min-height: 154px;
+  resize: vertical;
+}
+
+.mcp-cc-switch-json.stale {
   opacity: 0.52;
 }
 
@@ -11381,11 +11444,6 @@ fieldset label {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .mcp-http-field-grid .dialog-field:last-child {
-    grid-column: auto;
-    grid-template-columns: 100px minmax(0, 1fr);
-  }
-
   .mcp-http-listen-editor {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -11403,6 +11461,10 @@ fieldset label {
 
   .mcp-http-exposure {
     padding: 7px 9px;
+  }
+
+  .mcp-cc-switch-options {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mcp-http-runtime {

@@ -348,6 +348,7 @@ fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
             .unwrap();
     assert_eq!(config.token_ref, MCP_HTTP_TOKEN_REF);
     assert_eq!(config.endpoint, "http://127.0.0.1:8787/mcp");
+    assert_eq!(config.client_endpoint, "http://127.0.0.1:8787/mcp");
     assert_eq!(config.settings, McpHttpSettings::default());
     assert!(!config.remote_access);
     assert!(config.token_available);
@@ -383,6 +384,7 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
     let store_path = Path::new("/tmp/portmate-store.sqlite3");
     let remote = McpHttpSettings {
         listen_host: "0.0.0.0".to_string(),
+        client_host: "192.168.33.222".to_string(),
         port: 9888,
         allowed_origins: vec!["https://console.example.test".to_string()],
         client_id: "automation-client".to_string(),
@@ -391,6 +393,7 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
     };
     let config = build_mcp_http_config_for_request(false, executable, store_path, remote).unwrap();
     assert_eq!(config.endpoint, "http://0.0.0.0:9888/mcp");
+    assert_eq!(config.client_endpoint, "http://192.168.33.222:9888/mcp");
     assert!(config.remote_access);
     assert!(config
         .start_command
@@ -421,6 +424,14 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
         .unwrap_err()
         .contains("HTTP(S)"));
 
+    let invalid_client_host = McpHttpSettings {
+        client_host: "0.0.0.0".to_string(),
+        ..McpHttpSettings::default()
+    };
+    assert!(normalize_mcp_http_settings(invalid_client_host)
+        .unwrap_err()
+        .contains("cannot be an unspecified"));
+
     let loopback = McpHttpSettings {
         allow_remote: true,
         ..McpHttpSettings::default()
@@ -441,6 +452,7 @@ fn mcp_http_config_supports_explicit_remote_listeners_and_validates_origins() {
     let ipv6_config =
         build_mcp_http_config_for_request(false, executable, store_path, ipv6_loopback).unwrap();
     assert_eq!(ipv6_config.settings.listen_host, "::1");
+    assert_eq!(ipv6_config.client_endpoint, "http://127.0.0.1:9889/mcp");
     assert_eq!(
         ipv6_config.settings.allowed_origins,
         vec!["http://[::1]:9889"]
@@ -482,6 +494,7 @@ fn managed_mcp_http_command_uses_saved_settings_without_exposing_the_token() {
         store_path,
         McpHttpSettings {
             listen_host: "0.0.0.0".to_string(),
+            client_host: "mcp.example.test".to_string(),
             port: 9911,
             allowed_origins: vec!["https://console.example.test".to_string()],
             client_id: "managed-client".to_string(),

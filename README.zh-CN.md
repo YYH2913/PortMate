@@ -124,7 +124,8 @@ Host Key 变化默认阻断连接。请在确认设备替换、系统重装或�
 2. 打开 `工具 -> MCP Bridge -> 授权`，创建独立 Client ID，并选择权限和允许访问的会话。
 3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
 4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
-5. HTTP 客户端在 `HTTP` 页设置监听 IP、端口、Origin、Client ID，生成 Token 后启动托管服务。
+5. HTTP 客户端在 `HTTP` 页设置监听 IP、客户端地址、端口、Origin、Client ID，生成 Token 后启动托管服务。
+6. CC Switch 直接复制 `HTTP` 页生成的 JSON，并在客户端电脑上设置其中引用的 Token 环境变量。
 
 ### stdio 示例
 
@@ -157,11 +158,29 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 
 - 默认监听 `127.0.0.1:8787`，端点为 `/mcp`。
 - 支持 `127.0.0.1`、`0.0.0.0`、`::1`、`::` 和自定义数字 IP。
+- 客户端地址与监听地址独立持久化，因此通配监听不会生成无法连接的 `0.0.0.0` 或 `::` 客户端 URL。
 - 非回环监听必须显式启用远程访问。
 - 每个请求都需要 Bearer Token 或 `X-PortMate-MCP-Token`，存在 Origin 时还会校验 allowlist。
 - bridge 本身不终止 TLS。远程监听应只用于可信网络，或放在配置正确的 TLS 反向代理后方。
 
 不要把 HTTP Token 写入 README、启动命令、issue、日志或 MCP 客户端的公开配置示例中。
+
+### CC Switch
+
+`HTTP` 页会生成 CC Switch 单服务器编辑器可直接使用的扁平 JSON。它不会添加外层 `mcpServers`，也不会嵌入 Bearer Token，只引用环境变量：
+
+```json
+{
+  "portmate": {
+    "type": "http",
+    "url": "http://192.168.33.222:8787/mcp",
+    "bearer_token_env_var": "PORTMATE_MCP_TOKEN",
+    "tool_timeout_sec": 180
+  }
+}
+```
+
+只在运行 CC Switch 的客户端电脑环境中设置 `PORTMATE_MCP_TOKEN`。生成的 JSON 不包含 Token 值，可以安全保存。
 
 ### 权限范围
 
