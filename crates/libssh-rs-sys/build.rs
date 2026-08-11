@@ -266,8 +266,9 @@ fn main() {
     cfg.compile("libssh");
 
     if target.contains("windows") {
-        println!("cargo:rustc-link-lib=libcrypto");
-        println!("cargo:rustc-link-lib=libssl");
+        let openssl_prefix = if compiler.is_like_msvc() { "lib" } else { "" };
+        println!("cargo:rustc-link-lib={openssl_prefix}crypto");
+        println!("cargo:rustc-link-lib={openssl_prefix}ssl");
         println!("cargo:rustc-link-lib=crypt32");
         println!("cargo:rustc-link-lib=user32");
         println!("cargo:rustc-link-lib=shell32");

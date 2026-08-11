@@ -6,6 +6,7 @@ pub(super) use remote::*;
 pub(super) const DEFAULT_SYSMON_HISTORY_QUERY_LIMIT: usize = 120;
 
 pub(super) const MAX_SYSMON_HISTORY_QUERY_LIMIT: usize = 240;
+#[cfg(target_os = "linux")]
 pub(super) const LOCAL_SYSMON_SAMPLE_SECONDS: f32 = 0.12;
 pub(super) const MAX_CONCURRENT_SYSMON_REFRESHES: usize = 4;
 pub(super) const REMOTE_OPENWRT_SYSMON_NETWORK_COMMAND: &str = r#"sh -c 'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH; ubus call network.interface dump 2>/dev/null'"#;
@@ -197,6 +198,7 @@ pub(super) fn validate_sysmon_history_query_limit(limit: Option<usize>) -> Resul
 
 pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnapshot, String> {
     match std::env::consts::OS {
+        #[cfg(target_os = "linux")]
         "linux" => {
             let session_id = session_id.to_string();
             let sample = tauri::async_runtime::spawn_blocking(move || {
@@ -219,6 +221,7 @@ pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnaps
             snapshot.disks = parse_sysmon_disks(&disks);
             Ok(snapshot)
         }
+        #[cfg(target_os = "macos")]
         "macos" => {
             let output = exec_local_sysmon_command(
                 "sh",
@@ -229,6 +232,7 @@ pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnaps
             parse_remote_macos_sysmon_output(session_id, &output)
                 .map_err(|error| error.replacen("远端", "本机", 1))
         }
+        #[cfg(windows)]
         "windows" => {
             let encoded = windows_powershell_encoded_script(REMOTE_WINDOWS_SYSMON_SCRIPT);
             let output = exec_local_sysmon_command(
@@ -253,6 +257,7 @@ pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnaps
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn collect_local_linux_sysmon(session_id: &str) -> SysmonSnapshot {
     let uptime_seconds = read_uptime_seconds().unwrap_or_default();
     let (memory_total_bytes, memory_available_bytes, memory_percent) =

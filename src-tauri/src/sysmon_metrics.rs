@@ -32,11 +32,6 @@ pub(super) fn read_uptime_seconds() -> Option<u64> {
     parse_uptime_seconds(&raw)
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(super) fn read_uptime_seconds() -> Option<u64> {
-    None
-}
-
 #[cfg(target_os = "linux")]
 pub(super) fn read_memory_usage() -> Option<(u64, u64, f32)> {
     let raw = fs::read_to_string("/proc/meminfo").ok()?;
@@ -70,20 +65,10 @@ pub(super) fn parse_memory_usage(raw: &str) -> Option<(u64, u64, f32)> {
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(super) fn read_memory_usage() -> Option<(u64, u64, f32)> {
-    None
-}
-
 #[cfg(target_os = "linux")]
 pub(super) fn read_load_average() -> Option<[f32; 3]> {
     let raw = fs::read_to_string("/proc/loadavg").ok()?;
     parse_load_average(&raw)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn read_load_average() -> Option<[f32; 3]> {
-    None
 }
 
 pub(super) fn parse_load_average(raw: &str) -> Option<[f32; 3]> {
@@ -237,11 +222,6 @@ pub(super) fn parse_cpu_times(raw: &str) -> Option<(u64, u64)> {
         .iter()
         .fold(0_u64, |total, value| total.saturating_add(*value));
     Some((idle, total))
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn read_cpu_times() -> Option<(u64, u64)> {
-    None
 }
 
 pub(super) fn parse_sysmon_processes(raw: &str) -> Vec<SysmonProcess> {

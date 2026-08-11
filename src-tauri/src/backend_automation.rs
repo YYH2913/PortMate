@@ -12,6 +12,7 @@ mod sysmon_linux_network_fallback;
 mod sysmon_local_command;
 mod sysmon_metrics;
 mod sysmon_network;
+#[cfg(any(target_os = "linux", test))]
 mod sysmon_network_io;
 mod sysmon_remote_parsing;
 mod sysmon_runtime;
@@ -29,6 +30,7 @@ use sysmon_linux_network_fallback::*;
 use sysmon_local_command::*;
 use sysmon_metrics::*;
 use sysmon_network::*;
+#[cfg(any(target_os = "linux", test))]
 use sysmon_network_io::*;
 use sysmon_remote_parsing::*;
 use sysmon_runtime::*;
