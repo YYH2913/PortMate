@@ -190,6 +190,13 @@ npm run build
 npm run desktop:build
 ```
 
+在 Linux 上配置 MinGW-w64 工具链和 Windows GNU `libsodium.a` 后，可交叉构建未签名的
+Windows GNU x86_64 便携包：
+
+```bash
+npm run desktop:build:windows-gnu
+```
+
 产物位于 `target/release/bundle/`。正式发布前必须在目标平台执行 [RELEASE.md](./RELEASE.md) 中的安装、升级、回滚、签名和产物校验，不应把一次本地源码构建直接视为可发布安装包。
 
 ## 验证

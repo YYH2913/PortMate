@@ -15,6 +15,7 @@ import {
   inspectPortableTree,
   verifyWindowsPackageLayout,
 } from "./native-package-layout.mjs";
+import { verifyWindowsReleaseBinary } from "./windows-release-binary.mjs";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 
@@ -28,6 +29,10 @@ const sourceMain = join(projectRoot, "target", "release", "portmate.exe");
 const sourceSidecar = join(projectRoot, "target", "release", "portmate-mcp.exe");
 const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
+const releaseBinary = verifyWindowsReleaseBinary({
+  executable: sourceMain,
+  frontendDist: join(projectRoot, "dist"),
+});
 const msi = findSingleArtifact(join(bundleRoot, "msi"), ".msi", "MSI installer");
 const nsis = findSingleArtifact(join(bundleRoot, "nsis"), ".exe", "NSIS installer");
 const auditRoot = mkdtempSync(join(tmpdir(), "portmate windows package check "));
@@ -134,6 +139,7 @@ console.log(JSON.stringify({
   verifiedPackages: ["MSI", "NSIS"],
   verified: [
     "unique main executable, MCP sidecar, application license, and JetBrains Mono license",
+    "PE32+ x86-64 GUI main executable with embedded production frontend assets",
     "non-empty regular payload files",
     "release-binary and both license SHA-256 equality",
     "portable package symlinks",
@@ -147,6 +153,7 @@ console.log(JSON.stringify({
     msi: verifiedMsi,
     nsis: verifiedNsis,
   },
+  releaseBinary,
   runtimeSmokes,
   sidecarWatchdogSmokes,
 }, null, 2));

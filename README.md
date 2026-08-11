@@ -190,6 +190,13 @@ Build native desktop packages:
 npm run desktop:build
 ```
 
+Cross-build an unsigned Windows GNU x86_64 portable archive from Linux with a configured
+MinGW-w64 toolchain and Windows GNU `libsodium.a`:
+
+```bash
+npm run desktop:build:windows-gnu
+```
+
 Bundles are written below `target/release/bundle/`. Before publishing, run the installation, upgrade, rollback, signing, and artifact gates in [RELEASE.md](./RELEASE.md) on each target platform. A successful local source build is not, by itself, a releasable package.
 
 ## Verification
