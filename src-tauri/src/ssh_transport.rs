@@ -75,7 +75,7 @@ pub(super) async fn establish_ssh_reconnect_runtime(
     .await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) async fn establish_ssh_runtime_with_timeout(
     state: &AppState,
     profile: &SessionProfile,

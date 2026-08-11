@@ -397,8 +397,3 @@ pub(super) fn linux_sysmon_command_candidates(program: &str) -> Vec<String> {
         )
         .collect()
 }
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> {
-    None
-}

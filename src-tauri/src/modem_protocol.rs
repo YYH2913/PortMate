@@ -250,7 +250,7 @@ pub(super) fn crc16_xmodem(data: &[u8]) -> u16 {
     crc
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
     let mut output = PendingLocalTransferOutput::create(Path::new(path), "本地传输目标路径")?;
     output

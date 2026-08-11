@@ -57,6 +57,7 @@ impl PortableVaultProbeConfig {
         self.root.join(PORTABLE_VAULT_SALT_FILE_NAME)
     }
 
+    #[cfg(unix)]
     fn lock_path(&self) -> PathBuf {
         self.root.join(format!("{PORTABLE_VAULT_FILE_NAME}.lock"))
     }
@@ -545,7 +546,8 @@ fn verify_portable_vault_windows_file_security(root: &Path) -> Result<(), String
         &parent_linked.salt_path(),
         &parent_linked.password,
     )
-    .expect_err("portable vault accepted a Windows parent junction");
+    .err()
+    .expect("portable vault accepted a Windows parent junction");
     if !error.contains("真实目录") {
         return Err(format!(
             "portable vault parent-junction probe returned the wrong error: {error}"

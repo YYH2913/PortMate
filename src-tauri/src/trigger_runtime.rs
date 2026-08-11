@@ -3,7 +3,7 @@ use super::*;
 mod trigger_command;
 
 use trigger_command::run_shell_command;
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 pub(super) use trigger_command::run_shell_command_bounded;
 
 pub(super) const MAX_TRIGGER_COMMAND_CONCURRENCY: usize = 4;

@@ -12,7 +12,7 @@ pub(super) type TcpWriteHalf = Box<dyn AsyncWrite + Send + Unpin>;
 
 pub(super) enum TcpConnectedStream {
     Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 impl TcpConnectedStream {
@@ -101,7 +101,7 @@ pub(super) async fn connect_tcp_transport(
     )
     .await
     .map_err(|_| format!("{label} TLS 握手超时: {server_name}"))?
-    .map(TcpConnectedStream::Tls)
+    .map(|stream| TcpConnectedStream::Tls(Box::new(stream)))
     .map_err(|error| format!("{label} TLS 握手失败: {error}"))
 }
 

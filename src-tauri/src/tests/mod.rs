@@ -13,12 +13,16 @@ mod command_type_tests;
 mod connection_config_tests;
 #[path = "export_tests.rs"]
 mod export_tests;
+#[cfg(unix)]
 #[path = "external_sftp_compat.rs"]
 mod external_sftp_compat;
+#[cfg(unix)]
 #[path = "external_ssh_compat.rs"]
 mod external_ssh_compat;
+#[cfg(target_os = "linux")]
 #[path = "external_ssh_gssapi_compat.rs"]
 mod external_ssh_gssapi_compat;
+#[cfg(unix)]
 #[path = "external_tcp_telnet_compat.rs"]
 mod external_tcp_telnet_compat;
 #[path = "file_batch_tests.rs"]
@@ -49,20 +53,28 @@ mod migration_tests;
 mod modem_protocol_tests;
 #[path = "modem_runtime_tests.rs"]
 mod modem_runtime_tests;
+#[cfg(unix)]
 #[path = "openssh_authentication_tests.rs"]
 mod openssh_authentication_tests;
+#[cfg(unix)]
 #[path = "openssh_jump_host_tests.rs"]
 mod openssh_jump_host_tests;
+#[cfg(unix)]
 #[path = "openssh_modem_integration.rs"]
 mod openssh_modem_integration;
+#[cfg(unix)]
 #[path = "openssh_reconnect_tests.rs"]
 mod openssh_reconnect_tests;
+#[cfg(unix)]
 #[path = "openssh_sftp_integration.rs"]
 mod openssh_sftp_integration;
+#[cfg(unix)]
 #[path = "openssh_transfer_recovery_integration.rs"]
 mod openssh_transfer_recovery_integration;
+#[cfg(unix)]
 #[path = "openssh_transfer_tunnel_tests.rs"]
 mod openssh_transfer_tunnel_tests;
+#[cfg(unix)]
 #[path = "openssh_tunnel_integration.rs"]
 mod openssh_tunnel_integration;
 #[path = "portable_vault_tests.rs"]
@@ -89,6 +101,7 @@ mod shell_runtime_tests;
 mod ssh_policy_tests;
 #[path = "ssh_runtime_tests.rs"]
 mod ssh_runtime_tests;
+#[cfg(unix)]
 #[path = "ssh_test_support.rs"]
 mod ssh_test_support;
 #[path = "ssh_transport_tests.rs"]
@@ -114,6 +127,7 @@ mod trigger_tests;
 #[path = "tunnel_tests.rs"]
 mod tunnel_tests;
 
+#[cfg(unix)]
 use ssh_test_support::*;
 
 fn shared_runtime_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -134,8 +148,10 @@ fn vault_identity(id: &str, secret_ref: &str) -> IdentityRef {
     }
 }
 
+#[cfg(unix)]
 struct ChildGuard(Option<std::process::Child>);
 
+#[cfg(unix)]
 impl ChildGuard {
     fn stop(&mut self) {
         if let Some(mut child) = self.0.take() {
@@ -145,6 +161,7 @@ impl ChildGuard {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         self.stop();
@@ -370,6 +387,7 @@ async fn spawn_stalled_ssh_endpoint() -> (u16, tokio::task::JoinHandle<()>) {
     (port, task)
 }
 
+#[cfg(unix)]
 fn assert_tunnel_client_closed(result: std::io::Result<usize>, label: &str) {
     match result {
         Ok(0) => {}
@@ -507,6 +525,7 @@ fn test_transfer_progress_context(
     }
 }
 
+#[cfg(unix)]
 async fn wait_for_transfer_progress(state: &AppState, task_id: &str, label: &str) {
     let result = tokio::time::timeout(Duration::from_secs(15), async {
         loop {

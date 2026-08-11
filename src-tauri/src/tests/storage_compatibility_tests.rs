@@ -2,7 +2,6 @@
 fn json_compatibility_store_is_private_atomic_and_symlink_safe() {
     let temp = tempfile::tempdir().unwrap();
     let store_path = temp.path().join(LEGACY_JSON_STORE_FILE_NAME);
-    let protected_path = temp.path().join("protected.txt");
     let mut store = SessionStore::default();
     store.upsert_profile(test_shell_profile());
     fs::write(&store_path, b"old snapshot").unwrap();
@@ -18,6 +17,7 @@ fn json_compatibility_store_is_private_atomic_and_symlink_safe() {
     {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
+        let protected_path = temp.path().join("protected.txt");
         assert_eq!(
             fs::metadata(&store_path).unwrap().permissions().mode() & 0o777,
             0o600

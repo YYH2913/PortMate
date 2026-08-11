@@ -156,7 +156,7 @@ pub(super) async fn open_sftp_session(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) async fn open_sftp_session_with_timeout<H: client::Handler>(
     handle: Arc<tokio::sync::Mutex<client::Handle<H>>>,
     timeout: Duration,
