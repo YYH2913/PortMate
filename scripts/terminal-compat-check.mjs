@@ -227,12 +227,12 @@ function createSession(id, name) {
   };
 }
 
-function createEvent(id, sessionId, text) {
+function createEvent(id, sessionId, text, ts = "2026-07-15T00:00:00.000000Z") {
   return {
     id,
     sessionId,
     paneId: `${sessionId}:main`,
-    ts: "2026-07-15T00:00:00.000000Z",
+    ts,
     direction: "inbound",
     stream: "stdout",
     bytesRef: null,
@@ -248,10 +248,10 @@ const sessions = [
 const eventsBySession = {
   "session-a": [
     createEvent("a-normal", "session-a", "NORMAL-PROMPT $ "),
-    createEvent("a-alt-enter", "session-a", "\x1b[?1049h\x1b[2J\x1b[H"),
-    createEvent("a-title", "session-a", "\x1b[1;38;2;94;234;212mPORTMATE VTT BASELINE\x1b[0m"),
-    createEvent("a-color", "session-a", "\x1b[4;8HTRUECOLOR \x1b[38;2;255;120;80mRGB-OK\x1b[0m"),
-    createEvent("a-wide-mouse", "session-a", "\x1b[6;4H宽字符界面\x1b[?1000h\x1b[?1006h"),
+    createEvent("a-alt-enter", "session-a", "\x1b[?1049h\x1b[2J\x1b[H", "2026-07-15T00:00:01.111111Z"),
+    createEvent("a-title", "session-a", "\x1b[1;38;2;94;234;212mPORTMATE VTT BASELINE\x1b[0m", "2026-07-15T00:00:02.222222Z"),
+    createEvent("a-color", "session-a", "\x1b[4;8HTRUECOLOR \x1b[38;2;255;120;80mRGB-OK\x1b[0m", "2026-07-15T00:00:03.333333Z"),
+    createEvent("a-wide-mouse", "session-a", "\x1b[6;4H宽字符界面\x1b[?1000h\x1b[?1006h", "2026-07-15T00:00:04.444444Z"),
   ],
   "session-b": [createEvent("b-prompt", "session-b", "secondary$ ")],
 };
@@ -662,11 +662,17 @@ try {
   const initialTimestampAlternate = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
     bufferType: gutter.getAttribute("data-buffer-type"),
     count: gutter.querySelectorAll("time").length,
+    timestamps: [...gutter.querySelectorAll("time")].map((time) => time.getAttribute("datetime")),
   }));
+  const initialAlternateUniqueTimestamps = new Set(initialTimestampAlternate.timestamps);
   assert(initialSemanticState.decorations === 0,
     `semantic highlighting leaked into the initial alternate screen: ${JSON.stringify(initialSemanticState)}`);
-  assert(initialTimestampAlternate.bufferType === "alternate" && initialTimestampAlternate.count > 0,
-    `the initial alternate screen is missing row timestamps: ${JSON.stringify(initialTimestampAlternate)}`);
+  assert(initialTimestampAlternate.bufferType === "alternate"
+    && initialTimestampAlternate.count > 0
+    && initialAlternateUniqueTimestamps.size >= 2
+    && initialAlternateUniqueTimestamps.has("2026-07-15T00:00:01.111111Z")
+    && initialAlternateUniqueTimestamps.has("2026-07-15T00:00:04.444444Z"),
+  `the initial alternate screen lost per-row event timestamps: ${JSON.stringify(initialTimestampAlternate)}`);
 
   await clearCalls();
   await page.setViewportSize({ width: 1320, height: 820 });
@@ -724,6 +730,12 @@ try {
   const trueColorSearch = await openAndAssertSearch("TRUECOLOR RGB-OK");
   const wideSearch = await openAndAssertSearch("宽字符界面");
 
+  const timestampAlternateBeforeRestore = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    bufferType: gutter.getAttribute("data-buffer-type"),
+    count: gutter.querySelectorAll("time").length,
+    timestamps: [...gutter.querySelectorAll("time")].map((time) => time.getAttribute("datetime")),
+  }));
+
   await page.locator('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]').click();
   await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]')?.getAttribute("aria-selected") === "true");
   await page.locator('[data-pane-id="pane-a"] [data-view-id="view-a"] [role="tab"]').click();
@@ -736,7 +748,14 @@ try {
   const restoredTimestampAlternate = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
     bufferType: gutter.getAttribute("data-buffer-type"),
     count: gutter.querySelectorAll("time").length,
+    timestamps: [...gutter.querySelectorAll("time")].map((time) => time.getAttribute("datetime")),
   }));
+  assert(restoredTimestampAlternate.bufferType === "alternate"
+    && JSON.stringify(restoredTimestampAlternate.timestamps) === JSON.stringify(timestampAlternateBeforeRestore.timestamps),
+  `alternate row timestamps changed after cached tab restoration: ${JSON.stringify({
+    beforeRestore: timestampAlternateBeforeRestore,
+    restored: restoredTimestampAlternate,
+  })}`);
   const restoredSearch = await openAndAssertSearch("PORTMATE VTT BASELINE");
 
   await page.waitForFunction(() => (
@@ -1561,6 +1580,7 @@ try {
     },
     timestamps: {
       initialAlternate: initialTimestampAlternate,
+      beforeRestoreAlternate: timestampAlternateBeforeRestore,
       restoredAlternate: restoredTimestampAlternate,
       restoredNormal: restoredTimestampNormal,
       semanticRestored: semanticTimestampRestored,

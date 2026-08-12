@@ -28,6 +28,67 @@ export function normalizeTerminalTimestamps(
   return normalized.slice(-Math.max(1, Math.trunc(limit) || 1));
 }
 
+export function resizeAlternateTerminalTimestamps(
+  value: unknown,
+  rows: number,
+  fallbackTimestamp?: unknown,
+): TerminalTimestampEntry[] {
+  const rowCount = Math.max(0, Math.trunc(rows) || 0);
+  if (!rowCount) return [];
+  const normalized = normalizeTerminalTimestamps(value)
+    .filter((entry) => entry.line < rowCount);
+  const fallback = normalizeTerminalTimestampValue(fallbackTimestamp)
+    ?? normalized.at(-1)?.ts
+    ?? null;
+  if (!normalized.length && !fallback) return [];
+
+  const byLine = new Map(normalized.map((entry) => [entry.line, entry.ts]));
+  const finalExistingLine = normalized.at(-1)?.line ?? -1;
+  const resized: TerminalTimestampEntry[] = [];
+  let inherited: string | null = null;
+  for (let line = 0; line < rowCount; line += 1) {
+    const exact = byLine.get(line);
+    if (exact) inherited = exact;
+    const ts = exact
+      ?? (line > finalExistingLine ? fallback : inherited ?? fallback);
+    if (ts) resized.push({ line, ts });
+  }
+  return resized;
+}
+
+export function updateAlternateTerminalTimestamps(
+  value: unknown,
+  rows: number,
+  changedRows: readonly number[],
+  timestamp: unknown,
+): TerminalTimestampEntry[] {
+  const normalizedTimestamp = normalizeTerminalTimestampValue(timestamp);
+  const resized = resizeAlternateTerminalTimestamps(value, rows, normalizedTimestamp);
+  if (!normalizedTimestamp || !resized.length) return resized;
+  const changed = new Set(changedRows.filter((row) => (
+    Number.isSafeInteger(row) && row >= 0 && row < resized.length
+  )));
+  return resized.map((entry) => changed.has(entry.line)
+    ? { ...entry, ts: normalizedTimestamp }
+    : entry);
+}
+
+export function changedAlternateTerminalRows(
+  before: readonly string[],
+  after: readonly string[],
+  beforeCursorRow: number,
+  afterCursorRow: number,
+): number[] {
+  const changed = new Set<number>();
+  for (let row = 0; row < after.length; row += 1) {
+    if (before[row] !== after[row]) changed.add(row);
+  }
+  for (const row of [beforeCursorRow, afterCursorRow]) {
+    if (Number.isSafeInteger(row) && row >= 0 && row < after.length) changed.add(row);
+  }
+  return [...changed].sort((left, right) => left - right);
+}
+
 export function visibleTerminalTimestamps(
   entries: readonly TerminalTimestampEntry[],
   viewportY: number,

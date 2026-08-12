@@ -49,6 +49,7 @@ describe("terminal state cache", () => {
     const restored = cache.get("a")!;
     restored.seenEventIds.push("mutated");
     restored.timestamps?.push({ line: 8, ts: "2026-08-09T01:02:05.000000Z" });
+    restored.alternateTimestamps?.push({ line: 8, ts: "2026-08-09T01:02:07.000000Z" });
 
     expect(restored.cols).toBe(1);
     expect(restored.rows).toBe(1);
@@ -60,6 +61,37 @@ describe("terminal state cache", () => {
       { line: 7, ts: "2026-08-09T01:02:03.000000Z" },
     ]);
     expect(cache.get("a")?.alternateTimestamp).toBe("2026-08-09T01:02:06.123456Z");
+    expect(cache.get("a")?.alternateTimestamps).toEqual([
+      { line: 0, ts: "2026-08-09T01:02:06.123456Z" },
+    ]);
+  });
+
+  it("normalizes, resizes, and deep-clones alternate-screen row timestamps", () => {
+    const cache = new TerminalStateCache();
+    expect(cache.save("alternate", {
+      serialized: "screen",
+      cols: 80,
+      rows: 4,
+      seenEventIds: [],
+      alternateTimestamps: [
+        { line: 0, ts: "2026-08-09T01:02:01.111111789Z" },
+        { line: 1, ts: "2026-08-09T01:02:02.222222789Z" },
+        { line: 3, ts: "invalid" },
+        { line: 8, ts: "2026-08-09T01:02:08Z" },
+      ],
+      alternateTimestamp: "2026-08-09T01:02:03.333333789Z",
+    })).toBe(true);
+
+    const restored = cache.get("alternate")!;
+    expect(restored.alternateTimestamps).toEqual([
+      { line: 0, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 1, ts: "2026-08-09T01:02:02.222222Z" },
+      { line: 2, ts: "2026-08-09T01:02:03.333333Z" },
+      { line: 3, ts: "2026-08-09T01:02:03.333333Z" },
+    ]);
+    restored.alternateTimestamps![0].ts = "2026-08-09T01:02:09.999999Z";
+    expect(cache.get("alternate")?.alternateTimestamps?.[0].ts)
+      .toBe("2026-08-09T01:02:01.111111Z");
   });
 
   it("retains an empty serialized screen with its dimensions", () => {

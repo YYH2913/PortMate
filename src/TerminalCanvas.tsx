@@ -58,9 +58,12 @@ import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
 import {
   MAX_TERMINAL_TIMESTAMPS,
+  changedAlternateTerminalRows,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
   rebaseTerminalTimestamps,
+  resizeAlternateTerminalTimestamps,
+  updateAlternateTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
@@ -218,6 +221,52 @@ function terminalSemanticCellSegments(
     }
   }
   return segments;
+}
+
+function alternateTerminalScreenSnapshot(term: XTerm): string[] {
+  const buffer = term.buffer.active;
+  if (buffer.type !== "alternate") return [];
+  const snapshot: string[] = [];
+  const reusableCell = buffer.getNullCell();
+  for (let row = 0; row < term.rows; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) {
+      snapshot.push("missing");
+      continue;
+    }
+    const cells: unknown[] = [line.isWrapped];
+    for (let column = 0; column < Math.min(term.cols, line.length); column += 1) {
+      const cell = line.getCell(column, reusableCell);
+      if (!cell) continue;
+      const chars = cell.getChars();
+      const width = cell.getWidth();
+      if (!chars && width === 1 && cell.isAttributeDefault()) continue;
+      const flags = [
+        cell.isBold(),
+        cell.isItalic(),
+        cell.isDim(),
+        cell.isUnderline(),
+        cell.isBlink(),
+        cell.isInverse(),
+        cell.isInvisible(),
+        cell.isStrikethrough(),
+        cell.isOverline(),
+      ].map(Number).join("");
+      cells.push([
+        column,
+        chars,
+        cell.getCode(),
+        width,
+        cell.getFgColorMode(),
+        cell.getFgColor(),
+        cell.getBgColorMode(),
+        cell.getBgColor(),
+        flags,
+      ]);
+    }
+    snapshot.push(JSON.stringify(cells));
+  }
+  return snapshot;
 }
 
 function terminalSemanticColor(kind: TerminalSemanticTokenKind, theme: ITheme): string {
@@ -882,7 +931,18 @@ export default function TerminalCanvas({
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
     );
     let timestampMarkers: TerminalTimestampMarker[] = [];
-    let alternateTimestamp: string | null = cachedState?.alternateTimestamp ?? null;
+    const cachedAlternateTimestamp = normalizeTerminalTimestamps([
+      { line: 0, ts: cachedState?.alternateTimestamp },
+    ], 1)[0]?.ts ?? null;
+    let alternateTimestamps = resizeAlternateTerminalTimestamps(
+      cachedState?.alternateTimestamps,
+      term.rows,
+      cachedAlternateTimestamp,
+    );
+    let alternateLatestTimestamp: string | null = cachedAlternateTimestamp
+      ?? alternateTimestamps.reduce<string | null>((latest, entry) => (
+      !latest || entry.ts > latest ? entry.ts : latest
+      ), null);
     let pendingRestoredTimestamps = normalizeTerminalTimestamps(cachedState?.timestamps);
     let drainEventWrites = () => {};
     let scheduleSemanticHighlighting = () => {};
@@ -946,9 +1006,7 @@ export default function TerminalCanvas({
           buffer.viewportY,
           term.rows,
         )
-        : alternateTimestamp
-          ? visibleTerminalTimestamps([{ line: 0, ts: alternateTimestamp }], 0, term.rows)
-          : [];
+        : visibleTerminalTimestamps(alternateTimestamps, 0, term.rows);
       host.dataset.terminalTimestampBuffer = bufferType;
       host.dataset.terminalTimestampCount = String(entries.length);
       host.dataset.terminalTimestampMarkerCount = String(timestampMarkers.length);
@@ -980,7 +1038,10 @@ export default function TerminalCanvas({
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
-      if (buffer.type === "alternate" && !restorePending) alternateTimestamp = null;
+      if (buffer.type === "alternate" && !restorePending) {
+        alternateTimestamps = [];
+        alternateLatestTimestamp = null;
+      }
       restoreTimestampMarkers();
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
@@ -999,6 +1060,9 @@ export default function TerminalCanvas({
         const beforeLine = beforeBufferType === "normal"
           ? term.buffer.normal.baseY + term.buffer.normal.cursorY
           : beforeBuffer.cursorY;
+        const beforeAlternateSnapshot = beforeBufferType === "alternate"
+          ? alternateTerminalScreenSnapshot(term)
+          : [];
         let callbackCompleted = false;
         let writeReturned = false;
         writeTerminalEvent(term, event, () => {
@@ -1008,7 +1072,24 @@ export default function TerminalCanvas({
               const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
               registerTimestampRange(beforeBufferType === "normal" ? beforeLine : afterLine, afterLine, event.ts);
             } else {
-              alternateTimestamp = normalizeTerminalTimestamps([{ line: 0, ts: event.ts }], 1)[0]?.ts ?? null;
+              const normalizedTimestamp = normalizeTerminalTimestamps([
+                { line: 0, ts: event.ts },
+              ], 1)[0]?.ts ?? null;
+              const afterSnapshot = alternateTerminalScreenSnapshot(term);
+              alternateLatestTimestamp = normalizedTimestamp ?? alternateLatestTimestamp;
+              alternateTimestamps = beforeBufferType === "alternate"
+                ? updateAlternateTerminalTimestamps(
+                  alternateTimestamps,
+                  term.rows,
+                  changedAlternateTerminalRows(
+                    beforeAlternateSnapshot,
+                    afterSnapshot,
+                    beforeLine,
+                    afterBuffer.cursorY,
+                  ),
+                  event.ts,
+                )
+                : resizeAlternateTerminalTimestamps([], term.rows, event.ts);
             }
           }
           settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
@@ -1172,6 +1253,13 @@ export default function TerminalCanvas({
       scheduleTimestampGutter();
     });
     const semanticResizeDisposable = term.onResize(() => {
+      if (term.buffer.active.type === "alternate") {
+        alternateTimestamps = resizeAlternateTerminalTimestamps(
+          alternateTimestamps,
+          term.rows,
+          alternateLatestTimestamp,
+        );
+      }
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
       refreshCompletionAnchorRef.current();
@@ -1317,8 +1405,11 @@ export default function TerminalCanvas({
             seenEventIds: [...seenEventsRef.current],
             mouseEncoding,
             timestamps: timestampSnapshot(firstSerializedLine),
+            alternateTimestamps: term.buffer.active.type === "alternate"
+              ? alternateTimestamps
+              : undefined,
             alternateTimestamp: term.buffer.active.type === "alternate"
-              ? alternateTimestamp ?? undefined
+              ? alternateLatestTimestamp ?? undefined
               : undefined,
           });
         } catch {

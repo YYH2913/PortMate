@@ -1,5 +1,5 @@
 import type { TerminalMouseEncoding } from "./terminal-mouse";
-import { normalizeTerminalTimestamps } from "./terminal-timestamp-state";
+import { normalizeTerminalTimestamps, resizeAlternateTerminalTimestamps } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry } from "./terminal-timestamp-state";
 
 export type SerializedTerminalState = {
@@ -9,6 +9,8 @@ export type SerializedTerminalState = {
   seenEventIds: string[];
   mouseEncoding?: TerminalMouseEncoding;
   timestamps?: TerminalTimestampEntry[];
+  alternateTimestamps?: TerminalTimestampEntry[];
+  /** Legacy fallback retained for snapshots created before per-row alternate timestamps. */
   alternateTimestamp?: string;
 };
 
@@ -70,16 +72,24 @@ export class TerminalStateCache {
 
   save(sessionId: string, state: SerializedTerminalState): boolean {
     if (!sessionId || utf8ByteLength(state.serialized) > this.maxBytes) return false;
+    const rows = normalizeDimension(state.rows);
+    const legacyAlternateTimestamp = normalizeTerminalTimestamps([
+      { line: 0, ts: state.alternateTimestamp },
+    ], 1)[0]?.ts;
+    const alternateTimestamps = resizeAlternateTerminalTimestamps(
+      state.alternateTimestamps,
+      rows,
+      legacyAlternateTimestamp,
+    );
     const normalized: SerializedTerminalState = {
       serialized: state.serialized,
       cols: normalizeDimension(state.cols),
-      rows: normalizeDimension(state.rows),
+      rows,
       seenEventIds: state.seenEventIds.slice(-MAX_SERIALIZED_TERMINAL_EVENTS),
       mouseEncoding: normalizeMouseEncoding(state.mouseEncoding),
       timestamps: normalizeTerminalTimestamps(state.timestamps),
-      alternateTimestamp: normalizeTerminalTimestamps([
-        { line: 0, ts: state.alternateTimestamp },
-      ], 1)[0]?.ts,
+      alternateTimestamps: alternateTimestamps.length ? alternateTimestamps : undefined,
+      alternateTimestamp: legacyAlternateTimestamp ?? latestTimestamp(alternateTimestamps),
     };
     this.states.delete(sessionId);
     this.states.set(sessionId, normalized);
@@ -103,7 +113,14 @@ function cloneSerializedTerminalState(state: SerializedTerminalState): Serialize
     ...state,
     seenEventIds: [...state.seenEventIds],
     timestamps: state.timestamps?.map((entry) => ({ ...entry })),
+    alternateTimestamps: state.alternateTimestamps?.map((entry) => ({ ...entry })),
   };
+}
+
+function latestTimestamp(entries: readonly TerminalTimestampEntry[]): string | undefined {
+  return entries.reduce<string | undefined>((latest, entry) => (
+    !latest || entry.ts > latest ? entry.ts : latest
+  ), undefined);
 }
 
 function normalizeDimension(value: number): number {

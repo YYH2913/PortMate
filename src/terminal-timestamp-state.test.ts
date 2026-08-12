@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  changedAlternateTerminalRows,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
   rebaseTerminalTimestamps,
+  resizeAlternateTerminalTimestamps,
+  updateAlternateTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 
@@ -68,5 +71,53 @@ describe("terminal timestamp state", () => {
     expect(formatTerminalTimestampClock("2026-08-09T01:02:03.123456789Z"))
       .toMatch(/^\d{2}:\d{2}:\d{2}\.123456$/);
     expect(formatTerminalTimestampClock("invalid")).toBe("--:--:--.------");
+  });
+
+  it("keeps dense per-row alternate timestamps and preserves unchanged rows", () => {
+    const entered = resizeAlternateTerminalTimestamps([], 4, "2026-08-09T01:02:01.111111789Z");
+    expect(entered).toEqual([
+      { line: 0, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 1, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 2, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 3, ts: "2026-08-09T01:02:01.111111Z" },
+    ]);
+    expect(updateAlternateTerminalTimestamps(
+      entered,
+      4,
+      [1, 3],
+      "2026-08-09T01:02:02.222222999Z",
+    )).toEqual([
+      { line: 0, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 1, ts: "2026-08-09T01:02:02.222222Z" },
+      { line: 2, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 3, ts: "2026-08-09T01:02:02.222222Z" },
+    ]);
+  });
+
+  it("fills added alternate rows with the latest event and crops removed rows", () => {
+    const initial = [
+      { line: 0, ts: "2026-08-09T01:02:01.111111Z" },
+      { line: 1, ts: "2026-08-09T01:02:02.222222Z" },
+    ];
+    expect(resizeAlternateTerminalTimestamps(
+      initial,
+      4,
+      "2026-08-09T01:02:03.333333Z",
+    )).toEqual([
+      ...initial,
+      { line: 2, ts: "2026-08-09T01:02:03.333333Z" },
+      { line: 3, ts: "2026-08-09T01:02:03.333333Z" },
+    ]);
+    expect(resizeAlternateTerminalTimestamps(initial, 1)).toEqual([initial[0]]);
+    expect(resizeAlternateTerminalTimestamps(initial, 0)).toEqual([]);
+  });
+
+  it("detects changed alternate rows and always includes both cursor rows", () => {
+    expect(changedAlternateTerminalRows(
+      ["same", "old", "same", "removed"],
+      ["same", "new", "same"],
+      0,
+      2,
+    )).toEqual([0, 1, 2]);
   });
 });
