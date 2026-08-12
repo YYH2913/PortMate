@@ -18,6 +18,24 @@ export const MAX_SERIALIZED_TERMINALS = 32;
 export const MAX_SERIALIZED_TERMINAL_BYTES = 2 * 1024 * 1024;
 export const MAX_SERIALIZED_TERMINAL_EVENTS = 4000;
 
+export function terminalStateCacheKey(sessionId: string, viewId: string): string {
+  return JSON.stringify([sessionId, viewId]);
+}
+
+export function terminalEventSnapshotIds(
+  seen: ReadonlySet<string>,
+  polledEventIds: readonly string[],
+  maxEvents = MAX_SERIALIZED_TERMINAL_EVENTS,
+): string[] {
+  const prioritized = new Set(seen);
+  for (const eventId of polledEventIds) {
+    if (!eventId) continue;
+    prioritized.delete(eventId);
+    prioritized.add(eventId);
+  }
+  return [...prioritized].slice(-Math.max(1, Math.trunc(maxEvents)));
+}
+
 export function rememberTerminalEventId(
   seen: Set<string>,
   pending: Set<string>,

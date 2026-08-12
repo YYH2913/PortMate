@@ -3,10 +3,34 @@ import {
   MAX_SERIALIZED_TERMINAL_EVENTS,
   rememberTerminalEventId,
   settleTerminalEventId,
+  terminalEventSnapshotIds,
+  terminalStateCacheKey,
   TerminalStateCache,
 } from "./terminal-state-cache";
 
 describe("terminal state cache", () => {
+  it("isolates duplicate views of one session and reused view ids", () => {
+    expect(terminalStateCacheKey("session-a", "view-a"))
+      .not.toBe(terminalStateCacheKey("session-a", "view-b"));
+    expect(terminalStateCacheKey("session-a", "view-a"))
+      .not.toBe(terminalStateCacheKey("session-b", "view-a"));
+  });
+
+  it("prioritizes the current polling window after realtime dedupe rollover", () => {
+    const initial = Array.from({ length: 5 }, (_, index) => `initial-${index}`);
+    const seen = new Set([
+      ...initial,
+      ...Array.from({ length: MAX_SERIALIZED_TERMINAL_EVENTS + 100 }, (_, index) => `live-${index}`),
+    ]);
+    const snapshot = terminalEventSnapshotIds(seen, initial);
+
+    expect(snapshot).toHaveLength(MAX_SERIALIZED_TERMINAL_EVENTS);
+    expect(initial.every((eventId) => snapshot.includes(eventId))).toBe(true);
+    expect(snapshot.at(-1)).toBe("initial-4");
+    expect(snapshot).not.toContain("live-0");
+    expect(snapshot).toContain(`live-${MAX_SERIALIZED_TERMINAL_EVENTS + 99}`);
+  });
+
   it("evicts the least recently used terminal", () => {
     const cache = new TerminalStateCache(2, 100);
     expect(cache.save("a", state("A"))).toBe(true);

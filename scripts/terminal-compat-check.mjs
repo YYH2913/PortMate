@@ -185,7 +185,7 @@ function createSession(id, name) {
         term: "xterm-256color",
         rows: 32,
         cols: 120,
-        scrollback: 200000,
+        scrollback: 4096,
         fontFamily: "JetBrains Mono, monospace",
         fontSize: 13,
         theme: "portmate-dark",
@@ -867,7 +867,9 @@ try {
   await emitSessionEvent(createEvent("a-real-top-exit", "session-a", topPty.exitFrame));
 
   const longLogStartedAt = Date.now();
-  await emitSessionEvent(createEvent("a-long-log", "session-a", longLogText));
+  const retainedLogTimestamp = "2026-07-15T00:00:05.555555Z";
+  const postTrimTimestamp = "2026-07-15T00:00:06.666666Z";
+  await emitSessionEvent(createEvent("a-long-log", "session-a", longLogText, retainedLogTimestamp));
   const longLogSearch = await openAndAssertSearch(longLogTailMarker);
   const longLogDurationMs = Date.now() - longLogStartedAt;
   assert(longLogDurationMs < 15_000,
@@ -877,6 +879,7 @@ try {
     const timestamps = [...region.querySelectorAll(".terminal-timestamp-gutter time")];
     return {
       clocks: timestamps.map((timestamp) => timestamp.textContent ?? ""),
+      values: timestamps.map((timestamp) => timestamp.getAttribute("datetime")),
       count: timestamps.length,
       markerCount: Number(host?.dataset.terminalTimestampMarkerCount ?? "-1"),
       rows: Number(host?.dataset.terminalTimestampRows ?? "-1"),
@@ -884,9 +887,86 @@ try {
   });
   assert(longLogTimestamps.count === longLogTimestamps.rows
     && longLogTimestamps.clocks.every((clock) => /^\d{2}:\d{2}:\d{2}\.\d{6}$/.test(clock))
-    && longLogTimestamps.markerCount > 0
+    && longLogTimestamps.values.every((timestamp) => timestamp === retainedLogTimestamp)
+    && longLogTimestamps.markerCount >= 0
     && longLogTimestamps.markerCount < 200,
   `long terminal output lost per-row microsecond timestamps or marker compaction: ${JSON.stringify(longLogTimestamps)}`);
+  await emitSessionEvent(createEvent(
+    "a-post-scrollback-trim",
+    "session-a",
+    "PORTMATE-POST-SCROLLBACK-TRIM\r\n",
+    postTrimTimestamp,
+  ));
+  await page.waitForFunction(({ retained, latest }) => {
+    const timestamps = [...document.querySelectorAll('[data-pane-id="pane-a"] .terminal-timestamp-gutter time')]
+      .map((timestamp) => timestamp.getAttribute("datetime"));
+    return timestamps.length > 1 && timestamps.includes(retained) && timestamps.includes(latest);
+  }, { retained: retainedLogTimestamp, latest: postTrimTimestamp });
+  const timestampAfterScrollbackTrim = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
+    count: gutter.querySelectorAll("time").length,
+    timestamps: [...gutter.querySelectorAll("time")].map((time) => time.getAttribute("datetime")),
+  }));
+  assert(timestampAfterScrollbackTrim.timestamps[0] === retainedLogTimestamp
+    && timestampAfterScrollbackTrim.timestamps.at(-1) === postTrimTimestamp,
+  `scrollback marker eviction lost its retained-row timestamp anchor: ${JSON.stringify(timestampAfterScrollbackTrim)}`);
+
+  await page.locator('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]')?.getAttribute("aria-selected") === "true"
+      && document.querySelector('[data-pane-id="pane-a"] .terminal-canvas')?.getAttribute("data-terminal-session-id") === "session-b"
+  ));
+  const cachedNormalTimestampState = await page.evaluate(async () => {
+    const { terminalStateCache, terminalStateCacheKey } = await import("/src/terminal-state-cache.ts");
+    const state = terminalStateCache.get(terminalStateCacheKey("session-a", "view-a"));
+    return state ? {
+      bytes: new TextEncoder().encode(state.serialized).byteLength,
+      hasAlternateEnter: state.serialized.includes("\x1b[?1049h"),
+      hasAlternateExit: state.serialized.includes("\x1b[?1049l"),
+      includesLongTail: state.serialized.includes("PORTMATE-LONG-LOG-TAIL-006000"),
+      seenInitial: ["a-normal", "a-alt-enter", "a-title", "a-color", "a-wide-mouse"]
+        .map((eventId) => state.seenEventIds.includes(eventId)),
+      seenCount: state.seenEventIds.length,
+      timestamps: state.timestamps ?? [],
+      alternateTimestamps: state.alternateTimestamps ?? [],
+    } : null;
+  });
+  assert(cachedNormalTimestampState
+    && !cachedNormalTimestampState.hasAlternateEnter
+    && cachedNormalTimestampState.includesLongTail
+    && cachedNormalTimestampState.seenInitial.every(Boolean)
+    && cachedNormalTimestampState.timestamps[0]?.ts === retainedLogTimestamp
+    && cachedNormalTimestampState.timestamps.at(-1)?.ts === postTrimTimestamp
+    && cachedNormalTimestampState.alternateTimestamps.length === 0,
+  `normal terminal state was not cached before its view unmounted: ${JSON.stringify(cachedNormalTimestampState)}`);
+  await page.locator('[data-pane-id="pane-a"] [data-view-id="view-a"] [role="tab"]').click();
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    const canvas = document.querySelector('[data-pane-id="pane-a"] .terminal-canvas');
+    return canvas?.getAttribute("data-terminal-session-id") === "session-a"
+      && host?.dataset.terminalReady === "true";
+  });
+  await page.waitForTimeout(150);
+  const timestampAfterTrimCacheRestore = await page.locator('[data-pane-id="pane-a"] .terminal-terminal-region').evaluate((region) => {
+    const host = region.querySelector(".terminal-host");
+    const gutter = region.querySelector(".terminal-timestamp-gutter");
+    return {
+      buffer: host?.getAttribute("data-terminal-buffer"),
+      markerCount: Number(host?.getAttribute("data-terminal-timestamp-marker-count") ?? "-1"),
+      ready: host?.getAttribute("data-terminal-ready"),
+      restored: host?.getAttribute("data-terminal-restored"),
+      serialization: host?.getAttribute("data-terminal-serialization"),
+      count: gutter?.querySelectorAll("time").length ?? 0,
+      timestamps: [...(gutter?.querySelectorAll("time") ?? [])].map((time) => time.getAttribute("datetime")),
+    };
+  });
+  assert(timestampAfterTrimCacheRestore.buffer === "normal"
+    && timestampAfterTrimCacheRestore.restored === "true"
+    && timestampAfterTrimCacheRestore.timestamps[0] === retainedLogTimestamp
+    && timestampAfterTrimCacheRestore.timestamps.at(-1) === postTrimTimestamp,
+  `cached terminal restoration lost its scrollback timestamp interval: ${JSON.stringify({
+    cached: cachedNormalTimestampState,
+    restored: timestampAfterTrimCacheRestore,
+  })}`);
 
   const activeScreen = page.locator('[data-pane-id="pane-a"] .xterm-screen');
   const selectTerminalText = async () => {
@@ -1584,6 +1664,9 @@ try {
       restoredAlternate: restoredTimestampAlternate,
       restoredNormal: restoredTimestampNormal,
       semanticRestored: semanticTimestampRestored,
+      afterScrollbackTrim: timestampAfterScrollbackTrim,
+      cachedAfterScrollbackTrim: cachedNormalTimestampState,
+      afterTrimCacheRestore: timestampAfterTrimCacheRestore,
     },
     vimPty: { bytes: vimPty.bytes, alternateScreen: true, restoredNormalScreen: true },
     lessPty: { bytes: lessPty.bytes, alternateScreen: true, restoredNormalScreen: true },

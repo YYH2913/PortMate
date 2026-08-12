@@ -55,7 +55,7 @@ import {
   terminalSemanticTokens,
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
-import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
+import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
@@ -130,6 +130,7 @@ type TerminalGotoLineContext = {
 type TerminalTimestampMarker = {
   marker: IMarker;
   ts: string;
+  lastLine: number;
 };
 type TerminalTimestampViewport = {
   bufferType: "normal" | "alternate";
@@ -307,6 +308,7 @@ export default function TerminalCanvas({
   const activeTerminalTheme = terminalTheme(themeId, backgroundOpacity);
   const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
   const sessionId = active?.profile.id ?? "";
+  const stateCacheKey = terminalStateCacheKey(sessionId, viewId);
   const displayModeKey = viewId || sessionId;
   const [displayMode, setDisplayMode] = useState<TerminalDisplayMode>(() => (
     typeof window === "undefined" ? "text" : readTerminalDisplayMode(window.localStorage, displayModeKey)
@@ -329,6 +331,7 @@ export default function TerminalCanvas({
   const refreshTimestampGutterRef = useRef<() => void>(() => {});
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
+  const polledEventIdsRef = useRef(new Map<string, string[]>());
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const gotoLineInputRef = useRef<HTMLInputElement | null>(null);
@@ -820,7 +823,7 @@ export default function TerminalCanvas({
     const terminalInstanceId = String(++terminalInstanceSequence);
     host.dataset.terminalInstanceId = terminalInstanceId;
     host.dataset.terminalReady = "false";
-    const cachedState = terminalStateCache.get(active.profile.id);
+    const cachedState = terminalStateCache.get(stateCacheKey);
     const terminalSettings = normalizeTerminalProfileSettings(active.profile.terminal);
     seenEventsRef.current = new Set(cachedState?.seenEventIds ?? []);
     lastSizeRef.current = "";
@@ -962,6 +965,7 @@ export default function TerminalCanvas({
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
     );
     let timestampMarkers: TerminalTimestampMarker[] = [];
+    let normalTimestampAnchor: string | null = null;
     const cachedAlternateTimestamp = normalizeTerminalTimestamps([
       { line: 0, ts: cachedState?.alternateTimestamp },
     ], 1)[0]?.ts ?? null;
@@ -979,9 +983,25 @@ export default function TerminalCanvas({
     let scheduleSemanticHighlighting = () => {};
 
     const compactTimestampMarkers = () => {
-      timestampMarkers = timestampMarkers.filter((entry) => !entry.marker.isDisposed && entry.marker.line >= 0);
+      const retained: TerminalTimestampMarker[] = [];
+      const disposed: TerminalTimestampMarker[] = [];
+      for (const entry of timestampMarkers) {
+        const line = entry.marker.line;
+        if (!entry.marker.isDisposed && line >= 0) {
+          entry.lastLine = line;
+          retained.push(entry);
+        } else {
+          disposed.push(entry);
+        }
+      }
+      disposed.sort((left, right) => left.lastLine - right.lastLine || left.marker.id - right.marker.id);
+      normalTimestampAnchor = disposed.at(-1)?.ts ?? normalTimestampAnchor;
+      timestampMarkers = retained.sort((left, right) => left.marker.line - right.marker.line);
       while (timestampMarkers.length > timestampMarkerLimit) {
-        timestampMarkers.shift()?.marker.dispose();
+        const removed = timestampMarkers.shift();
+        if (!removed) break;
+        normalTimestampAnchor = removed.ts;
+        removed.marker.dispose();
       }
     };
     const registerTimestampLine = (line: number, ts: string) => {
@@ -998,7 +1018,34 @@ export default function TerminalCanvas({
       const cursorLine = normal.baseY + normal.cursorY;
       const marker = term.registerMarker(normalized.line - cursorLine);
       if (!marker || marker.line < 0) return;
-      timestampMarkers.push({ marker, ts: normalized.ts });
+      timestampMarkers.push({ marker, ts: normalized.ts, lastLine: marker.line });
+      compactTimestampMarkers();
+    };
+    const trackTimestampLine = (line: number, ts: string): TerminalTimestampMarker | null => {
+      if (term.buffer.active.type !== "normal") return null;
+      const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
+      if (!normalized) return null;
+      const normal = term.buffer.normal;
+      const cursorLine = normal.baseY + normal.cursorY;
+      const marker = term.registerMarker(normalized.line - cursorLine);
+      return marker ? { marker, ts: normalized.ts, lastLine: marker.line } : null;
+    };
+    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number) => {
+      const trackedLine = tracked.marker.line;
+      if (tracked.marker.isDisposed || trackedLine < 0) {
+        compactTimestampMarkers();
+        normalTimestampAnchor = tracked.ts;
+        return;
+      }
+      tracked.lastLine = trackedLine;
+      const existing = timestampMarkers.find((entry) => entry.marker.line === trackedLine);
+      if (existing) {
+        existing.ts = tracked.ts;
+        tracked.marker.dispose();
+      } else {
+        timestampMarkers.push(tracked);
+      }
+      if (cursorLine < trackedLine) registerTimestampLine(cursorLine, tracked.ts);
       compactTimestampMarkers();
     };
     const registerTimestampRange = (startLine: number, endLine: number, ts: string) => {
@@ -1017,6 +1064,7 @@ export default function TerminalCanvas({
       return rebaseTerminalTimestamps([
         ...pendingRestoredTimestamps,
         ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
+        ...(normalTimestampAnchor ? [{ line: 0, ts: normalTimestampAnchor }] : []),
       ], firstSerializedLine);
     };
     const renderTimestampGutter = () => {
@@ -1033,7 +1081,10 @@ export default function TerminalCanvas({
       const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
       const entries = bufferType === "normal"
         ? visibleTerminalTimestamps(
-          timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
+          [
+            ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
+            ...(normalTimestampAnchor ? [{ line: 0, ts: normalTimestampAnchor }] : []),
+          ],
           buffer.viewportY,
           term.rows,
         )
@@ -1094,6 +1145,9 @@ export default function TerminalCanvas({
         const beforeAlternateSnapshot = beforeBufferType === "alternate"
           ? alternateTerminalScreenSnapshot(term)
           : [];
+        const trackedNormalStart = event.text && event.direction !== "outbound" && beforeBufferType === "normal"
+          ? trackTimestampLine(beforeLine, event.ts)
+          : null;
         let callbackCompleted = false;
         let writeReturned = false;
         writeTerminalEvent(term, event, () => {
@@ -1101,8 +1155,10 @@ export default function TerminalCanvas({
             const afterBuffer = term.buffer.active;
             if (afterBuffer.type === "normal") {
               const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
-              registerTimestampRange(beforeBufferType === "normal" ? beforeLine : afterLine, afterLine, event.ts);
+              if (trackedNormalStart) commitTrackedTimestamp(trackedNormalStart, afterLine);
+              else registerTimestampRange(afterLine, afterLine, event.ts);
             } else {
+              trackedNormalStart?.marker.dispose();
               const normalizedTimestamp = normalizeTerminalTimestamps([
                 { line: 0, ts: event.ts },
               ], 1)[0]?.ts ?? null;
@@ -1428,13 +1484,16 @@ export default function TerminalCanvas({
             serializedScrollback + term.rows,
           );
           const firstSerializedLine = Math.max(0, normalBuffer.length - serializedLineCount);
-          terminalStateCache.save(active.profile.id, {
+          terminalStateCache.save(stateCacheKey, {
             serialized: serialize.serialize({
               scrollback: serializedScrollback,
             }),
             cols: term.cols,
             rows: term.rows,
-            seenEventIds: [...seenEventsRef.current],
+            seenEventIds: terminalEventSnapshotIds(
+              seenEventsRef.current,
+              polledEventIdsRef.current.get(active.profile.id) ?? [],
+            ),
             mouseEncoding,
             timestamps: timestampSnapshot(firstSerializedLine),
             alternateTimestamps: term.buffer.active.type === "alternate"
@@ -1456,11 +1515,11 @@ export default function TerminalCanvas({
       webglAddon?.dispose();
       termRef.current = null;
     };
-  }, [active?.profile.id]);
+  }, [active?.profile.id, stateCacheKey, viewId]);
 
   useEffect(() => {
     setTimestampViewport(emptyTerminalTimestampViewport);
-  }, [active?.profile.id]);
+  }, [stateCacheKey]);
 
   useEffect(() => {
     refreshSemanticHighlightingRef.current();
@@ -1797,6 +1856,9 @@ export default function TerminalCanvas({
     if (!term) return;
     for (const event of events) {
       writeEventRef.current(event);
+    }
+    if (active?.profile.id) {
+      polledEventIdsRef.current.set(active.profile.id, events.map((event) => event.id));
     }
   }, [events, active?.profile.id]);
 
