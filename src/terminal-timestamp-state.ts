@@ -7,7 +7,7 @@ export interface VisibleTerminalTimestamp extends TerminalTimestampEntry {
   row: number;
 }
 
-export const MAX_TERMINAL_TIMESTAMPS = 4_000;
+export const MAX_TERMINAL_TIMESTAMPS = 10_000_000;
 const RFC3339_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i;
 
 export function normalizeTerminalTimestamps(
@@ -39,7 +39,7 @@ export function visibleTerminalTimestamps(
   const normalized = normalizeTerminalTimestamps(entries, Math.max(1, entries.length));
   if (!normalized.length) return [];
 
-  let timestampIndex = 0;
+  let timestampIndex = -1;
   while (timestampIndex + 1 < normalized.length
     && normalized[timestampIndex + 1].line <= firstLine) timestampIndex += 1;
 
@@ -48,9 +48,30 @@ export function visibleTerminalTimestamps(
     const line = firstLine + row;
     while (timestampIndex + 1 < normalized.length
       && normalized[timestampIndex + 1].line <= line) timestampIndex += 1;
-    visible.push({ line, row, ts: normalized[timestampIndex].ts });
+    if (timestampIndex >= 0) visible.push({ line, row, ts: normalized[timestampIndex].ts });
   }
   return visible;
+}
+
+export function rebaseTerminalTimestamps(
+  entries: readonly TerminalTimestampEntry[],
+  firstLine: number,
+  limit = MAX_TERMINAL_TIMESTAMPS,
+): TerminalTimestampEntry[] {
+  const offset = Math.max(0, Math.trunc(firstLine) || 0);
+  const normalized = normalizeTerminalTimestamps(entries, Math.max(1, entries.length));
+  if (!normalized.length) return [];
+  const rebased: TerminalTimestampEntry[] = [];
+  let preceding: TerminalTimestampEntry | null = null;
+  for (const entry of normalized) {
+    if (entry.line <= offset) {
+      preceding = entry;
+      continue;
+    }
+    rebased.push({ line: entry.line - offset, ts: entry.ts });
+  }
+  if (preceding) rebased.unshift({ line: 0, ts: preceding.ts });
+  return normalizeTerminalTimestamps(rebased, limit);
 }
 
 export function formatTerminalTimestampClock(value: string): string {
@@ -72,7 +93,7 @@ function normalizeTerminalTimestampValue(value: unknown): string | null {
   if (!Number.isFinite(parsed)) return null;
   const match = value.match(RFC3339_TIMESTAMP);
   const fraction = match?.[2]
-    ? match[2].padEnd(6, "0")
+    ? match[2].slice(0, 6).padEnd(6, "0")
     : new Date(parsed).toISOString().match(/\.(\d{3})Z$/)?.[1].padEnd(6, "0") ?? "000000";
   const utcSecond = new Date(Math.floor(parsed / 1_000) * 1_000).toISOString().slice(0, 19);
   return `${utcSecond}.${fraction}Z`;

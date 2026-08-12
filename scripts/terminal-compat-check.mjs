@@ -853,6 +853,21 @@ try {
   const longLogDurationMs = Date.now() - longLogStartedAt;
   assert(longLogDurationMs < 15_000,
     `${longLogLineCount}-line terminal render/search took ${longLogDurationMs} ms`);
+  const longLogTimestamps = await page.locator('[data-pane-id="pane-a"] .terminal-terminal-region').evaluate((region) => {
+    const host = region.querySelector(".terminal-host");
+    const timestamps = [...region.querySelectorAll(".terminal-timestamp-gutter time")];
+    return {
+      clocks: timestamps.map((timestamp) => timestamp.textContent ?? ""),
+      count: timestamps.length,
+      markerCount: Number(host?.dataset.terminalTimestampMarkerCount ?? "-1"),
+      rows: Number(host?.dataset.terminalTimestampRows ?? "-1"),
+    };
+  });
+  assert(longLogTimestamps.count === longLogTimestamps.rows
+    && longLogTimestamps.clocks.every((clock) => /^\d{2}:\d{2}:\d{2}\.\d{6}$/.test(clock))
+    && longLogTimestamps.markerCount > 0
+    && longLogTimestamps.markerCount < 200,
+  `long terminal output lost per-row microsecond timestamps or marker compaction: ${JSON.stringify(longLogTimestamps)}`);
 
   const activeScreen = page.locator('[data-pane-id="pane-a"] .xterm-screen');
   const selectTerminalText = async () => {

@@ -860,6 +860,13 @@ button {
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.38);
 }
 
+body[data-portmate-interaction-layer-open] .portmate-context-menu[data-interaction-layer="inactive"],
+body[data-portmate-modal-open] .menu-popover,
+body[data-portmate-modal-open] .portmate-context-menu {
+  pointer-events: none;
+  visibility: hidden;
+}
+
 .menu-popover button {
   height: 30px;
   padding: 0 12px;

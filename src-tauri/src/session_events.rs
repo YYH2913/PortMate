@@ -312,7 +312,7 @@ pub(super) fn format_text_log_event(event: &SessionEvent, text: &str) -> String 
         "[{}] [{direction}/{stream}] [session={}] [pane={}] [command={}] ",
         event
             .ts
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         text_log_field(&event.session_id),
         text_log_field(&event.pane_id),
         text_log_field(command_id),

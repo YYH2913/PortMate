@@ -82,6 +82,8 @@ export default function WorkspaceViewContextMenu({
   return (
     <div
       className="portmate-context-menu workspace-view-context-menu"
+      aria-label="视图菜单"
+      tabIndex={-1}
       style={{ left, top }}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => {

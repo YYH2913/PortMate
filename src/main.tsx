@@ -5,6 +5,7 @@ import App from "./App";
 import { parseDetachedPaneRequest } from "./detached-pane-state";
 import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
 import { parseWorkspaceWindowRequest } from "./workspace-window-route";
+import { useModalInteractionBoundary } from "./modal-interaction-boundary";
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));
@@ -17,18 +18,29 @@ if (serialAnalyzerRequest) document.body.classList.add("serial-analyzer-window")
 void loadBundledTerminalFont().finally(() => {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      {detachedPaneRequest ? (
-        <Suspense fallback={<div className="detached-pane-loading">正在加载终端...</div>}>
-          <DetachedPaneApp request={detachedPaneRequest} />
-        </Suspense>
-      ) : serialAnalyzerRequest ? (
-        <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
-          <SerialAnalyzerApp request={serialAnalyzerRequest} />
-        </Suspense>
-      ) : <App workspaceWindowId={workspaceWindowRequest?.windowId} />}
+      <PortMateRoute />
     </React.StrictMode>,
   );
 });
+
+function PortMateRoute() {
+  useModalInteractionBoundary();
+  if (detachedPaneRequest) {
+    return (
+      <Suspense fallback={<div className="detached-pane-loading">正在加载终端...</div>}>
+        <DetachedPaneApp request={detachedPaneRequest} />
+      </Suspense>
+    );
+  }
+  if (serialAnalyzerRequest) {
+    return (
+      <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
+        <SerialAnalyzerApp request={serialAnalyzerRequest} />
+      </Suspense>
+    );
+  }
+  return <App workspaceWindowId={workspaceWindowRequest?.windowId} />;
+}
 
 async function loadBundledTerminalFont() {
   try {

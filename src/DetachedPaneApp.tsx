@@ -297,22 +297,8 @@ function DetachedScreenLockOverlay({ marker, ownerWindowId }: { marker: ScreenLo
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    const overlay = overlayRef.current;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const siblings = overlay?.parentElement
-      ? [...overlay.parentElement.children].filter((element): element is HTMLElement => element instanceof HTMLElement && element !== overlay)
-      : [];
-    const previousInert = siblings.map((element) => element.inert);
-    siblings.forEach((element) => {
-      element.inert = true;
-    });
-    buttonRef.current?.focus({ preventScroll: true });
-    return () => {
-      siblings.forEach((element, index) => {
-        element.inert = previousInert[index];
-      });
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-    };
+    const frame = window.requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   async function focusOwnerWorkspace() {

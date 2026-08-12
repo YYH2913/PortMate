@@ -42,7 +42,7 @@ fn append_log_bytes_rejects_symlink_targets() {
 }
 
 #[test]
-fn text_log_events_include_millisecond_metadata_on_every_line() {
+fn text_log_events_include_microsecond_metadata_on_every_line() {
     let event = SessionEvent {
         id: "event-1".to_string(),
         session_id: "session:1".to_string(),
@@ -56,7 +56,7 @@ fn text_log_events_include_millisecond_metadata_on_every_line() {
         text: Some("first\nsecond".to_string()),
         annotations: BTreeMap::from([("commandId".to_string(), "command-1".to_string())]),
     };
-    let prefix = "[2026-07-15T12:34:56.123Z] [inbound/stderr] [session=session:1] \
+    let prefix = "[2026-07-15T12:34:56.123456Z] [inbound/stderr] [session=session:1] \
                   [pane=session:1:main] [command=command-1] ";
 
     assert_eq!(

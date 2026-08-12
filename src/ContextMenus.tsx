@@ -60,7 +60,7 @@ export function SessionContextMenu({
   const disconnectDisabled = !status || sessionConnectionAction(status) !== "disconnect";
 
   return (
-    <div className="portmate-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+    <div className="portmate-context-menu" aria-label="会话菜单" tabIndex={-1} style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <ContextSubmenu label="设置标签页颜色(C)" disabled={disabled}>
         <div className="context-color-grid">
           {colors.map((color) => (
@@ -107,7 +107,7 @@ export function TerminalContextMenu({
   const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
   const top = Math.max(8, Math.min(state.y, window.innerHeight - 460));
   return (
-    <div className="portmate-context-menu terminal-context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+    <div className="portmate-context-menu terminal-context-menu" aria-label="终端菜单" tabIndex={-1} style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <ContextMenuButton label="复制" shortcut="Ctrl+Shift+C" disabled={!state.hasSelection} onClick={() => onAction("copy")} />
       <ContextMenuButton label="粘贴" shortcut="Ctrl+V" onClick={() => onAction("paste")} />
       <ContextMenuButton label="查找" shortcut="Ctrl+Shift+F" onClick={() => onAction("find")} />

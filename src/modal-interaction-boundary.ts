@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 const MODAL_LAYER_SELECTOR = ".dialog-backdrop, .mcp-approval-backdrop, .screen-lock-overlay";
+const POPUP_LAYER_SELECTOR = ".portmate-context-menu, .menu-popover";
 const MODAL_PANEL_SELECTOR = '[role="dialog"], [role="alertdialog"], .wind-dialog, .mcp-approval-dialog';
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -10,6 +11,39 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not(:disabled)",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
+const BLOCKED_OUTSIDE_EVENTS = [
+  "keydown",
+  "keyup",
+  "keypress",
+  "beforeinput",
+  "copy",
+  "cut",
+  "paste",
+  "pointerdown",
+  "pointerup",
+  "pointermove",
+  "pointercancel",
+  "mousedown",
+  "mouseup",
+  "click",
+  "dblclick",
+  "auxclick",
+  "contextmenu",
+  "selectstart",
+  "dragstart",
+  "dragover",
+  "drop",
+  "touchstart",
+  "touchend",
+  "wheel",
+] as const;
+
+export const INTERACTION_LAYER_DISMISS_EVENT = "portmate-dismiss-interaction-layer";
+
+type InteractionLayer = {
+  element: HTMLElement;
+  modal: boolean;
+};
 
 export function activeModalLayer(root: Document = document): HTMLElement | null {
   const layers = [...root.querySelectorAll<HTMLElement>(MODAL_LAYER_SELECTOR)]
@@ -30,33 +64,75 @@ export function hasActiveModalLayer(root: Document | undefined = typeof document
   return Boolean(root && activeModalLayer(root));
 }
 
+export function activeInteractionLayer(root: Document = document): HTMLElement | null {
+  return resolveActiveInteractionLayer(root)?.element ?? null;
+}
+
+export function hasActiveInteractionLayer(root: Document | undefined = typeof document === "undefined" ? undefined : document): boolean {
+  return Boolean(root && resolveActiveInteractionLayer(root));
+}
+
 export function useModalInteractionBoundary() {
   useEffect(() => {
     let currentLayer: HTMLElement | null = null;
     let lastOutsideFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     let syncFrame: number | null = null;
+    const inertState = new Map<HTMLElement, boolean>();
 
-    const focusLayer = (layer: HTMLElement) => {
-      const panel = modalPanel(layer);
+    const restoreInertState = () => {
+      for (const [element, inert] of inertState) {
+        if (element.isConnected) element.inert = inert;
+      }
+      inertState.clear();
+    };
+
+    const isolateLayer = (layer: HTMLElement) => {
+      restoreInertState();
+      let branch: HTMLElement = layer;
+      let parent = branch.parentElement;
+      while (parent) {
+        for (const sibling of parent.children) {
+          if (!(sibling instanceof HTMLElement) || sibling === branch || sibling.contains(branch)) continue;
+          if (!inertState.has(sibling)) inertState.set(sibling, sibling.inert);
+          sibling.inert = true;
+        }
+        branch = parent;
+        parent = parent.parentElement;
+      }
+    };
+
+    const focusLayer = (layer: InteractionLayer) => {
+      const panel = interactionPanel(layer);
       if (!panel) return;
-      if (!panel.hasAttribute("role")) panel.setAttribute("role", "dialog");
-      panel.setAttribute("aria-modal", "true");
+      if (!panel.hasAttribute("role")) panel.setAttribute("role", layer.modal ? "dialog" : "menu");
+      if (layer.modal) panel.setAttribute("aria-modal", "true");
       if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
-      panel.focus({ preventScroll: true });
+      const firstControl = !layer.modal ? interactionFocusableElements(panel)[0] : null;
+      (firstControl ?? panel).focus({ preventScroll: true });
     };
 
     const syncLayer = () => {
       syncFrame = null;
-      const nextLayer = activeModalLayer();
-      document.body.toggleAttribute("data-portmate-modal-open", Boolean(nextLayer));
+      const next = resolveActiveInteractionLayer(document);
+      const nextLayer = next?.element ?? null;
+      document.body.toggleAttribute("data-portmate-modal-open", Boolean(next?.modal));
+      document.body.toggleAttribute("data-portmate-interaction-layer-open", Boolean(next));
       for (const layer of document.querySelectorAll<HTMLElement>(MODAL_LAYER_SELECTOR)) {
         layer.dataset.modalLayer = layer === nextLayer ? "active" : "inactive";
       }
-      if (nextLayer) {
-        clearSelectionOutside(nextLayer);
-        if (!nextLayer.contains(document.activeElement)) focusLayer(nextLayer);
+      for (const layer of document.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)) {
+        layer.dataset.interactionLayer = layer === nextLayer ? "active" : "inactive";
+      }
+      if (next && nextLayer) {
+        if (next.modal) isolateLayer(nextLayer);
+        else restoreInertState();
+        if (next.modal) clearSelectionOutside(nextLayer);
+        if (!nextLayer.contains(document.activeElement)) focusLayer(next);
       } else if (currentLayer && lastOutsideFocus?.isConnected) {
+        restoreInertState();
         lastOutsideFocus.focus({ preventScroll: true });
+      } else {
+        restoreInertState();
       }
       currentLayer = nextLayer;
     };
@@ -66,21 +142,53 @@ export function useModalInteractionBoundary() {
       syncFrame = window.requestAnimationFrame(syncLayer);
     };
 
+    const dismissPopup = (layer: InteractionLayer) => {
+      if (!layer.modal) window.dispatchEvent(new Event(INTERACTION_LAYER_DISMISS_EVENT));
+    };
+
     const blockOutsideLayer = (event: Event): boolean => {
-      const layer = activeModalLayer();
-      if (!layer || eventTargetInside(layer, event.target)) return false;
+      const layer = resolveActiveInteractionLayer(document);
+      if (!layer || eventTargetInside(layer.element, event.target)) return false;
+      if (!layer.modal && event.type === "wheel") {
+        dismissPopup(layer);
+        return false;
+      }
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
-      focusLayer(layer);
+      if (["click", "contextmenu", "wheel"].includes(event.type)) {
+        dismissPopup(layer);
+      } else {
+        focusLayer(layer);
+      }
       return true;
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (blockOutsideLayer(event)) return;
-      const layer = activeModalLayer();
-      if (!layer || event.key !== "Tab") return;
-      const panel = modalPanel(layer);
-      const controls = panel ? modalFocusableElements(panel) : [];
+      const layer = resolveActiveInteractionLayer(document);
+      if (!layer) return;
+      if (!layer.modal && event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        dismissPopup(layer);
+        return;
+      }
+      const panel = interactionPanel(layer);
+      const controls = panel ? interactionFocusableElements(panel) : [];
+      if (!layer.modal && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!controls.length) return;
+        const currentIndex = controls.indexOf(document.activeElement as HTMLElement);
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? controls.length - 1
+            : (Math.max(0, currentIndex) + (event.key === "ArrowDown" ? 1 : -1) + controls.length) % controls.length;
+        controls[nextIndex].focus({ preventScroll: true });
+        return;
+      }
+      if (event.key !== "Tab") return;
       if (!controls.length) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -97,17 +205,22 @@ export function useModalInteractionBoundary() {
     };
 
     const handleFocusIn = (event: FocusEvent) => {
-      const layer = activeModalLayer();
+      const layer = resolveActiveInteractionLayer(document);
       if (!layer) {
         if (event.target instanceof HTMLElement) lastOutsideFocus = event.target;
         return;
       }
-      if (!eventTargetInside(layer, event.target)) focusLayer(layer);
+      if (!eventTargetInside(layer.element, event.target)) focusLayer(layer);
     };
 
     const handleSelectionChange = () => {
-      const layer = activeModalLayer();
-      if (layer) clearSelectionOutside(layer);
+      const layer = resolveActiveInteractionLayer(document);
+      if (layer?.modal) clearSelectionOutside(layer.element);
+    };
+
+    const handleCapturedEvent = (event: Event) => {
+      if (event.type === "keydown" && event instanceof KeyboardEvent) handleKeyDown(event);
+      else blockOutsideLayer(event);
     };
 
     const observer = new MutationObserver(scheduleSync);
@@ -117,27 +230,38 @@ export function useModalInteractionBoundary() {
       attributes: true,
       attributeFilter: ["class", "hidden", "style", "aria-hidden"],
     });
-    window.addEventListener("keydown", handleKeyDown, true);
-    window.addEventListener("pointerdown", blockOutsideLayer, true);
-    window.addEventListener("mousedown", blockOutsideLayer, true);
-    window.addEventListener("click", blockOutsideLayer, true);
-    window.addEventListener("selectstart", blockOutsideLayer, true);
+    const captureOptions: AddEventListenerOptions = {
+      capture: true,
+      passive: false,
+    };
+    for (const eventName of BLOCKED_OUTSIDE_EVENTS) {
+      window.addEventListener(eventName, handleCapturedEvent, captureOptions);
+    }
     document.addEventListener("focusin", handleFocusIn, true);
     document.addEventListener("selectionchange", handleSelectionChange);
     scheduleSync();
     return () => {
       observer.disconnect();
       if (syncFrame !== null) window.cancelAnimationFrame(syncFrame);
-      window.removeEventListener("keydown", handleKeyDown, true);
-      window.removeEventListener("pointerdown", blockOutsideLayer, true);
-      window.removeEventListener("mousedown", blockOutsideLayer, true);
-      window.removeEventListener("click", blockOutsideLayer, true);
-      window.removeEventListener("selectstart", blockOutsideLayer, true);
+      for (const eventName of BLOCKED_OUTSIDE_EVENTS) {
+        window.removeEventListener(eventName, handleCapturedEvent, true);
+      }
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("selectionchange", handleSelectionChange);
+      restoreInertState();
       document.body.removeAttribute("data-portmate-modal-open");
+      document.body.removeAttribute("data-portmate-interaction-layer-open");
     };
   }, []);
+}
+
+function resolveActiveInteractionLayer(root: Document): InteractionLayer | null {
+  const modal = activeModalLayer(root);
+  if (modal) return { element: modal, modal: true };
+  const popups = [...root.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)]
+    .filter((layer) => modalLayerVisible(layer));
+  if (!popups.length) return null;
+  return { element: popups.at(-1)!, modal: false };
 }
 
 function modalLayerVisible(layer: HTMLElement): boolean {
@@ -151,13 +275,14 @@ function modalLayerZIndex(layer: HTMLElement): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function modalPanel(layer: HTMLElement): HTMLElement | null {
-  return layer.matches(MODAL_PANEL_SELECTOR)
-    ? layer
-    : layer.querySelector<HTMLElement>(MODAL_PANEL_SELECTOR);
+function interactionPanel(layer: InteractionLayer): HTMLElement | null {
+  if (!layer.modal) return layer.element;
+  return layer.element.matches(MODAL_PANEL_SELECTOR)
+    ? layer.element
+    : layer.element.querySelector<HTMLElement>(MODAL_PANEL_SELECTOR);
 }
 
-function modalFocusableElements(panel: HTMLElement): HTMLElement[] {
+function interactionFocusableElements(panel: HTMLElement): HTMLElement[] {
   return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((element) => {
     if (element.hidden || element.closest("[hidden], [inert], [aria-hidden=\"true\"]")) return false;
     const style = window.getComputedStyle(element);

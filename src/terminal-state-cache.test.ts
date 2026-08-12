@@ -59,7 +59,7 @@ describe("terminal state cache", () => {
     expect(cache.get("a")?.timestamps).toEqual([
       { line: 7, ts: "2026-08-09T01:02:03.000000Z" },
     ]);
-    expect(cache.get("a")?.alternateTimestamp).toBe("2026-08-09T01:02:06.123456789Z");
+    expect(cache.get("a")?.alternateTimestamp).toBe("2026-08-09T01:02:06.123456Z");
   });
 
   it("retains an empty serialized screen with its dimensions", () => {

@@ -1226,6 +1226,17 @@ try {
   await page.locator('.workspace-pane-tab[data-view-id="view-edge"]').click({ button: "right" });
   const workspaceViewMenu = page.locator(".workspace-view-context-menu");
   await workspaceViewMenu.waitFor();
+  const focusModeButton = page.locator('[aria-label="进入专注模式"], [aria-label="退出专注模式"]');
+  const focusModeBeforeMenuShortcut = await focusModeButton.getAttribute("aria-pressed");
+  await page.keyboard.press("Alt+Enter");
+  assert(await focusModeButton.getAttribute("aria-pressed") === focusModeBeforeMenuShortcut
+    && await workspaceViewMenu.count() === 1,
+  "a workspace shortcut crossed the view context-menu layer");
+  await page.keyboard.press("Escape");
+  await workspaceViewMenu.waitFor({ state: "detached" });
+
+  await page.locator('.workspace-pane-tab[data-view-id="view-edge"]').click({ button: "right" });
+  await workspaceViewMenu.waitFor();
   assert(await workspaceViewMenu.getByRole("button", { name: "移到新窗口", exact: true }).isDisabled()
     && await workspaceViewMenu.getByRole("button", { name: "关闭窗格", exact: true }).isDisabled()
     && await workspaceViewMenu.getByRole("button", { name: "移到新分组", exact: true }).isDisabled()
@@ -1235,8 +1246,11 @@ try {
   "relocated single-pane actions do not preserve their disabled state");
   assert(await workspaceViewMenu.getByRole("button", { name: "复制视图", exact: true }).isEnabled(),
     "relocated duplicate-view action is unavailable");
-  await page.locator(".center-workspace").click({ position: { x: 400, y: 160 } });
+  const focusModeBeforeOutsideClick = await focusModeButton.getAttribute("aria-pressed");
+  await focusModeButton.click();
   await workspaceViewMenu.waitFor({ state: "detached" });
+  assert(await focusModeButton.getAttribute("aria-pressed") === focusModeBeforeOutsideClick,
+    "the click that dismissed a context menu also activated the underlying control");
 
   const edgeTabLabel = page.locator('.workspace-pane-tab[data-view-id="view-edge"] .workspace-pane-tab-label');
   await edgeTabLabel.dispatchEvent("auxclick", { button: 1 });
@@ -2512,7 +2526,8 @@ Host staging
   await page.waitForFunction(() => Boolean(document.activeElement?.closest(".search-dialog")));
   const modalBoundaryResult = await page.evaluate(() => {
     const terminalInput = document.querySelector(".terminal-pane.active .xterm-helper-textarea");
-    const inactiveHeader = document.querySelector(".terminal-pane:not(.active) header");
+    const backgroundTarget = terminalInput;
+    const backgroundInert = Boolean(terminalInput?.closest("[inert]"));
     terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
       cancelable: true,
@@ -2528,28 +2543,43 @@ Host staging
       ctrlKey: true,
       shiftKey: true,
     }));
-    inactiveHeader?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
-    inactiveHeader?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    backgroundTarget?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    backgroundTarget?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    const blockedPointerEvents = Object.fromEntries([
+      ["mouseup", new MouseEvent("mouseup", { bubbles: true, cancelable: true })],
+      ["auxclick", new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 })],
+      ["contextmenu", new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })],
+      ["wheel", new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 })],
+    ].map(([name, event]) => {
+      backgroundTarget?.dispatchEvent(event);
+      return [name, event.defaultPrevented];
+    }));
     const selectionEvent = new Event("selectstart", { bubbles: true, cancelable: true });
     terminalInput?.dispatchEvent(selectionEvent);
     (terminalInput instanceof HTMLElement ? terminalInput : null)?.focus();
     return {
       activePaneId: document.querySelector(".terminal-pane.active")?.getAttribute("data-pane-id"),
+      backgroundInert,
       focusMode: document.querySelector('[aria-label="进入专注模式"], [aria-label="退出专注模式"]')?.getAttribute("aria-pressed"),
       focusInsideModal: Boolean(document.activeElement?.closest(".search-dialog")),
+      blockedPointerEvents,
       selectionBlocked: selectionEvent.defaultPrevented,
       sendTextCalls: window.__invokeCalls.filter((call) => call.command === "send_text").length,
     };
   });
   assert(modalBoundaryResult.activePaneId === modalBoundaryBaseline.activePaneId
+    && modalBoundaryResult.backgroundInert
     && modalBoundaryResult.focusMode === modalBoundaryBaseline.focusMode
     && modalBoundaryResult.focusInsideModal
+    && Object.values(modalBoundaryResult.blockedPointerEvents).every(Boolean)
     && modalBoundaryResult.selectionBlocked
     && modalBoundaryResult.sendTextCalls === modalBoundaryBaseline.sendTextCalls,
   `modal interaction leaked into the terminal workspace: ${JSON.stringify({ modalBoundaryBaseline, modalBoundaryResult })}`);
   await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).press("Escape");
   await page.locator(".search-dialog").waitFor({ state: "detached" });
   await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
+  assert(!await page.evaluate(() => Boolean(document.querySelector(".wind-root > [inert]"))),
+    "closing a modal left the workspace inert");
 
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   await page.locator(".search-dialog").waitFor();

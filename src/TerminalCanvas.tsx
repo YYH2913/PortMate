@@ -60,6 +60,7 @@ import {
   MAX_TERMINAL_TIMESTAMPS,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
+  rebaseTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
@@ -876,6 +877,10 @@ export default function TerminalCanvas({
     });
     let terminalDisposed = false;
     let timestampFrame: number | null = null;
+    const timestampMarkerLimit = Math.min(
+      MAX_TERMINAL_TIMESTAMPS,
+      terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
+    );
     let timestampMarkers: TerminalTimestampMarker[] = [];
     let alternateTimestamp: string | null = cachedState?.alternateTimestamp ?? null;
     let pendingRestoredTimestamps = normalizeTerminalTimestamps(cachedState?.timestamps);
@@ -884,7 +889,7 @@ export default function TerminalCanvas({
 
     const compactTimestampMarkers = () => {
       timestampMarkers = timestampMarkers.filter((entry) => !entry.marker.isDisposed && entry.marker.line >= 0);
-      while (timestampMarkers.length > MAX_TERMINAL_TIMESTAMPS) {
+      while (timestampMarkers.length > timestampMarkerLimit) {
         timestampMarkers.shift()?.marker.dispose();
       }
     };
@@ -907,8 +912,8 @@ export default function TerminalCanvas({
     };
     const registerTimestampRange = (startLine: number, endLine: number, ts: string) => {
       const lastLine = Math.max(0, Math.max(startLine, endLine));
-      const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - MAX_TERMINAL_TIMESTAMPS + 1);
-      for (let line = firstLine; line <= lastLine; line += 1) registerTimestampLine(line, ts);
+      const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - timestampMarkerLimit + 1);
+      registerTimestampLine(firstLine, ts);
     };
     const restoreTimestampMarkers = () => {
       if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
@@ -918,13 +923,10 @@ export default function TerminalCanvas({
     };
     const timestampSnapshot = (firstSerializedLine: number): TerminalTimestampEntry[] => {
       compactTimestampMarkers();
-      return normalizeTerminalTimestamps([
+      return rebaseTerminalTimestamps([
         ...pendingRestoredTimestamps,
         ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
-      ].filter((entry) => entry.line >= firstSerializedLine).map((entry) => ({
-        line: entry.line - firstSerializedLine,
-        ts: entry.ts,
-      })));
+      ], firstSerializedLine);
     };
     const renderTimestampGutter = () => {
       timestampFrame = null;
@@ -949,6 +951,7 @@ export default function TerminalCanvas({
           : [];
       host.dataset.terminalTimestampBuffer = bufferType;
       host.dataset.terminalTimestampCount = String(entries.length);
+      host.dataset.terminalTimestampMarkerCount = String(timestampMarkers.length);
       host.dataset.terminalTimestampRows = String(term.rows);
       if (!region || !screen || cellHeight <= 0) return;
       const next: TerminalTimestampViewport = { bufferType, screenTop, cellHeight, entries };
@@ -970,6 +973,9 @@ export default function TerminalCanvas({
       });
     }
     term.open(host);
+    if (!cachedState) {
+      registerTimestampRange(0, term.buffer.normal.baseY + term.buffer.normal.cursorY, new Date().toISOString());
+    }
     host.dataset.terminalBuffer = terminalBufferType(term);
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
