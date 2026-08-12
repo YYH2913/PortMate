@@ -1001,7 +1001,8 @@ body[data-portmate-modal-open] .portmate-context-menu {
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.45);
 }
 
-.context-submenu:hover > .context-submenu-panel {
+.context-submenu:hover > .context-submenu-panel,
+.context-submenu:focus-within > .context-submenu-panel {
   display: grid;
 }
 

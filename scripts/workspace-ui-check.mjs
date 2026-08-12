@@ -1263,6 +1263,55 @@ try {
   assert(await focusModeButton.getAttribute("aria-pressed") === focusModeBeforeOutsideClick,
     "the click that dismissed a context menu also activated the underlying control");
 
+  await page.locator('.workspace-pane-tab[data-view-id="view-edge"]').click({ button: "right" });
+  await workspaceViewMenu.waitFor();
+  const popupSelectionBoundary = await page.evaluate(() => {
+    const menu = document.querySelector(".workspace-view-context-menu");
+    const background = document.querySelector(".workspace-pane-tab-label span:last-child")?.firstChild;
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    if (menu && background) {
+      const range = document.createRange();
+      range.selectNodeContents(background);
+      selection?.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+    return {
+      selection: selection?.toString() ?? "",
+      focusInsidePopup: Boolean(document.activeElement?.closest(".workspace-view-context-menu")),
+    };
+  });
+  assert(popupSelectionBoundary.selection === "" && popupSelectionBoundary.focusInsidePopup,
+    `a browser selection crossed the context-menu layer: ${JSON.stringify(popupSelectionBoundary)}`);
+  await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-mcp-approval") || []).length > 0);
+  const popupTakeoverApprovalId = await page.evaluate(() => {
+    const now = Date.now();
+    const approval = {
+      id: "33333333-3333-4333-8333-333333333333",
+      clientId: "popup-takeover-check",
+      action: "run_command",
+      sessionId: "edge-router",
+      scope: "write-input",
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+    };
+    window.__emitTauriEvent("portmate-mcp-approval", approval);
+    return approval.id;
+  });
+  const popupTakeoverApproval = page.getByRole("alertdialog", { name: "MCP 写操作审批", exact: true });
+  await popupTakeoverApproval.waitFor();
+  await workspaceViewMenu.waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
+  await popupTakeoverApproval.waitFor({ state: "detached" });
+  assert(await workspaceViewMenu.count() === 0,
+    "a context menu resurfaced after a higher modal closed");
+  assert(await page.evaluate((approvalId) => window.__invokeCalls.some((call) => (
+    call.command === "respond_mcp_approval"
+      && call.args.approvalId === approvalId
+      && call.args.approved === false
+  )), popupTakeoverApprovalId),
+  "the popup takeover approval did not close through its modal boundary");
+
   const edgeTabLabel = page.locator('.workspace-pane-tab[data-view-id="view-edge"] .workspace-pane-tab-label');
   await edgeTabLabel.dispatchEvent("auxclick", { button: 1 });
   const middleClickRename = page.locator(".workspace-view-rename-dialog");
@@ -2701,6 +2750,77 @@ Host staging
   assert(await page.locator(".terminal-pane .workspace-pane-tab", { hasText: "Edge" }).count() === 1
     && await page.locator(".terminal-pane .workspace-pane-tab", { hasText: "Bench UART" }).count() === 1,
   "view edge drop did not create one pane per terminal view");
+  const activePaneBeforeSwitch = page.locator(".terminal-pane.active");
+  const activeCanvasBeforeSwitch = activePaneBeforeSwitch.locator(".terminal-canvas");
+  const activeSelectionTarget = {
+    sessionId: await activeCanvasBeforeSwitch.getAttribute("data-terminal-session-id"),
+    viewId: await activeCanvasBeforeSwitch.getAttribute("data-terminal-view-id"),
+  };
+  assert(activeSelectionTarget.sessionId && activeSelectionTarget.viewId,
+    `active pane did not expose its terminal identity: ${JSON.stringify(activeSelectionTarget)}`);
+  const activeSelectionResult = await page.evaluate(({ sessionId, viewId }) => new Promise((resolve) => {
+    window.dispatchEvent(new CustomEvent("portmate-terminal-selection", {
+      detail: { sessionId, viewId, action: "select-all", respond: resolve },
+    }));
+  }), activeSelectionTarget);
+  assert(activeSelectionResult?.ok, `active pane could not establish a local selection: ${JSON.stringify(activeSelectionResult)}`);
+  const previousActivePaneId = await activePaneBeforeSwitch.getAttribute("data-pane-id");
+  const nextPane = page.locator(".terminal-pane:not(.active)");
+  const nextPaneId = await nextPane.getAttribute("data-pane-id");
+  const nextPaneHostBounds = await nextPane.locator(".terminal-host").boundingBox();
+  assert(nextPaneHostBounds, "inactive pane terminal geometry is unavailable");
+  await page.mouse.click(nextPaneHostBounds.x + 40, nextPaneHostBounds.y + 40);
+  await page.waitForFunction((paneId) => document.querySelector(".terminal-pane.active")?.getAttribute("data-pane-id") === paneId, nextPaneId);
+  const paneInteractionBoundary = await page.evaluate(async (oldPaneId) => {
+    const activePane = document.querySelector(".terminal-pane.active");
+    const inactivePane = [...document.querySelectorAll(".terminal-pane")]
+      .find((pane) => pane.getAttribute("data-pane-id") === oldPaneId);
+    const activeCanvas = activePane?.querySelector(".terminal-canvas");
+    const inactiveCanvas = inactivePane?.querySelector(".terminal-canvas");
+    const inactiveInput = inactivePane?.querySelector(".xterm-helper-textarea");
+    const sendCallsBefore = window.__invokeCalls.filter((call) => call.command === "send_text").length;
+    inactiveInput?.focus();
+    inactiveInput?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "x",
+      code: "KeyX",
+    }));
+    inactiveInput?.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      data: "inactive-pane-probe",
+      inputType: "insertText",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const staleSelection = inactivePane?.querySelector(".terminal-host")?.getAttribute("data-terminal-has-selection");
+    activePane?.querySelector(".xterm-helper-textarea")?.focus();
+    const activeText = activePane?.querySelector(".workspace-pane-tab-label span:last-child")?.firstChild;
+    const inactiveText = inactivePane?.querySelector(".workspace-pane-tab-label span:last-child")?.firstChild;
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    if (activeText && inactiveText && selection) {
+      selection.setBaseAndExtent(activeText, 0, inactiveText, inactiveText.textContent?.length ?? 0);
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+    return {
+      activeCanvasFocused: activeCanvas?.getAttribute("data-terminal-focused"),
+      inactiveCanvasFocused: inactiveCanvas?.getAttribute("data-terminal-focused"),
+      inactiveCanvasInert: inactiveCanvas?.hasAttribute("inert"),
+      inactiveReceivedFocus: document.activeElement === inactiveInput,
+      staleSelection,
+      selectionAfterCrossPaneDrag: selection?.toString() ?? "",
+      sendTextCalls: window.__invokeCalls.filter((call) => call.command === "send_text").length - sendCallsBefore,
+    };
+  }, previousActivePaneId);
+  assert(paneInteractionBoundary.activeCanvasFocused === "true"
+    && paneInteractionBoundary.inactiveCanvasFocused === "false"
+    && paneInteractionBoundary.inactiveCanvasInert
+    && !paneInteractionBoundary.inactiveReceivedFocus
+    && paneInteractionBoundary.staleSelection !== "true"
+    && paneInteractionBoundary.selectionAfterCrossPaneDrag === ""
+    && paneInteractionBoundary.sendTextCalls === 0,
+  `interaction crossed active/inactive pane boundaries: ${JSON.stringify(paneInteractionBoundary)}`);
   await page.screenshot({ path: `${screenshotPrefix}-view-split-drop.png`, fullPage: true });
 
   const benchPane = page.locator(".terminal-pane", { has: page.locator(".workspace-pane-tab", { hasText: "Bench UART" }) });
@@ -3418,6 +3538,79 @@ Host staging
   }));
   assert(JSON.stringify(detachedCountsAfterFailure) === JSON.stringify(detachedStableCounts),
     `detached terminal cleared valid state after a polling failure: ${JSON.stringify({ detachedStableCounts, detachedCountsAfterFailure })}`);
+  const detachedTerminalCanvas = detachedPage.locator(".detached-pane-terminal .terminal-canvas");
+  const detachedSelectionTarget = {
+    sessionId: await detachedTerminalCanvas.getAttribute("data-terminal-session-id"),
+    viewId: await detachedTerminalCanvas.getAttribute("data-terminal-view-id"),
+  };
+  assert(detachedSelectionTarget.sessionId && detachedSelectionTarget.viewId,
+    `detached terminal did not expose its interaction identity: ${JSON.stringify(detachedSelectionTarget)}`);
+  const detachedSelectionResult = await detachedPage.evaluate(({ sessionId, viewId }) => new Promise((resolve) => {
+    window.dispatchEvent(new CustomEvent("portmate-terminal-selection", {
+      detail: { sessionId, viewId, action: "select-all", respond: resolve },
+    }));
+  }), detachedSelectionTarget);
+  assert(detachedSelectionResult?.ok, `detached terminal could not establish a selection: ${JSON.stringify(detachedSelectionResult)}`);
+  const detachedInputBeforeLock = await detachedPage.evaluate(() => window.__invokeCalls.filter((call) => call.command === "send_text").length);
+  await detachedPage.evaluate(() => {
+    const marker = { version: 1, reason: "manual", lockedAt: Date.now() };
+    localStorage.setItem("portmate.screenLock.v1", JSON.stringify(marker));
+    window.dispatchEvent(new StorageEvent("storage", {
+      key: "portmate.screenLock.v1",
+      newValue: JSON.stringify(marker),
+      storageArea: localStorage,
+    }));
+  });
+  const detachedLockOverlay = detachedPage.locator(".screen-lock-overlay");
+  await detachedLockOverlay.waitFor();
+  await detachedPage.waitForFunction(() => document.activeElement?.closest(".screen-lock-overlay"));
+  const detachedLockBoundary = await detachedPage.evaluate(async () => {
+    const terminalInput = document.querySelector(".detached-pane-terminal .xterm-helper-textarea");
+    const terminalHost = document.querySelector(".detached-pane-terminal .terminal-host");
+    const rootInert = Boolean(terminalInput?.closest("[inert]"));
+    terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "x",
+      code: "KeyX",
+    }));
+    const inputEvent = new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      data: "locked-detached-probe",
+      inputType: "insertText",
+    });
+    terminalInput?.dispatchEvent(inputEvent);
+    const pointerEvent = new PointerEvent("pointerdown", { bubbles: true, cancelable: true });
+    terminalInput?.dispatchEvent(pointerEvent);
+    const wheelEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 });
+    terminalInput?.dispatchEvent(wheelEvent);
+    terminalInput?.focus();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return {
+      rootInert,
+      focusInsideLock: Boolean(document.activeElement?.closest(".screen-lock-overlay")),
+      inputBlocked: inputEvent.defaultPrevented,
+      pointerBlocked: pointerEvent.defaultPrevented,
+      wheelBlocked: wheelEvent.defaultPrevented,
+      hasSelection: terminalHost?.getAttribute("data-terminal-has-selection"),
+    };
+  });
+  const detachedInputAfterLock = await detachedPage.evaluate(() => window.__invokeCalls.filter((call) => call.command === "send_text").length);
+  assert(detachedLockBoundary.rootInert
+    && detachedLockBoundary.focusInsideLock
+    && detachedLockBoundary.inputBlocked
+    && detachedLockBoundary.pointerBlocked
+    && detachedLockBoundary.wheelBlocked
+    && detachedLockBoundary.hasSelection !== "true"
+    && detachedInputAfterLock === detachedInputBeforeLock,
+  `interaction crossed the detached-window lock layer: ${JSON.stringify({
+    boundary: detachedLockBoundary,
+    before: detachedInputBeforeLock,
+    after: detachedInputAfterLock,
+  })}`);
+  await detachedPage.evaluate(() => localStorage.removeItem("portmate.screenLock.v1"));
+  await detachedLockOverlay.waitFor({ state: "detached" });
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
   await detachedPage.close();
 
@@ -3837,9 +4030,10 @@ Host staging
   await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
   await page.keyboard.press("Escape");
   await approvalDialog.waitFor({ state: "detached" });
-  const approvalCalls = await page.evaluate(() => window.__invokeCalls
+  const approvalCalls = await page.evaluate((expectedIds) => window.__invokeCalls
     .filter((call) => call.command === "respond_mcp_approval")
-    .map((call) => call.args));
+    .map((call) => call.args)
+    .filter((args) => expectedIds.includes(args.approvalId)), approvalIds);
   assert(JSON.stringify(approvalCalls) === JSON.stringify([
     { approvalId: approvalIds[0], approved: true },
     { approvalId: approvalIds[1], approved: false },

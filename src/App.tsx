@@ -5085,6 +5085,8 @@ function TerminalCanvas(props: TerminalCanvasProps) {
 function isWorkspaceHotkeyTarget(target: EventTarget | null) {
   if (hasActiveInteractionLayer()) return false;
   const element = target instanceof Element ? target : document.activeElement;
+  const pane = element?.closest(".terminal-pane");
+  if (pane && !pane.classList.contains("active")) return false;
   if (element?.closest(".terminal-search-bar, .terminal-goto-line, .terminal-free-input, .terminal-one-key-completion")) return false;
   return Boolean(element?.closest(".terminal-host, .terminal-pane-grid"));
 }

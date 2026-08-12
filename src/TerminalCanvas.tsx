@@ -56,6 +56,8 @@ import {
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
 import { rememberTerminalEventId, settleTerminalEventId, terminalStateCache } from "./terminal-state-cache";
+import { MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
+import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
   MAX_TERMINAL_TIMESTAMPS,
   changedAlternateTerminalRows,
@@ -499,8 +501,30 @@ export default function TerminalCanvas({
   completionSuggestionsRef.current = completionCandidates;
   completionSelectionRef.current = activeCompletionIndex;
   const freeInputOpen = freeInputSource !== null;
+  const focusTerminalSurface = () => {
+    if (!focusedRef.current) return;
+    const gotoLineInput = gotoLineInputRef.current;
+    if (gotoLineInput?.isConnected) {
+      gotoLineInput.focus({ preventScroll: true });
+      return;
+    }
+    const freeInput = freeInputRef.current;
+    if (freeInput?.isConnected) {
+      freeInput.focus({ preventScroll: true });
+      return;
+    }
+    const searchInput = searchInputRef.current;
+    if (searchInput?.isConnected) {
+      searchInput.focus({ preventScroll: true });
+      return;
+    }
+    if (displayModeRef.current !== "hex") termRef.current?.focus();
+  };
+  const scheduleTerminalSurfaceFocus = () => {
+    window.requestAnimationFrame(focusTerminalSurface);
+  };
   openSearchRef.current = () => {
-    if (displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex") return;
     closeTerminalGotoLine(true, false);
     setFreeInputSource(null);
     setFreeInputValue("");
@@ -509,12 +533,13 @@ export default function TerminalCanvas({
     setSearchInvalid(false);
     setSearchOpen(true);
     window.requestAnimationFrame(() => {
+      if (!focusedRef.current) return;
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     });
   };
   openFreeInputRef.current = () => {
-    if (displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex") return;
     closeTerminalGotoLine(true, false);
     dismissOneKeyPrompt();
     searchRef.current?.clearDecorations();
@@ -523,14 +548,14 @@ export default function TerminalCanvas({
     setSearchInvalid(false);
     if (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource) setFreeInputValue("");
     setFreeInputSource("manual");
-    window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+    scheduleTerminalSurfaceFocus();
   };
   openGotoLineRef.current = () => {
-    if (displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex") return;
     const term = termRef.current;
     if (!term) return;
     if (gotoLineContext) {
-      window.requestAnimationFrame(() => gotoLineInputRef.current?.focus({ preventScroll: true }));
+      scheduleTerminalSurfaceFocus();
       return;
     }
     searchRef.current?.clearDecorations();
@@ -551,7 +576,7 @@ export default function TerminalCanvas({
       resumeFreeInputSource: freeInputSource,
       resumeFreeInputValue: freeInputValue,
     });
-    window.requestAnimationFrame(() => gotoLineInputRef.current?.focus({ preventScroll: true }));
+    scheduleTerminalSurfaceFocus();
   };
   runSearchRef.current = (direction) => runTerminalSearch(direction);
 
@@ -593,7 +618,7 @@ export default function TerminalCanvas({
       inputFlushTimerRef.current = null;
     }
     flushInputRef.current();
-    window.requestAnimationFrame(() => termRef.current?.focus());
+    scheduleTerminalSurfaceFocus();
   };
   dismissCompletionRef.current = () => {
     setCompletionDismissedLine(completionInputRef.current.line);
@@ -731,10 +756,10 @@ export default function TerminalCanvas({
       setFreeInputSource(resumeFreeInputSource);
       setFreeInputValue(resumeFreeInputValue);
       if (focusTerminal) {
-        window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+        scheduleTerminalSurfaceFocus();
       }
     } else if (focusTerminal) {
-      window.requestAnimationFrame(() => termRef.current?.focus());
+      scheduleTerminalSurfaceFocus();
     }
   }
 
@@ -752,7 +777,7 @@ export default function TerminalCanvas({
       keyModeRef.current = "remote";
       onKeyModeChangeRef.current("remote");
     }
-    window.requestAnimationFrame(() => termRef.current?.focus());
+    scheduleTerminalSurfaceFocus();
   }
 
   function submitTerminalFreeInput() {
@@ -834,6 +859,10 @@ export default function TerminalCanvas({
     term.loadAddon(new ClipboardAddon(undefined, createWriteOnlyClipboardProvider(navigator.clipboard)));
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (!focusedRef.current) {
+        event.preventDefault();
+        return false;
+      }
       const mode = keyModeRef.current;
       const selectionAction = terminalSelectionShortcut(event, mode);
       if (selectionAction) {
@@ -852,7 +881,9 @@ export default function TerminalCanvas({
         event.preventDefault();
         if (!event.repeat) {
           const resolution = resolveTerminalBufferAction(bufferAction, terminalBufferType(term));
-          if (resolution.ok) term.write(resolution.sequence, () => term.focus());
+          if (resolution.ok) term.write(resolution.sequence, () => {
+            if (focusedRef.current) term.focus();
+          });
         }
         return false;
       }
@@ -1276,7 +1307,7 @@ export default function TerminalCanvas({
     };
     flushInputRef.current = flushInput;
     const inputDisposable = term.onData((text) => {
-      if (keyModeRef.current !== "remote") return;
+      if (!focusedRef.current || keyModeRef.current !== "remote") return;
       if (isTerminalMouseReport(text)
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
       updateCompletionInput(text);
@@ -1295,6 +1326,7 @@ export default function TerminalCanvas({
     });
     const selectionDisposable = term.onSelectionChange(() => {
       host.dataset.terminalHasSelection = term.hasSelection() ? "true" : "false";
+      if (!focusedRef.current) return;
       if (keyModeRef.current !== "remote") return;
       if (!copyOnSelectRef.current) return;
       const selected = term.getSelection();
@@ -1304,7 +1336,7 @@ export default function TerminalCanvas({
     });
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
-      if (keyModeRef.current !== "remote") return;
+      if (!focusedRef.current || keyModeRef.current !== "remote") return;
       void navigator.clipboard?.readText().then((text) => {
         if (text) {
           resetCompletionInput(false);
@@ -1497,6 +1529,19 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
+    const clearSelectionBehindModal = (event: Event) => {
+      const layer = (event as CustomEvent<ModalLayerActivatedDetail>).detail?.layer;
+      const host = hostRef.current;
+      if (!layer || !host || layer.contains(host)) return;
+      termRef.current?.clearSelection();
+      localNavigationRef.current = null;
+      clearDocumentSelectionWithin(host.closest(".terminal-canvas"));
+    };
+    window.addEventListener(MODAL_LAYER_ACTIVATED_EVENT, clearSelectionBehindModal);
+    return () => window.removeEventListener(MODAL_LAYER_ACTIVATED_EVENT, clearSelectionBehindModal);
+  }, []);
+
+  useEffect(() => {
     const requestGotoLine = () => {
       if (active && focused) openGotoLineRef.current();
     };
@@ -1577,7 +1622,7 @@ export default function TerminalCanvas({
         return;
       }
       term.write(resolution.sequence, () => {
-        term.focus();
+        if (focusedRef.current) term.focus();
         detail.respond({
           ok: true,
           payload: { sessionId: active.profile.id, viewId, action, bufferType },
@@ -1617,7 +1662,7 @@ export default function TerminalCanvas({
       }
       if (action === "select-all") term.selectAll();
       else term.clearSelection();
-      term.focus();
+      if (focusedRef.current) term.focus();
       detail.respond({
         ok: true,
         payload: { sessionId: active.profile.id, viewId, action, selection: null },
@@ -1655,7 +1700,7 @@ export default function TerminalCanvas({
       if (term) {
         localNavigationRef.current = clampLocalNavigationState(term, localNavigationRef.current);
         renderTerminalLocalSelection(term, localNavigationRef.current);
-        window.requestAnimationFrame(() => term.focus());
+        scheduleTerminalSurfaceFocus();
       }
       return;
     }
@@ -1669,13 +1714,13 @@ export default function TerminalCanvas({
       setSearchResult(null);
       if (previousMode !== "command") setFreeInputValue("");
       setFreeInputSource("normal");
-      window.requestAnimationFrame(() => freeInputRef.current?.focus({ preventScroll: true }));
+      scheduleTerminalSurfaceFocus();
       return;
     }
 
     setFreeInputSource(null);
     setFreeInputValue("");
-    window.requestAnimationFrame(() => term?.focus());
+    scheduleTerminalSurfaceFocus();
   }, [active?.profile.id, keyMode, mouseReporting, viewId]);
 
   useEffect(() => {
@@ -1707,8 +1752,13 @@ export default function TerminalCanvas({
     if (focused && displayMode !== "hex") {
       // Another view of this session may have resized the shared PTY while this view was inactive.
       lastSizeRef.current = "";
-      termRef.current?.focus();
+      scheduleTerminalSurfaceFocus();
       fitAndReportRef.current();
+    } else if (!focused) {
+      termRef.current?.blur();
+      termRef.current?.clearSelection();
+      localNavigationRef.current = null;
+      clearDocumentSelectionWithin(host?.closest(".terminal-canvas") ?? null);
     }
   }, [active?.profile.id, displayMode, focused]);
 
@@ -1753,6 +1803,10 @@ export default function TerminalCanvas({
   return (
     <div
       className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceOpen ? " completion-open" : ""}`}
+      data-terminal-focused={focused ? "true" : "false"}
+      data-terminal-session-id={sessionId || undefined}
+      data-terminal-view-id={viewId || undefined}
+      inert={!focused}
       data-terminal-display-mode={active ? displayMode : undefined}
       data-completion-placement={completionSurfaceOpen ? "below" : undefined}
       data-completion-cursor-bottom={completionSurfaceOpen ? completionAnchor.cursorBottom : undefined}
@@ -1805,7 +1859,7 @@ export default function TerminalCanvas({
                 ))}
               </div>
               <div ref={hostRef} className="terminal-host" inert={displayMode === "hex" || freeInputOpen || gotoLineOpen} />
-          {freeInputOpen ? (
+          {focused && freeInputOpen ? (
             <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
               event.preventDefault();
               submitTerminalFreeInput();
@@ -1954,7 +2008,7 @@ export default function TerminalCanvas({
               ) : null}
             </section>
           ) : null}
-          {gotoLineContext ? (
+          {focused && gotoLineContext ? (
             <form className="terminal-goto-line" aria-label="跳转到终端行" onSubmit={(event) => {
               event.preventDefault();
               submitTerminalGotoLine();
@@ -1993,7 +2047,7 @@ export default function TerminalCanvas({
               </div>
             </form>
           ) : null}
-          {searchOpen ? (
+          {focused && searchOpen ? (
             <form className="terminal-search-bar" onSubmit={(event) => {
               event.preventDefault();
               runTerminalSearch("next");
@@ -2228,6 +2282,16 @@ function sameTerminalTimestampViewport(
 function formatTerminalTimestampTitle(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : `${date.toLocaleString()} · ${value}`;
+}
+
+function clearDocumentSelectionWithin(container: Element | null) {
+  if (!container) return;
+  const selection = document.getSelection();
+  if (!selection?.rangeCount) return;
+  if ((selection.anchorNode && container.contains(selection.anchorNode))
+    || (selection.focusNode && container.contains(selection.focusNode))) {
+    selection.removeAllRanges();
+  }
 }
 
 function formatTerminalCanvasError(error: unknown): string {

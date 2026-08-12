@@ -3,6 +3,7 @@ import { useEffect } from "react";
 const MODAL_LAYER_SELECTOR = ".dialog-backdrop, .mcp-approval-backdrop, .screen-lock-overlay";
 const POPUP_LAYER_SELECTOR = ".portmate-context-menu, .menu-popover";
 const MODAL_PANEL_SELECTOR = '[role="dialog"], [role="alertdialog"], .wind-dialog, .mcp-approval-dialog';
+const SELECTION_SCOPE_SELECTOR = `${MODAL_LAYER_SELECTOR}, ${POPUP_LAYER_SELECTOR}, .terminal-pane, .detached-pane-root, .serial-analyzer-root`;
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not(:disabled)",
@@ -16,6 +17,10 @@ const BLOCKED_OUTSIDE_EVENTS = [
   "keyup",
   "keypress",
   "beforeinput",
+  "input",
+  "compositionstart",
+  "compositionupdate",
+  "compositionend",
   "copy",
   "cut",
   "paste",
@@ -39,6 +44,11 @@ const BLOCKED_OUTSIDE_EVENTS = [
 ] as const;
 
 export const INTERACTION_LAYER_DISMISS_EVENT = "portmate-dismiss-interaction-layer";
+export const MODAL_LAYER_ACTIVATED_EVENT = "portmate-modal-layer-activated";
+
+export type ModalLayerActivatedDetail = {
+  layer: HTMLElement;
+};
 
 type InteractionLayer = {
   element: HTMLElement;
@@ -77,6 +87,7 @@ export function useModalInteractionBoundary() {
     let currentLayer: HTMLElement | null = null;
     let lastOutsideFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     let syncFrame: number | null = null;
+    let dismissedPopupLayer: HTMLElement | null = null;
     const inertState = new Map<HTMLElement, boolean>();
 
     const restoreInertState = () => {
@@ -115,6 +126,15 @@ export function useModalInteractionBoundary() {
       syncFrame = null;
       const next = resolveActiveInteractionLayer(document);
       const nextLayer = next?.element ?? null;
+      if (next?.modal) {
+        const popup = visiblePopupLayers(document).at(-1) ?? null;
+        if (popup && dismissedPopupLayer !== popup) {
+          dismissedPopupLayer = popup;
+          window.dispatchEvent(new Event(INTERACTION_LAYER_DISMISS_EVENT));
+        }
+      } else {
+        dismissedPopupLayer = null;
+      }
       document.body.toggleAttribute("data-portmate-modal-open", Boolean(next?.modal));
       document.body.toggleAttribute("data-portmate-interaction-layer-open", Boolean(next));
       for (const layer of document.querySelectorAll<HTMLElement>(MODAL_LAYER_SELECTOR)) {
@@ -126,7 +146,12 @@ export function useModalInteractionBoundary() {
       if (next && nextLayer) {
         if (next.modal) isolateLayer(nextLayer);
         else restoreInertState();
-        if (next.modal) clearSelectionOutside(nextLayer);
+        clearSelectionOutside(nextLayer);
+        if (next.modal && currentLayer !== nextLayer) {
+          window.dispatchEvent(new CustomEvent<ModalLayerActivatedDetail>(MODAL_LAYER_ACTIVATED_EVENT, {
+            detail: { layer: nextLayer },
+          }));
+        }
         if (!nextLayer.contains(document.activeElement)) focusLayer(next);
       } else if (currentLayer && lastOutsideFocus?.isConnected) {
         restoreInertState();
@@ -215,7 +240,8 @@ export function useModalInteractionBoundary() {
 
     const handleSelectionChange = () => {
       const layer = resolveActiveInteractionLayer(document);
-      if (layer?.modal) clearSelectionOutside(layer.element);
+      if (layer) clearSelectionOutside(layer.element);
+      else clearSelectionAcrossScopes();
     };
 
     const handleCapturedEvent = (event: Event) => {
@@ -258,10 +284,14 @@ export function useModalInteractionBoundary() {
 function resolveActiveInteractionLayer(root: Document): InteractionLayer | null {
   const modal = activeModalLayer(root);
   if (modal) return { element: modal, modal: true };
-  const popups = [...root.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)]
-    .filter((layer) => modalLayerVisible(layer));
+  const popups = visiblePopupLayers(root);
   if (!popups.length) return null;
   return { element: popups.at(-1)!, modal: false };
+}
+
+function visiblePopupLayers(root: Document): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)]
+    .filter((layer) => modalLayerVisible(layer));
 }
 
 function modalLayerVisible(layer: HTMLElement): boolean {
@@ -300,4 +330,17 @@ function clearSelectionOutside(layer: HTMLElement) {
   if (selection.anchorNode && layer.contains(selection.anchorNode)
     && selection.focusNode && layer.contains(selection.focusNode)) return;
   selection.removeAllRanges();
+}
+
+function clearSelectionAcrossScopes() {
+  const selection = document.getSelection();
+  if (!selection?.rangeCount || !selection.anchorNode || !selection.focusNode) return;
+  const anchorScope = selectionScope(selection.anchorNode);
+  const focusScope = selectionScope(selection.focusNode);
+  if (anchorScope !== focusScope && (anchorScope || focusScope)) selection.removeAllRanges();
+}
+
+function selectionScope(node: Node): Element | null {
+  const element = node instanceof Element ? node : node.parentElement;
+  return element?.closest(SELECTION_SCOPE_SELECTOR) ?? null;
 }
