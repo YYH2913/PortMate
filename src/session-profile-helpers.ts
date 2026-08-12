@@ -132,6 +132,7 @@ export function createOpenSshImportConnection(candidate: OpenSshImportCandidate)
       bindPort: forward.bindPort,
       targetHost: forward.targetHost,
       targetPort: forward.targetPort,
+      routeRules: [],
       enabled: true,
     })),
   };
@@ -180,6 +181,7 @@ export function createPuttyImportConnection(candidate: PuttySessionImportCandida
         bindPort: forward.bindPort,
         targetHost: forward.targetHost,
         targetPort: forward.targetPort,
+        routeRules: [],
         enabled: true,
       })),
     };

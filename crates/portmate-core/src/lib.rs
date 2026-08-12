@@ -29,6 +29,8 @@ pub use triggers::{
     MAX_TRIGGER_MATCHER_CHARACTERS,
 };
 pub use tunnels::{
-    normalize_tunnels, validate_tunnels, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
-    MAX_TUNNEL_ID_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
+    normalize_tunnel_route_rules, normalize_tunnels, tunnel_route_allowed,
+    validate_tunnel_route_rules, validate_tunnels, MAX_TUNNELS_PER_PROFILE,
+    MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_ID_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
+    MAX_TUNNEL_ROUTE_RULES,
 };

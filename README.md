@@ -216,7 +216,7 @@ Download by reversing the sides, for example `source: "remote:/var/log/messages"
 
 ### Route-Specific Forwarding And Proxy
 
-`create_tunnel` creates a route only inside one connected, authorized SSH or Tmux session. It does not modify the operating system routing table and does not install a transparent CIDR proxy. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.
+`create_tunnel` creates a route only inside one connected, authorized SSH or Tmux session. It does not modify the operating system routing table. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.
 
 Local forwarding sends one local listener to a fixed target through SSH:
 
@@ -232,7 +232,7 @@ Local forwarding sends one local listener to a fixed target through SSH:
 }
 ```
 
-Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` for a route-specific SOCKS5 proxy; dynamic mode needs no target fields and supports `bindPort: 0` to request an available local port:
+Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` for a route-specific SOCKS5 proxy; dynamic mode needs no fixed target and supports `bindPort: 0` to request an available local port. `routeRules` is optional: an empty list allows every SOCKS5 target, while a non-empty list allows only matching exact domains, `*.example.com` suffixes, IP addresses, or IPv4/IPv6 CIDRs. A rule can also restrict one port.
 
 ```json
 {
@@ -240,6 +240,11 @@ Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` fo
   "mode": "dynamic",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
+  "routeRules": [
+    { "host": "*.internal.example", "port": 443 },
+    { "host": "10.20.0.0/16", "port": null },
+    { "host": "2001:db8:42::/48", "port": 22 }
+  ],
   "label": "Device network SOCKS5"
 }
 ```

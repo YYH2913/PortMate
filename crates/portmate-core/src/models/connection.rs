@@ -34,7 +34,17 @@ pub struct TunnelSpec {
     pub bind_port: u16,
     pub target_host: String,
     pub target_port: u16,
+    #[serde(default)]
+    pub route_rules: Vec<TunnelRouteRule>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelRouteRule {
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

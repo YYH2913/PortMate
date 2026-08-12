@@ -17,6 +17,7 @@ pub(super) async fn exercise_openssh_local_and_dynamic_tunnels(
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: echo_address.port(),
+            route_rules: Vec::new(),
             label: None,
         },
     )
@@ -104,6 +105,7 @@ pub(super) async fn exercise_openssh_local_and_dynamic_tunnels(
             bind_port: 0,
             target_host: String::new(),
             target_port: 0,
+            route_rules: Vec::new(),
             label: None,
         },
     )
@@ -217,6 +219,7 @@ pub(super) async fn exercise_openssh_remote_tunnel(state: &AppState, profile: &S
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: remote_echo_address.port(),
+            route_rules: Vec::new(),
             label: None,
         },
     )
@@ -426,6 +429,7 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: port,
+            route_rules: Vec::new(),
             label: Some("reconnect tunnel".to_string()),
         },
     )
@@ -440,6 +444,7 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: port,
+            route_rules: Vec::new(),
             label: Some("reconnect remote tunnel".to_string()),
         },
     )
@@ -455,6 +460,7 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
         bind_port: conflict_port,
         target_host: "127.0.0.1".to_string(),
         target_port: port,
+        route_rules: Vec::new(),
         enabled: true,
     };
     {

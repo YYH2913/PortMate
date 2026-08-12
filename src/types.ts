@@ -240,7 +240,13 @@ export interface TunnelSpec {
   bindPort: number;
   targetHost: string;
   targetPort: number;
+  routeRules: TunnelRouteRule[];
   enabled: boolean;
+}
+
+export interface TunnelRouteRule {
+  host: string;
+  port: number | null;
 }
 
 export interface TunnelStatus {

@@ -7,9 +7,10 @@ use portable_pty::PtySize;
 #[cfg(test)]
 use portmate_core::ProxyKind;
 use portmate_core::{
-    compute_ssh_sha256_fingerprint, normalize_triggers, normalize_tunnels, prompt_templates,
-    redact_secrets, redact_session_event, redact_session_events, redact_session_summary,
-    redact_transfer_task, resource_templates, tool_definitions, validate_triggers,
+    compute_ssh_sha256_fingerprint, normalize_triggers, normalize_tunnel_route_rules,
+    normalize_tunnels, prompt_templates, redact_secrets, redact_session_event,
+    redact_session_events, redact_session_summary, redact_transfer_task, resource_templates,
+    tool_definitions, tunnel_route_allowed, validate_triggers, validate_tunnel_route_rules,
     validate_tunnels, AuditRecord, AuthMethod, ConnectionConfig, EventDirection, EventStream,
     HostKeyDecision, HostKeyEvaluation, HostKeyMode, HostKeyObservation, HostKeyScope,
     HostKeyStore, IdentityRef, IdentitySource, McpGrant, McpHttpSettings, McpScope,
@@ -18,7 +19,7 @@ use portmate_core::{
     SysmonNetworkInterface, SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark,
     TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
     TunnelSpec, MAX_COMMAND_HISTORY_ENTRIES, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
-    MAX_TUNNEL_LABEL_CHARACTERS,
+    MAX_TUNNEL_LABEL_CHARACTERS, MAX_TUNNEL_ROUTE_RULES,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};

@@ -216,7 +216,7 @@ SFTP 上传示例：
 
 ### 指定路由转发与代理
 
-`create_tunnel` 只在一个已连接且已授权的 SSH/Tmux 会话内创建指定路由。它不会修改操作系统路由表，也不会安装透明 CIDR 代理。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。
+`create_tunnel` 只在一个已连接且已授权的 SSH/Tmux 会话内创建指定路由。它不会修改操作系统路由表。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。
 
 本地转发把一个本地监听端口经 SSH 送到固定目标：
 
@@ -232,7 +232,7 @@ SFTP 上传示例：
 }
 ```
 
-服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理使用 `mode: "dynamic"`，不需要目标字段，并可把 `bindPort` 设为 `0` 自动选择可用的本地端口：
+服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理使用 `mode: "dynamic"`，不需要固定目标，并可把 `bindPort` 设为 `0` 自动选择可用的本地端口。`routeRules` 是可选项：空数组允许全部 SOCKS5 目标，非空数组只允许匹配的精确域名、`*.example.com` 后缀、IP 地址或 IPv4/IPv6 CIDR；每条规则还可限制一个端口。
 
 ```json
 {
@@ -240,6 +240,11 @@ SFTP 上传示例：
   "mode": "dynamic",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
+  "routeRules": [
+    { "host": "*.internal.example", "port": 443 },
+    { "host": "10.20.0.0/16", "port": null },
+    { "host": "2001:db8:42::/48", "port": 22 }
+  ],
   "label": "Device network SOCKS5"
 }
 ```

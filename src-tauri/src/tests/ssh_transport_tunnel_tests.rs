@@ -12,6 +12,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: echo_address.port(),
+            route_rules: Vec::new(),
             label: None,
         },
     )
@@ -89,6 +90,11 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
     let dynamic_echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let dynamic_echo_address = dynamic_echo_listener.local_addr().unwrap();
     drop(dynamic_echo_listener);
+    let denied_port = if dynamic_echo_address.port() == u16::MAX {
+        u16::MAX - 1
+    } else {
+        dynamic_echo_address.port() + 1
+    };
     let dynamic_tunnel = create_tunnel_inner(
         state,
         CreateTunnelRequest {
@@ -98,12 +104,72 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
             bind_port: 0,
             target_host: String::new(),
             target_port: 0,
+            route_rules: vec![portmate_core::TunnelRouteRule {
+                host: "127.0.0.1".to_string(),
+                port: Some(dynamic_echo_address.port()),
+            }],
             label: None,
         },
     )
     .await
     .unwrap();
     let [port_high, port_low] = dynamic_echo_address.port().to_be_bytes();
+    let [denied_port_high, denied_port_low] = denied_port.to_be_bytes();
+
+    for (request, denied_target) in [
+        (
+            [5, 1, 0, 1, 127, 0, 0, 2, port_high, port_low],
+            format!("127.0.0.2:{}", dynamic_echo_address.port()),
+        ),
+        (
+            [
+                5,
+                1,
+                0,
+                1,
+                127,
+                0,
+                0,
+                1,
+                denied_port_high,
+                denied_port_low,
+            ],
+            format!("127.0.0.1:{denied_port}"),
+        ),
+    ] {
+        let mut denied_client = TcpStream::connect(("127.0.0.1", dynamic_tunnel.bind_port))
+            .await
+            .unwrap();
+        denied_client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut denied_method = [0_u8; 2];
+        denied_client.read_exact(&mut denied_method).await.unwrap();
+        assert_eq!(denied_method, [5, 0]);
+        denied_client.write_all(&request).await.unwrap();
+        let mut denied_reply = [0_u8; 10];
+        denied_client.read_exact(&mut denied_reply).await.unwrap();
+        assert_eq!(denied_reply, super::socks5_reply(2));
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let status = list_tunnels_inner(state, Some(session_id))
+                    .unwrap()
+                    .into_iter()
+                    .find(|status| status.spec.id == dynamic_tunnel.id)
+                    .unwrap();
+                if status.active_connections == 0
+                    && status.last_error.as_deref().is_some_and(|error| {
+                        error.contains("dynamic route denied by target rules")
+                            && error.contains(&denied_target)
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("libssh dynamic tunnel denial metrics did not settle");
+    }
 
     let mut failed_socks_client = TcpStream::connect(("127.0.0.1", dynamic_tunnel.bind_port))
         .await
@@ -132,7 +198,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
                 .into_iter()
                 .find(|status| status.spec.id == dynamic_tunnel.id)
                 .unwrap();
-            if status.active_connections == 0 && status.total_connections == 1 {
+            if status.active_connections == 0 && status.total_connections == 3 {
                 assert!(status
                     .last_error
                     .as_deref()
@@ -181,7 +247,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
                 .into_iter()
                 .find(|status| status.spec.id == dynamic_tunnel.id)
                 .unwrap();
-            if status.active_connections == 0 && status.total_connections == 2 {
+            if status.active_connections == 0 && status.total_connections == 4 {
                 assert_eq!(status.tcp_to_ssh_bytes, 4);
                 assert_eq!(status.ssh_to_tcp_bytes, 4);
                 assert!(status.last_error.is_none());
@@ -207,6 +273,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: remote_echo_address.port(),
+            route_rules: Vec::new(),
             label: None,
         },
     )

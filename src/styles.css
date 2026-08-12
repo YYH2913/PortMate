@@ -6332,6 +6332,7 @@ fieldset label {
 .utility-dialog {
   grid-template-rows: 46px minmax(0, auto) 58px;
   width: min(560px, calc(100vw - 40px));
+  max-height: calc(100dvh - 24px);
 }
 
 .session-config-import-dialog {
@@ -8632,8 +8633,10 @@ fieldset label {
 
 .utility-content {
   display: grid;
+  min-height: 0;
   gap: 12px;
   padding: 18px 18px 14px;
+  overflow: auto;
 }
 
 .utility-actions {
@@ -8671,6 +8674,81 @@ fieldset label {
   min-width: 0;
   border-top: 1px solid var(--line-soft);
   padding-top: 12px;
+}
+
+.tunnel-routes {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 0;
+}
+
+.tunnel-routes > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.tunnel-routes > header > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tunnel-routes > header small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tunnel-routes button,
+.tunnel-route-row button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.tunnel-routes button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.tunnel-route-list {
+  display: grid;
+  gap: 6px;
+  max-height: 152px;
+  overflow: auto;
+}
+
+.tunnel-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px 28px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tunnel-route-row input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.tunnel-route-row input:focus {
+  border-color: var(--cyan);
+  outline: 0;
 }
 
 .tunnel-panel header {

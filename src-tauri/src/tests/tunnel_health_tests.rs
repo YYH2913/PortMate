@@ -101,6 +101,7 @@ fn remote_tunnel_health_recovery_preserves_non_health_errors() {
             bind_port: 10_022,
             target_host: "127.0.0.1".to_string(),
             target_port: 22,
+            route_rules: Vec::new(),
             enabled: true,
         })
         .last_error
@@ -118,6 +119,7 @@ fn remote_tunnel_health_recovery_preserves_non_health_errors() {
                 bind_port: 10_022,
                 target_host: "127.0.0.1".to_string(),
                 target_port: 22,
+                route_rules: Vec::new(),
                 enabled: true,
             })
             .last_error

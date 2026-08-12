@@ -176,11 +176,18 @@ pub(super) fn spawn_libssh_remote_forward_acceptor(
 
 pub(super) async fn handle_dynamic_tunnel_client(
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
+    tunnel: TunnelSpec,
     mut local_stream: TcpStream,
     peer: std::net::SocketAddr,
     metrics: Arc<TunnelMetrics>,
 ) -> Result<(), String> {
     let (target_host, target_port) = read_socks5_connect_request(&mut local_stream).await?;
+    if !tunnel_route_allowed(&tunnel.route_rules, &target_host, target_port) {
+        let _ = local_stream.write_all(&socks5_reply(2)).await;
+        return Err(format!(
+            "dynamic route denied by target rules: {target_host}:{target_port}"
+        ));
+    }
 
     let channel = match open_tunnel_direct_tcpip(
         &handle,
@@ -211,6 +218,7 @@ pub(super) async fn handle_dynamic_tunnel_client(
         bind_port: 0,
         target_host,
         target_port,
+        route_rules: Vec::new(),
         enabled: true,
     };
     pipe_ssh_channel_to_tcp(channel, local_stream, spec, metrics).await

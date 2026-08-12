@@ -86,6 +86,7 @@ describe("session summary cache", () => {
       bindPort: 10_022,
       targetHost: "device.internal",
       targetPort: 22,
+      routeRules: [],
       enabled: true,
     };
     summary.profile.connection.tunnels = Array.from(

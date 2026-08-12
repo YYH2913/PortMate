@@ -182,6 +182,7 @@ pub(super) async fn create_tunnel_inner(
         bind_port: request.bind_port,
         target_host: request.target_host.clone(),
         target_port: request.target_port,
+        route_rules: request.route_rules.clone(),
         enabled: true,
     };
     validate_tunnels(std::slice::from_ref(&tunnel))?;

@@ -183,7 +183,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "create_tunnel",
             "Create Forward Or Proxy",
-            "Create a route-specific SSH forward (`local` or `remote`) or a dynamic SOCKS5 proxy (`dynamic`) on an authorized SSH/Tmux session.",
+            "Create a route-specific SSH forward (`local` or `remote`) or a dynamic SOCKS5 proxy (`dynamic`) on an authorized SSH/Tmux session. Dynamic proxies may restrict targets with exact domains, `*.example.com` suffixes, IP addresses, or IPv4/IPv6 CIDRs and optional ports.",
             json!({
                 "type":"object",
                 "required":["sessionId","mode","bindHost","bindPort"],
@@ -194,6 +194,20 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                     "bindPort":{"type":"integer","minimum":0,"maximum":65535},
                     "targetHost":{"type":"string","maxLength":255,"default":""},
                     "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
+                    "routeRules":{
+                        "type":"array",
+                        "maxItems":64,
+                        "default":[],
+                        "items":{
+                            "type":"object",
+                            "required":["host"],
+                            "additionalProperties":false,
+                            "properties":{
+                                "host":{"type":"string","minLength":1,"maxLength":255},
+                                "port":{"type":["integer","null"],"minimum":1,"maximum":65535,"default":null}
+                            }
+                        }
+                    },
                     "label":{"type":"string","minLength":1,"maxLength":128}
                 },
                 "allOf":[
@@ -206,14 +220,16 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                         "then":{
                             "properties":{
                                 "targetHost":{"type":"string","maxLength":0},
-                                "targetPort":{"const":0}
+                                "targetPort":{"const":0},
+                                "routeRules":{"type":"array","maxItems":64}
                             }
                         },
                         "else":{
                             "required":["targetHost","targetPort"],
                             "properties":{
                                 "targetHost":{"type":"string","minLength":1,"maxLength":255},
-                                "targetPort":{"type":"integer","minimum":1,"maximum":65535}
+                                "targetPort":{"type":"integer","minimum":1,"maximum":65535},
+                                "routeRules":{"type":"array","maxItems":0}
                             }
                         }
                     }
@@ -487,6 +503,15 @@ mod tests {
         );
         assert_eq!(
             target_clause["then"]["properties"]["targetPort"]["const"],
+            0
+        );
+        assert_eq!(schema["properties"]["routeRules"]["maxItems"], 64);
+        assert_eq!(
+            schema["properties"]["routeRules"]["items"]["properties"]["port"]["type"],
+            json!(["integer", "null"])
+        );
+        assert_eq!(
+            target_clause["else"]["properties"]["routeRules"]["maxItems"],
             0
         );
         assert_eq!(

@@ -232,8 +232,14 @@ pub(super) async fn start_tunnel_runtime(
                         let _permit = permit;
                         metrics.connection_opened();
                         let result = if spec.mode == TunnelMode::Dynamic {
-                            handle_dynamic_tunnel_client(handle, stream, peer, Arc::clone(&metrics))
-                                .await
+                            handle_dynamic_tunnel_client(
+                                handle,
+                                spec,
+                                stream,
+                                peer,
+                                Arc::clone(&metrics),
+                            )
+                            .await
                         } else {
                             handle_local_tunnel_client(
                                 handle,

@@ -1,4 +1,6 @@
-use portmate_core::{TransferProtocol, TransferTask, TunnelMode, TunnelSpec};
+use portmate_core::{
+    TransferProtocol, TransferTask, TunnelMode, TunnelRouteRule, TunnelSpec,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +65,8 @@ pub struct CreateTunnelRequest {
     pub target_host: String,
     #[serde(default)]
     pub target_port: u16,
+    #[serde(default)]
+    pub route_rules: Vec<TunnelRouteRule>,
     pub label: Option<String>,
 }
 

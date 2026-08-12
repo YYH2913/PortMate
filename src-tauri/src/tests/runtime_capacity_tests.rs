@@ -137,6 +137,7 @@ fn ssh_auxiliary_saturation_blocks_remote_entry_points_without_side_effects() {
                     bind_port: 10_022,
                     target_host: "127.0.0.1".to_string(),
                     target_port: 22,
+                    route_rules: Vec::new(),
                     enabled: true,
                 },
                 metrics: Arc::new(TunnelMetrics::default()),

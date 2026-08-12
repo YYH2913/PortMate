@@ -399,6 +399,7 @@ fn mcp_stop_tunnel_authorizes_runtime_owner_and_tunnel_reads_are_scoped() {
             bind_port: 10_080,
             target_host: String::new(),
             target_port: 0,
+            route_rules: Vec::new(),
             enabled: true,
         };
         {

@@ -749,6 +749,17 @@ try {
             window.__pendingTunnelRefresh.push({ args: structuredClone(args), resolve });
           });
         }
+        if (command === "create_tunnel") {
+          const request = structuredClone(args.request);
+          return {
+            id: `tunnel-${window.__invokeCalls.filter((call) => call.command === "create_tunnel").length}`,
+            label: request.mode === "dynamic"
+              ? `${request.bindHost}:${request.bindPort} -> SOCKS5`
+              : `${request.bindHost}:${request.bindPort} -> ${request.targetHost}:${request.targetPort}`,
+            ...request,
+            enabled: true,
+          };
+        }
         if (command === "list_sysmon_history" || command === "refresh_sysmon") {
           if (!window.__deferSysmon) return command === "list_sysmon_history" ? [] : null;
           return new Promise((resolve) => {
@@ -1506,7 +1517,47 @@ Host staging
   assert(await tunnelCreate.isDisabled(), "whitespace tunnel target left Create enabled");
   await tunnelTargetHost.fill("127.0.0.1");
   assert(!await tunnelCreate.isDisabled(), "valid tunnel fields did not restore Create");
+
+  await tunnelDialog.locator(".dialog-field", { hasText: "模式:" }).locator("select").selectOption("dynamic");
+  assert(await tunnelDialog.locator(".dialog-field", { hasText: "目标:" }).count() === 0,
+    "dynamic tunnel retained its fixed target fields");
+  await tunnelDialog.getByRole("button", { name: "添加目标路由", exact: true }).click();
+  const routeHost = tunnelDialog.getByRole("textbox", { name: "路由目标 1", exact: true });
+  const routePort = tunnelDialog.getByRole("spinbutton", { name: "路由端口 1", exact: true });
+  await routeHost.fill("bad..host");
+  assert(await tunnelCreate.isDisabled(), "invalid dynamic route host left Create enabled");
+  await routeHost.fill("10.9.8.7/8");
+  await routePort.fill("0");
+  assert(await tunnelCreate.isDisabled(), "zero dynamic route port left Create enabled");
+  await routePort.fill("443");
+  await routeHost.blur();
+  assert(await routeHost.inputValue() === "10.0.0.0/8" && !await tunnelCreate.isDisabled(),
+    "valid dynamic CIDR route was not normalized or accepted");
+  await tunnelDialog.getByRole("button", { name: "添加目标路由", exact: true }).click();
+  await tunnelDialog.getByRole("textbox", { name: "路由目标 2", exact: true }).fill("10.0.0.0/8");
+  await tunnelDialog.getByRole("spinbutton", { name: "路由端口 2", exact: true }).fill("443");
+  assert(await tunnelCreate.isDisabled(), "duplicate normalized dynamic route left Create enabled");
+  await tunnelDialog.getByRole("button", { name: "删除目标路由 2", exact: true }).click();
+  assert(!await tunnelCreate.isDisabled(), "removing duplicate dynamic route did not restore Create");
   await page.screenshot({ path: `${screenshotPrefix}-tunnel.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileTunnelBounds = await tunnelDialog.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      width: rect.width,
+      scrollWidth: dialog.scrollWidth,
+    };
+  });
+  assert(mobileTunnelBounds.left >= 0 && mobileTunnelBounds.right <= 390
+    && mobileTunnelBounds.top >= 0 && mobileTunnelBounds.bottom <= 844
+    && mobileTunnelBounds.scrollWidth <= mobileTunnelBounds.width,
+  `dynamic tunnel dialog overflows on mobile: ${JSON.stringify(mobileTunnelBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-tunnel-mobile.png`, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForFunction(() => window.__pendingTunnelRefresh.length >= 1);
   await page.waitForTimeout(100);
   const tunnelRefreshBaseline = await page.evaluate(() => window.__pendingTunnelRefresh.length);
@@ -1518,8 +1569,20 @@ Host staging
     window.__pendingTunnelRefresh = [];
     window.__deferTunnelRefresh = false;
   });
-  await tunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await tunnelCreate.click();
   await tunnelDialog.waitFor({ state: "detached" });
+  const tunnelCreateRequest = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "create_tunnel").at(-1)?.args.request);
+  assert(tunnelCreateRequest?.mode === "dynamic"
+    && tunnelCreateRequest.targetHost === ""
+    && tunnelCreateRequest.targetPort === 0
+    && JSON.stringify(tunnelCreateRequest.routeRules) === JSON.stringify([
+      { host: "10.0.0.0/8", port: 443 },
+    ]),
+  `dynamic tunnel route rules were not submitted intact: ${JSON.stringify(tunnelCreateRequest)}`);
+  const tunnelNotice = page.locator(".notice-dialog", { hasText: "已创建 dynamic tunnel" });
+  await tunnelNotice.waitFor();
+  await tunnelNotice.getByRole("button", { name: "确定", exact: true }).click();
 
   const sysmonSnapshot = (sessionId, cpuPercent, networkInterfaces = []) => ({
     sessionId,
@@ -5568,6 +5631,7 @@ Host staging
       `${screenshotPrefix}-terminal-export-settings-mobile.png`,
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-tunnel.png`,
+      `${screenshotPrefix}-tunnel-mobile.png`,
       `${screenshotPrefix}-sysmon-sidebar.png`,
       `${screenshotPrefix}-host-key-scan.png`,
       `${screenshotPrefix}-ssh-health.png`,

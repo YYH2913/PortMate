@@ -24,6 +24,20 @@ pub(super) fn normalize_tunnel_request(
     request.session_id = request.session_id.trim().to_string();
     request.bind_host = request.bind_host.trim().to_string();
     request.target_host = request.target_host.trim().to_string();
+    if request.route_rules.len() > MAX_TUNNEL_ROUTE_RULES {
+        return Err(format!(
+            "tunnel route rule count exceeds {MAX_TUNNEL_ROUTE_RULES}"
+        ));
+    }
+    for (index, rule) in request.route_rules.iter().enumerate() {
+        if rule.host.chars().any(char::is_control) {
+            return Err(format!(
+                "tunnel route rule {} host must not contain control characters",
+                index + 1
+            ));
+        }
+    }
+    request.route_rules = normalize_tunnel_route_rules(request.route_rules);
     request.label = request
         .label
         .as_deref()
@@ -34,6 +48,9 @@ pub(super) fn normalize_tunnel_request(
     if request.mode == TunnelMode::Dynamic {
         request.target_host.clear();
         request.target_port = 0;
+        validate_tunnel_route_rules(&request.route_rules)?;
+    } else if !request.route_rules.is_empty() {
+        return Err("tunnel route rules are only supported by dynamic mode".to_string());
     }
     validate_tunnel_request_text(
         "session id",

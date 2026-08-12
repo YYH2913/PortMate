@@ -20,6 +20,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: 22,
+            route_rules: Vec::new(),
             enabled: true,
         },
         metrics,
@@ -71,6 +72,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
                 bind_port: 0,
                 target_host: String::new(),
                 target_port: 0,
+                route_rules: Vec::new(),
                 enabled: false,
             })
             .last_error
@@ -98,6 +100,7 @@ fn stopping_tunnel_marks_profile_tunnel_disabled() {
         bind_port: 10022,
         target_host: "127.0.0.1".to_string(),
         target_port: 22,
+        route_rules: Vec::new(),
         enabled: true,
     };
     if let ConnectionConfig::Ssh(ssh) = &mut profile.connection {

@@ -154,8 +154,9 @@ fn validate_ipc_write_args(state: &AppState, request: &IpcRequest) -> Result<(),
             })?;
         }
         "create_tunnel" => {
-            serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
+            normalize_tunnel_request(tunnel)?;
         }
         "stop_tunnel" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;

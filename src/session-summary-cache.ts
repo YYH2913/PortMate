@@ -13,6 +13,8 @@ import {
   MAX_TUNNEL_HOST_CHARACTERS,
   MAX_TUNNEL_ID_CHARACTERS,
   MAX_TUNNEL_LABEL_CHARACTERS,
+  MAX_TUNNEL_ROUTE_RULES,
+  isValidTunnelRouteRules,
 } from "./tunnel-state";
 
 export const SESSION_SUMMARY_CACHE_STORAGE_KEY = "portmate.sessions";
@@ -54,11 +56,14 @@ export function parseSessionSummaryCache(raw: string | null): SessionSummary[] {
 function normalizeCachedSessionSummary(session: SessionSummary): SessionSummary {
   const lastDisconnectReason = normalizeSessionDisconnectReason(session.runtime.lastDisconnectReason);
   const connection = session.profile.connection;
-  const profile = (connection.kind === "ssh" || connection.kind === "tmux")
-    && (connection as { tcpKeepaliveEnabled?: unknown }).tcpKeepaliveEnabled === undefined
+  const profile = connection.kind === "ssh" || connection.kind === "tmux"
     ? {
         ...session.profile,
-        connection: { ...connection, tcpKeepaliveEnabled: null },
+        connection: {
+          ...connection,
+          tcpKeepaliveEnabled: (connection as { tcpKeepaliveEnabled?: boolean | null }).tcpKeepaliveEnabled ?? null,
+          tunnels: connection.tunnels.map((tunnel) => ({ ...tunnel, routeRules: tunnel.routeRules ?? [] })),
+        },
       }
     : session.profile;
   return {
@@ -307,9 +312,12 @@ function isTunnelSpec(value: unknown): boolean {
     mode === "remote",
     true,
   )) return false;
+  const routeRules = tunnel.routeRules === undefined ? [] : tunnel.routeRules;
+  if (!Array.isArray(routeRules) || routeRules.length > MAX_TUNNEL_ROUTE_RULES
+    || !isValidTunnelRouteRules(routeRules as import("./types").TunnelRouteRule[])) return false;
   return mode === "dynamic"
     ? tunnel.targetHost === "" && tunnel.targetPort === 0
-    : isBoundedTunnelText(
+    : routeRules.length === 0 && isBoundedTunnelText(
       tunnel.targetHost,
       MAX_TUNNEL_HOST_CHARACTERS,
       false,

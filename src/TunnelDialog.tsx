@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { RefreshCw, Square, X } from "lucide-react";
+import { Plus, RefreshCw, Square, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { formatBytes } from "./display-formatters";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   canAddTunnel,
   isValidTunnelHostInput,
+  isValidTunnelRouteRules,
   MAX_TUNNEL_HOST_CHARACTERS,
+  MAX_TUNNEL_ROUTE_RULES,
+  normalizeTunnelRouteHost,
   parseTunnelPort,
 } from "./tunnel-state";
-import type { SessionSummary, TunnelSpec, TunnelStatus } from "./types";
+import type { SessionSummary, TunnelRouteRule, TunnelSpec, TunnelStatus } from "./types";
 
 export default function TunnelDialog({
   session,
@@ -26,6 +29,7 @@ export default function TunnelDialog({
   const [bindPort, setBindPort] = useState("10022");
   const [targetHost, setTargetHost] = useState("127.0.0.1");
   const [targetPort, setTargetPort] = useState("22");
+  const [routeRules, setRouteRules] = useState<TunnelRouteRule[]>([]);
   const [tunnels, setTunnels] = useState<TunnelStatus[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -85,6 +89,7 @@ export default function TunnelDialog({
           bindPort: normalizedBindPort,
           targetHost: mode === "dynamic" ? "" : targetHost,
           targetPort: normalizedTargetPort,
+          routeRules: mode === "dynamic" ? normalizedRouteRules(routeRules) : [],
         },
       });
       refreshGate.current.invalidate("tunnels");
@@ -122,7 +127,23 @@ export default function TunnelDialog({
   const formValid = isValidTunnelHostInput(bindHost)
     && parseTunnelPort(bindPort, true) !== null
     && (mode === "dynamic"
-      || (isValidTunnelHostInput(targetHost) && parseTunnelPort(targetPort, false) !== null));
+      ? isValidTunnelRouteRules(normalizedRouteRules(routeRules))
+      : isValidTunnelHostInput(targetHost) && parseTunnelPort(targetPort, false) !== null);
+
+  function addRouteRule() {
+    if (routeRules.length >= MAX_TUNNEL_ROUTE_RULES) return;
+    setRouteRules((current) => [...current, { host: "", port: null }]);
+  }
+
+  function updateRouteRule(index: number, patch: Partial<TunnelRouteRule>) {
+    setRouteRules((current) => current.map((rule, ruleIndex) => ruleIndex === index
+      ? { ...rule, ...patch }
+      : rule));
+  }
+
+  function removeRouteRule(index: number) {
+    setRouteRules((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
+  }
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -158,7 +179,62 @@ export default function TunnelDialog({
                 <input type="number" min={1} max={65_535} step={1} inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
               </DialogField>
             </>
-          ) : null}
+          ) : (
+            <div className="tunnel-routes" aria-label="指定目标路由">
+              <header>
+                <div>
+                  <strong>目标路由</strong>
+                  <small>{routeRules.length ? `仅允许 ${routeRules.length} 条规则` : "允许全部 SOCKS5 目标"}</small>
+                </div>
+                <button
+                  type="button"
+                  onClick={addRouteRule}
+                  disabled={routeRules.length >= MAX_TUNNEL_ROUTE_RULES}
+                  title="添加目标路由"
+                  aria-label="添加目标路由"
+                >
+                  <Plus size={14} />
+                </button>
+              </header>
+              {routeRules.length ? (
+                <div className="tunnel-route-list">
+                  {routeRules.map((rule, index) => (
+                    <div className="tunnel-route-row" key={index}>
+                      <input
+                        aria-label={`路由目标 ${index + 1}`}
+                        maxLength={MAX_TUNNEL_HOST_CHARACTERS}
+                        placeholder="host / *.domain / CIDR"
+                        value={rule.host}
+                        onChange={(event) => updateRouteRule(index, { host: event.target.value })}
+                        onBlur={() => updateRouteRule(index, { host: normalizeTunnelRouteHost(rule.host) })}
+                      />
+                      <input
+                        aria-label={`路由端口 ${index + 1}`}
+                        type="number"
+                        min={1}
+                        max={65_535}
+                        step={1}
+                        inputMode="numeric"
+                        placeholder="全部"
+                        value={rule.port ?? ""}
+                        onChange={(event) => updateRouteRule(index, {
+                          port: event.target.value === "" ? null : Number(event.target.value),
+                        })}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeRouteRule(index)}
+                        title="删除目标路由"
+                        aria-label={`删除目标路由 ${index + 1}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
           <div className="tunnel-panel">
             <header>
               <strong>运行中</strong>
@@ -172,7 +248,7 @@ export default function TunnelDialog({
                   <div key={tunnel.spec.id} className={`tunnel-row ${tunnel.lastError ? "degraded" : ""}`}>
                     <div>
                       <strong>{tunnel.spec.label}</strong>
-                      <small>{tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? "" : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
+                      <small>{tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? dynamicRouteSummary(tunnel.spec.routeRules) : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
                       <small>
                         active {tunnel.activeConnections} · total {tunnel.totalConnections} · TCP→SSH {formatBytes(tunnel.tcpToSshBytes)} · SSH→TCP {formatBytes(tunnel.sshToTcpBytes)}
                       </small>
@@ -197,6 +273,15 @@ export default function TunnelDialog({
       </form>
     </div>
   );
+}
+
+function normalizedRouteRules(rules: TunnelRouteRule[]): TunnelRouteRule[] {
+  return rules.map((rule) => ({ ...rule, host: normalizeTunnelRouteHost(rule.host) }));
+}
+
+function dynamicRouteSummary(rules: TunnelRouteRule[]): string {
+  if (!rules.length) return " -> all targets";
+  return ` -> ${rules.length} target rule${rules.length === 1 ? "" : "s"}`;
 }
 
 function DialogField({ label, children }: { label: string; children: ReactNode }) {

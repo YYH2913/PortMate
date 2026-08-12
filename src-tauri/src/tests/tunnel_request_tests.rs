@@ -7,6 +7,7 @@ fn tunnel_requests_are_normalized_and_validate_targets_early() {
         bind_port: 0,
         target_host: " device.internal ".to_string(),
         target_port: 22,
+        route_rules: Vec::new(),
         label: Some("  ".to_string()),
     })
     .unwrap();
@@ -32,6 +33,71 @@ fn tunnel_requests_are_normalized_and_validate_targets_early() {
     .unwrap();
     assert!(dynamic.target_host.is_empty());
     assert_eq!(dynamic.target_port, 0);
+
+    let dynamic_with_routes = normalize_tunnel_request(CreateTunnelRequest {
+        route_rules: vec![
+            portmate_core::TunnelRouteRule {
+                host: " *.Example.COM. ".to_string(),
+                port: Some(443),
+            },
+            portmate_core::TunnelRouteRule {
+                host: "10.9.8.7/8".to_string(),
+                port: None,
+            },
+        ],
+        ..dynamic.clone()
+    })
+    .unwrap();
+    assert_eq!(dynamic_with_routes.route_rules[0].host, "*.example.com");
+    assert_eq!(dynamic_with_routes.route_rules[1].host, "10.0.0.0/8");
+
+    let duplicate_routes = normalize_tunnel_request(CreateTunnelRequest {
+        route_rules: vec![
+            portmate_core::TunnelRouteRule {
+                host: "Example.COM.".to_string(),
+                port: Some(443),
+            },
+            portmate_core::TunnelRouteRule {
+                host: "example.com".to_string(),
+                port: Some(443),
+            },
+        ],
+        ..dynamic.clone()
+    })
+    .unwrap_err();
+    assert!(duplicate_routes.contains("duplicate rule"));
+
+    let controlled_route = normalize_tunnel_request(CreateTunnelRequest {
+        route_rules: vec![portmate_core::TunnelRouteRule {
+            host: "\nexample.com".to_string(),
+            port: None,
+        }],
+        ..dynamic.clone()
+    })
+    .unwrap_err();
+    assert!(controlled_route.contains("route rule 1 host must not contain control characters"));
+
+    let local_with_routes = normalize_tunnel_request(CreateTunnelRequest {
+        mode: TunnelMode::Local,
+        target_host: "device.internal".to_string(),
+        target_port: 22,
+        route_rules: dynamic_with_routes.route_rules.clone(),
+        ..dynamic.clone()
+    })
+    .unwrap_err();
+    assert!(local_with_routes.contains("only supported by dynamic mode"));
+
+    let too_many_routes = normalize_tunnel_request(CreateTunnelRequest {
+        route_rules: (0..=MAX_TUNNEL_ROUTE_RULES)
+            .map(|index| portmate_core::TunnelRouteRule {
+                host: format!("host-{index}.example"),
+                port: None,
+            })
+            .collect(),
+        ..dynamic.clone()
+    })
+    .unwrap_err();
+    assert!(too_many_routes.contains("route rule count exceeds"));
 
     let dynamic_without_target: CreateTunnelRequest = serde_json::from_value(serde_json::json!({
         "sessionId": "ssh-session-1",
@@ -122,6 +188,7 @@ fn tunnel_connection_slots_bound_and_release_concurrency() {
                         bind_port: 10_022,
                         target_host: "device.internal".to_string(),
                         target_port: 22,
+                        route_rules: Vec::new(),
                         enabled: true,
                     },
                     metrics: Arc::new(TunnelMetrics::default()),
@@ -152,6 +219,7 @@ fn profile_tunnel_bounds_reclaim_disabled_entries_without_overwriting_enabled_on
         bind_port: 10_000,
         target_host: "device.internal".to_string(),
         target_port: 22,
+        route_rules: Vec::new(),
         enabled,
     };
     let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
@@ -241,6 +309,7 @@ fn tunnel_metrics_snapshot_tracks_connections_bytes_and_errors() {
         bind_port: 10022,
         target_host: "127.0.0.1".to_string(),
         target_port: 22,
+        route_rules: Vec::new(),
         enabled: true,
     };
 

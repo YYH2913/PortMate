@@ -21,6 +21,7 @@ fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
             bind_port: 10_022,
             target_host: "127.0.0.1".to_string(),
             target_port: 22,
+            route_rules: Vec::new(),
             enabled: true,
         };
         let closed = Arc::new(AtomicBool::new(false));
@@ -72,6 +73,7 @@ fn tunnel_stop_persistence_failure_keeps_local_stop_truth() {
             bind_port: 10_023,
             target_host: "127.0.0.1".to_string(),
             target_port: 22,
+            route_rules: Vec::new(),
             enabled: true,
         };
         let mut profile = test_ssh_profile();
