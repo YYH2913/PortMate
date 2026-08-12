@@ -1795,10 +1795,9 @@ function SerialAdvancedFields({
     <>
       <DialogField label="串口:(S)">
         <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
+          <option value="">选择串口</option>
           {serialPortOptions(serial.port, serialPorts).map((option) => (
-            <option key={option || "blank"} value={option}>
-              {option || "选择串口"}
-            </option>
+            <option key={option} value={option}>{option}</option>
           ))}
         </select>
       </DialogField>

@@ -108,14 +108,16 @@ describe("session profile helpers", () => {
     ]);
   });
 
-  it("parses SSH targets and deduplicates serial port suggestions", () => {
+  it("parses SSH targets and limits serial choices to saved or discovered ports", () => {
     const ssh = createSshConnection();
     const parsed = parseSshTarget("ops@router.example", ssh);
     expect(formatSshTarget(parsed)).toBe("ops@router.example");
     expect(serialPortOptions("/dev/ttyUSB0", ["/dev/ttyUSB0", "/dev/ttyACM0"]))
-      .toEqual(expect.arrayContaining(["/dev/ttyUSB0", "/dev/ttyACM0", "COM1"]));
+      .toEqual(["/dev/ttyUSB0", "/dev/ttyACM0"]);
     expect(serialPortOptions("/dev/ttyUSB0", ["/dev/ttyUSB0"]).filter((port) => port === "/dev/ttyUSB0"))
       .toHaveLength(1);
+    expect(serialPortOptions("", [])).toEqual([]);
+    expect(serialPortOptions("COM42", [])).toEqual(["COM42"]);
   });
 
   it("translates OpenSSH import candidates into the existing SSH connection model", () => {

@@ -239,7 +239,7 @@ export function createIdentityRef(): IdentityRef {
 }
 
 export function serialPortOptions(current: string, discovered: string[]) {
-  return Array.from(new Set([current, ...discovered, "COM1", "COM2", "COM3", "COM7", "/dev/ttyUSB0", "/dev/ttyACM0"].filter(Boolean)));
+  return Array.from(new Set([current, ...discovered].filter(Boolean)));
 }
 
 export function formatSshTarget(ssh: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }>) {

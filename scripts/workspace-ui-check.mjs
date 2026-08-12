@@ -1098,7 +1098,7 @@ try {
             grants: window.__mcpGrants,
           };
         }
-        if (command === "list_serial_ports") return [];
+        if (command === "list_serial_ports") return ["/dev/ttyUSB0"];
         if (command.startsWith("plugin:event|")) return null;
         return null;
       },
