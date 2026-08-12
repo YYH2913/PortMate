@@ -15,7 +15,10 @@ import {
 } from "lucide-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
+import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
 import { KeyedRequestGate } from "./keyed-request-gate";
+import { decodeStoredScreenLockMarker, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
+import type { ScreenLockMarker } from "./screen-lock-state";
 import {
   analyzeSerialCaptureFrames,
   defaultSerialAnalyzerStoredState,
@@ -70,6 +73,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   const [history, setHistory] = useState<SerialCaptureHistorySnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
+  const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const sessionsRef = useRef<SessionSummary[]>(sessions);
   const sessionRefreshGateRef = useRef(new KeyedRequestGate<"sessions">());
   const framesRef = useRef<SerialCaptureFrame[]>([]);
@@ -81,6 +85,22 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   useEffect(() => {
     document.title = `${session?.profile.name ?? "串口"} - PortMate 串口分析器`;
   }, [session?.profile.name]);
+
+  useEffect(() => {
+    const refreshLock = () => setScreenLock((current) => {
+      const next = readScreenLockMarker(current?.lockedAt);
+      return screenLockMarkersEqual(current, next) ? current : next;
+    });
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === SCREEN_LOCK_STORAGE_KEY || event.key === null) refreshLock();
+    };
+    const timer = window.setInterval(refreshLock, 500);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   useEffect(() => {
     void refreshSessions();
@@ -274,6 +294,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
           <button type="button" onClick={() => void closeWindow()}>关闭窗口</button>
         </section>
       )}
+      {screenLock ? <ChildWindowScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
     </main>
   );
 }
@@ -569,6 +590,19 @@ function loadLocalSessions(): SessionSummary[] {
   } catch {
     return [];
   }
+}
+
+function readScreenLockMarker(fallbackLockedAt = Date.now()): ScreenLockMarker | null {
+  try {
+    const raw = window.localStorage.getItem(SCREEN_LOCK_STORAGE_KEY);
+    return decodeStoredScreenLockMarker(raw, fallbackLockedAt)?.marker ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function screenLockMarkersEqual(left: ScreenLockMarker | null, right: ScreenLockMarker | null) {
+  return left?.lockedAt === right?.lockedAt && left?.reason === right?.reason;
 }
 
 function formatAnalyzerTime(value: string): string {

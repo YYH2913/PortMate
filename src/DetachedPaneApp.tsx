@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Lock, PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
+import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
 import { COMMAND_HISTORY_STORAGE_KEY, commandHistoryCommands, normalizeCommandHistory, normalizeCommandHistoryPolicy } from "./command-history-state";
 import {
   buildDetachedPanePath,
@@ -287,66 +288,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           {terminalKeyModeLabel(keyMode)}
         </button>
       </footer>
-      {screenLock ? <DetachedScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
+      {screenLock ? <ChildWindowScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
     </main>
-  );
-}
-
-function DetachedScreenLockOverlay({ marker, ownerWindowId }: { marker: ScreenLockMarker; ownerWindowId: string }) {
-  const overlayRef = useRef<HTMLDivElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
-    return () => window.cancelAnimationFrame(frame);
-  }, []);
-
-  async function focusOwnerWorkspace() {
-    try {
-      if (isBackendAvailable()) {
-        const owner = await WebviewWindow.getByLabel(ownerWindowId);
-        await owner?.setFocus();
-        return;
-      }
-      window.opener?.focus();
-    } catch {
-      window.opener?.focus();
-    }
-  }
-
-  const reason = marker.reason === "idle" ? "空闲超时" : marker.reason === "startup" ? "启动保护" : "手动锁定";
-  return (
-    <div
-      ref={overlayRef}
-      className="screen-lock-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="detached-screen-lock-title"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" || event.key === "Tab") {
-          event.preventDefault();
-          event.stopPropagation();
-          buttonRef.current?.focus();
-        }
-      }}
-    >
-      <section className="screen-lock-panel">
-        <div className="screen-lock-brand">
-          <span className="screen-lock-icon"><Lock size={20} /></span>
-          <span>PortMate</span>
-        </div>
-        <div className="screen-lock-heading">
-          <h1 id="detached-screen-lock-title">屏幕已锁定</h1>
-          <span>{reason} · {new Date(marker.lockedAt).toLocaleTimeString()}</span>
-        </div>
-        <div className="screen-lock-rule" />
-        <p className="screen-lock-message">请在来源工作区完成解锁</p>
-        <button ref={buttonRef} className="screen-lock-primary" type="button" onClick={() => void focusOwnerWorkspace()}>
-          <PanelLeftOpen size={15} />
-          <span>切换到来源工作区</span>
-        </button>
-      </section>
-    </div>
   );
 }
 

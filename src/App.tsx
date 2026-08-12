@@ -2748,6 +2748,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function openSerialAnalyzer(session: SessionSummary) {
     const request: SerialAnalyzerRequest = {
       windowId: createWorkspaceNodeId("pane").replace(/^pane-/, "serial-analyzer-").replace(/[^A-Za-z0-9_-]/g, "-"),
+      ownerWindowId,
       sessionId: session.profile.id,
     };
     try {

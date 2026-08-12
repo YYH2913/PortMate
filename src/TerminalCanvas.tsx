@@ -56,7 +56,7 @@ import {
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
-import { MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
+import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
   MAX_TERMINAL_TIMESTAMPS,
@@ -1591,7 +1591,7 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     const requestSearch = () => {
-      if (active && focused) openSearchRef.current();
+      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) openSearchRef.current();
     };
     window.addEventListener(TERMINAL_SEARCH_REQUEST_EVENT, requestSearch);
     return () => window.removeEventListener(TERMINAL_SEARCH_REQUEST_EVENT, requestSearch);
@@ -1612,7 +1612,7 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     const requestGotoLine = () => {
-      if (active && focused) openGotoLineRef.current();
+      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) openGotoLineRef.current();
     };
     window.addEventListener(TERMINAL_GOTO_LINE_REQUEST_EVENT, requestGotoLine);
     return () => window.removeEventListener(TERMINAL_GOTO_LINE_REQUEST_EVENT, requestGotoLine);
@@ -1620,7 +1620,7 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     const requestFreeInput = () => {
-      if (active && focused) openFreeInputRef.current();
+      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) openFreeInputRef.current();
     };
     window.addEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
     return () => window.removeEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
@@ -1631,6 +1631,10 @@ export default function TerminalCanvas({
       const detail = (event as CustomEvent<TerminalTextExportRequestDetail>).detail;
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      if (modalBlocksTerminalCommand(hostRef.current)) {
+        detail.respond({ ok: false, error: "顶层对话框打开时不能导出终端文本。" });
+        return;
+      }
       const source = (detail as { source?: unknown }).source;
       if (source !== "buffer" && source !== "selection") {
         detail.respond({ ok: false, error: "不支持的终端文本导出来源。" });
@@ -1676,6 +1680,10 @@ export default function TerminalCanvas({
       const detail = (event as CustomEvent<TerminalBufferActionRequestDetail>).detail;
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      if (modalBlocksTerminalCommand(hostRef.current)) {
+        detail.respond({ ok: false, error: "顶层对话框打开时不能修改终端缓冲。" });
+        return;
+      }
       const action = (detail as { action?: unknown }).action;
       if (action !== "clear-scrollback" && action !== "clear-screen" && action !== "clear-all") {
         detail.respond({ ok: false, error: "不支持的终端缓冲操作。" });
@@ -1709,6 +1717,10 @@ export default function TerminalCanvas({
       const detail = (event as CustomEvent<TerminalSelectionRequestDetail>).detail;
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
+      if (modalBlocksTerminalCommand(hostRef.current)) {
+        detail.respond({ ok: false, error: "顶层对话框打开时不能访问终端选区。" });
+        return;
+      }
       const action = (detail as { action?: unknown }).action;
       if (action !== "read" && action !== "copy" && action !== "select-all" && action !== "clear") {
         detail.respond({ ok: false, error: "不支持的终端选择命令。" });
@@ -2351,6 +2363,11 @@ function sameTerminalTimestampViewport(
     const other = right.entries[index];
     return entry.line === other?.line && entry.row === other.row && entry.ts === other.ts;
   });
+}
+
+function modalBlocksTerminalCommand(host: HTMLElement | null): boolean {
+  const layer = activeModalLayer();
+  return Boolean(layer && (!host || !layer.contains(host)));
 }
 
 function formatTerminalTimestampTitle(value: string): string {

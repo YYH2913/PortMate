@@ -2640,8 +2640,9 @@ Host staging
   await page.evaluate(() => document.querySelector('[aria-label="搜索会话"]')?.click());
   await page.locator(".search-dialog").waitFor();
   await page.waitForFunction(() => Boolean(document.activeElement?.closest(".search-dialog")));
-  const modalBoundaryResult = await page.evaluate(() => {
+  const modalBoundaryResult = await page.evaluate(async () => {
     const terminalInput = document.querySelector(".terminal-pane.active .xterm-helper-textarea");
+    const terminalCanvas = document.querySelector(".terminal-pane.active .terminal-canvas");
     const backgroundTarget = terminalInput;
     const backgroundInert = Boolean(terminalInput?.closest("[inert]"));
     terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -2672,7 +2673,27 @@ Host staging
     }));
     const selectionEvent = new Event("selectstart", { bubbles: true, cancelable: true });
     terminalInput?.dispatchEvent(selectionEvent);
+    const terminalTarget = {
+      sessionId: terminalCanvas?.getAttribute("data-terminal-session-id"),
+      viewId: terminalCanvas?.getAttribute("data-terminal-view-id"),
+    };
+    const commandResponses = {};
+    for (const [type, detail] of [
+      ["portmate-terminal-selection", { ...terminalTarget, action: "select-all" }],
+      ["portmate-terminal-buffer-action", { ...terminalTarget, action: "clear-all" }],
+      ["portmate-terminal-text-export", { ...terminalTarget, source: "buffer" }],
+    ]) {
+      window.dispatchEvent(new CustomEvent(type, {
+        detail: { ...detail, respond: (response) => { commandResponses[type] = response; } },
+      }));
+    }
+    for (const type of [
+      "portmate-terminal-search",
+      "portmate-terminal-goto-line",
+      "portmate-terminal-free-input",
+    ]) window.dispatchEvent(new Event(type));
     (terminalInput instanceof HTMLElement ? terminalInput : null)?.focus();
+    await new Promise((resolve) => setTimeout(resolve, 40));
     return {
       activePaneId: document.querySelector(".terminal-pane.active")?.getAttribute("data-pane-id"),
       backgroundInert,
@@ -2680,6 +2701,10 @@ Host staging
       focusInsideModal: Boolean(document.activeElement?.closest(".search-dialog")),
       blockedPointerEvents,
       selectionBlocked: selectionEvent.defaultPrevented,
+      commandResponses,
+      terminalToolsOpened: Boolean(document.querySelector(
+        ".terminal-pane.active .terminal-search-bar, .terminal-pane.active .terminal-goto-line, .terminal-pane.active .terminal-free-input",
+      )),
       sendTextCalls: window.__invokeCalls.filter((call) => call.command === "send_text").length,
     };
   });
@@ -2689,6 +2714,9 @@ Host staging
     && modalBoundaryResult.focusInsideModal
     && Object.values(modalBoundaryResult.blockedPointerEvents).every(Boolean)
     && modalBoundaryResult.selectionBlocked
+    && Object.keys(modalBoundaryResult.commandResponses).length === 3
+    && Object.values(modalBoundaryResult.commandResponses).every((response) => response?.ok === false && response.error.includes("顶层对话框"))
+    && !modalBoundaryResult.terminalToolsOpened
     && modalBoundaryResult.sendTextCalls === modalBoundaryBaseline.sendTextCalls,
   `modal interaction leaked into the terminal workspace: ${JSON.stringify({ modalBoundaryBaseline, modalBoundaryResult })}`);
   await page.getByRole("combobox", { name: "搜索会话和日志", exact: true }).press("Escape");
@@ -3571,6 +3599,7 @@ Host staging
   const detachedLockBoundary = await detachedPage.evaluate(async () => {
     const terminalInput = document.querySelector(".detached-pane-terminal .xterm-helper-textarea");
     const terminalHost = document.querySelector(".detached-pane-terminal .terminal-host");
+    const terminalCanvas = document.querySelector(".detached-pane-terminal .terminal-canvas");
     const rootInert = Boolean(terminalInput?.closest("[inert]"));
     terminalInput?.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
@@ -3589,6 +3618,25 @@ Host staging
     terminalInput?.dispatchEvent(pointerEvent);
     const wheelEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 });
     terminalInput?.dispatchEvent(wheelEvent);
+    const terminalTarget = {
+      sessionId: terminalCanvas?.getAttribute("data-terminal-session-id"),
+      viewId: terminalCanvas?.getAttribute("data-terminal-view-id"),
+    };
+    const commandResponses = {};
+    for (const [type, detail] of [
+      ["portmate-terminal-selection", { ...terminalTarget, action: "select-all" }],
+      ["portmate-terminal-buffer-action", { ...terminalTarget, action: "clear-all" }],
+      ["portmate-terminal-text-export", { ...terminalTarget, source: "buffer" }],
+    ]) {
+      window.dispatchEvent(new CustomEvent(type, {
+        detail: { ...detail, respond: (response) => { commandResponses[type] = response; } },
+      }));
+    }
+    for (const type of [
+      "portmate-terminal-search",
+      "portmate-terminal-goto-line",
+      "portmate-terminal-free-input",
+    ]) window.dispatchEvent(new Event(type));
     terminalInput?.focus();
     await new Promise((resolve) => setTimeout(resolve, 40));
     return {
@@ -3598,6 +3646,10 @@ Host staging
       pointerBlocked: pointerEvent.defaultPrevented,
       wheelBlocked: wheelEvent.defaultPrevented,
       hasSelection: terminalHost?.getAttribute("data-terminal-has-selection"),
+      commandResponses,
+      terminalToolsOpened: Boolean(document.querySelector(
+        ".detached-pane-terminal .terminal-search-bar, .detached-pane-terminal .terminal-goto-line, .detached-pane-terminal .terminal-free-input",
+      )),
     };
   });
   const detachedInputAfterLock = await detachedPage.evaluate(() => window.__invokeCalls.filter((call) => call.command === "send_text").length);
@@ -3607,6 +3659,9 @@ Host staging
     && detachedLockBoundary.pointerBlocked
     && detachedLockBoundary.wheelBlocked
     && detachedLockBoundary.hasSelection !== "true"
+    && Object.keys(detachedLockBoundary.commandResponses).length === 3
+    && Object.values(detachedLockBoundary.commandResponses).every((response) => response?.ok === false && response.error.includes("顶层对话框"))
+    && !detachedLockBoundary.terminalToolsOpened
     && detachedInputAfterLock === detachedInputBeforeLock,
   `interaction crossed the detached-window lock layer: ${JSON.stringify({
     boundary: detachedLockBoundary,
@@ -3660,6 +3715,68 @@ Host staging
   assert(serialAnalyzerHealth.statusWidth === 60,
     `serial analyzer runtime status width is unstable: ${JSON.stringify(serialAnalyzerHealth)}`);
   await serialAnalyzerPage.screenshot({ path: `${screenshotPrefix}-serial-analyzer.png`, fullPage: true });
+  await serialAnalyzerPage.evaluate(() => {
+    const marker = { version: 1, reason: "manual", lockedAt: Date.now() };
+    localStorage.setItem("portmate.screenLock.v1", JSON.stringify(marker));
+    window.dispatchEvent(new StorageEvent("storage", {
+      key: "portmate.screenLock.v1",
+      newValue: JSON.stringify(marker),
+      storageArea: localStorage,
+    }));
+  });
+  const serialAnalyzerLockOverlay = serialAnalyzerPage.locator(".screen-lock-overlay");
+  await serialAnalyzerLockOverlay.waitFor();
+  await serialAnalyzerPage.waitForFunction(() => document.activeElement?.closest(".screen-lock-overlay"));
+  const serialAnalyzerLockBoundary = await serialAnalyzerPage.evaluate(async () => {
+    const parserButton = document.querySelector('.serial-analyzer-segmented[aria-label="帧解析方式"] button');
+    const filterInput = document.querySelector('[aria-label="筛选分析帧"]');
+    const statusText = document.querySelector(".serial-analyzer-status-strip span");
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    parserButton?.dispatchEvent(clickEvent);
+    const inputEvent = new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      data: "locked-analyzer-probe",
+      inputType: "insertText",
+    });
+    filterInput?.dispatchEvent(inputEvent);
+    const pointerEvent = new PointerEvent("pointerdown", { bubbles: true, cancelable: true });
+    filterInput?.dispatchEvent(pointerEvent);
+    const wheelEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 });
+    filterInput?.dispatchEvent(wheelEvent);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    if (statusText?.firstChild && selection) {
+      const range = document.createRange();
+      range.selectNodeContents(statusText.firstChild);
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+    filterInput?.focus();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return {
+      contentInert: Boolean(filterInput?.closest("[inert]")),
+      clickBlocked: clickEvent.defaultPrevented,
+      inputBlocked: inputEvent.defaultPrevented,
+      pointerBlocked: pointerEvent.defaultPrevented,
+      wheelBlocked: wheelEvent.defaultPrevented,
+      selection: selection?.toString() ?? "",
+      focusInsideLock: Boolean(document.activeElement?.closest(".screen-lock-overlay")),
+    };
+  });
+  assert(serialAnalyzerLockBoundary.contentInert
+    && serialAnalyzerLockBoundary.clickBlocked
+    && serialAnalyzerLockBoundary.inputBlocked
+    && serialAnalyzerLockBoundary.pointerBlocked
+    && serialAnalyzerLockBoundary.wheelBlocked
+    && serialAnalyzerLockBoundary.selection === ""
+    && serialAnalyzerLockBoundary.focusInsideLock,
+  `interaction crossed the serial-analyzer lock layer: ${JSON.stringify(serialAnalyzerLockBoundary)}`);
+  await serialAnalyzerPage.evaluate(() => localStorage.removeItem("portmate.screenLock.v1"));
+  await serialAnalyzerLockOverlay.waitFor({ state: "detached" });
+  await serialAnalyzerPage.getByLabel("筛选分析帧", { exact: true }).fill("post-lock-probe");
+  assert(await serialAnalyzerPage.getByLabel("筛选分析帧", { exact: true }).inputValue() === "post-lock-probe",
+    "serial analyzer remained inert after the shared screen lock closed");
   await serialAnalyzerPage.evaluate(() => { window.__deferSessionLists = true; });
   await serialAnalyzerPage.waitForFunction(() => window.__pendingSessionLists.length === 1);
   await serialAnalyzerPage.waitForTimeout(3_200);
