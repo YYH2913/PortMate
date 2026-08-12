@@ -4001,6 +4001,11 @@ Host staging
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
   const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
+  assert(await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue() === ""
+    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled(),
+  "CC Switch JSON exposed a stored Token before an explicit generation or rotation action");
+  await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
+  await mcpDialog.getByText("portmate-test-token", { exact: true }).waitFor();
   const ccSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
   const parsedCcSwitchJson = JSON.parse(ccSwitchJson);
   await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
@@ -4021,14 +4026,18 @@ Host staging
     portmate: {
       type: "http",
       url: "http://192.168.33.222:9088/mcp",
-      bearer_token_env_var: "PORTMATE_MCP_TOKEN",
+      headers: {
+        Authorization: "Bearer portmate-test-token",
+      },
       tool_timeout_sec: 180,
     },
   })
     && copiedCcSwitchJson === ccSwitchJson
     && !ccSwitchJson.includes("mcpServers")
-    && !ccSwitchJson.includes("portmate-test-token"),
-  `CC Switch MCP JSON is not directly importable or exposed a token: ${ccSwitchJson}`);
+    && ccSwitchJson.includes("portmate-test-token")
+    && !ccSwitchJson.includes("bearer_token_env_var")
+    && !ccSwitchJson.includes("bearer_token\""),
+  `CC Switch MCP JSON is not directly importable or missing its inline token: ${ccSwitchJson}`);
   await page.evaluate(() => { window.__deferMcpHttpRuntimeAction = true; });
   await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).click();
   await page.waitForFunction(() => window.__pendingMcpHttpRuntimeActions.length === 1);

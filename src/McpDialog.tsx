@@ -7,7 +7,6 @@ import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } fro
 import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, parseMcpGrantExpiryInput } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
-  CC_SWITCH_DEFAULT_TOKEN_ENV_VAR,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
   defaultMcpHttpSettings,
   formatCcSwitchMcpJson,
@@ -67,7 +66,6 @@ export default function McpDialog({
   const [httpBusy, setHttpBusy] = useState(false);
   const [httpRuntimeBusy, setHttpRuntimeBusy] = useState(false);
   const [ccSwitchServerId, setCcSwitchServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
-  const [ccSwitchTokenEnvVar, setCcSwitchTokenEnvVar] = useState(CC_SWITCH_DEFAULT_TOKEN_ENV_VAR);
   const [ccSwitchToolTimeout, setCcSwitchToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
   const [ccSwitchCopied, setCcSwitchCopied] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
@@ -112,9 +110,9 @@ export default function McpDialog({
     && (!httpRemoteListener || httpSettings.allowRemote);
   const ccSwitchJson = useMemo(() => formatCcSwitchMcpJson(httpSettings, {
     serverId: ccSwitchServerId,
-    tokenEnvVar: ccSwitchTokenEnvVar,
+    token: httpToken,
     toolTimeoutSeconds: ccSwitchToolTimeout,
-  }), [ccSwitchServerId, ccSwitchTokenEnvVar, ccSwitchToolTimeout, httpSettings]);
+  }), [ccSwitchServerId, ccSwitchToolTimeout, httpSettings, httpToken]);
 
   useEffect(() => {
     if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
@@ -641,7 +639,7 @@ export default function McpDialog({
                 </header>
                 <div className="mcp-cc-switch-options">
                   <label><span>Server ID</span><input aria-label="CC Switch Server ID" value={ccSwitchServerId} maxLength={64} spellCheck={false} onChange={(event) => setCcSwitchServerId(event.target.value)} /></label>
-                  <label><span>Token 环境变量</span><input aria-label="CC Switch Token 环境变量" value={ccSwitchTokenEnvVar} maxLength={128} spellCheck={false} onChange={(event) => setCcSwitchTokenEnvVar(event.target.value)} /></label>
+                  <label><span>Bearer Token</span><input aria-label="CC Switch Bearer Token" value={httpToken} readOnly spellCheck={false} placeholder="先生成 Token" /></label>
                   <label><span>工具超时</span><input aria-label="CC Switch 工具超时秒数" type="number" min={1} max={3_600} value={ccSwitchToolTimeout || ""} onChange={(event) => setCcSwitchToolTimeout(Number(event.target.value))} /></label>
                 </div>
                 <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-cc-switch-json stale" : "mcp-cc-switch-json"} readOnly aria-label="CC Switch MCP JSON" value={ccSwitchJson} />

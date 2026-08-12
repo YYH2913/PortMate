@@ -2,7 +2,6 @@ import type { McpHttpConfig, McpHttpConfigRequest } from "./types";
 
 export const MCP_HTTP_DEFAULT_PORT = 8787;
 export const CC_SWITCH_DEFAULT_SERVER_ID = "portmate";
-export const CC_SWITCH_DEFAULT_TOKEN_ENV_VAR = "PORTMATE_MCP_TOKEN";
 export const CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS = 180;
 export const MCP_HTTP_LISTEN_PRESETS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
 export const MCP_HTTP_CUSTOM_LISTEN_PRESET = "custom" as const;
@@ -78,17 +77,18 @@ export function formatCcSwitchMcpJson(
   settings: Pick<McpHttpConfigRequest, "clientHost" | "port">,
   options: {
     serverId?: string;
-    tokenEnvVar?: string;
+    token?: string;
     toolTimeoutSeconds?: number;
   } = {},
 ): string {
   const serverId = (options.serverId ?? CC_SWITCH_DEFAULT_SERVER_ID).trim();
-  const tokenEnvVar = (options.tokenEnvVar ?? CC_SWITCH_DEFAULT_TOKEN_ENV_VAR).trim();
+  const token = (options.token ?? "").trim();
   const toolTimeoutSeconds = options.toolTimeoutSeconds ?? CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS;
   const url = mcpHttpClientEndpoint(settings);
   if (!url
     || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(serverId)
-    || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnvVar)
+    || !token
+    || token.length > 4_096
     || !Number.isInteger(toolTimeoutSeconds)
     || toolTimeoutSeconds < 1
     || toolTimeoutSeconds > 3_600) return "";
@@ -96,7 +96,9 @@ export function formatCcSwitchMcpJson(
     [serverId]: {
       type: "http",
       url,
-      bearer_token_env_var: tokenEnvVar,
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
       tool_timeout_sec: toolTimeoutSeconds,
     },
   }, null, 2);

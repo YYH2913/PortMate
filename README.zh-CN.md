@@ -125,7 +125,7 @@ Host Key 变化默认阻断连接。请在确认设备替换、系统重装或�
 3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
 4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
 5. HTTP 客户端在 `HTTP` 页设置监听 IP、客户端地址、端口、Origin、Client ID，生成 Token 后启动托管服务。
-6. CC Switch 直接复制 `HTTP` 页生成的 JSON，并在客户端电脑上设置其中引用的 Token 环境变量。
+6. 先生成或轮换 Token，再从 `HTTP` 页复制 CC Switch JSON。复制出的 JSON 包含该 Token，必须按敏感凭据保存。
 
 ### stdio 示例
 
@@ -167,20 +167,22 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 
 ### CC Switch
 
-`HTTP` 页会生成 CC Switch 单服务器编辑器可直接使用的扁平 JSON。它不会添加外层 `mcpServers`，也不会嵌入 Bearer Token，只引用环境变量：
+`HTTP` 页会生成 CC Switch 单服务器编辑器可直接使用的扁平 JSON。它不会添加外层 `mcpServers`。显式生成或轮换 Token 后，JSON 会直接包含 Bearer Token：
 
 ```json
 {
   "portmate": {
     "type": "http",
     "url": "http://192.168.33.222:8787/mcp",
-    "bearer_token_env_var": "PORTMATE_MCP_TOKEN",
+    "headers": {
+      "Authorization": "Bearer <PortMate 返回的 Token>"
+    },
     "tool_timeout_sec": 180
   }
 }
 ```
 
-只在运行 CC Switch 的客户端电脑环境中设置 `PORTMATE_MCP_TOKEN`。生成的 JSON 不包含 Token 值，可以安全保存。
+未显式生成或轮换 Token 前，JSON 会保持为空。请把复制出的 JSON 当作密码处理，不要提交到代码仓库、日志、截图或共享文档；轮换 Token 会使旧值失效。
 
 ### 权限范围
 

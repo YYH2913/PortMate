@@ -125,7 +125,7 @@ A changed host key blocks the connection by default. Use one-time trust, append,
 3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.
 4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
 5. For HTTP clients, configure the listen IP, client address, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service.
-6. For CC Switch, copy the generated JSON from the HTTP page and define its referenced token environment variable on the client machine.
+6. For CC Switch, generate or rotate the Token, then copy the generated JSON from the HTTP page. The copied JSON includes that Token and must be treated as a secret.
 
 ### stdio Example
 
@@ -167,20 +167,22 @@ Never place the HTTP token in a README, startup command, issue, log, or public M
 
 ### CC Switch
 
-The HTTP page generates the flat single-server JSON accepted by the CC Switch editor. It intentionally omits the outer `mcpServers` object and references an environment variable instead of embedding the Bearer token:
+The HTTP page generates the flat single-server JSON accepted by the CC Switch editor. It intentionally omits the outer `mcpServers` object. After you explicitly generate or rotate a Token, the JSON includes that Bearer Token:
 
 ```json
 {
   "portmate": {
     "type": "http",
     "url": "http://192.168.33.222:8787/mcp",
-    "bearer_token_env_var": "PORTMATE_MCP_TOKEN",
+    "headers": {
+      "Authorization": "Bearer <token returned by PortMate>"
+    },
     "tool_timeout_sec": 180
   }
 }
 ```
 
-Set `PORTMATE_MCP_TOKEN` only in the environment of the machine running CC Switch. The generated JSON remains safe to store because it contains no token value.
+The JSON is empty until a Token is explicitly generated or rotated. Treat copied JSON as a password: keep it out of source control, logs, screenshots, and shared documents. Rotating the Token invalidates the previous value.
 
 ### Grant Scopes
 
