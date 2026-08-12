@@ -48,7 +48,7 @@ impl PortMateMcp {
         }
         for transfer in &self.store.transfers {
             if !self.has_session(&transfer.session_id)
-                || !self.read_session_allowed(McpScope::ReadLogs, &transfer.session_id)
+                || !self.read_session_allowed(McpScope::ReadTransfers, &transfer.session_id)
             {
                 continue;
             }
@@ -153,7 +153,7 @@ impl PortMateMcp {
                 .store
                 .transfer_by_id(&id)
                 .ok_or_else(|| anyhow!("unknown or unauthorized transfer resource"))?;
-            self.guard_read_scope(McpScope::ReadLogs, Some(&transfer.session_id))?;
+            self.guard_read_scope(McpScope::ReadTransfers, Some(&transfer.session_id))?;
             self.require_known_session(&transfer.session_id)?;
             serde_json::to_string_pretty(&redact_transfer_task(transfer))?
         } else {

@@ -70,6 +70,37 @@ fn grant_is_expired_at_its_exact_deadline() {
 }
 
 #[test]
+fn transfer_and_tunnel_write_scopes_imply_only_their_matching_read_scope() {
+    let now = Utc::now();
+    let transfer = McpGrant {
+        client_id: "transfer-client".to_string(),
+        name: "Transfer client".to_string(),
+        scopes: vec![McpScope::Transfer],
+        allowed_sessions: vec!["test-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    };
+    assert!(transfer.allows(McpScope::Transfer, Some("test-session"), now));
+    assert!(transfer.allows(McpScope::ReadTransfers, Some("test-session"), now));
+    assert!(!transfer.allows(McpScope::ReadTunnels, Some("test-session"), now));
+    assert!(!transfer.allows(McpScope::ReadTransfers, Some("other-session"), now));
+
+    let tunnel = McpGrant {
+        client_id: "tunnel-client".to_string(),
+        name: "Tunnel client".to_string(),
+        scopes: vec![McpScope::Tunnel],
+        allowed_sessions: vec!["test-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    };
+    assert!(tunnel.allows(McpScope::Tunnel, Some("test-session"), now));
+    assert!(tunnel.allows(McpScope::ReadTunnels, Some("test-session"), now));
+    assert!(!tunnel.allows(McpScope::ReadTransfers, Some("test-session"), now));
+}
+
+#[test]
 fn auth_success_recording_respects_the_enabled_policy() {
     let mut store = test_store();
     let mut ssh = sensitive_ssh_connection();

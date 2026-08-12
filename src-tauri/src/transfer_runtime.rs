@@ -111,8 +111,9 @@ pub(super) async fn start_transfer_inner(
                     .record_system_event_tracked(
                         &request.session_id,
                         format!(
-                            "PortMate: transfer queued ({:?}) {} -> {}",
-                            request.protocol, request.source, request.destination
+                            "PortMate: transfer queued ({:?}, {})",
+                            request.protocol,
+                            transfer_route_label(&request.source, &request.destination)
                         ),
                     )
                     .into_iter()
@@ -153,6 +154,18 @@ pub(super) async fn start_transfer_inner(
     });
 
     Ok(task)
+}
+
+pub(super) fn transfer_route_label(source: &str, destination: &str) -> &'static str {
+    match (
+        has_remote_transfer_prefix(source),
+        has_remote_transfer_prefix(destination),
+    ) {
+        (false, true) => "upload",
+        (true, false) => "download",
+        (true, true) => "remote-copy",
+        (false, false) => "local-copy",
+    }
 }
 
 pub(super) fn transfer_lane(

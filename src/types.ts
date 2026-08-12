@@ -504,7 +504,7 @@ export interface ExportMcpAuditResult {
   records: number;
 }
 
-export type McpScope = "read-sessions" | "read-logs" | "write-input" | "transfer" | "tunnel" | "manage-sessions";
+export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "write-input" | "transfer" | "tunnel" | "manage-sessions";
 
 export interface McpGrant {
   clientId: string;

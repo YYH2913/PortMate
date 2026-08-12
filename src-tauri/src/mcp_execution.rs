@@ -1,5 +1,14 @@
 use super::*;
 
+const DEFAULT_MCP_TRANSFER_QUERY_LIMIT: u64 = 100;
+const MAX_MCP_TRANSFER_QUERY_LIMIT: u64 = 1000;
+
+fn bounded_mcp_transfer_query_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_MCP_TRANSFER_QUERY_LIMIT)
+        .clamp(1, MAX_MCP_TRANSFER_QUERY_LIMIT) as usize
+}
+
 pub(super) async fn execute_ipc_request(
     state: AppState,
     request: IpcRequest,
@@ -67,6 +76,49 @@ pub(super) async fn execute_ipc_request(
                 .collect();
             serde_json::to_value(redact_session_events(events)).map_err(|error| error.to_string())
         }
+        "list_transfers" => {
+            let session_id = request
+                .args
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str);
+            let limit = bounded_mcp_transfer_query_limit(
+                request.args.get("limit").and_then(serde_json::Value::as_u64),
+            );
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(&store, &request, McpScope::ReadTransfers, session_id)?;
+            let mut transfers = store
+                .transfers
+                .iter()
+                .filter(|transfer| {
+                    session_id.is_none_or(|session_id| transfer.session_id == session_id)
+                        && store.mcp_can_read(
+                            &request.client_id,
+                            McpScope::ReadTransfers,
+                            Some(&transfer.session_id),
+                        )
+                })
+                .cloned()
+                .map(redact_transfer_task)
+                .collect::<Vec<_>>();
+            if transfers.len() > limit {
+                transfers.drain(..transfers.len() - limit);
+            }
+            serde_json::to_value(transfers).map_err(|error| error.to_string())
+        }
+        "get_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?;
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            let transfer = store
+                .transfer_by_id(transfer_id)
+                .ok_or_else(|| "unknown or unavailable transfer".to_string())?;
+            require_mcp_read_scope(
+                &store,
+                &request,
+                McpScope::ReadTransfers,
+                Some(&transfer.session_id),
+            )?;
+            serde_json::to_value(redact_transfer_task(transfer)).map_err(|error| error.to_string())
+        }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
@@ -132,11 +184,44 @@ pub(super) async fn execute_ipc_request(
             let task = start_transfer_inner(&state, transfer).await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
+        "cancel_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
+            let task = cancel_transfer_inner(&state, &transfer_id)?;
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
+        }
+        "retry_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
+            let task = retry_transfer_inner(&state, &transfer_id).await?;
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
+        }
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
             let spec = create_tunnel_inner(&state, tunnel).await?;
-            serde_json::to_value(spec).map_err(|error| error.to_string())
+            serde_json::to_value(redact_mcp_tunnel_spec(spec)).map_err(|error| error.to_string())
+        }
+        "list_tunnels" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            {
+                let store = state.store.lock().map_err(|error| error.to_string())?;
+                require_mcp_read_scope(
+                    &store,
+                    &request,
+                    McpScope::ReadTunnels,
+                    Some(&session_id),
+                )?;
+            }
+            let statuses = list_tunnels_inner(&state, Some(&session_id))?
+                .into_iter()
+                .map(redact_mcp_tunnel_status)
+                .collect::<Vec<_>>();
+            serde_json::to_value(statuses).map_err(|error| error.to_string())
+        }
+        "stop_tunnel" => {
+            let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?.to_string();
+            let status = stop_tunnel_inner(&state, &tunnel_id).await?;
+            serde_json::to_value(redact_mcp_tunnel_status(status))
+                .map_err(|error| error.to_string())
         }
         "list_tmux_state" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -191,4 +276,15 @@ fn redact_mcp_tmux_state(mut state: TmuxState) -> TmuxState {
         pane.title = redact_secrets(&pane.title);
     }
     state
+}
+
+fn redact_mcp_tunnel_status(mut status: TunnelStatus) -> TunnelStatus {
+    status.spec = redact_mcp_tunnel_spec(status.spec);
+    status.last_error = status.last_error.take().map(|error| redact_secrets(&error));
+    status
+}
+
+fn redact_mcp_tunnel_spec(mut spec: TunnelSpec) -> TunnelSpec {
+    spec.label = redact_secrets(&spec.label);
+    spec
 }

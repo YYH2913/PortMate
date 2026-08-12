@@ -131,37 +131,108 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "list_transfers",
+            "List Transfers",
+            "List recent file-transfer tasks visible to this client. Paths are redacted.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "limit":{"type":"integer","minimum":1,"maximum":1000,"default":100}
+                }
+            }),
+            true,
+        ),
+        tool(
+            "get_transfer",
+            "Get Transfer",
+            "Read one file-transfer task by ID. Paths are redacted.",
+            transfer_id_schema(),
+            true,
+        ),
+        tool(
             "start_transfer",
             "Start Transfer",
-            "Start SFTP/SCP or modem transfer.",
+            "Start an SFTP, SCP, XModem, YModem, or ZModem transfer. At least one side must use the `remote:` or `ssh:` prefix; unprefixed paths are local to the PortMate desktop host. SFTP/SCP also support same-session remote-to-remote copy.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","source","destination"],
                 "properties":{
-                    "sessionId":{"type":"string"},
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
-                    "source":{"type":"string"},
-                    "destination":{"type":"string"}
+                    "source":{"type":"string","minLength":1,"maxLength":32768},
+                    "destination":{"type":"string","minLength":1,"maxLength":32768}
                 }
             }),
             false,
         ),
         tool(
+            "cancel_transfer",
+            "Cancel Transfer",
+            "Cancel a queued or running file-transfer task.",
+            transfer_id_schema(),
+            false,
+        ),
+        tool(
+            "retry_transfer",
+            "Retry Transfer",
+            "Retry a previous file-transfer task with its original protocol and paths.",
+            transfer_id_schema(),
+            false,
+        ),
+        tool(
             "create_tunnel",
-            "Create Tunnel",
-            "Create an SSH tunnel on a trusted session.",
+            "Create Forward Or Proxy",
+            "Create a route-specific SSH forward (`local` or `remote`) or a dynamic SOCKS5 proxy (`dynamic`) on an authorized SSH/Tmux session.",
             json!({
                 "type":"object",
-                "required":["sessionId","mode","bindHost","bindPort","targetHost","targetPort"],
+                "required":["sessionId","mode","bindHost","bindPort"],
                 "properties":{
-                    "sessionId":{"type":"string"},
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "mode":{"type":"string","enum":["local","remote","dynamic"]},
-                    "bindHost":{"type":"string"},
-                    "bindPort":{"type":"integer"},
-                    "targetHost":{"type":"string"},
-                    "targetPort":{"type":"integer"}
-                }
+                    "bindHost":{"type":"string","maxLength":255},
+                    "bindPort":{"type":"integer","minimum":0,"maximum":65535},
+                    "targetHost":{"type":"string","maxLength":255,"default":""},
+                    "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
+                    "label":{"type":"string","minLength":1,"maxLength":128}
+                },
+                "allOf":[
+                    {
+                        "if":{"properties":{"mode":{"const":"remote"}},"required":["mode"]},
+                        "else":{"properties":{"bindHost":{"type":"string","minLength":1,"maxLength":255}}}
+                    },
+                    {
+                        "if":{"properties":{"mode":{"const":"dynamic"}},"required":["mode"]},
+                        "then":{
+                            "properties":{
+                                "targetHost":{"type":"string","maxLength":0},
+                                "targetPort":{"const":0}
+                            }
+                        },
+                        "else":{
+                            "required":["targetHost","targetPort"],
+                            "properties":{
+                                "targetHost":{"type":"string","minLength":1,"maxLength":255},
+                                "targetPort":{"type":"integer","minimum":1,"maximum":65535}
+                            }
+                        }
+                    }
+                ]
             }),
+            false,
+        ),
+        tool(
+            "list_tunnels",
+            "List Forwards And Proxies",
+            "List active SSH forwards and dynamic SOCKS5 proxies for an authorized session.",
+            session_schema(),
+            true,
+        ),
+        tool(
+            "stop_tunnel",
+            "Stop Forward Or Proxy",
+            "Stop an active SSH forward or dynamic SOCKS5 proxy by tunnel ID.",
+            tunnel_id_schema(),
             false,
         ),
         tool(
@@ -325,6 +396,106 @@ fn session_schema() -> Value {
     json!({
         "type":"object",
         "required":["sessionId"],
-        "properties":{"sessionId":{"type":"string"}}
+        "properties":{"sessionId":{"type":"string","minLength":1,"maxLength":128}}
     })
+}
+
+fn transfer_id_schema() -> Value {
+    json!({
+        "type":"object",
+        "required":["transferId"],
+        "properties":{"transferId":{"type":"string","minLength":1,"maxLength":128}}
+    })
+}
+
+fn tunnel_id_schema() -> Value {
+    json!({
+        "type":"object",
+        "required":["tunnelId"],
+        "properties":{"tunnelId":{"type":"string","minLength":1,"maxLength":128}}
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(name: &str) -> McpToolDefinition {
+        tool_definitions()
+            .into_iter()
+            .find(|definition| definition.name == name)
+            .unwrap_or_else(|| panic!("missing MCP tool definition: {name}"))
+    }
+
+    #[test]
+    fn transfer_and_route_lifecycle_tools_expose_bounded_schemas() {
+        for name in [
+            "list_transfers",
+            "get_transfer",
+            "cancel_transfer",
+            "retry_transfer",
+            "list_tunnels",
+            "stop_tunnel",
+        ] {
+            let tool = definition(name);
+            assert_eq!(tool.input_schema["type"], "object", "{name}");
+        }
+        for name in ["list_transfers", "get_transfer", "list_tunnels"] {
+            assert!(definition(name).read_only, "{name}");
+        }
+        for name in [
+            "start_transfer",
+            "cancel_transfer",
+            "retry_transfer",
+            "create_tunnel",
+            "stop_tunnel",
+        ] {
+            assert!(!definition(name).read_only, "{name}");
+        }
+
+        let transfer = definition("start_transfer");
+        assert_eq!(
+            transfer.input_schema["properties"]["source"]["maxLength"],
+            32_768
+        );
+        assert!(transfer
+            .description
+            .contains("At least one side must use the `remote:` or `ssh:` prefix"));
+        let list = definition("list_transfers");
+        assert_eq!(list.input_schema["properties"]["limit"]["maximum"], 1_000);
+        assert_eq!(
+            list.input_schema["properties"]["sessionId"]["maxLength"],
+            128
+        );
+    }
+
+    #[test]
+    fn route_schema_distinguishes_fixed_forwards_from_dynamic_socks() {
+        let schema = definition("create_tunnel").input_schema;
+        assert_eq!(
+            schema["properties"]["mode"]["enum"],
+            json!(["local", "remote", "dynamic"])
+        );
+        assert_eq!(schema["properties"]["bindPort"]["minimum"], 0);
+        assert_eq!(schema["properties"]["bindPort"]["maximum"], 65_535);
+
+        let clauses = schema["allOf"].as_array().expect("route schema clauses");
+        let target_clause = &clauses[1];
+        assert_eq!(
+            target_clause["if"]["properties"]["mode"]["const"],
+            "dynamic"
+        );
+        assert_eq!(
+            target_clause["then"]["properties"]["targetPort"]["const"],
+            0
+        );
+        assert_eq!(
+            target_clause["else"]["required"],
+            json!(["targetHost", "targetPort"])
+        );
+        assert_eq!(
+            target_clause["else"]["properties"]["targetPort"]["minimum"],
+            1
+        );
+    }
 }

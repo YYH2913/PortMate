@@ -68,7 +68,19 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
 
     await session.send_ping()
     tools = await session.list_tools()
-    require(any(tool.name == "list_sessions" for tool in tools.tools), f"{transport} tools/list omitted list_sessions")
+    tool_names = {tool.name for tool in tools.tools}
+    for tool_name in (
+        "list_sessions",
+        "list_transfers",
+        "get_transfer",
+        "start_transfer",
+        "cancel_transfer",
+        "retry_transfer",
+        "create_tunnel",
+        "list_tunnels",
+        "stop_tunnel",
+    ):
+        require(tool_name in tool_names, f"{transport} tools/list omitted {tool_name}")
     resources = await session.list_resources()
     require(any(str(resource.uri) == "portmate://sessions" for resource in resources.resources), f"{transport} resources/list omitted sessions")
     templates = await session.list_resource_templates()

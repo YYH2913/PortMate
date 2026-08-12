@@ -198,3 +198,92 @@ fn mcp_ipc_reads_redact_profiles_and_complete_event_metadata() {
         let _ = fs::remove_dir_all(root);
     });
 }
+
+#[test]
+fn mcp_transfer_reads_are_scoped_limited_and_path_redacted() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-transfer-read-{}", Uuid::new_v4()));
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        let transfer = |id: &str, source: &str| TransferTask {
+            id: id.to_string(),
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: source.to_string(),
+            destination: format!("remote:/srv/{id}"),
+            bytes_total: 10,
+            bytes_done: 10,
+            status: TransferStatus::Completed,
+            message: Some(format!("token={id}-secret")),
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: None,
+        };
+        {
+            let mut store = state.store.lock().unwrap();
+            store.record_transfer(transfer("old-transfer", "/home/operator/private-old"));
+            store.record_transfer(transfer("new-transfer", "/home/operator/private-new"));
+            store.grants.push(McpGrant {
+                client_id: "transfer-reader".to_string(),
+                name: "Transfer reader".to_string(),
+                scopes: vec![McpScope::ReadTransfers],
+                allowed_sessions: vec![session_id.clone()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            });
+        }
+        let request = |command: &str, args: serde_json::Value| IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "transfer-reader".to_string(),
+            trusted_write: false,
+            command: command.to_string(),
+            args,
+        };
+
+        let listed = handle_ipc_request(
+            state.clone(),
+            request(
+                "list_transfers",
+                serde_json::json!({ "sessionId": session_id, "limit": 1 }),
+            ),
+        )
+        .await
+        .unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], "new-transfer");
+        assert_eq!(listed[0]["source"], "<redacted-path>");
+        assert_eq!(listed[0]["destination"], "<redacted-path>");
+        assert_eq!(listed[0]["message"], "completed");
+
+        let one = handle_ipc_request(
+            state.clone(),
+            request(
+                "get_transfer",
+                serde_json::json!({ "transferId": "old-transfer" }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(one["source"], "<redacted-path>");
+        assert_eq!(one["destination"], "<redacted-path>");
+
+        state.store.lock().unwrap().grants[0].scopes = vec![McpScope::ReadLogs];
+        assert!(handle_ipc_request(
+            state.clone(),
+            request("list_transfers", serde_json::json!({})),
+        )
+        .await
+        .unwrap_err()
+        .contains("ReadTransfers"));
+
+        let raw = serde_json::to_string(&*state.store.lock().unwrap()).unwrap();
+        assert!(raw.contains("/home/operator/private-old"));
+        assert!(!serde_json::to_string(&listed)
+            .unwrap()
+            .contains("/home/operator"));
+        let _ = fs::remove_dir_all(root);
+    });
+}

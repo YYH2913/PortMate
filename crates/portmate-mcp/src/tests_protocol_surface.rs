@@ -194,6 +194,156 @@ fn mcp_log_query_limit_matches_declared_schema_bounds() {
 }
 
 #[test]
+fn mcp_transfer_query_limit_matches_declared_schema_bounds() {
+    assert_eq!(bounded_transfer_query_limit(None), 100);
+    assert_eq!(bounded_transfer_query_limit(Some(0)), 1);
+    assert_eq!(bounded_transfer_query_limit(Some(600)), 600);
+    assert_eq!(bounded_transfer_query_limit(Some(u64::MAX)), 1000);
+}
+
+#[test]
+fn transfer_tools_filter_by_scope_session_and_limit_while_redacting_paths() {
+    let mut store = test_snapshot_store("visible transfer session");
+    let mut hidden = store.profiles[0].clone();
+    hidden.id = "hidden-session".to_string();
+    hidden.name = "hidden transfer session".to_string();
+    store.upsert_profile(hidden);
+    let transfer = |id: &str, session_id: &str, path: &str| portmate_core::TransferTask {
+        id: id.to_string(),
+        session_id: session_id.to_string(),
+        protocol: portmate_core::TransferProtocol::Sftp,
+        source: path.to_string(),
+        destination: format!("remote:/srv/{id}"),
+        bytes_total: 1,
+        bytes_done: 1,
+        status: portmate_core::TransferStatus::Completed,
+        message: Some(format!("token={id}-secret")),
+        started_at: None,
+        finished_at: None,
+        average_bytes_per_second: None,
+    };
+    store.record_transfer(transfer(
+        "visible-old",
+        "refresh-session",
+        "/home/operator/visible-old",
+    ));
+    store.record_transfer(transfer(
+        "hidden",
+        "hidden-session",
+        "/home/operator/hidden",
+    ));
+    store.record_transfer(transfer(
+        "visible-new",
+        "refresh-session",
+        "/home/operator/visible-new",
+    ));
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "transfer-reader".to_string(),
+        name: "Transfer reader".to_string(),
+        scopes: vec![McpScope::ReadTransfers],
+        allowed_sessions: vec!["refresh-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    let mut server = PortMateMcp {
+        store,
+        store_path: None,
+        ipc: None,
+        client_id: "transfer-reader".to_string(),
+        allow_write: false,
+    };
+
+    let listed = server
+        .tool_call(&json!({
+            "name": "list_transfers",
+            "arguments": { "limit": 1 }
+        }))
+        .unwrap();
+    let listed = listed["content"][0]["text"].as_str().unwrap();
+    assert!(listed.contains("visible-new"));
+    assert!(!listed.contains("visible-old"));
+    assert!(!listed.contains("hidden"));
+    assert!(listed.contains("<redacted-path>"));
+    assert!(!listed.contains("/home/operator"));
+    assert!(!listed.contains("visible-new-secret"));
+
+    let one = server
+        .tool_call(&json!({
+            "name": "get_transfer",
+            "arguments": { "transferId": "visible-new" }
+        }))
+        .unwrap();
+    let one = one["content"][0]["text"].as_str().unwrap();
+    assert!(one.contains("visible-new"));
+    assert!(one.contains("<redacted-path>"));
+    assert!(!one.contains("/home/operator"));
+    assert!(server
+        .tool_call(&json!({
+            "name": "get_transfer",
+            "arguments": { "transferId": "hidden" }
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("ReadTransfers"));
+
+    server.store.grants[0].scopes = vec![McpScope::Transfer];
+    assert!(server
+        .tool_call(&json!({
+            "name": "list_transfers",
+            "arguments": { "sessionId": "refresh-session" }
+        }))
+        .is_ok());
+    assert_eq!(
+        server
+            .tool_call(&json!({
+                "name": "list_tunnels",
+                "arguments": { "sessionId": "refresh-session" }
+            }))
+            .unwrap_err()
+            .to_string(),
+        "MCP read grant does not permit ReadTunnels for the requested session"
+    );
+}
+
+#[test]
+fn tunnel_read_scope_returns_a_stable_empty_list_without_desktop_ipc() {
+    let mut store = test_snapshot_store("route session");
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "route-reader".to_string(),
+        name: "Route reader".to_string(),
+        scopes: vec![McpScope::ReadTunnels],
+        allowed_sessions: vec!["refresh-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    let mut server = PortMateMcp {
+        store,
+        store_path: None,
+        ipc: None,
+        client_id: "route-reader".to_string(),
+        allow_write: false,
+    };
+
+    let response = server
+        .tool_call(&json!({
+            "name": "list_tunnels",
+            "arguments": { "sessionId": "refresh-session" }
+        }))
+        .unwrap();
+    assert_eq!(response["content"][0]["text"], "[]");
+
+    server.store.grants[0].scopes = vec![McpScope::Tunnel];
+    assert!(server
+        .tool_call(&json!({
+            "name": "list_tunnels",
+            "arguments": { "sessionId": "refresh-session" }
+        }))
+        .is_ok());
+}
+
+#[test]
 fn json_rpc_empty_batch_is_invalid_and_notifications_have_no_payload() {
     let empty = handle_http_json_rpc(json!([])).unwrap().unwrap();
     assert_eq!(empty["error"]["code"], -32600);

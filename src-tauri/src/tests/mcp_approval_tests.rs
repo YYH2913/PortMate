@@ -104,6 +104,20 @@ fn mcp_approval_queue_is_bounded_one_shot_and_times_out_closed() {
 }
 
 #[test]
+fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
+    for (action, scope, label) in [
+        ("cancel_transfer", McpScope::Transfer, "transfer"),
+        ("retry_transfer", McpScope::Transfer, "transfer"),
+        ("stop_tunnel", McpScope::Tunnel, "tunnel"),
+    ] {
+        let request = build_mcp_approval_request("ops-client", action, "session-1", scope).unwrap();
+        assert_eq!(request.action, action);
+        assert_eq!(request.scope, label);
+        assert_eq!(request.session_id, "session-1");
+    }
+}
+
+#[test]
 fn confirming_mcp_grant_fails_closed_before_execution_without_ui() {
     tauri::async_runtime::block_on(async {
         let root = std::env::temp_dir().join(format!(

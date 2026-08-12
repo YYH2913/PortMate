@@ -33,6 +33,17 @@ fn tunnel_requests_are_normalized_and_validate_targets_early() {
     assert!(dynamic.target_host.is_empty());
     assert_eq!(dynamic.target_port, 0);
 
+    let dynamic_without_target: CreateTunnelRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "ssh-session-1",
+        "mode": "dynamic",
+        "bindHost": "127.0.0.1",
+        "bindPort": 0
+    }))
+    .unwrap();
+    let dynamic_without_target = normalize_tunnel_request(dynamic_without_target).unwrap();
+    assert!(dynamic_without_target.target_host.is_empty());
+    assert_eq!(dynamic_without_target.target_port, 0);
+
     let oversized_host = normalize_tunnel_request(CreateTunnelRequest {
         bind_host: "x".repeat(MAX_TUNNEL_HOST_CHARACTERS + 1),
         ..dynamic.clone()

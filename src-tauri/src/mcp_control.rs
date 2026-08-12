@@ -74,7 +74,7 @@ pub(super) fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, Strin
             "MCP grant name must not contain control characters or exceed {MAX_MCP_GRANT_NAME_BYTES} bytes"
         ));
     }
-    if grant.scopes.len() > 6 {
+    if grant.scopes.len() > 8 {
         return Err("MCP grant contains too many scopes".to_string());
     }
     for (index, scope) in grant.scopes.iter().enumerate() {

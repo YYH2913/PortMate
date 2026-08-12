@@ -12,6 +12,8 @@ pub const DEFAULT_MCP_HTTP_CLIENT_ID: &str = "portmate-local";
 pub enum McpScope {
     ReadSessions,
     ReadLogs,
+    ReadTransfers,
+    ReadTunnels,
     WriteInput,
     Transfer,
     Tunnel,
@@ -36,7 +38,12 @@ impl McpGrant {
         if self.revoked_at.is_some() || self.expires_at.is_some_and(|expires| expires <= now) {
             return false;
         }
-        if !self.scopes.contains(&scope) {
+        let implied = match scope {
+            McpScope::ReadTransfers => self.scopes.contains(&McpScope::Transfer),
+            McpScope::ReadTunnels => self.scopes.contains(&McpScope::Tunnel),
+            _ => false,
+        };
+        if !self.scopes.contains(&scope) && !implied {
             return false;
         }
         match session_id {

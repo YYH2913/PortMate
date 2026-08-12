@@ -296,6 +296,23 @@ fn transfer_cancel_remains_accepted_when_persistence_fails() {
 }
 
 #[test]
+fn transfer_system_events_record_direction_without_paths() {
+    assert_eq!(
+        transfer_route_label("/home/operator/private", "remote:/srv/private"),
+        "upload"
+    );
+    assert_eq!(
+        transfer_route_label("ssh:/srv/private", "/home/operator/private"),
+        "download"
+    );
+    assert_eq!(
+        transfer_route_label("remote:/srv/a", "remote:/srv/b"),
+        "remote-copy"
+    );
+    assert_eq!(transfer_route_label("local-a", "local-b"), "local-copy");
+}
+
+#[test]
 fn transfer_finish_preserves_cancelled_truth_and_cleans_runtime_state() {
     let root = std::env::temp_dir().join(format!(
         "portmate-transfer-finish-persistence-failure-{}",

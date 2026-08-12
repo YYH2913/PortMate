@@ -188,12 +188,63 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | --- | --- |
 | `read-sessions` | 读取已授权会话及运行状态 |
 | `read-logs` | 读取和搜索已授权会话日志 |
+| `read-transfers` | 列出并查看已脱敏的传输状态 |
+| `read-tunnels` | 列出活动的 SSH 转发和 SOCKS5 代理 |
 | `write-input` | 向终端发送文本、按键或命令 |
-| `transfer` | 创建文件传输任务 |
-| `tunnel` | 创建 SSH tunnel |
+| `transfer` | 启动、取消和重试文件传输，并隐含 `read-transfers` |
+| `tunnel` | 创建和停止 SSH 转发或 SOCKS5 代理，并隐含 `read-tunnels` |
 | `manage-sessions` | 打开或关闭会话 |
 
 授权可以设置到期时间、撤销状态、允许会话列表和写操作逐次确认。所有 MCP 写操作都会进入审计记录。
+
+### 文件传输工具
+
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:` 或 `ssh:` 前缀；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
+
+SFTP 上传示例：
+
+```json
+{
+  "sessionId": "edge-router",
+  "protocol": "sftp",
+  "source": "/home/operator/firmware.bin",
+  "destination": "remote:/tmp/firmware.bin"
+}
+```
+
+下载时交换两端，例如使用 `source: "remote:/var/log/messages"` 和 `destination: "/home/operator/messages"`。SFTP/SCP 也允许在同一个已授权会话内的两个 `remote:` 路径之间复制。用返回的任务 ID 调用 `get_transfer`、`cancel_transfer` 或 `retry_transfer`。
+
+### 指定路由转发与代理
+
+`create_tunnel` 只在一个已连接且已授权的 SSH/Tmux 会话内创建指定路由。它不会修改操作系统路由表，也不会安装透明 CIDR 代理。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。
+
+本地转发把一个本地监听端口经 SSH 送到固定目标：
+
+```json
+{
+  "sessionId": "edge-router",
+  "mode": "local",
+  "bindHost": "127.0.0.1",
+  "bindPort": 15432,
+  "targetHost": "db.internal",
+  "targetPort": 5432,
+  "label": "Database route"
+}
+```
+
+服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理使用 `mode: "dynamic"`，不需要目标字段，并可把 `bindPort` 设为 `0` 自动选择可用的本地端口：
+
+```json
+{
+  "sessionId": "edge-router",
+  "mode": "dynamic",
+  "bindHost": "127.0.0.1",
+  "bindPort": 0,
+  "label": "Device network SOCKS5"
+}
+```
+
+把本地监听绑定到非回环地址会向对应网络接口开放代理或转发。在完全信任 MCP 客户端和路由策略之前，应保留写操作逐次确认。
 
 ## 构建
 

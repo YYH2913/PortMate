@@ -210,7 +210,7 @@ const mcpGrants = [
   {
     clientId: "ops-console",
     name: "Operations Console",
-    scopes: ["read-sessions", "read-logs", "write-input"],
+    scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "write-input"],
     allowedSessions: ["edge-router"],
     confirmWrites: true,
     expiresAt: null,
@@ -3459,6 +3459,11 @@ Host staging
     "MCP grants did not load into the compact grant workspace");
   assert(await mcpDialog.getByRole("checkbox", { name: "写操作每次确认", exact: true }).isChecked(),
     "MCP write confirmation setting did not load for the selected grant");
+  const visibleMcpScopes = await mcpDialog.locator(".mcp-check-grid label").allTextContents();
+  assert(JSON.stringify(visibleMcpScopes.map((scope) => scope.trim())) === JSON.stringify([
+    "read-sessions", "read-logs", "read-transfers", "read-tunnels",
+    "write-input", "transfer", "tunnel", "manage-sessions",
+  ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
   await mcpDialog.locator(".mcp-new").click();
   const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
   await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
@@ -3497,6 +3502,9 @@ Host staging
   await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
   await newGrantClientId.fill("empty-store-client");
   await mcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Empty Store Client");
+  assert(await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-transfers" }).locator("input").isChecked()
+    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-tunnels" }).locator("input").isChecked(),
+  "new MCP grants do not default to read-only transfer and route visibility");
   const grantExpiry = mcpDialog.getByLabel("MCP 授权到期时间", { exact: true });
   await grantExpiry.fill("2031-04-05T06:07");
   await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();

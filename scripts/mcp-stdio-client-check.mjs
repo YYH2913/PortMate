@@ -64,7 +64,20 @@ try {
 
   await client.ping();
   const tools = await client.listTools();
-  assert(tools.tools.some((tool) => tool.name === "list_sessions"), "tools/list omitted list_sessions");
+  const toolNames = new Set(tools.tools.map((tool) => tool.name));
+  for (const toolName of [
+    "list_sessions",
+    "list_transfers",
+    "get_transfer",
+    "start_transfer",
+    "cancel_transfer",
+    "retry_transfer",
+    "create_tunnel",
+    "list_tunnels",
+    "stop_tunnel",
+  ]) {
+    assert(toolNames.has(toolName), `tools/list omitted ${toolName}`);
+  }
   const resources = await client.listResources();
   assert(resources.resources.some((resource) => resource.uri === "portmate://sessions"), "resources/list omitted portmate://sessions");
   const templates = await client.listResourceTemplates();

@@ -188,12 +188,63 @@ Set `PORTMATE_MCP_TOKEN` only in the environment of the machine running CC Switc
 | --- | --- |
 | `read-sessions` | Read authorized sessions and runtime state |
 | `read-logs` | Read and search logs for authorized sessions |
+| `read-transfers` | List and inspect redacted transfer status |
+| `read-tunnels` | List active SSH forwards and SOCKS5 proxies |
 | `write-input` | Send text, keys, or commands to a terminal |
-| `transfer` | Create file-transfer tasks |
-| `tunnel` | Create SSH tunnels |
+| `transfer` | Start, cancel, and retry file-transfer tasks; also implies `read-transfers` |
+| `tunnel` | Create and stop SSH forwards or SOCKS5 proxies; also implies `read-tunnels` |
 | `manage-sessions` | Open or close sessions |
 
 Grants support expiration, revocation, allowed-session lists, and per-write confirmation. Every MCP write operation is audited.
+
+### File Transfer Tools
+
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, XModem, YModem, and ZModem. At least one endpoint must be prefixed with `remote:` or `ssh:`; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
+
+Upload with SFTP:
+
+```json
+{
+  "sessionId": "edge-router",
+  "protocol": "sftp",
+  "source": "/home/operator/firmware.bin",
+  "destination": "remote:/tmp/firmware.bin"
+}
+```
+
+Download by reversing the sides, for example `source: "remote:/var/log/messages"` and `destination: "/home/operator/messages"`. SFTP and SCP may also copy between two `remote:` paths on the same authorized session. Use the returned task ID with `get_transfer`, `cancel_transfer`, or `retry_transfer`.
+
+### Route-Specific Forwarding And Proxy
+
+`create_tunnel` creates a route only inside one connected, authorized SSH or Tmux session. It does not modify the operating system routing table and does not install a transparent CIDR proxy. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.
+
+Local forwarding sends one local listener to a fixed target through SSH:
+
+```json
+{
+  "sessionId": "edge-router",
+  "mode": "local",
+  "bindHost": "127.0.0.1",
+  "bindPort": 15432,
+  "targetHost": "db.internal",
+  "targetPort": 5432,
+  "label": "Database route"
+}
+```
+
+Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` for a route-specific SOCKS5 proxy; dynamic mode needs no target fields and supports `bindPort: 0` to request an available local port:
+
+```json
+{
+  "sessionId": "edge-router",
+  "mode": "dynamic",
+  "bindHost": "127.0.0.1",
+  "bindPort": 0,
+  "label": "Device network SOCKS5"
+}
+```
+
+Binding a local listener to a non-loopback address exposes it to that interface. Keep per-write confirmation enabled unless the client and route policy are fully trusted.
 
 ## Build
 

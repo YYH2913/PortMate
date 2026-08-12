@@ -105,6 +105,382 @@ fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
 }
 
 #[test]
+fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-transfer-route-{}", Uuid::new_v4()));
+        let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+        let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        let request = |source: &str, destination: &str| IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "trusted-transfer-client".to_string(),
+            trusted_write: true,
+            command: "start_transfer".to_string(),
+            args: serde_json::json!({
+                "sessionId": session_id,
+                "protocol": "sftp",
+                "source": source,
+                "destination": destination
+            }),
+        };
+
+        for (source, destination) in [
+            ("/home/operator/private-a", "/tmp/private-b"),
+            ("/home/operator/private-a\0secret", "remote:/srv/private-b"),
+        ] {
+            let error = handle_ipc_request(state.clone(), request(source, destination))
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("at least one remote:/ssh: path") || error.contains("NUL-free"),
+                "{error}"
+            );
+        }
+
+        validate_mcp_transfer_route(&StartTransferRequest {
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Scp,
+            source: "remote:/srv/private-source".to_string(),
+            destination: "ssh:/srv/private-destination".to_string(),
+        })
+        .unwrap();
+
+        let local_transfer = TransferTask {
+            id: "local-transfer".to_string(),
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: "/home/operator/private-local-source".to_string(),
+            destination: "/tmp/private-local-destination".to_string(),
+            bytes_total: 10,
+            bytes_done: 0,
+            status: TransferStatus::Failed,
+            message: Some("failed".to_string()),
+            started_at: None,
+            finished_at: Some(Utc::now()),
+            average_bytes_per_second: None,
+        };
+        state
+            .store
+            .lock()
+            .unwrap()
+            .record_transfer(local_transfer.clone());
+        let retry_error = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "trusted-transfer-client".to_string(),
+                trusted_write: true,
+                command: "retry_transfer".to_string(),
+                args: serde_json::json!({ "transferId": local_transfer.id }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(retry_error.contains("at least one remote:/ssh: path"));
+
+        let store = state.store.lock().unwrap();
+        assert_eq!(store.audit.len(), 3);
+        assert!(store.audit.iter().all(|record| record.decision == "invalid"
+            && record.details.get("scope").map(String::as_str) == Some("transfer")));
+        let encoded = serde_json::to_string(&store.audit).unwrap();
+        for sensitive in [
+            "private-a",
+            "private-b",
+            "private-local-source",
+            "private-local-destination",
+            "/home/operator",
+            "/srv/",
+        ] {
+            assert!(!encoded.contains(sensitive), "audit leaked {sensitive}");
+        }
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
+    let root = std::env::temp_dir().join(format!("portmate-mcp-write-recheck-{}", Uuid::new_v4()));
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let owner_session = state.store.lock().unwrap().profiles[0].id.clone();
+    let transfer = TransferTask {
+        id: "rechecked-transfer".to_string(),
+        session_id: owner_session.clone(),
+        protocol: TransferProtocol::Sftp,
+        source: "/home/operator/private-source".to_string(),
+        destination: "remote:/srv/private-target".to_string(),
+        bytes_total: 100,
+        bytes_done: 1,
+        status: TransferStatus::Running,
+        message: Some("running".to_string()),
+        started_at: Some(Utc::now()),
+        finished_at: None,
+        average_bytes_per_second: None,
+    };
+    {
+        let mut store = state.store.lock().unwrap();
+        store.record_transfer(transfer.clone());
+        store.grants.push(McpGrant {
+            client_id: "rechecked-client".to_string(),
+            name: "Rechecked client".to_string(),
+            scopes: vec![McpScope::Transfer],
+            allowed_sessions: vec![owner_session.clone()],
+            confirm_writes: true,
+            expires_at: None,
+            revoked_at: None,
+        });
+    }
+    let request = IpcRequest {
+        token: "authenticated-token".to_string(),
+        client_id: "rechecked-client".to_string(),
+        trusted_write: false,
+        command: "cancel_transfer".to_string(),
+        args: serde_json::json!({ "transferId": transfer.id }),
+    };
+
+    revalidate_ipc_write_target(&state, &request, McpScope::Transfer, &owner_session, false)
+        .unwrap();
+    state
+        .store
+        .lock()
+        .unwrap()
+        .transfers
+        .iter_mut()
+        .find(|item| item.id == transfer.id)
+        .unwrap()
+        .session_id = "changed-session".to_string();
+    assert!(revalidate_ipc_write_target(
+        &state,
+        &request,
+        McpScope::Transfer,
+        &owner_session,
+        false,
+    )
+    .unwrap_err()
+    .contains("target changed"));
+
+    {
+        let mut store = state.store.lock().unwrap();
+        store
+            .transfers
+            .iter_mut()
+            .find(|item| item.id == transfer.id)
+            .unwrap()
+            .session_id = owner_session.clone();
+        store.grants[0].revoked_at = Some(Utc::now());
+    }
+    assert!(revalidate_ipc_write_target(
+        &state,
+        &request,
+        McpScope::Transfer,
+        &owner_session,
+        false,
+    )
+    .unwrap_err()
+    .contains("grant changed"));
+
+    {
+        let mut store = state.store.lock().unwrap();
+        store.grants.clear();
+    }
+    let trusted_request = IpcRequest {
+        trusted_write: true,
+        ..request.clone()
+    };
+    assert!(revalidate_ipc_write_target(
+        &state,
+        &trusted_request,
+        McpScope::Transfer,
+        &owner_session,
+        false,
+    )
+    .unwrap_err()
+    .contains("grant changed"));
+    revalidate_ipc_write_target(
+        &state,
+        &trusted_request,
+        McpScope::Transfer,
+        &owner_session,
+        true,
+    )
+    .unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_cancel_transfer_authorizes_the_recorded_session_not_client_arguments() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-transfer-owner-{}", Uuid::new_v4()));
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let owner_session = state.store.lock().unwrap().profiles[0].id.clone();
+        let mut other = test_shell_profile();
+        other.id = "other-session".to_string();
+        other.name = "Other session".to_string();
+        let transfer = TransferTask {
+            id: "owned-transfer".to_string(),
+            session_id: owner_session.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: "/home/operator/private-source".to_string(),
+            destination: "remote:/srv/private-target".to_string(),
+            bytes_total: 100,
+            bytes_done: 1,
+            status: TransferStatus::Running,
+            message: Some("running".to_string()),
+            started_at: Some(Utc::now()),
+            finished_at: None,
+            average_bytes_per_second: None,
+        };
+        {
+            let mut store = state.store.lock().unwrap();
+            store.upsert_profile(other);
+            store.record_transfer(transfer.clone());
+            store.grants.push(McpGrant {
+                client_id: "other-only".to_string(),
+                name: "Other only".to_string(),
+                scopes: vec![McpScope::Transfer],
+                allowed_sessions: vec!["other-session".to_string()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            });
+        }
+
+        let denied = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "other-only".to_string(),
+                trusted_write: false,
+                command: "cancel_transfer".to_string(),
+                args: serde_json::json!({
+                    "transferId": transfer.id,
+                    "sessionId": "other-session"
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains(&owner_session));
+        let store = state.store.lock().unwrap();
+        assert_eq!(
+            store.transfer_by_id(&transfer.id).unwrap().status,
+            TransferStatus::Running
+        );
+        assert_eq!(store.audit.len(), 1);
+        assert_eq!(
+            store.audit[0].session_id.as_deref(),
+            Some(owner_session.as_str())
+        );
+        assert_eq!(store.audit[0].decision, "denied");
+        assert!(!serde_json::to_string(&store.audit)
+            .unwrap()
+            .contains("private-source"));
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn mcp_stop_tunnel_authorizes_runtime_owner_and_tunnel_reads_are_scoped() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-tunnel-owner-{}", Uuid::new_v4()));
+        let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+        let owner_session = state.store.lock().unwrap().profiles[0].id.clone();
+        let mut other = test_ssh_profile();
+        other.id = "other-ssh-session".to_string();
+        other.name = "Other SSH".to_string();
+        let tunnel = TunnelSpec {
+            id: "owned-tunnel".to_string(),
+            label: "token=route-label-secret".to_string(),
+            mode: TunnelMode::Dynamic,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10_080,
+            target_host: String::new(),
+            target_port: 0,
+            enabled: true,
+        };
+        {
+            let mut store = state.store.lock().unwrap();
+            store.upsert_profile(other);
+            store.grants.push(McpGrant {
+                client_id: "route-client".to_string(),
+                name: "Route client".to_string(),
+                scopes: vec![McpScope::ReadTunnels, McpScope::Tunnel],
+                allowed_sessions: vec!["other-ssh-session".to_string()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            });
+        }
+        let closed = Arc::new(AtomicBool::new(false));
+        state.tunnels.lock().unwrap().insert(
+            tunnel.id.clone(),
+            TunnelRuntime {
+                session_id: owner_session.clone(),
+                ssh_runtime_id: "ssh-runtime-owner".to_string(),
+                spec: tunnel.clone(),
+                metrics: Arc::new(TunnelMetrics::default()),
+                closed: Arc::clone(&closed),
+            },
+        );
+        let request = |command: &str, args: serde_json::Value| IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "route-client".to_string(),
+            trusted_write: false,
+            command: command.to_string(),
+            args,
+        };
+
+        assert!(handle_ipc_request(
+            state.clone(),
+            request(
+                "list_tunnels",
+                serde_json::json!({ "sessionId": owner_session }),
+            ),
+        )
+        .await
+        .unwrap_err()
+        .contains("ReadTunnels"));
+        let listed = handle_ipc_request(
+            state.clone(),
+            request(
+                "list_tunnels",
+                serde_json::json!({ "sessionId": "other-ssh-session" }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed, serde_json::json!([]));
+
+        let denied = handle_ipc_request(
+            state.clone(),
+            request(
+                "stop_tunnel",
+                serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "sessionId": "other-ssh-session"
+                }),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains(&owner_session));
+        assert!(!closed.load(Ordering::SeqCst));
+        assert!(state.tunnels.lock().unwrap().contains_key(&tunnel.id));
+        let audit = state.store.lock().unwrap().audit.clone();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].session_id.as_deref(), Some(owner_session.as_str()));
+        assert_eq!(audit[0].decision, "denied");
+        assert!(!serde_json::to_string(&audit)
+            .unwrap()
+            .contains("route-label-secret"));
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

@@ -24,8 +24,9 @@ pub(crate) fn mark_transfer_running(
                 .record_system_event_tracked(
                     &request.session_id,
                     format!(
-                        "PortMate: transfer started ({:?}) {} -> {}",
-                        request.protocol, request.source, request.destination
+                        "PortMate: transfer started ({:?}, {})",
+                        request.protocol,
+                        transfer_route_label(&request.source, &request.destination)
                     ),
                 )
                 .into_iter()
@@ -82,10 +83,8 @@ pub(crate) fn finish_transfer_task(
         store.record_system_event(
             session_id,
             format!(
-                "PortMate: transfer finished ({:?}, {:?}): {}",
-                task.protocol,
-                task.status,
-                truncate_for_log(&message, 800)
+                "PortMate: transfer finished ({:?}, {:?})",
+                task.protocol, task.status
             ),
         );
         if let Err(error) =

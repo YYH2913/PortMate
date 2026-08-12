@@ -59,7 +59,9 @@ pub struct CreateTunnelRequest {
     pub mode: TunnelMode,
     pub bind_host: String,
     pub bind_port: u16,
+    #[serde(default)]
     pub target_host: String,
+    #[serde(default)]
     pub target_port: u16,
     pub label: Option<String>,
 }

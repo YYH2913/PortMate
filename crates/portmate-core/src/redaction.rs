@@ -118,10 +118,16 @@ pub fn redact_timeline_marks(mut marks: Vec<TimelineMark>) -> Vec<TimelineMark> 
 pub fn redact_transfer_task(mut transfer: TransferTask) -> TransferTask {
     transfer.source = "<redacted-path>".to_string();
     transfer.destination = "<redacted-path>".to_string();
-    transfer.message = transfer
-        .message
-        .take()
-        .map(|message| redact_secrets(&message));
+    transfer.message = transfer.message.as_ref().map(|_| {
+        match transfer.status {
+            crate::models::TransferStatus::Queued => "queued",
+            crate::models::TransferStatus::Running => "running",
+            crate::models::TransferStatus::Completed => "completed",
+            crate::models::TransferStatus::Failed => "failed",
+            crate::models::TransferStatus::Cancelled => "cancelled",
+        }
+        .to_string()
+    });
     transfer
 }
 
@@ -180,5 +186,31 @@ mod tests {
         assert!(!redacted.contains("abc123"));
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("DEF_123"));
+    }
+
+    #[test]
+    fn transfer_redaction_removes_both_paths_without_mutating_the_source() {
+        let transfer = TransferTask {
+            id: "transfer-1".to_string(),
+            session_id: "session-1".to_string(),
+            protocol: crate::models::TransferProtocol::Sftp,
+            source: "/home/operator/private-source".to_string(),
+            destination: "remote:/srv/private-target".to_string(),
+            bytes_total: 12,
+            bytes_done: 6,
+            status: crate::models::TransferStatus::Running,
+            message: Some("token=transfer-secret".to_string()),
+            started_at: None,
+            finished_at: None,
+            average_bytes_per_second: None,
+        };
+
+        let redacted = redact_transfer_task(transfer.clone());
+
+        assert_eq!(redacted.source, "<redacted-path>");
+        assert_eq!(redacted.destination, "<redacted-path>");
+        assert_eq!(redacted.message.as_deref(), Some("running"));
+        assert_eq!(transfer.source, "/home/operator/private-source");
+        assert_eq!(transfer.destination, "remote:/srv/private-target");
     }
 }

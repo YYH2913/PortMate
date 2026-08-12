@@ -4,7 +4,7 @@ export function createMcpGrant(): McpGrant {
   return {
     clientId: "",
     name: "",
-    scopes: ["read-sessions", "read-logs"],
+    scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels"],
     allowedSessions: [],
     confirmWrites: true,
     expiresAt: null,

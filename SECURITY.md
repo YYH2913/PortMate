@@ -30,6 +30,23 @@ attacker who controls the current OS account, injects or debugs the PortMate pro
 trusted PortMate binary, or controls the kernel. Use OS account isolation, full-disk encryption, and
 trusted release artifacts for those threats.
 
+## MCP Transfer And Route Boundary
+
+- File-transfer and forwarding mutations require an explicit session-scoped grant and are written
+  to the MCP audit log. Grants may require desktop confirmation for every mutation.
+- Transfer status returned through MCP removes source and destination paths. Transfer lifecycle
+  events record only protocol, direction, and final status; they do not copy paths or backend error
+  messages into terminal logs.
+- MCP transfer requests must include at least one `remote:` or `ssh:` endpoint. This prevents the
+  session-scoped transfer grant from becoming a general local filesystem copy primitive. SFTP/SCP
+  remote-to-remote copy remains limited to the same authorized session.
+- Cancel, retry, and stop requests are authorized against the session recorded for the backend task
+  or live tunnel ID. A caller-supplied `sessionId` cannot reassign ownership.
+- MCP forwarding is limited to SSH local forwarding, SSH remote forwarding, and a local dynamic
+  SOCKS5 listener attached to one connected SSH/Tmux session. It does not modify the host routing
+  table or install transparent system-wide proxy rules. Binding a listener outside loopback can
+  expose it to the attached network and should retain desktop confirmation.
+
 ## Dependency Gates
 
 `npm run test:dependency-audit` rejects moderate-or-higher npm advisories.

@@ -126,6 +126,32 @@ fn mcp_grant_validation_normalizes_and_rejects_ambiguous_inputs() {
 }
 
 #[test]
+fn mcp_grant_validation_accepts_the_complete_scope_set() {
+    let grant = McpGrant {
+        client_id: "complete-client".to_string(),
+        name: "Complete client".to_string(),
+        scopes: vec![
+            McpScope::ReadSessions,
+            McpScope::ReadLogs,
+            McpScope::ReadTransfers,
+            McpScope::ReadTunnels,
+            McpScope::WriteInput,
+            McpScope::Transfer,
+            McpScope::Tunnel,
+            McpScope::ManageSessions,
+        ],
+        allowed_sessions: Vec::new(),
+        confirm_writes: true,
+        expires_at: None,
+        revoked_at: None,
+    };
+
+    assert_eq!(normalize_mcp_grant(grant).unwrap().scopes.len(), 8);
+    assert_eq!(mcp_scope_label(McpScope::ReadTransfers), "read-transfers");
+    assert_eq!(mcp_scope_label(McpScope::ReadTunnels), "read-tunnels");
+}
+
+#[test]
 fn mcp_grant_mutations_change_memory_only_after_persistence_succeeds() {
     let mut store = SessionStore::default();
     store.grants.push(McpGrant {

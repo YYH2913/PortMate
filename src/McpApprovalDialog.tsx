@@ -10,7 +10,10 @@ const actionLabels: Record<string, string> = {
   open_session: "打开会话",
   close_session: "断开会话",
   start_transfer: "启动文件传输",
-  create_tunnel: "创建端口转发",
+  cancel_transfer: "取消文件传输",
+  retry_transfer: "重试文件传输",
+  create_tunnel: "创建指定转发或代理",
+  stop_tunnel: "停止指定转发或代理",
 };
 
 export default function McpApprovalDialog({

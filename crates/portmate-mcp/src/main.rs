@@ -54,7 +54,7 @@ use json_rpc::{dispatch_json_rpc_value, error, JsonRpcRequest, JsonRpcResponse};
 #[cfg(test)]
 use mcp_resources::{parse_session_uri, parse_transfer_uri};
 #[cfg(test)]
-use mcp_tools::bounded_log_query_limit;
+use mcp_tools::{bounded_log_query_limit, bounded_transfer_query_limit};
 #[cfg(test)]
 use response_encoding::{
     encode_json_rpc_response, sse_event_with_limit, try_encode_json_with_limit,
