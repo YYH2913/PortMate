@@ -100,11 +100,31 @@ pub(super) fn write_atomic_export_with_checksum(
     bytes: &[u8],
     label: &str,
 ) -> Result<FinalizedArchive, String> {
+    write_atomic_export_with_checksum_policy(final_path, bytes, label, false)
+}
+
+pub(super) fn write_atomic_export_with_checksum_policy(
+    final_path: &Path,
+    bytes: &[u8],
+    label: &str,
+    overwrite: bool,
+) -> Result<FinalizedArchive, String> {
     let file_name = final_path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("invalid {label} path"))?;
-    let temp_path = final_path.with_file_name(format!(".{file_name}.part"));
+    let checksum_path = final_path.with_file_name(format!("{file_name}.sha256"));
+    let destination_exists = validate_export_artifact_target(final_path, label, overwrite)?;
+    validate_export_artifact_target(
+        &checksum_path,
+        &format!("{label} checksum"),
+        overwrite && destination_exists,
+    )?;
+
+    let nonce = Uuid::new_v4().simple().to_string();
+    let temp_path = final_path.with_file_name(format!(".{file_name}.{nonce}.part"));
+    let checksum_temp_path =
+        final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.part"));
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -117,29 +137,8 @@ pub(super) fn write_atomic_export_with_checksum(
         return Err(format!("failed to write {label}: {error}"));
     }
     drop(file);
-    if let Err(error) = fs::rename(&temp_path, final_path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(format!(
-            "failed to finalize {label} {}: {error}",
-            final_path.display()
-        ));
-    }
-    let sha256 = match sha256_file(final_path) {
-        Ok(sha256) => sha256,
-        Err(error) => {
-            let _ = fs::remove_file(final_path);
-            return Err(error);
-        }
-    };
-    let size = match fs::metadata(final_path) {
-        Ok(metadata) => metadata.len(),
-        Err(error) => {
-            let _ = fs::remove_file(final_path);
-            return Err(format!("failed to read {label} metadata: {error}"));
-        }
-    };
-    let checksum_path = final_path.with_file_name(format!("{file_name}.sha256"));
-    let checksum_temp_path = final_path.with_file_name(format!(".{file_name}.sha256.part"));
+
+    let sha256 = sha256_hex(bytes);
     let mut checksum_options = OpenOptions::new();
     checksum_options.create_new(true).write(true);
     #[cfg(unix)]
@@ -147,7 +146,7 @@ pub(super) fn write_atomic_export_with_checksum(
     let mut checksum = match checksum_options.open(&checksum_temp_path) {
         Ok(checksum) => checksum,
         Err(error) => {
-            let _ = fs::remove_file(final_path);
+            let _ = fs::remove_file(&temp_path);
             return Err(format!("failed to create {label} checksum: {error}"));
         }
     };
@@ -155,21 +154,124 @@ pub(super) fn write_atomic_export_with_checksum(
         .write_all(format!("{sha256}  {file_name}\n").as_bytes())
         .and_then(|_| checksum.sync_all())
     {
-        let _ = fs::remove_file(final_path);
+        let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&checksum_temp_path);
         return Err(format!("failed to write {label} checksum: {error}"));
     }
     drop(checksum);
-    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
-        let _ = fs::remove_file(final_path);
+
+    if let Err(error) = install_export_artifact(&temp_path, final_path, overwrite) {
+        let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&checksum_temp_path);
+        return Err(format!(
+            "failed to finalize {label} {}: {error}",
+            final_path.display()
+        ));
+    }
+    if let Err(error) = install_export_artifact(&checksum_temp_path, &checksum_path, overwrite) {
+        let _ = fs::remove_file(&checksum_temp_path);
+        if !overwrite {
+            let _ = fs::remove_file(final_path);
+        }
         return Err(format!("failed to finalize {label} checksum: {error}"));
     }
     Ok(FinalizedArchive {
         checksum_path,
         sha256,
-        size,
+        size: bytes.len() as u64,
     })
+}
+
+fn validate_export_artifact_target(
+    path: &Path,
+    label: &str,
+    overwrite: bool,
+) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "refusing to replace symbolic link for {label}: {}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "{label} target is not a regular file: {}",
+            path.display()
+        )),
+        Ok(_) if !overwrite => Err(format!(
+            "refusing to overwrite existing {label}: {}",
+            path.display()
+        )),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect {label} target {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn install_export_artifact(source: &Path, destination: &Path, overwrite: bool) -> std::io::Result<()> {
+    if !overwrite {
+        #[cfg(windows)]
+        return move_export_artifact_windows(source, destination, false);
+
+        #[cfg(not(windows))]
+        {
+            fs::hard_link(source, destination)?;
+            if let Err(error) = fs::remove_file(source) {
+                let _ = fs::remove_file(destination);
+                return Err(error);
+            }
+            return Ok(());
+        }
+    }
+    replace_export_artifact(source, destination)
+}
+
+#[cfg(not(windows))]
+fn replace_export_artifact(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_export_artifact(source: &Path, destination: &Path) -> std::io::Result<()> {
+    move_export_artifact_windows(source, destination, true)
+}
+
+#[cfg(windows)]
+fn move_export_artifact_windows(
+    source: &Path,
+    destination: &Path,
+    replace_existing: bool,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace_existing {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    let result = unsafe {
+        MoveFileExW(source.as_ptr(), destination.as_ptr(), flags)
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn open_bundle_attachment_file(path: &Path) -> Result<fs::File, String> {

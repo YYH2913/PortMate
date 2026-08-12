@@ -15,6 +15,7 @@ struct NativeSmokeConfig {
 pub fn run() {
     webkit_runtime::configure_webkit_runtime();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let native_smoke = native_smoke_config().map_err(std::io::Error::other)?;
             let (data_root, data_dir) = match &native_smoke {

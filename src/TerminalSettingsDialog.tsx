@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Ban, RotateCcw, X } from "lucide-react";
+import { Ban, FolderOpen, RotateCcw, X } from "lucide-react";
+import { isBackendAvailable } from "./api";
 import {
   MAX_SCREEN_LOCK_TIMEOUT_MINUTES,
   MIN_SCREEN_LOCK_TIMEOUT_MINUTES,
@@ -9,6 +10,10 @@ import {
 import { allSyncProtocols, normalizeSyncInputSettings } from "./sync-input-state";
 import type { SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { terminalStartupSessionOptions } from "./terminal-settings-state";
+import {
+  chooseTerminalExportDirectory,
+  MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS,
+} from "./terminal-export-path";
 import type { SessionKind, SessionSummary } from "./types";
 import {
   defaultWorkspaceKeymap,
@@ -73,8 +78,19 @@ export default function TerminalSettingsDialog({
   const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
+  const [settingsError, setSettingsError] = useState("");
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
+
+  async function selectTerminalExportDirectory() {
+    setSettingsError("");
+    try {
+      const selected = await chooseTerminalExportDirectory(prefs.terminalTextExportDirectory);
+      if (selected !== null) updatePref("terminalTextExportDirectory", selected);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   function savePrefs() {
     if (keymapConflictCount) return;
@@ -108,11 +124,17 @@ export default function TerminalSettingsDialog({
           onWorkspaceKeymapChange={setWorkspaceKeymapDraft}
           syncSettings={syncDraft}
           onSyncSettingsChange={setSyncDraft}
+          canChooseExportDirectory={isBackendAvailable()}
+          onChooseExportDirectory={() => void selectTerminalExportDirectory()}
+          onExportDirectoryChange={(value) => {
+            setSettingsError("");
+            updatePref("terminalTextExportDirectory", value);
+          }}
         />
       </section>
       <div className="dialog-footer">
-        <div className={keymapConflictCount ? "dialog-note error" : "dialog-note"}>
-          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : ""}
+        <div className={keymapConflictCount || settingsError ? "dialog-note error" : "dialog-note"}>
+          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : settingsError}
         </div>
         <div className="dialog-actions inline">
           <button onClick={savePrefs} disabled={keymapConflictCount > 0}>保存</button>
@@ -133,6 +155,9 @@ function TerminalSettingsContent({
   onWorkspaceKeymapChange,
   syncSettings,
   onSyncSettingsChange,
+  canChooseExportDirectory,
+  onChooseExportDirectory,
+  onExportDirectoryChange,
 }: {
   activeItem: string;
   prefs: TerminalPrefs;
@@ -143,29 +168,44 @@ function TerminalSettingsContent({
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   syncSettings: SyncInputSettings;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
+  canChooseExportDirectory: boolean;
+  onChooseExportDirectory: () => void;
+  onExportDirectoryChange: (value: string) => void;
 }) {
   switch (activeItem) {
     case "应用":
       return (
-        <SettingsSection title="启动">
-          <SettingRadio label="无会话(N)" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
-          <SettingRadio label="上次会话(L)" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
-          <SettingRadio label="指定一个会话或一组会话(S)" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
-          {[0, 1, 2, 3].map((index) => (
-            <SettingSelect
-              key={index}
-              label={`会话 ${index + 1}:`}
-              value={prefs.startupSessions[index] ?? ""}
-              options={terminalStartupSessionOptions(sessions, prefs.startupSessions[index])}
-              disabled={prefs.startupMode !== "specific"}
-              onChange={(value) => {
-                const next = [...prefs.startupSessions];
-                next[index] = value;
-                updatePref("startupSessions", next);
-              }}
+        <>
+          <SettingsSection title="启动">
+            <SettingRadio label="无会话(N)" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
+            <SettingRadio label="上次会话(L)" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
+            <SettingRadio label="指定一个会话或一组会话(S)" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
+            {[0, 1, 2, 3].map((index) => (
+              <SettingSelect
+                key={index}
+                label={`会话 ${index + 1}:`}
+                value={prefs.startupSessions[index] ?? ""}
+                options={terminalStartupSessionOptions(sessions, prefs.startupSessions[index])}
+                disabled={prefs.startupMode !== "specific"}
+                onChange={(value) => {
+                  const next = [...prefs.startupSessions];
+                  next[index] = value;
+                  updatePref("startupSessions", next);
+                }}
+              />
+            ))}
+          </SettingsSection>
+          <SettingsSection title="终端文本导出">
+            <SettingPath
+              label="默认目录:"
+              value={prefs.terminalTextExportDirectory}
+              placeholder="PortMate 默认 exports 目录"
+              canBrowse={canChooseExportDirectory}
+              onBrowse={onChooseExportDirectory}
+              onChange={onExportDirectoryChange}
             />
-          ))}
-        </SettingsSection>
+          </SettingsSection>
+        </>
       );
     case "安全":
       return (
@@ -470,6 +510,46 @@ function SettingInput({ label, value, type = "text", min, max, step, onChange }:
   );
 }
 
+function SettingPath({
+  label,
+  value,
+  placeholder,
+  canBrowse,
+  onBrowse,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  canBrowse: boolean;
+  onBrowse: () => void;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="setting-row terminal-export-path-setting">
+      <span>{label}</span>
+      <span className="setting-path-control">
+        <input
+          aria-label="终端文本默认导出目录"
+          value={value}
+          maxLength={MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button
+          type="button"
+          aria-label="选择终端文本导出目录"
+          title={canBrowse ? "选择目录" : "目录选择仅在桌面版可用"}
+          disabled={!canBrowse}
+          onClick={onBrowse}
+        >
+          <FolderOpen size={16} />
+        </button>
+      </span>
+    </label>
+  );
+}
+
 type SettingSelectOption = string | { value: string; label: string };
 
 function SettingSelect({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: readonly SettingSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
@@ -502,6 +582,7 @@ function createTerminalPrefs() {
   return {
     startupMode: "last",
     startupSessions: ["", "", "", ""],
+    terminalTextExportDirectory: "",
     lockOnIdle: false,
     lockScreenTimeoutMinutes: 30,
     requireMasterPassword: false,

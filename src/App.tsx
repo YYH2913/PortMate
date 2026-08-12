@@ -70,6 +70,11 @@ import type { SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
+import {
+  chooseTerminalTextExportPath,
+  normalizeTerminalExportDirectory,
+  terminalTextExportFileName,
+} from "./terminal-export-path";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
@@ -1782,16 +1787,26 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function exportTerminalText(
     source: TerminalTextExportSource,
     target?: { sessionId: string; viewId: string },
+    destination: "default" | "choose" = "default",
   ) {
     const viewId = target?.viewId ?? activeWorkspaceView?.id;
     const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
     const session = sessions.find((candidate) => candidate.profile.id === sessionId);
-    const title = source === "selection" ? "导出选中文本" : "导出终端文本";
+    const title = destination === "choose"
+      ? "导出终端文本到..."
+      : source === "selection" ? "导出选中文本" : "导出终端文本";
     if (!session || !viewId) {
       setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
     try {
+      const destinationPath = destination === "choose" && isBackendAvailable()
+        ? await chooseTerminalTextExportPath(
+          terminalPrefs.terminalTextExportDirectory,
+          terminalTextExportFileName(session.profile.name, source),
+        )
+        : null;
+      if (destination === "choose" && isBackendAvailable() && destinationPath === null) return;
       const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId, source });
       if (payload.sessionId !== session.profile.id || payload.viewId !== viewId || payload.source !== source) {
         throw new Error("终端导出响应与目标视图不匹配。");
@@ -1803,6 +1818,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             viewId: payload.viewId,
             source: payload.source,
             text: payload.text,
+            destinationDirectory: destination === "default"
+              ? normalizeTerminalExportDirectory(terminalPrefs.terminalTextExportDirectory) || null
+              : null,
+            destinationPath,
+            overwrite: destinationPath !== null,
           },
         });
         setNotice({
@@ -2079,6 +2099,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       case "export-buffer":
         void exportTerminalText("buffer", target);
+        return;
+      case "export-buffer-to":
+        void exportTerminalText("buffer", target, "choose");
         return;
       case "export-selection":
         void exportTerminalText("selection", target);
@@ -2442,6 +2465,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       case "export-buffer":
         void exportTerminalText("buffer", { sessionId: view.sessionId, viewId: view.id });
+        return;
+      case "export-buffer-to":
+        void exportTerminalText("buffer", { sessionId: view.sessionId, viewId: view.id }, "choose");
         return;
       case "export-selection":
         void exportTerminalText("selection", { sessionId: view.sessionId, viewId: view.id });
@@ -5356,6 +5382,7 @@ function createTerminalPrefs() {
   return {
     startupMode: "last",
     startupSessions: ["", "", "", ""],
+    terminalTextExportDirectory: "",
     lockOnIdle: false,
     lockScreenTimeoutMinutes: 30,
     requireMasterPassword: false,
@@ -5857,6 +5884,7 @@ function normalizeTerminalPrefs(value: unknown): TerminalPrefs {
       ? source.startupMode
       : defaults.startupMode,
     startupSessions: normalizeTerminalStartupSessionIds(source.startupSessions),
+    terminalTextExportDirectory: normalizeTerminalExportDirectory(source.terminalTextExportDirectory),
     lockOnIdle: booleanPreference(source.lockOnIdle, defaults.lockOnIdle),
     lockScreenTimeoutMinutes: normalizeScreenLockTimeoutMinutes(source.lockScreenTimeoutMinutes),
     requireMasterPassword: booleanPreference(source.requireMasterPassword, defaults.requireMasterPassword),

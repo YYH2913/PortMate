@@ -510,6 +510,9 @@ try {
           window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
           return null;
         }
+        if (command === "plugin:dialog|save") return "/tmp/portmate-picked-terminal.txt";
+        if (command === "plugin:dialog|open") return "/tmp/portmate-terminal-text";
+        if (command === "plugin:path|join") return args.paths.join("/").replace(/\/{2,}/g, "/");
         if (command === "list_sessions") {
           if (!window.__deferSessionLists) return window.__sessions;
           return new Promise((resolve) => {
@@ -703,6 +706,17 @@ try {
         }
         if (command === "list_serial_capture_history") {
           return { frames: [], enabled: false, totalFrames: 0, capturedBytes: 0, droppedFrames: 0, unavailableFrames: 0 };
+        }
+        if (command === "export_terminal_text") {
+          return {
+            path: args.request.destinationPath || "/tmp/portmate-terminal-export.txt",
+            checksumPath: `${args.request.destinationPath || "/tmp/portmate-terminal-export.txt"}.sha256`,
+            sha256: "b".repeat(64),
+            size: new TextEncoder().encode(args.request.text).byteLength,
+            sessionId: args.request.sessionId,
+            viewId: args.request.viewId,
+            source: args.request.source,
+          };
         }
         if (command === "list_log_shards") return window.__logShards;
         if (command === "read_log_shard") {
@@ -1762,6 +1776,28 @@ Host staging
   await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
   const terminalContextMenu = page.locator(".terminal-context-menu");
   await terminalContextMenu.waitFor();
+  assert(await terminalContextMenu.locator(".context-label", { hasText: /^导出终端文本$/ }).count() === 1
+    && await terminalContextMenu.locator(".context-label", { hasText: /^导出终端文本到\.\.\.$/ }).count() === 1,
+  "terminal context menu does not expose both default and chosen-path text exports");
+  const terminalExportCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "export_terminal_text"
+  )).length);
+  await terminalContextMenu.locator(".context-menu-row", { hasText: "导出终端文本到..." }).click();
+  await page.waitForFunction((before) => window.__invokeCalls.filter((call) => (
+    call.command === "export_terminal_text"
+  )).length === before + 1, terminalExportCallsBefore);
+  const chosenTerminalExport = await page.evaluate(() => ({
+    save: window.__invokeCalls.filter((call) => call.command === "plugin:dialog|save").at(-1),
+    request: window.__invokeCalls.filter((call) => call.command === "export_terminal_text").at(-1)?.args.request,
+  }));
+  assert(chosenTerminalExport.save?.args.options?.defaultPath?.endsWith("-buffer.txt")
+    && chosenTerminalExport.request?.destinationDirectory === null
+    && chosenTerminalExport.request?.destinationPath === "/tmp/portmate-picked-terminal.txt"
+    && chosenTerminalExport.request?.overwrite === true,
+  `chosen-path terminal export was not routed through the native save dialog: ${JSON.stringify(chosenTerminalExport)}`);
+  await page.getByRole("button", { name: "确定", exact: true }).click();
+  await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
+  await terminalContextMenu.waitFor();
   await activeTerminalHost.dispatchEvent("scroll");
   assert(await terminalContextMenu.isVisible(),
     "XTerm's internal scroll bookkeeping dismissed the terminal context menu");
@@ -2635,9 +2671,13 @@ Host staging
   }).locator("select");
   const firstStartup = startupSelect(1);
   const secondStartup = startupSelect(2);
+  const terminalExportDirectory = page.getByRole("textbox", { name: "终端文本默认导出目录", exact: true });
   assert(await page.getByRole("combobox", { name: "会话 1:", exact: true }).count() === 1
     && await page.getByRole("combobox", { name: "会话 2:", exact: true }).count() === 1,
   "startup session selectors do not expose stable accessible names");
+  assert(await terminalExportDirectory.count() === 1
+    && await page.getByRole("button", { name: "选择终端文本导出目录", exact: true }).count() === 1,
+  "terminal export directory setting is incomplete");
   assert(await firstStartup.isDisabled() && await secondStartup.isDisabled(),
     "specific startup selectors are enabled outside specific mode");
   const settingsText = await page.locator(".terminal-settings-dialog").textContent();
@@ -2667,6 +2707,7 @@ Host staging
     "specific startup selectors did not become enabled");
   await firstStartup.selectOption("bench-uart");
   await secondStartup.selectOption("local-shell");
+  await terminalExportDirectory.fill("/tmp/portmate-terminal-text");
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "保存" }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
   const startupSettings = await page.evaluate(() => {
@@ -2683,16 +2724,54 @@ Host staging
       "xServerEnabled",
       "extensionsEnabled",
     ].filter((key) => Object.hasOwn(prefs, key));
-    return { mode: prefs.startupMode, sessions: prefs.startupSessions, legacyKeys };
+    return {
+      mode: prefs.startupMode,
+      sessions: prefs.startupSessions,
+      terminalTextExportDirectory: prefs.terminalTextExportDirectory,
+      legacyKeys,
+    };
   });
   assert(startupSettings.mode === "specific"
     && JSON.stringify(startupSettings.sessions) === JSON.stringify(["bench-uart", "local-shell", "", ""])
+    && startupSettings.terminalTextExportDirectory === "/tmp/portmate-terminal-text"
     && startupSettings.legacyKeys.length === 0,
   `startup settings did not persist exact profile IDs: ${JSON.stringify(startupSettings)}`);
   await openTerminalSettings();
   assert(await startupSelect(1).inputValue() === "bench-uart"
-    && await startupSelect(2).inputValue() === "local-shell",
-  "saved startup profiles did not restore in the settings dialog");
+    && await startupSelect(2).inputValue() === "local-shell"
+    && await page.getByRole("textbox", { name: "终端文本默认导出目录", exact: true }).inputValue() === "/tmp/portmate-terminal-text",
+  "saved startup or terminal export preferences did not restore in the settings dialog");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileTerminalExportSetting = await page.locator(".terminal-export-path-setting").evaluate((setting) => {
+    const dialog = setting.closest(".terminal-settings-dialog");
+    const control = setting.querySelector(".setting-path-control");
+    const input = setting.querySelector("input");
+    const button = setting.querySelector("button");
+    const dialogRect = dialog.getBoundingClientRect();
+    const controlRect = control.getBoundingClientRect();
+    const inputRect = input.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    return {
+      dialogLeft: dialogRect.left,
+      dialogRight: dialogRect.right,
+      dialogWidth: dialogRect.width,
+      dialogScrollWidth: dialog.scrollWidth,
+      controlLeft: controlRect.left,
+      controlRight: controlRect.right,
+      inputWidth: inputRect.width,
+      buttonWidth: buttonRect.width,
+    };
+  });
+  assert(mobileTerminalExportSetting.dialogLeft >= 0
+    && mobileTerminalExportSetting.dialogRight <= 390
+    && mobileTerminalExportSetting.dialogScrollWidth <= mobileTerminalExportSetting.dialogWidth
+    && mobileTerminalExportSetting.controlLeft >= mobileTerminalExportSetting.dialogLeft
+    && mobileTerminalExportSetting.controlRight <= mobileTerminalExportSetting.dialogRight
+    && mobileTerminalExportSetting.inputWidth >= 100
+    && mobileTerminalExportSetting.buttonWidth === 34,
+  `terminal export directory controls overflow on mobile: ${JSON.stringify(mobileTerminalExportSetting)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-terminal-export-settings-mobile.png`, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
 
@@ -5448,6 +5527,7 @@ Host staging
       `${screenshotPrefix}-search-mobile.png`,
       `${screenshotPrefix}-view-split-drop.png`,
       `${screenshotPrefix}-settings.png`,
+      `${screenshotPrefix}-terminal-export-settings-mobile.png`,
       `${screenshotPrefix}-transfer.png`,
       `${screenshotPrefix}-tunnel.png`,
       `${screenshotPrefix}-sysmon-sidebar.png`,

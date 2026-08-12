@@ -143,6 +143,9 @@ fn terminal_text_export_is_atomic_bounded_and_checksummed() {
         view_id: "view-mirror".to_string(),
         source: TerminalTextExportSource::Buffer,
         text: "prompt$ echo 终端\n终端\n".to_string(),
+        destination_directory: None,
+        destination_path: None,
+        overwrite: false,
     };
     let result =
         export_terminal_text_inner(&root.join("portmate-store.sqlite3"), request.clone()).unwrap();
@@ -202,6 +205,9 @@ fn terminal_text_export_rejects_a_symlinked_exports_directory() {
             view_id: "view-a".to_string(),
             source: TerminalTextExportSource::Buffer,
             text: "sensitive terminal output".to_string(),
+            destination_directory: None,
+            destination_path: None,
+            overwrite: false,
         },
     )
     .unwrap_err();
@@ -217,6 +223,9 @@ fn terminal_text_export_rejects_empty_invalid_and_oversized_requests() {
         view_id: "view-a".to_string(),
         source: TerminalTextExportSource::Selection,
         text: "selected".to_string(),
+        destination_directory: None,
+        destination_path: None,
+        overwrite: false,
     };
     assert!(validate_terminal_text_export_request(&request, 8).is_ok());
     request.text.push('!');
@@ -241,4 +250,192 @@ fn terminal_text_export_rejects_empty_invalid_and_oversized_requests() {
     assert!(validate_terminal_text_export_request(&request, 8)
         .unwrap_err()
         .contains("session id"));
+}
+
+#[test]
+fn terminal_text_export_request_keeps_legacy_destination_defaults() {
+    let request: ExportTerminalTextRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "shell-a",
+        "viewId": "view-a",
+        "source": "buffer",
+        "text": "legacy request"
+    }))
+    .unwrap();
+    assert!(request.destination_directory.is_none());
+    assert!(request.destination_path.is_none());
+    assert!(!request.overwrite);
+}
+
+#[test]
+fn terminal_text_export_uses_a_configured_existing_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("terminal-exports");
+    fs::create_dir(&destination).unwrap();
+    let request = ExportTerminalTextRequest {
+        session_id: "shell-a".to_string(),
+        view_id: "view-a".to_string(),
+        source: TerminalTextExportSource::Buffer,
+        text: "configured destination".to_string(),
+        destination_directory: Some(destination.display().to_string()),
+        destination_path: None,
+        overwrite: false,
+    };
+
+    let result = export_terminal_text_inner(&root.path().join("store.sqlite3"), request).unwrap();
+    assert_eq!(Path::new(&result.path).parent().unwrap(), destination);
+    assert_eq!(
+        fs::read_to_string(result.path).unwrap(),
+        "configured destination"
+    );
+}
+
+#[test]
+fn terminal_text_export_writes_and_overwrites_an_explicit_file() {
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("chosen.txt");
+    let mut request = ExportTerminalTextRequest {
+        session_id: "shell-a".to_string(),
+        view_id: "view-a".to_string(),
+        source: TerminalTextExportSource::Buffer,
+        text: "first export".to_string(),
+        destination_directory: None,
+        destination_path: Some(destination.display().to_string()),
+        overwrite: false,
+    };
+
+    let first =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request.clone()).unwrap();
+    assert_eq!(Path::new(&first.path), destination);
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "first export");
+    let refusal = export_terminal_text_inner(&root.path().join("store.sqlite3"), request.clone())
+        .unwrap_err();
+    assert!(refusal.contains("refusing to overwrite"), "{refusal}");
+
+    request.text = "replacement export".to_string();
+    request.overwrite = true;
+    let replacement =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request).unwrap();
+    assert_eq!(
+        fs::read_to_string(&destination).unwrap(),
+        "replacement export"
+    );
+    assert_eq!(replacement.sha256, sha256_file(&destination).unwrap());
+    assert!(fs::read_to_string(replacement.checksum_path)
+        .unwrap()
+        .starts_with(&replacement.sha256));
+    assert!(fs::read_dir(root.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".part")));
+}
+
+#[test]
+fn terminal_text_export_rejects_ambiguous_or_relative_destinations() {
+    let root = tempfile::tempdir().unwrap();
+    let mut request = ExportTerminalTextRequest {
+        session_id: "shell-a".to_string(),
+        view_id: "view-a".to_string(),
+        source: TerminalTextExportSource::Buffer,
+        text: "destination validation".to_string(),
+        destination_directory: None,
+        destination_path: Some("relative.txt".to_string()),
+        overwrite: false,
+    };
+    let relative = export_terminal_text_inner(&root.path().join("store.sqlite3"), request.clone())
+        .unwrap_err();
+    assert!(relative.contains("must be absolute"), "{relative}");
+
+    request.destination_path = Some(format!("{}/./chosen.txt", root.path().display()));
+    let current_component =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request.clone())
+            .unwrap_err();
+    assert!(
+        current_component.contains(". or .. components"),
+        "{current_component}"
+    );
+    request.destination_path = Some(format!("{}/child/../chosen.txt", root.path().display()));
+    let parent_component =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request.clone())
+            .unwrap_err();
+    assert!(
+        parent_component.contains(". or .. components"),
+        "{parent_component}"
+    );
+
+    request.destination_directory = Some(root.path().display().to_string());
+    let ambiguous = validate_terminal_text_export_request(&request, 1024).unwrap_err();
+    assert!(
+        ambiguous.contains("either a destination directory"),
+        "{ambiguous}"
+    );
+
+    request.destination_path = None;
+    request.overwrite = true;
+    let invalid_overwrite = validate_terminal_text_export_request(&request, 1024).unwrap_err();
+    assert!(
+        invalid_overwrite.contains("explicit destination path"),
+        "{invalid_overwrite}"
+    );
+
+    let orphan_target = root.path().join("orphan.txt");
+    let orphan_checksum = root.path().join("orphan.txt.sha256");
+    fs::write(&orphan_checksum, "unrelated checksum").unwrap();
+    request.destination_directory = None;
+    request.destination_path = Some(orphan_target.display().to_string());
+    let orphan_error =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request).unwrap_err();
+    assert!(
+        orphan_error.contains("refusing to overwrite"),
+        "{orphan_error}"
+    );
+    assert!(!orphan_target.exists());
+    assert_eq!(
+        fs::read_to_string(orphan_checksum).unwrap(),
+        "unrelated checksum"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_text_export_rejects_symlinked_custom_destinations() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let linked_directory = root.path().join("linked-exports");
+    std::os::unix::fs::symlink(outside.path(), &linked_directory).unwrap();
+    let request = ExportTerminalTextRequest {
+        session_id: "shell-a".to_string(),
+        view_id: "view-a".to_string(),
+        source: TerminalTextExportSource::Buffer,
+        text: "must stay local".to_string(),
+        destination_directory: Some(linked_directory.display().to_string()),
+        destination_path: None,
+        overwrite: false,
+    };
+    let directory_error =
+        export_terminal_text_inner(&root.path().join("store.sqlite3"), request).unwrap_err();
+    assert!(
+        directory_error.contains("symbolic link"),
+        "{directory_error}"
+    );
+
+    let target = root.path().join("chosen.txt");
+    let outside_file = outside.path().join("outside.txt");
+    fs::write(&outside_file, "outside").unwrap();
+    std::os::unix::fs::symlink(&outside_file, &target).unwrap();
+    let target_error = export_terminal_text_inner(
+        &root.path().join("store.sqlite3"),
+        ExportTerminalTextRequest {
+            session_id: "shell-a".to_string(),
+            view_id: "view-a".to_string(),
+            source: TerminalTextExportSource::Buffer,
+            text: "replacement".to_string(),
+            destination_directory: None,
+            destination_path: Some(target.display().to_string()),
+            overwrite: true,
+        },
+    )
+    .unwrap_err();
+    assert!(target_error.contains("symbolic link"), "{target_error}");
+    assert_eq!(fs::read_to_string(outside_file).unwrap(), "outside");
 }

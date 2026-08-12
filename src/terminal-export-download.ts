@@ -1,4 +1,5 @@
 import type { TerminalTextExportSource } from "./terminal-export-event";
+import { terminalTextExportFileName } from "./terminal-export-path";
 
 export function downloadTerminalText(
   text: string,
@@ -6,9 +7,7 @@ export function downloadTerminalText(
   source: TerminalTextExportSource,
   createdAt = new Date(),
 ): string {
-  const safeName = sessionName.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "session";
-  const timestamp = createdAt.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  const fileName = `${safeName}-${timestamp}-${source}.txt`;
+  const fileName = terminalTextExportFileName(sessionName, source, createdAt);
   const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;

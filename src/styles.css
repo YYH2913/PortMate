@@ -5092,6 +5092,44 @@ button {
   align-items: center;
 }
 
+.setting-path-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.setting-path-control > input {
+  min-width: 0;
+  font-family: var(--mono);
+  text-overflow: ellipsis;
+}
+
+.setting-path-control > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #1f2a34;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.setting-path-control > button:hover:not(:disabled),
+.setting-path-control > button:focus-visible {
+  outline: 0;
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.setting-path-control > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .setting-check {
   display: flex;
   align-items: center;

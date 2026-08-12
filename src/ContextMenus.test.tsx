@@ -49,7 +49,7 @@ describe("session context menu", () => {
     expect(buttonMarkup(reconnecting, "断开会话(C)")).not.toContain("disabled");
   });
 
-  it("exposes online search in the terminal action menu", () => {
+  it("exposes online search and both terminal text export destinations", () => {
     const html = renderToStaticMarkup(
       <TerminalContextMenu
         state={{ x: 100, y: 100, alternate: false, hasSelection: true }}
@@ -57,6 +57,8 @@ describe("session context menu", () => {
       />,
     );
     expect(html).toContain("在线搜索");
+    expect(html).toContain("导出终端文本");
+    expect(html).toContain("导出终端文本到...");
   });
 });
 

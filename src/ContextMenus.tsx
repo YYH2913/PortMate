@@ -32,6 +32,7 @@ export type TerminalContextAction =
   | "select-all"
   | "clear-selection"
   | "export-buffer"
+  | "export-buffer-to"
   | "export-selection"
   | "triggers";
 
@@ -120,6 +121,7 @@ export function TerminalContextMenu({
       <ContextMenuButton label="清除选择" disabled={!state.hasSelection} onClick={() => onAction("clear-selection")} />
       <ContextDivider />
       <ContextMenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label="导出终端文本到..." onClick={() => onAction("export-buffer-to")} />
       <ContextMenuButton label="导出选中文本" disabled={!state.hasSelection} onClick={() => onAction("export-selection")} />
       <ContextDivider />
       <ContextMenuButton label="管理触发器..." onClick={() => onAction("triggers")} />

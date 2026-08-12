@@ -130,6 +130,12 @@ pub struct ExportTerminalTextRequest {
     pub view_id: String,
     pub source: TerminalTextExportSource,
     pub text: String,
+    #[serde(default)]
+    pub destination_directory: Option<String>,
+    #[serde(default)]
+    pub destination_path: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
