@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import { deviceLoadEndpoint, isModemTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
 import type { SessionKind, SessionProfile } from "./types";
 
@@ -33,6 +33,16 @@ describe("transfer capabilities", () => {
       "YModem",
       "ZModem",
     ]);
+  });
+
+  it("builds constrained device load endpoints for modem uploads", () => {
+    expect(isModemTransferProtocol("sftp")).toBe(false);
+    expect(isModemTransferProtocol("xmodem")).toBe(true);
+    expect(modemLoadCommand("ymodem")).toBe("loady");
+    expect(deviceLoadEndpoint("zmodem", " 0x80000000 ", " 115200 ")).toBe(
+      "load:loadz?address=0x80000000&baud=115200",
+    );
+    expect(deviceLoadEndpoint("xmodem", "", "")).toBe("load:loadx");
   });
 });
 

@@ -21,6 +21,9 @@ pub(super) async fn transfer_file_via_xmodem(
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     progress.check_cancelled()?;
+    if let Some(bytes) = transfer_file_to_device_modem(state, request, progress).await? {
+        return Ok(bytes);
+    }
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,
@@ -131,6 +134,9 @@ pub(super) async fn transfer_file_via_ymodem(
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     progress.check_cancelled()?;
+    if let Some(bytes) = transfer_file_to_device_modem(state, request, progress).await? {
+        return Ok(bytes);
+    }
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,
@@ -238,6 +244,9 @@ pub(super) async fn transfer_file_via_zmodem(
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     progress.check_cancelled()?;
+    if let Some(bytes) = transfer_file_to_device_modem(state, request, progress).await? {
+        return Ok(bytes);
+    }
     match modem_direction(request)? {
         ModemDirection::Upload {
             local_source,

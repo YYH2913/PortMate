@@ -139,3 +139,92 @@ fn modem_transfer_paths_reject_root_and_dot_components() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn device_load_endpoints_are_protocol_bound_and_injection_safe() {
+    let xmodem = parse_load_receiver_endpoint(
+        "load:loadx?address=0x80000000&baud=115200",
+        &TransferProtocol::Xmodem,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(xmodem.command, "loadx");
+    assert_eq!(xmodem.address.as_deref(), Some("0x80000000"));
+    assert_eq!(xmodem.baud_rate, Some(115_200));
+    assert_eq!(xmodem.command_line(), "loadx 0x80000000 115200\r");
+
+    let ymodem = parse_load_receiver_endpoint("load:loady", &TransferProtocol::Ymodem)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ymodem.command_line(), "loady\r");
+
+    for (endpoint, protocol) in [
+        ("load:loady", TransferProtocol::Xmodem),
+        ("load:loadx?address=8000%3Brun%20evil", TransferProtocol::Xmodem),
+        ("load:loadx?address=8000&baud=0", TransferProtocol::Xmodem),
+        ("load:loadx?baud=115200", TransferProtocol::Xmodem),
+        ("load:loadx?address=8000&unknown=1", TransferProtocol::Xmodem),
+        ("load://loadx?address=8000", TransferProtocol::Xmodem),
+        ("load:loadz#suffix", TransferProtocol::Zmodem),
+        ("load:loadx", TransferProtocol::Sftp),
+    ] {
+        assert!(
+            parse_load_receiver_endpoint(endpoint, &protocol).is_err(),
+            "unsafe or mismatched endpoint was accepted: {endpoint}"
+        );
+    }
+}
+
+#[test]
+fn device_load_endpoint_is_a_local_modem_upload_destination() {
+    let root = std::env::temp_dir().join(format!("portmate-load-endpoint-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("firmware.bin");
+    fs::write(&source, b"firmware").unwrap();
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "test-port".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+
+    let prepared = prepare_transfer_request(
+        &profile,
+        StartTransferRequest {
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Xmodem,
+            source: source.display().to_string(),
+            destination: "load:loadx?address=80000000".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared.destination, "load:loadx?address=80000000");
+    let (local_source, receiver) = device_modem_upload(&prepared).unwrap().unwrap();
+    assert_eq!(local_source, source.display().to_string());
+    assert_eq!(receiver.command_line(), "loadx 80000000\r");
+
+    for (source, destination) in [
+        ("load:loadx", source.to_str().unwrap()),
+        ("remote:/tmp/firmware.bin", "load:loadx"),
+    ] {
+        assert!(prepare_transfer_request(
+            &profile,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Xmodem,
+                source: source.to_string(),
+                destination: destination.to_string(),
+            },
+        )
+        .is_err());
+    }
+    let _ = fs::remove_dir_all(root);
+}

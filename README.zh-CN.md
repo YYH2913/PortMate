@@ -201,7 +201,7 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:` 或 `ssh:` 前缀；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
 
 SFTP 上传示例：
 
@@ -215,6 +215,19 @@ SFTP 上传示例：
 ```
 
 下载时交换两端，例如使用 `source: "remote:/var/log/messages"` 和 `destination: "/home/operator/messages"`。SFTP/SCP 也允许在同一个已授权会话内的两个 `remote:` 路径之间复制。用返回的任务 ID 调用 `get_transfer`、`cancel_transfer` 或 `retry_transfer`。
+
+对于 U-Boot 风格的设备接收命令，选择匹配的 Modem 协议，将本地文件上传目标设为 `load:loadx`、`load:loady` 或 `load:loadz`。`loadx` 和 `loady` 是标准 U-Boot 命令；只有目标固件确实提供该命令时才使用 `loadz`。可选且经过校验的查询参数可以附加加载地址和串口传输速率：
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "ymodem",
+  "source": "/home/operator/firmware.bin",
+  "destination": "load:loady?address=0x80000000&baud=115200"
+}
+```
+
+PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
 
 ### 指定路由转发与代理
 

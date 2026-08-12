@@ -132,7 +132,8 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
                 .await
                 .unwrap_err();
             assert!(
-                error.contains("at least one remote:/ssh: path") || error.contains("NUL-free"),
+                error.contains("at least one remote:/ssh:/load: endpoint")
+                    || error.contains("NUL-free"),
                 "{error}"
             );
         }
@@ -144,6 +145,21 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
             destination: "ssh:/srv/private-destination".to_string(),
         })
         .unwrap();
+
+        validate_mcp_transfer_route(&StartTransferRequest {
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Ymodem,
+            source: "/home/operator/firmware.bin".to_string(),
+            destination: "load:loady?address=0x80000000&baud=115200".to_string(),
+        })
+        .unwrap();
+        assert!(validate_mcp_transfer_route(&StartTransferRequest {
+            session_id: session_id.clone(),
+            protocol: TransferProtocol::Ymodem,
+            source: "remote:/srv/firmware.bin".to_string(),
+            destination: "load:loady".to_string(),
+        })
+        .is_err());
 
         let local_transfer = TransferTask {
             id: "local-transfer".to_string(),
@@ -176,7 +192,7 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
         )
         .await
         .unwrap_err();
-        assert!(retry_error.contains("at least one remote:/ssh: path"));
+        assert!(retry_error.contains("at least one remote:/ssh:/load: endpoint"));
 
         let store = state.store.lock().unwrap();
         assert_eq!(store.audit.len(), 3);

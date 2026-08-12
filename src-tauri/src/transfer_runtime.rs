@@ -158,8 +158,8 @@ pub(super) async fn start_transfer_inner(
 
 pub(super) fn transfer_route_label(source: &str, destination: &str) -> &'static str {
     match (
-        has_remote_transfer_prefix(source),
-        has_remote_transfer_prefix(destination),
+        is_nonlocal_transfer_endpoint(source),
+        is_nonlocal_transfer_endpoint(destination),
     ) {
         (false, true) => "upload",
         (true, false) => "download",
@@ -296,7 +296,7 @@ pub(super) fn validate_current_transfer_protocol(
         .map_err(|error| error.to_string())?
         .profile(&request.session_id)
         .ok_or_else(|| format!("unknown session: {}", request.session_id))?;
-    let accesses_remote = has_remote_transfer_prefix(&request.source)
-        || has_remote_transfer_prefix(&request.destination);
+    let accesses_remote = is_nonlocal_transfer_endpoint(&request.source)
+        || is_nonlocal_transfer_endpoint(&request.destination);
     validate_transfer_protocol(&profile, &request.protocol, accesses_remote)
 }

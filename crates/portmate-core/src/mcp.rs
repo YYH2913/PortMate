@@ -153,7 +153,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start an SFTP, SCP, XModem, YModem, or ZModem transfer. At least one side must use the `remote:` or `ssh:` prefix; unprefixed paths are local to the PortMate desktop host. SFTP/SCP also support same-session remote-to-remote copy.",
+            "Start an SFTP, SCP, XModem, YModem, or ZModem transfer. At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint; unprefixed paths are local to the PortMate desktop host. For a device-side Modem receiver, use destination `load:loadx`, `load:loady`, or `load:loadz`, optionally with validated `address` and `baud` query parameters. SFTP/SCP also support same-session remote-to-remote copy.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","source","destination"],
@@ -474,9 +474,9 @@ mod tests {
             transfer.input_schema["properties"]["source"]["maxLength"],
             32_768
         );
-        assert!(transfer
-            .description
-            .contains("At least one side must use the `remote:` or `ssh:` prefix"));
+        assert!(transfer.description.contains(
+            "At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint"
+        ));
         let list = definition("list_transfers");
         assert_eq!(list.input_schema["properties"]["limit"]["maximum"], 1_000);
         assert_eq!(

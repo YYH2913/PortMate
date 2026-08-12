@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { X } from "lucide-react";
 import { invokeBackend } from "./api";
-import { transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import { deviceLoadEndpoint, isModemTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
+import { COMMON_SERIAL_BAUD_RATES } from "./serial-connection-settings";
 import TransferList from "./TransferList";
 import type { SessionSummary, TransferTask } from "./types";
 
@@ -28,12 +29,17 @@ export default function TransferDialog({
   const [protocol, setProtocol] = useState<TransferProtocol | "">(() => protocols[0] ?? "");
   const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
+  const [modemMode, setModemMode] = useState<"device-load" | "path">(() => session.profile.kind === "serial" ? "device-load" : "path");
+  const [loadAddress, setLoadAddress] = useState("");
+  const [loadBaudRate, setLoadBaudRate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
   const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
   const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
   const connected = session.runtime.status === "connected";
+  const modemProtocol = isModemTransferProtocol(protocol);
+  const deviceLoadMode = modemProtocol && modemMode === "device-load";
 
   useEffect(() => {
     if (!protocol || !protocols.includes(protocol)) {
@@ -54,8 +60,11 @@ export default function TransferDialog({
     }
     setBusy(true);
     try {
+      const transferDestination = deviceLoadMode
+        ? deviceLoadEndpoint(protocol, loadAddress, loadBaudRate)
+        : destination;
       const task = await invokeBackend<TransferTask>("start_transfer", {
-        request: { sessionId: session.profile.id, protocol, source, destination },
+        request: { sessionId: session.profile.id, protocol, source, destination: transferDestination },
       });
       onTask(task);
       onNotice(`${task.protocol} ${task.status}: ${task.message ?? ""}`);
@@ -110,8 +119,37 @@ export default function TransferDialog({
               {protocols.map((option) => <option key={option} value={option}>{transferProtocolLabel(option)}</option>)}
             </select>
           </DialogField>
-          <DialogField label="来源:"><input value={source} onChange={(event) => setSource(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>
-          <DialogField label="目标:"><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>
+          {modemProtocol ? (
+            <DialogField label="接收端:">
+              <div className="transfer-mode-switch" aria-label="Modem 接收端模式">
+                <button type="button" aria-pressed={modemMode === "device-load"} onClick={() => setModemMode("device-load")}>自动 {modemLoadCommand(protocol)}</button>
+                <button type="button" aria-pressed={modemMode === "path"} onClick={() => setModemMode("path")}>路径 / 已就绪</button>
+              </div>
+            </DialogField>
+          ) : null}
+          <DialogField label={deviceLoadMode ? "本地文件:" : "来源:"}><input value={source} onChange={(event) => setSource(event.target.value)} placeholder={deviceLoadMode ? "/local/firmware.bin" : "/local/file 或 remote:/remote/file"} /></DialogField>
+          {deviceLoadMode ? (
+            <>
+              <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，例如 0x80000000" spellCheck={false} /></DialogField>
+              <DialogField label="传输波特率:">
+                <input
+                  type="number"
+                  min={1}
+                  max={4_294_967_295}
+                  list="transfer-load-baud-rate-options"
+                  value={loadBaudRate}
+                  onChange={(event) => setLoadBaudRate(event.target.value)}
+                  placeholder={session.profile.kind === "serial" ? "可选，留空使用当前波特率" : "仅串口会话可设置"}
+                  disabled={session.profile.kind !== "serial"}
+                />
+                <datalist id="transfer-load-baud-rate-options">
+                  {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
+                </datalist>
+              </DialogField>
+            </>
+          ) : (
+            <DialogField label="目标:"><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>
+          )}
           <div className="transfer-queue-panel">
             <header>
               <strong>队列</strong>
@@ -134,7 +172,7 @@ export default function TransferDialog({
         </section>
         <footer className="utility-actions">
           <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || !destination.trim()}>{busy ? "执行中" : "开始"}</button>
+          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || (!deviceLoadMode && !destination.trim()) || (deviceLoadMode && Boolean(loadBaudRate.trim()) && !loadAddress.trim())}>{busy ? "执行中" : "开始"}</button>
         </footer>
       </form>
     </div>

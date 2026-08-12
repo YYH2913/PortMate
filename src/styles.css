@@ -7393,6 +7393,38 @@ fieldset label {
   width: min(760px, calc(100vw - 40px));
 }
 
+.transfer-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  height: 35px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--control);
+}
+
+.transfer-mode-switch button {
+  min-width: 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-mode-switch button:last-child {
+  border-right: 0;
+}
+
+.transfer-mode-switch button[aria-pressed="true"] {
+  background: #263844;
+  color: var(--text);
+}
+
 .sysmon-dialog {
   grid-template-rows: 46px minmax(0, 1fr) 54px;
   width: min(900px, calc(100vw - 40px));

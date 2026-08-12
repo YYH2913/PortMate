@@ -19,8 +19,15 @@ pub(super) fn prepare_transfer_request_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<StartTransferRequest, String> {
-    let accesses_remote = has_remote_transfer_prefix(&request.source)
-        || has_remote_transfer_prefix(&request.destination);
+    if has_load_receiver_prefix(&request.source) {
+        return Err("load: 设备接收端点只能作为 Modem 上传目标".to_string());
+    }
+    let load_receiver = parse_load_receiver_endpoint(&request.destination, &request.protocol)?;
+    if load_receiver.is_some() && has_remote_transfer_prefix(&request.source) {
+        return Err("load: 设备接收端点只支持从 PortMate 本机文件上传".to_string());
+    }
+    let accesses_remote = is_nonlocal_transfer_endpoint(&request.source)
+        || is_nonlocal_transfer_endpoint(&request.destination);
     validate_transfer_protocol(profile, &request.protocol, accesses_remote)?;
     if let Some(path) = remote_path(&request.source) {
         validate_remote_transfer_path(path, "远端传输源路径")?;
@@ -197,7 +204,7 @@ pub(super) fn resolve_default_local_transfer_path_with_home(
     platform: LocalTransferPathPlatform,
     home: Option<&Path>,
 ) -> Result<String, String> {
-    if has_remote_transfer_prefix(value) {
+    if is_nonlocal_transfer_endpoint(value) {
         return Ok(value.to_string());
     }
     let windows = platform == LocalTransferPathPlatform::Windows;
@@ -243,4 +250,112 @@ fn expand_local_home_transfer_path(
 
 pub(super) fn has_remote_transfer_prefix(value: &str) -> bool {
     value.starts_with("remote:") || value.starts_with("ssh:")
+}
+
+pub(super) fn has_load_receiver_prefix(value: &str) -> bool {
+    value.starts_with("load:")
+}
+
+pub(super) fn is_nonlocal_transfer_endpoint(value: &str) -> bool {
+    has_remote_transfer_prefix(value) || has_load_receiver_prefix(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LoadReceiverSpec {
+    pub(super) command: &'static str,
+    pub(super) address: Option<String>,
+    pub(super) baud_rate: Option<u32>,
+}
+
+impl LoadReceiverSpec {
+    pub(super) fn command_line(&self) -> String {
+        let mut command = self.command.to_string();
+        if let Some(address) = self.address.as_deref() {
+            command.push(' ');
+            command.push_str(address);
+        }
+        if let Some(baud_rate) = self.baud_rate {
+            command.push(' ');
+            command.push_str(&baud_rate.to_string());
+        }
+        command.push('\r');
+        command
+    }
+}
+
+pub(super) fn parse_load_receiver_endpoint(
+    value: &str,
+    protocol: &TransferProtocol,
+) -> Result<Option<LoadReceiverSpec>, String> {
+    if !has_load_receiver_prefix(value) {
+        return Ok(None);
+    }
+    if value.starts_with("load://") {
+        return Err("load: 设备接收端点不能包含主机部分".to_string());
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|error| format!("load: 设备接收端点无效: {error}"))?;
+    if parsed.scheme() != "load" || parsed.fragment().is_some() {
+        return Err("load: 设备接收端点格式无效".to_string());
+    }
+
+    let expected_command = match protocol {
+        TransferProtocol::Xmodem => "loadx",
+        TransferProtocol::Ymodem => "loady",
+        TransferProtocol::Zmodem => "loadz",
+        TransferProtocol::Sftp | TransferProtocol::Scp => {
+            return Err("load: 设备接收端点仅支持 X/Y/ZModem".to_string())
+        }
+    };
+    if parsed.path() != expected_command {
+        return Err(format!(
+            "{} 传输必须使用 load:{expected_command} 设备接收端点",
+            transfer_protocol_label(protocol)
+        ));
+    }
+
+    let mut address = None;
+    let mut baud_rate = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "address" if address.is_none() => {
+                let value = value.into_owned();
+                let digits = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .unwrap_or(&value);
+                if digits.is_empty()
+                    || digits.len() > 16
+                    || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(
+                        "load: 加载地址必须是最多 16 位的十六进制数，可带 0x 前缀"
+                            .to_string(),
+                    );
+                }
+                address = Some(value);
+            }
+            "baud" if baud_rate.is_none() => {
+                let value = value
+                    .parse::<u32>()
+                    .map_err(|_| "load: 波特率必须是有效的正整数".to_string())?;
+                if value == 0 {
+                    return Err("load: 波特率必须大于 0".to_string());
+                }
+                baud_rate = Some(value);
+            }
+            "address" | "baud" => {
+                return Err(format!("load: 参数 `{key}` 不能重复"));
+            }
+            _ => return Err(format!("load: 不支持参数 `{key}`")),
+        }
+    }
+    if baud_rate.is_some() && address.is_none() {
+        return Err("load: 指定波特率时必须同时指定加载地址".to_string());
+    }
+    Ok(Some(LoadReceiverSpec {
+        command: expected_command,
+        address,
+        baud_rate,
+    }))
 }

@@ -201,7 +201,7 @@ Grants support expiration, revocation, allowed-session lists, and per-write conf
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, XModem, YModem, and ZModem. At least one endpoint must be prefixed with `remote:` or `ssh:`; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
 
 Upload with SFTP:
 
@@ -215,6 +215,19 @@ Upload with SFTP:
 ```
 
 Download by reversing the sides, for example `source: "remote:/var/log/messages"` and `destination: "/home/operator/messages"`. SFTP and SCP may also copy between two `remote:` paths on the same authorized session. Use the returned task ID with `get_transfer`, `cancel_transfer`, or `retry_transfer`.
+
+For a U-Boot-style device receiver, upload a local file with the matching Modem protocol and set the destination to `load:loadx`, `load:loady`, or `load:loadz`. `loadx` and `loady` are standard U-Boot commands; use `loadz` only when the target firmware provides that command. Optional validated query parameters add the load address and serial transfer rate:
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "ymodem",
+  "source": "/home/operator/firmware.bin",
+  "destination": "load:loady?address=0x80000000&baud=115200"
+}
+```
+
+PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
 ### Route-Specific Forwarding And Proxy
 

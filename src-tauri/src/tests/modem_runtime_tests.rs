@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn tcp_device_loadx_transfer_sends_command_and_file_in_one_task() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = b"PortMate loadx integration".to_vec();
+        let expected_packet = modem_packet_bytes(MODEM_SOH, 1, &payload, XMODEM_BLOCK_SIZE, true);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut command = Vec::new();
+            loop {
+                let byte = socket.read_u8().await.unwrap();
+                command.push(byte);
+                if byte == b'\r' {
+                    break;
+                }
+            }
+            assert_eq!(command, b"loadx 0x80000000\r");
+            socket.write_all(&[MODEM_CRC_REQUEST]).await.unwrap();
+
+            let mut packet = vec![0_u8; expected_packet.len()];
+            socket.read_exact(&mut packet).await.unwrap();
+            assert_eq!(packet, expected_packet);
+            socket.write_all(&[MODEM_ACK]).await.unwrap();
+
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_EOT);
+            socket.write_all(&[MODEM_ACK]).await.unwrap();
+        });
+
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!("portmate-loadx-tcp-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("firmware.bin");
+        fs::write(&source, &payload).unwrap();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let task = start_transfer_inner(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Xmodem,
+                source: source.display().to_string(),
+                destination: "load:loadx?address=0x80000000".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let completed = wait_for_transfer_terminal_state(&state, &task.id).await;
+        assert_eq!(completed.status, TransferStatus::Completed, "{completed:?}");
+        assert_eq!(completed.bytes_done, payload.len() as u64);
+        assert_eq!(completed.destination, "load:loadx?address=0x80000000");
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("loadx server timed out")
+            .expect("loadx server failed");
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn cancelling_silent_xmodem_sends_can_and_stops_worker() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

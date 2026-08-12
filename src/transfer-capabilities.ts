@@ -1,6 +1,7 @@
 import type { SessionProfile, TransferTask } from "./types";
 
 export type TransferProtocol = TransferTask["protocol"];
+export type ModemTransferProtocol = Extract<TransferProtocol, "xmodem" | "ymodem" | "zmodem">;
 
 const transferProtocolLabels: Record<TransferProtocol, string> = {
   sftp: "SFTP",
@@ -24,4 +25,28 @@ export function transferProtocolsForProfile(profile: SessionProfile): TransferPr
 
 export function transferProtocolLabel(protocol: TransferProtocol): string {
   return transferProtocolLabels[protocol];
+}
+
+export function isModemTransferProtocol(protocol: TransferProtocol | ""): protocol is ModemTransferProtocol {
+  return protocol === "xmodem" || protocol === "ymodem" || protocol === "zmodem";
+}
+
+export function modemLoadCommand(protocol: ModemTransferProtocol): "loadx" | "loady" | "loadz" {
+  if (protocol === "xmodem") return "loadx";
+  if (protocol === "ymodem") return "loady";
+  return "loadz";
+}
+
+export function deviceLoadEndpoint(
+  protocol: ModemTransferProtocol,
+  address: string,
+  baudRate: string,
+): string {
+  const query = new URLSearchParams();
+  const normalizedAddress = address.trim();
+  const normalizedBaudRate = baudRate.trim();
+  if (normalizedAddress) query.set("address", normalizedAddress);
+  if (normalizedBaudRate) query.set("baud", normalizedBaudRate);
+  const encoded = query.toString();
+  return `load:${modemLoadCommand(protocol)}${encoded ? `?${encoded}` : ""}`;
 }

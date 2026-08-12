@@ -187,11 +187,18 @@ pub(super) fn validate_mcp_transfer_route(request: &StartTransferRequest) -> Res
             ));
         }
     }
-    let source_remote = has_remote_transfer_prefix(&request.source);
-    let destination_remote = has_remote_transfer_prefix(&request.destination);
+    if has_load_receiver_prefix(&request.source) {
+        return Err("MCP load: endpoint is only permitted as a Modem upload destination".to_string());
+    }
+    let load_receiver = parse_load_receiver_endpoint(&request.destination, &request.protocol)?;
+    if load_receiver.is_some() && has_remote_transfer_prefix(&request.source) {
+        return Err("MCP load: transfer source must be a local desktop file".to_string());
+    }
+    let source_remote = is_nonlocal_transfer_endpoint(&request.source);
+    let destination_remote = is_nonlocal_transfer_endpoint(&request.destination);
     if !source_remote && !destination_remote {
         return Err(
-            "MCP file transfer requires at least one remote:/ssh: path; local-to-local copy is not exposed"
+            "MCP file transfer requires at least one remote:/ssh:/load: endpoint; local-to-local copy is not exposed"
                 .to_string(),
         );
     }

@@ -1,6 +1,7 @@
 // Included from lib.rs so the existing crate-root module paths stay stable.
 
 mod modem_protocol;
+mod modem_device;
 mod modem_remote;
 mod modem_runtime;
 mod modem_transfer;
@@ -63,6 +64,7 @@ mod transport_timing;
 mod tunnel_commands;
 
 use modem_protocol::*;
+use modem_device::*;
 use modem_remote::*;
 use modem_runtime::*;
 use modem_transfer::*;

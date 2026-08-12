@@ -701,6 +701,22 @@ try {
           if (!window.__deferTransferLists) return result;
           return new Promise((resolve) => window.__pendingTransferLists.push({ result, resolve }));
         }
+        if (command === "start_transfer") {
+          const request = structuredClone(args.request);
+          const task = {
+            id: `transfer-${window.__transfers.length + 1}`,
+            ...request,
+            bytesTotal: 0,
+            bytesDone: 0,
+            status: "queued",
+            message: "queued",
+            startedAt: null,
+            finishedAt: null,
+            averageBytesPerSecond: null,
+          };
+          window.__transfers.push(task);
+          return structuredClone(task);
+        }
         if (command === "list_serial_capture") {
           return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
         }
@@ -1785,6 +1801,41 @@ Host staging
   assert(JSON.stringify(serialTransferOptions) === JSON.stringify(["xmodem", "ymodem", "zmodem"])
     && await page.locator(".transfer-dialog select").inputValue() === "xmodem",
   `Serial transfer dialog exposes unsupported protocols: ${JSON.stringify(serialTransferOptions)}`);
+  assert(await page.locator('.transfer-mode-switch button[aria-pressed="true"]').textContent() === "自动 loadx",
+    "Serial Modem transfer did not default to the device load receiver");
+  await page.screenshot({ path: `${screenshotPrefix}-transfer-load.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileLoadTransferBounds = await page.locator(".transfer-dialog").evaluate((dialog) => ({
+    left: dialog.getBoundingClientRect().left,
+    right: dialog.getBoundingClientRect().right,
+    top: dialog.getBoundingClientRect().top,
+    bottom: dialog.getBoundingClientRect().bottom,
+    scrollWidth: dialog.scrollWidth,
+    width: dialog.clientWidth,
+  }));
+  assert(mobileLoadTransferBounds.left >= 0 && mobileLoadTransferBounds.right <= 390
+    && mobileLoadTransferBounds.top >= 0 && mobileLoadTransferBounds.bottom <= 844
+    && mobileLoadTransferBounds.scrollWidth <= mobileLoadTransferBounds.width,
+  `Mobile loadx transfer dialog overflowed: ${JSON.stringify(mobileLoadTransferBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-transfer-load-mobile.png`, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "本地文件:" }).locator("input").fill("/tmp/firmware.bin");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "加载地址:" }).locator("input").fill("0x80000000");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "传输波特率:" }).locator("input").fill("115200");
+  await page.locator(".transfer-dialog .utility-actions button", { hasText: "开始" }).click();
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "start_transfer"));
+  const serialLoadTransfer = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "start_transfer").at(-1)?.args.request);
+  assert(serialLoadTransfer?.sessionId === "bench-uart"
+    && serialLoadTransfer.protocol === "xmodem"
+    && serialLoadTransfer.source === "/tmp/firmware.bin"
+    && serialLoadTransfer.destination === "load:loadx?address=0x80000000&baud=115200",
+  `Serial loadx transfer request is wrong: ${JSON.stringify(serialLoadTransfer)}`);
+  assert(await page.locator(".transfer-dialog .transfer-list .transfer-row").count() === 1,
+    "Serial loadx transfer was not added to the queue");
+  const transferNotice = page.locator(".notice-dialog", { hasText: "xmodem queued" });
+  await transferNotice.waitFor();
+  await transferNotice.getByRole("button", { name: "确定", exact: true }).click();
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
@@ -6005,6 +6056,8 @@ Host staging
       `${screenshotPrefix}-settings.png`,
       `${screenshotPrefix}-terminal-export-settings-mobile.png`,
       `${screenshotPrefix}-transfer.png`,
+      `${screenshotPrefix}-transfer-load.png`,
+      `${screenshotPrefix}-transfer-load-mobile.png`,
       `${screenshotPrefix}-tunnel.png`,
       `${screenshotPrefix}-tunnel-mobile.png`,
       `${screenshotPrefix}-sysmon-sidebar.png`,
