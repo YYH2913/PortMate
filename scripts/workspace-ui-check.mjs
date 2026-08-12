@@ -3849,6 +3849,11 @@ Host staging
     && await mcpDialog.locator(".mcp-grant-draft.active", { hasText: "新授权" }).count() === 1
     && await mcpDialog.getByRole("button", { name: "保存", exact: true }).isDisabled(),
   "MCP new grant action did not create and focus an explicit blank draft");
+  await mcpDialog.getByRole("button", { name: "随机生成 Client ID", exact: true }).click();
+  const generatedClientId = await newGrantClientId.inputValue();
+  assert(/^client-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generatedClientId)
+    && await newGrantClientId.evaluate((input) => input === document.activeElement),
+  `MCP random Client ID action produced an invalid value: ${generatedClientId}`);
   await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
   const mcpGrantEditorBounds = await mcpDialog.locator(".mcp-editor").evaluate((editor) => {
     const editorRect = editor.getBoundingClientRect();
@@ -3883,7 +3888,34 @@ Host staging
     && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-tunnels" }).locator("input").isChecked(),
   "new MCP grants do not default to read-only transfer and route visibility");
   const grantExpiry = mcpDialog.getByLabel("MCP 授权到期时间", { exact: true });
-  await grantExpiry.fill("2031-04-05T06:07");
+  await grantExpiry.click();
+  const grantExpiryEditor = mcpDialog.locator(".mcp-expiry-editor");
+  await grantExpiryEditor.getByLabel("MCP 授权到期日期", { exact: true }).fill("2031-04-05");
+  await grantExpiryEditor.getByLabel("MCP 授权到期时刻", { exact: true }).fill("06:07");
+  const grantExpiryEditorBounds = await grantExpiryEditor.evaluate((editor) => {
+    const rect = editor.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  assert(grantExpiryEditorBounds.left >= 0
+    && grantExpiryEditorBounds.right <= grantExpiryEditorBounds.viewportWidth
+    && grantExpiryEditorBounds.top >= 0
+    && grantExpiryEditorBounds.bottom <= grantExpiryEditorBounds.viewportHeight,
+  `MCP grant expiry editor exceeds the viewport: ${JSON.stringify(grantExpiryEditorBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-grant-expiry.png`, fullPage: true });
+  await grantExpiryEditor.getByRole("button", { name: "取消", exact: true }).click();
+  assert(await grantExpiry.inputValue() === "" && await grantExpiryEditor.count() === 0,
+    "cancelling the MCP grant expiry editor changed the grant");
+  await grantExpiry.click();
+  await grantExpiryEditor.getByLabel("MCP 授权到期日期", { exact: true }).fill("2031-04-05");
+  await grantExpiryEditor.getByLabel("MCP 授权到期时刻", { exact: true }).fill("06:07");
+  await grantExpiryEditor.getByRole("button", { name: "确定", exact: true }).click();
   await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
   await mcpDialog.locator(".mcp-grants > button", { hasText: "Empty Store Client" }).waitFor();
   const emptyStoreGrantSave = await page.evaluate(() => window.__invokeCalls
@@ -4387,6 +4419,25 @@ Host staging
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
   await page.locator(".mcp-dialog").waitFor();
+  await page.locator(".mcp-new").click();
+  await page.getByLabel("MCP 授权到期时间", { exact: true }).click();
+  const mobileMcpExpiryEditor = page.locator(".mcp-expiry-editor");
+  await mobileMcpExpiryEditor.scrollIntoViewIfNeeded();
+  const mobileMcpExpiryBounds = await mobileMcpExpiryEditor.evaluate((editor) => {
+    const rect = editor.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, scrollWidth: editor.scrollWidth, width: rect.width };
+  });
+  assert(mobileMcpExpiryBounds.left >= 0
+    && mobileMcpExpiryBounds.right <= mobile.viewportWidth
+    && mobileMcpExpiryBounds.scrollWidth <= mobileMcpExpiryBounds.width,
+  `mobile MCP grant expiry editor overflows horizontally: ${JSON.stringify(mobileMcpExpiryBounds)}`);
+  assert(await mobileMcpExpiryEditor.getByRole("button", { name: "清除", exact: true }).isVisible()
+    && await mobileMcpExpiryEditor.getByRole("button", { name: "取消", exact: true }).isVisible()
+    && await mobileMcpExpiryEditor.getByRole("button", { name: "确定", exact: true }).isVisible(),
+  "mobile MCP grant expiry actions are unreachable");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-grant-expiry-mobile.png`, fullPage: true });
+  await mobileMcpExpiryEditor.getByLabel("MCP 授权到期日期", { exact: true }).press("Escape");
+  await mobileMcpExpiryEditor.waitFor({ state: "detached" });
   await page.getByRole("tab", { name: "HTTP", exact: true }).click();
   await page.getByLabel("MCP HTTP 监听 IP", { exact: true }).waitFor();
   const mobileMcpHttpBounds = await page.locator(".mcp-http-view").evaluate((view) => ({
@@ -5968,6 +6019,8 @@ Host staging
       `${screenshotPrefix}-detached-health.png`,
       `${screenshotPrefix}-serial-analyzer.png`,
       `${screenshotPrefix}-mcp-grants.png`,
+      `${screenshotPrefix}-mcp-grant-expiry.png`,
+      `${screenshotPrefix}-mcp-grant-expiry-mobile.png`,
       `${screenshotPrefix}-mcp-http.png`,
       `${screenshotPrefix}-mcp-http-mobile.png`,
       `${screenshotPrefix}-mcp-audit.png`,

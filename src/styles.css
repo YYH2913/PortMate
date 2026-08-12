@@ -10982,6 +10982,140 @@ fieldset label {
   background: var(--control-hover);
 }
 
+.mcp-client-id-control,
+.mcp-expiry-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 35px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mcp-client-id-control > button,
+.mcp-expiry-summary > button {
+  display: grid;
+  width: 35px;
+  height: 35px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mcp-client-id-control > button:hover:not(:disabled),
+.mcp-expiry-summary > button:hover:not(:disabled),
+.mcp-expiry-summary > button[aria-expanded="true"] {
+  border-color: var(--cyan);
+  background: var(--control-hover);
+  color: var(--cyan);
+}
+
+.mcp-client-id-control > button:focus-visible,
+.mcp-expiry-summary > button:focus-visible,
+.mcp-expiry-actions button:focus-visible {
+  border-color: var(--cyan);
+  outline: 1px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+.mcp-client-id-control > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mcp-client-id-control > input:only-child {
+  grid-column: 1 / -1;
+}
+
+.mcp-expiry-control {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.mcp-expiry-summary > input[readonly] {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.mcp-expiry-editor {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  grid-template-columns: minmax(132px, 1fr) minmax(92px, 0.58fr);
+  width: min(360px, calc(100vw - 48px));
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #435365;
+  border-radius: 4px;
+  background: #111a23;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.mcp-expiry-editor label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.mcp-expiry-editor label > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-expiry-editor input {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.mcp-expiry-editor > small {
+  grid-column: 1 / -1;
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-expiry-editor > small.invalid {
+  color: #fca5a5;
+}
+
+.mcp-expiry-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.mcp-expiry-actions button {
+  min-width: 58px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mcp-expiry-actions button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.mcp-expiry-actions button.primary {
+  border-color: rgba(94, 234, 212, 0.45);
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--cyan);
+}
+
+.mcp-expiry-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .mcp-confirm-write {
   display: inline-flex;
   width: max-content;
@@ -11602,6 +11736,19 @@ fieldset label {
 
   .mcp-check-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mcp-expiry-editor {
+    position: static;
+    width: 100%;
+    margin-top: 6px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mcp-expiry-editor label,
+  .mcp-expiry-editor > small,
+  .mcp-expiry-actions {
+    grid-column: 1;
   }
 
   .mcp-audit-view {

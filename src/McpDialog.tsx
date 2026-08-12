@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Copy, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
+import { CalendarClock, Copy, Dices, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, formatMcpGrantExpiryInput, parseMcpGrantExpiryInput } from "./mcp-grant-state";
+import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, parseMcpGrantExpiryInput } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOKEN_ENV_VAR,
@@ -30,6 +30,7 @@ const mcpHttpListenOptions = [
   [MCP_HTTP_CUSTOM_LISTEN_PRESET, "自定义 IP"],
 ] as const;
 type McpDialogTab = "grants" | "http" | "audit";
+type McpExpiryEditorState = { date: string; time: string };
 
 export default function McpDialog({
   grants,
@@ -54,6 +55,7 @@ export default function McpDialog({
   const [draft, setDraft] = useState<McpGrant | null>(() => grants[0] ?? null);
   const [editingClientId, setEditingClientId] = useState<string | null>(() => grants[0]?.clientId ?? null);
   const [creatingGrant, setCreatingGrant] = useState(false);
+  const [expiryEditor, setExpiryEditor] = useState<McpExpiryEditorState | null>(null);
   const [error, setError] = useState("");
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
   const [httpRuntime, setHttpRuntime] = useState<McpHttpRuntimeStatus | null>(null);
@@ -77,6 +79,8 @@ export default function McpDialog({
   const [selectedAuditId, setSelectedAuditId] = useState("");
   const [auditExport, setAuditExport] = useState<ExportMcpAuditResult | null>(null);
   const clientIdInputRef = useRef<HTMLInputElement>(null);
+  const expiryEditorRef = useRef<HTMLDivElement>(null);
+  const expiryDateInputRef = useRef<HTMLInputElement>(null);
   const httpListenInputRef = useRef<HTMLInputElement>(null);
   const activeTabRef = useRef(tab);
   const httpRuntimeActionRef = useRef(false);
@@ -99,6 +103,9 @@ export default function McpDialog({
   const httpRemoteListener = isNonLoopbackMcpHost(httpSettings.listenHost);
   const httpRuntimeActive = httpRuntime?.phase === "starting" || httpRuntime?.phase === "running";
   const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
+  const expiryCandidate = expiryEditor
+    ? parseMcpGrantExpiryInput(`${expiryEditor.date}T${expiryEditor.time}`)
+    : null;
   const httpSettingsValid = Boolean(httpSettings.listenHost.trim() && httpSettings.clientId.trim())
     && Number.isInteger(httpSettings.port) && httpSettings.port >= 1 && httpSettings.port <= 65_535
     && Boolean(mcpHttpClientEndpoint(httpSettings))
@@ -157,6 +164,17 @@ export default function McpDialog({
   useEffect(() => () => requestGateRef.current.invalidateAll(), []);
 
   useEffect(() => setCcSwitchCopied(false), [ccSwitchJson]);
+
+  useEffect(() => {
+    if (!expiryEditor) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !expiryEditorRef.current?.contains(event.target)) {
+        setExpiryEditor(null);
+      }
+    };
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => window.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [Boolean(expiryEditor)]);
 
   async function loadHttpConfig() {
     const token = requestGateRef.current.begin("http");
@@ -406,6 +424,7 @@ export default function McpDialog({
   }
 
   function selectGrant(grant: McpGrant) {
+    setExpiryEditor(null);
     setDraft(grant);
     setEditingClientId(grant.clientId);
     setCreatingGrant(false);
@@ -413,6 +432,7 @@ export default function McpDialog({
   }
 
   function newGrant() {
+    setExpiryEditor(null);
     setDraft(createMcpGrant());
     setEditingClientId(null);
     setCreatingGrant(true);
@@ -421,6 +441,50 @@ export default function McpDialog({
       clientIdInputRef.current?.focus();
       clientIdInputRef.current?.select();
     });
+  }
+
+  function fillRandomClientId() {
+    if (!draft || editingClientId !== null) return;
+    try {
+      let clientId = "";
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        clientId = generateMcpClientId();
+        if (!grants.some((grant) => grant.clientId === clientId)) break;
+      }
+      setDraft({ ...draft, clientId });
+      setError("");
+      requestAnimationFrame(() => {
+        clientIdInputRef.current?.focus();
+        clientIdInputRef.current?.select();
+      });
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  function openExpiryEditor() {
+    if (!draft) return;
+    const current = formatMcpGrantExpiryInput(draft.expiresAt) || defaultMcpGrantExpiryInput();
+    const [date = "", time = ""] = current.split("T");
+    setExpiryEditor({ date, time });
+    requestAnimationFrame(() => {
+      expiryDateInputRef.current?.focus();
+      expiryDateInputRef.current?.select();
+    });
+  }
+
+  function applyExpiry() {
+    if (!draft || !expiryCandidate) return;
+    setDraft({ ...draft, expiresAt: expiryCandidate });
+    setExpiryEditor(null);
+    setError("");
+  }
+
+  function clearExpiry() {
+    if (!draft) return;
+    setDraft({ ...draft, expiresAt: null });
+    setExpiryEditor(null);
+    setError("");
   }
 
   function toggleScope(scope: McpScope) {
@@ -471,9 +535,47 @@ export default function McpDialog({
             </aside>
             {draft ? (
               <section className="mcp-editor">
-                <McpField label="Client ID:"><input ref={clientIdInputRef} value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} /></McpField>
+                <McpFieldGroup label="Client ID:">
+                  <div className="mcp-client-id-control">
+                    <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
+                    {editingClientId === null ? <button type="button" title="随机生成 Client ID" aria-label="随机生成 Client ID" disabled={grantBusy} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
+                  </div>
+                </McpFieldGroup>
                 <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
-                <McpField label="到期时间:"><input type="datetime-local" aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} onChange={(event) => setDraft({ ...draft, expiresAt: parseMcpGrantExpiryInput(event.target.value) })} /></McpField>
+                <McpFieldGroup label="到期时间:">
+                  <div className="mcp-expiry-control" ref={expiryEditorRef}>
+                    <div className="mcp-expiry-summary">
+                      <input type="text" readOnly aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} placeholder="永不过期" onClick={openExpiryEditor} onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openExpiryEditor();
+                        }
+                      }} />
+                      <button type="button" title="编辑到期时间" aria-label="编辑 MCP 授权到期时间" aria-expanded={Boolean(expiryEditor)} onClick={() => expiryEditor ? setExpiryEditor(null) : openExpiryEditor()}><CalendarClock size={15} /></button>
+                    </div>
+                    {expiryEditor ? (
+                      <div className="mcp-expiry-editor" onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setExpiryEditor(null);
+                        } else if (event.key === "Enter" && expiryCandidate) {
+                          event.preventDefault();
+                          applyExpiry();
+                        }
+                      }}>
+                        <label><span>日期</span><input ref={expiryDateInputRef} type="text" inputMode="numeric" aria-label="MCP 授权到期日期" maxLength={10} placeholder="YYYY-MM-DD" value={expiryEditor.date} onChange={(event) => setExpiryEditor({ ...expiryEditor, date: event.target.value })} /></label>
+                        <label><span>时间</span><input type="text" inputMode="numeric" aria-label="MCP 授权到期时刻" maxLength={5} placeholder="HH:mm" value={expiryEditor.time} onChange={(event) => setExpiryEditor({ ...expiryEditor, time: event.target.value })} /></label>
+                        <small className={expiryEditor.date && expiryEditor.time && !expiryCandidate ? "invalid" : ""}>{expiryEditor.date && expiryEditor.time && !expiryCandidate ? "请输入有效的本地日期和时间" : "使用本机时区"}</small>
+                        <div className="mcp-expiry-actions">
+                          <button type="button" onClick={clearExpiry}>清除</button>
+                          <button type="button" onClick={() => setExpiryEditor(null)}>取消</button>
+                          <button type="button" className="primary" disabled={!expiryCandidate} onClick={applyExpiry}>确定</button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </McpFieldGroup>
                 <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
                 <fieldset className="mcp-check-grid">
                   <legend>权限范围</legend>
@@ -636,6 +738,12 @@ function mcpHttpRuntimeLabel(status: McpHttpRuntimeStatus | null) {
     case "stopped": return "未运行";
     default: return "读取状态";
   }
+}
+
+function defaultMcpGrantExpiryInput() {
+  const date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+  date.setSeconds(0, 0);
+  return formatMcpGrantExpiryInput(date.toISOString());
 }
 
 function formatDateTime(value: string) {
