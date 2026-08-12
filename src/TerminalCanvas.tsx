@@ -55,6 +55,8 @@ import {
   terminalSemanticTokens,
 } from "./terminal-semantic-highlighting";
 import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting";
+import { mapTerminalSemanticRow, terminalSemanticCellSegments } from "./terminal-semantic-cells";
+import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./terminal-semantic-cells";
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
@@ -138,11 +140,6 @@ type TerminalTimestampViewport = {
   cellHeight: number;
   entries: VisibleTerminalTimestamp[];
 };
-type TerminalSemanticCell = {
-  row: number;
-  column: number;
-  width: number;
-};
 type TerminalSemanticLogicalLine = {
   text: string;
   cells: TerminalSemanticCell[];
@@ -174,28 +171,16 @@ function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): Termina
   while (row < buffer.length) {
     const line = buffer.getLine(row);
     if (!line || (row > startRow && !line.isWrapped)) break;
-    const physicalCharacters: string[] = [];
-    const physicalCells: TerminalSemanticCell[] = [];
-    const physicalContent: boolean[] = [];
+    const bufferCells: TerminalSemanticBufferCell[] = [];
     const columns = Math.min(term.cols, line.length);
     for (let column = 0; column < columns; column += 1) {
       const cell = line.getCell(column);
-      if (!cell || cell.getWidth() === 0) continue;
-      const chars = cell.getChars();
-      const cellCharacters = Array.from(chars || " ");
-      for (const character of cellCharacters) {
-        physicalCharacters.push(character);
-        physicalCells.push({ row, column, width: Math.max(1, cell.getWidth()) });
-        physicalContent.push(Boolean(chars));
-      }
+      if (!cell) continue;
+      bufferCells.push({ column, width: cell.getWidth(), chars: cell.getChars() });
     }
-    while (physicalCharacters.length && !physicalContent.at(-1)) {
-      physicalCharacters.pop();
-      physicalCells.pop();
-      physicalContent.pop();
-    }
-    characters.push(...physicalCharacters);
-    cells.push(...physicalCells);
+    const mapped = mapTerminalSemanticRow(row, bufferCells);
+    characters.push(...Array.from(mapped.text));
+    cells.push(...mapped.cells);
     row += 1;
     if (characters.length > MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) {
       oversized = true;
@@ -207,23 +192,6 @@ function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): Termina
     while (row < buffer.length && buffer.getLine(row)?.isWrapped) row += 1;
   }
   return { text: characters.join(""), cells, nextRow: Math.max(startRow + 1, row) };
-}
-
-function terminalSemanticCellSegments(
-  cells: readonly TerminalSemanticCell[],
-  start: number,
-  end: number,
-): TerminalSemanticCell[] {
-  const segments: TerminalSemanticCell[] = [];
-  for (const cell of cells.slice(start, end)) {
-    const previous = segments.at(-1);
-    if (previous && previous.row === cell.row && cell.column <= previous.column + previous.width) {
-      previous.width = Math.max(previous.width, cell.column + cell.width - previous.column);
-    } else {
-      segments.push({ ...cell });
-    }
-  }
-  return segments;
 }
 
 function alternateTerminalScreenSnapshot(term: XTerm): string[] {
@@ -1287,10 +1255,6 @@ export default function TerminalCanvas({
         host.dataset.terminalSemanticHighlighting = "unsupported";
         return;
       }
-      if (!completionInputRef.current.synchronized || oneKeyPromptStateRef.current.prompt) {
-        host.dataset.terminalSemanticHighlighting = "paused";
-        return;
-      }
       const buffer = term.buffer.active;
       if (buffer.type !== "normal") {
         host.dataset.terminalSemanticHighlighting = "alternate";
@@ -1534,10 +1498,8 @@ export default function TerminalCanvas({
   useEffect(() => {
     refreshSemanticHighlightingRef.current();
   }, [
-    completionInput.synchronized,
     completionSettings,
     semanticHighlightingSupported,
-    oneKeyPrompt?.eventId,
     themeId,
   ]);
 

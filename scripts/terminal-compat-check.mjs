@@ -1412,16 +1412,28 @@ try {
   ));
   await page.keyboard.press("Enter");
 
+  const semanticUnicodeCommand = '路由器(config)# echo "你好" /tmp/固件.bin';
+  await emitSessionEvent(createEvent("a-semantic-before-paste", "session-a", `\r\n${semanticUnicodeCommand}\r\n`));
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.dataset.terminalSemanticHighlighting === "active"
+      && Number(host.dataset.terminalSemanticDecorationCount ?? "0") >= 3;
+  });
+  const semanticBeforePaste = await activeHost.evaluate((host) => ({
+    state: host.dataset.terminalSemanticHighlighting,
+    decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
+  }));
   await activeTextarea.dispatchEvent("paste", { bubbles: true, cancelable: true });
   await page.keyboard.type("git s");
   await page.waitForTimeout(100);
   assert(await activeCompletion.count() === 0, "plain terminal paste did not pause command completion");
-  const semanticPaused = await activeHost.evaluate((host) => ({
+  const semanticAfterPaste = await activeHost.evaluate((host) => ({
     state: host.dataset.terminalSemanticHighlighting,
     decorations: Number(host.dataset.terminalSemanticDecorationCount ?? "-1"),
   }));
-  assert(semanticPaused.state === "paused" && semanticPaused.decorations === 0,
-    `semantic highlighting did not pause after synchronization loss: ${JSON.stringify(semanticPaused)}`);
+  assert(semanticAfterPaste.state === "active"
+    && semanticAfterPaste.decorations === semanticBeforePaste.decorations,
+  `semantic highlighting was incorrectly cleared after completion synchronization loss: ${JSON.stringify({ semanticBeforePaste, semanticAfterPaste })}`);
 
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");
@@ -1653,7 +1665,8 @@ try {
       dark: semanticDark,
       light: semanticLight,
       alternate: semanticAlternate,
-      paused: semanticPaused,
+      beforePaste: semanticBeforePaste,
+      afterPaste: semanticAfterPaste,
       resumed: semanticResumed,
       disabled: semanticDisabled,
       outboundTextUnchanged: semanticOutboundText === semanticOutboundCommand,
