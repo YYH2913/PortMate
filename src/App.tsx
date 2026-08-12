@@ -1839,12 +1839,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         });
         setNotice({
           title,
-          message: `${formatBytes(result.size)} · ${payload.logicalLines} 行 · SHA-256 ${result.sha256.slice(0, 16)}...\n${result.path}`,
+          message: `${formatBytes(result.size)} · ${payload.lineCount} 行 · SHA-256 ${result.sha256.slice(0, 16)}...\n${result.path}`,
         });
       } else {
         const { downloadTerminalText } = await import("./terminal-export-download");
         const fileName = downloadTerminalText(payload.text, session.profile.name, source);
-        setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.logicalLines} 行` });
+        setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.lineCount} 行` });
       }
     } catch (error) {
       setNotice({ title, message: formatError(error) });

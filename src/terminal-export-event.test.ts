@@ -10,7 +10,7 @@ describe("terminal export request event", () => {
       expect(detail).toMatchObject({ sessionId: "session-a", viewId: "view-b", source: "buffer" });
       detail.respond({
         ok: true,
-        payload: { sessionId: "session-a", viewId: "view-b", source: "buffer", text: "ready", bytes: 5, logicalLines: 1 },
+        payload: { sessionId: "session-a", viewId: "view-b", source: "buffer", text: "ready", bytes: 5, lineCount: 1 },
       });
       return true;
     });

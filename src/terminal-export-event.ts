@@ -9,7 +9,7 @@ export type TerminalTextExportPayload = {
   source: TerminalTextExportSource;
   text: string;
   bytes: number;
-  logicalLines: number;
+  lineCount: number;
 };
 
 export type TerminalTextExportResponse =

@@ -329,6 +329,7 @@ export default function TerminalCanvas({
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
   const refreshTimestampGutterRef = useRef<() => void>(() => {});
+  const exportTimestampSnapshotRef = useRef<() => TerminalTimestampEntry[]>(() => []);
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
   const polledEventIdsRef = useRef(new Map<string, string[]>());
@@ -1067,6 +1068,12 @@ export default function TerminalCanvas({
         ...(normalTimestampAnchor ? [{ line: 0, ts: normalTimestampAnchor }] : []),
       ], firstSerializedLine);
     };
+    const exportTimestampSnapshot = (): TerminalTimestampEntry[] => (
+      term.buffer.active.type === "alternate"
+        ? normalizeTerminalTimestamps(alternateTimestamps, Math.max(1, alternateTimestamps.length))
+        : timestampSnapshot(0)
+    );
+    exportTimestampSnapshotRef.current = exportTimestampSnapshot;
     const renderTimestampGutter = () => {
       timestampFrame = null;
       if (terminalDisposed) return;
@@ -1465,6 +1472,9 @@ export default function TerminalCanvas({
       if (refreshTimestampGutterRef.current === scheduleTimestampGutter) {
         refreshTimestampGutterRef.current = () => {};
       }
+      if (exportTimestampSnapshotRef.current === exportTimestampSnapshot) {
+        exportTimestampSnapshotRef.current = () => [];
+      }
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
       mouseEncodingSetDisposable.dispose();
@@ -1633,12 +1643,14 @@ export default function TerminalCanvas({
       }
       const extracted = source === "selection"
         ? extractTerminalSelectionText(term.getSelection())
-        : extractTerminalBufferText(term.buffer.active);
+        : extractTerminalBufferText(term.buffer.active, exportTimestampSnapshotRef.current());
       if (!extracted.ok) {
         detail.respond({
           ok: false,
           error: extracted.reason === "empty"
             ? source === "selection" ? "当前终端没有选中文本。" : "当前终端缓冲为空。"
+            : extracted.reason === "missing-timestamp"
+              ? "终端时间戳尚未就绪，请稍后重试。"
             : `终端文本超过 ${MAX_TERMINAL_EXPORT_BYTES / (1024 * 1024)} MiB 导出上限。`,
         });
         return;
@@ -1651,7 +1663,7 @@ export default function TerminalCanvas({
           source,
           text: extracted.text,
           bytes: extracted.bytes,
-          logicalLines: extracted.logicalLines,
+          lineCount: extracted.lineCount,
         },
       });
     };

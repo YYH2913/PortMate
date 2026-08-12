@@ -1916,10 +1916,14 @@ Host staging
     save: window.__invokeCalls.filter((call) => call.command === "plugin:dialog|save").at(-1),
     request: window.__invokeCalls.filter((call) => call.command === "export_terminal_text").at(-1)?.args.request,
   }));
+  const exportedTerminalLines = chosenTerminalExport.request?.text?.split("\n") ?? [];
   assert(chosenTerminalExport.save?.args.options?.defaultPath?.endsWith("-buffer.txt")
     && chosenTerminalExport.request?.destinationDirectory === null
     && chosenTerminalExport.request?.destinationPath === "/tmp/portmate-picked-terminal.txt"
-    && chosenTerminalExport.request?.overwrite === true,
+    && chosenTerminalExport.request?.overwrite === true
+    && exportedTerminalLines.length > 1
+    && exportedTerminalLines.every((line) => /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\] /.test(line))
+    && exportedTerminalLines.some((line) => line === `[${terminalTimestampProbe}] PORTMATE TIMESTAMP PROBE`),
   `chosen-path terminal export was not routed through the native save dialog: ${JSON.stringify(chosenTerminalExport)}`);
   await page.getByRole("button", { name: "确定", exact: true }).click();
   await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
