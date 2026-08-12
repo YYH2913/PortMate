@@ -328,6 +328,26 @@ pub(super) fn format_text_log_event(event: &SessionEvent, text: &str) -> String 
     rendered
 }
 
+pub(super) fn serialize_jsonl_log_event(event: &SessionEvent) -> Result<Vec<u8>, String> {
+    let mut serialized = serde_json::to_value(event)
+        .map_err(|error| format!("JSONL serialization failed: {error}"))?;
+    let fields = serialized
+        .as_object_mut()
+        .ok_or_else(|| "JSONL serialization did not produce an event object".to_string())?;
+    fields.insert(
+        "ts".to_string(),
+        serde_json::Value::String(
+            event
+                .ts
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        ),
+    );
+    let mut line = serde_json::to_vec(&serialized)
+        .map_err(|error| format!("JSONL serialization failed: {error}"))?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 fn append_text_log_shard_for_profile(
     store_path: &Path,
     profile: &SessionProfile,
@@ -369,9 +389,7 @@ fn append_jsonl_log_shard_for_profile(
     if profile.logging.redact_secrets {
         event.text = event.text.map(|text| redact_secrets(&text));
     }
-    let mut line = serde_json::to_vec(&event)
-        .map_err(|error| format!("JSONL serialization failed: {error}"))?;
-    line.push(b'\n');
+    let line = serialize_jsonl_log_event(&event)?;
     append_log_bytes(store_path, profile, "jsonl", &line)
         .map(|_| ())
         .map_err(|error| {

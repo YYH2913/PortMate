@@ -64,6 +64,43 @@ fn text_log_events_include_microsecond_metadata_on_every_line() {
         format!("{prefix}first\n{prefix}second\n")
     );
     assert_eq!(text_log_field("field]\\\n\t"), "field\\]\\\\\\n\\t");
+
+    assert_eq!(
+        format_text_log_event(&event, "first\r\n\nthird\n"),
+        format!("{prefix}first\r\n{prefix}\n{prefix}third\n")
+    );
+    assert_eq!(format_text_log_event(&event, "\n"), format!("{prefix}\n"));
+}
+
+#[test]
+fn jsonl_log_events_are_single_records_with_fixed_microsecond_timestamps() {
+    let event = SessionEvent {
+        id: "event-jsonl".to_string(),
+        session_id: "session-jsonl".to_string(),
+        pane_id: "session-jsonl:main".to_string(),
+        ts: DateTime::parse_from_rfc3339("2026-07-15T12:34:56.123456789Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        direction: EventDirection::Inbound,
+        stream: EventStream::Stdout,
+        bytes_ref: Some("log-bytes:v1:test".to_string()),
+        text: Some("first\r\n\nthird\n".to_string()),
+        annotations: BTreeMap::from([("commandId".to_string(), "command-1".to_string())]),
+    };
+
+    let rendered = String::from_utf8(serialize_jsonl_log_event(&event).unwrap()).unwrap();
+    assert_eq!(rendered.matches('\n').count(), 1);
+    assert!(rendered.contains("\"ts\":\"2026-07-15T12:34:56.123456Z\""));
+    assert!(rendered.contains("\"text\":\"first\\r\\n\\nthird\\n\""));
+
+    let parsed = serde_json::from_str::<SessionEvent>(rendered.trim_end()).unwrap();
+    assert_eq!(parsed.text, event.text);
+    assert_eq!(
+        parsed.ts,
+        DateTime::parse_from_rfc3339("2026-07-15T12:34:56.123456Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    );
 }
 
 #[test]
