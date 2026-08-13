@@ -184,6 +184,29 @@ pub(super) async fn execute_ipc_request(
             let task = start_transfer_inner(&state, transfer).await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
+        "start_content_transfer" => {
+            let content_request = serde_json::from_value::<StartMcpContentTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid content transfer request: {error}"))?;
+            let (source, staging_path) = stage_mcp_content_transfer(&state, &content_request)?;
+            let transfer = StartTransferRequest {
+                session_id: content_request.session_id,
+                protocol: content_request.protocol,
+                source,
+                destination: content_request.destination,
+            };
+            match start_transfer_inner_with_staging(&state, transfer, Some(staging_path.clone()))
+                .await
+            {
+                Ok(task) => serde_json::to_value(redact_transfer_task(task))
+                    .map_err(|error| error.to_string()),
+                Err(error) => {
+                    let _ = fs::remove_file(staging_path);
+                    Err(error)
+                }
+            }
+        }
         "cancel_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
             let task = cancel_transfer_inner(&state, &transfer_id)?;
@@ -250,6 +273,40 @@ pub(super) async fn execute_ipc_request(
         }
         other => Err(format!("unsupported IPC command: {other}")),
     }
+}
+
+pub(super) fn stage_mcp_content_transfer(
+    state: &AppState,
+    request: &StartMcpContentTransferRequest,
+) -> Result<(String, PathBuf), String> {
+    validate_mcp_content_transfer_request(request)?;
+    let content = BASE64_STANDARD
+        .decode(&request.content_base64)
+        .map_err(|_| "MCP contentBase64 is not valid standard Base64".to_string())?;
+    let parent = state
+        .store_path
+        .parent()
+        .ok_or_else(|| "MCP content staging directory is unavailable".to_string())?;
+    let staging_dir = parent.join(".mcp-transfer-staging");
+    fs::create_dir_all(&staging_dir)
+        .map_err(|error| format!("failed to create MCP content staging directory: {error}"))?;
+    #[cfg(unix)]
+    fs::set_permissions(&staging_dir, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        format!("failed to secure MCP content staging directory: {error}")
+    })?;
+    let path = staging_dir.join(format!("{}-{}", Uuid::new_v4(), request.file_name));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("failed to create MCP content staging file: {error}"))?;
+    if let Err(error) = file.write_all(&content).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("failed to write MCP content staging file: {error}"));
+    }
+    Ok((path.display().to_string(), path))
 }
 
 pub(super) fn ipc_string_arg<'a>(

@@ -42,7 +42,9 @@ fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
         "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
-        "start_transfer" | "cancel_transfer" | "retry_transfer" => Some(McpScope::Transfer),
+        "start_transfer" | "start_content_transfer" | "cancel_transfer" | "retry_transfer" => {
+            Some(McpScope::Transfer)
+        }
         "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
         _ => None,
     }
@@ -134,6 +136,13 @@ fn validate_ipc_write_args(state: &AppState, request: &IpcRequest) -> Result<(),
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
             validate_mcp_transfer_route(&transfer)?;
         }
+        "start_content_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid content transfer request: {error}"))?;
+            validate_mcp_content_transfer_request(&transfer)?;
+        }
         "cancel_transfer" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "transferId")?, "transfer")?;
         }
@@ -203,6 +212,50 @@ pub(super) fn validate_mcp_transfer_route(request: &StartTransferRequest) -> Res
         );
     }
     Ok(())
+}
+
+pub(super) fn validate_mcp_content_transfer_request(
+    request: &StartMcpContentTransferRequest,
+) -> Result<(), String> {
+    use portmate_core::{MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH, MAX_MCP_CONTENT_TRANSFER_BYTES};
+
+    if request.file_name.len() > 255
+        || request.file_name.is_empty()
+        || request.file_name.chars().any(|character| {
+            character == '\0'
+                || character.is_control()
+                || character == '/'
+                || character == '\\'
+                || character == ':'
+        })
+        || matches!(request.file_name.as_str(), "." | "..")
+    {
+        return Err(
+            "MCP content transfer fileName must be a single printable file name without path separators"
+                .to_string(),
+        );
+    }
+    if request.content_base64.is_empty()
+        || request.content_base64.len() > MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
+    {
+        return Err(format!(
+            "MCP contentBase64 exceeds the {MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH}-byte encoded limit"
+        ));
+    }
+    let content = BASE64_STANDARD
+        .decode(&request.content_base64)
+        .map_err(|_| "MCP contentBase64 is not valid standard Base64".to_string())?;
+    if content.len() > MAX_MCP_CONTENT_TRANSFER_BYTES {
+        return Err(format!(
+            "MCP content exceeds the {MAX_MCP_CONTENT_TRANSFER_BYTES}-byte decoded limit"
+        ));
+    }
+    validate_mcp_transfer_route(&StartTransferRequest {
+        session_id: request.session_id.clone(),
+        protocol: request.protocol.clone(),
+        source: request.file_name.clone(),
+        destination: request.destination.clone(),
+    })
 }
 
 fn validate_mcp_operation_id(value: &str, label: &str) -> Result<(), String> {

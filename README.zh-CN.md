@@ -229,6 +229,20 @@ SFTP 上传示例：
 
 PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
 
+如果内容来自另一台电脑上的 MCP 客户端，可以使用 `start_content_transfer`，无需先把文件放到运行桌面端的电脑上。客户端提交标准 Base64 内容；PortMate 会校验不含路径分隔符的安全文件名，将解码后的内容暂存在应用数据目录的私有目录中，并在任务结束后删除。内容不会写入 MCP 审计记录，也不会通过任务路径返回。解码后内容上限为 700 KiB；内联内容任务需要重新调用该工具，不能直接重试：
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "xmodem",
+  "fileName": "firmware.bin",
+  "contentBase64": "AAECAwQF...",
+  "destination": "load:loadx?address=0x80000000"
+}
+```
+
+该工具也可以通过 SFTP/SCP 上传内联内容，只需把目标写成 `remote:` 或 `ssh:` 端点，例如 `remote:/tmp/firmware.bin`。它仍然需要 `transfer` 授权，并遵循 MCP 写操作审批策略。
+
 ### 指定路由转发与代理
 
 `create_tunnel` 只在一个已连接且已授权的 SSH/Tmux 会话内创建指定路由。它不会修改操作系统路由表。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。

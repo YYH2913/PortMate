@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Maximum decoded payload accepted by the MCP inline-content transfer tool.
+/// The encoded form remains below the desktop IPC request limit.
+pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 700 * 1024;
+pub const MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH: usize =
+    MAX_MCP_CONTENT_TRANSFER_BYTES.div_ceil(3) * 4;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolDefinition {
@@ -161,6 +167,24 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
                     "source":{"type":"string","minLength":1,"maxLength":32768},
+                    "destination":{"type":"string","minLength":1,"maxLength":32768}
+                }
+            }),
+            false,
+        ),
+        tool(
+            "start_content_transfer",
+            "Start Content Transfer",
+            "Start a transfer from inline Base64 content supplied by the MCP client. The content is staged inside the PortMate desktop application and is never written to MCP audit records or returned as a path. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
+            json!({
+                "type":"object",
+                "required":["sessionId","protocol","fileName","contentBase64","destination"],
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
+                    "fileName":{"type":"string","minLength":1,"maxLength":255},
+                    "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
                     "destination":{"type":"string","minLength":1,"maxLength":32768}
                 }
             }),
@@ -461,6 +485,7 @@ mod tests {
         }
         for name in [
             "start_transfer",
+            "start_content_transfer",
             "cancel_transfer",
             "retry_transfer",
             "create_tunnel",
@@ -477,6 +502,14 @@ mod tests {
         assert!(transfer.description.contains(
             "At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint"
         ));
+        let content_transfer = definition("start_content_transfer");
+        assert_eq!(
+            content_transfer.input_schema["properties"]["contentBase64"]["maxLength"],
+            MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
+        );
+        assert!(content_transfer
+            .description
+            .contains("inline Base64 content"));
         let list = definition("list_transfers");
         assert_eq!(list.input_schema["properties"]["limit"]["maximum"], 1_000);
         assert_eq!(

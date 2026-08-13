@@ -46,6 +46,7 @@ pub(crate) fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
+    cleanup_mcp_content_transfer_staging(state, task_id);
     match state.transfer_cancellations.lock() {
         Ok(mut cancellations) => {
             cancellations.remove(task_id);

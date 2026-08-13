@@ -491,6 +491,7 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
         tunnels: Arc::new(Mutex::new(HashMap::new())),
         tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(MAX_TUNNEL_CONNECTIONS)),
         transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+        mcp_content_transfer_staging: Arc::new(Mutex::new(HashMap::new())),
         transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TRANSFER_TASKS)),
         transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
         sysmon_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYSMON_REFRESHES)),

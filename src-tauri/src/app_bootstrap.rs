@@ -75,6 +75,7 @@ pub fn run() {
                     MAX_TUNNEL_CONNECTIONS,
                 )),
                 transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+                mcp_content_transfer_staging: Arc::new(Mutex::new(HashMap::new())),
                 transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(
                     MAX_ACTIVE_TRANSFER_TASKS,
                 )),

@@ -51,6 +51,12 @@ pub(super) async fn retry_transfer_inner(
             .transfer_by_id(transfer_id)
             .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
     };
+    if previous.source.contains(".mcp-transfer-staging") {
+        return Err(
+            "inline MCP content transfers cannot be retried; call start_content_transfer again"
+                .to_string(),
+        );
+    }
     start_transfer_inner(
         state,
         StartTransferRequest {
@@ -66,6 +72,14 @@ pub(super) async fn retry_transfer_inner(
 pub(super) async fn start_transfer_inner(
     state: &AppState,
     request: StartTransferRequest,
+) -> Result<TransferTask, String> {
+    start_transfer_inner_with_staging(state, request, None).await
+}
+
+pub(super) async fn start_transfer_inner_with_staging(
+    state: &AppState,
+    request: StartTransferRequest,
+    staging_path: Option<PathBuf>,
 ) -> Result<TransferTask, String> {
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -101,6 +115,13 @@ pub(super) async fn start_transfer_inner(
             .map_err(|error| error.to_string())?;
         cancellations.insert(task.id.clone(), Arc::clone(&cancel));
     }
+    if let Some(staging_path) = staging_path.as_ref() {
+        let mut staging = state
+            .mcp_content_transfer_staging
+            .lock()
+            .map_err(|error| error.to_string())?;
+        staging.insert(task.id.clone(), staging_path.clone());
+    }
 
     let queue_result = match state.store.lock() {
         Ok(mut store) => {
@@ -124,6 +145,7 @@ pub(super) async fn start_transfer_inner(
         Err(error) => Err(error.to_string()),
     };
     if let Err(error) = queue_result {
+        cleanup_mcp_content_transfer_staging(state, &task.id);
         let cleanup_error = state
             .transfer_cancellations
             .lock()
@@ -154,6 +176,27 @@ pub(super) async fn start_transfer_inner(
     });
 
     Ok(task)
+}
+
+pub(super) fn cleanup_mcp_content_transfer_staging(state: &AppState, task_id: &str) {
+    let path = match state.mcp_content_transfer_staging.lock() {
+        Ok(mut staging) => staging.remove(task_id),
+        Err(error) => {
+            eprintln!(
+                "PortMate: failed to lock MCP content staging cleanup for {task_id}: {error}"
+            );
+            None
+        }
+    };
+    if let Some(path) = path {
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "PortMate: failed to remove MCP content staging file after transfer {task_id}: {error}"
+                );
+            }
+        }
+    }
 }
 
 pub(super) fn transfer_route_label(source: &str, destination: &str) -> &'static str {

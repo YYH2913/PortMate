@@ -168,15 +168,16 @@ impl PortMateMcp {
                     format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
                 }
             }
-            "start_transfer" => {
+            "start_transfer" | "start_content_transfer" => {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     let transfer = serde_json::from_value::<TransferTask>(value)
                         .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
                     serde_json::to_string_pretty(&redact_transfer_task(transfer))?
                 } else {
                     is_error = true;
-                    "start_transfer was NOT executed: desktop IPC is not available, so no transfer was started."
-                        .to_string()
+                    format!(
+                        "{name} was NOT executed: desktop IPC is not available, so no transfer was started."
+                    )
                 }
             }
             "cancel_transfer" | "retry_transfer" => {

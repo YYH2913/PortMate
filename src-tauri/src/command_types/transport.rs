@@ -14,6 +14,16 @@ pub struct StartTransferRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StartMcpContentTransferRequest {
+    pub session_id: String,
+    pub protocol: TransferProtocol,
+    pub file_name: String,
+    pub content_base64: String,
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartExternalDropRequest {
     pub session_id: String,
     pub paths: Vec<String>,

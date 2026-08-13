@@ -64,6 +64,7 @@ pub struct AppState {
     pub(super) tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     pub(super) tunnel_connection_slots: Arc<tokio::sync::Semaphore>,
     pub(super) transfer_cancellations: Arc<Mutex<HashMap<String, Arc<TransferCancellation>>>>,
+    pub(super) mcp_content_transfer_staging: Arc<Mutex<HashMap<String, PathBuf>>>,
     pub(super) transfer_task_slots: Arc<tokio::sync::Semaphore>,
     pub(super) transfer_lanes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) sysmon_slots: Arc<tokio::sync::Semaphore>,

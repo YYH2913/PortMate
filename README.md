@@ -229,6 +229,20 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
+For content produced on another MCP client, use `start_content_transfer` instead of first creating a file on the desktop host. The client sends standard Base64 content; PortMate validates the safe single-component file name, stages the decoded bytes in a private application-data directory, and removes the staging file when the task finishes. The content is never included in MCP audit records or returned task paths. The decoded payload is limited to 700 KiB and inline-content tasks must be started again instead of retried:
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "xmodem",
+  "fileName": "firmware.bin",
+  "contentBase64": "AAECAwQF...",
+  "destination": "load:loadx?address=0x80000000"
+}
+```
+
+The same tool can upload inline content through SFTP/SCP by using a `remote:` or `ssh:` destination, for example `remote:/tmp/firmware.bin`. It still requires the `transfer` grant and follows the normal MCP write approval policy.
+
 ### Route-Specific Forwarding And Proxy
 
 `create_tunnel` creates a route only inside one connected, authorized SSH or Tmux session. It does not modify the operating system routing table. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.

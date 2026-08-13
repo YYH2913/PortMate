@@ -215,6 +215,46 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
 }
 
 #[test]
+fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() {
+    let root = std::env::temp_dir().join(format!("portmate-mcp-content-{}", Uuid::new_v4()));
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let valid = StartMcpContentTransferRequest {
+        session_id: "session:1".to_string(),
+        protocol: TransferProtocol::Xmodem,
+        file_name: "firmware.bin".to_string(),
+        content_base64: BASE64_STANDARD.encode(b"secret firmware bytes"),
+        destination: "load:loadx".to_string(),
+    };
+    validate_mcp_content_transfer_request(&valid).unwrap();
+    for file_name in ["../firmware.bin", "nested/firmware.bin", "C:firmware.bin"] {
+        let mut invalid = valid.clone();
+        invalid.file_name = file_name.to_string();
+        assert!(validate_mcp_content_transfer_request(&invalid).is_err());
+    }
+    let mut invalid = valid.clone();
+    invalid.content_base64 = "not-base64".to_string();
+    assert!(validate_mcp_content_transfer_request(&invalid)
+        .unwrap_err()
+        .contains("valid standard Base64"));
+
+    let (source, staging_path) = stage_mcp_content_transfer(&state, &valid).unwrap();
+    assert!(source.contains(".mcp-transfer-staging"));
+    assert_eq!(fs::read(&staging_path).unwrap(), b"secret firmware bytes");
+    assert!(!serde_json::to_string(&state.store.lock().unwrap().audit)
+        .unwrap()
+        .contains("secret firmware bytes"));
+    let task_id = "staged-task";
+    state
+        .mcp_content_transfer_staging
+        .lock()
+        .unwrap()
+        .insert(task_id.to_string(), staging_path.clone());
+    cleanup_mcp_content_transfer_staging(&state, task_id);
+    assert!(!staging_path.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
     let root = std::env::temp_dir().join(format!("portmate-mcp-write-recheck-{}", Uuid::new_v4()));
     let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
