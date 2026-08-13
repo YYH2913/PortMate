@@ -51,7 +51,15 @@ pub(super) async fn retry_transfer_inner(
             .transfer_by_id(transfer_id)
             .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
     };
-    if previous.source.contains(".mcp-transfer-staging") {
+    let staging_root = state
+        .store_path
+        .parent()
+        .map(|parent| parent.join(".mcp-transfer-staging"));
+    if staging_root.is_some_and(|root| {
+        Path::new(&previous.source)
+            .parent()
+            .is_some_and(|parent| parent.starts_with(&root))
+    }) {
         return Err(
             "inline MCP content transfers cannot be retried; call start_content_transfer again"
                 .to_string(),

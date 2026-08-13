@@ -202,7 +202,11 @@ pub(super) async fn execute_ipc_request(
                 Ok(task) => serde_json::to_value(redact_transfer_task(task))
                     .map_err(|error| error.to_string()),
                 Err(error) => {
-                    let _ = fs::remove_file(staging_path);
+                    let _ = fs::remove_file(&staging_path);
+                    let _ = staging_path
+                        .parent()
+                        .filter(|parent| parent.file_name().is_some())
+                        .map(fs::remove_dir);
                     Err(error)
                 }
             }
