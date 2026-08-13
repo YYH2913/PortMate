@@ -48,6 +48,10 @@
     {
       "version": "2.1.0",
       "protocolVersion": "2025-06-18"
+    },
+    {
+      "version": "2.2.0",
+      "protocolVersion": "2025-06-18"
     }
   ]
 }
