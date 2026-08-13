@@ -66,4 +66,37 @@ describe("CI command logging", () => {
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
   });
+
+  it("keeps native Rolldown bindings installable on every native runner", () => {
+    const lockfile = JSON.parse(readFileSync(
+      resolve(import.meta.dirname, "..", "package-lock.json"),
+      "utf8",
+    ));
+    const packages = lockfile.packages;
+    expect(packages["node_modules/@rolldown/binding-darwin-arm64"]).toMatchObject({
+      os: ["darwin"],
+      cpu: ["arm64"],
+    });
+    expect(packages["node_modules/@rolldown/binding-darwin-arm64"]).not.toHaveProperty("libc");
+    expect(packages["node_modules/@rolldown/binding-darwin-x64"]).toMatchObject({
+      os: ["darwin"],
+      cpu: ["x64"],
+    });
+    expect(packages["node_modules/@rolldown/binding-darwin-x64"]).not.toHaveProperty("libc");
+    expect(packages["node_modules/@rolldown/binding-win32-x64-msvc"]).toMatchObject({
+      os: ["win32"],
+      cpu: ["x64"],
+    });
+    expect(packages["node_modules/@rolldown/binding-win32-x64-msvc"]).not.toHaveProperty("libc");
+    expect(packages["node_modules/@rolldown/binding-linux-x64-gnu"]).toMatchObject({
+      os: ["linux"],
+      cpu: ["x64"],
+      libc: ["glibc"],
+    });
+    expect(packages["node_modules/@rolldown/binding-linux-x64-musl"]).toMatchObject({
+      os: ["linux"],
+      cpu: ["x64"],
+      libc: ["musl"],
+    });
+  });
 });
