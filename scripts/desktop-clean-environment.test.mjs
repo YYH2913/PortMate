@@ -26,7 +26,7 @@ describe("buildDesktopEnvironment", () => {
       LD_PRELOAD: "/snap/injected.so",
       GTK_PATH: "/snap/gtk",
       GIO_MODULE_DIR: "/snap/gio",
-    });
+    }, "linux");
 
     expect(env).toMatchObject({
       HOME: "/home/alice",
@@ -51,7 +51,7 @@ describe("buildDesktopEnvironment", () => {
     const env = buildDesktopEnvironment({
       HOME: "/home/alice",
       XDG_DATA_DIRS_VSCODE_SNAP_ORIG: "/opt/share:/usr/share",
-    });
+    }, "linux");
 
     expect(env.XDG_DATA_DIRS).toBe("/opt/share:/usr/share");
     expect(env).not.toHaveProperty("XDG_DATA_DIRS_VSCODE_SNAP_ORIG");
@@ -61,7 +61,7 @@ describe("buildDesktopEnvironment", () => {
     const env = buildDesktopEnvironment({
       HOME: "/home/alice",
       XDG_DATA_DIRS: "/opt/company/share:/usr/share",
-    });
+    }, "linux");
 
     expect(env.XDG_DATA_DIRS).toBe("/opt/company/share:/usr/share");
   });
@@ -72,7 +72,7 @@ describe("buildDesktopEnvironment", () => {
       SNAP: "/snap/code/200",
       SNAP_NAME: "code",
       XDG_DATA_DIRS: "/snap/code/200/usr/share:/usr/share",
-    });
+    }, "linux");
 
     expect(env.XDG_DATA_DIRS).toBe(
       "/home/alice/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
@@ -100,7 +100,7 @@ describe("buildDesktopEnvironment", () => {
   });
 
   it("derives the flatpak user path from HOME without a fixed username", () => {
-    const env = buildDesktopEnvironment({ HOME: "/srv/users/bob" });
+    const env = buildDesktopEnvironment({ HOME: "/srv/users/bob" }, "linux");
 
     expect(env.XDG_DATA_DIRS).toBe(
       "/srv/users/bob/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
@@ -109,7 +109,7 @@ describe("buildDesktopEnvironment", () => {
   });
 
   it("uses only system paths when HOME is unavailable", () => {
-    const env = buildDesktopEnvironment({});
+    const env = buildDesktopEnvironment({}, "linux");
 
     expect(env.XDG_DATA_DIRS).toBe(
       "/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop",

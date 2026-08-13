@@ -27,6 +27,7 @@ describe("GSSAPI build environment", () => {
     const result = prepareGssapiBuildEnvironment({
       projectRoot: "/project",
       env: { PATH: "/bin" },
+      platform: "linux",
       runCommand: (command, args) => {
         calls.push([command, args]);
         return { status: command === "pkg-config" ? 0 : 1 };
@@ -43,6 +44,7 @@ describe("GSSAPI build environment", () => {
       projectRoot: "/project",
       env: { PKG_CONFIG_PATH: "/opt/pkg", LD_LIBRARY_PATH: "/opt/lib" },
       sysroot: root,
+      platform: "linux",
       runCommand: (command, args) => ({
         status: command === "pkg-config" && args[0] === "--atleast-version" ? 0 : 1,
       }),
@@ -80,6 +82,7 @@ describe("GSSAPI build environment", () => {
       projectRoot: "/project",
       env: {},
       defaultSysroot: join(root, "sysroot"),
+      platform: "linux",
       runCommand: (command, args, options = {}) => {
         commands.push({ command, args, options });
         if (command === "pkg-config") return {
@@ -109,6 +112,7 @@ describe("GSSAPI build environment", () => {
       projectRoot: "/project",
       env: {},
       defaultSysroot: join(root, "sysroot"),
+      platform: "linux",
       runCommand: (command, args, options = {}) => ({
         status: command === "pkg-config" && options.env?.PKG_CONFIG_SYSROOT_DIR ? 0 : 1,
       }),
@@ -130,6 +134,7 @@ describe("GSSAPI build environment", () => {
       projectRoot: "/project",
       env: {},
       defaultSysroot: sysroot,
+      platform: "linux",
       runCommand: (command, args, options = {}) => {
         if (command === "pkg-config") {
           return { status: options.env?.PKG_CONFIG_SYSROOT_DIR ? 0 : 1 };

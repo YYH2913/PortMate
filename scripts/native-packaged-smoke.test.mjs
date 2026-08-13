@@ -128,6 +128,8 @@ describe("native packaged runtime smoke", () => {
           );
           process.exit(91);
         }
+        // Windows does not allow removing the process working directory.
+        process.chdir(dirname(data));
         rmSync(data, { recursive: true });
         renameSync(legacy, data);
       }

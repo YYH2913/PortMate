@@ -68,13 +68,21 @@ describe("native packaged sidecar parent watchdog smoke", () => {
   it("times out a sidecar that ignores parent exit and forcibly cleans it up", async () => {
     const { fixture, pidPath } = sidecarFixture("ignored parent");
 
-    await expect(smokePackagedSidecarParentWatchdog({
+    const run = smokePackagedSidecarParentWatchdog({
       executable: process.execPath,
       args: [fixture, "ignore-parent", pidPath],
       label: "ignored-parent fixture",
       readyTimeoutMs: 1_000,
       watchdogTimeoutMs: 300,
-    })).rejects.toThrow(/sidecar \d+ survived its parent beyond 300 ms/);
+    });
+    if (process.platform === "win32") {
+      // Windows runner Job Objects terminate descendants with the parent, so
+      // the watchdog observes a clean exit instead of needing a timeout kill.
+      const result = await run;
+      expect(result.sidecarExited).toBe(true);
+    } else {
+      await expect(run).rejects.toThrow(/sidecar \d+ survived its parent beyond 300 ms/);
+    }
 
     expect(processExists(pidFrom(pidPath))).toBe(false);
   });
