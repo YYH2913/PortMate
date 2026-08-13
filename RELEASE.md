@@ -5,7 +5,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 
 ## Version And Source
 
-- [ ] `package.json`, `src-tauri/tauri.conf.json`, and all Cargo packages use the intended version.
+- [ ] `npm run test:release-source` confirms `package.json`, both lock files, Tauri metadata, every PortMate-owned Cargo package, licenses, and the current changelog section use the intended release identity and version. Embedded upstream forks retain their upstream package versions.
 - [ ] `Cargo.lock` and `package-lock.json` are committed and the release worktree contains no unintended files.
 - [ ] Release notes describe user-visible changes, security changes, migrations, and known limitations.
 - [ ] `LICENSE`, package publisher, application identifier, and platform metadata are correct.
@@ -13,6 +13,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 ## Required Verification
 
 - [ ] `npm ci` succeeds with the Node version in `.nvmrc`.
+- [ ] `npm run test:release-source` passes from the committed release source.
 - [ ] `npm run test:dependency-audit` and `npm run test:rust-dependency-audit` pass with fresh npm and RustSec advisory data.
 - [ ] `npm run test:native-keyring-dependencies` confirms that desktop and MCP use only the shared platform-specific native provider boundary.
 - [ ] `npm run test:portable-cross` checks the portable Rust crates for Windows GNU, Apple Silicon macOS, and FreeBSD with the locked dependency graph.

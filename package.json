@@ -59,6 +59,8 @@
     "test:portable-vault": "cargo test --locked -p portmate tests::portable_vault_tests::portable_vault_cross_process_fault_matrix -- --exact --nocapture --test-threads=1",
     "pretest:portable-cross": "node scripts/ensure-node-version.mjs",
     "test:portable-cross": "node scripts/portable-cross-check.mjs",
+    "pretest:release-source": "node scripts/ensure-node-version.mjs",
+    "test:release-source": "node scripts/release-source-check.mjs",
     "pretest:ssh-server-compat": "node scripts/ensure-node-version.mjs",
     "test:ssh-server-compat": "node scripts/ssh-server-compat-check.mjs",
     "test:libssh-gssapi-build": "bash scripts/libssh-gssapi-build-check.sh",

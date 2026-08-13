@@ -51,7 +51,7 @@ PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets
 - MCP compatibility covers the official TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift SDKs.
 - Linux DEB, RPM, and AppImage packages have local package and lifecycle gates. Windows and macOS still require successful native-runner evidence.
 
-See [PROGRESS.md](./PROGRESS.md) for the detailed implementation record and remaining boundaries. See [RELEASE.md](./RELEASE.md) for release requirements.
+See [CHANGELOG.md](./CHANGELOG.md) for versioned user-visible changes, [PROGRESS.md](./PROGRESS.md) for the detailed implementation record and remaining boundaries, and [RELEASE.md](./RELEASE.md) for release requirements.
 
 ## Quick Start
 
@@ -335,6 +335,7 @@ Normal development gates:
 ```bash
 npm test
 npm run build
+npm run test:release-source
 cargo fmt --all -- --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings

@@ -51,7 +51,7 @@ PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允�
 - MCP 回归覆盖 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 官方 SDK。
 - Linux DEB、RPM 和 AppImage 已有本地打包与包内生命周期门禁；Windows 和 macOS 仍需原生 runner 的成功证据。
 
-详细实现进度和未完成边界见 [PROGRESS.md](./PROGRESS.md)，正式发布要求见 [RELEASE.md](./RELEASE.md)。
+按版本整理的用户可见变化见 [CHANGELOG.md](./CHANGELOG.md)，详细实现进度和未完成边界见 [PROGRESS.md](./PROGRESS.md)，正式发布要求见 [RELEASE.md](./RELEASE.md)。
 
 ## 快速开始
 
@@ -335,6 +335,7 @@ npm run desktop:build:windows-gnu
 ```bash
 npm test
 npm run build
+npm run test:release-source
 cargo fmt --all -- --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
