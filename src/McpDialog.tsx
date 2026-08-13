@@ -536,7 +536,7 @@ export default function McpDialog({
                 <McpFieldGroup label="Client ID:">
                   <div className="mcp-client-id-control">
                     <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
-                    {editingClientId === null ? <button type="button" title="随机生成 Client ID" aria-label="随机生成 Client ID" disabled={grantBusy} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
+                    {editingClientId === null ? <button type="button" title="随机生成 Client ID" aria-label="随机生成 Client ID" disabled={grantBusy} onMouseDown={(event) => event.preventDefault()} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
                   </div>
                 </McpFieldGroup>
                 <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>

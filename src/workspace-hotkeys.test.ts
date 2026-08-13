@@ -10,6 +10,12 @@ import {
 } from "./workspace-hotkeys";
 
 const baseInput = { altKey: true, ctrlKey: false, metaKey: false, shiftKey: false };
+const primaryChordModifier = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
+  ? "Meta"
+  : "Ctrl";
+const primaryChordInput = primaryChordModifier === "Meta"
+  ? { ...baseInput, altKey: false, metaKey: true }
+  : { ...baseInput, altKey: false, ctrlKey: true };
 
 describe("workspace hotkeys", () => {
   it.each([
@@ -148,16 +154,16 @@ describe("workspace hotkeys", () => {
     expect(formatWorkspaceKeyBinding(keymap["split-down"])).toBe("Alt + W  →  Ctrl + Shift + H");
   });
 
-  it("opens OneKeys with WindTerm's Ctrl+T Ctrl+K chord", () => {
+  it("opens OneKeys with the platform primary T/K chord", () => {
     expect(resolveWorkspaceHotkeySequence(
-      { ...baseInput, altKey: false, ctrlKey: true, code: "KeyT" },
+      { ...primaryChordInput, code: "KeyT" },
       1,
-    )).toEqual({ kind: "pending", prefix: "Ctrl+KeyT" });
+    )).toEqual({ kind: "pending", prefix: `${primaryChordModifier}+KeyT` });
     expect(resolveWorkspaceHotkeySequence(
-      { ...baseInput, altKey: false, ctrlKey: true, code: "KeyK" },
+      { ...primaryChordInput, code: "KeyK" },
       1,
       defaultWorkspaceKeymap,
-      "Ctrl+KeyT",
+      `${primaryChordModifier}+KeyT`,
     )).toEqual({ kind: "action", action: { kind: "one-keys" } });
   });
 

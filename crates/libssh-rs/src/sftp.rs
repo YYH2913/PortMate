@@ -305,6 +305,9 @@ unsafe impl Send for SftpFile {}
 
 impl Drop for SftpFile {
     fn drop(&mut self) {
+        if self.file_inner.is_null() {
+            return;
+        }
         let (_sess, file) = self.lock_session();
         unsafe {
             sys::sftp_close(file);
@@ -670,6 +673,9 @@ unsafe impl Send for SftpDir {}
 
 impl Drop for SftpDir {
     fn drop(&mut self) {
+        if self.dir_inner.is_null() {
+            return;
+        }
         let (_sess, dir) = self.lock_session();
         unsafe {
             sys::sftp_closedir(dir);
