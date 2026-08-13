@@ -52,6 +52,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 上一版本升级门禁现由 `npm run test:release-upgrade` 固定，并接入三平台 Native CI。仓库保存 0.1.0 最终 SQLite v4 schema、canonical SessionStore、credential migration journal、WebView localStorage 和真实 JSONL 日志夹具；schema 不调用当前初始化器，因此未来版本不能用当前表结构自证兼容。Rust 门禁从 `dev.portmate.app` 的非空旧目录构造 Store，验证 Profile、Host Key、MCP grant、事件、命令历史、日志和浏览器状态完成原子目录迁移，确认旧 Store 缺少的 MCP `clientHost` 与 tunnel `routeRules` 由当前兼容默认值补齐，并在保存、typed mirror 重写、JSON compatibility snapshot 和二次加载后保持数据及独立 journal/metadata；前端门禁使用同一 0.1.0 浏览器夹具验证 workspace split/view、panel visibility、dock layout/size 与 command history。夹具 Store、journal、browser-state 和 log 的 SHA-256 分别为 `086e12bf5e5092fbe72477a0299cdd02a3c74d4e33f2dc1039f4fef5c0c1603f`、`32de6c975bce5f848e76ab37ea1fa6d13a5737ba3d2d6e3adb09cac173b2d52c`、`a96487f37bd7a6a2c295bac90920fe84a5666df6f85b97d4515ab3c7025273e0` 和 `33d913ee96ed5346817b5c1474addfaf32f38ff7cb33f725c81fa1c2089b37c2`。统一门禁、完整前端 103 文件/567 项、生产构建、Rustfmt、PortMate all-targets Clippy `-D warnings` 和 locked workspace 回归均通过；主应用为 453 passed、1 ignored、1 filtered，其余 crate、integration、watchdog 与 doc-test 全部通过。该结果完成可复现的上一版本数据升级门禁，但不替代旧签名安装包留存、真实三平台安装升级和回滚演练。
 
+MCP 执行边界继续按职责收敛：inline Base64 与分块上传内容的解码、暂存、归属校验、route 校验、长度/SHA-256 校验和清理已从 654 行的 `mcp_execution.rs` 迁入独立 309 行的 `mcp_content_staging.rs`，执行编排文件降至 351 行。迁移保留私有目录/文件权限、符号链接/reparse point/hardlink 拒绝、owner/client metadata 绑定、精确长度与摘要校验以及失败清理语义，原调用路径和错误契约不变。专项回归中 MCP 执行 20 项通过、1 项按设计忽略的 child-process fixture，MCP read 3 项通过；完整 PortMate 为 455 passed、1 个同一 intentional ignored fixture、0 filtered，all-targets Clippy `-D warnings`、Rustfmt 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
