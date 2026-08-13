@@ -294,16 +294,30 @@ pub(super) fn stage_mcp_content_transfer(
     fs::set_permissions(&staging_dir, fs::Permissions::from_mode(0o700)).map_err(|error| {
         format!("failed to secure MCP content staging directory: {error}")
     })?;
-    let path = staging_dir.join(format!("{}-{}", Uuid::new_v4(), request.file_name));
+    let task_dir = staging_dir.join(Uuid::new_v4().to_string());
+    fs::create_dir(&task_dir)
+        .map_err(|error| format!("failed to create MCP content staging task directory: {error}"))?;
+    #[cfg(unix)]
+    if let Err(error) = fs::set_permissions(&task_dir, fs::Permissions::from_mode(0o700)) {
+        let _ = fs::remove_dir(&task_dir);
+        return Err(format!(
+            "failed to secure MCP content staging task directory: {error}"
+        ));
+    }
+    let path = task_dir.join(&request.file_name);
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
     let mut file = options
         .open(&path)
-        .map_err(|error| format!("failed to create MCP content staging file: {error}"))?;
+        .map_err(|error| {
+            let _ = fs::remove_dir(&task_dir);
+            format!("failed to create MCP content staging file: {error}")
+        })?;
     if let Err(error) = file.write_all(&content).and_then(|_| file.sync_all()) {
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&task_dir);
         return Err(format!("failed to write MCP content staging file: {error}"));
     }
     Ok((path.display().to_string(), path))

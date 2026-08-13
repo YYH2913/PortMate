@@ -196,6 +196,9 @@ pub(super) fn cleanup_mcp_content_transfer_staging(state: &AppState, task_id: &s
                 );
             }
         }
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
     }
 }
 
