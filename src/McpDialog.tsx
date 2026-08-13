@@ -451,6 +451,10 @@ export default function McpDialog({
       }
       setDraft({ ...draft, clientId });
       setError("");
+      // Keep the editor focused even when the browser dispatches the button click
+      // after a state update has replaced the controlled input value.
+      clientIdInputRef.current?.focus();
+      clientIdInputRef.current?.select();
       requestAnimationFrame(() => {
         clientIdInputRef.current?.focus();
         clientIdInputRef.current?.select();
