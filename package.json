@@ -50,7 +50,7 @@
     "pretest:native-keyring": "node scripts/ensure-node-version.mjs",
     "test:native-keyring": "node scripts/native-keyring-check.mjs",
     "pretest:dependency-audit": "node scripts/ensure-node-version.mjs",
-    "test:dependency-audit": "npm audit --audit-level=moderate",
+    "test:dependency-audit": "node scripts/dependency-audit.mjs",
     "pretest:rust-dependency-audit": "node scripts/ensure-node-version.mjs",
     "test:rust-dependency-audit": "node scripts/rust-dependency-audit.mjs",
     "pretest:native-keyring-dependencies": "node scripts/ensure-node-version.mjs",
