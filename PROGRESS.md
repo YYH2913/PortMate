@@ -68,6 +68,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同日对附件所示 Native CI 跨平台失败按当前 HEAD 逐项复核。Windows 的 OpenSSL 失败来自旧 workflow 强行设置 `MAKE=nmake.exe`，这会污染 OpenSSL 的 Makefile 递归命令；当前 workflow 只验证 Strawberry Perl 的 `MSWin32` 平台并设置 `OPENSSL_SRC_PERL`，把 MSVC `nmake.exe` 发现交还给 `openssl-src` 的 Windows registry 路径。macOS 的 `/var -> /private/var` 临时目录别名则由测试夹具在创建后 canonicalize 解决，生产路径仍拒绝任意符号链接分量；SSH agent socket 同时改用短 `/tmp` 路径。Telnet TLS 夹具不再调用 macOS Secure Transport 不支持的 PKCS#8 导入，而是以 OpenSSL 生成 PKCS#12 identity。为模拟 macOS 路径语义，完整 locked Rust workspace 在 `TMPDIR` 指向符号链接的私有临时目录下以 CI 的单线程/portable-vault skip 参数运行；所有 crate、integration、watchdog 和 doc-test 均通过，实际覆盖 OpenSSH agent、SFTP/SCP、libssh、文件操作、本地传输与 TLS Telnet 失败类别。该结果证明当前源码修复；仍须在推送后由真实 Windows/macOS Native runner 给出最终原生证据。
 
+当前 HEAD 继续以本机 MinGW-w64 与静态 libsodium 执行 `cargo check --locked -p portmate --target x86_64-pc-windows-gnu`，完整桌面 crate 通过，覆盖 Tauri/Wry/WebView2、native TLS、Windows keyring、Stronghold、serial、russh/libssh、SQLite 与全部 Windows 条件编译路径；独立 portable gate 也再次通过 Windows GNU、macOS Apple Silicon 和 FreeBSD x86_64 的五个可移植 crate。Windows 0.1.1 portable ZIP 的 GUI/console PE、WebView2 loader、嵌入生产前端、许可证与 ZIP 完整性已有本地静态证据，但这些交叉构建仍不替代 Windows MSVC 的 vendored OpenSSL、真实 WebView2 启动、Credential Manager，或 MSI/NSIS 安装 smoke。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
