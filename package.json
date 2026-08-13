@@ -62,7 +62,7 @@
     "pretest:release-source": "node scripts/ensure-node-version.mjs",
     "test:release-source": "node scripts/release-source-check.mjs",
     "pretest:release-upgrade": "node scripts/ensure-node-version.mjs",
-    "test:release-upgrade": "cargo test --locked -p portmate tests::release_upgrade_tests::previous_release_app_data_survives_directory_store_mirror_and_journal_upgrade -- --exact --test-threads=1 && vitest run src/release-upgrade.test.ts",
+    "test:release-upgrade": "cargo test --locked -p portmate tests::release_upgrade_tests:: -- --test-threads=1 && vitest run src/release-upgrade.test.ts",
     "pretest:ssh-server-compat": "node scripts/ensure-node-version.mjs",
     "test:ssh-server-compat": "node scripts/ssh-server-compat-check.mjs",
     "test:libssh-gssapi-build": "bash scripts/libssh-gssapi-build-check.sh",

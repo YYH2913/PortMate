@@ -341,3 +341,26 @@ fn previous_release_app_data_survives_directory_store_mirror_and_journal_upgrade
     assert_eq!(preserved_journal.created_at, journal.created_at);
     assert_eq!(preserved_journal.updated_at, journal.updated_at);
 }
+
+#[test]
+fn previous_release_upgrade_refuses_two_nonempty_app_data_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
+    let current = root.path().join("dev.portmate.desktop");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(&current).unwrap();
+    let legacy_store = legacy.join(STORE_FILE_NAME);
+    write_previous_release_store(&legacy_store);
+    let current_store = current.join(STORE_FILE_NAME);
+    fs::write(&current_store, b"current-store-must-remain-unchanged").unwrap();
+    let legacy_before = fs::read(&legacy_store).unwrap();
+
+    let error = migrate_legacy_app_data_dir(root.path(), &current).unwrap_err();
+
+    assert!(error.contains("refusing to merge"), "{error}");
+    assert_eq!(fs::read(&legacy_store).unwrap(), legacy_before);
+    assert_eq!(
+        fs::read(&current_store).unwrap(),
+        b"current-store-must-remain-unchanged"
+    );
+}
