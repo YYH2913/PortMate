@@ -916,6 +916,7 @@ export default function TerminalCanvas({
     host.dataset.terminalWebgl = "loading";
     host.dataset.terminalKeyMode = keyModeRef.current;
     host.dataset.terminalCursorStyle = terminalKeyModeCursorStyle(keyModeRef.current);
+    host.dataset.terminalCursorColor = term.options.theme?.cursor ?? "#5eead4";
     host.dataset.terminalMouseReporting = mouseReportingRef.current ? "enabled" : "disabled";
     host.dataset.terminalRestored = cachedState ? "true" : "false";
     let mouseEncoding: TerminalMouseEncoding = cachedState?.mouseEncoding ?? "default";
@@ -1511,6 +1512,7 @@ export default function TerminalCanvas({
     const normalized = normalizeTerminalProfileSettings(active.profile.terminal);
     const appliedTheme = applyTerminalPresentation(term, normalized);
     host.dataset.terminalTheme = appliedTheme;
+    host.dataset.terminalCursorColor = term.options.theme?.cursor ?? "#5eead4";
     host.dataset.terminalOpacity = String(normalized.backgroundOpacity);
     configureWebglRef.current(
       shouldEnableTerminalWebgl(isBackendAvailable(), navigator.userAgent)

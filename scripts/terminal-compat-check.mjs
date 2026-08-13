@@ -576,6 +576,10 @@ try {
     }
 
     const screenshot = await host.screenshot();
+    const cursorColor = await host.evaluate((element) => {
+      const value = getComputedStyle(element).getPropertyValue("--xterm-cursor-color").trim();
+      return value || element.dataset.terminalCursorColor || "#5eead4";
+    });
     const components = await page.evaluate(async ({ base64, color }) => {
       const expected = [
         Number.parseInt(color.slice(1, 3), 16),
@@ -642,7 +646,7 @@ try {
         });
       }
       return found.sort((left, right) => right.bottom - left.bottom || right.area - left.area).slice(0, 8);
-    }, { base64: screenshot.toString("base64"), color: "#5eead4" });
+    }, { base64: screenshot.toString("base64"), color: cursorColor });
     const cursor = components[0];
     const rendered = expectedStyle === "block"
       ? cursor?.width >= 5 && cursor.height >= 8 && cursor.area >= cursor.width * cursor.height * 0.6
