@@ -48,6 +48,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 版本化发布源边界现由 `CHANGELOG.md` 和 `npm run test:release-source` 固定：0.1.1 说明分别记录用户可见新增/变化/修复、安全边界、迁移与已知限制；门禁使用 locked Cargo metadata 区分 PortMate 自有 crate 与保留上游版本的内置 fork，并统一核对 `package.json`、`package-lock.json`、Tauri metadata、全部自有 Cargo 包、Apache-2.0/OFL 许可资源以及当前版本的完整发行说明。该门禁已接入 Native CI portable job；专项 3 项、完整前端 102 文件/566 项、生产构建和 workflow YAML 解析均通过。
 
+随后使用 Node 22.20.0 从空 `node_modules` 执行 `npm ci`，严格按未变化的 `package-lock.json`（SHA-256 `5b63b1d85bdfeabbfbcdb3533048d04bc0fbb905aca5032117d367cb85fde480`）恢复 170 个包并报告 0 个漏洞；干净安装后再次通过 release-source、102 文件/566 项前端测试、生产构建和独立 npm dependency audit。该结果证明当前锁文件在本机可重建，不代替 Native CI 三平台的全新 checkout 记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
