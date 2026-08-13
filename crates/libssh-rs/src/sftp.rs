@@ -56,8 +56,10 @@ unsafe impl Sync for SftpInner {}
 impl Drop for SftpInner {
     fn drop(&mut self) {
         let _sess = self.sess.lock().unwrap();
-        unsafe {
-            sys::sftp_free(self.sftp_inner);
+        if !self.sftp_inner.is_null() {
+            unsafe {
+                sys::sftp_free(self.sftp_inner);
+            }
         }
     }
 }
