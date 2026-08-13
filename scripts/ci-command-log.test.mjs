@@ -55,6 +55,10 @@ describe("CI command logging", () => {
     expect(workflow).toContain(
       "target/native-ci/native-keyring.log npm run test:native-keyring",
     );
+    expect(workflow).toContain(
+      "target/native-ci/workspace-tests.log",
+    );
+    expect(workflow).toContain("--test-threads=1");
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow).toContain("if: runner.os == 'Linux'");
     expect(workflow).toContain("- macos-15");

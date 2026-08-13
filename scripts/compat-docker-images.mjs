@@ -55,7 +55,15 @@ export async function prepareCompatibilityImage({
   buildOptions = {},
   inspectOptions = {},
   attempts = 3,
+  retryDelayMs = 5_000,
+  wait = (durationMs) => new Promise((resolveWait) => setTimeout(resolveWait, durationMs)),
 }) {
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10) {
+    throw new Error("compatibility image build attempts must be an integer from 1 to 10");
+  }
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 60_000) {
+    throw new Error("compatibility image retry delay must be an integer from 0 to 60000 ms");
+  }
   if (useCachedImages) {
     const inspected = run("docker", ["image", "inspect", image], {
       ...inspectOptions,
@@ -76,10 +84,16 @@ export async function prepareCompatibilityImage({
     } catch (error) {
       lastError = error;
       if (attempt < attempts) {
-        console.warn(`docker build attempt ${attempt}/${attempts} failed; retrying`);
-        await new Promise((resolveWait) => setTimeout(resolveWait, attempt * 1_000));
+        const delayMs = attempt * retryDelayMs;
+        console.warn(
+          `docker image ${image} build attempt ${attempt}/${attempts} failed; retrying in ${delayMs} ms`,
+        );
+        await wait(delayMs);
       }
     }
   }
-  throw lastError;
+  throw new Error(
+    `failed to prepare compatibility image ${image} after ${attempts} attempts: ${lastError?.message ?? "unknown build error"}`,
+    { cause: lastError },
+  );
 }

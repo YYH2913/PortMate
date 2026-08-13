@@ -16,6 +16,8 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerControlTimeoutMs = 180_000;
+const dockerImageBuildTimeoutMs = 600_000;
+const compatibilityTestTimeoutMs = 900_000;
 const useCachedImages = compatibilityUsesCachedImages();
 const allServers = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-server-matrix.json"), "utf8"));
 const allHealthFaults = JSON.parse(readFileSync(resolve(projectRoot, "tests/compat/ssh-health-fault-matrix.json"), "utf8"));
@@ -49,6 +51,7 @@ for (const entry of matrix) {
     image,
     useCachedImages,
     buildArgs: ["build", "--tag", image, "--file", resolve(projectRoot, entry.dockerfile), ...buildArgs, projectRoot],
+    buildOptions: { timeout: dockerImageBuildTimeoutMs },
     inspectOptions: { timeout: dockerControlTimeoutMs },
   });
 
@@ -74,6 +77,7 @@ for (const entry of matrix) {
       "--nocapture",
       "--test-threads=1",
     ], {
+      timeout: compatibilityTestTimeoutMs,
       env: {
         ...process.env,
         PORTMATE_COMPAT_SSH_LABEL: entry.name,
@@ -96,6 +100,7 @@ for (const entry of matrix) {
         "--nocapture",
         "--test-threads=1",
       ], {
+        timeout: compatibilityTestTimeoutMs,
         env: {
           ...process.env,
           PORTMATE_COMPAT_SSH_LABEL: entry.name,
@@ -140,6 +145,7 @@ if (healthFaultMatrix.length || transferFaultMatrix.length) {
       resolve(projectRoot, "tests/compat/ssh-health-faults-alpine.Dockerfile"),
       projectRoot,
     ],
+    buildOptions: { timeout: dockerImageBuildTimeoutMs },
     inspectOptions: { timeout: dockerControlTimeoutMs },
   });
 }
@@ -173,6 +179,7 @@ for (const entry of healthFaultMatrix) {
       "--nocapture",
       "--test-threads=1",
     ], {
+      timeout: compatibilityTestTimeoutMs,
       env: {
         ...process.env,
         PORTMATE_COMPAT_SSH_HEALTH_FAULT: entry.name,
@@ -225,6 +232,7 @@ for (const entry of transferFaultMatrix) {
       "--nocapture",
       "--test-threads=1",
     ], {
+      timeout: compatibilityTestTimeoutMs,
       env: {
         ...process.env,
         PORTMATE_COMPAT_SSH_TRANSFER_FAULT: entry.name,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compatibilityUsesCachedImages,
   filterCompatibilityEntries,
+  prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
 
 const entries = [
@@ -58,5 +59,59 @@ describe("Docker compatibility cache mode", () => {
     expect(() => compatibilityUsesCachedImages({
       PORTMATE_COMPAT_USE_CACHED_IMAGES: "yes",
     })).toThrow("must be 0 or 1");
+  });
+
+  it("inspects cached images without attempting a build", async () => {
+    const calls = [];
+    await prepareCompatibilityImage({
+      run: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 0 };
+      },
+      image: "portmate-compat-cached:local",
+      buildArgs: ["build", "."],
+      useCachedImages: true,
+    });
+
+    expect(calls).toEqual([{
+      command: "docker",
+      args: ["image", "inspect", "portmate-compat-cached:local"],
+      options: { quiet: true, allowFailure: true },
+    }]);
+  });
+
+  it("retries image builds with bounded backoff and reports the image", async () => {
+    const calls = [];
+    const waits = [];
+    await expect(prepareCompatibilityImage({
+      run: (command, args, options) => {
+        calls.push({ command, args, options });
+        throw new Error(`network failure ${calls.length}`);
+      },
+      image: "portmate-compat-fedora:local",
+      buildArgs: ["build", "--tag", "portmate-compat-fedora:local", "."],
+      buildOptions: { timeout: 600_000 },
+      useCachedImages: false,
+      retryDelayMs: 5_000,
+      wait: async (durationMs) => waits.push(durationMs),
+    })).rejects.toThrow(
+      "failed to prepare compatibility image portmate-compat-fedora:local after 3 attempts: network failure 3",
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every(({ options }) => options.timeout === 600_000)).toBe(true);
+    expect(waits).toEqual([5_000, 10_000]);
+  });
+
+  it("rejects unsafe retry bounds before invoking Docker", async () => {
+    await expect(prepareCompatibilityImage({
+      run: () => {
+        throw new Error("must not run");
+      },
+      image: "portmate-compat-invalid:local",
+      buildArgs: ["build", "."],
+      useCachedImages: false,
+      attempts: 0,
+    })).rejects.toThrow("attempts must be an integer from 1 to 10");
   });
 });

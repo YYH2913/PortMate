@@ -42,5 +42,7 @@ describe("Rust command lock boundary", () => {
 
     const sshMatrix = source("scripts/ssh-server-compat-check.mjs");
     expect(sshMatrix.match(/"test",\s*"--locked",\s*"-p"/g)).toHaveLength(4);
+    expect(sshMatrix.match(/timeout: compatibilityTestTimeoutMs/g)).toHaveLength(4);
+    expect(sshMatrix).toContain("const compatibilityTestTimeoutMs = 900_000;");
   });
 });
