@@ -4,6 +4,13 @@ pub(super) const REMOTE_TUNNEL_HEALTH_INTERVAL: Duration = Duration::from_secs(1
 pub(super) const REMOTE_TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REMOTE_TUNNEL_HEALTH_ERROR_PREFIX: &str = "remote forward health check failed:";
 pub(super) const REMOTE_TUNNEL_PROBE_COMMAND: &str = r#"sh -lc 'if [ -r /proc/net/tcp ]; then echo __PORTMATE_PROC__; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true; elif command -v ss >/dev/null 2>&1 && probe=$(ss -H -ltn 2>/dev/null); then echo __PORTMATE_SS__; printf "%s\n" "$probe"; elif command -v sockstat >/dev/null 2>&1 && probe=$(sockstat -46ln 2>/dev/null); then echo __PORTMATE_SOCKSTAT__; printf "%s\n" "$probe"; elif command -v lsof >/dev/null 2>&1 && probe=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null); then echo __PORTMATE_LSOF__; printf "%s\n" "$probe"; elif command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null); then echo __PORTMATE_NETSTAT__; printf "%s\n" "$probe"; else echo __PORTMATE_UNSUPPORTED__; fi'"#;
+pub(super) const REMOTE_WINDOWS_TUNNEL_PROBE_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+[Console]::Out.WriteLine('__PORTMATE_WINDOWS_TCP__')
+$listeners | ForEach-Object { [Console]::Out.WriteLine([string]$_.Port) }
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RemoteTunnelHealth {
@@ -127,20 +134,37 @@ pub(super) async fn probe_remote_tunnel_health(
         }
     }
 
-    let output = match exec_ssh_command_capture(
+    let probe_started = Instant::now();
+    let probe = match exec_ssh_command_capture(
         Arc::clone(&handle),
         REMOTE_TUNNEL_PROBE_COMMAND,
         REMOTE_TUNNEL_HEALTH_TIMEOUT,
     )
     .await
     {
-        Ok(output) => output,
+        Ok(output) => parse_remote_listener_probe(&output, runtime.spec.bind_port),
         Err(error) if error.starts_with("SSH exec 返回非零状态") => {
-            return Ok(RemoteTunnelHealth::Unsupported);
+            RemoteListenerProbe::Unsupported
         }
         Err(error) => return Err(format!("listener probe failed: {error}")),
     };
-    match parse_remote_listener_probe(&output, runtime.spec.bind_port) {
+    let probe = if probe == RemoteListenerProbe::Unsupported {
+        let remaining = REMOTE_TUNNEL_HEALTH_TIMEOUT
+            .checked_sub(probe_started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "listener probe timed out before Windows fallback".to_string())?;
+        let command = windows_powershell_command(REMOTE_WINDOWS_TUNNEL_PROBE_SCRIPT);
+        match exec_ssh_command_capture(handle.clone(), &command, remaining).await {
+            Ok(output) => parse_remote_listener_probe(&output, runtime.spec.bind_port),
+            Err(error) if error.starts_with("SSH exec 返回非零状态") => {
+                RemoteListenerProbe::Unsupported
+            }
+            Err(error) => return Err(format!("Windows listener probe failed: {error}")),
+        }
+    } else {
+        probe
+    };
+    match probe {
         RemoteListenerProbe::Listening => Ok(if routing_restored {
             RemoteTunnelHealth::Restored
         } else {
@@ -180,6 +204,18 @@ pub(super) async fn probe_remote_tunnel_health(
 pub(super) fn parse_remote_listener_probe(output: &str, port: u16) -> RemoteListenerProbe {
     if output.contains("__PORTMATE_UNSUPPORTED__") {
         return RemoteListenerProbe::Unsupported;
+    }
+    if let Some((_, ports)) = output.split_once("__PORTMATE_WINDOWS_TCP__") {
+        let listening = ports.lines().any(|line| {
+            line.trim()
+                .parse::<u16>()
+                .is_ok_and(|candidate| candidate == port)
+        });
+        return if listening {
+            RemoteListenerProbe::Listening
+        } else {
+            RemoteListenerProbe::Missing
+        };
     }
     if let Some((_, table)) = output.split_once("__PORTMATE_PROC__") {
         let expected_port = format!("{port:04X}");

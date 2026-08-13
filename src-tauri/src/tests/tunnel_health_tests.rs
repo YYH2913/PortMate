@@ -56,6 +56,20 @@ fn remote_tunnel_listener_probe_parses_linux_bsd_macos_and_unsupported_outputs()
         parse_remote_listener_probe(bsd_netstat_output, 10_022),
         RemoteListenerProbe::Listening
     );
+
+    let windows_output = "Windows OpenSSH preface\r\n__PORTMATE_WINDOWS_TCP__\r\n22\r\n2200\r\ninvalid\r\n65536\r\n";
+    assert_eq!(
+        parse_remote_listener_probe(windows_output, 22),
+        RemoteListenerProbe::Listening
+    );
+    assert_eq!(
+        parse_remote_listener_probe(windows_output, 2_200),
+        RemoteListenerProbe::Listening
+    );
+    assert_eq!(
+        parse_remote_listener_probe(windows_output, 10_022),
+        RemoteListenerProbe::Missing
+    );
     assert_eq!(
         parse_remote_listener_probe("__PORTMATE_UNSUPPORTED__\n", 22),
         RemoteListenerProbe::Unsupported
@@ -77,6 +91,11 @@ fn remote_tunnel_probe_only_marks_successful_cross_platform_tools() {
     ));
     assert!(REMOTE_TUNNEL_PROBE_COMMAND
         .contains("command -v netstat >/dev/null 2>&1 && probe=$(netstat -ltn 2>/dev/null)"));
+    assert!(REMOTE_WINDOWS_TUNNEL_PROBE_SCRIPT
+        .contains("IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()"));
+    assert!(!REMOTE_WINDOWS_TUNNEL_PROBE_SCRIPT.contains("Get-NetTCPConnection"));
+    assert!(windows_powershell_command(REMOTE_WINDOWS_TUNNEL_PROBE_SCRIPT)
+        .starts_with("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand "));
     assert!(
         REMOTE_TUNNEL_PROBE_COMMAND.find("sockstat").unwrap()
             < REMOTE_TUNNEL_PROBE_COMMAND.find("netstat").unwrap()
