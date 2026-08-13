@@ -34,7 +34,7 @@ pub(super) fn fail_tunnel_runtime_if_owned(
     let runtime = remove_tunnel_runtime_if_owned(tunnels, tunnel_id, ssh_runtime_id)?;
     if let Some(runtime) = &runtime {
         runtime.metrics.record_error(error);
-        runtime.closed.store(true, Ordering::SeqCst);
+        runtime.request_shutdown();
     }
     Ok(runtime)
 }
@@ -60,7 +60,7 @@ pub(super) fn fail_session_tunnel_runtimes(
     tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     session_id: &str,
     error: &str,
-) -> Result<usize, String> {
+) -> Result<Vec<TunnelRuntime>, String> {
     let mut tunnels = tunnels
         .lock()
         .map_err(|lock_error| lock_error.to_string())?;
@@ -68,15 +68,35 @@ pub(super) fn fail_session_tunnel_runtimes(
         .iter()
         .filter_map(|(id, runtime)| (runtime.session_id == session_id).then_some(id.clone()))
         .collect::<Vec<_>>();
-    let mut removed = 0;
+    let mut removed = Vec::with_capacity(ids.len());
     for id in ids {
         if let Some(runtime) = tunnels.remove(&id) {
             runtime.metrics.record_error(error);
-            runtime.closed.store(true, Ordering::SeqCst);
-            removed += 1;
+            runtime.request_shutdown();
+            removed.push(runtime);
         }
     }
     Ok(removed)
+}
+
+pub(super) async fn await_tunnel_listener_shutdowns(
+    runtimes: &[TunnelRuntime],
+) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + TUNNEL_LISTENER_SHUTDOWN_TIMEOUT;
+    let mut timed_out = Vec::new();
+    for runtime in runtimes {
+        if runtime.listener_worker.is_finished() {
+            continue;
+        }
+        if tokio::time::timeout_at(deadline, runtime.listener_worker.wait_finished())
+            .await
+            .is_err()
+            && !runtime.listener_worker.is_finished()
+        {
+            timed_out.push(runtime.spec.id.clone());
+        }
+    }
+    timed_out
 }
 
 pub(super) async fn stop_tunnel_inner(
@@ -122,9 +142,18 @@ pub(super) async fn stop_tunnel_runtime_effects(
 ) -> Result<(TunnelRuntime, Vec<String>), String> {
     let runtime = remove_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, ssh_runtime_id)?
         .ok_or_else(|| format!("tunnel runtime was superseded: {tunnel_id}"))?;
-    runtime.closed.store(true, Ordering::SeqCst);
+    runtime.request_shutdown();
     let mut warnings = Vec::new();
     if runtime.spec.mode != TunnelMode::Remote {
+        if !await_tunnel_listener_shutdowns(std::slice::from_ref(&runtime))
+            .await
+            .is_empty()
+        {
+            warnings.push(format!(
+                "tunnel listener shutdown timed out after {}ms",
+                TUNNEL_LISTENER_SHUTDOWN_TIMEOUT.as_millis()
+            ));
+        }
         return Ok((runtime, warnings));
     }
 

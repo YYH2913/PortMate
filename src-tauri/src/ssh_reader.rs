@@ -150,7 +150,7 @@ pub(super) fn read_ssh_channel(
         )
         .unwrap_or_else(|| "SSH channel closed".to_string());
 
-        let should_reconnect = {
+        let (should_reconnect, stopped_tunnel_runtimes) = {
             let mut connections = match io.runtimes.ssh.lock() {
                 Ok(connections) => connections,
                 Err(_) => return,
@@ -170,15 +170,16 @@ pub(super) fn read_ssh_channel(
                     return;
                 }
             };
-            let stopped_tunnels =
+            let stopped_tunnel_runtimes =
                 match fail_session_tunnel_runtimes(&state.tunnels, &session_id, &disconnect_reason)
                 {
-                    Ok(count) => count,
+                    Ok(runtimes) => runtimes,
                     Err(error) => {
                         eprintln!("PortMate: failed to clean up SSH tunnel runtimes: {error}");
-                        0
+                        Vec::new()
                     }
                 };
+            let stopped_tunnels = stopped_tunnel_runtimes.len();
             let reconnect_profile = (!closed.load(Ordering::SeqCst))
                 .then(|| store.profile(&session_id).map(normalize_session_profile))
                 .flatten()
@@ -201,7 +202,7 @@ pub(super) fn read_ssh_channel(
                 {
                     eprintln!("PortMate: failed to persist SSH reconnect event: {error}");
                 }
-                true
+                (true, stopped_tunnel_runtimes)
             } else {
                 if let Some(runtime) = connections.remove(&session_id) {
                     runtime.closed.store(true, Ordering::SeqCst);
@@ -222,9 +223,30 @@ pub(super) fn read_ssh_channel(
                 {
                     eprintln!("PortMate: failed to persist SSH close event: {error}");
                 }
-                false
+                (false, stopped_tunnel_runtimes)
             }
         };
+
+        let timed_out_tunnels = await_tunnel_listener_shutdowns(&stopped_tunnel_runtimes).await;
+        if !timed_out_tunnels.is_empty() {
+            let message = format!(
+                "PortMate: timed out waiting for SSH tunnel listener shutdown: {}",
+                timed_out_tunnels.join(", ")
+            );
+            eprintln!("{message}");
+            if let Ok(mut store) = io.store.lock() {
+                store.record_system_event(&session_id, message);
+                if let Err(error) = persist_applied_store(
+                    &store,
+                    &io.store_path,
+                    "SSH tunnel listener shutdown timeout",
+                ) {
+                    eprintln!(
+                        "PortMate: failed to persist tunnel listener shutdown timeout: {error}"
+                    );
+                }
+            }
+        }
 
         if should_reconnect {
             tauri::async_runtime::spawn(reconnect_ssh_session(

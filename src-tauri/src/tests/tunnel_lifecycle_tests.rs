@@ -33,6 +33,7 @@ fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
                 spec: tunnel.clone(),
                 metrics: Arc::new(TunnelMetrics::default()),
                 closed: Arc::clone(&closed),
+                listener_worker: TunnelListenerWorker::completed(),
             },
         );
 
@@ -91,6 +92,7 @@ fn tunnel_stop_persistence_failure_keeps_local_stop_truth() {
                 spec: tunnel.clone(),
                 metrics: Arc::new(TunnelMetrics::default()),
                 closed: Arc::clone(&closed),
+                listener_worker: TunnelListenerWorker::completed(),
             },
         );
 

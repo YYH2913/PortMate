@@ -3,6 +3,66 @@ use super::*;
 pub(super) const MAX_ACTIVE_TUNNELS: usize = 256;
 pub(super) const MAX_TUNNEL_CONNECTIONS: usize = 256;
 pub(super) const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
+pub(super) const TUNNEL_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone)]
+pub(super) struct TunnelListenerWorker {
+    shutdown: Arc<tokio::sync::Notify>,
+    finished: tokio::sync::watch::Receiver<bool>,
+}
+
+pub(super) struct TunnelListenerCompletion {
+    finished: tokio::sync::watch::Sender<bool>,
+}
+
+impl TunnelListenerWorker {
+    pub(super) fn running() -> (Self, TunnelListenerCompletion) {
+        let (finished, receiver) = tokio::sync::watch::channel(false);
+        (
+            Self {
+                shutdown: Arc::new(tokio::sync::Notify::new()),
+                finished: receiver,
+            },
+            TunnelListenerCompletion { finished },
+        )
+    }
+
+    pub(super) fn completed() -> Self {
+        let (finished, receiver) = tokio::sync::watch::channel(true);
+        drop(finished);
+        Self {
+            shutdown: Arc::new(tokio::sync::Notify::new()),
+            finished: receiver,
+        }
+    }
+
+    pub(super) fn request_shutdown(&self) {
+        self.shutdown.notify_one();
+    }
+
+    pub(super) async fn wait_shutdown(&self) {
+        self.shutdown.notified().await;
+    }
+
+    pub(super) fn is_finished(&self) -> bool {
+        *self.finished.borrow()
+    }
+
+    pub(super) async fn wait_finished(&self) {
+        let mut finished = self.finished.clone();
+        while !*finished.borrow() {
+            if finished.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for TunnelListenerCompletion {
+    fn drop(&mut self) {
+        let _ = self.finished.send(true);
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct TunnelRuntime {
@@ -11,6 +71,14 @@ pub(super) struct TunnelRuntime {
     pub(super) spec: TunnelSpec,
     pub(super) metrics: Arc<TunnelMetrics>,
     pub(super) closed: Arc<AtomicBool>,
+    pub(super) listener_worker: TunnelListenerWorker,
+}
+
+impl TunnelRuntime {
+    pub(super) fn request_shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.listener_worker.request_shutdown();
+    }
 }
 
 #[derive(Clone, Debug)]

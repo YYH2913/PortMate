@@ -230,8 +230,9 @@ pub(super) fn stop_pending_ssh_reconnect_if_disabled(
     if let Some(runtime) = connections.remove(session_id) {
         runtime.closed.store(true, Ordering::SeqCst);
     }
-    let stopped_tunnels =
-        fail_session_tunnel_runtimes(&state.tunnels, session_id, reason).unwrap_or_default();
+    let stopped_tunnels = fail_session_tunnel_runtimes(&state.tunnels, session_id, reason)
+        .map(|runtimes| runtimes.len())
+        .unwrap_or_default();
     let _ = store.set_runtime_status_with_reason(
         session_id,
         SessionStatus::Disconnected,

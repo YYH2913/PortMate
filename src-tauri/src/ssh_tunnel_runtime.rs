@@ -114,6 +114,7 @@ pub(super) async fn start_tunnel_runtime(
                     spec: tunnel.clone(),
                     metrics: Arc::clone(&metrics),
                     closed: Arc::clone(&closed),
+                    listener_worker: TunnelListenerWorker::completed(),
                 },
             );
             Ok::<(), String>(())
@@ -174,6 +175,7 @@ pub(super) async fn start_tunnel_runtime(
         }
     }
     let closed = Arc::new(AtomicBool::new(false));
+    let (listener_worker, listener_completion) = TunnelListenerWorker::running();
     let metrics = Arc::new(TunnelMetrics::default());
     let connection_slots = Arc::clone(&state.tunnel_connection_slots);
     {
@@ -200,6 +202,7 @@ pub(super) async fn start_tunnel_runtime(
                 spec: tunnel.clone(),
                 metrics: Arc::clone(&metrics),
                 closed: Arc::clone(&closed),
+                listener_worker: listener_worker.clone(),
             },
         );
     }
@@ -211,12 +214,17 @@ pub(super) async fn start_tunnel_runtime(
     let tunnel_for_task = tunnel.clone();
     let ssh_runtime_id_for_task = ssh_runtime_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _listener_completion = listener_completion;
         loop {
             if closed.load(Ordering::SeqCst) {
                 break;
             }
-            match tokio::time::timeout(Duration::from_millis(500), listener.accept()).await {
-                Ok(Ok((stream, peer))) => {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => Some(accepted),
+                _ = listener_worker.wait_shutdown() => None,
+            };
+            match accepted {
+                Some(Ok((stream, peer))) => {
                     let Some(permit) =
                         try_acquire_tunnel_connection(&connection_slots, metrics.as_ref())
                     else {
@@ -277,7 +285,7 @@ pub(super) async fn start_tunnel_runtime(
                         }
                     });
                 }
-                Ok(Err(error)) => {
+                Some(Err(error)) => {
                     let message = format!("SSH tunnel accept failed: {error}");
                     let removed = match fail_tunnel_runtime_if_owned(
                         &tunnel_registry,
@@ -312,7 +320,7 @@ pub(super) async fn start_tunnel_runtime(
                     }
                     break;
                 }
-                Err(_) => {}
+                None => break,
             }
         }
     });

@@ -142,6 +142,7 @@ fn ssh_auxiliary_saturation_blocks_remote_entry_points_without_side_effects() {
                 },
                 metrics: Arc::new(TunnelMetrics::default()),
                 closed: Arc::new(AtomicBool::new(false)),
+                listener_worker: TunnelListenerWorker::completed(),
             },
         )
         .await

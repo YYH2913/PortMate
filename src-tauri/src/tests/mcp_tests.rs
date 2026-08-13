@@ -661,6 +661,7 @@ fn mcp_stop_tunnel_authorizes_runtime_owner_and_tunnel_reads_are_scoped() {
                 spec: tunnel.clone(),
                 metrics: Arc::new(TunnelMetrics::default()),
                 closed: Arc::clone(&closed),
+                listener_worker: TunnelListenerWorker::completed(),
             },
         );
         let request = |command: &str, args: serde_json::Value| IpcRequest {

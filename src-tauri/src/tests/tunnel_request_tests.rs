@@ -193,6 +193,7 @@ fn tunnel_connection_slots_bound_and_release_concurrency() {
                     },
                     metrics: Arc::new(TunnelMetrics::default()),
                     closed: Arc::new(AtomicBool::new(false)),
+                    listener_worker: TunnelListenerWorker::completed(),
                 },
             )
         })
@@ -349,6 +350,7 @@ fn tunnel_metrics_snapshot_tracks_connections_bytes_and_errors() {
             spec: spec.clone(),
             metrics: Arc::clone(&failed_metrics),
             closed: Arc::clone(&failed_closed),
+            listener_worker: TunnelListenerWorker::completed(),
         },
     )])));
     assert!(fail_tunnel_runtime_if_owned(

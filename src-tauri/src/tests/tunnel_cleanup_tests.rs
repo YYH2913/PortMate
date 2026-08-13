@@ -25,6 +25,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
         },
         metrics,
         closed,
+        listener_worker: TunnelListenerWorker::completed(),
     };
     let tunnels = Arc::new(Mutex::new(HashMap::from([
         (
@@ -58,7 +59,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
 
     let removed =
         fail_session_tunnel_runtimes(&tunnels, "session-a", "SSH channel closed").unwrap();
-    assert_eq!(removed, 2);
+    assert_eq!(removed.len(), 2);
     assert!(first_closed.load(Ordering::SeqCst));
     assert!(second_closed.load(Ordering::SeqCst));
     assert!(!other_closed.load(Ordering::SeqCst));
@@ -86,6 +87,25 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
         .snapshot(remaining["other"].spec.clone())
         .last_error
         .is_none());
+}
+
+#[test]
+fn tunnel_listener_worker_reports_shutdown_completion() {
+    tauri::async_runtime::block_on(async {
+        let (worker, completion) = TunnelListenerWorker::running();
+        let waiter = worker.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            waiter.wait_shutdown().await;
+            drop(completion);
+        });
+
+        worker.request_shutdown();
+        tokio::time::timeout(Duration::from_secs(1), worker.wait_finished())
+            .await
+            .expect("listener worker should report completion");
+        task.await.unwrap();
+        assert!(worker.is_finished());
+    });
 }
 
 #[test]
