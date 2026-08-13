@@ -3,19 +3,17 @@ import {
   constants,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
-  rmSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
+import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
@@ -43,7 +41,12 @@ const bundleRoot = join(projectRoot, "target", "release", "bundle");
 const deb = join(bundleRoot, "deb", `PortMate_${version}_${architecture}.deb`);
 const rpm = join(bundleRoot, "rpm", `PortMate-${version}-1.${rpmArchitecture}.rpm`);
 const appImage = join(bundleRoot, "appimage", `PortMate_${version}_${architecture}.AppImage`);
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate package check "));
+const packageWorkspace = createNativePackageCheckWorkspace({
+  projectRoot,
+  label: "portmate linux package check",
+});
+const auditRoot = packageWorkspace.root;
+const packageEnvironment = packageWorkspace.environment;
 const runtimeSmokes = [];
 const sidecarWatchdogSmokes = [];
 
@@ -127,6 +130,7 @@ try {
       result: await smokePackagedSidecarParentWatchdog({
         executable: bridge,
         label: `${kind} packaged MCP sidecar`,
+        environment: packageEnvironment,
       }),
     });
   }
@@ -155,7 +159,7 @@ try {
     sidecarWatchdogSmokes,
   }, null, 2));
 } finally {
-  rmSync(auditRoot, { recursive: true, force: true });
+  packageWorkspace.cleanup();
 }
 
 async function checkPackagedApplication(kind, executable, dataRootName) {
@@ -167,6 +171,7 @@ async function checkPackagedApplication(kind, executable, dataRootName) {
       label: `${kind} packaged application`,
       exitAfterMs: 5_000,
       timeoutMs: 45_000,
+      environment: packageEnvironment,
     }),
   };
 }
@@ -381,41 +386,42 @@ function extractRpm(archive, destination) {
 }
 
 function checkPackagedBridge(kind, bridge) {
+  const bridgeEnvironment = { ...packageEnvironment, PORTMATE_MCP_BINARY: bridge };
   run(process.execPath, ["scripts/mcp-typescript-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-python-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-go-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-rust-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-ruby-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-java-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-kotlin-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-csharp-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   run(process.execPath, ["scripts/mcp-swift-client-check.mjs"], {
     cwd: projectRoot,
-    env: { ...process.env, PORTMATE_MCP_BINARY: bridge },
+    env: bridgeEnvironment,
   });
   console.log(`${kind} MCP sidecar protocol checks passed`);
 }
@@ -432,7 +438,7 @@ function run(command, args, options = {}) {
   if (options.createCwd) mkdirSync(options.cwd, { recursive: true });
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? projectRoot,
-    env: options.env ?? process.env,
+    env: options.env ?? packageEnvironment,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });

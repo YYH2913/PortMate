@@ -6,10 +6,10 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { temporaryDirectoryFromEnvironment } from "./native-package-workspace.mjs";
 
 const helper = fileURLToPath(new URL("./native-packaged-sidecar-parent.mjs", import.meta.url));
 const maximumCapturedOutputBytes = 64 * 1024;
@@ -26,7 +26,10 @@ export async function smokePackagedSidecarParentWatchdog({
 }) {
   validateOptions({ executable, args, label, readyTimeoutMs, watchdogTimeoutMs, token });
   const resolvedExecutable = resolve(executable);
-  const smokeRoot = mkdtempSync(join(tmpdir(), "portmate packaged sidecar watchdog "));
+  const smokeRoot = mkdtempSync(join(
+    temporaryDirectoryFromEnvironment(environment),
+    "portmate packaged sidecar watchdog ",
+  ));
   const reportPath = join(smokeRoot, "parent report.json");
   let parentOutput = Buffer.alloc(0);
   let parentResult = null;

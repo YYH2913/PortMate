@@ -1,18 +1,16 @@
 import {
   lstatSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File, verifyMacAppBundle } from "./native-package-layout.mjs";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
+import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -37,7 +35,12 @@ const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const app = findSingleBundle(join(bundleRoot, "macos"));
 const dmg = findSingleArtifact(join(bundleRoot, "dmg"), ".dmg", "DMG image");
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate macos package check "));
+const packageWorkspace = createNativePackageCheckWorkspace({
+  projectRoot,
+  label: "portmate macos package check",
+});
+const auditRoot = packageWorkspace.root;
+const packageEnvironment = packageWorkspace.environment;
 const mountPoint = join(auditRoot, "mounted-dmg");
 let mounted = false;
 let verifiedApp;
@@ -64,6 +67,7 @@ try {
     result: await smokePackagedSidecarParentWatchdog({
       executable: verifiedApp.sidecar,
       label: "macOS application MCP sidecar",
+      environment: packageEnvironment,
     }),
   });
   runtimeSmokes.push({
@@ -72,6 +76,7 @@ try {
       executable: verifiedApp.main,
       dataDirectory: join(auditRoot, "runtime-app", "dev.portmate.desktop"),
       label: "macOS application bundle",
+      environment: packageEnvironment,
     }),
   });
   run("hdiutil", ["verify", dmg]);
@@ -95,6 +100,7 @@ try {
     result: await smokePackagedSidecarParentWatchdog({
       executable: verifiedDmg.sidecar,
       label: "DMG packaged MCP sidecar",
+      environment: packageEnvironment,
     }),
   });
   runtimeSmokes.push({
@@ -103,6 +109,7 @@ try {
       executable: verifiedDmg.main,
       dataDirectory: join(auditRoot, "runtime-dmg", "dev.portmate.desktop"),
       label: "DMG packaged application",
+      environment: packageEnvironment,
     }),
   });
 } catch (error) {
@@ -116,7 +123,7 @@ try {
     }
   }
   try {
-    rmSync(auditRoot, { recursive: true, force: true });
+    packageWorkspace.cleanup();
   } catch (error) {
     failure ??= error;
   }
@@ -207,7 +214,7 @@ function macCategory(category) {
 function readCommandOutput(command, args) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
-    env: process.env,
+    env: packageEnvironment,
     encoding: "utf8",
     maxBuffer: 1024 * 1024,
   });
@@ -223,7 +230,7 @@ function readCommandOutput(command, args) {
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
-    env: process.env,
+    env: packageEnvironment,
     stdio: "inherit",
   });
   if (result.error) throw result.error;

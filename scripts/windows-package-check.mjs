@@ -1,12 +1,9 @@
 import {
   existsSync,
   lstatSync,
-  mkdtempSync,
   mkdirSync,
   readdirSync,
-  rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -18,6 +15,7 @@ import {
 import { verifyWindowsReleaseBinary } from "./windows-release-binary.mjs";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
+import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -35,7 +33,12 @@ const releaseBinary = verifyWindowsReleaseBinary({
 });
 const msi = findSingleArtifact(join(bundleRoot, "msi"), ".msi", "MSI installer");
 const nsis = findSingleArtifact(join(bundleRoot, "nsis"), ".exe", "NSIS installer");
-const auditRoot = mkdtempSync(join(tmpdir(), "portmate windows package check "));
+const packageWorkspace = createNativePackageCheckWorkspace({
+  projectRoot,
+  label: "portmate windows package check",
+});
+const auditRoot = packageWorkspace.root;
+const packageEnvironment = packageWorkspace.environment;
 const msiRoot = join(auditRoot, "msi");
 const nsisRoot = join(auditRoot, "nsis");
 const expectedUninstaller = join(nsisRoot, "uninstall.exe");
@@ -69,6 +72,7 @@ try {
     result: await smokePackagedSidecarParentWatchdog({
       executable: verifiedMsi.sidecar,
       label: "MSI packaged MCP sidecar",
+      environment: packageEnvironment,
     }),
   });
   runtimeSmokes.push({
@@ -77,6 +81,7 @@ try {
       executable: verifiedMsi.main,
       dataDirectory: join(auditRoot, "runtime-msi", "dev.portmate.desktop"),
       label: "MSI packaged application",
+      environment: packageEnvironment,
     }),
   });
 
@@ -93,6 +98,7 @@ try {
     result: await smokePackagedSidecarParentWatchdog({
       executable: verifiedNsis.sidecar,
       label: "NSIS installed MCP sidecar",
+      environment: packageEnvironment,
     }),
   });
   runtimeSmokes.push({
@@ -101,6 +107,7 @@ try {
       executable: verifiedNsis.main,
       dataDirectory: join(auditRoot, "runtime-nsis", "dev.portmate.desktop"),
       label: "NSIS installed application",
+      environment: packageEnvironment,
     }),
   });
   const uninstaller = findUniqueRegularFile(
@@ -126,7 +133,7 @@ try {
     failure ??= new Error(`NSIS installation did not provide its uninstaller: ${expectedUninstaller}`);
   }
   try {
-    rmSync(auditRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    packageWorkspace.cleanup();
   } catch (error) {
     failure ??= error;
   }
@@ -177,7 +184,7 @@ function assertNsisPayloadRemoved(payload) {
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
-    env: process.env,
+    env: packageEnvironment,
     stdio: "inherit",
     windowsHide: true,
   });

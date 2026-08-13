@@ -4,17 +4,15 @@ import {
   constants,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   renameSync,
-  rmSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { smokePackagedApplicationLegacyConflict } from "./native-packaged-smoke.mjs";
+import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 
 if (process.platform !== "linux") throw new Error("The AppImage smoke check requires a Linux host");
 if (!process.env.DISPLAY?.trim()) throw new Error("The AppImage smoke check requires an active X11 display");
@@ -28,7 +26,13 @@ const appImage = resolve(
 );
 assertExecutable(appImage);
 
-const testRoot = mkdtempSync(join(tmpdir(), "portmate-appimage-smoke-"));
+const packageWorkspace = createNativePackageCheckWorkspace({
+  projectRoot,
+  label: "portmate appimage smoke check",
+});
+const packageEnvironment = packageWorkspace.environment;
+const testRoot = join(packageWorkspace.temporaryDirectory, "portmate-appimage-smoke-root");
+mkdirSync(testRoot, { recursive: false, mode: 0o700 });
 const extractRoot = join(testRoot, "package");
 mkdirSync(extractRoot, { recursive: true, mode: 0o700 });
 
@@ -69,6 +73,7 @@ try {
     label: "AppImage packaged application",
     exitAfterMs: 5_000,
     timeoutMs: 45_000,
+    environment: packageEnvironment,
   }, migration.lifecycle.store);
 
   console.log(JSON.stringify({
@@ -86,14 +91,14 @@ try {
     conflict,
   }, null, 2));
 } finally {
-  rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  packageWorkspace.cleanup();
 }
 
 function runNativeSmoke(appRun, label) {
   const result = spawnSync(process.execPath, [join(projectRoot, "scripts", "linux-desktop-smoke-check.mjs")], {
     cwd: projectRoot,
     env: {
-      ...process.env,
+      ...packageEnvironment,
       PORTMATE_NATIVE_SMOKE_BINARY: appRun,
       PORTMATE_NATIVE_SMOKE_ROOT: testRoot,
     },
@@ -141,7 +146,7 @@ function assertExecutable(path) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? projectRoot,
-    env: process.env,
+    env: packageEnvironment,
     encoding: "utf8",
     maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
   });
