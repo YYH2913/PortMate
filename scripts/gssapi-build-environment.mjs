@@ -4,7 +4,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const minimumLibsshVersion = "0.9.7";
@@ -76,7 +76,7 @@ export function prepareGssapiBuildEnvironment({
 
 export function buildSysrootEnvironment(sysroot, env = process.env) {
   const root = resolve(sysroot);
-  const pkgConfigDirectories = findFiles(root, "libssh.pc").map((file) => file.slice(0, file.lastIndexOf("/")));
+  const pkgConfigDirectories = findFiles(root, "libssh.pc").map(dirname);
   if (pkgConfigDirectories.length === 0) {
     throw new Error(`libssh.pc is missing from GSSAPI sysroot: ${root}`);
   }
@@ -134,9 +134,9 @@ function findFiles(root, basename) {
 
 function findLibraryDirectories(root) {
   const directories = new Set();
-  for (const file of findFiles(root, "libssh.so")) directories.add(file.slice(0, file.lastIndexOf("/")));
+  for (const file of findFiles(root, "libssh.so")) directories.add(dirname(file));
   if (directories.size === 0) {
-    for (const file of findFiles(root, "libssh.so.4")) directories.add(file.slice(0, file.lastIndexOf("/")));
+    for (const file of findFiles(root, "libssh.so.4")) directories.add(dirname(file));
   }
   return [...directories];
 }

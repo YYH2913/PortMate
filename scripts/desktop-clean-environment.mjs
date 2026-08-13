@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { posix } from "node:path";
 
 const injectedDesktopVariables = new Set([
   "GDK_PIXBUF_MODULEDIR",
@@ -50,7 +50,7 @@ export function buildDesktopEnvironment(source, platform = process.platform) {
 
   const dataDirectories = [...systemDataDirectories];
   if (source.HOME?.trim()) {
-    dataDirectories.unshift(resolve(source.HOME, ".local/share/flatpak/exports/share"));
+    dataDirectories.unshift(posix.resolve(source.HOME, ".local/share/flatpak/exports/share"));
   }
   env.XDG_DATA_DIRS = dataDirectories.join(":");
   return env;

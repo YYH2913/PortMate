@@ -51,9 +51,9 @@ describe("GSSAPI build environment", () => {
     });
     expect(result.source).toBe("PORTMATE_GSSAPI_SYSROOT");
     expect(result.env.PKG_CONFIG_SYSROOT_DIR).toBe(root);
-    expect(result.env.PKG_CONFIG_PATH).toContain(`${root}/usr/lib/x86_64-linux-gnu/pkgconfig`);
+    expect(result.env.PKG_CONFIG_PATH).toContain(join(root, "usr/lib/x86_64-linux-gnu/pkgconfig"));
     expect(result.env.PKG_CONFIG_PATH).toContain("/opt/pkg");
-    expect(result.env.LD_LIBRARY_PATH).toContain(`${root}/usr/lib/x86_64-linux-gnu`);
+    expect(result.env.LD_LIBRARY_PATH).toContain(join(root, "usr/lib/x86_64-linux-gnu"));
     expect(result.env.LD_LIBRARY_PATH).toContain("/opt/lib");
   });
 
